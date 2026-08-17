@@ -12,6 +12,7 @@ import type {
   OrderRecord,
   Platform,
   Sale,
+  SaleBatchInput,
   SaleEditInput,
   SaleInput,
   Supplier,
@@ -58,6 +59,7 @@ export const api = {
   }) => invoke<Sale[]>("list_sales", params),
   getSale: (id: number) => invoke<Sale>("get_sale", { id }),
   createSale: (input: SaleInput) => invoke<Sale>("create_sale", { input }),
+  createSalesBatch: (input: SaleBatchInput) => invoke<Sale[]>("create_sales_batch", { input }),
   updateSale: (id: number, input: SaleEditInput) => invoke<Sale>("update_sale", { id, input }),
   deleteSale: (id: number) => invoke<void>("delete_sale", { id }),
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, Platform, Sale, SaleEditInput, SaleInput, SalePaymentStatus, Ticket } from "../lib/types";
+import type { EventWithStats, Platform, Sale, SaleBatchInput, SaleEditInput, SalePaymentStatus, Ticket } from "../lib/types";
 import { formatDate, formatMoney, formatPercent, todayIso } from "../lib/format";
 import {
   Badge,
@@ -18,7 +18,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconPlus, IconReceipt, IconSearch, IconTrash } from "../components/icons";
+import { IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 export default function Sales() {
@@ -266,6 +266,11 @@ export default function Sales() {
   );
 }
 
+interface SaleLineDraft {
+  price: string;
+  fees: string;
+}
+
 function SaleFormModal({
   open,
   onClose,
@@ -276,14 +281,16 @@ function SaleFormModal({
   onCreated: () => void;
 }) {
   const toast = useToast();
-  const [ticket, setTicket] = useState<Ticket | null>(null);
+  const [step, setStep] = useState<"pick" | "details">("pick");
+  const [selected, setSelected] = useState<Ticket[]>([]);
+  const [lines, setLines] = useState<Record<number, SaleLineDraft>>({});
   const [ticketQuery, setTicketQuery] = useState("");
   const [ticketOptions, setTicketOptions] = useState<Ticket[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [platformId, setPlatformId] = useState<number | null>(null);
   const [saleDate, setSaleDate] = useState(todayIso());
-  const [salePrice, setSalePrice] = useState("");
-  const [sellingFees, setSellingFees] = useState("0");
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkFees, setBulkFees] = useState("");
   const [paymentStatus, setPaymentStatus] = useState<SalePaymentStatus>("pending");
   const [buyerReference, setBuyerReference] = useState("");
   const [notes, setNotes] = useState("");
@@ -292,13 +299,15 @@ function SaleFormModal({
 
   useEffect(() => {
     if (!open) return;
-    setTicket(null);
+    setStep("pick");
+    setSelected([]);
+    setLines({});
     setTicketQuery("");
     setTicketOptions([]);
     setPlatformId(null);
     setSaleDate(todayIso());
-    setSalePrice("");
-    setSellingFees("0");
+    setBulkPrice("");
+    setBulkFees("");
     setPaymentStatus("pending");
     setBuyerReference("");
     setNotes("");
@@ -307,7 +316,7 @@ function SaleFormModal({
   }, [open]);
 
   useEffect(() => {
-    if (!open || ticket) return;
+    if (!open || step !== "pick") return;
     const t = setTimeout(() => {
       api
         .listTickets({ search: ticketQuery || undefined, status: "available,listed", sortBy: "created", sortDir: "desc" })
@@ -315,31 +324,110 @@ function SaleFormModal({
         .catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [open, ticket, ticketQuery]);
+  }, [open, step, ticketQuery]);
+
+  // If every ticket gets removed while on the details step, drop back to
+  // picking rather than showing an empty pricing form.
+  useEffect(() => {
+    if (step === "details" && selected.length === 0) setStep("pick");
+  }, [step, selected.length]);
+
+  const addTicket = (t: Ticket) => {
+    setSelected((prev) => (prev.some((s) => s.id === t.id) ? prev : [...prev, t]));
+    setLines((prev) => (prev[t.id] ? prev : { ...prev, [t.id]: { price: "", fees: "0" } }));
+  };
+
+  const removeTicket = (id: number) => {
+    setSelected((prev) => prev.filter((t) => t.id !== id));
+    setLines((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const updateLine = (id: number, field: keyof SaleLineDraft, value: string) => {
+    setLines((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  };
+
+  const applyBulkPrice = () => {
+    if (!bulkPrice.trim()) return;
+    setLines((prev) => {
+      const next = { ...prev };
+      for (const t of selected) next[t.id] = { ...next[t.id], price: bulkPrice };
+      return next;
+    });
+  };
+
+  const applyBulkFees = () => {
+    if (!bulkFees.trim()) return;
+    setLines((prev) => {
+      const next = { ...prev };
+      for (const t of selected) next[t.id] = { ...next[t.id], fees: bulkFees };
+      return next;
+    });
+  };
+
+  const visibleOptions = ticketOptions.filter((t) => !selected.some((s) => s.id === t.id));
+  const singleCurrency =
+    selected.length > 0 && selected.every((t) => t.currency === selected[0].currency) ? selected[0].currency : null;
+
+  const totals = useMemo(() => {
+    let revenue = 0;
+    let fees = 0;
+    let cost = 0;
+    for (const t of selected) {
+      const line = lines[t.id];
+      const p = parseFloat((line?.price ?? "").trim().replace(",", "."));
+      const f = parseFloat((line?.fees ?? "0").trim().replace(",", ".")) || 0;
+      if (Number.isFinite(p)) revenue += Math.round(p * 100);
+      fees += Math.round(f * 100);
+      cost += t.totalCostCents;
+    }
+    return { revenue, cost, fees, profit: revenue - cost - fees };
+  }, [selected, lines]);
 
   const submit = async () => {
     setError(null);
-    if (!ticket) return setError("Select a ticket to sell first");
-    const s = salePrice.trim().replace(",", ".");
-    if (!/^\d+(\.\d{1,2})?$/.test(s)) return setError("Sale price is not a valid amount");
-    const feesStr = sellingFees.trim().replace(",", ".") || "0";
-    if (!/^\d+(\.\d{1,2})?$/.test(feesStr)) return setError("Selling fees is not a valid amount");
+    if (selected.length === 0) return setError("Select at least one ticket to sell first");
     if (!saleDate) return setError("Sale date is required");
 
-    const input: SaleInput = {
-      ticketId: ticket.id,
+    const batchLines: SaleBatchInput["lines"] = [];
+    for (const t of selected) {
+      const line = lines[t.id];
+      const priceStr = (line?.price ?? "").trim().replace(",", ".");
+      if (!/^\d+(\.\d{1,2})?$/.test(priceStr)) {
+        return setError(`Sale price for ${t.code} is not a valid amount`);
+      }
+      const feesStr = (line?.fees ?? "").trim().replace(",", ".") || "0";
+      if (!/^\d+(\.\d{1,2})?$/.test(feesStr)) {
+        return setError(`Selling fees for ${t.code} is not a valid amount`);
+      }
+      batchLines.push({
+        ticketId: t.id,
+        salePriceCents: Math.round(parseFloat(priceStr) * 100),
+        sellingFeesCents: Math.round(parseFloat(feesStr) * 100),
+      });
+    }
+
+    const input: SaleBatchInput = {
+      lines: batchLines,
       platformId,
       saleDate,
-      salePriceCents: Math.round(parseFloat(s) * 100),
-      sellingFeesCents: Math.round(parseFloat(feesStr) * 100),
       paymentStatus,
       buyerReference: buyerReference || null,
       notes: notes || null,
     };
     setSaving(true);
     try {
-      const sale = await api.createSale(input);
-      toast.success(`${sale.code} recorded - ${ticket.code} marked as sold`);
+      const sales = await api.createSalesBatch(input);
+      if (sales.length === 1) {
+        toast.success(`${sales[0].code} recorded - ${sales[0].ticketCode} marked as sold`);
+      } else {
+        toast.success(
+          `${sales.length} sales recorded (${sales[0].code}–${sales[sales.length - 1].code}) - ${sales.length} tickets marked as sold`,
+        );
+      }
       onCreated();
     } catch (e) {
       setError(errMsg(e));
@@ -349,10 +437,14 @@ function SaleFormModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="New sale" width="max-w-xl">
-      {!ticket ? (
+    <Modal open={open} onClose={onClose} title="New sale" width="max-w-2xl">
+      {step === "pick" ? (
         <div>
-          <Field label="Find a ticket to sell" required hint="Only Available and Listed tickets can be sold">
+          <Field
+            label="Find tickets to sell"
+            required
+            hint="Only Available and Listed tickets can be sold. Add as many as you like to this one sale."
+          >
             <Input
               autoFocus
               placeholder="Search by code, event, seat..."
@@ -360,17 +452,17 @@ function SaleFormModal({
               onChange={(e) => setTicketQuery(e.target.value)}
             />
           </Field>
-          <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
-            {ticketOptions.length === 0 ? (
+          <div className="mt-3 max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+            {visibleOptions.length === 0 ? (
               <p className="p-4 text-center text-sm text-slate-400">
                 {ticketQuery ? "No matching available/listed tickets" : "Start typing to search your inventory"}
               </p>
             ) : (
-              ticketOptions.map((t) => (
+              visibleOptions.map((t) => (
                 <button
                   key={t.id}
                   className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50"
-                  onClick={() => setTicket(t)}
+                  onClick={() => addTicket(t)}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium text-slate-800">{t.code} &middot; {t.eventName}</span>
@@ -378,34 +470,126 @@ function SaleFormModal({
                       {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
                     </span>
                   </span>
-                  <span className="shrink-0">
+                  <span className="flex shrink-0 items-center gap-2">
                     <Badge tone={t.status}>{t.status}</Badge>
+                    <IconPlus className="h-4 w-4 text-brand-600" />
                   </span>
                 </button>
               ))
             )}
           </div>
+
+          {selected.length > 0 && (
+            <div className="mt-4">
+              <p className="label mb-1.5">Selected ({selected.length})</p>
+              <div className="flex flex-wrap gap-1.5">
+                {selected.map((t) => (
+                  <span
+                    key={t.id}
+                    className="inline-flex items-center gap-1 rounded-full bg-brand-50 py-1 pl-2.5 pr-1.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200"
+                  >
+                    {t.code}
+                    <button
+                      type="button"
+                      onClick={() => removeTicket(t.id)}
+                      className="rounded-full p-0.5 hover:bg-brand-100"
+                      aria-label={`Remove ${t.code}`}
+                    >
+                      <IconX className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <>
-          <div className="mb-4 flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3">
-            <div>
-              <p className="text-sm font-semibold text-slate-800">
-                {ticket.code} &middot; {ticket.eventName}
-              </p>
-              <p className="text-xs text-slate-400">
-                Cost {formatMoney(ticket.totalCostCents, ticket.currency)}
-                {[ticket.section, ticket.rowLabel, ticket.seat].some(Boolean)
-                  ? ` · ${[ticket.section, ticket.rowLabel, ticket.seat].filter(Boolean).join(" / ")}`
-                  : ""}
-              </p>
-            </div>
-            <button className="text-xs font-medium text-brand-600 hover:underline" onClick={() => setTicket(null)}>
-              Change
+          <div className="mb-3 flex items-center justify-between">
+            <p className="label mb-0">Selected tickets ({selected.length})</p>
+            <button type="button" className="text-xs font-medium text-brand-600 hover:underline" onClick={() => setStep("pick")}>
+              + Add more tickets
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-3">
+            <div className="w-28">
+              <span className="label">Quick-fill price</span>
+              <Input inputMode="decimal" placeholder="0.00" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} />
+            </div>
+            <Button type="button" variant="secondary" disabled={!bulkPrice.trim()} onClick={applyBulkPrice}>
+              Apply to all
+            </Button>
+            <div className="ml-4 w-24">
+              <span className="label">Quick-fill fees</span>
+              <Input inputMode="decimal" placeholder="0.00" value={bulkFees} onChange={(e) => setBulkFees(e.target.value)} />
+            </div>
+            <Button type="button" variant="secondary" disabled={!bulkFees.trim()} onClick={applyBulkFees}>
+              Apply to all
+            </Button>
+          </div>
+
+          <div className="max-h-52 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+            {selected.map((t) => {
+              const line = lines[t.id] ?? { price: "", fees: "0" };
+              return (
+                <div key={t.id} className="flex items-center gap-2 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-800">{t.code}</p>
+                    <p className="truncate text-xs text-slate-400">
+                      Cost {formatMoney(t.totalCostCents, t.currency)}
+                      {[t.section, t.rowLabel, t.seat].some(Boolean)
+                        ? ` · ${[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ")}`
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="w-24 shrink-0">
+                    <Input
+                      inputMode="decimal"
+                      placeholder="Price"
+                      value={line.price}
+                      onChange={(e) => updateLine(t.id, "price", e.target.value)}
+                    />
+                  </div>
+                  <div className="w-20 shrink-0">
+                    <Input
+                      inputMode="decimal"
+                      placeholder="Fees"
+                      value={line.fees}
+                      onChange={(e) => updateLine(t.id, "fees", e.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 text-slate-400 hover:text-red-600"
+                    title="Remove from this sale"
+                    onClick={() => removeTicket(t.id)}
+                  >
+                    <IconX className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {singleCurrency ? (
+            <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg bg-slate-50 px-4 py-3 text-sm">
+              <div>
+                <p className="text-xs text-slate-400">Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})</p>
+                <p className="font-semibold text-slate-900">{formatMoney(totals.revenue, singleCurrency)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Estimated profit</p>
+                <p className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  {formatMoney(totals.profit, singleCurrency)}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-slate-400">Selected tickets use different currencies - totals shown per ticket only.</p>
+          )}
+
+          <div className="mt-4 grid grid-cols-2 gap-4">
             <LookupSelect
               label="Platform"
               options={platforms}
@@ -419,12 +603,6 @@ function SaleFormModal({
             />
             <Field label="Sale date" required>
               <Input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} />
-            </Field>
-            <Field label={`Sale price (${ticket.currency})`} required>
-              <Input inputMode="decimal" placeholder="0.00" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} />
-            </Field>
-            <Field label="Selling fees">
-              <Input inputMode="decimal" value={sellingFees} onChange={(e) => setSellingFees(e.target.value)} />
             </Field>
             <Field label="Payment status">
               <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as SalePaymentStatus)}>
@@ -450,9 +628,15 @@ function SaleFormModal({
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={saving || !ticket}>
-          {saving ? "Recording..." : "Record sale"}
-        </Button>
+        {step === "pick" ? (
+          <Button variant="primary" onClick={() => setStep("details")} disabled={selected.length === 0}>
+            Continue ({selected.length})
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={submit} disabled={saving}>
+            {saving ? "Recording..." : `Record ${selected.length} sale${selected.length === 1 ? "" : "s"}`}
+          </Button>
+        )}
       </ModalFooter>
     </Modal>
   );

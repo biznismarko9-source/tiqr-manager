@@ -1,15 +1,29 @@
 name: Build Windows Installer
 
-# How to use this (one-time, ~3 minutes):
-#   1. Push this repository to GitHub (public or private, both work - Actions is free
-#      for public repos and gives 2000 free CI minutes/month for private repos).
-#   2. Go to the "Actions" tab on GitHub -> "Build Windows Installer" -> "Run workflow".
-#   3. Wait ~10-15 minutes. A green checkmark means it succeeded.
-#   4. Open the finished run -> scroll to "Artifacts" -> download "TIQR-Manager-Setup".
-#      Inside the zip is TIQR-Manager-Setup.exe - the real, double-click installer.
+# Two ways this fires:
 #
-# This also runs automatically on every push to main/master and on version tags
-# (e.g. "v1.0.1"), so future updates produce a fresh installer without any manual steps.
+# 1) Manual test build - Actions tab -> "Build Windows Installer" -> "Run workflow"
+#    (or any push to main/master). Builds an UNSIGNED installer and attaches it
+#    as a downloadable Artifact on the run. Good for "just get me an .exe to try".
+#    Existing installs will NOT auto-update from this - it's for manual testing only.
+#
+# 2) Real versioned release - push a tag like "v1.0.1". Builds a SIGNED installer
+#    and publishes it as a GitHub Release, together with the small "latest.json"
+#    file the app checks on startup. This is what existing installs actually see
+#    when they check for updates, so use this path whenever you want users to be
+#    offered an update.
+#
+#    Before this path works you need to add one repository secret, once:
+#    Settings -> Secrets and variables -> Actions -> New repository secret
+#      Name:  TAURI_SIGNING_PRIVATE_KEY
+#      Value: (the private updater key you were given separately - keep it secret)
+#
+#    To ship a real release: bump "version" in src-tauri/tauri.conf.json (and
+#    package.json) to the new version number, commit, then:
+#      git tag v1.0.1
+#      git push origin v1.0.1
+#    The release goes live immediately once the workflow finishes - existing
+#    installs will offer it the next time they check for updates.
 
 on:
   workflow_dispatch: {}
@@ -21,7 +35,9 @@ permissions:
   contents: write
 
 jobs:
+  # --- Path 1: quick unsigned test build, not tag pushes -------------------
   build-windows:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -52,7 +68,6 @@ jobs:
           tauriScript: npx tauri
 
       - name: Locate and rename installer
-        id: find_installer
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -Recurse | Select-Object -First 1
@@ -72,9 +87,40 @@ jobs:
           path: dist-installer/TIQR-Manager-Setup.exe
           if-no-files-found: error
 
-      - name: Attach installer to release (tag pushes only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        continue-on-error: true
+  # --- Path 2: signed, versioned release - only on "v*" tag pushes ---------
+  release-windows:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          files: dist-installer/TIQR-Manager-Setup.exe
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build, sign and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "TIQR Manager ${{ github.ref_name }}"
+          releaseBody: "See CHANGELOG or commit history for details."
+          releaseDraft: false
+          prerelease: false

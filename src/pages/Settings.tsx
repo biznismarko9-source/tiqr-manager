@@ -17,6 +17,7 @@ import {
 } from "../components/ui";
 import { IconDatabase, IconDownload, IconTrash, IconUpload } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 
 export default function Settings() {
   const toast = useToast();
@@ -30,6 +31,13 @@ export default function Settings() {
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   const [confirmClearDemo, setConfirmClearDemo] = useState(false);
   const [confirmResetDemo, setConfirmResetDemo] = useState(false);
+
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const [available, setAvailable] = useState<Update | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<UpdateProgress | null>(null);
 
   const reload = () => {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
@@ -119,6 +127,34 @@ export default function Settings() {
       toast.error(errMsg(e));
       setBusyAction(null);
       setConfirmRestorePath(null);
+    }
+  };
+
+  const doCheckForUpdate = async () => {
+    setUpdateChecking(true);
+    setUpdateError(null);
+    try {
+      const update = await checkForUpdate();
+      setAvailable(update);
+      setUpdateChecked(true);
+    } catch (e) {
+      setUpdateError(errMsg(e) || "Could not check for updates - are you online?");
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
+  const doInstallUpdate = async () => {
+    if (!available) return;
+    setInstalling(true);
+    setUpdateError(null);
+    try {
+      await installUpdate(available, setInstallProgress);
+      // installUpdate relaunches the app on success; if we're still here
+      // after a moment something odd happened, but there's nothing more to do.
+    } catch (e) {
+      setUpdateError(errMsg(e) || "Update failed to install");
+      setInstalling(false);
     }
   };
 
@@ -272,6 +308,51 @@ export default function Settings() {
               Reset demo data
             </Button>
           </div>
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800">Software updates</h2>
+          <p className="mb-3 text-xs text-slate-400">
+            Checks GitHub for a newer signed release. Nothing downloads until you approve it, and everything
+            still works fully offline either way.
+          </p>
+
+          {installing ? (
+            <div>
+              <p className="mb-2 text-sm text-slate-600">
+                Installing {available?.version}
+                {installProgress?.total ? ` - ${Math.round((installProgress.downloaded / installProgress.total) * 100)}%` : "..."}
+              </p>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-brand-600 transition-all"
+                  style={{
+                    width: installProgress?.total
+                      ? `${Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100))}%`
+                      : "30%",
+                  }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-400">The app will relaunch automatically once this finishes.</p>
+            </div>
+          ) : available ? (
+            <div>
+              <p className="mb-1 text-sm font-medium text-slate-800">Version {available.version} is available</p>
+              {available.body && <p className="mb-3 whitespace-pre-line text-xs text-slate-500">{available.body}</p>}
+              <Button variant="primary" onClick={doInstallUpdate}>
+                <IconDownload className="h-4 w-4" /> Download &amp; install
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="secondary" disabled={updateChecking} onClick={doCheckForUpdate}>
+                {updateChecking ? <Spinner className="h-4 w-4" /> : null}
+                {updateChecking ? "Checking..." : "Check for updates"}
+              </Button>
+              {updateChecked && !updateError && <span className="text-xs text-slate-400">You're on the latest version.</span>}
+            </div>
+          )}
+          {updateError && <p className="mt-3 text-xs text-red-600">{updateError}</p>}
           {appInfo && <p className="mt-4 text-xs text-slate-400">TIQR Manager v{appInfo.version}</p>}
         </Card>
       </div>

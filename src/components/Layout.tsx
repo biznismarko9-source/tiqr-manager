@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import {
   IconBoxes,
@@ -8,6 +9,8 @@ import {
   IconSettings,
   IconTicket,
 } from "./icons";
+import { checkForUpdate } from "../lib/updater";
+import { useToast } from "../lib/toast";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: IconGauge, end: true },
@@ -20,6 +23,21 @@ const NAV = [
 ];
 
 export default function Layout() {
+  const toast = useToast();
+
+  useEffect(() => {
+    // Quiet, one-time check on launch. Never blocks the UI and never
+    // surfaces an error - if it's offline or GitHub is unreachable, the
+    // app just carries on as a fully offline tool. Nothing downloads until
+    // the user explicitly approves it from Settings.
+    checkForUpdate()
+      .then((update) => {
+        if (update) toast.info(`TIQR Manager ${update.version} is available - open Settings to install it.`);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-slate-50">
       <aside className="flex w-56 shrink-0 flex-col border-r border-slate-200 bg-white">

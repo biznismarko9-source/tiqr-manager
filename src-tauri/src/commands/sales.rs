@@ -2,8 +2,9 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
-use crate::models::{Sale, SaleEditInput, SaleInput};
+use crate::models::{Sale, SaleBatchInput, SaleEditInput, SaleInput};
 use rusqlite::{params, Connection, Row};
+use std::collections::HashSet;
 use tauri::State;
 
 const BASE_SQL: &str = "
@@ -206,6 +207,117 @@ pub fn create_sale(state: State<AppState>, input: SaleInput) -> AppResult<Sale> 
 
     tx.commit()?;
     fetch_one(&conn, sale_id)
+}
+
+/// Records a sale that can cover multiple tickets in one action (e.g. a
+/// block of seats sold together to the same buyer). Every ticket still gets
+/// its own `sales` row - so per-ticket revenue/cost/profit/margin/ROI stay
+/// exact - but all rows share the buyer/platform/date/payment details from
+/// `input` and are inserted in a single all-or-nothing transaction: if any
+/// selected ticket turns out to be unavailable, nothing in the batch is
+/// saved. This is also the path used for a single-ticket sale (a batch of
+/// one line), so there is only one code path to keep correct.
+#[tauri::command]
+pub fn create_sales_batch(state: State<AppState>, input: SaleBatchInput) -> AppResult<Vec<Sale>> {
+    if input.lines.is_empty() {
+        return Err(AppError::Validation(
+            "Select at least one ticket to sell".into(),
+        ));
+    }
+    if input.sale_date.trim().is_empty() {
+        return Err(AppError::Validation("Sale date is required".into()));
+    }
+    for line in &input.lines {
+        if line.sale_price_cents < 0 || line.selling_fees_cents < 0 {
+            return Err(AppError::Validation("Amounts cannot be negative".into()));
+        }
+    }
+    {
+        let mut seen = HashSet::new();
+        for line in &input.lines {
+            if !seen.insert(line.ticket_id) {
+                return Err(AppError::Validation(
+                    "The same ticket was selected twice in this sale".into(),
+                ));
+            }
+        }
+    }
+
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+
+    let payment_status = input
+        .payment_status
+        .clone()
+        .unwrap_or_else(|| "pending".to_string());
+    let codes_batch = codes::next_code_batch(&tx, "sale", "SAL", input.lines.len() as i64)?;
+
+    let mut sale_ids = Vec::with_capacity(input.lines.len());
+
+    for (line, code) in input.lines.iter().zip(codes_batch.iter()) {
+        let ticket_status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM tickets WHERE id = ?1",
+                [line.ticket_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let ticket_status = ticket_status.ok_or_else(|| {
+            AppError::Validation(format!("Ticket #{} does not exist", line.ticket_id))
+        })?;
+        if ticket_status == "sold" {
+            return Err(AppError::Validation(
+                "One of the selected tickets has already been sold - nothing in this sale was saved. Remove it and try again.".into(),
+            ));
+        }
+        if ticket_status == "cancelled" {
+            return Err(AppError::Validation(
+                "One of the selected tickets is cancelled and cannot be sold - nothing in this sale was saved. Remove it and try again.".into(),
+            ));
+        }
+
+        let (currency,): (String,) = tx.query_row(
+            "SELECT currency FROM tickets WHERE id = ?1",
+            [line.ticket_id],
+            |r| Ok((r.get(0)?,)),
+        )?;
+
+        let insert_result = tx.execute(
+            "INSERT INTO sales (code, ticket_id, platform_id, sale_date, sale_price_cents,
+               selling_fees_cents, currency, payment_status, buyer_reference, notes)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                code,
+                line.ticket_id,
+                input.platform_id,
+                input.sale_date,
+                line.sale_price_cents,
+                line.selling_fees_cents,
+                currency,
+                payment_status,
+                input.buyer_reference,
+                input.notes,
+            ],
+        );
+        match insert_result {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(m))) if m.contains("UNIQUE") => {
+                return Err(AppError::Validation(
+                    "One of the selected tickets has already been sold - nothing in this sale was saved. Remove it and try again.".into(),
+                ));
+            }
+            Err(e) => return Err(AppError::from(e)),
+        }
+        sale_ids.push(tx.last_insert_rowid());
+
+        tx.execute(
+            "UPDATE tickets SET status='sold', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+            [line.ticket_id],
+        )?;
+    }
+
+    tx.commit()?;
+    sale_ids.into_iter().map(|id| fetch_one(&conn, id)).collect()
 }
 
 #[tauri::command]

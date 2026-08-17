@@ -15,6 +15,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::sales::list_sales,
             commands::sales::get_sale,
             commands::sales::create_sale,
+            commands::sales::create_sales_batch,
             commands::sales::update_sale,
             commands::sales::delete_sale,
             commands::lookups::list_platforms,

@@ -171,6 +171,21 @@ export interface SaleInput {
   notes?: string | null;
 }
 
+export interface SaleBatchLineInput {
+  ticketId: number;
+  salePriceCents: number;
+  sellingFeesCents: number;
+}
+
+export interface SaleBatchInput {
+  lines: SaleBatchLineInput[];
+  platformId?: number | null;
+  saleDate: string;
+  paymentStatus?: SalePaymentStatus | null;
+  buyerReference?: string | null;
+  notes?: string | null;
+}
+
 export interface SaleEditInput {
   platformId?: number | null;
   saleDate: string;

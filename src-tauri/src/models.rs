@@ -198,6 +198,31 @@ pub struct SaleInput {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct SaleBatchLineInput {
+    pub ticket_id: i64,
+    pub sale_price_cents: i64,
+    pub selling_fees_cents: i64,
+}
+
+/// Records one sale "transaction" that can cover several tickets at once
+/// (e.g. selling a block of 4 seats to the same buyer). Every ticket still
+/// gets its own `sales` row internally - one row per ticket is what keeps
+/// revenue/cost/profit/margin/ROI exact per seat - but all lines here share
+/// buyer/platform/date/payment details and are inserted atomically, so a
+/// single "New sale" action in the UI can hand over many tickets in one go.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SaleBatchInput {
+    pub lines: Vec<SaleBatchLineInput>,
+    pub platform_id: Option<i64>,
+    pub sale_date: String,
+    pub payment_status: Option<String>,
+    pub buyer_reference: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SaleEditInput {
     pub platform_id: Option<i64>,
     pub sale_date: String,
