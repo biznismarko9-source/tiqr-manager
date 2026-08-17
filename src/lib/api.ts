@@ -103,6 +103,10 @@ export const api = {
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
+
+  // Settings (generic key/value, e.g. theme preference)
+  getAppSetting: (key: string) => invoke<string | null>("get_app_setting", { key }),
+  setAppSetting: (key: string, value: string) => invoke<void>("set_app_setting", { key, value }),
 };
 
 export function errMsg(e: unknown): string {

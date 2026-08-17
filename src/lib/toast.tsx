@@ -47,10 +47,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className={
               "pointer-events-auto rounded-lg border px-4 py-3 text-sm font-medium shadow-lg animate-[fadein_.15s_ease-out] " +
               (i.kind === "error"
-                ? "border-red-200 bg-red-50 text-red-800"
+                ? "border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400"
                 : i.kind === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  : "border-slate-700 bg-slate-800 text-white")
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400"
+                  : "border-slate-700 bg-slate-800 text-white dark:border-slate-600 dark:bg-slate-700")
             }
           >
             {i.message}

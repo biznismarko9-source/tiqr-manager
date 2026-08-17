@@ -18,9 +18,17 @@ import {
 import { IconDatabase, IconDownload, IconTrash, IconUpload } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
+import { useTheme, type ThemeMode } from "../lib/theme";
+
+const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
+  { key: "light", label: "Light" },
+  { key: "system", label: "System" },
+  { key: "dark", label: "Dark" },
+];
 
 export default function Settings() {
   const toast = useToast();
+  const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -164,8 +172,30 @@ export default function Settings() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Platforms</h2>
-          <p className="mb-3 text-xs text-slate-400">Used when recording orders and sales. Not hardcoded — add as many as you like.</p>
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Appearance</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Choose how TIQR Manager looks. "System" follows your OS setting automatically.
+          </p>
+          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            {THEME_OPTIONS.map((o) => (
+              <button
+                key={o.key}
+                onClick={() => setThemeMode(o.key)}
+                className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                  themeMode === o.key
+                    ? "bg-brand-600 text-white"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Used when recording orders and sales. Not hardcoded — add as many as you like.</p>
           <div className="mb-3 flex gap-2">
             <Input
               placeholder="e.g. Ticketmaster"
@@ -175,13 +205,13 @@ export default function Settings() {
             />
             <Button onClick={addPlatform}>Add</Button>
           </div>
-          <ul className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-100">
-            {platforms.length === 0 && <li className="p-3 text-sm text-slate-400">No platforms yet</li>}
+          <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+            {platforms.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
             {platforms.map((p) => (
               <li key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
                 <span>{p.name}</span>
                 <button
-                  className="text-slate-300 hover:text-red-600"
+                  className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
                   title="Remove"
                   onClick={async () => {
                     try {
@@ -200,8 +230,8 @@ export default function Settings() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Suppliers</h2>
-          <p className="mb-3 text-xs text-slate-400">Who you buy tickets from.</p>
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suppliers</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Who you buy tickets from.</p>
           <div className="mb-3 flex gap-2">
             <Input
               placeholder="e.g. John from Discord"
@@ -211,15 +241,15 @@ export default function Settings() {
             />
             <Button onClick={addSupplier}>Add</Button>
           </div>
-          <ul className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-100">
-            {suppliers.length === 0 && <li className="p-3 text-sm text-slate-400">No suppliers yet</li>}
+          <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+            {suppliers.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No suppliers yet</li>}
             {suppliers.map((s) => (
               <li key={s.id} className="flex items-center justify-between px-3 py-2 text-sm">
                 <span>
                   {s.name} {s.isDemo && <Badge tone="demo">demo</Badge>}
                 </span>
                 <button
-                  className="text-slate-300 hover:text-red-600"
+                  className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
                   title="Remove"
                   onClick={async () => {
                     try {
@@ -238,8 +268,8 @@ export default function Settings() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Import orders from CSV</h2>
-          <p className="mb-3 text-xs text-slate-400">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
             Bulk-add orders (and their tickets) from a spreadsheet. Columns: event, purchase_date, supplier,
             platform, quantity, unit_price, fees, other_costs, currency, payment_status, ticket_type, section,
             notes. Everything imports in one all-or-nothing transaction.
@@ -250,8 +280,8 @@ export default function Settings() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Export CSV</h2>
-          <p className="mb-3 text-xs text-slate-400">Save any part of your data as a CSV file.</p>
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Save any part of your data as a CSV file.</p>
           <div className="flex flex-wrap gap-2">
             {[
               { label: "Events", key: "events", fn: api.exportEventsCsv, file: "events.csv" },
@@ -274,8 +304,8 @@ export default function Settings() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Backup &amp; restore</h2>
-          <p className="mb-3 text-xs text-slate-400">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
             Your database lives only on this device. Back it up regularly, especially before big imports.
           </p>
           <div className="flex flex-wrap gap-2">
@@ -288,15 +318,15 @@ export default function Settings() {
             </Button>
           </div>
           {appInfo && (
-            <p className="mt-4 break-all text-xs text-slate-400">
+            <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
               Database file: <span className="font-mono">{appInfo.dbPath}</span>
             </p>
           )}
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Demo data</h2>
-          <p className="mb-3 text-xs text-slate-400">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Demo data</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
             The sample events/orders/tickets/sales that ship with TIQR Manager so you're not staring at an
             empty app. Clear them once you start entering your own data.
           </p>
@@ -311,19 +341,19 @@ export default function Settings() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800">Software updates</h2>
-          <p className="mb-3 text-xs text-slate-400">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h2>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
             Checks GitHub for a newer signed release. Nothing downloads until you approve it, and everything
             still works fully offline either way.
           </p>
 
           {installing ? (
             <div>
-              <p className="mb-2 text-sm text-slate-600">
+              <p className="mb-2 text-sm text-slate-600 dark:text-slate-400">
                 Installing {available?.version}
                 {installProgress?.total ? ` - ${Math.round((installProgress.downloaded / installProgress.total) * 100)}%` : "..."}
               </p>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                 <div
                   className="h-full rounded-full bg-brand-600 transition-all"
                   style={{
@@ -333,12 +363,12 @@ export default function Settings() {
                   }}
                 />
               </div>
-              <p className="mt-2 text-xs text-slate-400">The app will relaunch automatically once this finishes.</p>
+              <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">The app will relaunch automatically once this finishes.</p>
             </div>
           ) : available ? (
             <div>
-              <p className="mb-1 text-sm font-medium text-slate-800">Version {available.version} is available</p>
-              {available.body && <p className="mb-3 whitespace-pre-line text-xs text-slate-500">{available.body}</p>}
+              <p className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-200">Version {available.version} is available</p>
+              {available.body && <p className="mb-3 whitespace-pre-line text-xs text-slate-500 dark:text-slate-400">{available.body}</p>}
               <Button variant="primary" onClick={doInstallUpdate}>
                 <IconDownload className="h-4 w-4" /> Download &amp; install
               </Button>
@@ -349,11 +379,11 @@ export default function Settings() {
                 {updateChecking ? <Spinner className="h-4 w-4" /> : null}
                 {updateChecking ? "Checking..." : "Check for updates"}
               </Button>
-              {updateChecked && !updateError && <span className="text-xs text-slate-400">You're on the latest version.</span>}
+              {updateChecked && !updateError && <span className="text-xs text-slate-400 dark:text-slate-500">You're on the latest version.</span>}
             </div>
           )}
-          {updateError && <p className="mt-3 text-xs text-red-600">{updateError}</p>}
-          {appInfo && <p className="mt-4 text-xs text-slate-400">TIQR Manager v{appInfo.version}</p>}
+          {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
+          {appInfo && <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">TIQR Manager v{appInfo.version}</p>}
         </Card>
       </div>
 
@@ -476,9 +506,9 @@ function CsvImportModal({
   return (
     <Modal open={isOpen} onClose={onClose} title="Import orders from CSV" width="max-w-3xl">
       {!path && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-slate-300 py-10">
-          <IconUpload className="h-8 w-8 text-slate-300" />
-          <p className="text-sm text-slate-500">Choose a CSV file to preview before importing.</p>
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 py-10">
+          <IconUpload className="h-8 w-8 text-slate-300 dark:text-slate-600" />
+          <p className="text-sm text-slate-500 dark:text-slate-400">Choose a CSV file to preview before importing.</p>
           <Button variant="primary" onClick={pickFile}>
             Choose CSV file...
           </Button>
@@ -486,7 +516,7 @@ function CsvImportModal({
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400">
+        <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400 dark:text-slate-500">
           <Spinner className="h-4 w-4" /> Reading file...
         </div>
       )}
@@ -494,24 +524,24 @@ function CsvImportModal({
       {preview && !loading && (
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm text-slate-600">
-              <span className="font-medium text-emerald-600">{preview.validCount} valid</span>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              <span className="font-medium text-emerald-600 dark:text-emerald-400">{preview.validCount} valid</span>
               {preview.errorCount > 0 && (
                 <>
                   {" "}
-                  &middot; <span className="font-medium text-red-600">{preview.errorCount} with errors</span>
+                  &middot; <span className="font-medium text-red-600 dark:text-red-400">{preview.errorCount} with errors</span>
                 </>
               )}{" "}
               of {preview.rows.length} rows
             </p>
-            <button className="text-xs font-medium text-brand-600 hover:underline" onClick={pickFile}>
+            <button className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={pickFile}>
               Choose a different file
             </button>
           </div>
 
-          <div className="max-h-80 overflow-auto rounded-lg border border-slate-200">
+          <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
             <table className="w-full min-w-[600px] border-collapse text-xs">
-              <thead className="sticky top-0 border-b border-slate-200 bg-slate-50">
+              <thead className="sticky top-0 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
                 <tr>
                   <th className="th">#</th>
                   {preview.headers.map((h) => (
@@ -522,29 +552,29 @@ function CsvImportModal({
                   <th className="th">Issues</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {preview.rows.slice(0, 100).map((r) => (
-                  <tr key={r.rowNumber} className={r.errors.length > 0 ? "bg-red-50" : ""}>
+                  <tr key={r.rowNumber} className={r.errors.length > 0 ? "bg-red-50 dark:bg-red-500/10" : ""}>
                     <td className="td">{r.rowNumber}</td>
                     {preview.headers.map((h) => (
                       <td key={h} className="td whitespace-nowrap">
                         {r.values[h] ?? ""}
                       </td>
                     ))}
-                    <td className="td text-red-600">{r.errors.join("; ")}</td>
+                    <td className="td text-red-600 dark:text-red-400">{r.errors.join("; ")}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
             {preview.rows.length > 100 && (
-              <p className="border-t border-slate-100 p-2 text-center text-xs text-slate-400">
+              <p className="border-t border-slate-100 dark:border-slate-800 p-2 text-center text-xs text-slate-400 dark:text-slate-500">
                 Showing first 100 of {preview.rows.length} rows
               </p>
             )}
           </div>
 
           {preview.errorCount > 0 && (
-            <p className="mt-3 text-sm text-red-600">
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">
               Fix the highlighted rows in your CSV and re-choose the file. Nothing is imported until every row is
               valid.
             </p>

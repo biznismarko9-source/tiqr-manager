@@ -233,6 +233,8 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
                 notes: notes.map(|s| s.to_string()),
                 ticket_type: ticket_type.map(|s| s.to_string()),
                 section: section.map(|s| s.to_string()),
+                row_label: None,
+                seats: None,
             })
         } else {
             None

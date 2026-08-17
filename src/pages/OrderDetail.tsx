@@ -51,19 +51,19 @@ export default function OrderDetail() {
 
   return (
     <div>
-      <Link to="/orders" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800">
+      <Link to="/orders" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
         <IconArrowLeft className="h-4 w-4" /> Back to orders
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold text-slate-900">{order.code}</h1>
+            <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
             <Badge tone={order.paymentStatus}>{order.paymentStatus}</Badge>
             {order.isDemo && <Badge tone="demo">demo</Badge>}
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            <Link to={`/events/${order.eventId}`} className="hover:text-brand-700">
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+            <Link to={`/events/${order.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
               {order.eventName}
             </Link>
             {" "}&middot; purchased {formatDate(order.purchaseDate)}
@@ -81,61 +81,61 @@ export default function OrderDetail() {
 
       <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400">Quantity</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Quantity</p>
           <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400">Unit price</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Unit price</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.unitPriceCents, order.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400">Fees + other</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Fees + other</p>
           <p className="mt-1 text-lg font-semibold">
             {formatMoney(order.feesCents + order.otherCostsCents, order.currency)}
           </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400">Total cost</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Total cost</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
         </Card>
       </div>
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400">Supplier</p>
-          <p className="mt-1 text-sm text-slate-700">{order.supplierName ?? "-"}</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Supplier</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.supplierName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400">Platform</p>
-          <p className="mt-1 text-sm text-slate-700">{order.platformName ?? "-"}</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400">Sold / Available</p>
-          <p className="mt-1 text-sm text-slate-700">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Sold / Available</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {order.soldCount} / {order.availableCount}
           </p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400">Currency</p>
-          <p className="mt-1 text-sm text-slate-700">{order.currency}</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
         </div>
         {order.notes && (
           <div className="col-span-2 sm:col-span-4">
-            <p className="text-xs font-medium uppercase text-slate-400">Notes</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{order.notes}</p>
+            <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Notes</p>
+            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{order.notes}</p>
           </div>
         )}
       </Card>
 
-      <h2 className="mb-3 text-sm font-semibold text-slate-800">Tickets generated by this order ({tickets?.length ?? 0})</h2>
+      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets generated by this order ({tickets?.length ?? 0})</h2>
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets found for this order" />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[800px] border-collapse">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Ticket</th>
                 <th className="th">Seat</th>
@@ -145,11 +145,11 @@ export default function OrderDetail() {
                 <th className="th" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {tickets.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50">
-                  <td className="td font-medium text-slate-900">{t.code}</td>
-                  <td className="td text-slate-500">
+                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td font-medium text-slate-900 dark:text-slate-100">{t.code}</td>
+                  <td className="td text-slate-500 dark:text-slate-400">
                     {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
                   </td>
                   <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
@@ -161,7 +161,7 @@ export default function OrderDetail() {
                   </td>
                   <td className="td text-right">
                     <button
-                      className="text-xs font-medium text-brand-600 hover:underline"
+                      className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
                       onClick={() => setEditTicket(t)}
                     >
                       Edit
@@ -281,7 +281,7 @@ function OrderEditModal({
 
   return (
     <Modal open={open} onClose={onClose} title={`Edit ${order.code}`}>
-      <p className="mb-4 text-xs text-slate-400">
+      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
         Quantity and pricing are locked after creation because they&apos;ve already been allocated to
         individual tickets. Edit ticket cost/listing price directly if you need to fix a mistake.
       </p>
@@ -338,7 +338,7 @@ function OrderEditModal({
           </Field>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel

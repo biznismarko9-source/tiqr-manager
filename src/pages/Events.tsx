@@ -76,7 +76,7 @@ export default function Events() {
 
       <div className="mb-4 max-w-xs">
         <div className="relative">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
           <Input
             placeholder="Search events..."
             value={search}
@@ -100,9 +100,9 @@ export default function Events() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[900px] border-collapse">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Event</th>
                 <th className="th">Date</th>
@@ -116,15 +116,15 @@ export default function Events() {
                 <th className="th text-right">ROI</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {events.map((ev) => (
                 <tr
                   key={ev.id}
-                  className="cursor-pointer hover:bg-slate-50"
+                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
                   onClick={() => (window.location.hash = `#/events/${ev.id}`)}
                 >
                   <td className="td">
-                    <Link to={`/events/${ev.id}`} className="font-medium text-slate-900 hover:text-brand-700">
+                    <Link to={`/events/${ev.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {ev.name}
                     </Link>
                     {ev.isDemo && (
@@ -132,7 +132,7 @@ export default function Events() {
                         <Badge tone="demo">demo</Badge>
                       </span>
                     )}
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-slate-400 dark:text-slate-500">
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>
@@ -145,7 +145,7 @@ export default function Events() {
                   <td className="td text-right tabular-nums">{formatMoney(ev.stats.totalCostCents, "EUR")}</td>
                   <td className="td text-right tabular-nums">{formatMoney(ev.stats.revenueCents, "EUR")}</td>
                   <td
-                    className={`td text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600" : ev.stats.profitCents < 0 ? "text-red-600" : ""}`}
+                    className={`td text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
                     {formatMoney(ev.stats.profitCents, "EUR")}
                   </td>
@@ -291,7 +291,7 @@ export function EventFormModal({
           </Field>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel

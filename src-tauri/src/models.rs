@@ -104,6 +104,12 @@ pub struct OrderInput {
     pub notes: Option<String>,
     pub ticket_type: Option<String>,
     pub section: Option<String>,
+    pub row_label: Option<String>,
+    /// Individual seat labels, one per generated ticket, in order. When
+    /// provided (non-empty) its length must equal `quantity` - each ticket
+    /// gets `seats[i]`. Leave empty/absent to generate tickets without a
+    /// seat number (unchanged default behaviour).
+    pub seats: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

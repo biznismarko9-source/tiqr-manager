@@ -51,7 +51,7 @@ export function LookupSelect({
         <span className="label mb-1">{label}</span>
         <button
           type="button"
-          className="mb-1 text-xs font-medium text-brand-600 hover:underline"
+          className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
           onClick={() => {
             setAdding((a) => !a);
             setError(null);
@@ -91,7 +91,7 @@ export function LookupSelect({
           ))}
         </Select>
       )}
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );
 }

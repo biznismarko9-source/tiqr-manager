@@ -89,6 +89,9 @@ export interface OrderInput {
   notes?: string | null;
   ticketType?: string | null;
   section?: string | null;
+  rowLabel?: string | null;
+  /** One seat label per generated ticket, in order. Length must equal quantity if provided. */
+  seats?: string[] | null;
 }
 
 export interface OrderEditInput {

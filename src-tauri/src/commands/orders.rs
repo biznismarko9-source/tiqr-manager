@@ -117,6 +117,15 @@ fn validate_order_input(input: &OrderInput) -> AppResult<()> {
     if input.currency.trim().is_empty() {
         return Err(AppError::Validation("Currency is required".into()));
     }
+    if let Some(seats) = &input.seats {
+        if !seats.is_empty() && seats.len() as i64 != input.quantity {
+            return Err(AppError::Validation(format!(
+                "You entered {} seat(s) but quantity is {} - provide one seat per ticket or leave seats empty",
+                seats.len(),
+                input.quantity
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -179,16 +188,20 @@ pub(crate) fn insert_order_with_tickets(
     let other_alloc = allocate_cents(input.other_costs_cents, input.quantity);
 
     let mut stmt = conn.prepare(
-        "INSERT INTO tickets (code, event_id, order_id, section, ticket_type,
+        "INSERT INTO tickets (code, event_id, order_id, section, row_label, seat, ticket_type,
            purchase_cost_cents, purchase_fees_cents, other_costs_cents, currency, status, is_demo)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'available',?10)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'available',?12)",
     )?;
+    let seats = input.seats.as_ref().filter(|s| !s.is_empty());
     for i in 0..input.quantity as usize {
+        let seat: Option<&String> = seats.and_then(|s| s.get(i));
         stmt.execute(params![
             ticket_codes[i],
             input.event_id,
             order_id,
             input.section,
+            input.row_label,
+            seat,
             input.ticket_type,
             input.unit_price_cents,
             fees_alloc[i],

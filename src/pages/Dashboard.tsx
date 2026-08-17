@@ -44,13 +44,13 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="A real-time snapshot of your ticket reselling business."
         actions={
-          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
             {PERIODS.map((p) => (
               <button
                 key={p.key}
                 onClick={() => setPeriod(p.key)}
                 className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  period === p.key ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100"
+                  period === p.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                 }`}
               >
                 {p.label}
@@ -62,7 +62,7 @@ export default function Dashboard() {
 
       {period === "custom" && (
         <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
-          <label className="text-xs font-medium text-slate-600">
+          <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
             From
             <input
               type="date"
@@ -71,7 +71,7 @@ export default function Dashboard() {
               className="input mt-1"
             />
           </label>
-          <label className="text-xs font-medium text-slate-600">
+          <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
             To
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input mt-1" />
           </label>
@@ -82,7 +82,7 @@ export default function Dashboard() {
         <LoadingBlock label="Loading dashboard..." />
       ) : (
         <>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
             Activity {data.periodFrom} &rarr; {data.periodTo}
           </p>
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -102,7 +102,7 @@ export default function Dashboard() {
             />
           </div>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
             Current inventory (all time)
           </p>
           <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -117,16 +117,16 @@ export default function Dashboard() {
               {data.recentEvents.length === 0 ? (
                 <EmptyRow text="No events yet" />
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                   {data.recentEvents.map((ev) => (
                     <li key={ev.id}>
                       <Link
                         to={`/events/${ev.id}`}
-                        className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50"
+                        className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
                       >
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-800">{ev.name}</p>
-                          <p className="text-xs text-slate-400">{formatDate(ev.eventDate)}</p>
+                          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
+                          <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(ev.eventDate)}</p>
                         </div>
                         <Badge tone={ev.status}>{ev.status}</Badge>
                       </Link>
@@ -140,18 +140,18 @@ export default function Dashboard() {
               {data.recentOrders.length === 0 ? (
                 <EmptyRow text="No orders yet" />
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                   {data.recentOrders.map((o) => (
                     <li key={o.id}>
                       <Link
                         to={`/orders/${o.id}`}
-                        className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50"
+                        className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
                       >
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-800">{o.code}</p>
-                          <p className="truncate text-xs text-slate-400">{o.eventName}</p>
+                          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</p>
+                          <p className="truncate text-xs text-slate-400 dark:text-slate-500">{o.eventName}</p>
                         </div>
-                        <p className="shrink-0 text-sm tabular-nums text-slate-600">
+                        <p className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
                           {formatMoney(o.totalCostCents, o.currency)}
                         </p>
                       </Link>
@@ -165,14 +165,14 @@ export default function Dashboard() {
               {data.recentSales.length === 0 ? (
                 <EmptyRow text="No sales yet" />
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                   {data.recentSales.map((s) => (
                     <li key={s.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-slate-800">{s.eventName}</p>
-                        <p className="text-xs text-slate-400">{formatDate(s.saleDate)}</p>
+                        <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{s.eventName}</p>
+                        <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(s.saleDate)}</p>
                       </div>
-                      <p className="shrink-0 text-sm tabular-nums text-emerald-600">
+                      <p className="shrink-0 text-sm tabular-nums text-emerald-600 dark:text-emerald-400">
                         {formatMoney(s.salePriceCents, s.currency)}
                       </p>
                     </li>
@@ -198,9 +198,9 @@ function RecentCard({
 }) {
   return (
     <Card>
-      <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-3">
-        <span className="text-slate-400">{icon}</span>
-        <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+      <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
+        <span className="text-slate-400 dark:text-slate-500">{icon}</span>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{title}</h3>
       </div>
       {children}
     </Card>

@@ -85,7 +85,7 @@ export default function Sales() {
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
               placeholder="Sale code, ticket, buyer..."
               value={search}
@@ -123,7 +123,7 @@ export default function Sales() {
           <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </div>
         {totals && sales && (
-          <p className="ml-auto text-xs text-slate-400">
+          <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
             {sales.length} sales &middot; revenue {formatMoney(totals.revenue, "EUR")} &middot; profit{" "}
             {formatMoney(totals.profit, "EUR")}
           </p>
@@ -143,9 +143,9 @@ export default function Sales() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[1100px] border-collapse">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Sale</th>
                 <th className="th">Event / Ticket</th>
@@ -160,10 +160,10 @@ export default function Sales() {
                 <th className="th" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {sales.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50">
-                  <td className="td font-medium text-slate-900">
+                <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td font-medium text-slate-900 dark:text-slate-100">
                     {s.code}
                     {s.isDemo && (
                       <span className="ml-1.5">
@@ -172,17 +172,17 @@ export default function Sales() {
                     )}
                   </td>
                   <td className="td">
-                    <Link to={`/events/${s.eventId}`} className="hover:text-brand-700">
+                    <Link to={`/events/${s.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
                       {s.eventName}
                     </Link>
-                    <p className="text-xs text-slate-400">{s.ticketCode}</p>
+                    <p className="text-xs text-slate-400 dark:text-slate-500">{s.ticketCode}</p>
                   </td>
                   <td className="td whitespace-nowrap">{formatDate(s.saleDate)}</td>
                   <td className="td">{s.platformName ?? "-"}</td>
                   <td className="td text-right tabular-nums">{formatMoney(s.salePriceCents, s.currency)}</td>
                   <td className="td text-right tabular-nums">{formatMoney(s.sellingFeesCents, s.currency)}</td>
                   <td
-                    className={`td text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600" : s.profitCents < 0 ? "text-red-600" : ""}`}
+                    className={`td text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
                     {formatMoney(s.profitCents, s.currency)}
                   </td>
@@ -194,13 +194,13 @@ export default function Sales() {
                   <td className="td">
                     <div className="flex items-center justify-end gap-3">
                       <button
-                        className="text-xs font-medium text-brand-600 hover:underline"
+                        className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
                         onClick={() => setEditTarget(s)}
                       >
                         Edit
                       </button>
                       <button
-                        className="text-slate-400 hover:text-red-600"
+                        className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
                         title="Delete sale (returns ticket to available)"
                         onClick={() => setDeleteTarget(s)}
                       >
@@ -452,27 +452,27 @@ function SaleFormModal({
               onChange={(e) => setTicketQuery(e.target.value)}
             />
           </Field>
-          <div className="mt-3 max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+          <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
             {visibleOptions.length === 0 ? (
-              <p className="p-4 text-center text-sm text-slate-400">
+              <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
                 {ticketQuery ? "No matching available/listed tickets" : "Start typing to search your inventory"}
               </p>
             ) : (
               visibleOptions.map((t) => (
                 <button
                   key={t.id}
-                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
                   onClick={() => addTicket(t)}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium text-slate-800">{t.code} &middot; {t.eventName}</span>
-                    <span className="block truncate text-xs text-slate-400">
+                    <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code} &middot; {t.eventName}</span>
+                    <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
                       {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
                     </span>
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
                     <Badge tone={t.status}>{t.status}</Badge>
-                    <IconPlus className="h-4 w-4 text-brand-600" />
+                    <IconPlus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                   </span>
                 </button>
               ))
@@ -486,13 +486,13 @@ function SaleFormModal({
                 {selected.map((t) => (
                   <span
                     key={t.id}
-                    className="inline-flex items-center gap-1 rounded-full bg-brand-50 py-1 pl-2.5 pr-1.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200"
+                    className="inline-flex items-center gap-1 rounded-full bg-brand-50 dark:bg-brand-500/10 py-1 pl-2.5 pr-1.5 text-xs font-medium text-brand-700 dark:text-brand-400 ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30"
                   >
                     {t.code}
                     <button
                       type="button"
                       onClick={() => removeTicket(t.id)}
-                      className="rounded-full p-0.5 hover:bg-brand-100"
+                      className="rounded-full p-0.5 hover:bg-brand-100 dark:hover:bg-brand-500/20"
                       aria-label={`Remove ${t.code}`}
                     >
                       <IconX className="h-3 w-3" />
@@ -507,12 +507,12 @@ function SaleFormModal({
         <>
           <div className="mb-3 flex items-center justify-between">
             <p className="label mb-0">Selected tickets ({selected.length})</p>
-            <button type="button" className="text-xs font-medium text-brand-600 hover:underline" onClick={() => setStep("pick")}>
+            <button type="button" className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={() => setStep("pick")}>
               + Add more tickets
             </button>
           </div>
 
-          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-3">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3">
             <div className="w-28">
               <span className="label">Quick-fill price</span>
               <Input inputMode="decimal" placeholder="0.00" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} />
@@ -529,14 +529,14 @@ function SaleFormModal({
             </Button>
           </div>
 
-          <div className="max-h-52 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+          <div className="max-h-52 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
             {selected.map((t) => {
               const line = lines[t.id] ?? { price: "", fees: "0" };
               return (
                 <div key={t.id} className="flex items-center gap-2 px-3 py-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-800">{t.code}</p>
-                    <p className="truncate text-xs text-slate-400">
+                    <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
+                    <p className="truncate text-xs text-slate-400 dark:text-slate-500">
                       Cost {formatMoney(t.totalCostCents, t.currency)}
                       {[t.section, t.rowLabel, t.seat].some(Boolean)
                         ? ` · ${[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ")}`
@@ -561,7 +561,7 @@ function SaleFormModal({
                   </div>
                   <button
                     type="button"
-                    className="shrink-0 text-slate-400 hover:text-red-600"
+                    className="shrink-0 text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
                     title="Remove from this sale"
                     onClick={() => removeTicket(t.id)}
                   >
@@ -573,20 +573,20 @@ function SaleFormModal({
           </div>
 
           {singleCurrency ? (
-            <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg bg-slate-50 px-4 py-3 text-sm">
+            <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
               <div>
-                <p className="text-xs text-slate-400">Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})</p>
-                <p className="font-semibold text-slate-900">{formatMoney(totals.revenue, singleCurrency)}</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})</p>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(totals.revenue, singleCurrency)}</p>
               </div>
               <div>
-                <p className="text-xs text-slate-400">Estimated profit</p>
-                <p className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                <p className="text-xs text-slate-400 dark:text-slate-500">Estimated profit</p>
+                <p className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
                   {formatMoney(totals.profit, singleCurrency)}
                 </p>
               </div>
             </div>
           ) : (
-            <p className="mt-3 text-xs text-slate-400">Selected tickets use different currencies - totals shown per ticket only.</p>
+            <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">Selected tickets use different currencies - totals shown per ticket only.</p>
           )}
 
           <div className="mt-4 grid grid-cols-2 gap-4">
@@ -623,7 +623,7 @@ function SaleFormModal({
         </>
       )}
 
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel
@@ -747,7 +747,7 @@ function SaleEditModal({
           </Field>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel

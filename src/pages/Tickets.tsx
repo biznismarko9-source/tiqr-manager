@@ -99,7 +99,7 @@ export function TicketsView({
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
               placeholder="Code, seat, event..."
               value={search}
@@ -146,7 +146,7 @@ export function TicketsView({
           {sortDir === "asc" ? "Asc" : "Desc"}
         </Button>
         {summary && (
-          <p className="ml-auto text-xs text-slate-400">
+          <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
             {summary.count} tickets &middot; listing value {formatMoney(summary.listingValue, "EUR")}
           </p>
         )}
@@ -157,9 +157,9 @@ export function TicketsView({
       ) : tickets.length === 0 ? (
         <EmptyState icon={<IconTicket className="h-8 w-8" />} title="No tickets match these filters" />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[1000px] border-collapse">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <SortTh label="Code" k="code" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
                 <SortTh label="Event" k="event" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
@@ -171,10 +171,10 @@ export function TicketsView({
                 <th className="th" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {tickets.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50">
-                  <td className="td font-medium text-slate-900">
+                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td font-medium text-slate-900 dark:text-slate-100">
                     {t.code}
                     {t.isDemo && (
                       <span className="ml-1.5">
@@ -183,16 +183,16 @@ export function TicketsView({
                     )}
                   </td>
                   <td className="td">
-                    <Link to={`/events/${t.eventId}`} className="hover:text-brand-700">
+                    <Link to={`/events/${t.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
                       {t.eventName}
                     </Link>
                   </td>
                   <td className="td">
-                    <Link to={`/orders/${t.orderId}`} className="text-slate-500 hover:text-brand-700">
+                    <Link to={`/orders/${t.orderId}`} className="text-slate-500 dark:text-slate-400 hover:text-brand-700 dark:hover:text-brand-400">
                       {t.orderCode}
                     </Link>
                   </td>
-                  <td className="td text-slate-500">
+                  <td className="td text-slate-500 dark:text-slate-400">
                     {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
                   </td>
                   <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
@@ -204,7 +204,7 @@ export function TicketsView({
                   </td>
                   <td className="td text-right">
                     <button
-                      className="text-xs font-medium text-brand-600 hover:underline"
+                      className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
                       onClick={() => setEditTicket(t)}
                     >
                       Edit
@@ -346,8 +346,8 @@ export function TicketEditModal({
         <Field label="Status">
           {locked ? (
             <div>
-              <div className="input flex items-center bg-slate-50 text-slate-500">Sold</div>
-              <p className="mt-1 text-xs text-slate-400">Delete the sale on the Sales screen to make this available again.</p>
+              <div className="input flex items-center bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">Sold</div>
+              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Delete the sale on the Sales screen to make this available again.</p>
             </div>
           ) : (
             <Select value={status} onChange={(e) => setStatus(e.target.value as TicketStatus)}>
@@ -363,12 +363,12 @@ export function TicketEditModal({
           </Field>
         </div>
       </div>
-      <div className="mt-3 grid grid-cols-3 gap-3 rounded-lg bg-slate-50 px-4 py-3 text-xs text-slate-500">
+      <div className="mt-3 grid grid-cols-3 gap-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
         <div>Purchase cost: {formatMoney(ticket.purchaseCostCents, ticket.currency)}</div>
         <div>Fees: {formatMoney(ticket.purchaseFeesCents, ticket.currency)}</div>
         <div>Other: {formatMoney(ticket.otherCostsCents, ticket.currency)}</div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel

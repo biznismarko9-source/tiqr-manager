@@ -8,4 +8,5 @@ pub mod events;
 pub mod lookups;
 pub mod orders;
 pub mod sales;
+pub mod settings;
 pub mod tickets;

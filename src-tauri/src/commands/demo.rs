@@ -124,6 +124,8 @@ pub fn seed_demo_data(conn: &Connection) -> AppResult<()> {
             notes: None,
             ticket_type: Some("Category 1".into()),
             section: Some("Lower Tier".into()),
+            row_label: Some("12".into()),
+            seats: Some((1..=10).map(|n| n.to_string()).collect()),
         },
         true,
     )?;
@@ -153,6 +155,8 @@ pub fn seed_demo_data(conn: &Connection) -> AppResult<()> {
             notes: None,
             ticket_type: Some("Standard".into()),
             section: Some("Block 12".into()),
+            row_label: Some("B".into()),
+            seats: None,
         },
         true,
     )?;
@@ -188,6 +192,8 @@ pub fn seed_demo_data(conn: &Connection) -> AppResult<()> {
             notes: Some("Grandstand K".into()),
             ticket_type: Some("Grandstand".into()),
             section: Some("K".into()),
+            row_label: None,
+            seats: None,
         },
         true,
     )?;
@@ -213,6 +219,8 @@ pub fn seed_demo_data(conn: &Connection) -> AppResult<()> {
             notes: None,
             ticket_type: Some("Fan Pit".into()),
             section: None,
+            row_label: None,
+            seats: None,
         },
         true,
     )?;
@@ -242,6 +250,8 @@ pub fn seed_demo_data(conn: &Connection) -> AppResult<()> {
             notes: None,
             ticket_type: Some("Cageside".into()),
             section: None,
+            row_label: None,
+            seats: None,
         },
         true,
     )?;

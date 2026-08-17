@@ -23,6 +23,27 @@ import type { OrderRecord } from "../lib/types";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK"];
 
+/** Turns the free-form "Seats" input into one label per ticket.
+ * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
+ * comma-separated list ("12, 14, 16A"). Blank input -> no seats assigned. */
+function parseSeats(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    const step = start <= end ? 1 : -1;
+    const out: string[] = [];
+    for (let n = start; step > 0 ? n <= end : n >= end; n += step) out.push(String(n));
+    return out;
+  }
+  return trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export default function Orders() {
   const toast = useToast();
   const location = useLocation();
@@ -80,7 +101,7 @@ export default function Orders() {
 
       <div className="mb-4 max-w-xs">
         <div className="relative">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
           <Input
             placeholder="Search orders..."
             value={search}
@@ -104,9 +125,9 @@ export default function Orders() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[950px] border-collapse">
-            <thead className="border-b border-slate-200 bg-slate-50">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Order</th>
                 <th className="th">Event</th>
@@ -119,11 +140,11 @@ export default function Orders() {
                 <th className="th">Payment</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {orders.map((o) => (
-                <tr key={o.id} className="hover:bg-slate-50">
+                <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td">
-                    <Link to={`/orders/${o.id}`} className="font-medium text-slate-900 hover:text-brand-700">
+                    <Link to={`/orders/${o.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {o.code}
                     </Link>
                     {o.isDemo && (
@@ -133,7 +154,7 @@ export default function Orders() {
                     )}
                   </td>
                   <td className="td">
-                    <Link to={`/events/${o.eventId}`} className="hover:text-brand-700">
+                    <Link to={`/events/${o.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
                       {o.eventName}
                     </Link>
                   </td>
@@ -197,6 +218,8 @@ function OrderFormModal({
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
   const [ticketType, setTicketType] = useState("");
   const [section, setSection] = useState("");
+  const [rowLabel, setRowLabel] = useState("");
+  const [seatsRaw, setSeatsRaw] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -218,18 +241,21 @@ function OrderFormModal({
     setPaymentStatus("unpaid");
     setTicketType("");
     setSection("");
+    setRowLabel("");
+    setSeatsRaw("");
     setNotes("");
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, presetEventId]);
 
+  const qNum = parseInt(quantity, 10) || 0;
+
   const totalPreviewCents = useMemo(() => {
-    const q = parseInt(quantity, 10) || 0;
     const up = decimalStringToCents(unitPrice) ?? 0;
     const f = decimalStringToCents(fees) ?? 0;
     const oc = decimalStringToCents(otherCosts) ?? 0;
-    return q * up + f + oc;
-  }, [quantity, unitPrice, fees, otherCosts]);
+    return qNum * up + f + oc;
+  }, [qNum, unitPrice, fees, otherCosts]);
 
   const submit = async () => {
     setError(null);
@@ -237,6 +263,7 @@ function OrderFormModal({
     const upCents = decimalStringToCents(unitPrice);
     const feesCents = decimalStringToCents(fees);
     const otherCents = decimalStringToCents(otherCosts);
+    const seats = parseSeats(seatsRaw);
 
     if (!eventId) return setError("Please select an event");
     if (!Number.isFinite(q) || q < 1) return setError("Quantity must be at least 1");
@@ -244,6 +271,9 @@ function OrderFormModal({
     if (feesCents === null) return setError("Fees is not a valid amount");
     if (otherCents === null) return setError("Other costs is not a valid amount");
     if (!purchaseDate) return setError("Purchase date is required");
+    if (seats.length > 0 && seats.length !== q) {
+      return setError(`You entered ${seats.length} seat(s) but quantity is ${q} - provide one seat per ticket, or clear the Seats field`);
+    }
 
     const input: OrderInput = {
       eventId: Number(eventId),
@@ -259,6 +289,8 @@ function OrderFormModal({
       notes: notes || null,
       ticketType: ticketType || null,
       section: section || null,
+      rowLabel: rowLabel || null,
+      seats: seats.length > 0 ? seats : null,
     };
 
     setSaving(true);
@@ -353,6 +385,20 @@ function OrderFormModal({
           <Input value={section} onChange={(e) => setSection(e.target.value)} />
         </Field>
 
+        <Field label="Row">
+          <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
+        </Field>
+        <Field
+          label="Seats"
+          hint={qNum > 1 ? `One per ticket, e.g. "12-${11 + qNum}" or "12,13,14" - optional` : 'Optional, e.g. "12"'}
+        >
+          <Input
+            placeholder={qNum > 1 ? "12-15" : "12"}
+            value={seatsRaw}
+            onChange={(e) => setSeatsRaw(e.target.value)}
+          />
+        </Field>
+
         <div className="col-span-2">
           <Field label="Payment status">
             <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
@@ -369,14 +415,14 @@ function OrderFormModal({
         </div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3 text-sm">
-        <span className="text-slate-500">Total cost (preview)</span>
-        <span className="font-semibold tabular-nums text-slate-900">
+      <div className="mt-4 flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
+        <span className="text-slate-500 dark:text-slate-400">Total cost (preview)</span>
+        <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">
           {formatMoney(totalPreviewCents, currency)}
         </span>
       </div>
 
-      {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       <ModalFooter>
         <Button variant="secondary" onClick={onClose} disabled={saving}>
           Cancel
