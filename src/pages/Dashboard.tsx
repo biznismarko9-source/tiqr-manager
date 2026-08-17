@@ -82,15 +82,21 @@ export default function Dashboard() {
         <LoadingBlock label="Loading dashboard..." />
       ) : (
         <>
+          {data.mixedCurrencies && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+              You have data in more than one currency. To avoid adding different currencies together, the totals
+              below only include <b>{data.primaryCurrency}</b>. Filter by event/platform to see the others.
+            </div>
+          )}
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
             Activity {data.periodFrom} &rarr; {data.periodTo}
           </p>
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="Revenue" value={formatMoney(data.period.revenueCents, "EUR")} />
-            <StatCard label="Purchase cost" value={formatMoney(data.period.totalCostCents, "EUR")} />
+            <StatCard label="Revenue" value={formatMoney(data.period.revenueCents, data.primaryCurrency)} />
+            <StatCard label="Purchase cost" value={formatMoney(data.period.totalCostCents, data.primaryCurrency)} />
             <StatCard
               label="Profit"
-              value={formatMoney(data.period.profitCents, "EUR")}
+              value={formatMoney(data.period.profitCents, data.primaryCurrency)}
               tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
             />
             <StatCard label="Margin" value={formatPercent(data.period.margin)} />

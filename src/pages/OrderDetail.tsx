@@ -196,7 +196,7 @@ export default function OrderDetail() {
       <ConfirmDialog
         open={confirmDelete}
         title="Delete this order?"
-        message="This deletes the order and every ticket it generated. Only possible while none of its tickets have been sold. This cannot be undone."
+        message="This deletes the order and every ticket it generated. Only possible while none of its tickets have ever been sold (including refunded sales, which stay on record). This cannot be undone."
         confirmLabel="Delete order"
         danger
         busy={deleting}
