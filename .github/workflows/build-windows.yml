@@ -1,0 +1,80 @@
+name: Build Windows Installer
+
+# How to use this (one-time, ~3 minutes):
+#   1. Push this repository to GitHub (public or private, both work - Actions is free
+#      for public repos and gives 2000 free CI minutes/month for private repos).
+#   2. Go to the "Actions" tab on GitHub -> "Build Windows Installer" -> "Run workflow".
+#   3. Wait ~10-15 minutes. A green checkmark means it succeeded.
+#   4. Open the finished run -> scroll to "Artifacts" -> download "TIQR-Manager-Setup".
+#      Inside the zip is TIQR-Manager-Setup.exe - the real, double-click installer.
+#
+# This also runs automatically on every push to main/master and on version tags
+# (e.g. "v1.0.1"), so future updates produce a fresh installer without any manual steps.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (Windows NSIS installer)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npx tauri
+
+      - name: Locate and rename installer
+        id: find_installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -Recurse | Select-Object -First 1
+          if (-not $installer) {
+            Write-Error "No NSIS installer (.exe) was found under src-tauri/target/release/bundle/nsis. Check the build step logs above for errors."
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path "dist-installer" | Out-Null
+          Copy-Item $installer.FullName "dist-installer/TIQR-Manager-Setup.exe"
+          Write-Host "Found installer: $($installer.FullName)"
+          Write-Host "Size: $([math]::Round($installer.Length / 1MB, 1)) MB"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TIQR-Manager-Setup
+          path: dist-installer/TIQR-Manager-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach installer to release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          files: dist-installer/TIQR-Manager-Setup.exe

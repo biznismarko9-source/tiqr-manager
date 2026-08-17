@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TIQR Manager",
+  "version": "1.0.0",
+  "identifier": "com.tiqrmanager.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "TIQR Manager",
+        "width": 1400,
+        "height": 880,
+        "minWidth": 1080,
+        "minHeight": 680,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "TIQR",
+    "copyright": "TIQR",
+    "category": "Business",
+    "shortDescription": "Local-first manager for ticket resellers",
+    "longDescription": "TIQR Manager helps ticket resellers track purchased tickets, orders, events, sales, revenue, costs, profit, margin and ROI - fully local, no cloud, no account required.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
