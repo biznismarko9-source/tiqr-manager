@@ -111,6 +111,13 @@ export default function Orders() {
         </div>
       </div>
 
+      {orders && orders.length >= 5000 && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          Showing the most recent 5,000 orders that match your filters. Narrow the search or event filter to see the
+          rest.
+        </div>
+      )}
+
       {orders === null ? (
         <LoadingBlock />
       ) : orders.length === 0 ? (

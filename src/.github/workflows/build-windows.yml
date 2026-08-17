@@ -115,7 +115,7 @@ jobs:
         run: npm ci
 
       - name: Build, sign and publish release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -126,3 +126,4 @@ jobs:
           releaseBody: "See CHANGELOG or commit history for details."
           releaseDraft: false
           prerelease: false
+          uploadUpdaterJson: true

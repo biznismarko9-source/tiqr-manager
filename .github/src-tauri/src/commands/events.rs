@@ -17,10 +17,15 @@ const STATS_SQL: &str = "
       COALESCE(SUM(t.purchase_cost_cents + t.purchase_fees_cents + t.other_costs_cents), 0) AS total_cost_cents,
       COALESCE(SUM(CASE WHEN t.status='sold' THEN t.purchase_cost_cents + t.purchase_fees_cents + t.other_costs_cents ELSE 0 END), 0) AS cogs_cents,
       COALESCE(SUM(s.sale_price_cents), 0) AS revenue_cents,
-      COALESCE(SUM(s.selling_fees_cents), 0) AS selling_fees_cents
+      COALESCE(SUM(s.selling_fees_cents), 0) AS selling_fees_cents,
+      CASE WHEN COUNT(DISTINCT t.currency) <= 1 THEN MIN(t.currency) ELSE NULL END AS currency
     FROM events e
     LEFT JOIN tickets t ON t.event_id = e.id
-    LEFT JOIN sales s ON s.ticket_id = t.id
+    -- Refunded sales stay in the table (history) but must never count as
+    -- revenue - excluding them from the join keeps every aggregate above
+    -- correct without a second pass, and matches tickets whose status has
+    -- already been returned to 'available' by the refund itself.
+    LEFT JOIN sales s ON s.ticket_id = t.id AND s.payment_status != 'refunded'
 ";
 
 fn map_event_with_stats(row: &Row) -> rusqlite::Result<EventWithStats> {
@@ -49,6 +54,7 @@ fn map_event_with_stats(row: &Row) -> rusqlite::Result<EventWithStats> {
         row.get("cogs_cents")?,
         row.get("revenue_cents")?,
         row.get("selling_fees_cents")?,
+        row.get("currency")?,
     );
     Ok(EventWithStats { event, stats })
 }

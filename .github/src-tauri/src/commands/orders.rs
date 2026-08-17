@@ -6,6 +6,10 @@ use crate::models::{Order, OrderEditInput, OrderInput};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
+// Safety cap on the unfiltered list view - see the identical constant in
+// commands/tickets.rs for the rationale.
+const LIST_CAP: i64 = 5000;
+
 const BASE_SQL: &str = "
     SELECT
       o.id, o.code, o.event_id, e.name as event_name,
@@ -87,7 +91,7 @@ pub fn list_orders(
             }
         }
     }
-    sql.push_str(" GROUP BY o.id ORDER BY o.purchase_date DESC, o.id DESC");
+    sql.push_str(&format!(" GROUP BY o.id ORDER BY o.purchase_date DESC, o.id DESC LIMIT {LIST_CAP}"));
 
     let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -252,9 +256,7 @@ pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> A
     fetch_one(&conn, id)
 }
 
-#[tauri::command]
-pub fn delete_order(state: State<AppState>, id: i64) -> AppResult<()> {
-    let conn = state.db.lock().unwrap();
+fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
     let sold_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tickets WHERE order_id = ?1 AND status = 'sold'",
         [id],
@@ -265,9 +267,201 @@ pub fn delete_order(state: State<AppState>, id: i64) -> AppResult<()> {
             "This order has sold tickets and cannot be deleted.".into(),
         ));
     }
+    // A refunded sale is no longer "sold" (the ticket already returned to
+    // available), but the sale itself is history that must survive - so it
+    // still has to block deletion, with its own clear message. Without this,
+    // the DB's own foreign key (sales.ticket_id -> RESTRICT) would still
+    // stop the delete, but only with a generic "blocked by other records"
+    // error instead of telling the user why.
+    let sale_history_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sales s JOIN tickets t ON t.id = s.ticket_id WHERE t.order_id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    if sale_history_count > 0 {
+        return Err(AppError::Validation(
+            "This order has sales history (including refunds) and cannot be deleted.".into(),
+        ));
+    }
     let changed = conn.execute("DELETE FROM orders WHERE id = ?1", [id])?;
     if changed == 0 {
         return Err(AppError::NotFound(format!("Order #{id} not found")));
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn delete_order(state: State<AppState>, id: i64) -> AppResult<()> {
+    let conn = state.db.lock().unwrap();
+    delete_order_impl(&conn, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_conn;
+
+    fn seed_event(conn: &Connection) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", [])
+            .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn base_input(event_id: i64, quantity: i64) -> OrderInput {
+        OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity,
+            unit_price_cents: 1000,
+            fees_cents: 100,
+            other_costs_cents: 50,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: Some("A".to_string()),
+            row_label: Some("12".to_string()),
+            seats: None,
+        }
+    }
+
+    #[test]
+    fn seats_are_assigned_one_per_ticket_in_order() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 4);
+        input.seats = Some(vec!["11".into(), "12".into(), "13".into(), "14".into()]);
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT seat FROM tickets WHERE order_id = ?1 ORDER BY id")
+            .unwrap();
+        let seats: Vec<Option<String>> = stmt
+            .query_map([order_id], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            seats,
+            vec![
+                Some("11".to_string()),
+                Some("12".to_string()),
+                Some("13".to_string()),
+                Some("14".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn seat_count_must_match_quantity() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 4);
+        input.seats = Some(vec!["11".into(), "12".into(), "13".into()]); // only 3 for qty 4
+
+        let err = insert_order_with_tickets(&conn, &input, false).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        // Nothing should have been written - order creation is all-or-nothing.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn empty_seats_still_valid() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 3); // seats: None
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tickets WHERE order_id = ?1",
+                [order_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ticket_count, 3);
+    }
+
+    #[test]
+    fn fees_and_costs_allocate_exactly_across_tickets() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 3);
+        input.fees_cents = 100; // does not divide evenly by 3
+        input.other_costs_cents = 0;
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let total_fees: i64 = conn
+            .query_row(
+                "SELECT SUM(purchase_fees_cents) FROM tickets WHERE order_id = ?1",
+                [order_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_fees, 100, "allocated fees must sum back exactly, no cent lost to rounding");
+    }
+
+    #[test]
+    fn delete_blocked_by_sale_history_even_after_refund() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 1);
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_id: i64 = conn
+            .query_row(
+                "SELECT id FROM tickets WHERE order_id = ?1",
+                [order_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // Simulate a sale that was later refunded: ticket back to
+        // 'available', but the sales row (history) still exists.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000001', ?1, '2026-02-01', 1500, 'refunded')",
+            [ticket_id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='available' WHERE id=?1", [ticket_id])
+            .unwrap();
+
+        let err = delete_order_impl(&conn, order_id).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let still_there: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM orders WHERE id = ?1",
+                [order_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_there, 1, "order must survive - it has sale history");
+    }
+
+    #[test]
+    fn delete_allowed_once_no_tickets_and_no_sale_history() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 2); // never sold
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        delete_order_impl(&conn, order_id).unwrap();
+
+        let still_there: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM orders WHERE id = ?1",
+                [order_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_there, 0);
+    }
 }

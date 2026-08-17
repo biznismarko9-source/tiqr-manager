@@ -35,6 +35,15 @@ export function formatMoney(cents: number | null | undefined, currency: string):
   }
 }
 
+/** Same as formatMoney, but for a FinanceSummary-style amount whose currency
+ * may be "mixed" (null - the underlying tickets/sales aren't all one
+ * currency). Never blends currencies into one number - shows "Mixed" instead
+ * so nobody mistakes it for a real total. */
+export function formatMoneyOrMixed(cents: number | null | undefined, currency: string | null): string {
+  if (currency === null) return "Mixed";
+  return formatMoney(cents, currency);
+}
+
 export function formatPercent(ratio: number | null | undefined): string {
   if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return "N/A";
   return `${(ratio * 100).toFixed(1)}%`;

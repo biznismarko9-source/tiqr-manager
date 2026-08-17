@@ -187,6 +187,9 @@ pub struct Sale {
     pub profit_cents: i64,
     pub margin: Option<f64>,
     pub roi: Option<f64>,
+    /// Set together, only by the dedicated refund action - never by a plain edit.
+    pub refunded_at: Option<String>,
+    pub refund_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -249,4 +252,10 @@ pub struct DashboardData {
     pub recent_orders: Vec<Order>,
     pub recent_sales: Vec<Sale>,
     pub recent_events: Vec<EventWithStats>,
+    /// The currency all dashboard totals below are computed in. Always a
+    /// concrete code (defaults to EUR) - never a blended sum of currencies.
+    pub primary_currency: String,
+    /// True when the database also contains data in other currencies, which
+    /// is therefore excluded from the totals above. The UI should warn.
+    pub mixed_currencies: bool,
 }

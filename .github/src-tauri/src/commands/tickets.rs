@@ -4,6 +4,13 @@ use crate::models::{Ticket, TicketUpdateInput};
 use rusqlite::{params, Row};
 use tauri::State;
 
+// Safety cap on unfiltered list views. Ordinary use (hundreds to low
+// thousands of tickets) never hits this; it only kicks in for very large,
+// unfiltered inventories so the UI never has to serialize/render an
+// unbounded number of rows in one go. Results are already ordered, so a
+// capped result is simply "the most relevant N", not an arbitrary cut.
+const LIST_CAP: i64 = 5000;
+
 const BASE_SQL: &str = "
     SELECT t.id, t.code, t.event_id, e.name as event_name, t.order_id, o.code as order_code,
       t.section, t.row_label, t.seat, t.ticket_type,
@@ -113,7 +120,7 @@ pub fn list_tickets(
         Some("asc") => "ASC",
         _ => "DESC",
     };
-    sql.push_str(&format!(" ORDER BY {sort_col} {dir}, t.id DESC"));
+    sql.push_str(&format!(" ORDER BY {sort_col} {dir}, t.id DESC LIMIT {LIST_CAP}"));
 
     let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();

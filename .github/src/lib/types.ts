@@ -16,6 +16,8 @@ export interface FinanceSummary {
   profitCents: number;
   margin: number | null;
   roi: number | null;
+  /** Set only when every contributing ticket/sale shares one currency. Null means mixed - do not show the totals above as a single money amount. */
+  currency: string | null;
 }
 
 export interface EventRecord {
@@ -161,6 +163,8 @@ export interface Sale {
   profitCents: number;
   margin: number | null;
   roi: number | null;
+  refundedAt: string | null;
+  refundReason: string | null;
 }
 
 export interface SaleInput {
@@ -223,6 +227,10 @@ export interface DashboardData {
   recentOrders: OrderRecord[];
   recentSales: Sale[];
   recentEvents: EventWithStats[];
+  /** The single currency every total on this dashboard is computed in. */
+  primaryCurrency: string;
+  /** True when the database also has data in other currencies, excluded from the totals above. */
+  mixedCurrencies: boolean;
 }
 
 export interface CsvPreviewRow {

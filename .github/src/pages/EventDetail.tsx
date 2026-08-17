@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatPercent } from "../lib/format";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import {
   Badge,
   Button,
@@ -78,13 +78,18 @@ export default function EventDetail() {
         <StatCard label="Purchased" value={String(s.purchasedTickets)} />
         <StatCard label="Available" value={String(s.availableTickets)} sub={`${s.listedTickets} listed`} />
         <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
-        <StatCard label="Cost" value={formatMoney(s.totalCostCents, "EUR")} />
-        <StatCard label="Revenue" value={formatMoney(s.revenueCents, "EUR")} />
+        <StatCard label="Cost" value={formatMoneyOrMixed(s.totalCostCents, s.currency)} />
+        <StatCard label="Revenue" value={formatMoneyOrMixed(s.revenueCents, s.currency)} />
       </div>
+      {s.currency === null && (
+        <p className="-mt-5 mb-6 text-xs text-amber-700 dark:text-amber-400">
+          This event has tickets in more than one currency, so cost/revenue/profit/margin/ROI can&apos;t be combined into one number here. Check individual orders and sales instead.
+        </p>
+      )}
       <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard
           label="Profit"
-          value={formatMoney(s.profitCents, "EUR")}
+          value={formatMoneyOrMixed(s.profitCents, s.currency)}
           tone={s.profitCents > 0 ? "positive" : s.profitCents < 0 ? "negative" : "default"}
         />
         <StatCard label="Margin" value={formatPercent(s.margin)} />

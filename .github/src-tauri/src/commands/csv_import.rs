@@ -126,6 +126,8 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
         let notes = field(&header_map, &record, &["notes"]);
         let ticket_type = field(&header_map, &record, &["ticket_type"]);
         let section = field(&header_map, &record, &["section"]);
+        let row_label = field(&header_map, &record, &["row", "row_label"]);
+        let seats_raw = field(&header_map, &record, &["seats", "seat"]);
         let supplier_name = field(&header_map, &record, &["supplier"]);
         let platform_name = field(&header_map, &record, &["platform"]);
 
@@ -218,6 +220,25 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
             ));
         }
 
+        // "seats" is a comma-separated list, one label per ticket, e.g.
+        // "11,12,13,14" for quantity=4. Leaving it blank is valid - tickets
+        // are then created without a seat number, same as manual entry.
+        let seats: Option<Vec<String>> = seats_raw.map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+        });
+        if let Some(seat_list) = &seats {
+            if !seat_list.is_empty() && quantity > 0 && seat_list.len() as i64 != quantity {
+                errors.push(format!(
+                    "'seats' has {} value(s) but quantity is {} - provide one seat per ticket or leave 'seats' empty",
+                    seat_list.len(),
+                    quantity
+                ));
+            }
+        }
+
         let order_input = if errors.is_empty() {
             Some(OrderInput {
                 event_id: event_id.unwrap(),
@@ -233,8 +254,8 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
                 notes: notes.map(|s| s.to_string()),
                 ticket_type: ticket_type.map(|s| s.to_string()),
                 section: section.map(|s| s.to_string()),
-                row_label: None,
-                seats: None,
+                row_label: row_label.map(|s| s.to_string()),
+                seats: seats.filter(|s| !s.is_empty()),
             })
         } else {
             None
@@ -308,11 +329,10 @@ fn resolve_or_create_platform(conn: &Connection, name: &str) -> AppResult<i64> {
 }
 
 /// All-or-nothing bulk import: every row is validated BEFORE any database
-/// write happens. If anything is invalid, nothing is written at all.
-#[tauri::command]
-pub fn import_orders_csv(state: State<AppState>, path: String) -> AppResult<CsvImportResult> {
-    let mut conn = state.db.lock().unwrap();
-    let (_, rows) = parse_rows(&conn, &path)?;
+/// write happens. If anything is invalid, nothing is written at all. Takes
+/// a plain connection so it's directly testable without a Tauri app.
+fn import_orders_csv_impl(conn: &mut Connection, path: &str) -> AppResult<CsvImportResult> {
+    let (_, rows) = parse_rows(conn, path)?;
 
     let mut all_errors: Vec<String> = vec![];
     for row in &rows {
@@ -357,4 +377,128 @@ pub fn import_orders_csv(state: State<AppState>, path: String) -> AppResult<CsvI
         imported_tickets,
         errors: vec![],
     })
+}
+
+#[tauri::command]
+pub fn import_orders_csv(state: State<AppState>, path: String) -> AppResult<CsvImportResult> {
+    let mut conn = state.db.lock().unwrap();
+    import_orders_csv_impl(&mut conn, &path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_conn;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Writes `contents` to a fresh file under the OS temp dir and returns
+    /// its path. No extra crate needed - std::fs is enough for this. The
+    /// counter keeps concurrent test threads from colliding on one filename.
+    struct TempCsv(std::path::PathBuf);
+    impl TempCsv {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempCsv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn write_csv(contents: &str) -> TempCsv {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "tiqr-manager-test-{}-{n}.csv",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        TempCsv(path)
+    }
+
+    fn seed_event(conn: &Connection, name: &str) {
+        conn.execute("INSERT INTO events (name) VALUES (?1)", [name])
+            .unwrap();
+    }
+
+    #[test]
+    fn imports_seats_as_one_ticket_per_seat() {
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price,section,row,seats\n\
+             Concert A,2026-01-01,4,20.00,A,12,\"11,12,13,14\"\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.imported_orders, 1);
+        assert_eq!(result.imported_tickets, 4);
+
+        let mut stmt = conn
+            .prepare("SELECT seat, row_label FROM tickets ORDER BY id")
+            .unwrap();
+        let rows: Vec<(Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (Some("11".to_string()), Some("12".to_string())),
+                (Some("12".to_string()), Some("12".to_string())),
+                (Some("13".to_string()), Some("12".to_string())),
+                (Some("14".to_string()), Some("12".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn import_is_valid_without_seats_column() {
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price\nConcert A,2026-01-01,2,15.00\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert!(result.errors.is_empty());
+        assert_eq!(result.imported_tickets, 2);
+    }
+
+    #[test]
+    fn seat_count_mismatch_is_reported_and_nothing_imports() {
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price,seats\n\
+             Concert A,2026-01-01,4,20.00,\"11,12,13\"\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.imported_orders, 0);
+        assert_eq!(result.imported_tickets, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("seats"));
+    }
+
+    #[test]
+    fn import_is_all_or_nothing_across_rows() {
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        // Second row references an event that doesn't exist - the whole
+        // file must be rejected, including the otherwise-valid first row.
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price\n\
+             Concert A,2026-01-01,2,15.00\n\
+             Unknown Event,2026-01-02,1,10.00\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.imported_orders, 0);
+        assert_eq!(result.imported_tickets, 0);
+        assert!(!result.errors.is_empty());
+
+        let order_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(order_count, 0, "nothing should be written when any row is invalid");
+    }
 }

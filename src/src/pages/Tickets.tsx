@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
-import { formatMoney } from "../lib/format";
+import { formatMoney, formatMoneyOrMixed } from "../lib/format";
 import {
   Badge,
   Button,
@@ -88,7 +88,8 @@ export function TicketsView({
   const summary = useMemo(() => {
     if (!tickets) return null;
     const listingValue = tickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-    return { count: tickets.length, listingValue };
+    const currency = tickets.length > 0 && tickets.every((t) => t.currency === tickets[0].currency) ? tickets[0].currency : null;
+    return { count: tickets.length, listingValue, currency };
   }, [tickets]);
 
   return (
@@ -147,10 +148,17 @@ export function TicketsView({
         </Button>
         {summary && (
           <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
-            {summary.count} tickets &middot; listing value {formatMoney(summary.listingValue, "EUR")}
+            {summary.count} tickets &middot; listing value {formatMoneyOrMixed(summary.listingValue, summary.currency)}
           </p>
         )}
       </div>
+
+      {tickets && tickets.length >= 5000 && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          Showing the most recent 5,000 tickets that match your filters. Narrow the search, status, or event filter
+          to see the rest.
+        </div>
+      )}
 
       {tickets === null ? (
         <LoadingBlock />
@@ -342,7 +350,7 @@ export function TicketEditModal({
           {locked ? (
             <div>
               <div className="input flex items-center bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">Sold</div>
-              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Delete the sale on the Sales screen to make this available again.</p>
+              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Refund or delete the sale on the Sales screen to make this available again.</p>
             </div>
           ) : (
             <Select value={status} onChange={(e) => setStatus(e.target.value as TicketStatus)}>

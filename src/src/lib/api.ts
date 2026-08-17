@@ -61,6 +61,7 @@ export const api = {
   createSale: (input: SaleInput) => invoke<Sale>("create_sale", { input }),
   createSalesBatch: (input: SaleBatchInput) => invoke<Sale[]>("create_sales_batch", { input }),
   updateSale: (id: number, input: SaleEditInput) => invoke<Sale>("update_sale", { id, input }),
+  refundSale: (id: number, reason?: string | null) => invoke<Sale>("refund_sale", { id, reason: reason || null }),
   deleteSale: (id: number) => invoke<void>("delete_sale", { id }),
 
   // Lookups

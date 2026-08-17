@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDate, formatMoney, formatPercent } from "../lib/format";
+import { formatDate, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import {
   Badge,
   Button,
@@ -140,12 +140,12 @@ export default function Events() {
                   </td>
                   <td className="td text-right tabular-nums">{ev.stats.purchasedTickets}</td>
                   <td className="td text-right tabular-nums">{ev.stats.availableTickets}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(ev.stats.totalCostCents, "EUR")}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(ev.stats.revenueCents, "EUR")}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td
                     className={`td text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
-                    {formatMoney(ev.stats.profitCents, "EUR")}
+                    {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
                   </td>
                   <td className="td text-right tabular-nums">{formatPercent(ev.stats.margin)}</td>
                   <td className="td text-right tabular-nums">{formatPercent(ev.stats.roi)}</td>

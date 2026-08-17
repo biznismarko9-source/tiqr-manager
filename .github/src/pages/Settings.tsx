@@ -35,6 +35,9 @@ export default function Settings() {
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
+  const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
+  const [confirmDeleteSupplier, setConfirmDeleteSupplier] = useState<Supplier | null>(null);
+  const [deletingLookup, setDeletingLookup] = useState(false);
 
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateChecked, setUpdateChecked] = useState(false);
@@ -208,14 +211,7 @@ export default function Settings() {
                 <button
                   className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
                   title="Remove"
-                  onClick={async () => {
-                    try {
-                      await api.deletePlatform(p.id);
-                      reload();
-                    } catch (e) {
-                      toast.error(errMsg(e));
-                    }
-                  }}
+                  onClick={() => setConfirmDeletePlatform(p)}
                 >
                   <IconTrash className="h-4 w-4" />
                 </button>
@@ -244,14 +240,7 @@ export default function Settings() {
                 <button
                   className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
                   title="Remove"
-                  onClick={async () => {
-                    try {
-                      await api.deleteSupplier(s.id);
-                      reload();
-                    } catch (e) {
-                      toast.error(errMsg(e));
-                    }
-                  }}
+                  onClick={() => setConfirmDeleteSupplier(s)}
                 >
                   <IconTrash className="h-4 w-4" />
                 </button>
@@ -265,7 +254,8 @@ export default function Settings() {
           <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
             Bulk-add orders (and their tickets) from a spreadsheet. Columns: event, purchase_date, supplier,
             platform, quantity, unit_price, fees, other_costs, currency, payment_status, ticket_type, section,
-            notes. Everything imports in one all-or-nothing transaction.
+            row, seats, notes. "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it
+            out to import without seat numbers. Everything imports in one all-or-nothing transaction.
           </p>
           <Button variant="primary" onClick={() => setImportOpen(true)}>
             <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
@@ -381,6 +371,62 @@ export default function Settings() {
         busy={busyAction === "restore"}
         onCancel={() => setConfirmRestorePath(null)}
         onConfirm={doRestore}
+      />
+
+      <ConfirmDialog
+        open={!!confirmDeletePlatform}
+        title="Remove this platform?"
+        message={
+          <>
+            Removes <b>{confirmDeletePlatform?.name}</b> from the platform list. Any existing orders/sales that
+            used it keep their cost/revenue amounts - they just lose the platform label.
+          </>
+        }
+        confirmLabel="Remove platform"
+        danger
+        busy={deletingLookup}
+        onCancel={() => setConfirmDeletePlatform(null)}
+        onConfirm={async () => {
+          if (!confirmDeletePlatform) return;
+          setDeletingLookup(true);
+          try {
+            await api.deletePlatform(confirmDeletePlatform.id);
+            setConfirmDeletePlatform(null);
+            reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeletingLookup(false);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!confirmDeleteSupplier}
+        title="Remove this supplier?"
+        message={
+          <>
+            Removes <b>{confirmDeleteSupplier?.name}</b> from the supplier list. Any existing orders that used it
+            keep their cost amounts - they just lose the supplier label.
+          </>
+        }
+        confirmLabel="Remove supplier"
+        danger
+        busy={deletingLookup}
+        onCancel={() => setConfirmDeleteSupplier(null)}
+        onConfirm={async () => {
+          if (!confirmDeleteSupplier) return;
+          setDeletingLookup(true);
+          try {
+            await api.deleteSupplier(confirmDeleteSupplier.id);
+            setConfirmDeleteSupplier(null);
+            reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeletingLookup(false);
+          }
+        }}
       />
 
     </div>

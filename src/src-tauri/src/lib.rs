@@ -45,6 +45,7 @@ pub fn run() {
             commands::sales::create_sale,
             commands::sales::create_sales_batch,
             commands::sales::update_sale,
+            commands::sales::refund_sale,
             commands::sales::delete_sale,
             commands::lookups::list_platforms,
             commands::lookups::create_platform,
