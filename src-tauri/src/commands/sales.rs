@@ -202,7 +202,22 @@ const GROUP_BASE_SELECT: &str = "
       MAX(s.sale_date) as sale_date,
       MAX(s.platform_id) as platform_id,
       MAX(p.name) as platform_name,
-      CASE WHEN COUNT(DISTINCT s.currency) = 1 THEN MAX(s.currency) END as currency,
+      -- 1.6.0 audit H5: currency must be derived the same way the money
+      -- fields right below it are - from non-refunded lines only. Deriving
+      -- it from ALL lines (including refunded ones) meant a batch whose
+      -- ONLY differently-currencied line had been refunded still showed
+      -- Mixed for money/margin/ROI, even though what's left is a clean,
+      -- fully-computable single-currency total. Falls back to checking ALL
+      -- lines only when every line in the group is refunded (COUNT = 0
+      -- among non-refunded ones), so a fully-refunded single-currency group
+      -- still reports its currency instead of going blank.
+      CASE
+        WHEN COUNT(DISTINCT CASE WHEN s.payment_status != 'refunded' THEN s.currency END) = 1
+          THEN MAX(CASE WHEN s.payment_status != 'refunded' THEN s.currency END)
+        WHEN COUNT(DISTINCT CASE WHEN s.payment_status != 'refunded' THEN s.currency END) = 0
+          THEN CASE WHEN COUNT(DISTINCT s.currency) = 1 THEN MAX(s.currency) END
+        ELSE NULL
+      END as currency,
       COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN s.sale_price_cents END), 0) as revenue_cents,
       COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN s.selling_fees_cents END), 0) as selling_fees_cents,
       COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) END), 0) as cost_cents,
@@ -1473,6 +1488,86 @@ mod tests {
         assert_eq!(g.profit_cents, 1000);
         assert_eq!(g.margin, Some(0.5));
         assert_eq!(g.roi, Some(1.0));
+    }
+
+    // ---- 1.6.0 audit H5 fix: currency must follow the same non-refunded --
+    // ---- scope as revenue/cost/profit, not all lines ----------------------
+
+    #[test]
+    fn refunding_the_only_differently_currencied_line_reveals_the_real_single_currency_total() {
+        // The exact H5 scenario: EUR active + USD active. While both are
+        // active this is correctly Mixed (same as the BUG #6 test above).
+        // Once the USD line is refunded, only the EUR line still counts
+        // toward revenue/cost/profit (exactly like every other refund test),
+        // so currency/margin/ROI should now report the real EUR numbers
+        // instead of staying stuck on Mixed just because a refunded, no-
+        // longer-counted line happens to be a different currency.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('H5 Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let eur_active = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let usd_to_refund = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let ids = create_sales_batch_impl(
+            &mut conn,
+            &batch_input(&[eur_active, usd_to_refund], 2000, "paid"),
+        )
+        .unwrap();
+        assert_eq!(ids.len(), 2);
+
+        // Still both active -> Mixed, unchanged from BUG #6 behavior.
+        let before = all_groups(&conn);
+        assert_eq!(before[0].currency, None);
+
+        refund_sale_impl(&mut conn, ids[1], Some("test refund")).unwrap();
+
+        let groups = all_groups(&conn);
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(g.ticket_count, 2, "refunded line stays in the group");
+        assert_eq!(g.refunded_count, 1);
+        assert_eq!(
+            g.currency.as_deref(),
+            Some("EUR"),
+            "only one currency left among non-refunded lines -> must not stay Mixed"
+        );
+        // revenue 2000, cost 1000 (seed_ticket_with_currency's order costs
+        // 1000 cents), fees 0 -> profit 1000, from the EUR line alone.
+        assert_eq!(g.revenue_cents, 2000);
+        assert_eq!(g.cost_cents, 1000);
+        assert_eq!(g.profit_cents, 1000);
+        assert_eq!(g.margin, Some(0.5));
+        assert_eq!(g.roi, Some(1.0));
+    }
+
+    #[test]
+    fn fully_refunded_mixed_currency_batch_falls_back_to_all_lines_for_currency() {
+        // Edge case the H5 fix must not break: if EVERY line in the group
+        // ends up refunded, there are zero non-refunded lines to derive
+        // currency from - fall back to checking all lines so a group that
+        // was always mixed still reports Mixed (not some arbitrary pick),
+        // and per-group money stays 0 (nothing realized), not blank/error.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('H5 Fully Refunded Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let eur_line = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let usd_line = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&[eur_line, usd_line], 2000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, ids[0], Some("test refund")).unwrap();
+        refund_sale_impl(&mut conn, ids[1], Some("test refund")).unwrap();
+
+        let groups = all_groups(&conn);
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(g.refunded_count, 2);
+        assert_eq!(g.currency, None, "still mixed when falling back to all (refunded) lines");
+        assert_eq!(g.margin, None);
+        assert_eq!(g.roi, None);
+        assert_eq!(g.revenue_cents, 0, "nothing realized - both lines refunded");
     }
 
     // ---- BUG #1 fix: refund must not permanently block a resale ----------

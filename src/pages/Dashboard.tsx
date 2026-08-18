@@ -4,12 +4,25 @@ import { api, errMsg } from "../lib/api";
 import type { DashboardData, UpcomingEventAlert } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import { Badge, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
+import { RevenueChart } from "../components/RevenueChart";
 import { IconAlertTriangle, IconCalendarDays, IconPackage, IconReceipt } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 // Same fixed window the backend uses (dashboard.rs::UPCOMING_EVENT_WINDOW_DAYS)
 // - shown in the section label only, never re-derived/recomputed here.
 const UPCOMING_EVENT_WINDOW_DAYS = 14;
+
+// dashboard.rs's period_bounds() encodes "no lower/upper bound" (the "All
+// time" period, or a Custom range with the From date left blank) as these
+// two sentinel dates so the underlying SQL BETWEEN query always has a real
+// pair of bind params. They must never be shown to the user as if they were
+// real dates (1.6.0 audit H3 - this used to render as e.g.
+// "Activity 0001-01-01 -> 9999-12-31").
+const PERIOD_MIN_SENTINEL = "0001-01-01";
+const PERIOD_MAX_SENTINEL = "9999-12-31";
+function periodBoundLabel(iso: string, fallback: string): string {
+  return iso === PERIOD_MIN_SENTINEL || iso === PERIOD_MAX_SENTINEL ? fallback : formatDate(iso);
+}
 
 const PERIODS: { key: string; label: string }[] = [
   { key: "today", label: "Today" },
@@ -111,7 +124,10 @@ export default function Dashboard() {
           ) : (
             <>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                Activity {data.periodFrom} &rarr; {data.periodTo}
+                Activity{" "}
+                {data.periodFrom === PERIOD_MIN_SENTINEL && data.periodTo === PERIOD_MAX_SENTINEL
+                  ? "All time"
+                  : `${periodBoundLabel(data.periodFrom, "the beginning")} → ${periodBoundLabel(data.periodTo, "today")}`}
               </p>
               <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 <StatCard label="Revenue" value={formatMoney(data.period.revenueCents, data.primaryCurrency)} />
@@ -129,6 +145,21 @@ export default function Dashboard() {
                   sub={`${data.period.purchasedTickets} purchased in period`}
                 />
               </div>
+              {/* Same numbers as the "Revenue"/"Profit" StatCards above, just
+                  broken out over time instead of collapsed into one total for
+                  the period - never a separate/independent figure, so it can
+                  never contradict them (see revenue_time_series in
+                  dashboard.rs, which shares period_summary's exact scope). */}
+              <Card className="mb-8 p-4">
+                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  Revenue &amp; profit over time
+                </p>
+                <RevenueChart
+                  points={data.revenueTimeSeries}
+                  granularity={data.timeSeriesGranularity}
+                  currency={data.primaryCurrency}
+                />
+              </Card>
             </>
           )}
 

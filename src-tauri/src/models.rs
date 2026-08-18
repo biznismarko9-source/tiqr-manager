@@ -379,6 +379,23 @@ pub struct DashboardAlerts {
     pub upcoming_events: Vec<UpcomingEventAlert>,
 }
 
+/// One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same
+/// scope and realized-only/refund-excluded rule as `DashboardData.period`
+/// (see dashboard.rs) - just broken out by date instead of collapsed into
+/// one total, so the chart and the StatCards above it can never disagree.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RevenueTimeSeriesPoint {
+    /// The earliest real sale_date that fell into this bucket - always a
+    /// concrete calendar date (never one of period_bounds()'s sentinel
+    /// dates), used as this point's display date/label.
+    pub bucket_start: String,
+    pub revenue_cents: i64,
+    pub selling_fees_cents: i64,
+    pub cogs_cents: i64,
+    pub profit_cents: i64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
@@ -401,4 +418,11 @@ pub struct DashboardData {
     pub inventory_potential: InventoryPotential,
     /// Attention/alerts - see `DashboardAlerts` doc comment.
     pub alerts: DashboardAlerts,
+    /// Revenue/profit chart data - see `RevenueTimeSeriesPoint` doc comment.
+    pub revenue_time_series: Vec<RevenueTimeSeriesPoint>,
+    /// "day" | "week" | "month" - the bucket width `revenue_time_series`
+    /// used, chosen from the period's span (see dashboard.rs::
+    /// time_series_granularity), so the frontend can label ticks
+    /// appropriately without re-deriving the same span logic itself.
+    pub time_series_granularity: String,
 }

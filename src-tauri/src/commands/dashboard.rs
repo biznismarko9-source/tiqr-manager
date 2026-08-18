@@ -2,7 +2,9 @@ use crate::commands::{events as events_cmd, orders as orders_cmd, sales as sales
 use crate::db::AppState;
 use crate::error::AppResult;
 use crate::finance;
-use crate::models::{DashboardAlerts, DashboardData, InventoryPotential, UpcomingEventAlert};
+use crate::models::{
+    DashboardAlerts, DashboardData, InventoryPotential, RevenueTimeSeriesPoint, UpcomingEventAlert,
+};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
 use tauri::State;
@@ -33,6 +35,41 @@ fn period_bounds(period: Option<&str>, from: Option<String>, to: Option<String>)
         ),
         Some("all") => ("0001-01-01".to_string(), "9999-12-31".to_string()),
         _ => (today.to_string(), today.to_string()),
+    }
+}
+
+/// Picks the revenue/profit chart's bucket width from the period's span, so
+/// "Last 7 days" isn't 7 bars' worth of nothing else and "All time" for a
+/// shop that's been running for years isn't thousands of daily bars. Falls
+/// back to "day" if the bounds can't be parsed. That shouldn't happen in
+/// practice (period_bounds() always emits valid dates); this is just a safe
+/// default, never a panic.
+fn time_series_granularity(period_from: &str, period_to: &str) -> &'static str {
+    let span_days = match (
+        NaiveDate::parse_from_str(period_from, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(period_to, "%Y-%m-%d"),
+    ) {
+        (Ok(from), Ok(to)) => (to - from).num_days(),
+        _ => 0,
+    };
+    if span_days <= 31 {
+        "day"
+    } else if span_days <= 180 {
+        "week"
+    } else {
+        "month"
+    }
+}
+
+/// The SQL expression used to bucket `s.sale_date` for a given granularity.
+/// Grouping by this key (rather than the display date directly) keeps week/
+/// month bucketing correct even though `bucket_start` - the MIN(sale_date)
+/// within that key - is what's actually shown/used by the frontend.
+fn bucket_key_expr(granularity: &str) -> &'static str {
+    match granularity {
+        "week" => "strftime('%Y-W%W', s.sale_date)",
+        "month" => "strftime('%Y-%m', s.sale_date)",
+        _ => "s.sale_date",
     }
 }
 
@@ -202,6 +239,54 @@ pub(crate) fn get_dashboard_impl(
         Some(primary_currency.clone()),
     );
 
+    // ---- Revenue/Profit over time (chart) --------------------------------
+    // Same scope as `period_summary` right above (period_from/period_to,
+    // primary_currency, event_id/platform_id, refund-excluded) - just
+    // broken out by date bucket instead of collapsed into one total, so the
+    // chart and the StatCards above it can never silently disagree. Bucket
+    // width adapts to the period's span - see time_series_granularity().
+    let granularity = time_series_granularity(&period_from, &period_to);
+    let bucket_expr = bucket_key_expr(granularity);
+    let mut ts_sql = format!(
+        "SELECT {bucket_expr} as bucket_key, MIN(s.sale_date) as bucket_start,
+            COALESCE(SUM(s.sale_price_cents),0) as revenue_cents,
+            COALESCE(SUM(s.selling_fees_cents),0) as selling_fees_cents,
+            COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0) as cogs_cents
+         FROM sales s JOIN tickets t ON t.id = s.ticket_id
+         WHERE s.sale_date BETWEEN ?1 AND ?2 AND s.currency = ?3 AND s.payment_status != 'refunded'"
+    );
+    let mut ts_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(period_from.clone()),
+        Box::new(period_to.clone()),
+        Box::new(primary_currency.clone()),
+    ];
+    if let Some(eid) = event_id {
+        ts_sql.push_str(&format!(" AND t.event_id = ?{}", ts_params.len() + 1));
+        ts_params.push(Box::new(eid));
+    }
+    if let Some(pid) = platform_id {
+        ts_sql.push_str(&format!(" AND s.platform_id = ?{}", ts_params.len() + 1));
+        ts_params.push(Box::new(pid));
+    }
+    ts_sql.push_str(" GROUP BY bucket_key ORDER BY bucket_start ASC");
+    let ts_refs: Vec<&dyn rusqlite::ToSql> = ts_params.iter().map(|p| p.as_ref()).collect();
+    let mut ts_stmt = conn.prepare(&ts_sql)?;
+    let revenue_time_series = ts_stmt
+        .query_map(ts_refs.as_slice(), |r| {
+            let revenue_cents: i64 = r.get("revenue_cents")?;
+            let selling_fees_cents: i64 = r.get("selling_fees_cents")?;
+            let cogs_cents: i64 = r.get("cogs_cents")?;
+            Ok(RevenueTimeSeriesPoint {
+                bucket_start: r.get("bucket_start")?,
+                revenue_cents,
+                selling_fees_cents,
+                cogs_cents,
+                profit_cents: finance::profit_cents(revenue_cents, cogs_cents, selling_fees_cents),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(ts_stmt);
+
     // ---- Inventory Cost / Listing Value / Potential Profit --------------
     // Deliberately separate from `inventory`/`period_summary` above (both
     // realized-only FinanceSummary blocks) - this is about UNSOLD stock, so
@@ -315,6 +400,8 @@ pub(crate) fn get_dashboard_impl(
         mixed_currencies,
         inventory_potential,
         alerts,
+        revenue_time_series,
+        time_series_granularity: granularity.to_string(),
     })
 }
 
@@ -593,5 +680,174 @@ mod tests {
 
         assert_eq!(data.inventory.revenue_cents, 0, "no sale exists, so realized revenue must stay 0");
         assert_eq!(data.inventory_potential.inventory_cost_cents, 500, "only the unsold ticket counts here");
+    }
+
+    // ---- 1.6.0: revenue/profit chart --------------------------------------
+
+    /// Sells an already-seeded (available/listed) ticket on a specific date,
+    /// via the real `create_sale_impl` (not a raw INSERT) so every column
+    /// (currency copied from the ticket, code assignment, etc.) is exactly
+    /// what the app itself would produce.
+    fn seed_sale(conn: &mut Connection, ticket_id: i64, sale_date: &str, price_cents: i64) -> i64 {
+        crate::commands::sales::create_sale_impl(
+            conn,
+            &crate::models::SaleInput {
+                ticket_id,
+                platform_id: None,
+                sale_date: sale_date.to_string(),
+                sale_price_cents: price_cents,
+                selling_fees_cents: 0,
+                payment_status: Some("paid".to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn time_series_granularity_switches_on_span_thresholds() {
+        assert_eq!(time_series_granularity("2026-01-01", "2026-01-01"), "day"); // 0 days
+        assert_eq!(time_series_granularity("2026-01-01", "2026-01-31"), "day"); // 30 days, <= 31
+        assert_eq!(time_series_granularity("2026-01-01", "2026-02-15"), "week"); // 45 days, > 31
+        assert_eq!(time_series_granularity("2026-01-01", "2026-06-30"), "week"); // 180 days, <= 180
+        assert_eq!(time_series_granularity("2026-01-01", "2026-07-01"), "month"); // 181 days, > 180
+        assert_eq!(time_series_granularity("0001-01-01", "9999-12-31"), "month", "All time -> coarsest bucket");
+    }
+
+    #[test]
+    fn revenue_time_series_buckets_by_day_and_sums_back_to_the_period_total() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Chart Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, t1, "2026-03-01", 2000);
+        seed_sale(&mut conn, t2, "2026-03-01", 3000); // same day as t1 -> same bucket
+        seed_sale(&mut conn, t3, "2026-03-03", 1500); // different day -> its own bucket
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.time_series_granularity, "day");
+        assert_eq!(data.revenue_time_series.len(), 2, "two distinct sale dates -> two buckets");
+        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 5000, "2000 + 3000 on the same day");
+        assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-03");
+        assert_eq!(data.revenue_time_series[1].revenue_cents, 1500);
+        // Cross-check against the existing, already-trusted period total -
+        // the chart must never be able to silently drift from the StatCards
+        // showing the same period.
+        let chart_revenue: i64 = data.revenue_time_series.iter().map(|p| p.revenue_cents).sum();
+        let chart_profit: i64 = data.revenue_time_series.iter().map(|p| p.profit_cents).sum();
+        assert_eq!(chart_revenue, data.period.revenue_cents);
+        assert_eq!(chart_profit, data.period.profit_cents);
+    }
+
+    #[test]
+    fn revenue_time_series_excludes_refunds_same_as_the_period_total() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Chart Refund Event", "upcoming", None);
+        let active = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let refunded = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, active, "2026-03-01", 2000);
+        let refunded_sale_id = seed_sale(&mut conn, refunded, "2026-03-02", 9000);
+        crate::commands::sales::refund_sale_impl(&mut conn, refunded_sale_id, Some("test refund")).unwrap();
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.revenue_time_series.len(), 1, "refunded day contributes no bucket at all");
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 2000);
+    }
+
+    #[test]
+    fn revenue_time_series_groups_the_same_iso_week_together_at_week_granularity() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Chart Week Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        // Both Tuesday/Wednesday of the same Mon-Sun week (2026-02-02 is a
+        // Monday), well inside a 90-day period so granularity is "week".
+        seed_sale(&mut conn, t1, "2026-02-03", 2000);
+        seed_sale(&mut conn, t2, "2026-02-04", 1000);
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-01-01".to_string()),
+            Some("2026-04-01".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.time_series_granularity, "week");
+        assert_eq!(data.revenue_time_series.len(), 1, "same ISO week -> one bucket");
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 3000);
+        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-02-03", "earliest date in the bucket");
+    }
+
+    #[test]
+    fn revenue_time_series_groups_the_same_month_together_at_month_granularity() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Chart Month Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, t1, "2026-02-03", 2000);
+        seed_sale(&mut conn, t2, "2026-02-20", 1000); // same month, different day
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.time_series_granularity, "month");
+        assert_eq!(data.revenue_time_series.len(), 1, "same month -> one bucket");
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 3000);
+    }
+
+    #[test]
+    fn revenue_time_series_respects_event_filter_same_as_period_total() {
+        let mut conn = test_conn();
+        let event_a = seed_event(&conn, "Event A", "upcoming", None);
+        let event_b = seed_event(&conn, "Event B", "upcoming", None);
+        let ta = seed_ticket(&conn, "1", event_a, "available", "EUR", 1000, None);
+        let tb = seed_ticket(&conn, "2", event_b, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, ta, "2026-03-01", 2000);
+        seed_sale(&mut conn, tb, "2026-03-01", 9000);
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            Some(event_a),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.revenue_time_series.len(), 1);
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 2000, "event_b's sale must not leak in");
+        assert_eq!(data.revenue_time_series[0].revenue_cents, data.period.revenue_cents);
     }
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
 import {
   Badge,
   Button,
@@ -92,8 +92,8 @@ export default function EventDetail() {
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
           tone={s.profitCents > 0 ? "positive" : s.profitCents < 0 ? "negative" : "default"}
         />
-        <StatCard label="Margin" value={formatPercent(s.margin)} />
-        <StatCard label="ROI" value={formatPercent(s.roi)} />
+        <StatCard label="Margin" value={formatPercentOrMixed(s.margin, s.currency)} />
+        <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
       </div>
 
       {event.notes && (

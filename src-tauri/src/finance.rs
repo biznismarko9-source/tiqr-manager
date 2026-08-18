@@ -62,6 +62,19 @@ pub fn compute_summary(
     currency: Option<String>,
 ) -> FinanceSummary {
     let profit = profit_cents(revenue_cents, cogs_cents, selling_fees_cents);
+    // Margin/ROI are ratios expressed IN a currency - when the inputs above
+    // blend more than one currency together (currency == None), the ratio
+    // itself is meaningless even though the arithmetic "succeeds" (1.6.0
+    // audit H1/H2: events.rs fed already-blended sums in here with
+    // currency=None and got back a real-looking % that contradicted its own
+    // "Mixed" banner). This mirrors the guard BUG #6 added ad hoc in
+    // sales.rs's group query - centralizing it here means every caller of
+    // this shared function gets the same safety for free.
+    let (margin, roi) = if currency.is_some() {
+        (safe_ratio(profit, revenue_cents), safe_ratio(profit, cogs_cents))
+    } else {
+        (None, None)
+    };
     FinanceSummary {
         purchased_tickets,
         available_tickets,
@@ -73,8 +86,8 @@ pub fn compute_summary(
         revenue_cents,
         selling_fees_cents,
         profit_cents: profit,
-        margin: safe_ratio(profit, revenue_cents),
-        roi: safe_ratio(profit, cogs_cents),
+        margin,
+        roi,
         currency,
     }
 }
@@ -173,6 +186,20 @@ mod tests {
         let s = compute_summary(1, 0, 0, 1, 0, cogs, cogs, revenue, 0, Some("EUR".into()));
         assert_eq!(s.profit_cents, revenue - cogs);
         assert!(s.margin.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn compute_summary_forces_margin_and_roi_to_none_when_currency_is_mixed() {
+        // 1.6.0 audit H1/H2: a caller can have real, nonzero revenue/cogs
+        // math but still be blending two currencies together (currency =
+        // None). The ratio would "succeed" numerically but be meaningless -
+        // this profit/revenue would compute to Some(0.5) if currency weren't
+        // checked, silently contradicting a "Mixed" currency banner shown
+        // right next to it (this was exactly the EventDetail/Events.tsx bug).
+        let s = compute_summary(2, 0, 0, 2, 0, 5000, 5000, 10000, 0, None);
+        assert_eq!(s.profit_cents, 5000); // arithmetic itself is still exact
+        assert_eq!(s.margin, None, "must not report a ratio across mixed currencies");
+        assert_eq!(s.roi, None, "must not report a ratio across mixed currencies");
     }
 
     #[test]

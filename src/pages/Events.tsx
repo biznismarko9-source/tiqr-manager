@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDate, formatMoneyOrMixed, formatPercent } from "../lib/format";
+import { formatDate, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
 import {
   Badge,
   Button,
@@ -159,8 +159,8 @@ export default function Events() {
                   >
                     {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
                   </td>
-                  <td className="td text-right tabular-nums">{formatPercent(ev.stats.margin)}</td>
-                  <td className="td text-right tabular-nums">{formatPercent(ev.stats.roi)}</td>
+                  <td className="td text-right tabular-nums">{formatPercentOrMixed(ev.stats.margin, ev.stats.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatPercentOrMixed(ev.stats.roi, ev.stats.currency)}</td>
                 </tr>
               ))}
             </tbody>

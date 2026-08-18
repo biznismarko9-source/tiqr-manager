@@ -167,6 +167,17 @@ export default function OrderDetail() {
       </p>
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets in this order ({tickets?.length ?? 0})</h2>
+      {tickets && tickets.length >= 5000 && (
+        // 1.6.0 audit H4: this list is capped the same way Orders/Tickets/
+        // Sales already are (see LIST_CAP in tickets.rs) - but a single
+        // order's quantity can go up to 50,000, well past that cap, and
+        // unlike those other three pages this one had no banner at all, so
+        // tickets past #5,000 were silently invisible with no indication.
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          Showing the first 5,000 tickets in this order. This order has more than that - the rest exist and are
+          counted correctly everywhere else, they just aren&apos;t listed individually below.
+        </div>
+      )}
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
@@ -201,12 +212,29 @@ export default function OrderDetail() {
                     <Badge tone={t.status}>{t.status}</Badge>
                   </td>
                   <td className="td text-right">
-                    <button
-                      className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                      onClick={() => setEditTicket(t)}
-                    >
-                      Edit
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      {/* 1.6.0 audit UX finding: there was no way to get from
+                          a sold ticket to the sale that sold it. Reuses the
+                          Sales page's own existing ticket-code search (BUG
+                          #5) via the same navigate(path, { state }) preset
+                          convention Orders.tsx already uses for
+                          presetEventId - no backend change needed. */}
+                      {t.status === "sold" && (
+                        <Link
+                          to="/sales"
+                          state={{ presetSearch: t.code }}
+                          className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                        >
+                          View sale
+                        </Link>
+                      )}
+                      <button
+                        className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                        onClick={() => setEditTicket(t)}
+                      >
+                        Edit
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

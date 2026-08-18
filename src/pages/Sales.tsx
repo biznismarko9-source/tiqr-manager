@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, todayIso } from "../lib/format";
@@ -22,6 +22,8 @@ import { useToast } from "../lib/toast";
 
 export default function Sales() {
   const toast = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [search, setSearch] = useState("");
@@ -35,6 +37,20 @@ export default function Sales() {
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
   }, []);
+
+  // Lets another page (e.g. a "View sale" link next to a sold ticket in
+  // OrderDetail.tsx) jump here pre-filtered to one ticket's sale, using the
+  // exact same navigate(path, { state }) + consume-and-clear convention
+  // Orders.tsx already uses for presetEventId - not a new pattern, no new
+  // backend query, just reusing the existing ticket-code search (BUG #5).
+  useEffect(() => {
+    const state = location.state as { presetSearch?: string } | null;
+    if (state?.presetSearch) {
+      setSearch(state.presetSearch);
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   const load = () => {
     api
@@ -166,71 +182,15 @@ export default function Sales() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1100px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
-              <tr>
-                <th className="th">Sale</th>
-                <th className="th">Event</th>
-                <th className="th text-right">Tickets</th>
-                <th className="th">Date</th>
-                <th className="th">Platform</th>
-                <th className="th text-right">Revenue</th>
-                <th className="th text-right">Fees</th>
-                <th className="th text-right">Profit</th>
-                <th className="th text-right">Margin</th>
-                <th className="th text-right">ROI</th>
-                <th className="th">Payment</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {groups.map((g) => (
-                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td">
-                    <Link
-                      to={`/sales/${g.id}`}
-                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
-                    >
-                      {g.code}
-                    </Link>
-                  </td>
-                  <td className="td">
-                    {g.eventId && g.eventName ? (
-                      <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-                        {g.eventName}
-                      </Link>
-                    ) : (
-                      <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
-                    )}
-                  </td>
-                  <td className="td text-right tabular-nums">{g.ticketCount}</td>
-                  <td className="td whitespace-nowrap">{formatDate(g.saleDate)}</td>
-                  <td className="td">{g.platformName ?? "-"}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
-                  <td
-                    className={`td text-right tabular-nums font-medium ${g.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : g.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
-                  >
-                    {formatMoneyOrMixed(g.profitCents, g.currency)}
-                  </td>
-                  <td className="td text-right tabular-nums">{formatPercentOrMixed(g.margin, g.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatPercentOrMixed(g.roi, g.currency)}</td>
-                  <td className="td">
-                    {g.paymentStatus ? (
-                      <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge>
-                    ) : (
-                      <Badge tone="mixed">Mixed</Badge>
-                    )}
-                    {g.refundedCount > 0 && (
-                      <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
-                        {g.refundedCount} of {g.ticketCount} refunded
-                      </p>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        // 1.6.0 redesign: one card per sale action (single ticket or
+        // multi-ticket batch) instead of one flat table row - the data was
+        // already grouped this way (SaleGroup/batch_id, see sales.rs), this
+        // just changes how it's presented. Every field shown below existed
+        // in the old table too; nothing here is a new number.
+        <div className="space-y-2">
+          {groups.map((g) => (
+            <SaleGroupCard key={g.id} group={g} />
+          ))}
         </div>
       )}
 
@@ -242,6 +202,117 @@ export default function Sales() {
           load();
         }}
       />
+    </div>
+  );
+}
+
+/** One row of the redesigned Sales list - a single sale action (one ticket,
+ * or a multi-ticket batch sharing one `batch_id`). All figures come straight
+ * from the group query (sales.rs GROUP_BASE_SELECT) - this component only
+ * decides how to lay them out, never recomputes anything. */
+function SaleGroupCard({ group: g }: { group: SaleGroup }) {
+  const navigate = useNavigate();
+  return (
+    <div
+      onClick={(e) => {
+        // Same pattern already used by Events.tsx's row-click: the card as a
+        // whole navigates to Sale Detail, except when the click landed on a
+        // real nested <a> (event name below) - that Link already performs
+        // its own, correct navigation, so this must not double-navigate it.
+        if ((e.target as HTMLElement).closest("a")) return;
+        navigate(`/sales/${g.id}`);
+      }}
+      className="card flex cursor-pointer flex-wrap items-center gap-x-6 gap-y-3 p-4 transition-shadow hover:shadow-md hover:ring-1 hover:ring-brand-200 dark:hover:ring-brand-500/30"
+    >
+      <div className="min-w-[220px] flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            to={`/sales/${g.id}`}
+            className="font-semibold text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+          >
+            {g.code}
+          </Link>
+          {/* Visually distinguishes a single-ticket sale from a large batch
+              (1.6.0 audit UX finding) - brand-tinted once there's more than
+              one ticket riding on this one sale action, plain otherwise. */}
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+              g.ticketCount > 1
+                ? "bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-200 dark:bg-brand-500/10 dark:text-brand-400 dark:ring-brand-500/30"
+                : "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700"
+            }`}
+          >
+            {g.ticketCount} ticket{g.ticketCount === 1 ? "" : "s"}
+          </span>
+        </div>
+        <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">
+          {g.eventId && g.eventName ? (
+            <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+              {g.eventName}
+            </Link>
+          ) : (
+            <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
+          )}
+        </p>
+        <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+          {formatDate(g.saleDate)}
+          {g.platformName ? ` · ${g.platformName}` : ""}
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-start gap-x-5 gap-y-2 text-right">
+        <div className="w-[92px]">
+          <p className="text-xs text-slate-400 dark:text-slate-500">Revenue</p>
+          <p className="tabular-nums text-sm font-medium text-slate-800 dark:text-slate-200">
+            {formatMoneyOrMixed(g.revenueCents, g.currency)}
+          </p>
+        </div>
+        <div className="w-20">
+          <p className="text-xs text-slate-400 dark:text-slate-500">Fees</p>
+          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
+            {formatMoneyOrMixed(g.sellingFeesCents, g.currency)}
+          </p>
+        </div>
+        <div className="w-[92px]">
+          <p className="text-xs text-slate-400 dark:text-slate-500">Profit</p>
+          <p
+            className={`tabular-nums text-sm font-semibold ${
+              g.profitCents > 0
+                ? "text-emerald-600 dark:text-emerald-400"
+                : g.profitCents < 0
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-slate-800 dark:text-slate-200"
+            }`}
+          >
+            {formatMoneyOrMixed(g.profitCents, g.currency)}
+          </p>
+        </div>
+        <div className="w-14">
+          <p className="text-xs text-slate-400 dark:text-slate-500">Margin</p>
+          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
+            {formatPercentOrMixed(g.margin, g.currency)}
+          </p>
+        </div>
+        <div className="w-14">
+          <p className="text-xs text-slate-400 dark:text-slate-500">ROI</p>
+          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
+            {formatPercentOrMixed(g.roi, g.currency)}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex w-28 shrink-0 flex-col items-end gap-1">
+        {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
+        {/* Refund indicator gets its own amber tone (matching this app's
+            existing warning-banner convention) instead of muted gray text,
+            so a partially-refunded batch doesn't blend into the background
+            next to the Payment badge (1.6.0 audit UX finding). */}
+        {g.refundedCount > 0 && (
+          <span className="text-right text-xs font-medium text-amber-700 dark:text-amber-400">
+            {g.refundedCount} of {g.ticketCount} refunded
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -365,6 +436,26 @@ function SaleFormModal({
       cost += t.totalCostCents;
     }
     return { revenue, cost, fees, profit: revenue - cost - fees };
+  }, [selected, lines]);
+
+  // Only used when the selection is mixed-currency (1.6.0 audit UX finding:
+  // previously that case showed no profit preview at all, just a one-line
+  // notice). Same lenient, live-preview parsing as `totals` above, just
+  // grouped by currency instead of assuming the whole batch is one.
+  const perCurrencyTotals = useMemo(() => {
+    const byCurrency = new Map<string, { revenue: number; cost: number; fees: number; count: number }>();
+    for (const t of selected) {
+      const line = lines[t.id];
+      const p = parseFloat((line?.price ?? "").trim().replace(",", "."));
+      const f = parseFloat((line?.fees ?? "0").trim().replace(",", ".")) || 0;
+      const entry = byCurrency.get(t.currency) ?? { revenue: 0, cost: 0, fees: 0, count: 0 };
+      if (Number.isFinite(p)) entry.revenue += Math.round(p * 100);
+      entry.fees += Math.round(f * 100);
+      entry.cost += t.totalCostCents;
+      entry.count += 1;
+      byCurrency.set(t.currency, entry);
+    }
+    return Array.from(byCurrency.entries()).map(([currency, v]) => ({ currency, ...v, profit: v.revenue - v.cost - v.fees }));
   }, [selected, lines]);
 
   const submit = async () => {
@@ -507,6 +598,9 @@ function SaleFormModal({
             <Button type="button" variant="secondary" disabled={!bulkFees.trim()} onClick={applyBulkFees}>
               Apply to all
             </Button>
+            <p className="w-full text-xs text-slate-400 dark:text-slate-500">
+              Applying overwrites any price/fees already entered below for every selected ticket.
+            </p>
           </div>
 
           <div className="max-h-52 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
@@ -523,6 +617,15 @@ function SaleFormModal({
                         : ""}
                     </p>
                   </div>
+                  {/* Persistent currency label (1.6.0 audit UX finding: a
+                      placeholder alone disappears the moment a value is
+                      typed, which is exactly when it's most useful to still
+                      see what currency these two fields are in). One label
+                      covers both - price and fees on one ticket are always
+                      the same currency (copied from the ticket itself). */}
+                  <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">
+                    {t.currency}
+                  </span>
                   <div className="w-24 shrink-0">
                     <Input
                       inputMode="decimal"
@@ -566,7 +669,29 @@ function SaleFormModal({
               </div>
             </div>
           ) : (
-            <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">Selected tickets use different currencies - totals shown per ticket only.</p>
+            // 1.6.0 audit UX finding: previously this case showed no profit
+            // preview at all, just a one-line notice. A mixed-currency batch
+            // still can't be blended into ONE total (that's a real, correct
+            // rule elsewhere in this app - see finance.rs), but each
+            // individual currency within it is still summable on its own.
+            <div className="mt-4 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
+              <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
+                Selected tickets use different currencies - shown separately, never blended into one total:
+              </p>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {perCurrencyTotals.map((c) => (
+                  <div key={c.currency}>
+                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                      {c.currency} ({c.count} ticket{c.count === 1 ? "" : "s"})
+                    </p>
+                    <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(c.revenue, c.currency)}</p>
+                    <p className={`text-xs font-medium ${c.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                      {formatMoney(c.profit, c.currency)} profit
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           <div className="mt-4 grid grid-cols-2 gap-4">

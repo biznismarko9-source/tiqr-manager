@@ -314,6 +314,19 @@ export interface DashboardAlerts {
   upcomingEvents: UpcomingEventAlert[];
 }
 
+/** One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same
+ * scope and realized-only/refund-excluded rule as DashboardData.period -
+ * just broken out by date instead of collapsed into one total. */
+export interface RevenueTimeSeriesPoint {
+  /** The earliest real sale date in this bucket - always a concrete
+   * calendar date, never one of the backend's "no bound" sentinel dates. */
+  bucketStart: string;
+  revenueCents: number;
+  sellingFeesCents: number;
+  cogsCents: number;
+  profitCents: number;
+}
+
 export interface DashboardData {
   inventory: FinanceSummary;
   period: FinanceSummary;
@@ -330,6 +343,11 @@ export interface DashboardData {
   inventoryPotential: InventoryPotential;
   /** Attention/alerts - see DashboardAlerts. */
   alerts: DashboardAlerts;
+  /** Revenue/profit chart data - see RevenueTimeSeriesPoint. Same period/
+   * currency/event/platform scope as `period` above. */
+  revenueTimeSeries: RevenueTimeSeriesPoint[];
+  /** "day" | "week" | "month" - the bucket width revenueTimeSeries used. */
+  timeSeriesGranularity: string;
 }
 
 export interface CsvPreviewRow {

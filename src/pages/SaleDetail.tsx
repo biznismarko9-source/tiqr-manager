@@ -54,14 +54,23 @@ export default function SaleDetail() {
 
   const header = useMemo(() => {
     if (!lines || lines.length === 0) return null;
-    const currency = uniform(lines, (s) => s.currency);
+    const counted = lines.filter((s) => s.paymentStatus !== "refunded");
+    // 1.6.0 audit H5: mirror the backend's GROUP_BASE_SELECT fix (sales.rs) -
+    // currency must be derived from non-refunded lines only, the same scope
+    // as the money fields below. Deriving it from ALL lines (including
+    // refunded ones) meant a batch whose ONLY differently-currencied line
+    // had been refunded still showed Mixed for money/margin/ROI, even though
+    // what's left is a clean, fully-computable single-currency total. Falls
+    // back to ALL lines only when the whole group is refunded (counted is
+    // empty), so a fully-refunded single-currency group still reports its
+    // currency instead of going blank.
+    const currency = counted.length > 0 ? uniform(counted, (s) => s.currency) : uniform(lines, (s) => s.currency);
     const eventId = uniform(lines, (s) => s.eventId);
     const eventName = uniform(lines, (s) => s.eventName);
     const saleDate = uniform(lines, (s) => s.saleDate);
     const platformName = uniform(lines, (s) => s.platformName);
     const paymentStatus = uniform(lines, (s) => s.paymentStatus);
     const refundedCount = lines.filter((s) => s.paymentStatus === "refunded").length;
-    const counted = lines.filter((s) => s.paymentStatus !== "refunded");
     const revenueCents = counted.reduce((sum, s) => sum + s.salePriceCents, 0);
     const feesCents = counted.reduce((sum, s) => sum + s.sellingFeesCents, 0);
     const costCents = counted.reduce((sum, s) => sum + s.costCents, 0);
@@ -74,9 +83,16 @@ export default function SaleDetail() {
     // currency-blind ratio across e.g. EUR + USD.
     const margin = currency !== null && revenueCents !== 0 ? profitCents / revenueCents : null;
     const roi = currency !== null && costCents !== 0 ? profitCents / costCents : null;
-    // The representative code is always the group's own lowest code (see
-    // backend GROUP_BASE_SELECT) - lines are already ordered by id ASC.
-    const code = lines[0].batchId ?? lines[0].code;
+    // The representative code is always the group's own lowest-id surviving
+    // line's code (see backend GROUP_BASE_SELECT's MIN(s.code) - lines here
+    // are already ordered by id ASC, so lines[0] is that same row). 1.6.0
+    // audit finding: this used to prefer lines[0].batchId, a static value
+    // copied once at creation time - correct for an untouched batch (where
+    // it equals the original lowest code anyway), but stale after deleting
+    // exactly that lowest-id row, since batchId doesn't shift to the next
+    // surviving line the way lines[0].code (freshly fetched every load)
+    // does. Always using lines[0].code matches the backend in every case.
+    const code = lines[0].code;
     return {
       code,
       currency,
