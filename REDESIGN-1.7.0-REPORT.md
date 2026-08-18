@@ -1,9 +1,9 @@
-# TIQR Manager 1.6.0 — Audit, Bug Fixes, Dashboard Chart, Sales Redesign
+# TIQR Manager 1.7.0 — Audit, Bug Fixes, Dashboard Chart, Sales Redesign
 
 Dátum: 2026-08-18
-Rozsah: audit celej appky → oprava 6 HIGH bugov → Dashboard graf tržieb/profitu → Sales redesign (tabuľka v štýle Tickets) → New Sale/Sale Detail polish → verzia 1.6.0.
+Rozsah: audit celej appky → oprava 6 HIGH bugov → Dashboard graf tržieb/profitu → Sales redesign (tabuľka v štýle Tickets) → New Sale/Sale Detail polish → verzia 1.7.0.
 
-**Revízia po tvojej spätnej väzbe:** prvý pokus mal Sales ako karty a graf ako jednoduché stĺpce. Po tvojom vysvetlení (8 tiketov predaných ako 4+2+2 → 3 riadky, presne v štýle, akým Tickets zoskupuje podľa objednávky) som Sales main list prerobil znova na tabuľku v identickom štýle ako `Tickets.tsx`, a graf prerobil na moderný smooth area/line chart s interaktívnym hoverom. §5 a §6 nižšie opisujú tento finálny stav; H1-H6 opravy a verzia sa touto revíziou nemenili.
+**Prečo 1.7.0 a nie 1.6.0:** toto vydanie prešlo dvomi kolami - prvý pokus (interne označený 1.6.0, nikdy nenasadený) mal Sales ako karty a graf ako jednoduché stĺpce. Po tvojom vysvetlení (8 tiketov predaných ako 4+2+2 → 3 riadky, presne v štýle, akým Tickets zoskupuje podľa objednávky) som Sales main list prerobil na tabuľku v identickom štýle ako `Tickets.tsx` a graf na moderný smooth area/line chart s interaktívnym hoverom - popísané v §5 a §6 nižšie. Aby si vždy dostal jednoznačne stiahnuteľný, aktuálny report a zdrojový zip, od teraz **poviem verziu pri každej jednej zmene** (pokojne aj len o patch, napr. 1.7.1) - nikdy viac ten istý názov súboru pre iný obsah.
 
 ---
 
@@ -62,9 +62,9 @@ Predtým appka nemala ŽIADNU time-series granularitu — všetko bolo jeden pre
 
 Šírka bucketu sa prispôsobuje dĺžke obdobia (`time_series_granularity()`): ≤31 dní → deň, ≤180 dní → týždeň, viac (vrátane "All time") → mesiac. Dôvod: "Last 7 days" nemá zmysel po dňoch rozbíjať na 7×nič-iné a viacročné "All time" nemá zmysel po dňoch (tisíce stĺpcov).
 
-Frontend (`src/components/RevenueChart.tsx`) je vlastný, dependency-free SVG graf — **žiadna nová npm závislosť** (appka doteraz nemala žiadnu UI knižnicu okrem React/Tailwind, pridávanie charting knižnice by zbytočne zväčšilo Windows build). Namiesto pôvodných jednoduchých stĺpcov je to teraz smooth area/line graf: Revenue ako vyplnená plocha s jemným gradientom (brand farba), Profit ako čiara nad ňou, ktorá mení farbu (zelená/červená) presne v bode, kde prechádza cez nulu — takže strata je vizuálne okamžite viditeľná v samotnom grafe, nie len v čísle. Krivka je vyhladená (Catmull-Rom → cubic Bezier prevod), ale každý reálny dátový bod stále leží presne na krivke, nič sa neinterpoluje ani nezaokrúhľuje preč.
+Frontend (`src/components/RevenueChart.tsx`) je vlastný, dependency-free SVG graf — **žiadna nová npm závislosť** (appka doteraz nemala žiadnu UI knižnicu okrem React/Tailwind, pridávanie charting knižnice by zbytočne zväčšilo Windows build). Je to smooth area/line graf: Revenue ako vyplnená plocha s jemným gradientom (brand farba), Profit ako čiara nad ňou, ktorá mení farbu (zelená/červená) presne v bode, kde prechádza cez nulu — takže strata je vizuálne okamžite viditeľná v samotnom grafe, nie len v čísle. Krivka je vyhladená (Catmull-Rom → cubic Bezier prevod), ale každý reálny dátový bod stále leží presne na krivke, nič sa neinterpoluje ani nezaokrúhľuje preč.
 
-Hover je teraz interaktívny namiesto natívneho SVG tooltipu: pohyb myšou nad grafom prepne legendu nad grafom na live readout (dátum + presné Revenue/Profit hodnoty pre ten bucket), plus vertikálna crosshair čiara a bodky na oboch krivkách presne v hoverovanom bode. Šírka grafu sa meria cez `ResizeObserver` (namiesto naťahovania fixného viewBoxu na celú šírku), takže súradnicový systém je vždy 1:1 s reálnymi pixelmi na oboch osiach — kruhové hover-bodky preto zostávajú kruhové aj keď sa karta zmenší/zväčší, a pozícia myši sa dá prečítať priamo z bounding boxu bez extra prepočtu mierky.
+Hover je interaktívny namiesto natívneho SVG tooltipu: pohyb myšou nad grafom prepne legendu nad grafom na live readout (dátum + presné Revenue/Profit hodnoty pre ten bucket), plus vertikálna crosshair čiara a bodky na oboch krivkách presne v hoverovanom bode. Šírka grafu sa meria cez `ResizeObserver` (namiesto naťahovania fixného viewBoxu na celú šírku), takže súradnicový systém je vždy 1:1 s reálnymi pixelmi na oboch osiach — kruhové hover-bodky preto zostávajú kruhové aj keď sa karta zmenší/zväčší, a pozícia myši sa dá prečítať priamo z bounding boxu bez extra prepočtu mierky.
 
 Vizuálne overené cez Playwright screenshot pri viacerých scenároch (bežné dáta, mesačná granularita s veľkým poklesom pod nulu, úzka karta/responsivita, 1 bucket, prázdne obdobie, hover interakcia so živým readoutom, dark mode) — viď §8. Pri tejto verifikácii sa našiel a hneď opravil jeden reálny bug: y-osový popisok pri väčších sumách (napr. "€2,900.00") sa orezával na ľavom okraji grafu — opravené zväčšením ľavého paddingu a `overflow-visible` na `<svg>` ako poistkou pre ešte väčšie sumy.
 
@@ -99,7 +99,9 @@ Navyše (UX #7, "ticket → sale" prelinkovanie): `OrderDetail.tsx` pri predanom
 
 ## 7. Verzia
 
-`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`: 1.5.0 → **1.6.0**, všetky 3 konzistentne. Žiadna nová migrácia (presne 4 ako predtým). `release.ps1` a `1-CLICK-UPDATE.bat` tiež aktualizované na v1.6.0 (vrátane commit message, ktorá teraz opisuje reálne zmeny tohto vydania) — bez toho by ti tieto skripty ešte stále hovorili "v1.5.0" pri publikovaní 1.6.0 zdrojového kódu.
+`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`: 1.5.0 → **1.7.0**, všetky 3 konzistentne. Žiadna nová migrácia (presne 4 ako predtým). `release.ps1` a `1-CLICK-UPDATE.bat` tiež aktualizované na v1.7.0 (vrátane commit message, ktorá teraz opisuje reálne zmeny tohto vydania) — bez toho by ti tieto skripty ešte stále hovorili "v1.5.0" pri publikovaní tohto zdrojového kódu.
+
+Medzikrok 1.6.0 sa nikdy nenasadil (žiadny tag, žiadny build) — bol to len report/zip, ktorý si dostal predtým, než si ma upozornil na chybu v Sales dizajne. Preto sa priamo skočilo na 1.7.0 namiesto vydávania 1.6.0 a hneď potom opravného 1.6.1. Od tejto chvíle: **verzia sa zvýši po každej jednej zmene**, ktorú urobím a pošlem ti na stiahnutie (aj keby to bol len drobný patch, napr. 1.7.1) — nikdy viac nedostaneš report/zip so starým názvom/verziou pre nový obsah.
 
 ## 8. Testovanie a verifikácia
 
@@ -108,11 +110,12 @@ Navyše (UX #7, "ticket → sale" prelinkovanie): `OrderDetail.tsx` pri predanom
 - `cargo test --lib`: **95 passed / 0 failed / 3 ignored** (83 pôvodných + 13 nových: 1× finance.rs, 2× sales.rs, 3× csv_export.rs, 7× dashboard.rs). 3 ignored sú tie isté dávno-existujúce perf testy (spúšťajú sa len manuálne).
 - `cargo clippy --lib --all-targets`: presne tie isté 3 staré, nesúvisiace warningy ako pred týmto vydaním (finance.rs digit-grouping, dashboard.rs if_same_then_else, db.rs type_complexity) — žiadny nový warning.
 - `tsc -b` (samostatne aj cez `npm run build`): čisté, 0 chýb.
-- `npm run build` (plný vite build): úspešný, 60 modulov, bundle 296.39 kB / gzip 82.18 kB — žiadna nová závislosť.
+- `npm run build` (plný vite build): úspešný, 60 modulov, bundle 296.39 kB / gzip 82.18 kB — žiadna nová závislosť. Build log potvrdzuje `tiqr-manager@1.7.0`.
+- `cargo check --lib` potvrdzuje `Compiling tiqr-manager v1.7.0`.
 
 **Vizuálne (Playwright + headless Chromium, cez dočasný preview harness mimo Tauri, zmazaný po použití — spustené 2×, raz pre prvý pokus a raz po korekcii podľa tvojej spätnej väzby):**
 - `RevenueChart` (finálna verzia): bežné dáta (30 dní), mesačná granularita s veľkým poklesom pod nulu (overuje farebný prechod zelená→červená→zelená na profit krivke pri viacerých prechodoch cez nulu), úzka karta (responsivita cez ResizeObserver), 1 bucket, prázdne obdobie, hover interakcia (crosshair + live readout v legende + bodky na oboch krivkách), dark mode — všetko vyzerá správne. Pri tomto prechode sa našiel a opravil orezávaný y-osový popisok pri väčších sumách (pozri §5).
-- Sales tabuľka (finálna verzia): presne marka's príklad (8 tiketov ako 4+2+2 → 3 riadky), 1-tiketový predaj, mixed-events riadok, mixed-currency riadok ("Mixed" všade kde treba), čiastočne refundovaný riadok (amber text), rôzne payment status badge (paid/pending/refunded), dark mode — stĺpce zarovnané, farby a badge-y správne, vizuálne zhodné so štýlom `Tickets.tsx`.
+- Sales tabuľka (finálna verzia): presne tvoj príklad (8 tiketov ako 4+2+2 → 3 riadky), 1-tiketový predaj, mixed-events riadok, mixed-currency riadok ("Mixed" všade kde treba), čiastočne refundovaný riadok (amber text), rôzne payment status badge (paid/pending/refunded), dark mode — stĺpce zarovnané, farby a badge-y správne, vizuálne zhodné so štýlom `Tickets.tsx`.
 - New Sale currency label a per-currency profit preview — layout správny (nezmenené touto revíziou).
 
 **Manuálna logická kontrola (bez GUI behu appky v tomto prostredí):**
@@ -132,10 +135,10 @@ Nedotknuté (podľa DO NOT TOUCH): `db.rs`, `money.rs`, `backup.rs`, `csv_import
 
 ## 10. Ako to nasadiť
 
-Rovnaký postup ako predtým — v priečinku appky spusti `1-CLICK-UPDATE.bat` (dvojklik), ten zavolá `release.ps1`, ktorý overí, že všetky 3 verzie sedia na 1.6.0, commitne, vytvorí a pushne tag `v1.6.0`, čo spustí GitHub Actions signed build.
+Rovnaký postup ako predtým — v priečinku appky spusti `1-CLICK-UPDATE.bat` (dvojklik), ten zavolá `release.ps1`, ktorý overí, že všetky 3 verzie sedia na 1.7.0, commitne, vytvorí a pushne tag `v1.7.0`, čo spustí GitHub Actions signed build.
 
-**Jedna vec na sledovanie:** naposledy (pri 1.5.0) sa riešil problém, že GitHub Actions niekedy vypľul installer stále pomenovaný podľa starej verzie napriek správnemu zdrojovému kódu. Do `build-windows.yml` pribudli 2 opravy (zmazanie starého GitHub Release pred publikovaním; `release.ps1` teraz vždy vytvorí nový commit) — ale nikdy sa nepotvrdilo, či to definitívne vyriešilo problém, lebo si medzitým prešiel na túto 1.6.0 úlohu. Ak pri sledovaní GitHub Actions po spustení `1-CLICK-UPDATE.bat` opäť uvidíš installer pomenovaný "...1.5.0..." namiesto "...1.6.0...", daj vedieť — je to jediné vlákno z minula, ktoré zostalo definitívne nepotvrdené.
+**Jedna vec na sledovanie:** naposledy (pri 1.5.0) sa riešil problém, že GitHub Actions niekedy vypľul installer stále pomenovaný podľa starej verzie napriek správnemu zdrojovému kódu. Do `build-windows.yml` pribudli 2 opravy (zmazanie starého GitHub Release pred publikovaním; `release.ps1` teraz vždy vytvorí nový commit) — ale nikdy sa nepotvrdilo, či to definitívne vyriešilo problém, lebo si medzitým prešiel na túto úlohu. Ak pri sledovaní GitHub Actions po spustení `1-CLICK-UPDATE.bat` uvidíš installer pomenovaný podľa starej verzie namiesto "...1.7.0...", daj vedieť — je to jediné vlákno z minula, ktoré zostalo definitívne nepotvrdené.
 
 ---
 
-Priložený zip obsahuje kompletný zdrojový kód s verziou 1.6.0, pripravený na spustenie `1-CLICK-UPDATE.bat`.
+Priložený zip obsahuje kompletný zdrojový kód s verziou 1.7.0, pripravený na spustenie `1-CLICK-UPDATE.bat`.
