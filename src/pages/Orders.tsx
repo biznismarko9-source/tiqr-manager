@@ -21,7 +21,7 @@ import { IconPackage, IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 import type { OrderRecord } from "../lib/types";
 
-const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK"];
+const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
 /** Turns the free-form "Seats" input into one label per ticket.
  * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
@@ -214,11 +214,10 @@ function OrderFormModal({
   const [purchaseDate, setPurchaseDate] = useState(todayIso());
   const [quantity, setQuantity] = useState("1");
   const [unitPrice, setUnitPrice] = useState("");
-  const [fees, setFees] = useState("0");
+  const [unitFees, setUnitFees] = useState("0");
   const [otherCosts, setOtherCosts] = useState("0");
   const [currency, setCurrency] = useState("EUR");
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
-  const [ticketType, setTicketType] = useState("");
   const [section, setSection] = useState("");
   const [rowLabel, setRowLabel] = useState("");
   const [seatsRaw, setSeatsRaw] = useState("");
@@ -237,11 +236,10 @@ function OrderFormModal({
     setPurchaseDate(todayIso());
     setQuantity("1");
     setUnitPrice("");
-    setFees("0");
+    setUnitFees("0");
     setOtherCosts("0");
     setCurrency("EUR");
     setPaymentStatus("unpaid");
-    setTicketType("");
     setSection("");
     setRowLabel("");
     setSeatsRaw("");
@@ -254,23 +252,25 @@ function OrderFormModal({
 
   const totalPreviewCents = useMemo(() => {
     const up = decimalStringToCents(unitPrice) ?? 0;
-    const f = decimalStringToCents(fees) ?? 0;
+    const f = decimalStringToCents(unitFees) ?? 0;
     const oc = decimalStringToCents(otherCosts) ?? 0;
-    return qNum * up + f + oc;
-  }, [qNum, unitPrice, fees, otherCosts]);
+    // Fees are entered per ticket now (same as unit price) - multiply by
+    // quantity here too. Other costs stays a plain order-wide total.
+    return qNum * up + qNum * f + oc;
+  }, [qNum, unitPrice, unitFees, otherCosts]);
 
   const submit = async () => {
     setError(null);
     const q = parseInt(quantity, 10);
     const upCents = decimalStringToCents(unitPrice);
-    const feesCents = decimalStringToCents(fees);
+    const unitFeesCents = decimalStringToCents(unitFees);
     const otherCents = decimalStringToCents(otherCosts);
     const seats = parseSeats(seatsRaw);
 
     if (!eventId) return setError("Please select an event");
     if (!Number.isFinite(q) || q < 1) return setError("Quantity must be at least 1");
     if (upCents === null) return setError("Unit price is not a valid amount");
-    if (feesCents === null) return setError("Fees is not a valid amount");
+    if (unitFeesCents === null) return setError("Fees is not a valid amount");
     if (otherCents === null) return setError("Other costs is not a valid amount");
     if (!purchaseDate) return setError("Purchase date is required");
     if (seats.length > 0 && seats.length !== q) {
@@ -284,12 +284,19 @@ function OrderFormModal({
       purchaseDate,
       quantity: q,
       unitPriceCents: upCents,
-      feesCents: feesCents,
+      // Fees are entered per ticket in this form (same as unit price), but
+      // the backend's OrderInput.feesCents has always meant - and still
+      // means - the order-wide total (it splits that total evenly across
+      // tickets via the existing, tested allocate_cents). Multiplying here
+      // keeps that backend contract 100% unchanged: the total sent is an
+      // exact multiple of quantity, so allocate_cents hands every ticket
+      // back exactly this per-unit amount with zero remainder to distribute.
+      feesCents: unitFeesCents * q,
       otherCostsCents: otherCents,
       currency,
       paymentStatus,
       notes: notes || null,
-      ticketType: ticketType || null,
+      ticketType: null,
       section: section || null,
       rowLabel: rowLabel || null,
       seats: seats.length > 0 ? seats : null,
@@ -373,33 +380,32 @@ function OrderFormModal({
           </>
         </Field>
 
-        <Field label="Purchase fees (total)" hint="Split evenly across all tickets">
-          <Input inputMode="decimal" value={fees} onChange={(e) => setFees(e.target.value)} />
+        <Field label={`Unit purchase fees (${currency})`}>
+          <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} />
         </Field>
         <Field label="Other costs (total)" hint="Split evenly across all tickets">
           <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
         </Field>
 
-        <Field label="Ticket type">
-          <Input placeholder="e.g. Category 1" value={ticketType} onChange={(e) => setTicketType(e.target.value)} />
-        </Field>
         <Field label="Section">
           <Input value={section} onChange={(e) => setSection(e.target.value)} />
         </Field>
-
         <Field label="Row">
           <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
         </Field>
-        <Field
-          label="Seats"
-          hint={qNum > 1 ? `One per ticket, e.g. "12-${11 + qNum}" or "12,13,14" - optional` : 'Optional, e.g. "12"'}
-        >
-          <Input
-            placeholder={qNum > 1 ? "12-15" : "12"}
-            value={seatsRaw}
-            onChange={(e) => setSeatsRaw(e.target.value)}
-          />
-        </Field>
+
+        <div className="col-span-2">
+          <Field
+            label="Seats"
+            hint={qNum > 1 ? `One per ticket, e.g. "12-${11 + qNum}" or "12,13,14" - optional` : 'Optional, e.g. "12"'}
+          >
+            <Input
+              placeholder={qNum > 1 ? "12-15" : "12"}
+              value={seatsRaw}
+              onChange={(e) => setSeatsRaw(e.target.value)}
+            />
+          </Field>
+        </div>
 
         <div className="col-span-2">
           <Field label="Payment status">

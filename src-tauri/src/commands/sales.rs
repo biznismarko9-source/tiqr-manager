@@ -738,11 +738,27 @@ pub fn refund_sale(state: State<AppState>, id: i64, reason: Option<String>) -> A
     fetch_one(&conn, id)
 }
 
-/// Core logic behind `delete_sale`. This is for correcting a genuine mistake
-/// (e.g. the wrong ticket was picked) - nothing of value ever really
-/// happened, so nothing needs to stay on record. A real refund to an actual
-/// buyer should use `refund_sale_impl` instead, which keeps the sale in
-/// history with a `refunded` status - so this refuses to touch one.
+/// Core logic behind `delete_sale`. Two cases, handled differently:
+///
+/// - A non-refunded sale is a genuine mistake to undo (e.g. the wrong ticket
+///   was picked) - the row is removed and the ticket goes back to
+///   `available`, because this WAS the ticket's one and only active sale
+///   (migration 004's partial unique index guarantees at most one active,
+///   non-refunded sale can ever exist per ticket at a time).
+///
+/// - A refunded sale is historical record-keeping. Originally this function
+///   refused to delete one at all, so refund history could never be lost.
+///   Marko explicitly asked to relax that (2026-08 - he needed to clear out
+///   test data, and accepted this also permanently changes real-world
+///   behavior) so it's now allowed - but deleting a refunded row must NEVER
+///   touch `tickets.status`. A refunded row does not own the ticket's
+///   current state: the ticket may already be `available` (refund already
+///   did that - nothing left to do) or it may have been resold since, under
+///   a *different*, newer active sale row (still correctly `sold` under
+///   that other row). Touching status here would either be a no-op or,
+///   worse, silently un-sell a currently-sold ticket out from under its
+///   real active sale. Only a ticket's own active sale (the non-refunded
+///   branch below) is ever allowed to change its status.
 fn delete_sale_impl(conn: &mut Connection, id: i64) -> AppResult<()> {
     let tx = conn.transaction()?;
     let row: Option<(i64, String)> = tx
@@ -754,19 +770,16 @@ fn delete_sale_impl(conn: &mut Connection, id: i64) -> AppResult<()> {
         .ok();
     let (ticket_id, payment_status) =
         row.ok_or_else(|| AppError::NotFound(format!("Sale #{id} not found")))?;
-    // A refunded sale is history, not a mistake to undo - deleting it here
-    // would silently destroy the very record refund_sale exists to keep.
-    if payment_status == "refunded" {
-        return Err(AppError::Validation(
-            "This sale has been refunded and is kept as history - it can't be deleted.".into(),
-        ));
-    }
 
     tx.execute("DELETE FROM sales WHERE id = ?1", [id])?;
-    tx.execute(
-        "UPDATE tickets SET status='available', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
-        [ticket_id],
-    )?;
+    if payment_status != "refunded" {
+        // This was the ticket's one active sale - see the doc comment above
+        // for why a refunded row must never reach this branch.
+        tx.execute(
+            "UPDATE tickets SET status='available', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+            [ticket_id],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1052,19 +1065,58 @@ mod tests {
     }
 
     #[test]
-    fn refunded_sale_cannot_be_hard_deleted() {
+    fn refunded_sale_can_now_be_deleted_and_does_not_touch_an_already_available_ticket() {
+        // Marko explicitly asked (2026-08) to relax the original BUG #1 fix's
+        // guarantee that a refunded sale can never be deleted - he needed to
+        // clear out test data, and understood this also permanently changes
+        // real-world behavior going forward, not just for testing.
         let mut conn = test_conn();
         let tickets = seed_tickets(&mut conn, 1);
         let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
         refund_sale_impl(&mut conn, sale_id, None).unwrap();
+        assert_eq!(ticket_status(&conn, tickets[0]), "available");
 
-        let err = delete_sale_impl(&mut conn, sale_id).unwrap_err();
-        assert!(matches!(err, AppError::Validation(_)));
+        delete_sale_impl(&mut conn, sale_id).unwrap();
 
         let still_present: i64 = conn
             .query_row("SELECT COUNT(*) FROM sales WHERE id = ?1", [sale_id], |r| r.get(0))
             .unwrap();
-        assert_eq!(still_present, 1, "refunded sale row must still exist");
+        assert_eq!(still_present, 0, "refunded sale row can now be removed");
+        assert_eq!(
+            ticket_status(&conn, tickets[0]),
+            "available",
+            "ticket was already available from the refund - deleting the refund record must not change that"
+        );
+    }
+
+    #[test]
+    fn deleting_an_old_refunded_sale_never_disturbs_a_newer_active_sale_on_the_same_ticket() {
+        // The critical safety property of allowing refunded-sale deletion: a
+        // ticket can carry BOTH an old refunded sale and a newer active one
+        // (migration 004's partial unique index). Deleting the old refunded
+        // row must leave the ticket exactly as the *active* sale says it
+        // should be - never reset to Available out from under a ticket that
+        // is genuinely sold right now under a different sale row.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let ticket_id = tickets[0];
+
+        let refunded_id = create_sale_impl(&mut conn, &sale_input(ticket_id, 2000)).unwrap();
+        refund_sale_impl(&mut conn, refunded_id, None).unwrap();
+        let active_id = create_sale_impl(&mut conn, &sale_input(ticket_id, 1800)).unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "sold");
+
+        delete_sale_impl(&mut conn, refunded_id).unwrap();
+
+        assert_eq!(
+            ticket_status(&conn, ticket_id),
+            "sold",
+            "deleting the old refunded record must not un-sell a ticket that is actively sold under a different sale"
+        );
+        let active_still_present: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sales WHERE id = ?1", [active_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(active_still_present, 1, "the newer active sale must be untouched");
     }
 
     #[test]

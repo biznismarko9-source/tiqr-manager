@@ -240,31 +240,35 @@ export default function SaleDetail() {
                     )}
                   </td>
                   <td className="td">
-                    {s.paymentStatus === "refunded" ? (
-                      <p className="text-right text-xs text-slate-400 dark:text-slate-500">Locked</p>
-                    ) : (
-                      <div className="flex items-center justify-end gap-3">
-                        <button
-                          className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                          onClick={() => setEditTarget(s)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
-                          onClick={() => setRefundTarget(s)}
-                        >
-                          Refund
-                        </button>
-                        <button
-                          className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
-                          title="Delete sale (returns ticket to available)"
-                          onClick={() => setDeleteTarget(s)}
-                        >
-                          <IconTrash className="h-4 w-4" />
-                        </button>
-                      </div>
-                    )}
+                    <div className="flex items-center justify-end gap-3">
+                      {s.paymentStatus !== "refunded" && (
+                        <>
+                          <button
+                            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                            onClick={() => setEditTarget(s)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
+                            onClick={() => setRefundTarget(s)}
+                          >
+                            Refund
+                          </button>
+                        </>
+                      )}
+                      <button
+                        className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
+                        title={
+                          s.paymentStatus === "refunded"
+                            ? "Delete refund record (ticket status is not affected)"
+                            : "Delete sale (returns ticket to available)"
+                        }
+                        onClick={() => setDeleteTarget(s)}
+                      >
+                        <IconTrash className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -294,26 +298,36 @@ export default function SaleDetail() {
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Delete this sale?"
+        title={deleteTarget?.paymentStatus === "refunded" ? "Delete this refund record?" : "Delete this sale?"}
         message={
-          <>
-            Use this only to undo a mistake (e.g. the wrong ticket was picked) - it permanently removes sale{" "}
-            <b>{deleteTarget?.code}</b> with no record left behind, and sets ticket{" "}
-            <b>{deleteTarget?.ticketCode}</b> back to Available. This cannot be undone.
-            <br />
-            If a real buyer is returning a ticket, cancel this and use <b>Refund</b> instead - it keeps a record.
-          </>
+          deleteTarget?.paymentStatus === "refunded" ? (
+            <>
+              This permanently deletes the refund record for sale <b>{deleteTarget?.code}</b> (ticket{" "}
+              <b>{deleteTarget?.ticketCode}</b>). The ticket itself is not affected - it already returned to
+              Available when it was refunded. Once this record is gone, there will be no trace this ticket was ever
+              sold and refunded. This cannot be undone.
+            </>
+          ) : (
+            <>
+              Use this only to undo a mistake (e.g. the wrong ticket was picked) - it permanently removes sale{" "}
+              <b>{deleteTarget?.code}</b> with no record left behind, and sets ticket{" "}
+              <b>{deleteTarget?.ticketCode}</b> back to Available. This cannot be undone.
+              <br />
+              If a real buyer is returning a ticket, cancel this and use <b>Refund</b> instead - it keeps a record.
+            </>
+          )
         }
-        confirmLabel="Delete sale"
+        confirmLabel={deleteTarget?.paymentStatus === "refunded" ? "Delete refund record" : "Delete sale"}
         danger
         busy={deleting}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={async () => {
           if (!deleteTarget) return;
+          const wasRefunded = deleteTarget.paymentStatus === "refunded";
           setDeleting(true);
           try {
             await api.deleteSale(deleteTarget.id);
-            toast.success("Sale deleted, ticket is available again");
+            toast.success(wasRefunded ? "Refund record deleted" : "Sale deleted, ticket is available again");
             setDeleteTarget(null);
             const remaining = (lines ?? []).filter((l) => l.id !== deleteTarget.id);
             if (remaining.length === 0) {

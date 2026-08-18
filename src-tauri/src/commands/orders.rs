@@ -412,11 +412,14 @@ fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
         ));
     }
     // A refunded sale is no longer "sold" (the ticket already returned to
-    // available), but the sale itself is history that must survive - so it
-    // still has to block deletion, with its own clear message. Without this,
-    // the DB's own foreign key (sales.ticket_id -> RESTRICT) would still
-    // stop the delete, but only with a generic "blocked by other records"
-    // error instead of telling the user why.
+    // available), but any sales row still on record - including a refunded
+    // one - blocks the order until it's gone, with its own clear message.
+    // (Sale Detail now allows deleting a refunded sale directly - once that's
+    // done this count drops and the order becomes deletable on its own,
+    // nothing here needs to change for that.) Without this check at all, the
+    // DB's own foreign key (sales.ticket_id -> RESTRICT) would still stop the
+    // delete, but only with a generic "blocked by other records" error
+    // instead of telling the user why.
     let sale_history_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sales s JOIN tickets t ON t.id = s.ticket_id WHERE t.order_id = ?1",
         [id],
