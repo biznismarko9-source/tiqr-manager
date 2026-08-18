@@ -49,6 +49,18 @@ export function formatPercent(ratio: number | null | undefined): string {
   return `${(ratio * 100).toFixed(1)}%`;
 }
 
+/** Same as formatPercent, but for a margin/ROI value that came from a group
+ * (SaleGroup, Sale Detail header, ...) whose currency may be "mixed" (null -
+ * the underlying lines aren't all one currency). A blended ratio across
+ * different currencies (e.g. EUR + USD) is mathematically well-formed but
+ * economically meaningless, so this shows "Mixed" instead - same convention
+ * as formatMoneyOrMixed - rather than the ordinary "N/A" formatPercent shows
+ * for a ratio that's null for another reason (e.g. zero revenue). */
+export function formatPercentOrMixed(ratio: number | null | undefined, currency: string | null): string {
+  if (currency === null) return "Mixed";
+  return formatPercent(ratio);
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);

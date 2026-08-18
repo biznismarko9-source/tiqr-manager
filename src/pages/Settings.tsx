@@ -120,15 +120,28 @@ export default function Settings() {
       filters: [{ name: "SQLite Database", extensions: ["sqlite3", "db", "sqlite"] }],
     });
     if (!path || Array.isArray(path)) return;
-    setConfirmRestorePath(path);
+    // Validate before showing the "this will replace your data" confirmation,
+    // so a file that's not a TIQR Manager backup is rejected with a clear
+    // error right away instead of behind a scary confirm dialog.
+    setBusyAction("restore");
+    try {
+      await api.validateBackupFile(path);
+      setConfirmRestorePath(path);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const doRestore = async () => {
     if (!confirmRestorePath) return;
     setBusyAction("restore");
     try {
-      await api.restoreDatabase(confirmRestorePath);
-      toast.success("Backup restored. Relaunching...");
+      const result = await api.restoreDatabase(confirmRestorePath);
+      toast.success(
+        `Backup restored. Your previous data was automatically saved to ${result.safetyBackupPath}. Relaunching...`,
+      );
       setTimeout(() => relaunch(), 700);
     } catch (e) {
       toast.error(errMsg(e));
@@ -296,8 +309,9 @@ export default function Settings() {
               {busyAction === "backup" ? <Spinner className="h-4 w-4" /> : <IconDatabase className="h-4 w-4" />}
               Backup database...
             </Button>
-            <Button variant="secondary" onClick={pickRestoreFile}>
-              <IconUpload className="h-4 w-4" /> Restore from backup...
+            <Button variant="secondary" disabled={busyAction === "restore"} onClick={pickRestoreFile}>
+              {busyAction === "restore" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
+              Restore from backup...
             </Button>
           </div>
           {appInfo && (

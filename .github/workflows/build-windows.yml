@@ -106,13 +106,32 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      # No Rust build cache here on purpose (unlike the test-build job above).
+      # A cached target/ directory can let stale bundle/packaging output
+      # (e.g. an old NSIS installer name/version) survive into a new signed
+      # release even when the source itself is fully up to date - a real
+      # release must always be a clean, from-scratch build so the shipped
+      # installer can never lag behind what was actually tagged.
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Delete any existing GitHub release for this tag
+        # release.ps1 deletes and recreates the git TAG before pushing, which
+        # is what triggers this run - but a GitHub *release* (the page with
+        # the uploaded .exe/.msi assets) is a separate object that survives
+        # that tag delete/recreate. If one is already sitting there from an
+        # earlier attempt, the publish step below can end up updating it in
+        # place and keeping its old asset filenames (still showing the old
+        # version number) instead of a clean, freshly-named set - which is
+        # exactly the "installer still says the old version" symptom this
+        # step exists to prevent. continue-on-error covers the normal case
+        # where this is the first release ever published under this tag, so
+        # there is nothing yet to delete.
+        run: gh release delete "${{ github.ref_name }}" --yes
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build, sign and publish release
         uses: tauri-apps/tauri-action@v1

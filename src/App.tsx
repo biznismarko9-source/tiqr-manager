@@ -10,6 +10,7 @@ import OrderDetail from "./pages/OrderDetail";
 import Tickets from "./pages/Tickets";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
+import SaleDetail from "./pages/SaleDetail";
 import Settings from "./pages/Settings";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="tickets" element={<Tickets />} />
             <Route path="inventory" element={<Inventory />} />
             <Route path="sales" element={<Sales />} />
+            <Route path="sales/:id" element={<SaleDetail />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

@@ -1,7 +1,7 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::models::{Ticket, TicketUpdateInput};
-use rusqlite::{params, Row};
+use rusqlite::{params, Connection, Row};
 use tauri::State;
 
 // Safety cap on unfiltered list views. Ordinary use (hundreds to low
@@ -11,6 +11,15 @@ use tauri::State;
 // capped result is simply "the most relevant N", not an arbitrary cut.
 const LIST_CAP: i64 = 5000;
 
+// The `sa.payment_status != 'refunded'` join guard matters as of migration
+// 004: a ticket can now legitimately have more than one `sales` row over its
+// lifetime (a refunded sale plus a later active resale - see BUG #1 fix), so
+// an unfiltered join here would fan a single ticket out into two result
+// rows. Restricting the join to the ACTIVE sale (there is at most one, by
+// construction - see idx_sales_ticket_active_unique) keeps this a true
+// one-row-per-ticket view and makes `sale_price_cents` reflect the current
+// sale, never a stale refunded one. Same pattern already used in
+// orders.rs's fetch_sales_summary and events.rs's stats query.
 const BASE_SQL: &str = "
     SELECT t.id, t.code, t.event_id, e.name as event_name, t.order_id, o.code as order_code,
       t.section, t.row_label, t.seat, t.ticket_type,
@@ -20,7 +29,7 @@ const BASE_SQL: &str = "
     FROM tickets t
     JOIN events e ON e.id = t.event_id
     JOIN orders o ON o.id = t.order_id
-    LEFT JOIN sales sa ON sa.ticket_id = t.id
+    LEFT JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status != 'refunded'
 ";
 
 fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
@@ -53,10 +62,14 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
     })
 }
 
-#[tauri::command]
+/// Split out from the `list_tickets` command (same pattern as
+/// list_orders/list_sale_groups) so it's directly unit-testable against a
+/// plain `&Connection` - in particular so BUG #1's fix can be verified end
+/// to end: a ticket with both a refunded and a new active sale must still
+/// come back as exactly one row here, carrying the active sale's price.
 #[allow(clippy::too_many_arguments)]
-pub fn list_tickets(
-    state: State<AppState>,
+pub(crate) fn list_tickets_impl(
+    conn: &Connection,
     search: Option<String>,
     status: Option<String>,
     event_id: Option<i64>,
@@ -64,7 +77,6 @@ pub fn list_tickets(
     sort_by: Option<String>,
     sort_dir: Option<String>,
 ) -> AppResult<Vec<Ticket>> {
-    let conn = state.db.lock().unwrap();
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
@@ -129,6 +141,21 @@ pub fn list_tickets(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_tickets(
+    state: State<AppState>,
+    search: Option<String>,
+    status: Option<String>,
+    event_id: Option<i64>,
+    order_id: Option<i64>,
+    sort_by: Option<String>,
+    sort_dir: Option<String>,
+) -> AppResult<Vec<Ticket>> {
+    let conn = state.db.lock().unwrap();
+    list_tickets_impl(&conn, search, status, event_id, order_id, sort_by, sort_dir)
+}
+
+#[tauri::command]
 pub fn get_ticket(state: State<AppState>, id: i64) -> AppResult<Ticket> {
     let conn = state.db.lock().unwrap();
     let sql = format!("{BASE_SQL} WHERE t.id = ?1");
@@ -189,4 +216,85 @@ pub fn update_ticket(
 
     let sql = format!("{BASE_SQL} WHERE t.id = ?1");
     Ok(conn.query_row(&sql, [id], map_ticket)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::orders::insert_order_with_tickets;
+    use crate::commands::sales::{create_sale_impl, refund_sale_impl};
+    use crate::db::test_conn;
+    use crate::models::{OrderInput, SaleInput};
+
+    fn seed_one_ticket(conn: &Connection) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        let order_id = insert_order_with_tickets(conn, &input, false).unwrap();
+        conn.query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// BUG #1 fix, ticket-view half: once a ticket can carry both a
+    /// refunded sale and a new active one (migration 004), list_tickets_impl
+    /// must still show that ticket exactly once - never fanned out into two
+    /// rows by the LEFT JOIN sales - and its `sale_price_cents` must reflect
+    /// the current active sale, not the refunded one.
+    #[test]
+    fn ticket_with_a_refunded_and_a_new_active_sale_appears_exactly_once() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let ticket_code: String = conn
+            .query_row("SELECT code FROM tickets WHERE id=?1", [ticket_id], |r| r.get(0))
+            .unwrap();
+
+        let first_sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        let sale_id_1 = create_sale_impl(&mut conn, &first_sale).unwrap();
+        refund_sale_impl(&mut conn, sale_id_1, Some("buyer cancelled")).unwrap();
+
+        let second_sale = SaleInput {
+            sale_price_cents: 1800,
+            ..first_sale
+        };
+        create_sale_impl(&mut conn, &second_sale).unwrap();
+
+        let results = list_tickets_impl(&conn, Some(ticket_code), None, None, None, None, None).unwrap();
+        assert_eq!(results.len(), 1, "the ticket must appear exactly once, never duplicated by the sales join");
+        assert_eq!(
+            results[0].sale_price_cents,
+            Some(1800),
+            "sale_price_cents must reflect the current active sale, not the refunded one"
+        );
+
+        // Same guarantee for get_ticket's single-row lookup.
+        let sql = format!("{BASE_SQL} WHERE t.id = ?1");
+        let single = conn.query_row(&sql, [ticket_id], map_ticket).unwrap();
+        assert_eq!(single.sale_price_cents, Some(1800));
+    }
 }

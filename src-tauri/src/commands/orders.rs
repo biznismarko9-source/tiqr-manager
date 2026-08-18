@@ -1,8 +1,8 @@
 use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::finance::allocate_cents;
-use crate::models::{Order, OrderEditInput, OrderInput};
+use crate::finance::{self, allocate_cents};
+use crate::models::{Order, OrderEditInput, OrderInput, OrderSalesSummary};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
@@ -19,7 +19,9 @@ const BASE_SQL: &str = "
       o.total_cost_cents, o.currency, o.payment_status, o.notes, o.is_demo,
       o.created_at, o.updated_at,
       COUNT(CASE WHEN t.status='sold' THEN 1 END) as sold_count,
-      COUNT(CASE WHEN t.status='available' THEN 1 END) as available_count
+      COUNT(CASE WHEN t.status='available' THEN 1 END) as available_count,
+      COUNT(CASE WHEN t.status='listed' THEN 1 END) as listed_count,
+      COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled_count
     FROM orders o
     JOIN events e ON e.id = o.event_id
     LEFT JOIN suppliers sup ON sup.id = o.supplier_id
@@ -51,6 +53,8 @@ fn map_order(row: &Row) -> rusqlite::Result<Order> {
         updated_at: row.get("updated_at")?,
         sold_count: row.get("sold_count")?,
         available_count: row.get("available_count")?,
+        listed_count: row.get("listed_count")?,
+        cancelled_count: row.get("cancelled_count")?,
     })
 }
 
@@ -67,26 +71,100 @@ fn fetch_one(conn: &Connection, id: i64) -> AppResult<Order> {
         .map_err(|_| AppError::NotFound(format!("Order #{id} not found")))
 }
 
-#[tauri::command]
-pub fn list_orders(
-    state: State<AppState>,
+/// Powers both the plain "Orders" list (search/event_id only, unchanged
+/// behaviour) and the order-grouped "Tickets/Inventory" view, which needs a
+/// few more filters that are inherently ticket-level even though the rows
+/// returned are order-level. Those (`status`, `section`, and - as of BUG #5 -
+/// ticket code within `search`) are applied as a semi-join on `tickets` -
+/// "keep this order if it HAS a matching ticket" - so the row's own
+/// sold/available/listed/cancelled counts always stay the order's true,
+/// complete counts, never a partial/filtered count.
+#[allow(clippy::too_many_arguments)]
+fn list_orders_impl(
+    conn: &Connection,
     search: Option<String>,
     event_id: Option<i64>,
+    order_id: Option<i64>,
+    supplier_id: Option<i64>,
+    platform_id: Option<i64>,
+    status: Option<String>,
+    section: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
 ) -> AppResult<Vec<Order>> {
-    let conn = state.db.lock().unwrap();
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
+    if let Some(oid) = order_id {
+        sql.push_str(" AND o.id = ?");
+        params_vec.push(Box::new(oid));
+    }
     if let Some(eid) = event_id {
         sql.push_str(" AND o.event_id = ?");
         params_vec.push(Box::new(eid));
     }
+    if let Some(sid) = supplier_id {
+        sql.push_str(" AND o.supplier_id = ?");
+        params_vec.push(Box::new(sid));
+    }
+    if let Some(pid) = platform_id {
+        sql.push_str(" AND o.platform_id = ?");
+        params_vec.push(Box::new(pid));
+    }
+    if let Some(from) = date_from.as_deref() {
+        if !from.is_empty() {
+            sql.push_str(" AND o.purchase_date >= ?");
+            params_vec.push(Box::new(from.to_string()));
+        }
+    }
+    if let Some(to) = date_to.as_deref() {
+        if !to.is_empty() {
+            sql.push_str(" AND o.purchase_date <= ?");
+            params_vec.push(Box::new(to.to_string()));
+        }
+    }
+    if let Some(s) = status.as_deref() {
+        if !s.is_empty() {
+            // Comma-separated, same convention as list_tickets' own status filter.
+            let statuses: Vec<String> = s
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+            if !statuses.is_empty() {
+                let placeholders = statuses.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                sql.push_str(&format!(
+                    " AND o.id IN (SELECT order_id FROM tickets WHERE status IN ({placeholders}))"
+                ));
+                for st in statuses {
+                    params_vec.push(Box::new(st));
+                }
+            }
+        }
+    }
+    if let Some(sec) = section.as_deref() {
+        let sec = sec.trim();
+        if !sec.is_empty() {
+            sql.push_str(" AND o.id IN (SELECT order_id FROM tickets WHERE section LIKE ?)");
+            params_vec.push(Box::new(format!("%{sec}%")));
+        }
+    }
     if let Some(q) = search.as_deref() {
         let q = q.trim();
         if !q.is_empty() {
-            sql.push_str(" AND (o.code LIKE ? OR e.name LIKE ? OR sup.name LIKE ? OR p.name LIKE ?)");
+            // BUG #5 fix: ticket code added as one more OR-branch, same
+            // parenthesized search group as before - "additive", not a
+            // second search system. It has to be a semi-join subquery
+            // (like status/section above), not a direct `t.code LIKE ?` on
+            // the already-joined `t` - a direct predicate would filter the
+            // pre-aggregation rows and corrupt this order's own
+            // sold/available/listed/cancelled counts down to just the
+            // matching ticket instead of the order's true, complete counts.
+            sql.push_str(
+                " AND (o.code LIKE ? OR e.name LIKE ? OR sup.name LIKE ? OR p.name LIKE ? OR o.id IN (SELECT order_id FROM tickets WHERE code LIKE ?))",
+            );
             let like = format!("%{q}%");
-            for _ in 0..4 {
+            for _ in 0..5 {
                 params_vec.push(Box::new(like.clone()));
             }
         }
@@ -100,9 +178,75 @@ pub fn list_orders(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn list_orders(
+    state: State<AppState>,
+    search: Option<String>,
+    event_id: Option<i64>,
+    order_id: Option<i64>,
+    supplier_id: Option<i64>,
+    platform_id: Option<i64>,
+    status: Option<String>,
+    section: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<Order>> {
+    let conn = state.db.lock().unwrap();
+    list_orders_impl(
+        &conn, search, event_id, order_id, supplier_id, platform_id, status, section, date_from,
+        date_to,
+    )
+}
+
+#[tauri::command]
 pub fn get_order(state: State<AppState>, id: i64) -> AppResult<Order> {
     let conn = state.db.lock().unwrap();
     fetch_one(&conn, id)
+}
+
+/// Sales-side rollup for one order's "ORDER SUMMARY" (Order Detail): revenue,
+/// fees and cost only from this order's tickets that are actually sold and
+/// NOT refunded - refunded/unsold tickets must never inflate realized
+/// revenue/profit. A ticket has at most one `sales` row (ticket_id UNIQUE),
+/// so this LEFT JOIN never fans out the ticket count. Kept as its own tiny
+/// query (not folded into BASE_SQL) so the main order LIST never pays for
+/// this extra join - only Order Detail, opened one order at a time, does.
+fn fetch_sales_summary(conn: &Connection, order_id: i64) -> AppResult<OrderSalesSummary> {
+    let (revenue_cents, selling_fees_cents, cogs_cents): (i64, i64, i64) = conn.query_row(
+        "SELECT
+           COALESCE(SUM(sa.sale_price_cents), 0),
+           COALESCE(SUM(sa.selling_fees_cents), 0),
+           COALESCE(SUM(t.purchase_cost_cents + t.purchase_fees_cents + t.other_costs_cents), 0)
+         FROM tickets t
+         JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status != 'refunded'
+         WHERE t.order_id = ?1",
+        [order_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let profit_cents = finance::profit_cents(revenue_cents, cogs_cents, selling_fees_cents);
+    Ok(OrderSalesSummary {
+        revenue_cents,
+        selling_fees_cents,
+        cogs_cents,
+        profit_cents,
+        margin: finance::safe_ratio(profit_cents, revenue_cents),
+        roi: finance::safe_ratio(profit_cents, cogs_cents),
+    })
+}
+
+#[tauri::command]
+pub fn get_order_sales_summary(state: State<AppState>, id: i64) -> AppResult<OrderSalesSummary> {
+    let conn = state.db.lock().unwrap();
+    // Give a proper 404 rather than a silent all-zero summary for a bad id.
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM orders WHERE id = ?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Err(AppError::NotFound(format!("Order #{id} not found")));
+    }
+    fetch_sales_summary(&conn, id)
 }
 
 fn validate_order_input(input: &OrderInput) -> AppResult<()> {
@@ -463,5 +607,365 @@ mod tests {
             )
             .unwrap();
         assert_eq!(still_there, 0);
+    }
+
+    // ---- Order-grouped Tickets view: counts, filters, sales summary ------
+
+    fn ticket_ids(conn: &Connection, order_id: i64) -> Vec<i64> {
+        let mut stmt = conn
+            .prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id")
+            .unwrap();
+        stmt.query_map([order_id], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn ticket_code(conn: &Connection, ticket_id: i64) -> String {
+        conn.query_row("SELECT code FROM tickets WHERE id = ?1", [ticket_id], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn set_status(conn: &Connection, ticket_id: i64, status: &str) {
+        conn.execute("UPDATE tickets SET status=?1 WHERE id=?2", params![status, ticket_id])
+            .unwrap();
+    }
+
+    /// Inserts a `sales` row directly (bypassing commands::sales, which is
+    /// out of scope for this module's tests - mirrors the existing
+    /// `delete_blocked_by_sale_history_even_after_refund` test above).
+    fn insert_sale(conn: &Connection, code: &str, ticket_id: i64, price_cents: i64, payment_status: &str) {
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, selling_fees_cents, payment_status)
+             VALUES (?1, ?2, '2026-02-01', ?3, 0, ?4)",
+            params![code, ticket_id, price_cents, payment_status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sold_available_listed_cancelled_counts_always_sum_to_quantity() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 10);
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        set_status(&conn, tickets[0], "sold");
+        set_status(&conn, tickets[1], "sold");
+        set_status(&conn, tickets[2], "sold");
+        set_status(&conn, tickets[3], "listed");
+        set_status(&conn, tickets[4], "cancelled");
+        // tickets[5..10) stay 'available' (5 of them)
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(order.sold_count, 3);
+        assert_eq!(order.listed_count, 1);
+        assert_eq!(order.cancelled_count, 1);
+        assert_eq!(order.available_count, 5);
+        assert_eq!(
+            order.sold_count + order.listed_count + order.cancelled_count + order.available_count,
+            order.quantity,
+            "every ticket must be in exactly one bucket - none lost, none double-counted"
+        );
+    }
+
+    #[test]
+    fn order_sales_summary_excludes_unsold_and_refunded_tickets() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 4); // unit price 1000, fees 100, other 50 -> cost/ticket varies slightly after allocation
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        // ticket 0: sold & paid (realized)
+        insert_sale(&conn, "SAL-000001", tickets[0], 2000, "paid");
+        set_status(&conn, tickets[0], "sold");
+        // ticket 1: sold & pending (still realized - only 'refunded' is excluded)
+        insert_sale(&conn, "SAL-000002", tickets[1], 1800, "pending");
+        set_status(&conn, tickets[1], "sold");
+        // ticket 2: sold then refunded (must be excluded from revenue)
+        insert_sale(&conn, "SAL-000003", tickets[2], 5000, "refunded");
+        // ticket 3: never sold, stays available (must not appear at all)
+
+        let summary = fetch_sales_summary(&conn, order_id).unwrap();
+        assert_eq!(summary.revenue_cents, 2000 + 1800, "refunded ticket's price must be excluded");
+
+        let cost_per_ticket = {
+            let o = fetch_one(&conn, order_id).unwrap();
+            o.total_cost_cents / o.quantity
+        };
+        // COGS only for the 2 realized tickets (allocation is exact-ish; just
+        // assert it's non-zero and strictly less than the order's full cost).
+        assert!(summary.cogs_cents > 0);
+        assert!(summary.cogs_cents < cost_per_ticket * 4);
+        assert_eq!(
+            summary.profit_cents,
+            summary.revenue_cents - summary.cogs_cents - summary.selling_fees_cents
+        );
+    }
+
+    #[test]
+    fn order_sales_summary_is_zero_when_nothing_sold_yet() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 3);
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let summary = fetch_sales_summary(&conn, order_id).unwrap();
+        assert_eq!(summary.revenue_cents, 0);
+        assert_eq!(summary.profit_cents, 0);
+        assert_eq!(summary.margin, None, "0 revenue -> N/A, not 0%");
+    }
+
+    #[test]
+    fn list_orders_status_filter_keeps_the_orders_full_counts() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order1 = insert_order_with_tickets(&conn, &base_input(event_id, 3), false).unwrap();
+        let order2 = insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+        let t1 = ticket_ids(&conn, order1);
+        set_status(&conn, t1[0], "sold");
+        // order2 has no sold tickets at all.
+
+        let sold_orders = list_orders_impl(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("sold".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(sold_orders.len(), 1, "only order1 has a sold ticket");
+        assert_eq!(sold_orders[0].id, order1);
+        // The filter narrows WHICH orders appear, but this order's own counts
+        // must stay its true, complete counts - not just the matching ticket.
+        assert_eq!(sold_orders[0].quantity, 3);
+        assert_eq!(sold_orders[0].sold_count, 1);
+        assert_eq!(sold_orders[0].available_count, 2);
+
+        let _ = order2; // present only to prove it's excluded above
+    }
+
+    #[test]
+    fn list_orders_section_and_date_filters() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut a = base_input(event_id, 1);
+        a.section = Some("VIP".to_string());
+        a.purchase_date = "2026-01-05".to_string();
+        let order_a = insert_order_with_tickets(&conn, &a, false).unwrap();
+
+        let mut b = base_input(event_id, 1);
+        b.section = Some("General".to_string());
+        b.purchase_date = "2026-06-05".to_string();
+        insert_order_with_tickets(&conn, &b, false).unwrap();
+
+        let by_section = list_orders_impl(
+            &conn, None, None, None, None, None, None, Some("VIP".to_string()), None, None,
+        )
+        .unwrap();
+        assert_eq!(by_section.len(), 1);
+        assert_eq!(by_section[0].id, order_a);
+
+        let by_date = list_orders_impl(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("2026-01-01".to_string()),
+            Some("2026-02-01".to_string()),
+        )
+        .unwrap();
+        assert_eq!(by_date.len(), 1);
+        assert_eq!(by_date[0].id, order_a);
+    }
+
+    #[test]
+    fn hundred_ticket_order_summary_and_counts_stay_correct_at_that_scale() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 100);
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        assert_eq!(tickets.len(), 100);
+
+        for (i, &tid) in tickets.iter().enumerate() {
+            if i < 60 {
+                insert_sale(&conn, &format!("SAL-{i:06}"), tid, 2000, "paid");
+                set_status(&conn, tid, "sold");
+            }
+            // remaining 40 stay available
+        }
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(order.sold_count, 60);
+        assert_eq!(order.available_count, 40);
+        assert_eq!(order.quantity, 100);
+
+        let summary = fetch_sales_summary(&conn, order_id).unwrap();
+        assert_eq!(summary.revenue_cents, 2000 * 60);
+    }
+
+    // ---- BUG #5: ticket-code search on the order-grouped Tickets/Inventory view ----
+    //
+    // The Tickets and Inventory pages are both powered by list_orders (see
+    // TicketsView in the frontend) - after the order-grouped redesign, the
+    // free-text search only matched o.code/e.name/sup.name/p.name, never a
+    // ticket's own code. These tests cover exactly the regression the audit
+    // found: ticket code must be searchable again, additively, alongside
+    // every field that already worked - without breaking the grouping.
+
+    #[test]
+    fn search_finds_order_by_exact_ticket_code() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 3), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        let target_code = ticket_code(&conn, tickets[1]);
+
+        let results =
+            list_orders_impl(&conn, Some(target_code.clone()), None, None, None, None, None, None, None, None)
+                .unwrap();
+
+        assert_eq!(results.len(), 1, "exact ticket code must find its order: {target_code}");
+        assert_eq!(results[0].id, order_id);
+    }
+
+    #[test]
+    fn search_finds_order_by_partial_ticket_code() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        let full_code = ticket_code(&conn, tickets[0]); // e.g. "TKT-000001"
+        // Same substring/LIKE semantics every other search field already
+        // uses (the shared `like = format!("%{q}%")` in list_orders_impl) -
+        // just the numeric part, without the "TKT-" prefix, so this is a
+        // genuine substring match, not accidentally the full code again.
+        let partial = full_code.trim_start_matches("TKT-");
+        assert_ne!(partial, full_code, "sanity: must be a genuine substring, not the whole code");
+
+        let results =
+            list_orders_impl(&conn, Some(partial.to_string()), None, None, None, None, None, None, None, None)
+                .unwrap();
+
+        assert_eq!(results.len(), 1, "partial ticket code {partial:?} must still find the order");
+        assert_eq!(results[0].id, order_id);
+    }
+
+    #[test]
+    fn search_still_finds_orders_by_order_code_event_name_supplier_and_platform() {
+        let conn = test_conn();
+
+        conn.execute("INSERT INTO events (name) VALUES ('Coldplay Arena Show')", [])
+            .unwrap();
+        let named_event_id = conn.last_insert_rowid();
+        let plain_event_id = seed_event(&conn);
+
+        conn.execute("INSERT INTO suppliers (name) VALUES ('Acme Supplier')", [])
+            .unwrap();
+        let supplier_id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO platforms (name) VALUES ('Viagogo')", [])
+            .unwrap();
+        let platform_id = conn.last_insert_rowid();
+
+        let order_by_event = insert_order_with_tickets(&conn, &base_input(named_event_id, 1), false).unwrap();
+
+        let mut sup_input = base_input(plain_event_id, 1);
+        sup_input.supplier_id = Some(supplier_id);
+        let order_by_supplier = insert_order_with_tickets(&conn, &sup_input, false).unwrap();
+
+        let mut plat_input = base_input(plain_event_id, 1);
+        plat_input.platform_id = Some(platform_id);
+        let order_by_platform = insert_order_with_tickets(&conn, &plat_input, false).unwrap();
+
+        // A plain, unrelated order - must never show up in any search below,
+        // proving these searches actually narrow results, not just pass
+        // everything through.
+        insert_order_with_tickets(&conn, &base_input(plain_event_id, 1), false).unwrap();
+
+        let order_code = fetch_one(&conn, order_by_event).unwrap().code;
+
+        let by_order_code =
+            list_orders_impl(&conn, Some(order_code.clone()), None, None, None, None, None, None, None, None)
+                .unwrap();
+        assert_eq!(by_order_code.len(), 1);
+        assert_eq!(by_order_code[0].id, order_by_event);
+
+        let by_event_name =
+            list_orders_impl(&conn, Some("Coldplay".to_string()), None, None, None, None, None, None, None, None)
+                .unwrap();
+        assert_eq!(by_event_name.len(), 1);
+        assert_eq!(by_event_name[0].id, order_by_event);
+
+        let by_supplier =
+            list_orders_impl(&conn, Some("Acme".to_string()), None, None, None, None, None, None, None, None)
+                .unwrap();
+        assert_eq!(by_supplier.len(), 1);
+        assert_eq!(by_supplier[0].id, order_by_supplier);
+
+        let by_platform =
+            list_orders_impl(&conn, Some("Viagogo".to_string()), None, None, None, None, None, None, None, None)
+                .unwrap();
+        assert_eq!(by_platform.len(), 1);
+        assert_eq!(by_platform[0].id, order_by_platform);
+    }
+
+    #[test]
+    fn search_by_nonexistent_ticket_code_returns_no_results() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+
+        let results =
+            list_orders_impl(&conn, Some("TKT-999999".to_string()), None, None, None, None, None, None, None, None)
+                .unwrap();
+
+        assert!(results.is_empty(), "a ticket code that doesn't exist must find nothing");
+    }
+
+    #[test]
+    fn search_by_ticket_code_returns_the_whole_order_group_with_correct_full_counts() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 5), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        assert_eq!(tickets.len(), 5);
+
+        // Sell two, cancel one, leave two available - non-trivial counts -
+        // then search by ONE of these tickets' own codes.
+        set_status(&conn, tickets[0], "sold");
+        set_status(&conn, tickets[1], "sold");
+        set_status(&conn, tickets[2], "cancelled");
+        let searched_code = ticket_code(&conn, tickets[3]); // still 'available'
+
+        let results =
+            list_orders_impl(&conn, Some(searched_code.clone()), None, None, None, None, None, None, None, None)
+                .unwrap();
+
+        // Multiple tickets belong to the same order - searching by one of
+        // them must still produce exactly ONE grouped row for that order,
+        // never fan out into one row per matching ticket.
+        assert_eq!(results.len(), 1, "must return one grouped order row, not one row per ticket");
+        assert_eq!(results[0].id, order_id);
+
+        // And that row's counts must be the order's TRUE, complete counts -
+        // not just the single matching ticket. This is exactly the hazard a
+        // direct `t.code LIKE ?` predicate (instead of the semi-join
+        // subquery used here) would have caused.
+        assert_eq!(results[0].quantity, 5);
+        assert_eq!(results[0].sold_count, 2);
+        assert_eq!(results[0].cancelled_count, 1);
+        assert_eq!(results[0].available_count, 2);
     }
 }

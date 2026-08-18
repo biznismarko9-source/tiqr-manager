@@ -86,6 +86,24 @@ pub struct Order {
     pub updated_at: String,
     pub sold_count: i64,
     pub available_count: i64,
+    pub listed_count: i64,
+    pub cancelled_count: i64,
+}
+
+/// Sales-side rollup for one order, computed only from that order's tickets
+/// that were actually sold and never refunded - i.e. "realized" numbers, the
+/// same convention `finance.rs` and every other screen already uses. Loaded
+/// separately from `Order` (only when Order Detail is opened) so the main
+/// order list never pays for this extra join.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderSalesSummary {
+    pub revenue_cents: i64,
+    pub selling_fees_cents: i64,
+    pub cogs_cents: i64,
+    pub profit_cents: i64,
+    pub margin: Option<f64>,
+    pub roi: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -169,6 +187,9 @@ pub struct Sale {
     pub code: String,
     pub ticket_id: i64,
     pub ticket_code: String,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub seat: Option<String>,
     pub event_id: i64,
     pub event_name: String,
     pub platform_id: Option<i64>,
@@ -190,6 +211,51 @@ pub struct Sale {
     /// Set together, only by the dedicated refund action - never by a plain edit.
     pub refunded_at: Option<String>,
     pub refund_reason: Option<String>,
+    /// NULL for an ordinary single-ticket sale. Shared by every row that was
+    /// submitted together in one multi-ticket "New sale" action - see
+    /// migration 003. Used only to group rows in the UI; never changes what
+    /// a single `sales` row means (still exactly one ticket).
+    pub batch_id: Option<String>,
+}
+
+/// One row in the Sales screen's main (grouped) list: everything submitted
+/// together in one sale action - a single ticket, or a multi-ticket batch -
+/// collapsed into one summary row. `id`/`code` are the group's representative
+/// (lowest) sale id/code, used to open Sale Detail, which then loads the
+/// individual `Sale` rows on demand (mirrors Order/Order Detail).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SaleGroup {
+    pub id: i64,
+    pub code: String,
+    pub batch_id: Option<String>,
+    pub ticket_count: i64,
+    /// Some only when every ticket in this group shares one event; None
+    /// means mixed (a batch can span events - ticket selection isn't
+    /// restricted to one event) and the UI should show "Mixed events".
+    pub event_id: Option<i64>,
+    pub event_name: Option<String>,
+    pub sale_date: String,
+    pub platform_id: Option<i64>,
+    pub platform_name: Option<String>,
+    /// Some only when every line shares one currency - same mixed-safety
+    /// convention as `FinanceSummary.currency`.
+    pub currency: Option<String>,
+    /// Revenue/fees/cost/profit below are summed EXCLUDING refunded lines
+    /// (they are never "realized"), matching the site-wide convention.
+    pub revenue_cents: i64,
+    pub selling_fees_cents: i64,
+    pub cost_cents: i64,
+    pub profit_cents: i64,
+    pub margin: Option<f64>,
+    pub roi: Option<f64>,
+    /// Some(status) only when every line shares one payment status; None
+    /// means mixed (e.g. one ticket in the batch was refunded later while
+    /// the rest are still paid) - the UI should show "Mixed" rather than a
+    /// single, misleading badge.
+    pub payment_status: Option<String>,
+    pub refunded_count: i64,
+    pub is_demo: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -242,6 +308,77 @@ pub struct SaleEditInput {
     pub notes: Option<String>,
 }
 
+/// Dashboard "Inventory & Potential Profit" block - deliberately separate
+/// from `FinanceSummary` (realized numbers). Never mixed into `inventory`
+/// or `period` above, and never labelled "profit" alone - only "Potential
+/// Profit" - so it can never be mistaken for realized profit.
+///
+/// Scope: tickets currently `available` or `listed` (i.e. NOT YET sold, and
+/// not cancelled) - this is "current inventory" in the same sense as the
+/// existing `inventory` FinanceSummary block, so it is intentionally NOT
+/// affected by the Dashboard's period filter (see dashboard.rs).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryPotential {
+    /// Purchase cost (+fees +other costs) of every ticket still available or
+    /// listed - money already spent on stock that hasn't sold yet.
+    pub inventory_cost_cents: i64,
+    /// Sum of `listing_price_cents` for available/listed tickets that HAVE a
+    /// listing price set (tickets with no listing price contribute 0, they
+    /// are counted separately in `DashboardAlerts.missing_listing_price_count`).
+    pub listing_value_cents: i64,
+    /// `listing_value_cents - inventory_cost_cents`. Only meaningful for the
+    /// tickets already counted in `listing_value_cents` - unpriced inventory
+    /// still counts against `inventory_cost_cents` but contributes no
+    /// estimated revenue here, so this number gets more accurate as more
+    /// inventory is priced (see Attention: Missing Listing Price).
+    pub potential_profit_cents: i64,
+    /// Some(code) only when every available/listed ticket shares one
+    /// currency; None means mixed - same "never blend, show Mixed" contract
+    /// as `FinanceSummary.currency` / `SaleGroup.currency` (BUG #6). Reuses
+    /// this dashboard's own primary_currency/mixed_currencies rather than a
+    /// second, separate currency-mix check.
+    pub currency: Option<String>,
+}
+
+/// One row in the Dashboard's "Upcoming Events" alert - deliberately a small,
+/// focused DTO (not the full `EventWithStats`/`FinanceSummary`) since the
+/// alert only ever needs enough to show and link to the event.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpcomingEventAlert {
+    pub id: i64,
+    pub name: String,
+    pub event_date: String,
+    /// Tickets still available or listed for this event - inventory that is
+    /// still relevant to sell before the event happens.
+    pub relevant_inventory: i64,
+}
+
+/// Dashboard "Attention" section. Deliberately simple, transparent counts -
+/// no scoring, no new alert/notification engine, no persisted state. Always
+/// computed from current data, never affected by the Dashboard's period
+/// filter (these are "right now" facts, not activity within a date range).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardAlerts {
+    /// Orders whose payment_status is 'unpaid' or 'partial' - i.e. money
+    /// still owed to a supplier. (This is `orders.payment_status`, the
+    /// purchase side - a different field from `sales.payment_status`.)
+    pub unpaid_orders_count: i64,
+    /// Tickets currently `available` or `listed` with no `listing_price_cents`
+    /// set - inventory that cannot yet generate a sale because it has no price.
+    pub missing_listing_price_count: i64,
+    /// Total count of `status='upcoming'` events, with an `event_date`
+    /// within the next `UPCOMING_EVENT_WINDOW_DAYS` (see dashboard.rs), that
+    /// still have available/listed ticket inventory.
+    pub upcoming_events_count: i64,
+    /// The soonest of the above, up to `UPCOMING_EVENTS_CAP` - same
+    /// "capped list + separate total count" convention already used for
+    /// Recent Events/Orders/Sales elsewhere on this dashboard.
+    pub upcoming_events: Vec<UpcomingEventAlert>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
@@ -258,4 +395,10 @@ pub struct DashboardData {
     /// True when the database also contains data in other currencies, which
     /// is therefore excluded from the totals above. The UI should warn.
     pub mixed_currencies: bool,
+    /// Inventory Cost / Listing Value / Potential Profit - see
+    /// `InventoryPotential` doc comment. Kept and labelled separately from
+    /// `inventory`/`period` (realized) by design.
+    pub inventory_potential: InventoryPotential,
+    /// Attention/alerts - see `DashboardAlerts` doc comment.
+    pub alerts: DashboardAlerts,
 }

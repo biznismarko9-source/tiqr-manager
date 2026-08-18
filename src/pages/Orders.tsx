@@ -55,7 +55,7 @@ export default function Orders() {
 
   const load = (q?: string) => {
     api
-      .listOrders(q || undefined)
+      .listOrders({ search: q || undefined })
       .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };

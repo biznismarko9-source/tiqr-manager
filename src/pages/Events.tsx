@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventInput, EventStatus, EventWithStats } from "../lib/types";
 import { formatDate, formatMoneyOrMixed, formatPercent } from "../lib/format";
@@ -36,6 +36,7 @@ const OTHER_CATEGORY = "__other__";
 
 export default function Events() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [events, setEvents] = useState<EventWithStats[] | null>(null);
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
@@ -124,7 +125,18 @@ export default function Events() {
                 <tr
                   key={ev.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                  onClick={() => (window.location.hash = `#/events/${ev.id}`)}
+                  onClick={(e) => {
+                    // BUG #7 fix: the event name cell already has its own
+                    // <Link> below, which performs a single, correct router
+                    // navigation (and keeps keyboard/middle-click/right-click
+                    // working). This handler only covers "click anywhere
+                    // ELSE in the row" as a convenience, so a click that
+                    // lands on the Link is never navigated a second time -
+                    // it defers entirely to the Link instead of also firing
+                    // its own navigation for the same click.
+                    if ((e.target as HTMLElement).closest("a")) return;
+                    navigate(`/events/${ev.id}`);
+                  }}
                 >
                   <td className="td">
                     <Link to={`/events/${ev.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">

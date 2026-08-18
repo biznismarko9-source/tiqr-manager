@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, Platform, Sale, SaleBatchInput, SaleEditInput, SalePaymentStatus, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent, todayIso } from "../lib/format";
+import type { EventWithStats, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
-  ConfirmDialog,
   EmptyState,
   Field,
   Input,
@@ -18,23 +17,20 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
+import { IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 export default function Sales() {
   const toast = useToast();
-  const [sales, setSales] = useState<Sale[] | null>(null);
+  const [groups, setGroups] = useState<SaleGroup[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [search, setSearch] = useState("");
   const [eventId, setEventId] = useState<number | "">("");
   const [paymentStatus, setPaymentStatus] = useState("");
+  const [refundStatus, setRefundStatus] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Sale | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [editTarget, setEditTarget] = useState<Sale | null>(null);
-  const [refundTarget, setRefundTarget] = useState<Sale | null>(null);
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
@@ -42,14 +38,15 @@ export default function Sales() {
 
   const load = () => {
     api
-      .listSales({
+      .listSaleGroups({
         search: search || undefined,
         eventId: eventId || undefined,
         paymentStatus: paymentStatus || undefined,
+        refundStatus: refundStatus || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
       })
-      .then(setSales)
+      .then(setGroups)
       .catch((e) => toast.error(errMsg(e)));
   };
 
@@ -57,31 +54,32 @@ export default function Sales() {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, paymentStatus, dateFrom, dateTo]);
+  }, [search, eventId, paymentStatus, refundStatus, dateFrom, dateTo]);
 
   const totals = useMemo(() => {
-    if (!sales) return null;
-    // Refunded sales are history, not revenue - they must not inflate this
-    // total. And amounts in different currencies can never be added
-    // together, so this only sums when every counted sale shares one.
-    const counted = sales.filter((s) => s.paymentStatus !== "refunded");
+    if (!groups) return null;
+    // Every group's own revenue/profit already excludes its refunded lines,
+    // so this can sum them directly. Amounts in different currencies can
+    // never be added together, so this only sums when every group shares one.
     const currency =
-      counted.length > 0 && counted.every((s) => s.currency === counted[0].currency) ? counted[0].currency : null;
-    const sums = counted.reduce(
-      (acc, s) => ({
-        revenue: acc.revenue + s.salePriceCents,
-        profit: acc.profit + s.profitCents,
+      groups.length > 0 && groups.every((g) => g.currency === groups[0].currency) ? groups[0].currency : null;
+    const sums = groups.reduce(
+      (acc, g) => ({
+        revenue: acc.revenue + g.revenueCents,
+        profit: acc.profit + g.profitCents,
+        tickets: acc.tickets + g.ticketCount,
+        refunded: acc.refunded + g.refundedCount,
       }),
-      { revenue: 0, profit: 0 },
+      { revenue: 0, profit: 0, tickets: 0, refunded: 0 },
     );
-    return { ...sums, currency, refundedCount: sales.length - counted.length };
-  }, [sales]);
+    return { ...sums, currency };
+  }, [groups]);
 
   return (
     <div>
       <PageHeader
         title="Sales"
-        subtitle="Every ticket you've sold, with profit calculated automatically."
+        subtitle="Every sale you've recorded, with profit calculated automatically."
         actions={
           <Button variant="primary" onClick={() => setModalOpen(true)}>
             <IconPlus className="h-4 w-4" /> New Sale
@@ -122,6 +120,14 @@ export default function Sales() {
             <option value="refunded">Refunded</option>
           </Select>
         </div>
+        <div className="w-40">
+          <span className="label">Refunds</span>
+          <Select value={refundStatus} onChange={(e) => setRefundStatus(e.target.value)}>
+            <option value="">All</option>
+            <option value="has_refund">Has a refund</option>
+            <option value="no_refund">No refunds</option>
+          </Select>
+        </div>
         <div className="w-36">
           <span className="label">From</span>
           <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
@@ -130,25 +136,26 @@ export default function Sales() {
           <span className="label">To</span>
           <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </div>
-        {totals && sales && (
+        {totals && groups && (
           <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
-            {sales.length} sales &middot; revenue {formatMoneyOrMixed(totals.revenue, totals.currency)} &middot; profit{" "}
+            {groups.length} sales &middot; {totals.tickets} tickets &middot; revenue{" "}
+            {formatMoneyOrMixed(totals.revenue, totals.currency)} &middot; profit{" "}
             {formatMoneyOrMixed(totals.profit, totals.currency)}
-            {totals.refundedCount > 0 ? ` (${totals.refundedCount} refunded, excluded)` : ""}
+            {totals.refunded > 0 ? ` (${totals.refunded} ticket${totals.refunded === 1 ? "" : "s"} refunded, excluded)` : ""}
           </p>
         )}
       </div>
 
-      {sales && sales.length >= 5000 && (
+      {groups && groups.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           Showing the most recent 5,000 sales that match your filters. Narrow the date range, event, or payment
           filter to see the rest.
         </div>
       )}
 
-      {sales === null ? (
+      {groups === null ? (
         <LoadingBlock />
-      ) : sales.length === 0 ? (
+      ) : groups.length === 0 ? (
         <EmptyState
           icon={<IconReceipt className="h-8 w-8" />}
           title="No sales match these filters"
@@ -164,75 +171,60 @@ export default function Sales() {
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Sale</th>
-                <th className="th">Event / Ticket</th>
+                <th className="th">Event</th>
+                <th className="th text-right">Tickets</th>
                 <th className="th">Date</th>
                 <th className="th">Platform</th>
-                <th className="th text-right">Price</th>
+                <th className="th text-right">Revenue</th>
                 <th className="th text-right">Fees</th>
                 <th className="th text-right">Profit</th>
                 <th className="th text-right">Margin</th>
                 <th className="th text-right">ROI</th>
                 <th className="th">Payment</th>
-                <th className="th" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sales.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td font-medium text-slate-900 dark:text-slate-100">
-                    {s.code}
-                  </td>
+              {groups.map((g) => (
+                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td">
-                    <Link to={`/events/${s.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-                      {s.eventName}
+                    <Link
+                      to={`/sales/${g.id}`}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                    >
+                      {g.code}
                     </Link>
-                    <p className="text-xs text-slate-400 dark:text-slate-500">{s.ticketCode}</p>
                   </td>
-                  <td className="td whitespace-nowrap">{formatDate(s.saleDate)}</td>
-                  <td className="td">{s.platformName ?? "-"}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(s.salePriceCents, s.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(s.sellingFeesCents, s.currency)}</td>
-                  <td
-                    className={`td text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
-                  >
-                    {formatMoney(s.profitCents, s.currency)}
-                  </td>
-                  <td className="td text-right tabular-nums">{formatPercent(s.margin)}</td>
-                  <td className="td text-right tabular-nums">{formatPercent(s.roi)}</td>
                   <td className="td">
-                    <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
-                    {s.paymentStatus === "refunded" && s.refundedAt && (
-                      <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
-                        {formatDate(s.refundedAt)}
-                        {s.refundReason ? ` · ${s.refundReason}` : ""}
-                      </p>
+                    {g.eventId && g.eventName ? (
+                      <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+                        {g.eventName}
+                      </Link>
+                    ) : (
+                      <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
                     )}
                   </td>
+                  <td className="td text-right tabular-nums">{g.ticketCount}</td>
+                  <td className="td whitespace-nowrap">{formatDate(g.saleDate)}</td>
+                  <td className="td">{g.platformName ?? "-"}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
+                  <td
+                    className={`td text-right tabular-nums font-medium ${g.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : g.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                  >
+                    {formatMoneyOrMixed(g.profitCents, g.currency)}
+                  </td>
+                  <td className="td text-right tabular-nums">{formatPercentOrMixed(g.margin, g.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatPercentOrMixed(g.roi, g.currency)}</td>
                   <td className="td">
-                    {s.paymentStatus === "refunded" ? (
-                      <p className="text-right text-xs text-slate-400 dark:text-slate-500">Locked - refunded</p>
+                    {g.paymentStatus ? (
+                      <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge>
                     ) : (
-                      <div className="flex items-center justify-end gap-3">
-                        <button
-                          className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                          onClick={() => setEditTarget(s)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
-                          onClick={() => setRefundTarget(s)}
-                        >
-                          Refund
-                        </button>
-                        <button
-                          className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
-                          title="Delete sale (returns ticket to available)"
-                          onClick={() => setDeleteTarget(s)}
-                        >
-                          <IconTrash className="h-4 w-4" />
-                        </button>
-                      </div>
+                      <Badge tone="mixed">Mixed</Badge>
+                    )}
+                    {g.refundedCount > 0 && (
+                      <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                        {g.refundedCount} of {g.ticketCount} refunded
+                      </p>
                     )}
                   </td>
                 </tr>
@@ -250,114 +242,7 @@ export default function Sales() {
           load();
         }}
       />
-
-      <SaleEditModal
-        open={!!editTarget}
-        sale={editTarget}
-        onClose={() => setEditTarget(null)}
-        onSaved={() => {
-          setEditTarget(null);
-          load();
-        }}
-      />
-
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title="Delete this sale?"
-        message={
-          <>
-            Use this only to undo a mistake (e.g. the wrong ticket was picked) - it permanently removes sale{" "}
-            <b>{deleteTarget?.code}</b> with no record left behind, and sets ticket{" "}
-            <b>{deleteTarget?.ticketCode}</b> back to Available. This cannot be undone.
-            <br />
-            If a real buyer is returning a ticket, cancel this and use <b>Refund</b> instead - it keeps a record.
-          </>
-        }
-        confirmLabel="Delete sale"
-        danger
-        busy={deleting}
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={async () => {
-          if (!deleteTarget) return;
-          setDeleting(true);
-          try {
-            await api.deleteSale(deleteTarget.id);
-            toast.success("Sale deleted, ticket is available again");
-            setDeleteTarget(null);
-            load();
-          } catch (e) {
-            toast.error(errMsg(e));
-          } finally {
-            setDeleting(false);
-          }
-        }}
-      />
-
-      <RefundDialog
-        sale={refundTarget}
-        onClose={() => setRefundTarget(null)}
-        onRefunded={() => {
-          setRefundTarget(null);
-          load();
-        }}
-      />
     </div>
-  );
-}
-
-function RefundDialog({
-  sale,
-  onClose,
-  onRefunded,
-}: {
-  sale: Sale | null;
-  onClose: () => void;
-  onRefunded: () => void;
-}) {
-  const toast = useToast();
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setReason("");
-  }, [sale]);
-
-  if (!sale) return null;
-
-  const confirm = async () => {
-    setBusy(true);
-    try {
-      await api.refundSale(sale.id, reason.trim() || undefined);
-      toast.success(`${sale.code} refunded - ${sale.ticketCode} is available again`);
-      onRefunded();
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal open={!!sale} onClose={onClose} title={`Refund ${sale.code}`} width="max-w-sm">
-      <p className="text-sm text-slate-500 dark:text-slate-400">
-        Ticket <b>{sale.ticketCode}</b> will return to Available so it can be sold again. The sale itself stays on
-        record marked as refunded and is excluded from revenue/profit - it can no longer be edited or deleted
-        afterwards. This cannot be undone.
-      </p>
-      <div className="mt-3">
-        <Field label="Reason (optional)">
-          <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. buyer couldn't attend" />
-        </Field>
-      </div>
-      <ModalFooter>
-        <Button variant="secondary" onClick={onClose} disabled={busy}>
-          Cancel
-        </Button>
-        <Button variant="danger" onClick={confirm} disabled={busy}>
-          {busy ? "Refunding..." : "Refund sale"}
-        </Button>
-      </ModalFooter>
-    </Modal>
   );
 }
 
@@ -736,119 +621,3 @@ function SaleFormModal({
   );
 }
 
-function SaleEditModal({
-  open,
-  sale,
-  onClose,
-  onSaved,
-}: {
-  open: boolean;
-  sale: Sale | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [platformId, setPlatformId] = useState<number | null>(null);
-  const [saleDate, setSaleDate] = useState("");
-  const [salePrice, setSalePrice] = useState("");
-  const [sellingFees, setSellingFees] = useState("");
-  const [paymentStatus, setPaymentStatus] = useState<SalePaymentStatus>("pending");
-  const [buyerReference, setBuyerReference] = useState("");
-  const [notes, setNotes] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!sale) return;
-    api.listPlatforms().then(setPlatforms).catch(() => {});
-    setPlatformId(sale.platformId);
-    setSaleDate(sale.saleDate);
-    setSalePrice((sale.salePriceCents / 100).toFixed(2));
-    setSellingFees((sale.sellingFeesCents / 100).toFixed(2));
-    setPaymentStatus(sale.paymentStatus);
-    setBuyerReference(sale.buyerReference ?? "");
-    setNotes(sale.notes ?? "");
-    setError(null);
-  }, [sale]);
-
-  if (!sale) return null;
-
-  const submit = async () => {
-    const s = salePrice.trim().replace(",", ".");
-    if (!/^\d+(\.\d{1,2})?$/.test(s)) return setError("Sale price is not a valid amount");
-    const feesStr = sellingFees.trim().replace(",", ".") || "0";
-    if (!/^\d+(\.\d{1,2})?$/.test(feesStr)) return setError("Selling fees is not a valid amount");
-
-    const input: SaleEditInput = {
-      platformId,
-      saleDate,
-      salePriceCents: Math.round(parseFloat(s) * 100),
-      sellingFeesCents: Math.round(parseFloat(feesStr) * 100),
-      paymentStatus,
-      buyerReference: buyerReference || null,
-      notes: notes || null,
-    };
-    setSaving(true);
-    setError(null);
-    try {
-      await api.updateSale(sale.id, input);
-      toast.success("Sale updated");
-      onSaved();
-    } catch (e) {
-      setError(errMsg(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title={`Edit ${sale.code}`}>
-      <div className="grid grid-cols-2 gap-4">
-        <LookupSelect
-          label="Platform"
-          options={platforms}
-          value={platformId}
-          onChange={setPlatformId}
-          onCreate={async (name) => {
-            const p = await api.createPlatform(name, "sale");
-            setPlatforms((prev) => [...prev, p]);
-            return p;
-          }}
-        />
-        <Field label="Sale date" required>
-          <Input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} />
-        </Field>
-        <Field label={`Sale price (${sale.currency})`} required>
-          <Input inputMode="decimal" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} />
-        </Field>
-        <Field label="Selling fees">
-          <Input inputMode="decimal" value={sellingFees} onChange={(e) => setSellingFees(e.target.value)} />
-        </Field>
-        <Field label="Payment status" hint="Use the Refund action on the sales list to refund this sale">
-          <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as SalePaymentStatus)}>
-            <option value="pending">Pending</option>
-            <option value="paid">Paid</option>
-          </Select>
-        </Field>
-        <Field label="Buyer / reference">
-          <Input value={buyerReference} onChange={(e) => setBuyerReference(e.target.value)} />
-        </Field>
-        <div className="col-span-2">
-          <Field label="Notes">
-            <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </Field>
-        </div>
-      </div>
-      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
-      <ModalFooter>
-        <Button variant="secondary" onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={submit} disabled={saving}>
-          {saving ? "Saving..." : "Save changes"}
-        </Button>
-      </ModalFooter>
-    </Modal>
-  );
-}

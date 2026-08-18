@@ -75,6 +75,21 @@ export interface OrderRecord {
   updatedAt: string;
   soldCount: number;
   availableCount: number;
+  listedCount: number;
+  cancelledCount: number;
+}
+
+/** Sales-side rollup for one order (Order Detail's "ORDER SUMMARY"), loaded
+ * separately from OrderRecord - only when Order Detail is opened. Realized
+ * numbers only: unsold and refunded tickets are excluded, same convention as
+ * everywhere else in the app. */
+export interface OrderSalesSummary {
+  revenueCents: number;
+  sellingFeesCents: number;
+  cogsCents: number;
+  profitCents: number;
+  margin: number | null;
+  roi: number | null;
 }
 
 export interface OrderInput {
@@ -145,6 +160,9 @@ export interface Sale {
   code: string;
   ticketId: number;
   ticketCode: string;
+  section: string | null;
+  rowLabel: string | null;
+  seat: string | null;
   eventId: number;
   eventName: string;
   platformId: number | null;
@@ -165,6 +183,41 @@ export interface Sale {
   roi: number | null;
   refundedAt: string | null;
   refundReason: string | null;
+  /** NULL for an ordinary single-ticket sale; shared by every row submitted
+   * together in one multi-ticket "New sale" action. Grouping only - never
+   * changes what one `sales` row means. */
+  batchId: string | null;
+}
+
+/** One row in the Sales screen's main (grouped) list - everything submitted
+ * together in one sale action (a single ticket, or a multi-ticket batch)
+ * collapsed into a summary row. `id`/`code` are the group's representative
+ * sale, used to open Sale Detail (which loads the individual lines). */
+export interface SaleGroup {
+  id: number;
+  code: string;
+  batchId: string | null;
+  ticketCount: number;
+  /** Null means the group's tickets span more than one event ("Mixed events"). */
+  eventId: number | null;
+  eventName: string | null;
+  saleDate: string;
+  platformId: number | null;
+  platformName: string | null;
+  /** Null means the group's lines aren't all one currency - show "Mixed", never a blended amount. */
+  currency: string | null;
+  /** Revenue/fees/cost/profit exclude refunded lines - never "realized". */
+  revenueCents: number;
+  sellingFeesCents: number;
+  costCents: number;
+  profitCents: number;
+  margin: number | null;
+  roi: number | null;
+  /** Null means the lines don't all share one payment status (e.g. one of
+   * several tickets was refunded later) - show "Mixed", not a single badge. */
+  paymentStatus: SalePaymentStatus | null;
+  refundedCount: number;
+  isDemo: boolean;
 }
 
 export interface SaleInput {
@@ -219,6 +272,48 @@ export interface Supplier {
   createdAt: string;
 }
 
+/** Dashboard "Inventory & Potential Profit" block - deliberately separate
+ * from the realized `inventory`/`period` FinanceSummary blocks above. Scope
+ * is tickets currently `available` or `listed` (not yet sold, not
+ * cancelled) - a "current state" snapshot, not affected by the Dashboard's
+ * period filter. Never call/show `potentialProfitCents` as if it were
+ * realized profit. */
+export interface InventoryPotential {
+  /** Purchase cost (+fees +other costs) of every ticket still unsold. */
+  inventoryCostCents: number;
+  /** Sum of listing prices for unsold tickets that HAVE a listing price set
+   * (tickets missing one contribute 0 here - see alerts.missingListingPriceCount). */
+  listingValueCents: number;
+  /** listingValueCents - inventoryCostCents. Potential, not realized. */
+  potentialProfitCents: number;
+  /** Null means the current available/listed tickets aren't all one
+   * currency (or the dashboard overall is mixed) - show "Mixed", never a
+   * blended amount. Same convention as FinanceSummary.currency. */
+  currency: string | null;
+}
+
+/** One row in the Dashboard's "Upcoming Events" alert. */
+export interface UpcomingEventAlert {
+  id: number;
+  name: string;
+  eventDate: string;
+  /** Tickets still available or listed for this event. */
+  relevantInventory: number;
+}
+
+/** Dashboard "Attention" section - simple, transparent counts. Never
+ * period-filtered (these are "right now" facts). */
+export interface DashboardAlerts {
+  /** Orders with payment_status 'unpaid' or 'partial' (purchase side - money owed to a supplier). */
+  unpaidOrdersCount: number;
+  /** Available/listed tickets with no listing price set. */
+  missingListingPriceCount: number;
+  /** Total 'upcoming' events within the alert window that still have available/listed inventory. */
+  upcomingEventsCount: number;
+  /** The soonest of the above, capped (same convention as Recent Events/Orders/Sales). */
+  upcomingEvents: UpcomingEventAlert[];
+}
+
 export interface DashboardData {
   inventory: FinanceSummary;
   period: FinanceSummary;
@@ -231,6 +326,10 @@ export interface DashboardData {
   primaryCurrency: string;
   /** True when the database also has data in other currencies, excluded from the totals above. */
   mixedCurrencies: boolean;
+  /** Inventory Cost / Listing Value / Potential Profit - see InventoryPotential. */
+  inventoryPotential: InventoryPotential;
+  /** Attention/alerts - see DashboardAlerts. */
+  alerts: DashboardAlerts;
 }
 
 export interface CsvPreviewRow {
@@ -253,4 +352,8 @@ export interface CsvImportResult {
 export interface AppInfo {
   version: string;
   dbPath: string;
+}
+
+export interface RestoreOutcome {
+  safetyBackupPath: string;
 }

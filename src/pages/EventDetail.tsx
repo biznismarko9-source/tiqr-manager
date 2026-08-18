@@ -31,7 +31,7 @@ export default function EventDetail() {
 
   const load = useCallback(() => {
     api.getEvent(eventId).then(setEvent).catch((e) => toast.error(errMsg(e)));
-    api.listOrders(undefined, eventId).then(setOrders).catch((e) => toast.error(errMsg(e)));
+    api.listOrders({ eventId }).then(setOrders).catch((e) => toast.error(errMsg(e)));
     api
       .listTickets({ eventId, sortBy: "created", sortDir: "desc" })
       .then(setTickets)

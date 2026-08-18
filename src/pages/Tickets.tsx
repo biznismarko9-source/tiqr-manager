@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
-import { formatMoney, formatMoneyOrMixed } from "../lib/format";
+import type { EventWithStats, OrderRecord, Platform, Supplier, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
+import { formatDate, formatMoney } from "../lib/format";
 import {
   Badge,
   Button,
@@ -16,23 +16,28 @@ import {
   Select,
   Textarea,
 } from "../components/ui";
-import { IconChevronDown, IconChevronUp, IconSearch, IconTicket } from "../components/icons";
+import { IconBoxes, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 
-const SORT_OPTIONS = [
-  { key: "id", label: "Newest" },
-  { key: "code", label: "Code" },
-  { key: "event", label: "Event" },
-  { key: "status", label: "Status" },
-  { key: "price", label: "Listing price" },
-  { key: "cost", label: "Cost" },
-];
-
 export default function Tickets() {
-  return <TicketsView title="Tickets" subtitle="Every ticket you have ever purchased, across all events." />;
+  return <TicketsView title="Tickets" subtitle="Every order you've purchased, grouped with its tickets." />;
 }
 
-/** Shared list view, reused (pre-filtered) by the Inventory page. */
+/** An order's inventory status, derived purely from its ticket counts (there
+ * is no separate DB column for this - see the report). "Active" means it
+ * still has stock that could be listed/sold; "Sold out" means every ticket
+ * has been sold or cancelled; "Cancelled" means the whole order was voided. */
+function inventoryStatus(o: OrderRecord): { key: string; label: string } {
+  if (o.cancelledCount === o.quantity && o.quantity > 0) return { key: "cancelled", label: "Cancelled" };
+  if (o.availableCount + o.listedCount > 0) return { key: "active", label: "Active" };
+  return { key: "soldout", label: "Sold out" };
+}
+
+/** Shared list view, reused (pre-filtered) by the Inventory page. Groups
+ * tickets by their order - one row per order, not per ticket - so the list
+ * stays fast and readable no matter how many individual tickets an order
+ * generated. Clicking a row opens the existing Order Detail page, which
+ * loads that order's individual tickets (and a sales summary) on demand. */
 export function TicketsView({
   title,
   subtitle,
@@ -44,29 +49,38 @@ export function TicketsView({
 }) {
   const toast = useToast();
   const [params] = useSearchParams();
-  const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(params.get("code") ?? "");
   const [status, setStatus] = useState(lockedStatus ?? "");
   const [eventId, setEventId] = useState<number | "">("");
-  const [sortBy, setSortBy] = useState("id");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [editTicket, setEditTicket] = useState<Ticket | null>(null);
+  const [supplierId, setSupplierId] = useState<number | "">("");
+  const [platformId, setPlatformId] = useState<number | "">("");
+  const [section, setSection] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
+    api.listSuppliers().then(setSuppliers).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(() => {});
   }, []);
 
   const load = () => {
     api
-      .listTickets({
+      .listOrders({
         search: search || undefined,
-        status: status || undefined,
         eventId: eventId || undefined,
-        sortBy,
-        sortDir,
+        supplierId: supplierId || undefined,
+        platformId: platformId || undefined,
+        status: status || undefined,
+        section: section || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       })
-      .then(setTickets)
+      .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };
 
@@ -74,35 +88,26 @@ export function TicketsView({
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, status, eventId, sortBy, sortDir]);
-
-  const toggleSort = (key: string) => {
-    if (sortBy === key) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortBy(key);
-      setSortDir("asc");
-    }
-  };
+  }, [search, status, eventId, supplierId, platformId, section, dateFrom, dateTo]);
 
   const summary = useMemo(() => {
-    if (!tickets) return null;
-    const listingValue = tickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-    const currency = tickets.length > 0 && tickets.every((t) => t.currency === tickets[0].currency) ? tickets[0].currency : null;
-    return { count: tickets.length, listingValue, currency };
-  }, [tickets]);
+    if (!orders) return null;
+    const totalTickets = orders.reduce((sum, o) => sum + o.quantity, 0);
+    const availableTickets = orders.reduce((sum, o) => sum + o.availableCount + o.listedCount, 0);
+    return { orderCount: orders.length, totalTickets, availableTickets };
+  }, [orders]);
 
   return (
     <div>
       <PageHeader title={title} subtitle={subtitle} />
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
-        <div className="w-56">
+        <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
             <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
-              placeholder="Code, seat, event..."
+              placeholder="Order code, event..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
@@ -121,7 +126,7 @@ export function TicketsView({
             </Select>
           </div>
         )}
-        <div className="w-56">
+        <div className="w-48">
           <span className="label">Event</span>
           <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All events</option>
@@ -132,130 +137,110 @@ export function TicketsView({
             ))}
           </Select>
         </div>
-        <div className="w-44">
-          <span className="label">Sort by</span>
-          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
+        <div className="w-40">
+          <span className="label">Supplier</span>
+          <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All suppliers</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
               </option>
             ))}
           </Select>
         </div>
-        <Button variant="secondary" onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}>
-          {sortDir === "asc" ? <IconChevronUp className="h-4 w-4" /> : <IconChevronDown className="h-4 w-4" />}
-          {sortDir === "asc" ? "Asc" : "Desc"}
-        </Button>
+        <div className="w-40">
+          <span className="label">Platform</span>
+          <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All platforms</option>
+            {platforms.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="w-32">
+          <span className="label">Section</span>
+          <Input placeholder="e.g. 101" value={section} onChange={(e) => setSection(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">From</span>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">To</span>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
         {summary && (
           <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
-            {summary.count} tickets &middot; listing value {formatMoneyOrMixed(summary.listingValue, summary.currency)}
+            {summary.orderCount} orders &middot; {summary.totalTickets} tickets &middot; {summary.availableTickets} still
+            sellable
           </p>
         )}
       </div>
 
-      {tickets && tickets.length >= 5000 && (
+      {orders && orders.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-          Showing the most recent 5,000 tickets that match your filters. Narrow the search, status, or event filter
-          to see the rest.
+          Showing the most recent 5,000 orders that match your filters. Narrow the search, status, or event filter to
+          see the rest.
         </div>
       )}
 
-      {tickets === null ? (
+      {orders === null ? (
         <LoadingBlock />
-      ) : tickets.length === 0 ? (
-        <EmptyState icon={<IconTicket className="h-8 w-8" />} title="No tickets match these filters" />
+      ) : orders.length === 0 ? (
+        <EmptyState icon={<IconBoxes className="h-8 w-8" />} title="No orders match these filters" />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[1000px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <SortTh label="Code" k="code" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-                <SortTh label="Event" k="event" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
                 <th className="th">Order</th>
-                <th className="th">Seat</th>
-                <SortTh label="Cost" k="cost" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} right />
-                <SortTh label="Listing price" k="price" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} right />
-                <SortTh label="Status" k="status" sortBy={sortBy} sortDir={sortDir} onClick={toggleSort} />
-                <th className="th" />
+                <th className="th">Event</th>
+                <th className="th">Supplier</th>
+                <th className="th">Purchase date</th>
+                <th className="th text-right">Total</th>
+                <th className="th text-right">Available</th>
+                <th className="th text-right">Sold</th>
+                <th className="th text-right">Total cost</th>
+                <th className="th">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {tickets.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td font-medium text-slate-900 dark:text-slate-100">
-                    {t.code}
-                  </td>
-                  <td className="td">
-                    <Link to={`/events/${t.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-                      {t.eventName}
-                    </Link>
-                  </td>
-                  <td className="td">
-                    <Link to={`/orders/${t.orderId}`} className="text-slate-500 dark:text-slate-400 hover:text-brand-700 dark:hover:text-brand-400">
-                      {t.orderCode}
-                    </Link>
-                  </td>
-                  <td className="td text-slate-500 dark:text-slate-400">
-                    {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
-                  </td>
-                  <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
-                  <td className="td text-right tabular-nums">
-                    {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
-                  </td>
-                  <td className="td">
-                    <Badge tone={t.status}>{t.status}</Badge>
-                  </td>
-                  <td className="td text-right">
-                    <button
-                      className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                      onClick={() => setEditTicket(t)}
-                    >
-                      Edit
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {orders.map((o) => {
+                const inv = inventoryStatus(o);
+                return (
+                  <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                    <td className="td">
+                      <Link
+                        to={`/orders/${o.id}`}
+                        className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      >
+                        {o.code}
+                      </Link>
+                    </td>
+                    <td className="td">
+                      <Link to={`/orders/${o.id}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+                        {o.eventName}
+                      </Link>
+                    </td>
+                    <td className="td text-slate-500 dark:text-slate-400">{o.supplierName ?? "-"}</td>
+                    <td className="td whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
+                    <td className="td text-right tabular-nums">{o.quantity}</td>
+                    <td className="td text-right tabular-nums">{o.availableCount + o.listedCount}</td>
+                    <td className="td text-right tabular-nums">{o.soldCount}</td>
+                    <td className="td text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
+                    <td className="td">
+                      <Badge tone={inv.key}>{inv.label}</Badge>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
-
-      <TicketEditModal
-        open={!!editTicket}
-        ticket={editTicket}
-        onClose={() => setEditTicket(null)}
-        onSaved={() => {
-          setEditTicket(null);
-          load();
-        }}
-      />
     </div>
-  );
-}
-
-function SortTh({
-  label,
-  k,
-  sortBy,
-  sortDir,
-  onClick,
-  right,
-}: {
-  label: string;
-  k: string;
-  sortBy: string;
-  sortDir: "asc" | "desc";
-  onClick: (k: string) => void;
-  right?: boolean;
-}) {
-  const active = sortBy === k;
-  return (
-    <th className={`th cursor-pointer select-none ${right ? "text-right" : ""}`} onClick={() => onClick(k)}>
-      <span className={`inline-flex items-center gap-1 ${right ? "flex-row-reverse" : ""}`}>
-        {label}
-        {active && (sortDir === "asc" ? <IconChevronUp className="h-3 w-3" /> : <IconChevronDown className="h-3 w-3" />)}
-      </span>
-    </th>
   );
 }
 

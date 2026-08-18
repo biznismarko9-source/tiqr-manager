@@ -10,10 +10,13 @@ import type {
   OrderEditInput,
   OrderInput,
   OrderRecord,
+  OrderSalesSummary,
   Platform,
+  RestoreOutcome,
   Sale,
   SaleBatchInput,
   SaleEditInput,
+  SaleGroup,
   SaleInput,
   Supplier,
   Ticket,
@@ -29,9 +32,19 @@ export const api = {
   deleteEvent: (id: number) => invoke<void>("delete_event", { id }),
 
   // Orders
-  listOrders: (search?: string, eventId?: number) =>
-    invoke<OrderRecord[]>("list_orders", { search, eventId }),
+  listOrders: (params: {
+    search?: string;
+    eventId?: number;
+    orderId?: number;
+    supplierId?: number;
+    platformId?: number;
+    status?: string;
+    section?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  } = {}) => invoke<OrderRecord[]>("list_orders", params),
   getOrder: (id: number) => invoke<OrderRecord>("get_order", { id }),
+  getOrderSalesSummary: (id: number) => invoke<OrderSalesSummary>("get_order_sales_summary", { id }),
   createOrder: (input: OrderInput) => invoke<OrderRecord>("create_order", { input }),
   updateOrder: (id: number, input: OrderEditInput) => invoke<OrderRecord>("update_order", { id, input }),
   deleteOrder: (id: number) => invoke<void>("delete_order", { id }),
@@ -57,6 +70,16 @@ export const api = {
     dateFrom?: string;
     dateTo?: string;
   }) => invoke<Sale[]>("list_sales", params),
+  listSaleGroups: (params: {
+    search?: string;
+    eventId?: number;
+    platformId?: number;
+    paymentStatus?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    refundStatus?: string;
+  }) => invoke<SaleGroup[]>("list_sale_groups", params),
+  listSalesByGroup: (id: number) => invoke<Sale[]>("list_sales_by_group", { id }),
   getSale: (id: number) => invoke<Sale>("get_sale", { id }),
   createSale: (input: SaleInput) => invoke<Sale>("create_sale", { input }),
   createSalesBatch: (input: SaleBatchInput) => invoke<Sale[]>("create_sales_batch", { input }),
@@ -96,7 +119,8 @@ export const api = {
 
   // Backup / restore
   backupDatabase: (destPath: string) => invoke<void>("backup_database", { destPath }),
-  restoreDatabase: (srcPath: string) => invoke<void>("restore_database", { srcPath }),
+  validateBackupFile: (srcPath: string) => invoke<void>("validate_backup_file", { srcPath }),
+  restoreDatabase: (srcPath: string) => invoke<RestoreOutcome>("restore_database", { srcPath }),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

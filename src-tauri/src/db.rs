@@ -19,6 +19,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_refunds",
         include_str!("../migrations/002_refunds.sql"),
     ),
+    (
+        "003_sale_batch_id",
+        include_str!("../migrations/003_sale_batch_id.sql"),
+    ),
+    (
+        "004_sales_active_unique",
+        include_str!("../migrations/004_sales_active_unique.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -257,7 +265,7 @@ mod perf_smoke {
                  FROM tickets t
                  JOIN events e ON e.id = t.event_id
                  JOIN orders o ON o.id = t.order_id
-                 LEFT JOIN sales sa ON sa.ticket_id = t.id
+                 LEFT JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status != 'refunded'
                  ORDER BY t.id DESC",
             )
             .unwrap();
@@ -299,6 +307,84 @@ mod perf_smoke {
             t.elapsed()
         );
 
+        // ---- Tickets/Inventory screen (order-grouped list), unfiltered ---
+        // Mirrors list_orders_impl's BASE_SQL: GROUP BY o.id over a LEFT JOIN
+        // to every one of that order's tickets (using idx_tickets_order).
+        // This is now what the Tickets page actually loads on open, so it
+        // must stay fast even though it aggregates every ticket in the
+        // database on an unfiltered load.
+        let plan = explain_uses_index(
+            &conn,
+            "SELECT o.id FROM orders o LEFT JOIN tickets t ON t.order_id = o.id GROUP BY o.id",
+            &[],
+        );
+        eprintln!("[perf {n_tickets}] plan(order-grouped tickets list): {plan}");
+        let t = Instant::now();
+        let mut stmt = conn
+            .prepare(
+                "SELECT o.id,
+                    COUNT(CASE WHEN t.status='sold' THEN 1 END),
+                    COUNT(CASE WHEN t.status='available' THEN 1 END),
+                    COUNT(CASE WHEN t.status='listed' THEN 1 END),
+                    COUNT(CASE WHEN t.status='cancelled' THEN 1 END)
+                 FROM orders o
+                 JOIN events e ON e.id = o.event_id
+                 LEFT JOIN suppliers sup ON sup.id = o.supplier_id
+                 LEFT JOIN platforms p ON p.id = o.platform_id
+                 LEFT JOIN tickets t ON t.order_id = o.id
+                 GROUP BY o.id
+                 ORDER BY o.purchase_date DESC, o.id DESC",
+            )
+            .unwrap();
+        let rows: Vec<i64> = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        eprintln!(
+            "[perf {n_tickets}] order-grouped tickets list ({} orders): {:?}",
+            rows.len(),
+            t.elapsed()
+        );
+
+        // ---- Sales screen (batch-grouped list), unfiltered ---------------
+        // Mirrors list_sale_groups_impl's GROUP_BASE_SELECT: GROUP BY the
+        // expression COALESCE(batch_id, 'single:'||id), so every unfiltered
+        // load scans and aggregates every `sales` row - no index can speed up
+        // grouping by an expression. The seed data gives this the worst case
+        // for grouping overhead (every sale is its own group of one, i.e. the
+        // maximum possible group count) rather than a few huge batches.
+        let plan = explain_uses_index(
+            &conn,
+            "SELECT COUNT(*) FROM sales s GROUP BY COALESCE(s.batch_id, 'single:' || s.id)",
+            &[],
+        );
+        eprintln!("[perf {n_tickets}] plan(batch-grouped sales list): {plan}");
+        let t = Instant::now();
+        let mut stmt = conn
+            .prepare(
+                "SELECT MIN(s.id),
+                    COUNT(*),
+                    COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN s.sale_price_cents END), 0)
+                 FROM sales s
+                 JOIN tickets t ON t.id = s.ticket_id
+                 JOIN events e ON e.id = t.event_id
+                 LEFT JOIN platforms p ON p.id = s.platform_id
+                 GROUP BY COALESCE(s.batch_id, 'single:' || s.id)
+                 ORDER BY MAX(s.sale_date) DESC, MIN(s.id) DESC",
+            )
+            .unwrap();
+        let rows: Vec<i64> = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        eprintln!(
+            "[perf {n_tickets}] batch-grouped sales list ({} groups): {:?}",
+            rows.len(),
+            t.elapsed()
+        );
+
         eprintln!("[perf {n_tickets}] db file size: {} bytes", std::fs::metadata(&db.path).map(|m| m.len()).unwrap_or(0));
     }
 
@@ -318,5 +404,191 @@ mod perf_smoke {
     #[ignore]
     fn perf_100k() {
         run_at_scale(100_000);
+    }
+}
+
+/// Regression coverage for migration 004 (BUG #1 fix: a refunded ticket
+/// could never be resold, because sales.ticket_id was UNIQUE across ALL
+/// rows forever, not just active ones). Unlike test_conn() (which always
+/// applies every migration to a brand-new empty database, i.e. what a FRESH
+/// install experiences), this simulates the scenario that actually matters
+/// most for a schema-rebuild migration: an EXISTING v1.4.0 install, with
+/// real data already sitting under the OLD schema, opening the app after an
+/// update and having migration 004 run against that real data for the first
+/// time.
+#[cfg(test)]
+mod migration_004_tests {
+    use super::*;
+    use crate::commands::orders::insert_order_with_tickets;
+    use crate::models::OrderInput;
+
+    #[test]
+    fn migration_004_preserves_existing_data_and_fixes_refund_resell_on_upgrade() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+
+        // Apply exactly what every existing v1.4.0 install already has on
+        // disk today: migrations 001-003, nothing more. This mirrors
+        // run_migrations' own bookkeeping so the real run_migrations() call
+        // below sees a legitimate "003 already applied" state.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        for (version, sql) in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+            .unwrap();
+        }
+
+        // Seed real-shaped pre-existing data under the OLD schema (where
+        // ticket_id UNIQUE still covers every row, refunded or not).
+        conn.execute("INSERT INTO events (name) VALUES ('Old Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let order_input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 3,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        let order_id = insert_order_with_tickets(&conn, &order_input, false).unwrap();
+        let tickets: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM tickets WHERE order_id=?1 ORDER BY id")
+                .unwrap();
+            stmt.query_map([order_id], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        // Ticket 0: sold, still active.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000001', ?1, '2026-02-01', 2000, 'paid')",
+            [tickets[0]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [tickets[0]])
+            .unwrap();
+        // Ticket 1: sold, then refunded - exactly the row that used to make
+        // this ticket permanently unsellable under the old schema.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status, refunded_at, refund_reason)
+             VALUES ('SAL-000002', ?1, '2026-02-02', 1500, 'refunded', '2026-02-03T00:00:00.000Z', 'buyer cancelled')",
+            [tickets[1]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='available' WHERE id=?1", [tickets[1]])
+            .unwrap();
+        // Ticket 2: never sold.
+
+        let snapshot_before: Vec<(i64, String, i64, i64, String, Option<String>, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, code, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        };
+        assert_eq!(snapshot_before.len(), 2);
+
+        // This is the real upgrade moment: an existing user opens the app
+        // after updating. run_migrations sees 001-003 already recorded, so
+        // it applies ONLY 004 - exactly like a real upgrade would.
+        run_migrations(&conn).expect("migration 004 must apply cleanly on top of real pre-existing data");
+
+        // Nothing lost, nothing changed, nothing duplicated by the rebuild.
+        let snapshot_after: Vec<(i64, String, i64, i64, String, Option<String>, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, code, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        };
+        assert_eq!(
+            snapshot_before, snapshot_after,
+            "every pre-existing sale row must survive the table rebuild byte-for-byte"
+        );
+
+        // Referential integrity must be clean after the rebuild.
+        let violations: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            violations.is_empty(),
+            "foreign_key_check must be clean after the rebuild, found: {violations:?}"
+        );
+
+        // The actual bug fix: ticket 1 (refunded) can now be sold again.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000003', ?1, '2026-03-01', 1800, 'pending')",
+            [tickets[1]],
+        )
+        .expect("a previously-refunded ticket must be sellable again after migration 004");
+
+        // AUTOINCREMENT/id continuity: the new row's id must be strictly
+        // greater than every pre-existing id - never reused, never collided
+        // - even though the table itself was dropped and recreated.
+        let new_id: i64 = conn
+            .query_row("SELECT id FROM sales WHERE code='SAL-000003'", [], |r| r.get(0))
+            .unwrap();
+        let max_old_id = snapshot_before.iter().map(|r| r.0).max().unwrap();
+        assert!(
+            new_id > max_old_id,
+            "id sequence must continue past pre-existing ids, not collide: new_id={new_id}, max_old_id={max_old_id}"
+        );
+
+        // History fully intact: the refunded row AND the new active sale
+        // both exist side by side for this one ticket.
+        let ticket1_sales: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sales WHERE ticket_id=?1", [tickets[1]], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            ticket1_sales, 2,
+            "refund history plus the new sale must both be visible - nothing overwritten"
+        );
+
+        // Still impossible to have two ACTIVE sales of the same ticket at once.
+        let dup = conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000004', ?1, '2026-03-02', 999, 'pending')",
+            [tickets[1]],
+        );
+        assert!(
+            dup.is_err(),
+            "a ticket must never have two simultaneously active sales, even after the rebuild"
+        );
     }
 }
