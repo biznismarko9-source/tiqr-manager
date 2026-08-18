@@ -1,7 +1,9 @@
 # TIQR Manager 1.6.0 — Audit, Bug Fixes, Dashboard Chart, Sales Redesign
 
 Dátum: 2026-08-18
-Rozsah: audit celej appky → oprava 6 HIGH bugov → Dashboard graf tržieb/profitu → Sales redesign (karty namiesto tabuľky) → New Sale/Sale Detail polish → verzia 1.6.0.
+Rozsah: audit celej appky → oprava 6 HIGH bugov → Dashboard graf tržieb/profitu → Sales redesign (tabuľka v štýle Tickets) → New Sale/Sale Detail polish → verzia 1.6.0.
+
+**Revízia po tvojej spätnej väzbe:** prvý pokus mal Sales ako karty a graf ako jednoduché stĺpce. Po tvojom vysvetlení (8 tiketov predaných ako 4+2+2 → 3 riadky, presne v štýle, akým Tickets zoskupuje podľa objednávky) som Sales main list prerobil znova na tabuľku v identickom štýle ako `Tickets.tsx`, a graf prerobil na moderný smooth area/line chart s interaktívnym hoverom. §5 a §6 nižšie opisujú tento finálny stav; H1-H6 opravy a verzia sa touto revíziou nemenili.
 
 ---
 
@@ -60,22 +62,29 @@ Predtým appka nemala ŽIADNU time-series granularitu — všetko bolo jeden pre
 
 Šírka bucketu sa prispôsobuje dĺžke obdobia (`time_series_granularity()`): ≤31 dní → deň, ≤180 dní → týždeň, viac (vrátane "All time") → mesiac. Dôvod: "Last 7 days" nemá zmysel po dňoch rozbíjať na 7×nič-iné a viacročné "All time" nemá zmysel po dňoch (tisíce stĺpcov).
 
-Frontend (`src/components/RevenueChart.tsx`) je vlastný, jednoduchý SVG bar chart — **žiadna nová npm závislosť** (appka doteraz nemala žiadnu UI knižnicu okrem React/Tailwind, pridávanie charting knižnice len kvôli 2 stĺpcom na bucket by zbytočne zväčšilo Windows build). Zobrazuje Revenue (brand farba) a Profit (zelená/červená podľa znamienka) vedľa seba za bucket, s hover tooltipom (natívny SVG `<title>`, žiadny extra JS), gridlines a osou. Vizuálne overené cez Playwright screenshot pri viacerých scenároch (bežné dáta, záporný profit, 1 bucket, prázdne obdobie, 14+ bucketov, dark mode) — viď §8.
+Frontend (`src/components/RevenueChart.tsx`) je vlastný, dependency-free SVG graf — **žiadna nová npm závislosť** (appka doteraz nemala žiadnu UI knižnicu okrem React/Tailwind, pridávanie charting knižnice by zbytočne zväčšilo Windows build). Namiesto pôvodných jednoduchých stĺpcov je to teraz smooth area/line graf: Revenue ako vyplnená plocha s jemným gradientom (brand farba), Profit ako čiara nad ňou, ktorá mení farbu (zelená/červená) presne v bode, kde prechádza cez nulu — takže strata je vizuálne okamžite viditeľná v samotnom grafe, nie len v čísle. Krivka je vyhladená (Catmull-Rom → cubic Bezier prevod), ale každý reálny dátový bod stále leží presne na krivke, nič sa neinterpoluje ani nezaokrúhľuje preč.
+
+Hover je teraz interaktívny namiesto natívneho SVG tooltipu: pohyb myšou nad grafom prepne legendu nad grafom na live readout (dátum + presné Revenue/Profit hodnoty pre ten bucket), plus vertikálna crosshair čiara a bodky na oboch krivkách presne v hoverovanom bode. Šírka grafu sa meria cez `ResizeObserver` (namiesto naťahovania fixného viewBoxu na celú šírku), takže súradnicový systém je vždy 1:1 s reálnymi pixelmi na oboch osiach — kruhové hover-bodky preto zostávajú kruhové aj keď sa karta zmenší/zväčší, a pozícia myši sa dá prečítať priamo z bounding boxu bez extra prepočtu mierky.
+
+Vizuálne overené cez Playwright screenshot pri viacerých scenároch (bežné dáta, mesačná granularita s veľkým poklesom pod nulu, úzka karta/responsivita, 1 bucket, prázdne obdobie, hover interakcia so živým readoutom, dark mode) — viď §8. Pri tejto verifikácii sa našiel a hneď opravil jeden reálny bug: y-osový popisok pri väčších sumách (napr. "€2,900.00") sa orezával na ľavom okraji grafu — opravené zväčšením ľavého paddingu a `overflow-visible` na `<svg>` ako poistkou pre ešte väčšie sumy.
 
 Umiestnenie: hneď pod "Activity" StatCards (Revenue/Purchase cost/Profit/Margin/ROI/Tickets sold) pre zvolené obdobie, nad "Current inventory" sekciou — rozširuje existujúcu informáciu o časovú os, nie je to duplicitná/samostatná sekcia.
 
 Testy (7 nových, `commands::dashboard::tests`): bucketing po dňoch a súčet späť na `period` total (cross-check proti driftu), vylúčenie refundov, zoskupenie rovnakého ISO týždňa, zoskupenie rovnakého mesiaca, rešpektovanie event filtra, 6 hraníc granularity vrátane "All time".
 
-## 6. Sales: redesign na karty
+## 6. Sales: redesign na tabuľku (rovnaký štýl ako Tickets)
 
-Predtým: dáta už boli zoskupené (`SaleGroup`/`batch_id`/`GROUP_BASE_SELECT`), ale vizuálne to bola plochá `<table>` s jedným `<tr>` na skupinu. Zmenil sa **len render main listu** (`src/pages/Sales.tsx`) — filter bar, 5000-cap banner, totals summary riadok, aj celá dátová/filtrovacia logika (`listSaleGroups`) sú nedotknuté.
+Prvý pokus tohto vydania prerobil Sales main list z tabuľky na karty. Po tvojej spätnej väzbe a konkrétnom príklade (8 tiketov predaných ako 4+2+2 → 3 riadky, klik na riadok → vnútri presný rozpis tiketov k tomu predaju, presne v štýle akým Tickets zoskupuje podľa objednávky) som main list prerobil znova — tentokrát na **tabuľku v identickom vizuálnom štýle ako `Tickets.tsx`** (rovnaké `th`/`td` CSS triedy, rovnaký hover na riadku, rovnaký `overflow-x-auto rounded-xl border ... shadow-sm` wrapper).
 
-Nová `SaleGroupCard` komponenta: jedna karta na sale action (1 tiket alebo batch). Riadi sa presne rovnakým row-click vzorom, aký už má `Events.tsx` (celá karta klikateľná → Sale Detail, okrem kliku na vnorený `<a>` — link na event — ktorý naviguje sám osebe, bez dvojitej navigácie). Priamo rieši 3 UX nálezy z auditu:
-- **vizuálne odlíšenie 1-tiketového predaja od veľkého batchu** — badge "N tickets" má brand farbu pri N>1, sivú pri N=1.
-- **umiestnenie refund indikátora** — "N of M refunded" má teraz vlastnú amber farbu (rovnaký warning-konvent ako inde v appke) namiesto splývajúceho sivého textu.
-- **nekonzistentné click affordance** — predtým bol klikateľný len kód, zvyšok riadku mal hover pozadie ale nefungoval; teraz je klikateľná celá karta.
+Dáta a zoskupenie sa nemenili vôbec — to bolo a stále je správne (`SaleGroup`/`batch_id`/`GROUP_BASE_SELECT`, pozri DO NOT TOUCH). Zmenil sa **len render main listu** (`src/pages/Sales.tsx`) — filter bar, 5000-cap banner, totals summary riadok, aj celá dátová/filtrovacia logika (`listSaleGroups`) sú nedotknuté.
 
-Sale Detail (`SaleDetail.tsx`) **zostáva tabuľka s per-ticket rozpisom** presne podľa zadania ("Sale Detail keeps per-ticket breakdown") — nekonvertoval som ju na karty. Jediná zmena tam: oprava M9 nálezu (hlavička kódu používala `lines[0].batchId ?? lines[0].code`, čo mohlo zostať "stale" po zmazaní najnižšieho id v batchi — teraz vždy `lines[0].code`, presne podľa toho, čo robí aj backend).
+Stĺpce: Sale (kód, link → Sale Detail), Event (link → Event Detail, alebo "Mixed events" kurzívou), Platform, Sale date, Tickets (počet — presne toto číslo ukáže tvoj príklad ako riadky so 4/2/2), Revenue, Fees, Profit (farebne podľa znamienka), Margin/ROI (zlúčené do 1 stĺpca — rovnaká konvencia aká už je na Sale Detail's stat card), Status (Payment badge + amber "N of M refunded" pri čiastočnom refunde).
+
+Klik funguje presne ako na Tickets: len konkrétne `<Link>` bunky (Sale kód, Event) navigujú, zvyšok riadku má len hover-highlight — nie celá karta klikateľná ako v predošlom pokuse. To je presne to, čo `Tickets.tsx` robí, žiadna vlastná interakcia navyše.
+
+Čo sa stalo s 3 UX vylepšeniami z pôvodných kariet: refund indikátor s amber farbou zostal (je aj v tabuľke, pod Status badge). Badge "N tickets" zmizol — nahradilo ho jednoduché číslo v stĺpci Tickets, presne v duchu Tickets.tsx (ten tiež nemá badge na počty, len číslo v stĺpci). Klikateľná celá karta zmizla zámerne — to bol presne ten rozpor, ktorý si opravil svojou spätnou väzbou, keďže Tickets.tsx samotný túto vlastnosť nemá.
+
+Sale Detail (`SaleDetail.tsx`) **zostáva úplne nedotknuté** — tabuľka s per-ticket rozpisom presne podľa zadania, to je to, čo sa otvorí po kliku na riadok a presne to, čo si chcel vidieť "vo vnútri" jedného predaja. Jediná zmena tam bola (a zostáva) oprava M9 nálezu: hlavička kódu používala `lines[0].batchId ?? lines[0].code`, čo mohlo zostať "stale" po zmazaní najnižšieho id v batchi — teraz vždy `lines[0].code`, presne podľa toho, čo robí aj backend.
 
 New Sale flow (`SaleFormModal` v `Sales.tsx`) — 3 malé, bezpečné UX opravy priamo z auditu, žiadna z nich sa nedotýka `submit()`/skutočného zápisu do DB:
 - **currency label pri Price/Fees** — predtým nebolo vidieť menu pri poliach, teraz je vždy viditeľný label (nie len placeholder, ktorý by zmizol po vyplnení).
@@ -99,12 +108,12 @@ Navyše (UX #7, "ticket → sale" prelinkovanie): `OrderDetail.tsx` pri predanom
 - `cargo test --lib`: **95 passed / 0 failed / 3 ignored** (83 pôvodných + 13 nových: 1× finance.rs, 2× sales.rs, 3× csv_export.rs, 7× dashboard.rs). 3 ignored sú tie isté dávno-existujúce perf testy (spúšťajú sa len manuálne).
 - `cargo clippy --lib --all-targets`: presne tie isté 3 staré, nesúvisiace warningy ako pred týmto vydaním (finance.rs digit-grouping, dashboard.rs if_same_then_else, db.rs type_complexity) — žiadny nový warning.
 - `tsc -b` (samostatne aj cez `npm run build`): čisté, 0 chýb.
-- `npm run build` (plný vite build): úspešný, 60 modulov, veľkosť bundlu len mierne narástla (288KB→293KB) kvôli novej `RevenueChart` komponente — žiadna nová závislosť.
+- `npm run build` (plný vite build): úspešný, 60 modulov, bundle 296.39 kB / gzip 82.18 kB — žiadna nová závislosť.
 
-**Vizuálne (Playwright + headless Chromium, cez dočasný preview harness mimo Tauri, zmazaný po použití):**
-- `RevenueChart`: bežné dáta, záporný profit (červený stĺpec pod nulovou čiarou), 1 bucket, prázdne obdobie, 14-bucketový dataset s orezávaním popiskov, dark mode — všetko vyzerá správne, žiadna console chyba.
-- `SaleGroupCard`: 1-tiketový predaj, 12-tiketový batch, čiastočne refundovaný batch, mixed-events batch, mixed-currency batch, refundovaný predaj, dark mode — zarovnanie stĺpcov, farby, badge-y správne. Geometria flex layoutu overená aj priamym meraním (žiadna "diera" v layoute).
-- New Sale currency label a per-currency profit preview — layout správny.
+**Vizuálne (Playwright + headless Chromium, cez dočasný preview harness mimo Tauri, zmazaný po použití — spustené 2×, raz pre prvý pokus a raz po korekcii podľa tvojej spätnej väzby):**
+- `RevenueChart` (finálna verzia): bežné dáta (30 dní), mesačná granularita s veľkým poklesom pod nulu (overuje farebný prechod zelená→červená→zelená na profit krivke pri viacerých prechodoch cez nulu), úzka karta (responsivita cez ResizeObserver), 1 bucket, prázdne obdobie, hover interakcia (crosshair + live readout v legende + bodky na oboch krivkách), dark mode — všetko vyzerá správne. Pri tomto prechode sa našiel a opravil orezávaný y-osový popisok pri väčších sumách (pozri §5).
+- Sales tabuľka (finálna verzia): presne marka's príklad (8 tiketov ako 4+2+2 → 3 riadky), 1-tiketový predaj, mixed-events riadok, mixed-currency riadok ("Mixed" všade kde treba), čiastočne refundovaný riadok (amber text), rôzne payment status badge (paid/pending/refunded), dark mode — stĺpce zarovnané, farby a badge-y správne, vizuálne zhodné so štýlom `Tickets.tsx`.
+- New Sale currency label a per-currency profit preview — layout správny (nezmenené touto revíziou).
 
 **Manuálna logická kontrola (bez GUI behu appky v tomto prostredí):**
 - Refund/resell cyklus, migrácia 004, partial unique index — nedotknuté, testy prechádzajú.

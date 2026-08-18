@@ -182,15 +182,80 @@ export default function Sales() {
           }
         />
       ) : (
-        // 1.6.0 redesign: one card per sale action (single ticket or
-        // multi-ticket batch) instead of one flat table row - the data was
-        // already grouped this way (SaleGroup/batch_id, see sales.rs), this
-        // just changes how it's presented. Every field shown below existed
-        // in the old table too; nothing here is a new number.
-        <div className="space-y-2">
-          {groups.map((g) => (
-            <SaleGroupCard key={g.id} group={g} />
-          ))}
+        // One row per sale action (single ticket or multi-ticket batch) -
+        // same table style as the Tickets screen's order-grouped list. A
+        // batch of e.g. 8 tickets sold as 4+2+2 shows as 3 rows here, never
+        // as 8 separate rows; clicking a row's Sale code opens Sale Detail,
+        // which lists every ticket inside that one sale. The data was
+        // already grouped this way (SaleGroup/batch_id, see sales.rs) - only
+        // the layout changed here, no field or number is new.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full min-w-[1100px] border-collapse">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <tr>
+                <th className="th">Sale</th>
+                <th className="th">Event</th>
+                <th className="th">Platform</th>
+                <th className="th">Sale date</th>
+                <th className="th text-right">Tickets</th>
+                <th className="th text-right">Revenue</th>
+                <th className="th text-right">Fees</th>
+                <th className="th text-right">Profit</th>
+                <th className="th text-right">Margin / ROI</th>
+                <th className="th">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {groups.map((g) => (
+                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td">
+                    <Link
+                      to={`/sales/${g.id}`}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                    >
+                      {g.code}
+                    </Link>
+                  </td>
+                  <td className="td">
+                    {g.eventId && g.eventName ? (
+                      <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+                        {g.eventName}
+                      </Link>
+                    ) : (
+                      <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
+                    )}
+                  </td>
+                  <td className="td text-slate-500 dark:text-slate-400">{g.platformName ?? "-"}</td>
+                  <td className="td whitespace-nowrap">{formatDate(g.saleDate)}</td>
+                  <td className="td text-right tabular-nums">{g.ticketCount}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
+                  <td
+                    className={`td text-right tabular-nums font-medium ${
+                      g.profitCents > 0
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : g.profitCents < 0
+                          ? "text-red-600 dark:text-red-400"
+                          : ""
+                    }`}
+                  >
+                    {formatMoneyOrMixed(g.profitCents, g.currency)}
+                  </td>
+                  <td className="td text-right tabular-nums">
+                    {formatPercentOrMixed(g.margin, g.currency)} / {formatPercentOrMixed(g.roi, g.currency)}
+                  </td>
+                  <td className="td">
+                    {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
+                    {g.refundedCount > 0 && (
+                      <p className="mt-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                        {g.refundedCount} of {g.ticketCount} refunded
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -202,117 +267,6 @@ export default function Sales() {
           load();
         }}
       />
-    </div>
-  );
-}
-
-/** One row of the redesigned Sales list - a single sale action (one ticket,
- * or a multi-ticket batch sharing one `batch_id`). All figures come straight
- * from the group query (sales.rs GROUP_BASE_SELECT) - this component only
- * decides how to lay them out, never recomputes anything. */
-function SaleGroupCard({ group: g }: { group: SaleGroup }) {
-  const navigate = useNavigate();
-  return (
-    <div
-      onClick={(e) => {
-        // Same pattern already used by Events.tsx's row-click: the card as a
-        // whole navigates to Sale Detail, except when the click landed on a
-        // real nested <a> (event name below) - that Link already performs
-        // its own, correct navigation, so this must not double-navigate it.
-        if ((e.target as HTMLElement).closest("a")) return;
-        navigate(`/sales/${g.id}`);
-      }}
-      className="card flex cursor-pointer flex-wrap items-center gap-x-6 gap-y-3 p-4 transition-shadow hover:shadow-md hover:ring-1 hover:ring-brand-200 dark:hover:ring-brand-500/30"
-    >
-      <div className="min-w-[220px] flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            to={`/sales/${g.id}`}
-            className="font-semibold text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
-          >
-            {g.code}
-          </Link>
-          {/* Visually distinguishes a single-ticket sale from a large batch
-              (1.6.0 audit UX finding) - brand-tinted once there's more than
-              one ticket riding on this one sale action, plain otherwise. */}
-          <span
-            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-              g.ticketCount > 1
-                ? "bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-200 dark:bg-brand-500/10 dark:text-brand-400 dark:ring-brand-500/30"
-                : "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700"
-            }`}
-          >
-            {g.ticketCount} ticket{g.ticketCount === 1 ? "" : "s"}
-          </span>
-        </div>
-        <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">
-          {g.eventId && g.eventName ? (
-            <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-              {g.eventName}
-            </Link>
-          ) : (
-            <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
-          )}
-        </p>
-        <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
-          {formatDate(g.saleDate)}
-          {g.platformName ? ` · ${g.platformName}` : ""}
-        </p>
-      </div>
-
-      <div className="flex flex-wrap items-start gap-x-5 gap-y-2 text-right">
-        <div className="w-[92px]">
-          <p className="text-xs text-slate-400 dark:text-slate-500">Revenue</p>
-          <p className="tabular-nums text-sm font-medium text-slate-800 dark:text-slate-200">
-            {formatMoneyOrMixed(g.revenueCents, g.currency)}
-          </p>
-        </div>
-        <div className="w-20">
-          <p className="text-xs text-slate-400 dark:text-slate-500">Fees</p>
-          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
-            {formatMoneyOrMixed(g.sellingFeesCents, g.currency)}
-          </p>
-        </div>
-        <div className="w-[92px]">
-          <p className="text-xs text-slate-400 dark:text-slate-500">Profit</p>
-          <p
-            className={`tabular-nums text-sm font-semibold ${
-              g.profitCents > 0
-                ? "text-emerald-600 dark:text-emerald-400"
-                : g.profitCents < 0
-                  ? "text-red-600 dark:text-red-400"
-                  : "text-slate-800 dark:text-slate-200"
-            }`}
-          >
-            {formatMoneyOrMixed(g.profitCents, g.currency)}
-          </p>
-        </div>
-        <div className="w-14">
-          <p className="text-xs text-slate-400 dark:text-slate-500">Margin</p>
-          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
-            {formatPercentOrMixed(g.margin, g.currency)}
-          </p>
-        </div>
-        <div className="w-14">
-          <p className="text-xs text-slate-400 dark:text-slate-500">ROI</p>
-          <p className="tabular-nums text-sm text-slate-600 dark:text-slate-400">
-            {formatPercentOrMixed(g.roi, g.currency)}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex w-28 shrink-0 flex-col items-end gap-1">
-        {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
-        {/* Refund indicator gets its own amber tone (matching this app's
-            existing warning-banner convention) instead of muted gray text,
-            so a partially-refunded batch doesn't blend into the background
-            next to the Payment badge (1.6.0 audit UX finding). */}
-        {g.refundedCount > 0 && (
-          <span className="text-right text-xs font-medium text-amber-700 dark:text-amber-400">
-            {g.refundedCount} of {g.ticketCount} refunded
-          </span>
-        )}
-      </div>
     </div>
   );
 }
