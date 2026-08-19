@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
-import type { AppInfo, CsvPreview, Platform, Supplier } from "../lib/types";
+import type { AppInfo, CsvPreview, Platform } from "../lib/types";
 import {
   Button,
   Card,
@@ -28,15 +28,12 @@ export default function Settings() {
   const toast = useToast();
   const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [newPlatform, setNewPlatform] = useState("");
-  const [newSupplier, setNewSupplier] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
-  const [confirmDeleteSupplier, setConfirmDeleteSupplier] = useState<Supplier | null>(null);
   const [deletingLookup, setDeletingLookup] = useState(false);
 
   const [updateChecking, setUpdateChecking] = useState(false);
@@ -48,7 +45,6 @@ export default function Settings() {
 
   const reload = () => {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
-    api.listSuppliers().then(setSuppliers).catch((e) => toast.error(errMsg(e)));
     api.getAppInfo().then(setAppInfo).catch(() => {});
   };
 
@@ -64,17 +60,6 @@ export default function Settings() {
       toast.error(errMsg(e));
     }
   };
-  const addSupplier = async () => {
-    if (!newSupplier.trim()) return;
-    try {
-      await api.createSupplier(newSupplier.trim());
-      setNewSupplier("");
-      reload();
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  };
-
   const doExport = async (
     label: string,
     fileSuggestion: string,
@@ -182,190 +167,190 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" subtitle="Lookups, data import/export and backups." />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card className="self-start p-3 lg:col-span-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Appearance</h2>
-            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5">
-              {THEME_OPTIONS.map((o) => (
-                <button
-                  key={o.key}
-                  onClick={() => setThemeMode(o.key)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                    themeMode === o.key
-                      ? "bg-brand-600 text-white"
-                      : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
-                  }`}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Used when recording orders and sales. Not hardcoded — add as many as you like.</p>
-          <div className="mb-3 flex gap-2">
-            <Input
-              placeholder="e.g. Ticketmaster"
-              value={newPlatform}
-              onChange={(e) => setNewPlatform(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addPlatform()}
-            />
-            <Button onClick={addPlatform}>Add</Button>
-          </div>
-          <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-            {platforms.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
-            {platforms.map((p) => (
-              <li key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                <span>{p.name}</span>
-                <button
-                  className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
-                  title="Remove"
-                  onClick={() => setConfirmDeletePlatform(p)}
-                >
-                  <IconTrash className="h-4 w-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suppliers</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Who you buy tickets from.</p>
-          <div className="mb-3 flex gap-2">
-            <Input
-              placeholder="e.g. John from Discord"
-              value={newSupplier}
-              onChange={(e) => setNewSupplier(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addSupplier()}
-            />
-            <Button onClick={addSupplier}>Add</Button>
-          </div>
-          <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-            {suppliers.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No suppliers yet</li>}
-            {suppliers.map((s) => (
-              <li key={s.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                <span>{s.name}</span>
-                <button
-                  className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
-                  title="Remove"
-                  onClick={() => setConfirmDeleteSupplier(s)}
-                >
-                  <IconTrash className="h-4 w-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-            Bulk-add orders (and their tickets) from a spreadsheet. Columns: event, purchase_date, supplier,
-            platform, quantity, unit_price, fees, other_costs, currency, payment_status, ticket_type, section,
-            row, seats, notes. "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it
-            out to import without seat numbers. Everything imports in one all-or-nothing transaction.
-          </p>
-          <Button variant="primary" onClick={() => setImportOpen(true)}>
-            <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
-          </Button>
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Save any part of your data as a CSV file.</p>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { label: "Events", key: "events", fn: api.exportEventsCsv, file: "events.csv" },
-              { label: "Orders", key: "orders", fn: api.exportOrdersCsv, file: "orders.csv" },
-              { label: "Tickets", key: "tickets", fn: (p: string) => api.exportTicketsCsv(p), file: "tickets.csv" },
-              { label: "Sales", key: "sales", fn: api.exportSalesCsv, file: "sales.csv" },
-              { label: "Inventory", key: "inventory", fn: (p: string) => api.exportInventoryCsv(p), file: "inventory.csv" },
-            ].map((x) => (
-              <Button
-                key={x.key}
-                variant="secondary"
-                disabled={busyAction === x.key}
-                onClick={() => doExport(x.key, x.file, x.fn)}
-              >
-                {busyAction === x.key ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
-                {x.label}
-              </Button>
-            ))}
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-            Your database lives only on this device. Back it up regularly, especially before big imports.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" disabled={busyAction === "backup"} onClick={doBackup}>
-              {busyAction === "backup" ? <Spinner className="h-4 w-4" /> : <IconDatabase className="h-4 w-4" />}
-              Backup database...
-            </Button>
-            <Button variant="secondary" disabled={busyAction === "restore"} onClick={pickRestoreFile}>
-              {busyAction === "restore" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
-              Restore from backup...
-            </Button>
-          </div>
-          {appInfo && (
-            <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
-              Database file: <span className="font-mono">{appInfo.dbPath}</span>
-            </p>
-          )}
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h2>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-            Checks GitHub for a newer signed release. Nothing downloads until you approve it, and everything
-            still works fully offline either way.
-          </p>
-
-          {installing ? (
-            <div>
-              <p className="mb-2 text-sm text-slate-600 dark:text-slate-400">
-                Installing {available?.version}
-                {installProgress?.total ? ` - ${Math.round((installProgress.downloaded / installProgress.total) * 100)}%` : "..."}
-              </p>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                <div
-                  className="h-full rounded-full bg-brand-600 transition-all"
-                  style={{
-                    width: installProgress?.total
-                      ? `${Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100))}%`
-                      : "30%",
-                  }}
-                />
+      {/* 1.7.4: regrouped from one flat 7-card grid into labeled sections
+          (same uppercase/tracking-wide label style Dashboard already uses
+          for "Activity") so it's clear at a glance what belongs together -
+          marko asked for the page to read more clearly/"transparently" and
+          feel more modern. Suppliers management removed entirely (its own
+          card used to sit here between Platforms and Import) - see the 1.7.4
+          report section for why that's safe to drop from this page. */}
+      <div className="space-y-10">
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Appearance
+          </h2>
+          <Card className="p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Theme</h3>
+              <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5">
+                {THEME_OPTIONS.map((o) => (
+                  <button
+                    key={o.key}
+                    onClick={() => setThemeMode(o.key)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                      themeMode === o.key
+                        ? "bg-brand-600 text-white"
+                        : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
               </div>
-              <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">The app will relaunch automatically once this finishes.</p>
             </div>
-          ) : available ? (
-            <div>
-              <p className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-200">Version {available.version} is available</p>
-              {available.body && <p className="mb-3 whitespace-pre-line text-xs text-slate-500 dark:text-slate-400">{available.body}</p>}
-              <Button variant="primary" onClick={doInstallUpdate}>
-                <IconDownload className="h-4 w-4" /> Download &amp; install
+          </Card>
+        </section>
+
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Lookups
+          </h2>
+          <Card className="p-5 lg:max-w-xl">
+            <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
+            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Used when recording orders and sales. Not hardcoded — add as many as you like.</p>
+            <div className="mb-3 flex gap-2">
+              <Input
+                placeholder="e.g. Ticketmaster"
+                value={newPlatform}
+                onChange={(e) => setNewPlatform(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addPlatform()}
+              />
+              <Button onClick={addPlatform}>Add</Button>
+            </div>
+            <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+              {platforms.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
+              {platforms.map((p) => (
+                <li key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span>{p.name}</span>
+                  <button
+                    className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
+                    title="Remove"
+                    onClick={() => setConfirmDeletePlatform(p)}
+                  >
+                    <IconTrash className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </section>
+
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Data
+          </h2>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card className="p-5">
+              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h3>
+              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                Bulk-add orders (and their tickets) from a spreadsheet. Columns: event, purchase_date, supplier,
+                platform, quantity, unit_price, fees, other_costs, currency, payment_status, ticket_type, section,
+                row, seats, notes. "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it
+                out to import without seat numbers. Everything imports in one all-or-nothing transaction.
+              </p>
+              <Button variant="primary" onClick={() => setImportOpen(true)}>
+                <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
               </Button>
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              <Button variant="secondary" disabled={updateChecking} onClick={doCheckForUpdate}>
-                {updateChecking ? <Spinner className="h-4 w-4" /> : null}
-                {updateChecking ? "Checking..." : "Check for updates"}
-              </Button>
-              {updateChecked && !updateError && <span className="text-xs text-slate-400 dark:text-slate-500">You're on the latest version.</span>}
-            </div>
-          )}
-          {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
-          {appInfo && <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">TIQR Manager v{appInfo.version}</p>}
-        </Card>
+            </Card>
+
+            <Card className="p-5">
+              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h3>
+              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Save any part of your data as a CSV file.</p>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: "Events", key: "events", fn: api.exportEventsCsv, file: "events.csv" },
+                  { label: "Orders", key: "orders", fn: api.exportOrdersCsv, file: "orders.csv" },
+                  { label: "Tickets", key: "tickets", fn: (p: string) => api.exportTicketsCsv(p), file: "tickets.csv" },
+                  { label: "Sales", key: "sales", fn: api.exportSalesCsv, file: "sales.csv" },
+                  { label: "Inventory", key: "inventory", fn: (p: string) => api.exportInventoryCsv(p), file: "inventory.csv" },
+                ].map((x) => (
+                  <Button
+                    key={x.key}
+                    variant="secondary"
+                    disabled={busyAction === x.key}
+                    onClick={() => doExport(x.key, x.file, x.fn)}
+                  >
+                    {busyAction === x.key ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                    {x.label}
+                  </Button>
+                ))}
+              </div>
+            </Card>
+
+            <Card className="p-5 lg:col-span-2">
+              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h3>
+              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                Your database lives only on this device. Back it up regularly, especially before big imports.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" disabled={busyAction === "backup"} onClick={doBackup}>
+                  {busyAction === "backup" ? <Spinner className="h-4 w-4" /> : <IconDatabase className="h-4 w-4" />}
+                  Backup database...
+                </Button>
+                <Button variant="secondary" disabled={busyAction === "restore"} onClick={pickRestoreFile}>
+                  {busyAction === "restore" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
+                  Restore from backup...
+                </Button>
+              </div>
+              {appInfo && (
+                <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
+                  Database file: <span className="font-mono">{appInfo.dbPath}</span>
+                </p>
+              )}
+            </Card>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Software
+          </h2>
+          <Card className="p-5 lg:max-w-xl">
+            <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
+            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              Checks GitHub for a newer signed release. Nothing downloads until you approve it, and everything
+              still works fully offline either way.
+            </p>
+
+            {installing ? (
+              <div>
+                <p className="mb-2 text-sm text-slate-600 dark:text-slate-400">
+                  Installing {available?.version}
+                  {installProgress?.total ? ` - ${Math.round((installProgress.downloaded / installProgress.total) * 100)}%` : "..."}
+                </p>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-brand-600 transition-all"
+                    style={{
+                      width: installProgress?.total
+                        ? `${Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100))}%`
+                        : "30%",
+                    }}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">The app will relaunch automatically once this finishes.</p>
+              </div>
+            ) : available ? (
+              <div>
+                <p className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-200">Version {available.version} is available</p>
+                {available.body && <p className="mb-3 whitespace-pre-line text-xs text-slate-500 dark:text-slate-400">{available.body}</p>}
+                <Button variant="primary" onClick={doInstallUpdate}>
+                  <IconDownload className="h-4 w-4" /> Download &amp; install
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant="secondary" disabled={updateChecking} onClick={doCheckForUpdate}>
+                  {updateChecking ? <Spinner className="h-4 w-4" /> : null}
+                  {updateChecking ? "Checking..." : "Check for updates"}
+                </Button>
+                {updateChecked && !updateError && <span className="text-xs text-slate-400 dark:text-slate-500">You're on the latest version.</span>}
+              </div>
+            )}
+            {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
+            {appInfo && <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">TIQR Manager v{appInfo.version}</p>}
+          </Card>
+        </section>
       </div>
 
       <CsvImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
@@ -406,34 +391,6 @@ export default function Settings() {
           try {
             await api.deletePlatform(confirmDeletePlatform.id);
             setConfirmDeletePlatform(null);
-            reload();
-          } catch (e) {
-            toast.error(errMsg(e));
-          } finally {
-            setDeletingLookup(false);
-          }
-        }}
-      />
-
-      <ConfirmDialog
-        open={!!confirmDeleteSupplier}
-        title="Remove this supplier?"
-        message={
-          <>
-            Removes <b>{confirmDeleteSupplier?.name}</b> from the supplier list. Any existing orders that used it
-            keep their cost amounts - they just lose the supplier label.
-          </>
-        }
-        confirmLabel="Remove supplier"
-        danger
-        busy={deletingLookup}
-        onCancel={() => setConfirmDeleteSupplier(null)}
-        onConfirm={async () => {
-          if (!confirmDeleteSupplier) return;
-          setDeletingLookup(true);
-          try {
-            await api.deleteSupplier(confirmDeleteSupplier.id);
-            setConfirmDeleteSupplier(null);
             reload();
           } catch (e) {
             toast.error(errMsg(e));

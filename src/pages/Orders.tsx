@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderInput, OrderPaymentStatus, Platform, Supplier } from "../lib/types";
+import type { EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
 import { decimalStringToCents, formatDate, formatMoney, todayIso } from "../lib/format";
 import {
   Badge,
@@ -205,11 +205,9 @@ function OrderFormModal({
 }) {
   const toast = useToast();
   const [events, setEvents] = useState<EventWithStats[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
 
   const [eventId, setEventId] = useState<number | "">("");
-  const [supplierId, setSupplierId] = useState<number | null>(null);
   const [platformId, setPlatformId] = useState<number | null>(null);
   const [purchaseDate, setPurchaseDate] = useState(todayIso());
   const [quantity, setQuantity] = useState("1");
@@ -229,10 +227,8 @@ function OrderFormModal({
   useEffect(() => {
     if (!open) return;
     api.listEvents().then(setEvents).catch(() => {});
-    api.listSuppliers().then(setSuppliers).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
     setEventId(presetEventId ?? "");
-    setSupplierId(null);
     setPlatformId(null);
     setPurchaseDate(todayIso());
     setQuantity("1");
@@ -281,7 +277,13 @@ function OrderFormModal({
 
     const input: OrderInput = {
       eventId: Number(eventId),
-      supplierId,
+      // 1.7.4: Supplier is no longer collected on this form (see LookupSelect
+      // removal below) - marko flagged it as clutter he never uses when
+      // quickly creating an order. Always sending null here, rather than
+      // omitting the key, keeps the intent explicit for the next reader.
+      // Existing/CSV-imported orders that already have a supplier keep it -
+      // this form just never sets one going forward.
+      supplierId: null,
       platformId,
       purchaseDate,
       quantity: q,
@@ -332,28 +334,25 @@ function OrderFormModal({
           </Field>
         </div>
 
-        <LookupSelect
-          label="Supplier"
-          options={suppliers}
-          value={supplierId}
-          onChange={setSupplierId}
-          onCreate={async (name) => {
-            const s = await api.createSupplier(name);
-            setSuppliers((prev) => [...prev, s]);
-            return s;
-          }}
-        />
-        <LookupSelect
-          label="Platform"
-          options={platforms}
-          value={platformId}
-          onChange={setPlatformId}
-          onCreate={async (name) => {
-            const p = await api.createPlatform(name, "purchase");
-            setPlatforms((prev) => [...prev, p]);
-            return p;
-          }}
-        />
+        {/* 1.7.4: Supplier used to sit here next to Platform - removed as
+            clutter marko never uses on this form (still settable per-order
+            via Edit on Order Detail, and CSV import still recognizes a
+            "supplier" column, so nothing already using it breaks). Platform
+            now takes the full width on its own row instead of leaving an
+            empty half-row gap. */}
+        <div className="col-span-2">
+          <LookupSelect
+            label="Platform"
+            options={platforms}
+            value={platformId}
+            onChange={setPlatformId}
+            onCreate={async (name) => {
+              const p = await api.createPlatform(name, "purchase");
+              setPlatforms((prev) => [...prev, p]);
+              return p;
+            }}
+          />
+        </div>
 
         <Field label="Purchase date" required>
           <Input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />

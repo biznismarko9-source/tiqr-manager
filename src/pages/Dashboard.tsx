@@ -145,14 +145,17 @@ export default function Dashboard() {
                   sub={`${data.period.purchasedTickets} purchased in period`}
                 />
               </div>
-              {/* Same numbers as the "Revenue"/"Profit" StatCards above, just
-                  broken out over time instead of collapsed into one total for
-                  the period - never a separate/independent figure, so it can
-                  never contradict them (see revenue_time_series in
-                  dashboard.rs, which shares period_summary's exact scope). */}
+              {/* Same number as the "Revenue" StatCard above, just broken out
+                  over time instead of collapsed into one total for the
+                  period - never a separate/independent figure, so it can
+                  never contradict it (see revenue_time_series in
+                  dashboard.rs, which shares period_summary's exact scope).
+                  1.7.4: simplified to Revenue only - Profit stays visible as
+                  its own StatCard above, just not broken out bucket-by-bucket
+                  in this chart anymore (see RevenueChart.tsx). */}
               <Card className="mb-8 p-4">
                 <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                  Revenue &amp; profit over time
+                  Revenue over time
                 </p>
                 <RevenueChart
                   points={data.revenueTimeSeries}
