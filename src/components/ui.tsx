@@ -57,6 +57,15 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea className={`input ${className}`} {...rest} />;
 }
 
+// checkbox styling shared by every bulk-selection UI (Sales, Sale Detail,
+// Order Detail - header "select all" and per-row boxes alike). index.css has
+// no `.checkbox` component class (only .input/.th/.td/.label/.card), so this
+// is spelled out directly rather than assuming one exists. 1.8.3: hoisted
+// here from Sales.tsx (its original, 1.8.0 home) so it has one definition
+// instead of being copy-pasted into every page that grew a selection UI.
+export const CHECKBOX_CLASS =
+  "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-200 dark:border-slate-600 dark:bg-slate-800 dark:focus:ring-brand-900";
+
 export function Field({
   label,
   required,

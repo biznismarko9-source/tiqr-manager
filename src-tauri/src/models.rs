@@ -180,6 +180,35 @@ pub struct TicketUpdateInput {
     pub notes: Option<String>,
 }
 
+/// Closed set of ticket fields `bulk_update_tickets` is allowed to change.
+/// Deliberately has NO `Status` variant - see `bulk_update_tickets_impl`
+/// (tickets.rs) for why a naive bulk status change is unsafe. Being a closed
+/// enum rather than a free-form column-name string means there is no code
+/// path that could ever compile a bulk UPDATE against a column outside this
+/// list, in particular never against `tickets.status`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BulkTicketField {
+    Section,
+    RowLabel,
+    Seat,
+    TicketType,
+    ListingPriceCents,
+}
+
+/// Input for `bulk_update_tickets`: set one field to one value across many
+/// tickets in a single all-or-nothing transaction. `text_value` is used for
+/// Section/RowLabel/Seat/TicketType; `cents_value` is used for
+/// ListingPriceCents. Leaving the relevant one `None` clears that field.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketUpdateInput {
+    pub ticket_ids: Vec<i64>,
+    pub field: BulkTicketField,
+    pub text_value: Option<String>,
+    pub cents_value: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Sale {
@@ -384,6 +413,24 @@ pub struct DashboardAlerts {
     /// "capped list + separate total count" convention already used for
     /// Recent Events/Orders/Sales elsewhere on this dashboard.
     pub upcoming_events: Vec<UpcomingEventAlert>,
+    /// 1.8.3 (section 13, Payments visibility): sales whose payment_status
+    /// is 'pending' - money not yet collected from the buyer. The sales-side
+    /// mirror of `unpaid_orders_count` (money not yet paid to a supplier).
+    /// Deliberately NOT period-filtered, same "right now" rule as every
+    /// other field on this struct - and deliberately just a count/amount,
+    /// not a new payments module (no transactions/reconciliation/invoices).
+    pub pending_sales_count: i64,
+    /// SUM(sale_price_cents) of the sales counted in `pending_sales_count`,
+    /// scoped to `primary_currency` like every other money total on this
+    /// dashboard. Legitimately 0 (not "missing") when the count is 0.
+    pub pending_sales_amount_cents: i64,
+    /// Some(code) unless the database has more than one currency
+    /// (`mixed_currencies`) - same "null = mixed, never blend" convention as
+    /// `InventoryPotential.currency`. Reuses the dashboard's own
+    /// primary_currency/mixed_currencies signal (computed from tickets,
+    /// whose currency `sales.currency` always copies at creation time)
+    /// rather than a second, narrower check scoped to just pending sales.
+    pub pending_sales_currency: Option<String>,
 }
 
 /// One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same

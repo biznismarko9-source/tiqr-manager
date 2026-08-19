@@ -23,6 +23,12 @@ import type { OrderRecord } from "../lib/types";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
+// 1.8.3 (section 8): remembers the last-used search for this app session
+// only, same convention as Sales.tsx's `lastFilters` / Tickets.tsx's
+// `lastTicketsFilters`, so returning here (in particular via Order Detail's
+// context-aware Back link) finds the same search instead of starting blank.
+let lastOrdersSearch: string | null = null;
+
 /** Turns the free-form "Seats" input into one label per ticket.
  * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
  * comma-separated list ("12, 14, 16A"). Blank input -> no seats assigned. */
@@ -49,9 +55,13 @@ export default function Orders() {
   const location = useLocation();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(lastOrdersSearch ?? "");
   const [modalOpen, setModalOpen] = useState(false);
   const [presetEventId, setPresetEventId] = useState<number | undefined>(undefined);
+
+  useEffect(() => {
+    lastOrdersSearch = search;
+  }, [search]);
 
   const load = (q?: string) => {
     api
@@ -72,8 +82,12 @@ export default function Orders() {
   }, [search]);
 
   useEffect(() => {
-    const state = location.state as { presetEventId?: number } | null;
-    if (state?.presetEventId) {
+    // 1.8.3 (section 11): `openCreate` (no event preset) additionally lets
+    // the Dashboard's "New Order" Quick Action open this same modal without
+    // pinning it to one event - purely additive, presetEventId's own
+    // behavior below is unchanged.
+    const state = location.state as { presetEventId?: number; openCreate?: boolean } | null;
+    if (state?.presetEventId || state?.openCreate) {
       setPresetEventId(state.presetEventId);
       setModalOpen(true);
       navigate(location.pathname, { replace: true, state: null });
@@ -132,43 +146,73 @@ export default function Orders() {
           }
         />
       ) : (
+        // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
+        // Sales.tsx for the full rationale) instead of the old
+        // min-w-[950px]+overflow-x-auto pattern. Also added whole-row
+        // click-to-navigate to Order Detail, mirroring Events.tsx's own BUG
+        // #7 fix - a click that lands on the Event link still goes to the
+        // event instead (closest("a") defers to whichever link was actually
+        // clicked). `state={{ from: location.pathname }}` lets Order
+        // Detail's Back link return to this exact page (section 8).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[950px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-[92px]" />
+              <col />
+              <col className="w-[84px]" />
+              <col className="w-[92px]" />
+              <col className="w-[92px]" />
+              <col className="w-12" />
+              <col className="w-[64px]" />
+              <col className="w-[88px]" />
+              <col className="w-[88px]" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th">Order</th>
-                <th className="th">Event</th>
-                <th className="th">Date</th>
-                <th className="th">Supplier</th>
-                <th className="th">Platform</th>
-                <th className="th text-right">Qty</th>
-                <th className="th text-right">Sold</th>
-                <th className="th text-right">Total cost</th>
-                <th className="th">Payment</th>
+                <th className="th-c">Order</th>
+                <th className="th-c">Event</th>
+                <th className="th-c">Date</th>
+                <th className="th-c">Supplier</th>
+                <th className="th-c">Platform</th>
+                <th className="th-c text-right">Qty</th>
+                <th className="th-c text-right">Sold</th>
+                <th className="th-c text-right">Total cost</th>
+                <th className="th-c">Payment</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {orders.map((o) => (
-                <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td">
-                    <Link to={`/orders/${o.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                <tr
+                  key={o.id}
+                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest("a")) return;
+                    navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
+                  }}
+                >
+                  <td className="td-c truncate" title={o.code}>
+                    <Link
+                      to={`/orders/${o.id}`}
+                      state={{ from: location.pathname }}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                    >
                       {o.code}
                     </Link>
                   </td>
-                  <td className="td">
+                  <td className="td-c truncate" title={o.eventName}>
                     <Link to={`/events/${o.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
                       {o.eventName}
                     </Link>
                   </td>
-                  <td className="td whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
-                  <td className="td">{o.supplierName ?? "-"}</td>
-                  <td className="td">{o.platformName ?? "-"}</td>
-                  <td className="td text-right tabular-nums">{o.quantity}</td>
-                  <td className="td text-right tabular-nums">
+                  <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
+                  <td className="td-c truncate" title={o.supplierName ?? undefined}>{o.supplierName ?? "-"}</td>
+                  <td className="td-c truncate" title={o.platformName ?? undefined}>{o.platformName ?? "-"}</td>
+                  <td className="td-c text-right tabular-nums">{o.quantity}</td>
+                  <td className="td-c text-right tabular-nums">
                     {o.soldCount}/{o.quantity}
                   </td>
-                  <td className="td text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
-                  <td className="td">
+                  <td className="td-c text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
+                  <td className="td-c">
                     <Badge tone={o.paymentStatus}>{o.paymentStatus}</Badge>
                   </td>
                 </tr>
@@ -185,7 +229,7 @@ export default function Orders() {
         onCreated={(order) => {
           setModalOpen(false);
           load(search);
-          navigate(`/orders/${order.id}`);
+          navigate(`/orders/${order.id}`, { state: { from: location.pathname } });
         }}
       />
     </div>

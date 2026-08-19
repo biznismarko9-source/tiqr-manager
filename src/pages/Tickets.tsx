@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, Supplier, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDate, formatMoney } from "../lib/format";
@@ -33,6 +33,24 @@ function inventoryStatus(o: OrderRecord): { key: string; label: string } {
   return { key: "soldout", label: "Sold out" };
 }
 
+// 1.8.3 (section 8 of the brief): remembers each page's last-used filters
+// for this app session only, same module-level/session-only convention
+// Sales.tsx already established in 1.8.0 (see its own `lastFilters`). Keyed
+// by pathname (not a single shared value) because this one component backs
+// TWO different pages - Tickets ("/tickets") and Inventory ("/inventory") -
+// which must never leak each other's search/filters into one another.
+interface TicketsFilterState {
+  search: string;
+  status: string;
+  eventId: number | "";
+  supplierId: number | "";
+  platformId: number | "";
+  section: string;
+  dateFrom: string;
+  dateTo: string;
+}
+const lastTicketsFilters = new Map<string, TicketsFilterState>();
+
 /** Shared list view, reused (pre-filtered) by the Inventory page. Groups
  * tickets by their order - one row per order, not per ticket - so the list
  * stays fast and readable no matter how many individual tickets an order
@@ -48,25 +66,36 @@ export function TicketsView({
   lockedStatus?: string;
 }) {
   const toast = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
+  const cached = lastTicketsFilters.get(location.pathname);
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [search, setSearch] = useState(params.get("code") ?? "");
-  const [status, setStatus] = useState(lockedStatus ?? "");
-  const [eventId, setEventId] = useState<number | "">("");
-  const [supplierId, setSupplierId] = useState<number | "">("");
-  const [platformId, setPlatformId] = useState<number | "">("");
-  const [section, setSection] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState(params.get("code") ?? cached?.search ?? "");
+  const [status, setStatus] = useState(lockedStatus ?? cached?.status ?? "");
+  const [eventId, setEventId] = useState<number | "">(cached?.eventId ?? "");
+  const [supplierId, setSupplierId] = useState<number | "">(cached?.supplierId ?? "");
+  const [platformId, setPlatformId] = useState<number | "">(cached?.platformId ?? "");
+  const [section, setSection] = useState(cached?.section ?? "");
+  const [dateFrom, setDateFrom] = useState(cached?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(cached?.dateTo ?? "");
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
     api.listSuppliers().then(setSuppliers).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
   }, []);
+
+  // 1.8.3 (section 8): persist this page's own filters (see
+  // lastTicketsFilters above) so returning here - in particular via Order
+  // Detail's now context-aware Back link - finds the same search/filters
+  // instead of a blank slate.
+  useEffect(() => {
+    lastTicketsFilters.set(location.pathname, { search, status, eventId, supplierId, platformId, section, dateFrom, dateTo });
+  }, [location.pathname, search, status, eventId, supplierId, platformId, section, dateFrom, dateTo]);
 
   const load = () => {
     api
@@ -191,46 +220,82 @@ export function TicketsView({
       ) : orders.length === 0 ? (
         <EmptyState icon={<IconBoxes className="h-8 w-8" />} title="No orders match these filters" />
       ) : (
+        // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
+        // Sales.tsx for the full rationale) instead of the old
+        // min-w-[1000px]+overflow-x-auto pattern, which could scroll
+        // horizontally on this app's smallest supported window. Also added
+        // whole-row click-to-navigate, mirroring Events.tsx's own BUG #7 fix
+        // (a click anywhere in the row that doesn't land on a link still
+        // navigates to Order Detail; a click that does land on a link defers
+        // to it, so nothing double-navigates) - this table's hover highlight
+        // already visually implied the whole row was clickable, but only the
+        // two link cells actually were. `state={{ from: location.pathname }}`
+        // lets Order Detail's Back link return to this exact page (section 8).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1000px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-[92px]" />
+              <col />
+              <col className="w-[100px]" />
+              <col className="w-[88px]" />
+              <col className="w-12" />
+              <col className="w-[70px]" />
+              <col className="w-12" />
+              <col className="w-[88px]" />
+              <col className="w-[88px]" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th">Order</th>
-                <th className="th">Event</th>
-                <th className="th">Supplier</th>
-                <th className="th">Purchase date</th>
-                <th className="th text-right">Total</th>
-                <th className="th text-right">Available</th>
-                <th className="th text-right">Sold</th>
-                <th className="th text-right">Total cost</th>
-                <th className="th">Status</th>
+                <th className="th-c">Order</th>
+                <th className="th-c">Event</th>
+                <th className="th-c">Supplier</th>
+                <th className="th-c">Purchase date</th>
+                <th className="th-c text-right">Total</th>
+                <th className="th-c text-right">Available</th>
+                <th className="th-c text-right">Sold</th>
+                <th className="th-c text-right">Total cost</th>
+                <th className="th-c">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {orders.map((o) => {
                 const inv = inventoryStatus(o);
                 return (
-                  <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                    <td className="td">
+                  <tr
+                    key={o.id}
+                    className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest("a")) return;
+                      navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
+                    }}
+                  >
+                    <td className="td-c truncate" title={o.code}>
                       <Link
                         to={`/orders/${o.id}`}
+                        state={{ from: location.pathname }}
                         className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                       >
                         {o.code}
                       </Link>
                     </td>
-                    <td className="td">
-                      <Link to={`/orders/${o.id}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+                    <td className="td-c truncate" title={o.eventName}>
+                      <Link
+                        to={`/orders/${o.id}`}
+                        state={{ from: location.pathname }}
+                        className="hover:text-brand-700 dark:hover:text-brand-400"
+                      >
                         {o.eventName}
                       </Link>
                     </td>
-                    <td className="td text-slate-500 dark:text-slate-400">{o.supplierName ?? "-"}</td>
-                    <td className="td whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
-                    <td className="td text-right tabular-nums">{o.quantity}</td>
-                    <td className="td text-right tabular-nums">{o.availableCount + o.listedCount}</td>
-                    <td className="td text-right tabular-nums">{o.soldCount}</td>
-                    <td className="td text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
-                    <td className="td">
+                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.supplierName ?? undefined}>
+                      {o.supplierName ?? "-"}
+                    </td>
+                    <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
+                    <td className="td-c text-right tabular-nums">{o.quantity}</td>
+                    <td className="td-c text-right tabular-nums">{o.availableCount + o.listedCount}</td>
+                    <td className="td-c text-right tabular-nums">{o.soldCount}</td>
+                    <td className="td-c text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
+                    <td className="td-c">
                       <Badge tone={inv.key}>{inv.label}</Badge>
                     </td>
                   </tr>

@@ -6,6 +6,7 @@ import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, form
 import {
   Badge,
   Button,
+  CHECKBOX_CLASS,
   Card,
   ConfirmDialog,
   EmptyState,
@@ -18,6 +19,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
+import { BulkTicketEditBar } from "../components/BulkTicketEditBar";
 import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -43,8 +45,15 @@ export default function SaleDetail() {
   // time - separate from the per-line deleteTarget/deleting above.
   const [groupDeleteOpen, setGroupDeleteOpen] = useState(false);
   const [groupDeleting, setGroupDeleting] = useState(false);
+  // 1.8.3: bulk ticket actions - holds TICKET ids (s.ticketId), not sale ids,
+  // since bulk_update_tickets operates on the tickets table.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const load = useCallback(() => {
+    // Every reload (mount, delete, refund, edit, or a bulk edit just
+    // applied) starts from a clean selection - a stale id could otherwise
+    // point at a line that no longer exists here after a delete/refund.
+    setSelected(new Set());
     api
       .listSalesByGroup(saleId)
       .then(setLines)
@@ -116,6 +125,24 @@ export default function SaleDetail() {
   }, [lines]);
 
   if (lines === null || header === null) return <LoadingBlock />;
+
+  // 1.8.3: bulk ticket actions - refunded lines are excluded from selection,
+  // mirroring the existing rule below that already hides their per-line
+  // Edit/Refund buttons (a refunded line is history, not something to
+  // bulk-edit from this page).
+  const selectableLines = lines.filter((s) => s.paymentStatus !== "refunded");
+  const allSelectableSelected = selectableLines.length > 0 && selectableLines.every((s) => selected.has(s.ticketId));
+  const toggleSelectAll = () => {
+    setSelected(allSelectableSelected ? new Set() : new Set(selectableLines.map((s) => s.ticketId)));
+  };
+  const toggleOne = (ticketId: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticketId)) next.delete(ticketId);
+      else next.add(ticketId);
+      return next;
+    });
+  };
 
   return (
     <div>
@@ -218,23 +245,32 @@ export default function SaleDetail() {
         counted as realized.
       </p>
 
+      <BulkTicketEditBar
+        selectedIds={Array.from(selected)}
+        currency={header.currency}
+        onClear={() => setSelected(new Set())}
+        onApplied={() => load()}
+      />
+
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets in this sale ({lines.length})</h2>
       {lines.length === 0 ? (
         <EmptyState title="No tickets found for this sale" />
       ) : (
         // 1.8.2: same table-layout:fixed + <colgroup> technique as the Sales
-        // list (see Sales.tsx for the full rationale) - 8 fixed columns
-        // summing to 660px, Seat left unspecified to absorb the rest. Even
-        // at this app's smallest possible window (808px of content, see
-        // Sales.tsx's comment for the math) that leaves 148px for Seat,
-        // growing from there. Section/Row/Seat are merged into one Seat
-        // column via formatSeatLocation (lib/format.ts) - the 3 underlying
-        // fields (s.section/s.rowLabel/s.seat) are untouched, only how they
-        // display here changed. `.th-c`/`.td-c` are the same compact classes
-        // Sales.tsx uses - `.th`/`.td` elsewhere are untouched.
+        // list (see Sales.tsx for the full rationale) - Seat is left
+        // unspecified to absorb whatever width the fixed columns don't use.
+        // Even at this app's smallest possible window (808px of content, see
+        // Sales.tsx's comment for the math) that still leaves a comfortable
+        // floor for Seat, growing from there. Section/Row/Seat are merged
+        // into one Seat column via formatSeatLocation (lib/format.ts) - the
+        // 3 underlying fields (s.section/s.rowLabel/s.seat) are untouched,
+        // only how they display here changed. `.th-c`/`.td-c` are the same
+        // compact classes Sales.tsx uses - `.th`/`.td` elsewhere are
+        // untouched. 1.8.3 added the leading checkbox column (bulk actions).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              <col className="w-8" />
               <col className="w-[84px]" />
               <col className="w-[84px]" />
               <col />
@@ -247,6 +283,15 @@ export default function SaleDetail() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                <th className="th-c">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={allSelectableSelected}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all tickets in this sale"
+                  />
+                </th>
                 <th className="th-c">Ticket</th>
                 <th className="th-c">Order</th>
                 <th className="th-c">Seat</th>
@@ -261,8 +306,23 @@ export default function SaleDetail() {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {lines.map((s) => {
                 const seatLabel = formatSeatLocation(s.section, s.rowLabel, s.seat);
+                const selectable = s.paymentStatus !== "refunded";
                 return (
-                  <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <tr
+                    key={s.id}
+                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(s.ticketId) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
+                  >
+                    <td className="td-c">
+                      {selectable && (
+                        <input
+                          type="checkbox"
+                          className={CHECKBOX_CLASS}
+                          checked={selected.has(s.ticketId)}
+                          onChange={() => toggleOne(s.ticketId)}
+                          aria-label={`Select ticket ${s.ticketCode}`}
+                        />
+                      )}
+                    </td>
                     <td className="td-c font-medium text-slate-900 dark:text-slate-100">
                       {/* 1.8.0 (S11): reuses Tickets.tsx's existing ?code= search-param
                           convention - links to /tickets (not /inventory, which is locked

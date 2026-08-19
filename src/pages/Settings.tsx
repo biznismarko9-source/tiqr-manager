@@ -98,6 +98,26 @@ export default function Settings() {
     }
   };
 
+  // 1.8.3 (section 10): only one CSV import exists (orders + tickets
+  // together, see csv_import.rs) so only one template is offered - see
+  // export_orders_csv_template's doc comment (csv_export.rs).
+  const doDownloadTemplate = async () => {
+    const path = await save({
+      defaultPath: "tiqr-orders-import-template.csv",
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!path) return;
+    setBusyAction("template");
+    try {
+      await api.exportOrdersCsvTemplate(path);
+      toast.success(`Template saved to ${path}`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const doBackup = async () => {
     const stamp = new Date().toISOString().slice(0, 10);
     const path = await save({
@@ -284,9 +304,15 @@ export default function Settings() {
                   row, seats, notes. "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it
                   out to import without seat numbers. Everything imports in one all-or-nothing transaction.
                 </p>
-                <Button variant="primary" onClick={() => setImportOpen(true)}>
-                  <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" onClick={() => setImportOpen(true)}>
+                    <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
+                  </Button>
+                  <Button variant="secondary" disabled={busyAction === "template"} onClick={doDownloadTemplate}>
+                    {busyAction === "template" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                    Download template
+                  </Button>
+                </div>
               </Card>
 
               <Card className="p-5">
@@ -438,6 +464,38 @@ export default function Settings() {
   );
 }
 
+// 1.8.3 (section 9): a small clickable "count" chip for the import preview's
+// summary row - Valid/Invalid, filtering the preview table below when
+// clicked. Deliberately reuses the same tone convention as ui.tsx's Badge
+// (emerald=good, red=problem) rather than inventing new colors.
+function ImportSummaryChip({
+  label,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string;
+  tone: "neutral" | "valid" | "error";
+  active: boolean;
+  onClick: () => void;
+}) {
+  const toneCls =
+    tone === "valid"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30"
+      : tone === "error"
+        ? "bg-red-50 text-red-700 ring-red-200 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30"
+        : "bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-opacity ${toneCls} ${active ? "" : "opacity-60 hover:opacity-100"}`}
+    >
+      {label}
+    </button>
+  );
+}
+
 function CsvImportModal({
   open: isOpen,
   onClose,
@@ -452,11 +510,16 @@ function CsvImportModal({
   const [preview, setPreview] = useState<CsvPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  // 1.8.3 (section 9): which preview rows are shown - set by clicking a
+  // summary chip below. Preview-only; the actual import always covers every
+  // row regardless of this filter (see confirmImport, unaffected).
+  const [filterMode, setFilterMode] = useState<"all" | "valid" | "errors">("all");
 
   useEffect(() => {
     if (!isOpen) {
       setPath(null);
       setPreview(null);
+      setFilterMode("all");
     }
   }, [isOpen]);
 
@@ -466,6 +529,7 @@ function CsvImportModal({
     setPath(p);
     setLoading(true);
     setPreview(null);
+    setFilterMode("all");
     try {
       const res = await api.previewOrdersCsv(p);
       setPreview(res);
@@ -475,6 +539,12 @@ function CsvImportModal({
       setLoading(false);
     }
   };
+
+  const visibleRows = preview
+    ? preview.rows.filter((r) =>
+        filterMode === "valid" ? r.errors.length === 0 : filterMode === "errors" ? r.errors.length > 0 : true,
+      )
+    : [];
 
   const confirmImport = async () => {
     if (!path) return;
@@ -515,21 +585,43 @@ function CsvImportModal({
 
       {preview && !loading && (
         <div>
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              <span className="font-medium text-emerald-600 dark:text-emerald-400">{preview.validCount} valid</span>
-              {preview.errorCount > 0 && (
-                <>
-                  {" "}
-                  &middot; <span className="font-medium text-red-600 dark:text-red-400">{preview.errorCount} with errors</span>
-                </>
-              )}{" "}
-              of {preview.rows.length} rows
-            </p>
-            <button className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={pickFile}>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <ImportSummaryChip
+              label={`${preview.rows.length} row${preview.rows.length === 1 ? "" : "s"}`}
+              tone="neutral"
+              active={filterMode === "all"}
+              onClick={() => setFilterMode("all")}
+            />
+            <ImportSummaryChip
+              label={`✓ ${preview.validCount} valid`}
+              tone="valid"
+              active={filterMode === "valid"}
+              onClick={() => setFilterMode("valid")}
+            />
+            {preview.errorCount > 0 && (
+              <ImportSummaryChip
+                label={`✕ ${preview.errorCount} error${preview.errorCount === 1 ? "" : "s"}`}
+                tone="error"
+                active={filterMode === "errors"}
+                onClick={() => setFilterMode("errors")}
+              />
+            )}
+            <button className="ml-auto text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={pickFile}>
               Choose a different file
             </button>
           </div>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Click a count above to filter the preview below.{" "}
+            {/* 1.8.3 (section 9): the spec asked for a Duplicates count too, but
+                this app has no reliable way to detect one - every imported row
+                gets a freshly generated order/ticket code with nothing that ties
+                it back to CSV content, so there's no signal to compare against.
+                Saying so here rather than showing a count that would just be
+                guessing. */}
+            Duplicate rows aren&apos;t flagged - imported orders always get a fresh code, so there&apos;s no reliable
+            way to tell whether a row matches something you already imported. Review the file itself if you&apos;re
+            re-importing.
+          </p>
 
           <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
             <table className="w-full min-w-[600px] border-collapse text-xs">
@@ -545,22 +637,30 @@ function CsvImportModal({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {preview.rows.slice(0, 100).map((r) => (
-                  <tr key={r.rowNumber} className={r.errors.length > 0 ? "bg-red-50 dark:bg-red-500/10" : ""}>
-                    <td className="td">{r.rowNumber}</td>
-                    {preview.headers.map((h) => (
-                      <td key={h} className="td whitespace-nowrap">
-                        {r.values[h] ?? ""}
-                      </td>
-                    ))}
-                    <td className="td text-red-600 dark:text-red-400">{r.errors.join("; ")}</td>
+                {visibleRows.length === 0 ? (
+                  <tr>
+                    <td className="td text-center text-slate-400 dark:text-slate-500" colSpan={preview.headers.length + 2}>
+                      No rows match this filter
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  visibleRows.slice(0, 100).map((r) => (
+                    <tr key={r.rowNumber} className={r.errors.length > 0 ? "bg-red-50 dark:bg-red-500/10" : ""}>
+                      <td className="td">{r.rowNumber}</td>
+                      {preview.headers.map((h) => (
+                        <td key={h} className="td whitespace-nowrap">
+                          {r.values[h] ?? ""}
+                        </td>
+                      ))}
+                      <td className="td text-red-600 dark:text-red-400">{r.errors.join("; ")}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
-            {preview.rows.length > 100 && (
+            {visibleRows.length > 100 && (
               <p className="border-t border-slate-100 dark:border-slate-800 p-2 text-center text-xs text-slate-400 dark:text-slate-500">
-                Showing first 100 of {preview.rows.length} rows
+                Showing first 100 of {visibleRows.length} matching rows
               </p>
             )}
           </div>

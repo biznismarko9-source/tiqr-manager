@@ -47,6 +47,26 @@ export default function EventDetail() {
 
   const s = event.stats;
 
+  // 1.8.3 (section 14): "Potential profit" for this event's still-unsold
+  // stock, computed client-side from the tickets already loaded above -
+  // mirrors the Dashboard's InventoryPotential block field-for-field
+  // (inventory_cost_cents/listing_value_cents/potential_profit_cents), just
+  // scoped to one event instead of the whole database, so no new backend
+  // command is needed. `tickets` can still be null on first paint (it loads
+  // independently of `event`) - falls back to an empty list, same as the
+  // "Tickets (0)" heading below already tolerates.
+  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
+  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
+  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
+  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
+  // Checked against just this unsold subset (not the event-wide s.currency
+  // flag) - cheap to do precisely here since it's a plain filter over an
+  // already-loaded array, unlike the Dashboard's version which reuses its
+  // global mixed-currency flag to avoid an extra SQL query.
+  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
+  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? s.currency) : null;
+  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
+
   return (
     <div>
       <Link to="/events" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
@@ -76,7 +96,17 @@ export default function EventDetail() {
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Purchased" value={String(s.purchasedTickets)} />
-        <StatCard label="Available" value={String(s.availableTickets)} sub={`${s.listedTickets} listed`} />
+        {/* 1.8.3 (section 7): "Remaining" = available + listed together - the
+            true "still need to sell this" count. Previously this card led
+            with just availableTickets and buried listed in the sub-line,
+            which understated how much unsold stock was actually left
+            whenever any of it was already listed. Both individual counts
+            are still shown, just in the sub-line, not lost. */}
+        <StatCard
+          label="Remaining"
+          value={String(s.availableTickets + s.listedTickets)}
+          sub={`${s.availableTickets} available, ${s.listedTickets} listed`}
+        />
         <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
         <StatCard label="Cost" value={formatMoneyOrMixed(s.totalCostCents, s.currency)} />
         <StatCard label="Revenue" value={formatMoneyOrMixed(s.revenueCents, s.currency)} />
@@ -94,6 +124,43 @@ export default function EventDetail() {
         />
         <StatCard label="Margin" value={formatPercentOrMixed(s.margin, s.currency)} />
         <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
+      </div>
+
+      {/* 1.8.3 (section 14): same tinted-zone treatment as the Dashboard's
+          "Inventory & Potential Profit" block, just scoped to this one
+          event - deliberately never called "Profit" alone, so it can't be
+          mistaken for the realized Profit stat above. */}
+      <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+          Potential Profit
+        </p>
+        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Inventory cost"
+            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
+            sub="What unsold tickets cost you"
+          />
+          <StatCard
+            label="Listing value"
+            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
+            sub="Unsold tickets that have a listing price"
+          />
+          <StatCard
+            label="Potential profit"
+            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
+            sub="Listing value minus inventory cost"
+          />
+        </div>
+        {missingListingPriceCount > 0 && (
+          <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+            {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
+            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what
+            full inventory could be worth once priced.
+          </p>
+        )}
       </div>
 
       {event.notes && (

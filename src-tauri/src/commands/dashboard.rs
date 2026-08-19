@@ -382,6 +382,17 @@ pub(crate) fn get_dashboard_impl(
         [],
         |r| r.get(0),
     )?;
+    // 1.8.3 (section 13, Payments visibility): sales side of "money not yet
+    // settled" - the counterpart to unpaid_orders_count above. Scoped to
+    // primary_currency like every other money total on this dashboard (see
+    // pending_sales_currency doc comment on DashboardAlerts for why that's
+    // safe even though this query itself doesn't touch tickets.currency).
+    let (pending_sales_count, pending_sales_amount_cents): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(sale_price_cents),0)
+         FROM sales WHERE payment_status = 'pending' AND currency = ?1",
+        [&primary_currency],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
 
     let today = Local::now().date_naive().to_string();
     let window_end = (Local::now().date_naive() + Duration::days(UPCOMING_EVENT_WINDOW_DAYS)).to_string();
@@ -424,6 +435,9 @@ pub(crate) fn get_dashboard_impl(
         missing_listing_price_count,
         upcoming_events_count,
         upcoming_events,
+        pending_sales_count,
+        pending_sales_amount_cents,
+        pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
     let recent_orders = orders_cmd::fetch_recent(conn, 5)?;
@@ -589,6 +603,9 @@ mod tests {
         assert_eq!(data.alerts.missing_listing_price_count, 0);
         assert_eq!(data.alerts.upcoming_events_count, 0);
         assert!(data.alerts.upcoming_events.is_empty());
+        assert_eq!(data.alerts.pending_sales_count, 0);
+        assert_eq!(data.alerts.pending_sales_amount_cents, 0);
+        assert_eq!(data.alerts.pending_sales_currency, Some("EUR".to_string()));
     }
 
     // ---- Attention: unpaid orders ------------------------------------------
@@ -621,6 +638,83 @@ mod tests {
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
         assert_eq!(data.alerts.missing_listing_price_count, 2);
+    }
+
+    // ---- Attention: pending sales (1.8.3 section 13) -----------------------
+
+    /// Same as `seed_sale` but with an explicit payment_status - used only by
+    /// the pending-sales tests below. Every existing chart test keeps using
+    /// the plain `seed_sale` helper (always "paid"), which is deliberately
+    /// left untouched.
+    fn seed_sale_with_status(
+        conn: &mut Connection,
+        ticket_id: i64,
+        sale_date: &str,
+        price_cents: i64,
+        payment_status: &str,
+    ) -> i64 {
+        crate::commands::sales::create_sale_impl(
+            conn,
+            &crate::models::SaleInput {
+                ticket_id,
+                platform_id: None,
+                sale_date: sale_date.to_string(),
+                sale_price_cents: price_cents,
+                selling_fees_cents: 0,
+                payment_status: Some(payment_status.to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pending_sales_counts_and_sums_only_pending_payment_status() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "pending");
+        seed_sale_with_status(&mut conn, t2, "2026-03-02", 3000, "pending");
+        seed_sale_with_status(&mut conn, t3, "2026-03-03", 5000, "paid"); // must not count
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.alerts.pending_sales_count, 2);
+        assert_eq!(data.alerts.pending_sales_amount_cents, 5000, "2000 + 3000 pending, the paid one excluded");
+        assert_eq!(data.alerts.pending_sales_currency, Some("EUR".to_string()));
+    }
+
+    #[test]
+    fn pending_sales_excludes_refunded_even_if_it_was_pending_before_the_refund() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let sale_id = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "pending");
+        crate::commands::sales::refund_sale_impl(&mut conn, sale_id, Some("test refund")).unwrap();
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.alerts.pending_sales_count, 0, "a refund must flip payment_status away from pending");
+        assert_eq!(data.alerts.pending_sales_amount_cents, 0);
+    }
+
+    #[test]
+    fn pending_sales_amount_is_not_period_filtered() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        // Sold long before any of the "recent" period presets would cover.
+        seed_sale_with_status(&mut conn, t1, "2001-01-01", 2000, "pending");
+
+        let data = get_dashboard_impl(&conn, Some("today"), None, None, None, None).unwrap();
+
+        assert_eq!(
+            data.alerts.pending_sales_count, 1,
+            "pending sales is a right-now fact, like unpaid_orders_count - never period-filtered"
+        );
     }
 
     // ---- Attention: upcoming events ----------------------------------------

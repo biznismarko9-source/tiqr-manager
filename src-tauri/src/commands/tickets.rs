@@ -1,7 +1,8 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{Ticket, TicketUpdateInput};
+use crate::models::{BulkTicketField, BulkTicketUpdateInput, Ticket, TicketUpdateInput};
 use rusqlite::{params, Connection, Row};
+use std::collections::HashSet;
 use tauri::State;
 
 // Safety cap on unfiltered list views. Ordinary use (hundreds to low
@@ -163,13 +164,12 @@ pub fn get_ticket(state: State<AppState>, id: i64) -> AppResult<Ticket> {
         .map_err(|_| AppError::NotFound(format!("Ticket #{id} not found")))
 }
 
-#[tauri::command]
-pub fn update_ticket(
-    state: State<AppState>,
-    id: i64,
-    input: TicketUpdateInput,
-) -> AppResult<Ticket> {
-    let conn = state.db.lock().unwrap();
+/// Core logic behind `update_ticket` - split out (same pattern as
+/// `list_tickets_impl`/`create_sales_batch_impl`) so it's directly
+/// unit-testable against a plain `&Connection` without a full Tauri context.
+/// Byte-identical validation/SQL to the previous inline version - this is a
+/// mechanical extraction, not a behaviour change.
+pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdateInput) -> AppResult<()> {
     let current_status: String = conn
         .query_row("SELECT status FROM tickets WHERE id = ?1", [id], |r| {
             r.get(0)
@@ -214,8 +214,140 @@ pub fn update_ticket(
         ],
     )?;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_ticket(
+    state: State<AppState>,
+    id: i64,
+    input: TicketUpdateInput,
+) -> AppResult<Ticket> {
+    let conn = state.db.lock().unwrap();
+    update_ticket_impl(&conn, id, &input)?;
     let sql = format!("{BASE_SQL} WHERE t.id = ?1");
     Ok(conn.query_row(&sql, [id], map_ticket)?)
+}
+
+/// Core logic behind `bulk_update_tickets` - changes ONE ticket field across
+/// MANY tickets in a single all-or-nothing transaction (same
+/// validate-everything-then-write shape as `create_sales_batch_impl`; every
+/// ticket id is confirmed to exist before anything is written, and if any id
+/// is missing or the value is invalid, nothing is changed - rusqlite's
+/// `Transaction` rolls back automatically on Drop whenever `commit()` is
+/// never reached).
+///
+/// `field` is a closed enum (`BulkTicketField`), never a caller-supplied
+/// column name - the SQL column is chosen via `match` into one of a fixed set
+/// of `&'static str` literals, the same safe pattern `list_tickets_impl`
+/// already uses for its `sort_col`. This makes it impossible to compile a
+/// bulk UPDATE against `tickets.status`: status is deliberately NOT one of
+/// the bulk-editable fields, because a naive bulk status change could
+/// silently create a `status='sold'` ticket with no active `sales` row (or
+/// the reverse) - the exact class of corruption `update_ticket_impl`'s own
+/// guard exists to prevent for a single ticket, and nothing else in the app
+/// could detect or repair it afterwards. Section, row, seat, ticket type and
+/// listing price have no such coupling to sales/inventory state - the
+/// existing single-ticket edit flow (`TicketEditModal`) already allows
+/// editing all five regardless of a ticket's current status - so they're
+/// safe to change in bulk the same way.
+pub(crate) fn bulk_update_tickets_impl(
+    conn: &mut Connection,
+    input: &BulkTicketUpdateInput,
+) -> AppResult<Vec<i64>> {
+    if input.ticket_ids.is_empty() {
+        return Err(AppError::Validation("Select at least one ticket to edit".into()));
+    }
+    if let BulkTicketField::ListingPriceCents = input.field {
+        if let Some(price) = input.cents_value {
+            if price < 0 {
+                return Err(AppError::Validation("Listing price cannot be negative".into()));
+            }
+        }
+    }
+
+    let column: &'static str = match input.field {
+        BulkTicketField::Section => "section",
+        BulkTicketField::RowLabel => "row_label",
+        BulkTicketField::Seat => "seat",
+        BulkTicketField::TicketType => "ticket_type",
+        BulkTicketField::ListingPriceCents => "listing_price_cents",
+    };
+
+    // Dedupe so the same id appearing twice (e.g. a stale double click) is
+    // applied once, not treated as two separate writes.
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut seen = HashSet::new();
+        for &id in &input.ticket_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    let tx = conn.transaction()?;
+
+    // Validate every id exists BEFORE writing anything - all-or-nothing.
+    // 1.8.3 (section 17, performance audit): one SELECT ... IN (...) query
+    // instead of one query per id - same reasoning/technique as the
+    // refetch in the `bulk_update_tickets` wrapper below. The specific
+    // "Ticket #N does not exist" message is preserved by computing the
+    // missing id in Rust (set difference) rather than looping in SQL.
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing_ids: HashSet<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM tickets WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing_ids.contains(id)) {
+        return Err(AppError::Validation(format!("Ticket #{missing} does not exist")));
+    }
+
+    // Same "one statement, not one per id" treatment for the write itself:
+    // every selected ticket gets the exact same new value, so a single
+    // UPDATE ... WHERE id IN (...) does the whole batch at once. The new
+    // value (text_value or cents_value, depending on `field`) is bound
+    // first as ?1, then every id fills the IN (...) list - built as
+    // `Box<dyn ToSql>` because the leading value and the trailing ids are
+    // different Rust types, the same dynamic-parameter approach already
+    // used throughout dashboard.rs for its variable-shaped queries.
+    let sql = format!(
+        "UPDATE tickets SET {column} = ?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    if let BulkTicketField::ListingPriceCents = input.field {
+        update_params.push(Box::new(input.cents_value));
+    } else {
+        update_params.push(Box::new(input.text_value.clone()));
+    }
+    for &id in &ids {
+        update_params.push(Box::new(id));
+    }
+    let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, update_refs.as_slice())?;
+
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Bulk-edit one field (section, row, seat, ticket type or listing price)
+/// across many tickets at once - e.g. correcting the section label for a
+/// whole block of seats in one action instead of one ticket at a time.
+/// Shared by Sale Detail and Order Detail's bulk-selection UI (one command,
+/// one implementation - see `BulkTicketEditBar.tsx`). Deliberately does NOT
+/// support ticket status - see `bulk_update_tickets_impl`'s doc comment.
+/// Returns every updated ticket, refetched in a single query (not one query
+/// per id) so this stays cheap even for a large selection.
+#[tauri::command]
+pub fn bulk_update_tickets(state: State<AppState>, input: BulkTicketUpdateInput) -> AppResult<Vec<Ticket>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_tickets_impl(&mut conn, &input)?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("{BASE_SQL} WHERE t.id IN ({placeholders}) ORDER BY t.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_ticket)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 #[cfg(test)]
@@ -296,5 +428,201 @@ mod tests {
         let sql = format!("{BASE_SQL} WHERE t.id = ?1");
         let single = conn.query_row(&sql, [ticket_id], map_ticket).unwrap();
         assert_eq!(single.sale_price_cents, Some(1800));
+    }
+
+    // --- 1.8.3: bulk_update_tickets_impl -----------------------------------
+
+    /// 1.8.3 brief test scenario, verbatim: "4 tickets -> select 3 -> only
+    /// those 3 change". None of the other bulk tests leave an unselected
+    /// control ticket in place, so this is the one that actually proves
+    /// selection is respected rather than accidentally updating everything.
+    #[test]
+    fn bulk_update_tickets_impl_only_changes_the_selected_tickets_out_of_four() {
+        let mut conn = test_conn();
+        let ids: Vec<i64> = (0..4).map(|_| seed_one_ticket(&conn)).collect();
+        let selected = vec![ids[0], ids[1], ids[2]];
+        let untouched = ids[3];
+
+        let input = BulkTicketUpdateInput {
+            ticket_ids: selected.clone(),
+            field: BulkTicketField::Section,
+            text_value: Some("Block A".to_string()),
+            cents_value: None,
+        };
+        let updated_ids = bulk_update_tickets_impl(&mut conn, &input).unwrap();
+        assert_eq!(updated_ids.len(), 3);
+
+        for &id in &selected {
+            let section: Option<String> = conn
+                .query_row("SELECT section FROM tickets WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(section.as_deref(), Some("Block A"));
+        }
+        let untouched_section: Option<String> = conn
+            .query_row("SELECT section FROM tickets WHERE id=?1", [untouched], |r| r.get(0))
+            .unwrap();
+        assert_eq!(untouched_section, None, "the 4th ticket was never selected, so it must stay untouched");
+    }
+
+    /// PRIORITA #1 (1.8.3 brief, section 2/3): bulk-editing a safe field must
+    /// work regardless of a ticket's status, and must NEVER touch `status`
+    /// itself or the sale behind a sold ticket - the same contract the
+    /// existing single-ticket `TicketEditModal` already relies on.
+    #[test]
+    fn bulk_update_tickets_impl_changes_selected_fields_and_ignores_status() {
+        let mut conn = test_conn();
+        let available_id = seed_one_ticket(&conn);
+        let sold_id = seed_one_ticket(&conn);
+        let sale = SaleInput {
+            ticket_id: sold_id,
+            platform_id: None,
+            sale_date: "2026-03-01".to_string(),
+            sale_price_cents: 5000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sale_impl(&mut conn, &sale).unwrap();
+
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![available_id, sold_id],
+            field: BulkTicketField::Section,
+            text_value: Some("Block A".to_string()),
+            cents_value: None,
+        };
+        let updated_ids = bulk_update_tickets_impl(&mut conn, &input).unwrap();
+        assert_eq!(updated_ids.len(), 2);
+
+        for id in [available_id, sold_id] {
+            let (section, status): (Option<String>, String) = conn
+                .query_row("SELECT section, status FROM tickets WHERE id=?1", [id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(section.as_deref(), Some("Block A"));
+            if id == sold_id {
+                assert_eq!(status, "sold", "bulk edit must never change ticket status");
+            } else {
+                assert_eq!(status, "available");
+            }
+        }
+
+        // The sold ticket's sale itself must be completely untouched.
+        let sale_price: i64 = conn
+            .query_row("SELECT sale_price_cents FROM sales WHERE ticket_id=?1", [sold_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sale_price, 5000);
+    }
+
+    /// BULK UPDATE SAFETY (1.8.3 brief, section 3): one bad id in the batch
+    /// must roll back EVERY change, not just skip the bad one.
+    #[test]
+    fn bulk_update_tickets_impl_is_all_or_nothing() {
+        let mut conn = test_conn();
+        let id1 = seed_one_ticket(&conn);
+        let id2 = seed_one_ticket(&conn);
+
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![id1, id2, 999_999],
+            field: BulkTicketField::Section,
+            text_value: Some("Should not stick".to_string()),
+            cents_value: None,
+        };
+        assert!(bulk_update_tickets_impl(&mut conn, &input).is_err());
+
+        for id in [id1, id2] {
+            let section: Option<String> = conn
+                .query_row("SELECT section FROM tickets WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(section, None, "a failed bulk edit must change nothing at all");
+        }
+    }
+
+    #[test]
+    fn bulk_update_tickets_impl_rejects_negative_listing_price() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![id],
+            field: BulkTicketField::ListingPriceCents,
+            text_value: None,
+            cents_value: Some(-100),
+        };
+        assert!(bulk_update_tickets_impl(&mut conn, &input).is_err());
+        let price: Option<i64> = conn
+            .query_row("SELECT listing_price_cents FROM tickets WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(price, None);
+    }
+
+    #[test]
+    fn bulk_update_tickets_impl_rejects_empty_selection() {
+        let mut conn = test_conn();
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![],
+            field: BulkTicketField::Section,
+            text_value: Some("x".to_string()),
+            cents_value: None,
+        };
+        assert!(bulk_update_tickets_impl(&mut conn, &input).is_err());
+    }
+
+    #[test]
+    fn bulk_update_tickets_impl_dedupes_ids() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![id, id, id],
+            field: BulkTicketField::Section,
+            text_value: Some("Once".to_string()),
+            cents_value: None,
+        };
+        let updated_ids = bulk_update_tickets_impl(&mut conn, &input).unwrap();
+        assert_eq!(updated_ids, vec![id]);
+    }
+
+    /// Cross-check with BUG #1's own regression test above: bulk-editing an
+    /// unrelated field (row label) must never disturb a ticket's
+    /// refund/resale history or the sales-join dedup it relies on.
+    #[test]
+    fn bulk_update_tickets_impl_does_not_disturb_refund_history() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let first_sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        let sale_id_1 = create_sale_impl(&mut conn, &first_sale).unwrap();
+        refund_sale_impl(&mut conn, sale_id_1, Some("buyer cancelled")).unwrap();
+        let second_sale = SaleInput {
+            sale_price_cents: 1800,
+            ..first_sale
+        };
+        create_sale_impl(&mut conn, &second_sale).unwrap();
+
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![ticket_id],
+            field: BulkTicketField::RowLabel,
+            text_value: Some("12".to_string()),
+            cents_value: None,
+        };
+        bulk_update_tickets_impl(&mut conn, &input).unwrap();
+
+        let results = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        let ticket = results.iter().find(|t| t.id == ticket_id).unwrap();
+        assert_eq!(ticket.row_label.as_deref(), Some("12"));
+        assert_eq!(
+            ticket.sale_price_cents,
+            Some(1800),
+            "bulk-editing an unrelated field must not disturb which sale is active"
+        );
+        assert_eq!(ticket.status, "sold");
     }
 }

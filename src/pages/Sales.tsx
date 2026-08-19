@@ -7,6 +7,7 @@ import { formatDate, formatDateCompact, formatMoney, formatMoneyOrMixed, formatP
 import {
   Badge,
   Button,
+  CHECKBOX_CLASS,
   EmptyState,
   Field,
   Input,
@@ -96,12 +97,6 @@ function SummaryStat({ label, value, tone }: { label: string; value: string; ton
   );
 }
 
-// checkbox styling shared by the header "select all" and per-row boxes -
-// index.css has no `.checkbox` component class (only .input/.th/.td/.label/
-// .card), so this is spelled out directly rather than assuming one exists.
-const CHECKBOX_CLASS =
-  "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-200 dark:border-slate-600 dark:bg-slate-800 dark:focus:ring-brand-900";
-
 export default function Sales() {
   const toast = useToast();
   const location = useLocation();
@@ -138,9 +133,16 @@ export default function Sales() {
   // Orders.tsx already uses for presetEventId - not a new pattern, no new
   // backend query, just reusing the existing ticket-code search (BUG #5).
   useEffect(() => {
-    const state = location.state as { presetSearch?: string } | null;
+    // 1.8.3 (section 11): `openCreate` additionally lets the Dashboard's
+    // "New Sale" Quick Action open this page's New Sale modal directly -
+    // same consume-and-clear convention, just a second, unrelated flag on
+    // the same state object.
+    const state = location.state as { presetSearch?: string; openCreate?: boolean } | null;
     if (state?.presetSearch) {
       setSearch(state.presetSearch);
+      navigate(location.pathname, { replace: true, state: null });
+    } else if (state?.openCreate) {
+      setModalOpen(true);
       navigate(location.pathname, { replace: true, state: null });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

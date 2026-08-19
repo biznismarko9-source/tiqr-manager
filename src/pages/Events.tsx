@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventInput, EventStatus, EventWithStats } from "../lib/types";
 import { formatDate, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
@@ -37,6 +37,7 @@ const OTHER_CATEGORY = "__other__";
 export default function Events() {
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const [events, setEvents] = useState<EventWithStats[] | null>(null);
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
@@ -53,6 +54,20 @@ export default function Events() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 1.8.3 (section 11): lets the Dashboard's "New Event" Quick Action jump
+  // here with the create modal already open - same navigate(path, {state})
+  // + consume-and-clear convention already used by Orders.tsx's
+  // presetEventId and Sales.tsx's presetSearch, no new pattern.
+  useEffect(() => {
+    const state = location.state as { openCreate?: boolean } | null;
+    if (state?.openCreate) {
+      setEditing(null);
+      setModalOpen(true);
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   useEffect(() => {
     const t = setTimeout(() => load(search), 250);
@@ -104,20 +119,37 @@ export default function Events() {
           }
         />
       ) : (
+        // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
+        // Sales.tsx for the full rationale) instead of the old
+        // min-w-[900px]+overflow-x-auto pattern, which could actually
+        // overflow on this app's smallest supported window (900px needed vs.
+        // an 808px floor). Row click-to-navigate (BUG #7) is untouched.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[900px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col />
+              <col className="w-[84px]" />
+              <col className="w-[84px]" />
+              <col className="w-14" />
+              <col className="w-[70px]" />
+              <col className="w-20" />
+              <col className="w-20" />
+              <col className="w-20" />
+              <col className="w-14" />
+              <col className="w-14" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th">Event</th>
-                <th className="th">Date</th>
-                <th className="th">Status</th>
-                <th className="th text-right">Tickets</th>
-                <th className="th text-right">Available</th>
-                <th className="th text-right">Cost</th>
-                <th className="th text-right">Revenue</th>
-                <th className="th text-right">Profit</th>
-                <th className="th text-right">Margin</th>
-                <th className="th text-right">ROI</th>
+                <th className="th-c">Event</th>
+                <th className="th-c">Date</th>
+                <th className="th-c">Status</th>
+                <th className="th-c text-right">Tickets</th>
+                <th className="th-c text-right">Available</th>
+                <th className="th-c text-right">Cost</th>
+                <th className="th-c text-right">Revenue</th>
+                <th className="th-c text-right">Profit</th>
+                <th className="th-c text-right">Margin</th>
+                <th className="th-c text-right">ROI</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -138,29 +170,29 @@ export default function Events() {
                     navigate(`/events/${ev.id}`);
                   }}
                 >
-                  <td className="td">
-                    <Link to={`/events/${ev.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                  <td className="td-c truncate">
+                    <Link to={`/events/${ev.id}`} title={ev.name} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {ev.name}
                     </Link>
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                    <p className="truncate text-xs text-slate-400 dark:text-slate-500">
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>
-                  <td className="td whitespace-nowrap">{formatDate(ev.eventDate)}</td>
-                  <td className="td">
+                  <td className="td-c whitespace-nowrap">{formatDate(ev.eventDate)}</td>
+                  <td className="td-c">
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
-                  <td className="td text-right tabular-nums">{ev.stats.purchasedTickets}</td>
-                  <td className="td text-right tabular-nums">{ev.stats.availableTickets}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{ev.stats.purchasedTickets}</td>
+                  <td className="td-c text-right tabular-nums">{ev.stats.availableTickets}</td>
+                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td
-                    className={`td text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                    className={`td-c text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
                     {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
                   </td>
-                  <td className="td text-right tabular-nums">{formatPercentOrMixed(ev.stats.margin, ev.stats.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatPercentOrMixed(ev.stats.roi, ev.stats.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{formatPercentOrMixed(ev.stats.margin, ev.stats.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{formatPercentOrMixed(ev.stats.roi, ev.stats.currency)}</td>
                 </tr>
               ))}
             </tbody>

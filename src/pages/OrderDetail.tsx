@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { OrderEditInput, OrderPaymentStatus, OrderRecord, OrderSalesSummary, Platform, Supplier, Ticket } from "../lib/types";
-import { formatDate, formatMoney } from "../lib/format";
+import { formatDate, formatMoney, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
+  CHECKBOX_CLASS,
   Card,
   ConfirmDialog,
   EmptyState,
@@ -17,6 +18,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
+import { BulkTicketEditBar } from "../components/BulkTicketEditBar";
 import { IconArrowLeft, IconPencil, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { TicketEditModal } from "./Tickets";
@@ -25,7 +27,21 @@ export default function OrderDetail() {
   const { id } = useParams();
   const orderId = Number(id);
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
+
+  // 1.8.3 (section 8): if the user arrived from Tickets, Inventory or Orders
+  // - each of which now passes state={{ from: <its own path> }} on its link
+  // into Order Detail (see Tickets.tsx/Orders.tsx) - Back returns to that
+  // exact page (which itself now remembers its last search/filters, see
+  // lastTicketsFilters/lastOrdersSearch) instead of always landing on the
+  // general Orders list. Allowlisted rather than trusting state.from
+  // blindly, and falls back to the pre-1.8.3 default when absent (e.g. a
+  // direct link, a page refresh, or arriving from Event Detail/Sales, which
+  // don't opt into this).
+  const cameFrom = (location.state as { from?: string } | null)?.from;
+  const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
+  const backLabel = backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
 
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -34,8 +50,13 @@ export default function OrderDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [editTicket, setEditTicket] = useState<Ticket | null>(null);
+  // 1.8.3: bulk ticket actions.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const load = useCallback(() => {
+    // Every reload (mount, edit, delete, or a bulk edit just applied) starts
+    // from a clean selection - same reasoning as Sale Detail's own load().
+    setSelected(new Set());
     api.getOrder(orderId).then(setOrder).catch((e) => toast.error(errMsg(e)));
     api
       .listTickets({ orderId, sortBy: "code", sortDir: "asc" })
@@ -51,10 +72,29 @@ export default function OrderDetail() {
 
   if (!order) return <LoadingBlock />;
 
+  // 1.8.3: bulk ticket actions - unlike Sale Detail, no ticket here is
+  // excluded from selection: the existing single-ticket TicketEditModal
+  // already allows editing section/row/seat/type/listing price regardless of
+  // a ticket's status (only the Status field itself is locked when sold),
+  // so bulk-editing those same fields is safe for every ticket in this list.
+  const allSelected = tickets !== null && tickets.length > 0 && tickets.every((t) => selected.has(t.id));
+  const toggleSelectAll = () => {
+    if (!tickets) return;
+    setSelected(allSelected ? new Set() : new Set(tickets.map((t) => t.id)));
+  };
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <div>
-      <Link to="/orders" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
-        <IconArrowLeft className="h-4 w-4" /> Back to orders
+      <Link to={backTo} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+        <IconArrowLeft className="h-4 w-4" /> {backLabel}
       </Link>
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -178,66 +218,115 @@ export default function OrderDetail() {
           counted correctly everywhere else, they just aren&apos;t listed individually below.
         </div>
       )}
+      <BulkTicketEditBar
+        selectedIds={Array.from(selected)}
+        currency={order.currency}
+        onClear={() => setSelected(new Set())}
+        onApplied={() => load()}
+      />
+
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets found for this order" />
       ) : (
+        // 1.8.3 table-UX audit: brought onto the same table-layout:fixed +
+        // <colgroup> technique as Sales/Sale Detail (see Sales.tsx for the
+        // full rationale) instead of the old min-w-[900px]+overflow-x-auto
+        // pattern, which could scroll horizontally on this app's smallest
+        // supported window. Section/Row/Seat are merged into one Seat column
+        // via formatSeatLocation (lib/format.ts, same treatment Sale Detail
+        // got in 1.8.2) - the 3 underlying fields are untouched, only how
+        // they display here changed. Also added the leading checkbox column
+        // (bulk actions, see BulkTicketEditBar above).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[900px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-8" />
+              <col className="w-[84px]" />
+              <col />
+              <col className="w-[72px]" />
+              <col className="w-[92px]" />
+              <col className="w-24" />
+              <col className="w-[110px]" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th">Ticket</th>
-                <th className="th">Section</th>
-                <th className="th">Row</th>
-                <th className="th">Seat</th>
-                <th className="th text-right">Cost</th>
-                <th className="th text-right">Listing price</th>
-                <th className="th">Status</th>
-                <th className="th" />
+                <th className="th-c">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all tickets in this order"
+                  />
+                </th>
+                <th className="th-c">Ticket</th>
+                <th className="th-c">Seat</th>
+                <th className="th-c text-right">Cost</th>
+                <th className="th-c text-right">Listing price</th>
+                <th className="th-c">Status</th>
+                <th className="th-c" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {tickets.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td font-medium text-slate-900 dark:text-slate-100">{t.code}</td>
-                  <td className="td text-slate-500 dark:text-slate-400">{t.section ?? "-"}</td>
-                  <td className="td text-slate-500 dark:text-slate-400">{t.rowLabel ?? "-"}</td>
-                  <td className="td text-slate-500 dark:text-slate-400">{t.seat ?? "-"}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
-                  <td className="td text-right tabular-nums">
-                    {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
-                  </td>
-                  <td className="td">
-                    <Badge tone={t.status}>{t.status}</Badge>
-                  </td>
-                  <td className="td text-right">
-                    <div className="flex items-center justify-end gap-3">
-                      {/* 1.6.0 audit UX finding: there was no way to get from
-                          a sold ticket to the sale that sold it. Reuses the
-                          Sales page's own existing ticket-code search (BUG
-                          #5) via the same navigate(path, { state }) preset
-                          convention Orders.tsx already uses for
-                          presetEventId - no backend change needed. */}
-                      {t.status === "sold" && (
-                        <Link
-                          to="/sales"
-                          state={{ presetSearch: t.code }}
+              {tickets.map((t) => {
+                const seatLabel = formatSeatLocation(t.section, t.rowLabel, t.seat);
+                return (
+                  <tr
+                    key={t.id}
+                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(t.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
+                  >
+                    <td className="td-c">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleOne(t.id)}
+                        aria-label={`Select ticket ${t.code}`}
+                      />
+                    </td>
+                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={t.code}>
+                      {t.code}
+                    </td>
+                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={seatLabel}>
+                      {seatLabel}
+                    </td>
+                    <td className="td-c text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
+                    <td className="td-c text-right tabular-nums">
+                      {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
+                    </td>
+                    <td className="td-c">
+                      <Badge tone={t.status}>{t.status}</Badge>
+                    </td>
+                    <td className="td-c">
+                      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
+                        {/* 1.6.0 audit UX finding: there was no way to get from
+                            a sold ticket to the sale that sold it. Reuses the
+                            Sales page's own existing ticket-code search (BUG
+                            #5) via the same navigate(path, { state }) preset
+                            convention Orders.tsx already uses for
+                            presetEventId - no backend change needed. */}
+                        {t.status === "sold" && (
+                          <Link
+                            to="/sales"
+                            state={{ presetSearch: t.code }}
+                            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                          >
+                            View sale
+                          </Link>
+                        )}
+                        <button
                           className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                          onClick={() => setEditTicket(t)}
                         >
-                          View sale
-                        </Link>
-                      )}
-                      <button
-                        className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                        onClick={() => setEditTicket(t)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                          Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

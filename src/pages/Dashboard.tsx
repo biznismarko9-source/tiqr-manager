@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { DashboardData, UpcomingEventAlert } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
-import { Badge, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
+import { Badge, Button, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
-import { IconAlertTriangle, IconCalendarDays, IconPackage, IconReceipt } from "../components/icons";
+import {
+  IconAlertTriangle,
+  IconCalendarDays,
+  IconDownload,
+  IconPackage,
+  IconPlus,
+  IconReceipt,
+  IconUpload,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 
 // Same fixed window the backend uses (dashboard.rs::UPCOMING_EVENT_WINDOW_DAYS)
@@ -65,6 +73,7 @@ function periodMetricTone(data: DashboardData, metric: MetricKey): string {
 
 export default function Dashboard() {
   const toast = useToast();
+  const navigate = useNavigate();
   // 1.7.5: default changed from "30d" to "1y" to match the reference
   // screenshot's default selection (its "1 Yr" pill is the one shown
   // active) - purely an initial UI state, one click away from anything
@@ -117,6 +126,31 @@ export default function Dashboard() {
           </div>
         }
       />
+
+      {/* 1.8.3 (section 11): small, secondary launcher row - every button
+          just reuses an existing route/modal via the same navigate(path,
+          {state}) convention Orders.tsx/Sales.tsx/Events.tsx already use
+          elsewhere (see their `openCreate` handling); no new backend
+          command and no new page. Kept visually secondary (small, plain
+          buttons, no card/heading) so it doesn't compete with Activity
+          below. */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
+          <IconPlus className="h-4 w-4" /> New Event
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
+          <IconPlus className="h-4 w-4" /> New Order
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
+          <IconPlus className="h-4 w-4" /> New Sale
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+          <IconUpload className="h-4 w-4" /> Import CSV
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+          <IconDownload className="h-4 w-4" /> Export CSV
+        </Button>
+      </div>
 
       {period === "custom" && (
         <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
@@ -404,7 +438,10 @@ function EmptyRow({ text }: { text: string }) {
 function AttentionSection({ data }: { data: DashboardData }) {
   const { alerts } = data;
   const allClear =
-    alerts.unpaidOrdersCount === 0 && alerts.missingListingPriceCount === 0 && alerts.upcomingEventsCount === 0;
+    alerts.unpaidOrdersCount === 0 &&
+    alerts.missingListingPriceCount === 0 &&
+    alerts.upcomingEventsCount === 0 &&
+    alerts.pendingSalesCount === 0;
 
   return (
     <div className="mb-8">
@@ -414,13 +451,24 @@ function AttentionSection({ data }: { data: DashboardData }) {
       {allClear ? (
         <Card className="p-4 text-sm text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</Card>
       ) : (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
           <AlertCard
             label="Unpaid payments"
             count={alerts.unpaidOrdersCount}
             description="Orders that are unpaid or only partially paid"
             linkTo="/orders"
             linkLabel="View orders"
+          />
+          <AlertCard
+            label="Pending sales"
+            count={alerts.pendingSalesCount}
+            description={
+              alerts.pendingSalesCount > 0
+                ? `${formatMoneyOrMixed(alerts.pendingSalesAmountCents, alerts.pendingSalesCurrency)} not yet collected from buyers`
+                : "Sales awaiting payment from the buyer"
+            }
+            linkTo="/sales"
+            linkLabel="View sales"
           />
           <AlertCard
             label="Missing listing price"

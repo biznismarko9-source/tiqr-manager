@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BulkTicketUpdateInput,
   CsvImportResult,
   CsvPreview,
   DashboardData,
@@ -60,6 +61,8 @@ export const api = {
   }) => invoke<Ticket[]>("list_tickets", params),
   getTicket: (id: number) => invoke<Ticket>("get_ticket", { id }),
   updateTicket: (id: number, input: TicketUpdateInput) => invoke<Ticket>("update_ticket", { id, input }),
+  /** 1.8.3: set one field to one value across many tickets at once, in a single all-or-nothing transaction. */
+  bulkUpdateTickets: (input: BulkTicketUpdateInput) => invoke<Ticket[]>("bulk_update_tickets", { input }),
 
   // Sales
   listSales: (params: {
@@ -125,6 +128,8 @@ export const api = {
   exportSalesCsvSelected: (path: string, ids: number[]) => invoke<number>("export_sales_csv_selected", { path, ids }),
   exportInventoryCsv: (path: string, eventId?: number) =>
     invoke<number>("export_inventory_csv", { path, eventId }),
+  /** 1.8.3: downloadable header template matching the CSV import's recognized columns. */
+  exportOrdersCsvTemplate: (path: string) => invoke<void>("export_orders_csv_template", { path }),
 
   // Backup / restore
   backupDatabase: (destPath: string) => invoke<void>("backup_database", { destPath }),

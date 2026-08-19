@@ -311,6 +311,35 @@ pub fn export_sales_csv_selected(state: State<AppState>, path: String, ids: Vec<
     export_sales_csv_selected_impl(&conn, &path, &ids)
 }
 
+/// 1.8.3 (section 10): downloadable header template for the CSV import (see
+/// csv_import.rs's `parse_rows`) - lets a user build a compatible file from
+/// scratch instead of guessing column names. There is only ONE CSV import in
+/// this app (orders + their tickets together, see csv_import.rs) - no
+/// separate tickets-only or sales-only import exists, so only this one
+/// template is offered, rather than inventing formats the app doesn't
+/// actually support. Columns and order match the Settings screen's own
+/// "Columns: ..." description exactly (the primary/first-recognized name for
+/// each field - parse_rows also accepts a few synonyms, e.g. "row_label" for
+/// "row", but the template only ever shows the one preferred name so there's
+/// no ambiguity about what to type). Includes one filled-in example row so a
+/// blank column isn't mistaken for "required" when it's actually optional
+/// (e.g. supplier, platform, seats, notes). Doesn't touch the database at
+/// all, so it needs no connection/state.
+#[tauri::command]
+pub fn export_orders_csv_template(path: String) -> AppResult<()> {
+    let mut wtr = csv::Writer::from_path(&path)?;
+    wtr.write_record([
+        "event", "purchase_date", "supplier", "platform", "quantity", "unit_price", "fees",
+        "other_costs", "currency", "payment_status", "ticket_type", "section", "row", "seats", "notes",
+    ])?;
+    wtr.write_record([
+        "Example Event", "2026-01-01", "", "", "2", "45.00", "2.50", "0", "EUR", "unpaid", "",
+        "A", "12", "11,12", "",
+    ])?;
+    wtr.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

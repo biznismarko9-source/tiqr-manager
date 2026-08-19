@@ -155,6 +155,22 @@ export interface TicketUpdateInput {
   notes?: string | null;
 }
 
+/** Closed set of ticket fields `bulkUpdateTickets` can change - deliberately
+ * excludes status. See `bulk_update_tickets_impl` (tickets.rs) and
+ * `BulkTicketEditBar.tsx` for why. */
+export type BulkTicketField = "section" | "rowLabel" | "seat" | "ticketType" | "listingPriceCents";
+
+/** Input for `bulkUpdateTickets` (1.8.3) - set one field to one value across
+ * many tickets in a single all-or-nothing transaction. `textValue` is used
+ * for section/rowLabel/seat/ticketType; `centsValue` is used for
+ * listingPriceCents. */
+export interface BulkTicketUpdateInput {
+  ticketIds: number[];
+  field: BulkTicketField;
+  textValue?: string | null;
+  centsValue?: number | null;
+}
+
 export interface Sale {
   id: number;
   code: string;
@@ -318,6 +334,13 @@ export interface DashboardAlerts {
   upcomingEventsCount: number;
   /** The soonest of the above, capped (same convention as Recent Events/Orders/Sales). */
   upcomingEvents: UpcomingEventAlert[];
+  /** 1.8.3: sales with payment_status 'pending' - money not yet collected
+   * from the buyer (sales-side mirror of unpaidOrdersCount). Not period-filtered. */
+  pendingSalesCount: number;
+  /** Sum of salePriceCents for the sales counted in pendingSalesCount, scoped to primaryCurrency. */
+  pendingSalesAmountCents: number;
+  /** Null means mixed currencies - same convention as InventoryPotential.currency. */
+  pendingSalesCurrency: string | null;
 }
 
 /** One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same
