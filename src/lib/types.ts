@@ -165,6 +165,12 @@ export interface Sale {
   seat: string | null;
   eventId: number;
   eventName: string;
+  /** The ticket's own order - every ticket belongs to exactly one order, so
+   * this is never null/Mixed (unlike SaleGroup's fields below, which CAN be
+   * Mixed once several lines are aggregated). Powers Sale Detail's
+   * Ticket -> Order Detail link (1.8.0). */
+  orderId: number;
+  orderCode: string;
   platformId: number | null;
   platformName: string | null;
   saleDate: string;

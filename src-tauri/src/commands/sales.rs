@@ -15,6 +15,7 @@ const BASE_SQL: &str = "
     SELECT s.id, s.code, s.ticket_id, t.code as ticket_code,
       t.section, t.row_label, t.seat,
       t.event_id, e.name as event_name,
+      t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
       s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at, s.updated_at,
       s.refunded_at, s.refund_reason, s.batch_id,
@@ -22,6 +23,7 @@ const BASE_SQL: &str = "
     FROM sales s
     JOIN tickets t ON t.id = s.ticket_id
     JOIN events e ON e.id = t.event_id
+    JOIN orders o ON o.id = t.order_id
     LEFT JOIN platforms p ON p.id = s.platform_id
 ";
 
@@ -46,6 +48,8 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         seat: row.get("seat")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        order_id: row.get("order_id")?,
+        order_code: row.get("order_code")?,
         platform_id: row.get("platform_id")?,
         platform_name: row.get("platform_name")?,
         sale_date: row.get("sale_date")?,
@@ -256,11 +260,20 @@ fn list_sale_groups_impl(
     date_from: Option<String>,
     date_to: Option<String>,
     refund_status: Option<String>,
+    // 1.8.0: appended at the END of the existing parameter list rather than
+    // inserted between existing ones, on purpose - every pre-1.8.0 call site
+    // (tests included) keeps its original argument order/positions and just
+    // gains two trailing `None`s, instead of every position after the
+    // insertion point silently shifting (which `cargo check` would catch,
+    // but nothing here can run it this round - see the 1.8.0 report).
+    currency: Option<String>,
+    sort_by: Option<String>,
 ) -> AppResult<Vec<SaleGroup>> {
     let mut inner_sql = String::from(
         "SELECT DISTINCT COALESCE(s3.batch_id, 'single:' || s3.id) FROM sales s3
          JOIN tickets t3 ON t3.id = s3.ticket_id
          JOIN events e3 ON e3.id = t3.event_id
+         JOIN orders o3 ON o3.id = t3.order_id
          WHERE 1=1",
     );
     let mut inner_params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
@@ -283,6 +296,17 @@ fn list_sale_groups_impl(
             has_line_filter = true;
         }
     }
+    // 1.8.0: currency filter - "does this group contain at least one line in
+    // this currency", same semi-join pattern as every other line-level
+    // filter here (see the doc comment above this function). An exact match,
+    // not LIKE - currency is a short code (EUR, USD, ...), never free text.
+    if let Some(cur) = currency.as_deref() {
+        if !cur.is_empty() {
+            inner_sql.push_str(" AND s3.currency = ?");
+            inner_params.push(Box::new(cur.to_string()));
+            has_line_filter = true;
+        }
+    }
     if let Some(from) = date_from.as_deref() {
         if !from.is_empty() {
             inner_sql.push_str(" AND s3.sale_date >= ?");
@@ -300,11 +324,15 @@ fn list_sale_groups_impl(
     if let Some(q) = search.as_deref() {
         let q = q.trim();
         if !q.is_empty() {
+            // 1.8.0: also match the order code (o3.code, e.g. "ORD-001234")
+            // - section 3 of the 1.8.0 brief explicitly asks that searching
+            // an order code finds every sale tied to that order, the same
+            // way a ticket code already finds the sale group it was sold in.
             inner_sql.push_str(
-                " AND (s3.code LIKE ? OR t3.code LIKE ? OR e3.name LIKE ? OR s3.buyer_reference LIKE ?)",
+                " AND (s3.code LIKE ? OR t3.code LIKE ? OR e3.name LIKE ? OR s3.buyer_reference LIKE ? OR o3.code LIKE ?)",
             );
             let like = format!("%{q}%");
-            for _ in 0..4 {
+            for _ in 0..5 {
                 inner_params.push(Box::new(like.clone()));
             }
             has_line_filter = true;
@@ -325,11 +353,36 @@ fn list_sale_groups_impl(
         match rs {
             "has_refund" => sql.push_str(" HAVING refunded_count > 0"),
             "no_refund" => sql.push_str(" HAVING refunded_count = 0"),
+            // 1.8.0: split "has a refund" into partial vs. fully refunded -
+            // section 4 of the brief asks for both as distinct filter
+            // options. "has_refund" (any refund at all) is kept working
+            // above too, even though the 1.8.0 frontend no longer sends it,
+            // so nothing else that might call this with the old value breaks.
+            "partial_refund" => sql.push_str(" HAVING refunded_count > 0 AND refunded_count < ticket_count"),
+            "full_refund" => sql.push_str(" HAVING refunded_count > 0 AND refunded_count = ticket_count"),
             _ => {}
         }
     }
 
-    sql.push_str(&format!(" ORDER BY sale_date DESC, id DESC LIMIT {LIST_CAP}"));
+    // 1.8.0: sortable result (section 5 of the brief). Every arm is a
+    // hardcoded literal from this whitelist - `sort_by` never gets
+    // interpolated into the query - and the default (unset/unrecognized)
+    // arm is byte-identical to the pre-1.8.0 hardcoded clause, so every
+    // caller that doesn't pass sort_by keeps its exact previous ordering.
+    // Profit has no `profit_cents` alias to sort by here (unlike
+    // revenue_cents/cost_cents/selling_fees_cents, it's only computed in
+    // Rust afterwards, in map_sale_group - see finance::profit_cents), so
+    // it's spelled out as the same subtraction inline instead.
+    let order_clause = match sort_by.as_deref() {
+        Some("oldest") => "sale_date ASC, id ASC",
+        Some("revenue_desc") => "revenue_cents DESC, id DESC",
+        Some("revenue_asc") => "revenue_cents ASC, id DESC",
+        Some("profit_desc") => "(revenue_cents - cost_cents - selling_fees_cents) DESC, id DESC",
+        Some("profit_asc") => "(revenue_cents - cost_cents - selling_fees_cents) ASC, id DESC",
+        Some("tickets_desc") => "ticket_count DESC, id DESC",
+        _ => "sale_date DESC, id DESC",
+    };
+    sql.push_str(&format!(" ORDER BY {order_clause} LIMIT {LIST_CAP}"));
 
     let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -349,6 +402,8 @@ pub fn list_sale_groups(
     date_from: Option<String>,
     date_to: Option<String>,
     refund_status: Option<String>,
+    currency: Option<String>,
+    sort_by: Option<String>,
 ) -> AppResult<Vec<SaleGroup>> {
     let conn = state.db.lock().unwrap();
     list_sale_groups_impl(
@@ -360,7 +415,25 @@ pub fn list_sale_groups(
         date_from,
         date_to,
         refund_status,
+        currency,
+        sort_by,
     )
+}
+
+/// 1.8.0: distinct currencies actually present in `sales`, ordered
+/// alphabetically - powers the Sales screen's Currency filter dropdown so it
+/// always matches real data (including any "custom" currency not in the
+/// app's preferred list) instead of a hardcoded, possibly-stale list.
+fn list_sale_currencies_impl(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT currency FROM sales ORDER BY currency")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn list_sale_currencies(state: State<AppState>) -> AppResult<Vec<String>> {
+    let conn = state.db.lock().unwrap();
+    list_sale_currencies_impl(&conn)
 }
 
 /// Loads every individual ticket-line for the sale/batch that `id` belongs
@@ -394,6 +467,29 @@ fn list_sales_by_group_impl(conn: &Connection, id: i64) -> AppResult<Vec<Sale>> 
 pub fn list_sales_by_group(state: State<AppState>, id: i64) -> AppResult<Vec<Sale>> {
     let conn = state.db.lock().unwrap();
     list_sales_by_group_impl(&conn, id)
+}
+
+/// 1.8.0: resolves a list of SaleGroup representative ids (the ids a user
+/// checked on the Sales screen) to the full flat list of underlying
+/// `sales.id` rows across ALL of them - i.e. every ticket line belonging to
+/// any of the selected groups, not just their representative rows. Powers
+/// "Export selected" (see `export_sales_csv_selected_impl` in
+/// commands/csv_export.rs) so exporting N selected groups exports every line
+/// inside each one. Reuses `list_sales_by_group_impl`'s own group
+/// resolution (by batch_id, or the row itself when batch_id is NULL), so
+/// "the group" always means the exact same set of rows here as it does on
+/// Sale Detail. Sorted and de-duplicated so passing the same group twice (or
+/// two representative ids that happen to resolve to the same batch) never
+/// exports a line more than once.
+pub(crate) fn resolve_group_sale_ids(conn: &Connection, group_ids: &[i64]) -> AppResult<Vec<i64>> {
+    let mut all_ids: Vec<i64> = Vec::new();
+    for &id in group_ids {
+        let lines = list_sales_by_group_impl(conn, id)?;
+        all_ids.extend(lines.into_iter().map(|s| s.id));
+    }
+    all_ids.sort_unstable();
+    all_ids.dedup();
+    Ok(all_ids)
 }
 
 fn validate_new_payment_status(payment_status: Option<&str>) -> AppResult<()> {
@@ -1303,7 +1399,7 @@ mod tests {
     }
 
     fn all_groups(conn: &Connection) -> Vec<SaleGroup> {
-        list_sale_groups_impl(conn, None, None, None, None, None, None, None).unwrap()
+        list_sale_groups_impl(conn, None, None, None, None, None, None, None, None, None).unwrap()
     }
 
     #[test]
@@ -1422,7 +1518,7 @@ mod tests {
 
         let event_id = groups[0].event_id.unwrap();
         let filtered =
-            list_sale_groups_impl(&conn, None, Some(event_id), None, None, None, None, None).unwrap();
+            list_sale_groups_impl(&conn, None, Some(event_id), None, None, None, None, None, None, None).unwrap();
         assert_eq!(filtered.len(), 2, "both sales are for the same event and must both match");
     }
 
@@ -1478,7 +1574,7 @@ mod tests {
 
         for eid in [event_a, event_b] {
             let filtered =
-                list_sale_groups_impl(&conn, None, Some(eid), None, None, None, None, None).unwrap();
+                list_sale_groups_impl(&conn, None, Some(eid), None, None, None, None, None, None, None).unwrap();
             assert_eq!(filtered.len(), 1, "the group must still match when filtered by either event");
             assert_eq!(
                 filtered[0].ticket_count, 2,
@@ -1498,13 +1594,13 @@ mod tests {
         refund_sale_impl(&mut conn, ids[0], None).unwrap();
 
         let has_refund =
-            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("has_refund".into()))
+            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("has_refund".into()), None, None)
                 .unwrap();
         assert_eq!(has_refund.len(), 1);
         assert_eq!(has_refund[0].refunded_count, 1);
 
         let no_refund =
-            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("no_refund".into()))
+            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("no_refund".into()), None, None)
                 .unwrap();
         assert_eq!(no_refund.len(), 1);
         assert_eq!(no_refund[0].refunded_count, 0);
@@ -1939,5 +2035,257 @@ mod tests {
         let mut want_ids = remaining_ids.clone();
         want_ids.sort();
         assert_eq!(got_ids, want_ids);
+    }
+
+    // ======================================================================
+    // 1.8.0: Sales 2.0 - search/filters/sorting/order-linking/export-selected
+    // ======================================================================
+
+    /// 1.8.0 addition: `Sale` rows now carry the ticket's own order_id/
+    /// order_code (added so Sale Detail can link straight to Order Detail -
+    /// see SaleDetail.tsx). Every ticket belongs to exactly one order
+    /// (tickets.order_id NOT NULL), so this must always be populated, never
+    /// silently null/zero.
+    #[test]
+    fn sale_rows_carry_their_tickets_order_id_and_order_code() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+
+        let order_id: i64 = conn
+            .query_row("SELECT order_id FROM tickets WHERE id=?1", [tickets[0]], |r| r.get(0))
+            .unwrap();
+        let order_code: String = conn
+            .query_row("SELECT code FROM orders WHERE id=?1", [order_id], |r| r.get(0))
+            .unwrap();
+
+        let sale = fetch_one(&conn, sale_id).unwrap();
+        assert_eq!(sale.order_id, order_id);
+        assert_eq!(sale.order_code, order_code);
+
+        // Same fields must also come through the grouped Sale Detail path.
+        let lines = list_sales_by_group_impl(&conn, sale_id).unwrap();
+        assert_eq!(lines[0].order_id, order_id);
+        assert_eq!(lines[0].order_code, order_code);
+    }
+
+    /// 1.8.0 section 3: searching an order code must find the sale(s) tied
+    /// to that order, the same way a ticket code already does.
+    #[test]
+    fn list_sale_groups_search_matches_order_code() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+        let order_id: i64 = conn
+            .query_row("SELECT order_id FROM tickets WHERE id=?1", [tickets[0]], |r| r.get(0))
+            .unwrap();
+        let order_code: String = conn
+            .query_row("SELECT code FROM orders WHERE id=?1", [order_id], |r| r.get(0))
+            .unwrap();
+
+        let found = list_sale_groups_impl(
+            &conn, Some(order_code.clone()), None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1, "searching the order code must find the sale made from that order");
+        assert_eq!(found[0].id, sale_id);
+
+        let miss = list_sale_groups_impl(
+            &conn, Some("ORD-999999".into()), None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+        assert_eq!(miss.len(), 0, "an unrelated order code must not match");
+    }
+
+    /// 1.8.0 section 4: currency filter - "does this group contain a line in
+    /// this currency", same semi-join pattern as event/platform/payment.
+    #[test]
+    fn list_sale_groups_currency_filter_matches_only_that_currency() {
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Currency Filter Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let eur_ticket = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+        create_sale_impl(&mut conn, &sale_input(eur_ticket, 1000)).unwrap();
+        create_sale_impl(&mut conn, &sale_input(usd_ticket, 1000)).unwrap();
+
+        let eur_only = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, Some("EUR".into()), None,
+        )
+        .unwrap();
+        assert_eq!(eur_only.len(), 1);
+        assert_eq!(eur_only[0].currency.as_deref(), Some("EUR"));
+
+        let usd_only = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, Some("USD".into()), None,
+        )
+        .unwrap();
+        assert_eq!(usd_only.len(), 1);
+        assert_eq!(usd_only[0].currency.as_deref(), Some("USD"));
+
+        let gbp_none = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, Some("GBP".into()), None,
+        )
+        .unwrap();
+        assert_eq!(gbp_none.len(), 0, "a currency with no sales must match nothing");
+    }
+
+    /// 1.8.0 section 5: sortable results. Revenue and the (revenue - cost -
+    /// fees) profit expression both need to actually execute in SQL without
+    /// error - profit_cents itself is only computed in Rust afterwards (see
+    /// map_sale_group), so the ORDER BY must spell out the same subtraction
+    /// rather than reference a column that doesn't exist in the query.
+    #[test]
+    fn list_sale_groups_sorts_by_revenue_and_profit_both_directions() {
+        let mut conn = test_conn();
+        // seed_tickets' order always costs 1000 cents/ticket, so with equal
+        // cost and zero fees, profit ordering tracks revenue ordering
+        // exactly - this still genuinely exercises the SQL profit
+        // expression (the thing that broke before this fix), just via data
+        // where the expected order is easy to state.
+        let tickets = seed_tickets(&mut conn, 3);
+        create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap(); // profit 0
+        create_sale_impl(&mut conn, &sale_input(tickets[1], 3000)).unwrap(); // profit 2000
+        create_sale_impl(&mut conn, &sale_input(tickets[2], 2000)).unwrap(); // profit 1000
+
+        let revenue_desc = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("revenue_desc".into()),
+        )
+        .unwrap();
+        assert_eq!(revenue_desc.iter().map(|g| g.revenue_cents).collect::<Vec<_>>(), vec![3000, 2000, 1000]);
+
+        let revenue_asc = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("revenue_asc".into()),
+        )
+        .unwrap();
+        assert_eq!(revenue_asc.iter().map(|g| g.revenue_cents).collect::<Vec<_>>(), vec![1000, 2000, 3000]);
+
+        let profit_desc = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("profit_desc".into()),
+        )
+        .unwrap();
+        assert_eq!(profit_desc.iter().map(|g| g.profit_cents).collect::<Vec<_>>(), vec![2000, 1000, 0]);
+
+        let profit_asc = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("profit_asc".into()),
+        )
+        .unwrap();
+        assert_eq!(profit_asc.iter().map(|g| g.profit_cents).collect::<Vec<_>>(), vec![0, 1000, 2000]);
+    }
+
+    /// 1.8.0 section 5: "Most Tickets" sort and the "oldest" direction (the
+    /// default/unset case, i.e. plain "Newest", is already covered by every
+    /// pre-1.8.0 test in this file that never passes sort_by at all).
+    #[test]
+    fn list_sale_groups_sorts_by_ticket_count_and_oldest_first() {
+        let mut conn = test_conn();
+        let single = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &{
+            let mut i = sale_input(single[0], 1000);
+            i.sale_date = "2026-01-01".to_string();
+            i
+        })
+        .unwrap();
+        let batch = seed_tickets(&mut conn, 3);
+        create_sales_batch_impl(&mut conn, &{
+            let mut b = batch_input(&batch, 1000, "paid");
+            b.sale_date = "2026-06-01".to_string();
+            b
+        })
+        .unwrap();
+
+        let by_tickets = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("tickets_desc".into()),
+        )
+        .unwrap();
+        assert_eq!(by_tickets[0].ticket_count, 3, "the 3-ticket batch must sort first");
+        assert_eq!(by_tickets[1].ticket_count, 1);
+
+        let oldest_first = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("oldest".into()),
+        )
+        .unwrap();
+        assert_eq!(oldest_first[0].sale_date, "2026-01-01", "the earlier sale must come first when sorted oldest");
+    }
+
+    /// 1.8.0 section 4: refund status must distinguish partially- from
+    /// fully-refunded groups, not just "has any refund at all".
+    #[test]
+    fn list_sale_groups_refund_status_distinguishes_partial_from_full() {
+        let mut conn = test_conn();
+        let partial_tickets = seed_tickets(&mut conn, 4);
+        let partial_ids = create_sales_batch_impl(&mut conn, &batch_input(&partial_tickets, 1000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, partial_ids[0], None).unwrap(); // 1 of 4 refunded
+
+        let full_tickets = seed_tickets(&mut conn, 2);
+        let full_ids = create_sales_batch_impl(&mut conn, &batch_input(&full_tickets, 1000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, full_ids[0], None).unwrap();
+        refund_sale_impl(&mut conn, full_ids[1], None).unwrap(); // 2 of 2 refunded
+
+        let clean_tickets = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &sale_input(clean_tickets[0], 1000)).unwrap(); // 0 refunded
+
+        let partial = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, Some("partial_refund".into()), None, None,
+        )
+        .unwrap();
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].refunded_count, 1);
+        assert_eq!(partial[0].ticket_count, 4);
+
+        let full = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, Some("full_refund".into()), None, None,
+        )
+        .unwrap();
+        assert_eq!(full.len(), 1);
+        assert_eq!(full[0].refunded_count, 2);
+        assert_eq!(full[0].ticket_count, 2);
+
+        let none = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, Some("no_refund".into()), None, None,
+        )
+        .unwrap();
+        assert_eq!(none.len(), 1);
+        assert_eq!(none[0].refunded_count, 0);
+    }
+
+    /// 1.8.0: the Currency filter dropdown's data source.
+    #[test]
+    fn list_sale_currencies_returns_distinct_sorted_currencies() {
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Currencies Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let usd = seed_ticket_with_currency(&mut conn, event_id, "USD");
+        let eur1 = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let eur2 = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        create_sale_impl(&mut conn, &sale_input(usd, 1000)).unwrap();
+        create_sale_impl(&mut conn, &sale_input(eur1, 1000)).unwrap();
+        create_sale_impl(&mut conn, &sale_input(eur2, 1000)).unwrap();
+
+        let currencies = list_sale_currencies_impl(&conn).unwrap();
+        assert_eq!(currencies, vec!["EUR".to_string(), "USD".to_string()], "distinct and alphabetically sorted");
+    }
+
+    /// 1.8.0: "Export selected" resolves each selected representative id to
+    /// its FULL group (every line), not just that one row, and de-dupes if
+    /// the same underlying group is reachable via more than one selected id.
+    #[test]
+    fn resolve_group_sale_ids_expands_batches_and_dedupes() {
+        let mut conn = test_conn();
+        let single = seed_tickets(&mut conn, 1);
+        let single_id = create_sale_impl(&mut conn, &sale_input(single[0], 1000)).unwrap();
+
+        let batch = seed_tickets(&mut conn, 3);
+        let batch_ids = create_sales_batch_impl(&mut conn, &batch_input(&batch, 1000, "paid")).unwrap();
+
+        // Select the single sale, plus the batch via TWO of its own lines -
+        // the second reference must not duplicate the batch's lines.
+        let resolved = resolve_group_sale_ids(&conn, &[single_id, batch_ids[0], batch_ids[1]]).unwrap();
+
+        let mut expected = vec![single_id, batch_ids[0], batch_ids[1], batch_ids[2]];
+        expected.sort_unstable();
+        assert_eq!(resolved, expected, "every line of every selected group, exactly once each");
     }
 }

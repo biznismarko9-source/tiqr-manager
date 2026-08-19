@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, todayIso } from "../lib/format";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, titleCase, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -17,8 +18,89 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
+import { IconArrowLeft, IconChevronDown, IconDownload, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
+
+// 1.8.0: preferred/well-known currency codes for the Sales screen's Currency
+// filter (section 4 of the brief) - always offered regardless of whether the
+// database currently has data in them. Any OTHER currency actually present
+// in `sales` (list_sale_currencies) is appended after these, so a "custom"
+// currency the user already sold in still shows up without needing a
+// separate free-text input.
+const PREFERRED_CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
+
+const REFUND_STATUS_LABELS: Record<string, string> = {
+  no_refund: "No refunds",
+  partial_refund: "Partially refunded",
+  full_refund: "Fully refunded",
+};
+
+const SORT_LABELS: Record<string, string> = {
+  "": "Newest first",
+  oldest: "Oldest first",
+  revenue_desc: "Highest revenue",
+  revenue_asc: "Lowest revenue",
+  profit_desc: "Highest profit",
+  profit_asc: "Lowest profit",
+  tickets_desc: "Most tickets",
+};
+
+// 1.8.0: remembers the last-used Sales filters for this app session only
+// (module-level, so it survives navigating away to Sale Detail and back,
+// but resets on app restart - never written to disk). Deliberately NOT tied
+// to the URL or to Sale Detail's own "Back to sales" link/history, so it
+// works no matter how the user returns to this page, and touches nothing in
+// Sale Detail's own (protected) anchor/navigation logic. See section 10 of
+// the 1.8.0 brief and the 1.8.0 report for the reasoning.
+interface SalesFilterState {
+  search: string;
+  eventId: number | "";
+  platformId: number | "";
+  paymentStatus: string;
+  currency: string;
+  refundStatus: string;
+  dateFrom: string;
+  dateTo: string;
+  sortBy: string;
+}
+let lastFilters: SalesFilterState | null = null;
+
+function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-800 py-1 pl-2.5 pr-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-200 dark:ring-slate-700">
+      {label}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700"
+        aria-label={`Remove filter: ${label}`}
+      >
+        <IconX className="h-3 w-3" />
+      </button>
+    </span>
+  );
+}
+
+function SummaryStat({ label, value, tone }: { label: string; value: string; tone?: "positive" | "negative" }) {
+  const toneCls =
+    tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : tone === "negative"
+        ? "text-red-600 dark:text-red-400"
+        : "text-slate-900 dark:text-slate-100";
+  return (
+    <span className="whitespace-nowrap">
+      <span className="text-slate-400 dark:text-slate-500">{label}: </span>
+      <span className={`font-medium tabular-nums ${toneCls}`}>{value}</span>
+    </span>
+  );
+}
+
+// checkbox styling shared by the header "select all" and per-row boxes -
+// index.css has no `.checkbox` component class (only .input/.th/.td/.label/
+// .card), so this is spelled out directly rather than assuming one exists.
+const CHECKBOX_CLASS =
+  "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-200 dark:border-slate-600 dark:bg-slate-800 dark:focus:ring-brand-900";
 
 export default function Sales() {
   const toast = useToast();
@@ -26,16 +108,28 @@ export default function Sales() {
   const navigate = useNavigate();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
-  const [search, setSearch] = useState("");
-  const [eventId, setEventId] = useState<number | "">("");
-  const [paymentStatus, setPaymentStatus] = useState("");
-  const [refundStatus, setRefundStatus] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [platforms, setPlatforms] = useState<Platform[]>([]);
+  const [currencies, setCurrencies] = useState<string[]>([]);
+
+  const [search, setSearch] = useState(lastFilters?.search ?? "");
+  const [eventId, setEventId] = useState<number | "">(lastFilters?.eventId ?? "");
+  const [platformId, setPlatformId] = useState<number | "">(lastFilters?.platformId ?? "");
+  const [paymentStatus, setPaymentStatus] = useState(lastFilters?.paymentStatus ?? "");
+  const [currency, setCurrency] = useState(lastFilters?.currency ?? "");
+  const [refundStatus, setRefundStatus] = useState(lastFilters?.refundStatus ?? "");
+  const [dateFrom, setDateFrom] = useState(lastFilters?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(lastFilters?.dateTo ?? "");
+  const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "");
+  const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
+
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listSaleCurrencies().then(setCurrencies).catch(() => {});
   }, []);
 
   // Lets another page (e.g. a "View sale" link next to a sold ticket in
@@ -52,32 +146,46 @@ export default function Sales() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
+  // 1.8.0: remember these filters (module-level `lastFilters`, see top of
+  // file) so returning from Sale Detail finds the Sales screen exactly as it
+  // was left - without touching Sale Detail's own navigation at all.
+  useEffect(() => {
+    lastFilters = { search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy };
+  }, [search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
+
   const load = () => {
     api
       .listSaleGroups({
         search: search || undefined,
         eventId: eventId || undefined,
+        platformId: platformId || undefined,
         paymentStatus: paymentStatus || undefined,
+        currency: currency || undefined,
         refundStatus: refundStatus || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
+        sortBy: sortBy || undefined,
       })
       .then(setGroups)
       .catch((e) => toast.error(errMsg(e)));
   };
 
   useEffect(() => {
+    // A filter changing invalidates the current selection - a checked row
+    // might not even be part of the new result set anymore, and "Export
+    // selected" must never silently refer to rows the user can no longer see.
+    setSelected(new Set());
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, paymentStatus, refundStatus, dateFrom, dateTo]);
+  }, [search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
 
   const totals = useMemo(() => {
     if (!groups) return null;
     // Every group's own revenue/profit already excludes its refunded lines,
     // so this can sum them directly. Amounts in different currencies can
     // never be added together, so this only sums when every group shares one.
-    const currency =
+    const summaryCurrency =
       groups.length > 0 && groups.every((g) => g.currency === groups[0].currency) ? groups[0].currency : null;
     const sums = groups.reduce(
       (acc, g) => ({
@@ -88,8 +196,86 @@ export default function Sales() {
       }),
       { revenue: 0, profit: 0, tickets: 0, refunded: 0 },
     );
-    return { ...sums, currency };
+    return { ...sums, currency: summaryCurrency };
   }, [groups]);
+
+  const currencyOptions = useMemo(() => {
+    const extra = currencies.filter((c) => !PREFERRED_CURRENCIES.includes(c)).sort();
+    return [...PREFERRED_CURRENCIES, ...extra];
+  }, [currencies]);
+
+  const activeFilters = useMemo(() => {
+    const chips: { key: string; label: string; onRemove: () => void }[] = [];
+    if (eventId) {
+      const ev = events.find((e) => e.id === eventId);
+      chips.push({ key: "event", label: `Event: ${ev?.name ?? eventId}`, onRemove: () => setEventId("") });
+    }
+    if (platformId) {
+      const p = platforms.find((pl) => pl.id === platformId);
+      chips.push({ key: "platform", label: `Platform: ${p?.name ?? platformId}`, onRemove: () => setPlatformId("") });
+    }
+    if (paymentStatus) {
+      chips.push({ key: "payment", label: `Status: ${titleCase(paymentStatus)}`, onRemove: () => setPaymentStatus("") });
+    }
+    if (currency) {
+      chips.push({ key: "currency", label: `Currency: ${currency}`, onRemove: () => setCurrency("") });
+    }
+    if (refundStatus) {
+      chips.push({
+        key: "refund",
+        label: `Refunds: ${REFUND_STATUS_LABELS[refundStatus] ?? refundStatus}`,
+        onRemove: () => setRefundStatus(""),
+      });
+    }
+    if (dateFrom) chips.push({ key: "from", label: `From: ${dateFrom}`, onRemove: () => setDateFrom("") });
+    if (dateTo) chips.push({ key: "to", label: `To: ${dateTo}`, onRemove: () => setDateTo("") });
+    return chips;
+  }, [eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, events, platforms]);
+
+  const hasActiveFilters = activeFilters.length > 0 || !!search;
+
+  const clearAllFilters = () => {
+    setSearch("");
+    setEventId("");
+    setPlatformId("");
+    setPaymentStatus("");
+    setCurrency("");
+    setRefundStatus("");
+    setDateFrom("");
+    setDateTo("");
+  };
+
+  const allVisibleSelected = groups !== null && groups.length > 0 && groups.every((g) => selected.has(g.id));
+  const toggleSelectAll = () => {
+    if (!groups) return;
+    setSelected(allVisibleSelected ? new Set() : new Set(groups.map((g) => g.id)));
+  };
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const doExportSelected = async () => {
+    const path = await save({
+      defaultPath: `tiqr-sales-selected-${todayIso()}.csv`,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!path || Array.isArray(path)) return;
+    setExporting(true);
+    try {
+      const ids = Array.from(selected);
+      const count = await api.exportSalesCsvSelected(path, ids);
+      toast.success(`Exported ${count} sale line${count === 1 ? "" : "s"} from ${ids.length} sale${ids.length === 1 ? "" : "s"} to ${path}`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div>
@@ -103,13 +289,13 @@ export default function Sales() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      <div className="mb-2 flex flex-wrap items-end gap-3">
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">
             <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
-              placeholder="Sale code, ticket, buyer..."
+              placeholder="Sale, ticket, order, buyer..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
@@ -128,7 +314,24 @@ export default function Sales() {
           </Select>
         </div>
         <div className="w-40">
+          <span className="label">Platform</span>
+          <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All platforms</option>
+            {platforms.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="w-36">
           <span className="label">Payment</span>
+          {/* Only the 3 payment statuses that actually exist on a sale
+              (pending/paid/refunded - see SalePaymentStatus). "Partially
+              Paid" isn't a real per-sale status in this data model - that
+              concept only exists at the ORDER level (OrderPaymentStatus, a
+              different field entirely) - so it's intentionally not offered
+              here rather than inventing a new status. See the 1.8.0 report. */}
           <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)}>
             <option value="">All</option>
             <option value="pending">Pending</option>
@@ -136,12 +339,15 @@ export default function Sales() {
             <option value="refunded">Refunded</option>
           </Select>
         </div>
-        <div className="w-40">
-          <span className="label">Refunds</span>
-          <Select value={refundStatus} onChange={(e) => setRefundStatus(e.target.value)}>
+        <div className="w-32">
+          <span className="label">Currency</span>
+          <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
             <option value="">All</option>
-            <option value="has_refund">Has a refund</option>
-            <option value="no_refund">No refunds</option>
+            {currencyOptions.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </Select>
         </div>
         <div className="w-36">
@@ -152,15 +358,91 @@ export default function Sales() {
           <span className="label">To</span>
           <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </div>
-        {totals && groups && (
-          <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
-            {groups.length} sales &middot; {totals.tickets} tickets &middot; revenue{" "}
-            {formatMoneyOrMixed(totals.revenue, totals.currency)} &middot; profit{" "}
-            {formatMoneyOrMixed(totals.profit, totals.currency)}
-            {totals.refunded > 0 ? ` (${totals.refunded} ticket${totals.refunded === 1 ? "" : "s"} refunded, excluded)` : ""}
-          </p>
-        )}
+        <button
+          type="button"
+          className="mb-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+          onClick={() => setShowMoreFilters((v) => !v)}
+        >
+          More filters
+          <IconChevronDown className={`h-3.5 w-3.5 transition-transform ${showMoreFilters ? "rotate-180" : ""}`} />
+        </button>
       </div>
+
+      {showMoreFilters && (
+        <div className="mb-2 flex flex-wrap items-end gap-3">
+          <div className="w-44">
+            <span className="label">Refund status</span>
+            <Select value={refundStatus} onChange={(e) => setRefundStatus(e.target.value)}>
+              <option value="">All</option>
+              <option value="no_refund">No refunds</option>
+              <option value="partial_refund">Partially refunded</option>
+              <option value="full_refund">Fully refunded</option>
+            </Select>
+          </div>
+        </div>
+      )}
+
+      {activeFilters.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          {activeFilters.map((f) => (
+            <FilterChip key={f.key} label={f.label} onRemove={f.onRemove} />
+          ))}
+          <button
+            type="button"
+            className="ml-1 text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:underline"
+            onClick={clearAllFilters}
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm">
+          {totals && groups ? (
+            <>
+              <SummaryStat label="Results" value={`${groups.length} sale${groups.length === 1 ? "" : "s"}`} />
+              <SummaryStat label="Tickets" value={String(totals.tickets)} />
+              <SummaryStat label="Revenue" value={formatMoneyOrMixed(totals.revenue, totals.currency)} />
+              <SummaryStat
+                label="Profit"
+                value={formatMoneyOrMixed(totals.profit, totals.currency)}
+                tone={totals.currency !== null ? (totals.profit > 0 ? "positive" : totals.profit < 0 ? "negative" : undefined) : undefined}
+              />
+              {totals.refunded > 0 && (
+                <SummaryStat label="Refunded" value={`${totals.refunded} ticket${totals.refunded === 1 ? "" : "s"}`} />
+              )}
+            </>
+          ) : (
+            <span className="text-slate-400 dark:text-slate-500">Loading…</span>
+          )}
+        </div>
+        <div className="w-48">
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort sales">
+            {Object.entries(SORT_LABELS).map(([value, label]) => (
+              <option key={value || "newest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+
+      {selected.size > 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">
+          <span className="font-medium text-brand-800 dark:text-brand-300">Selected: {selected.size}</span>
+          <Button variant="secondary" onClick={doExportSelected} disabled={exporting}>
+            <IconDownload className="h-4 w-4" /> {exporting ? "Exporting..." : "Export CSV"}
+          </Button>
+          <button
+            type="button"
+            className="ml-auto text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline"
+            onClick={() => setSelected(new Set())}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
 
       {groups && groups.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
@@ -172,15 +454,28 @@ export default function Sales() {
       {groups === null ? (
         <LoadingBlock />
       ) : groups.length === 0 ? (
-        <EmptyState
-          icon={<IconReceipt className="h-8 w-8" />}
-          title="No sales match these filters"
-          action={
-            <Button variant="primary" onClick={() => setModalOpen(true)}>
-              <IconPlus className="h-4 w-4" /> New Sale
-            </Button>
-          }
-        />
+        hasActiveFilters ? (
+          <EmptyState
+            icon={<IconReceipt className="h-8 w-8" />}
+            title="No sales match these filters"
+            action={
+              <Button variant="secondary" onClick={clearAllFilters}>
+                Clear filters
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={<IconReceipt className="h-8 w-8" />}
+            title="No sales yet"
+            description="Record your first sale to start tracking revenue and profit."
+            action={
+              <Button variant="primary" onClick={() => setModalOpen(true)}>
+                <IconPlus className="h-4 w-4" /> New Sale
+              </Button>
+            }
+          />
+        )
       ) : (
         // One row per sale action (single ticket or multi-ticket batch) -
         // same table style as the Tickets screen's order-grouped list. A
@@ -190,9 +485,18 @@ export default function Sales() {
         // already grouped this way (SaleGroup/batch_id, see sales.rs) - only
         // the layout changed here, no field or number is new.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1100px] border-collapse">
+          <table className="w-full min-w-[1220px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                <th className="th w-10">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all visible sales"
+                  />
+                </th>
                 <th className="th">Sale</th>
                 <th className="th">Event</th>
                 <th className="th">Platform</th>
@@ -200,6 +504,7 @@ export default function Sales() {
                 <th className="th text-right">Tickets</th>
                 <th className="th text-right">Revenue</th>
                 <th className="th text-right">Fees</th>
+                <th className="th text-right">Cost</th>
                 <th className="th text-right">Profit</th>
                 <th className="th text-right">Margin / ROI</th>
                 <th className="th">Status</th>
@@ -207,7 +512,19 @@ export default function Sales() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {groups.map((g) => (
-                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr
+                  key={g.id}
+                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(g.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
+                >
+                  <td className="td">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={selected.has(g.id)}
+                      onChange={() => toggleOne(g.id)}
+                      aria-label={`Select sale ${g.code}`}
+                    />
+                  </td>
                   <td className="td">
                     <Link
                       to={`/sales/${g.id}`}
@@ -230,6 +547,7 @@ export default function Sales() {
                   <td className="td text-right tabular-nums">{g.ticketCount}</td>
                   <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
                   <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.costCents, g.currency)}</td>
                   <td
                     className={`td text-right tabular-nums font-medium ${
                       g.profitCents > 0

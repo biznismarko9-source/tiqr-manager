@@ -1,5 +1,5 @@
 use crate::db::AppState;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::money::format_cents;
 use rusqlite::Connection;
 use tauri::State;
@@ -199,13 +199,20 @@ pub fn export_sales_csv(state: State<AppState>, path: String) -> AppResult<i64> 
     export_sales_csv_impl(&conn, &path)
 }
 
-/// Split out from the `export_sales_csv` command (same "impl function + thin
-/// tauri::command wrapper" pattern already used by get_dashboard/
-/// list_sale_groups) so the 1.6.0 audit H6 fix (refunded rows must not
-/// contribute a nonzero profit) is directly unit-testable against a plain
-/// `&Connection`, without needing a Tauri `State<AppState>`.
-fn export_sales_csv_impl(conn: &Connection, path: &str) -> AppResult<i64> {
-    let mut stmt = conn.prepare(
+/// Shared row-writer behind both `export_sales_csv_impl` (every sale) and
+/// `export_sales_csv_selected_impl` (1.8.0, only the selected Sales screen
+/// rows). Keeping ONE implementation of the column list and the 1.6.0 audit
+/// H6 realized-only profit rule means "Export selected" can never quietly
+/// drift from what "Export all" already does - `where_extra` is the only
+/// difference between the two callers (e.g. `"WHERE s.id IN (?,?,?)"`, or ""
+/// for no filtering at all).
+fn write_sales_csv(
+    conn: &Connection,
+    path: &str,
+    where_extra: &str,
+    extra_params: &[&dyn rusqlite::ToSql],
+) -> AppResult<i64> {
+    let sql = format!(
         "SELECT s.code, t.code, e.name, p.name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
                 (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) as cost_cents,
                 s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at
@@ -213,8 +220,10 @@ fn export_sales_csv_impl(conn: &Connection, path: &str) -> AppResult<i64> {
          JOIN tickets t ON t.id = s.ticket_id
          JOIN events e ON e.id = t.event_id
          LEFT JOIN platforms p ON p.id = s.platform_id
-         ORDER BY s.id",
-    )?;
+         {where_extra}
+         ORDER BY s.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
         "sale_code", "ticket_code", "event", "platform", "sale_date", "sale_price",
@@ -222,7 +231,7 @@ fn export_sales_csv_impl(conn: &Connection, path: &str) -> AppResult<i64> {
         "notes", "is_demo", "created_at",
     ])?;
     let mut count = 0i64;
-    let mut rows = stmt.query([])?;
+    let mut rows = stmt.query(extra_params)?;
     while let Some(row) = rows.next()? {
         let sale_price: i64 = row.get(5)?;
         let fees: i64 = row.get(6)?;
@@ -262,13 +271,53 @@ fn export_sales_csv_impl(conn: &Connection, path: &str) -> AppResult<i64> {
     Ok(count)
 }
 
+/// Split out from the `export_sales_csv` command (same "impl function + thin
+/// tauri::command wrapper" pattern already used by get_dashboard/
+/// list_sale_groups) so the 1.6.0 audit H6 fix (refunded rows must not
+/// contribute a nonzero profit) is directly unit-testable against a plain
+/// `&Connection`, without needing a Tauri `State<AppState>`. Unchanged
+/// behavior/signature since 1.6.0 - now just a thin call into the shared
+/// `write_sales_csv` (1.8.0), with no extra filter applied.
+fn export_sales_csv_impl(conn: &Connection, path: &str) -> AppResult<i64> {
+    write_sales_csv(conn, path, "", &[])
+}
+
+/// 1.8.0: "Export selected" on the Sales screen. `group_ids` are SaleGroup
+/// representative ids (what the frontend has checked) - resolved via
+/// `resolve_group_sale_ids` (sales.rs) to every underlying sale line across
+/// all of them, so a selected 4-ticket batch exports all 4 lines, not just
+/// its representative row. Uses the exact same column layout and H6
+/// realized-only profit rule as "Export all" (`write_sales_csv`), just
+/// restricted to the resolved ids.
+fn export_sales_csv_selected_impl(conn: &Connection, path: &str, group_ids: &[i64]) -> AppResult<i64> {
+    if group_ids.is_empty() {
+        return Err(AppError::Validation("Select at least one sale to export".into()));
+    }
+    let ids = crate::commands::sales::resolve_group_sale_ids(conn, group_ids)?;
+    if ids.is_empty() {
+        return Err(AppError::Validation("None of the selected sales could be found".into()));
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let where_extra = format!("WHERE s.id IN ({placeholders})");
+    let param_boxes: Vec<Box<dyn rusqlite::ToSql>> =
+        ids.iter().map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>).collect();
+    let param_refs: Vec<&dyn rusqlite::ToSql> = param_boxes.iter().map(|p| p.as_ref()).collect();
+    write_sales_csv(conn, path, &where_extra, &param_refs)
+}
+
+#[tauri::command]
+pub fn export_sales_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    export_sales_csv_selected_impl(&conn, &path, &ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::orders::insert_order_with_tickets;
-    use crate::commands::sales::{create_sale_impl, refund_sale_impl};
+    use crate::commands::sales::{create_sale_impl, create_sales_batch_impl, refund_sale_impl};
     use crate::db::test_conn;
-    use crate::models::{OrderInput, SaleInput};
+    use crate::models::{OrderInput, SaleBatchInput, SaleBatchLineInput, SaleInput};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Same idea as csv_import.rs's own TempCsv test helper - a unique path
@@ -414,5 +463,84 @@ mod tests {
         // Only the active line: 2000 - 1000 - 100 = 900 cents. The refunded
         // line (5000 sale price) contributes 0, not 5000-1000-100=3900.
         assert_eq!(total_profit_cents, 900);
+    }
+
+    // ---- 1.8.0: Export selected ------------------------------------------
+
+    fn batch_input(tickets: &[i64]) -> SaleBatchInput {
+        SaleBatchInput {
+            lines: tickets
+                .iter()
+                .map(|&tid| SaleBatchLineInput {
+                    ticket_id: tid,
+                    sale_price_cents: 2000,
+                    selling_fees_cents: 0,
+                })
+                .collect(),
+            platform_id: None,
+            sale_date: "2026-01-20".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn export_selected_exports_only_the_chosen_groups_full_lines_not_the_whole_table() {
+        let mut conn = test_conn();
+        let a = seed_tickets(&mut conn, 1);
+        let a_id = create_sale_impl(&mut conn, &sale_input(a[0], 1000)).unwrap();
+        let a_code: String = conn.query_row("SELECT code FROM tickets WHERE id=?1", [a[0]], |r| r.get(0)).unwrap();
+
+        let b = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &sale_input(b[0], 1000)).unwrap(); // NOT selected - must not appear
+
+        let c = seed_tickets(&mut conn, 2);
+        let c_ids = create_sales_batch_impl(&mut conn, &batch_input(&c)).unwrap();
+        assert_eq!(c_ids.len(), 2);
+        let c_codes: Vec<String> = c
+            .iter()
+            .map(|&tid| conn.query_row("SELECT code FROM tickets WHERE id=?1", [tid], |r| r.get(0)).unwrap())
+            .collect();
+
+        let out = temp_csv_path();
+        let count = export_sales_csv_selected_impl(&conn, out.0.to_str().unwrap(), &[a_id, c_ids[0]]).unwrap();
+        assert_eq!(count, 3, "the single sale (1 line) plus the whole 2-ticket batch (2 lines) = 3");
+
+        let rows = read_csv_rows(&out.0);
+        let exported_ticket_codes: Vec<&String> = rows.iter().map(|r| &r[1]).collect();
+        assert!(exported_ticket_codes.contains(&&a_code), "the selected single sale's ticket must be exported");
+        for code in &c_codes {
+            assert!(exported_ticket_codes.contains(&code), "every line of the selected batch must be exported: {code}");
+        }
+        assert_eq!(rows.len(), 3, "no extra rows beyond the 3 selected lines");
+    }
+
+    #[test]
+    fn export_selected_rejects_an_empty_selection() {
+        let conn = test_conn();
+        let out = temp_csv_path();
+        let err = export_sales_csv_selected_impl(&conn, out.0.to_str().unwrap(), &[]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(!out.0.exists(), "nothing should be written to disk for a rejected empty selection");
+    }
+
+    #[test]
+    fn export_selected_applies_the_same_h6_realized_only_profit_rule() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2); // cost 1000 cents each
+        let ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets)).unwrap();
+        refund_sale_impl(&mut conn, ids[0], Some("test refund")).unwrap();
+
+        let out = temp_csv_path();
+        let count = export_sales_csv_selected_impl(&conn, out.0.to_str().unwrap(), &[ids[0]]).unwrap();
+        assert_eq!(count, 2, "selecting either line of the batch resolves to the whole 2-line group");
+
+        let rows = read_csv_rows(&out.0);
+        let refunded_row = rows.iter().find(|r| r[10] == "refunded").expect("the refunded line must still be exported");
+        assert_eq!(refunded_row[8], "0.00", "refunded line must export 0 profit, same rule as Export all");
+        let active_row = rows.iter().find(|r| r[10] == "paid").expect("the active line must still be exported");
+        // batch_input() above: sale_price 20.00, selling_fees 0.00, cost 10.00 (seed_tickets' 1000 cents) -> profit 10.00.
+        assert_eq!(active_row[8], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
     }
 }

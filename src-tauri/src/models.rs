@@ -192,6 +192,13 @@ pub struct Sale {
     pub seat: Option<String>,
     pub event_id: i64,
     pub event_name: String,
+    /// 1.8.0: the ticket's own order, so Sale Detail can link straight to
+    /// Order Detail without a second round trip. Every ticket belongs to
+    /// exactly one order (tickets.order_id is NOT NULL - see migration 001),
+    /// so this is never optional, unlike event_id/currency on `SaleGroup`
+    /// which CAN be "Mixed" once several lines are aggregated together.
+    pub order_id: i64,
+    pub order_code: String,
     pub platform_id: Option<i64>,
     pub platform_name: Option<String>,
     pub sale_date: String,

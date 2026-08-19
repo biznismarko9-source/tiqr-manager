@@ -207,10 +207,11 @@ export default function SaleDetail() {
         <EmptyState title="No tickets found for this sale" />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1050px] border-collapse">
+          <table className="w-full min-w-[1150px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Ticket</th>
+                <th className="th">Order</th>
                 <th className="th">Section</th>
                 <th className="th">Row</th>
                 <th className="th">Seat</th>
@@ -225,7 +226,28 @@ export default function SaleDetail() {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {lines.map((s) => (
                 <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td font-medium text-slate-900 dark:text-slate-100">{s.ticketCode}</td>
+                  <td className="td font-medium text-slate-900 dark:text-slate-100">
+                    {/* 1.8.0 (S11): reuses Tickets.tsx's existing ?code= search-param
+                        convention - links to /tickets (not /inventory, which is locked
+                        to available/listed and would never show a sold/refunded ticket). */}
+                    <Link
+                      to={`/tickets?code=${encodeURIComponent(s.ticketCode)}`}
+                      className="hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
+                    >
+                      {s.ticketCode}
+                    </Link>
+                  </td>
+                  <td className="td text-slate-500 dark:text-slate-400">
+                    {/* 1.8.0 (S11): every ticket belongs to exactly one order, so this
+                        is always a concrete link - never Mixed/null like the group-level
+                        header fields above. */}
+                    <Link
+                      to={`/orders/${s.orderId}`}
+                      className="hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
+                    >
+                      {s.orderCode}
+                    </Link>
+                  </td>
                   <td className="td text-slate-500 dark:text-slate-400">{s.section ?? "-"}</td>
                   <td className="td text-slate-500 dark:text-slate-400">{s.rowLabel ?? "-"}</td>
                   <td className="td text-slate-500 dark:text-slate-400">{s.seat ?? "-"}</td>

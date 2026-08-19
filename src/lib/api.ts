@@ -78,7 +78,13 @@ export const api = {
     dateFrom?: string;
     dateTo?: string;
     refundStatus?: string;
+    /** 1.8.0 */
+    currency?: string;
+    /** 1.8.0: "oldest" | "revenue_desc" | "revenue_asc" | "profit_desc" | "profit_asc" | "tickets_desc" - omit/undefined for the default (newest first). */
+    sortBy?: string;
   }) => invoke<SaleGroup[]>("list_sale_groups", params),
+  /** 1.8.0: distinct currencies actually present in sales data, for the Sales screen's Currency filter. */
+  listSaleCurrencies: () => invoke<string[]>("list_sale_currencies"),
   listSalesByGroup: (id: number) => invoke<Sale[]>("list_sales_by_group", { id }),
   getSale: (id: number) => invoke<Sale>("get_sale", { id }),
   createSale: (input: SaleInput) => invoke<Sale>("create_sale", { input }),
@@ -115,6 +121,8 @@ export const api = {
   exportTicketsCsv: (path: string, status?: string, eventId?: number) =>
     invoke<number>("export_tickets_csv", { path, status, eventId }),
   exportSalesCsv: (path: string) => invoke<number>("export_sales_csv", { path }),
+  /** 1.8.0: exports exactly the sale groups whose (representative) ids are given - every line in each, not just its representative row. */
+  exportSalesCsvSelected: (path: string, ids: number[]) => invoke<number>("export_sales_csv_selected", { path, ids }),
   exportInventoryCsv: (path: string, eventId?: number) =>
     invoke<number>("export_inventory_csv", { path, eventId }),
 
