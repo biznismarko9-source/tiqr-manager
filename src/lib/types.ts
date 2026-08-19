@@ -157,13 +157,16 @@ export interface TicketUpdateInput {
 
 /** Closed set of ticket fields `bulkUpdateTickets` can change - deliberately
  * excludes status. See `bulk_update_tickets_impl` (tickets.rs) and
- * `BulkTicketEditBar.tsx` for why. */
-export type BulkTicketField = "section" | "rowLabel" | "seat" | "ticketType" | "listingPriceCents";
+ * `BulkTicketEditBar.tsx` for why.
+ *
+ * 1.9.1: "ticketType" was removed from this set - it's now a one-time choice
+ * made when creating the order instead (see `OrderInput.ticketType`), still
+ * editable per-ticket afterwards via `TicketUpdateInput` if needed. */
+export type BulkTicketField = "section" | "rowLabel" | "seat" | "listingPriceCents";
 
 /** Input for `bulkUpdateTickets` (1.8.3) - set one field to one value across
  * many tickets in a single all-or-nothing transaction. `textValue` is used
- * for section/rowLabel/seat/ticketType; `centsValue` is used for
- * listingPriceCents. */
+ * for section/rowLabel/seat; `centsValue` is used for listingPriceCents. */
 export interface BulkTicketUpdateInput {
   ticketIds: number[];
   field: BulkTicketField;

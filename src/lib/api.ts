@@ -120,9 +120,15 @@ export const api = {
 
   // CSV export
   exportEventsCsv: (path: string) => invoke<number>("export_events_csv", { path }),
+  /** 1.9.1: exports exactly the given event ids - powers the Settings -> Data export picker. */
+  exportEventsCsvSelected: (path: string, ids: number[]) => invoke<number>("export_events_csv_selected", { path, ids }),
   exportOrdersCsv: (path: string) => invoke<number>("export_orders_csv", { path }),
+  /** 1.9.1: exports exactly the given order ids - powers the Settings -> Data export picker. */
+  exportOrdersCsvSelected: (path: string, ids: number[]) => invoke<number>("export_orders_csv_selected", { path, ids }),
   exportTicketsCsv: (path: string, status?: string, eventId?: number) =>
     invoke<number>("export_tickets_csv", { path, status, eventId }),
+  /** 1.9.1: exports exactly the given ticket ids regardless of status - powers both the Tickets and Inventory Settings -> Data export pickers. */
+  exportTicketsCsvSelected: (path: string, ids: number[]) => invoke<number>("export_tickets_csv_selected", { path, ids }),
   exportSalesCsv: (path: string) => invoke<number>("export_sales_csv", { path }),
   /** 1.8.0: exports exactly the sale groups whose (representative) ids are given - every line in each, not just its representative row. */
   exportSalesCsvSelected: (path: string, ids: number[]) => invoke<number>("export_sales_csv_selected", { path, ids }),

@@ -30,15 +30,17 @@ export default function OrderDetail() {
   const location = useLocation();
   const toast = useToast();
 
-  // 1.8.3 (section 8): if the user arrived from Tickets, Inventory or Orders
-  // - each of which now passes state={{ from: <its own path> }} on its link
-  // into Order Detail (see Tickets.tsx/Orders.tsx) - Back returns to that
-  // exact page (which itself now remembers its last search/filters, see
-  // lastTicketsFilters/lastOrdersSearch) instead of always landing on the
-  // general Orders list. Allowlisted rather than trusting state.from
-  // blindly, and falls back to the pre-1.8.3 default when absent (e.g. a
-  // direct link, a page refresh, or arriving from Event Detail/Sales, which
-  // don't opt into this).
+  // 1.8.3 (section 8): if the user arrived from Orders - which passes
+  // state={{ from: location.pathname }} on its link into Order Detail (see
+  // Orders.tsx) - Back returns to that exact page (which itself remembers
+  // its last search, see lastOrdersSearch) instead of always landing on the
+  // plain Orders list. Allowlisted rather than trusting state.from blindly,
+  // and falls back to the pre-1.8.3 default when absent (e.g. a direct link
+  // or a page refresh). 1.9.1: Tickets and Inventory used to link into Order
+  // Detail too (and so are still accepted here for backward-compatible
+  // fallback labeling), but marko had that navigation removed entirely - see
+  // Tickets.tsx - so in practice Orders is now the only page this ever
+  // arrives from.
   const cameFrom = (location.state as { from?: string } | null)?.from;
   const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
   const backLabel = backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
@@ -115,10 +117,11 @@ export default function OrderDetail() {
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
             <Badge tone={order.paymentStatus}>{order.paymentStatus}</Badge>
           </div>
+          {/* 1.9.1: the event name used to be a <Link> to Event Detail -
+              removed per marko's request to stop every "this reference jumps
+              me to a different section" link in Orders/Tickets/Sales. */}
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            <Link to={`/events/${order.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-              {order.eventName}
-            </Link>
+            {order.eventName}
             {" "}&middot; purchased {formatDate(order.purchaseDate)}
           </p>
         </div>
@@ -337,21 +340,14 @@ export default function OrderDetail() {
                     </td>
                     <td className="td-c">
                       <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
-                        {/* 1.6.0 audit UX finding: there was no way to get from
-                            a sold ticket to the sale that sold it. Reuses the
-                            Sales page's own existing ticket-code search (BUG
-                            #5) via the same navigate(path, { state }) preset
-                            convention Orders.tsx already uses for
-                            presetEventId - no backend change needed. */}
-                        {t.status === "sold" && (
-                          <Link
-                            to="/sales"
-                            state={{ presetSearch: t.code }}
-                            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                          >
-                            View sale
-                          </Link>
-                        )}
+                        {/* 1.9.1: this used to have a "View sale" link into
+                            /sales (added in 1.6.0 for a sold ticket, since
+                            there was previously no way to get from here to
+                            the sale that sold it) - removed per marko's
+                            explicit request to stop every "this reference
+                            jumps me to a different section" link in
+                            Orders/Tickets/Sales. Search the Sales screen by
+                            this ticket's code directly if you need that sale. */}
                         <button
                           className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
                           onClick={() => setEditTicket(t)}

@@ -58,7 +58,7 @@ export default function Events() {
   // 1.8.3 (section 11): lets the Dashboard's "New Event" Quick Action jump
   // here with the create modal already open - same navigate(path, {state})
   // + consume-and-clear convention already used by Orders.tsx's
-  // presetEventId and Sales.tsx's presetSearch, no new pattern.
+  // presetEventId and Sales.tsx's own openCreate handling, no new pattern.
   useEffect(() => {
     const state = location.state as { openCreate?: boolean } | null;
     if (state?.openCreate) {

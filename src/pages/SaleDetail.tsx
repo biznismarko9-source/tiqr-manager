@@ -181,14 +181,11 @@ export default function SaleDetail() {
               <Badge tone="mixed">Mixed</Badge>
             )}
           </div>
+          {/* 1.9.1: the event name used to be a <Link> to Event Detail -
+              removed per marko's request to stop every "this reference jumps
+              me to a different section" link in Orders/Tickets/Sales. */}
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {header.eventId && header.eventName ? (
-              <Link to={`/events/${header.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-                {header.eventName}
-              </Link>
-            ) : (
-              <span className="italic">Mixed events</span>
-            )}
+            {header.eventId && header.eventName ? header.eventName : <span className="italic">Mixed events</span>}
             {" "}&middot; {lines.length} ticket{lines.length === 1 ? "" : "s"}
             {header.saleDate && ` · sold ${formatDate(header.saleDate)}`}
           </p>
@@ -359,29 +356,16 @@ export default function SaleDetail() {
                         />
                       )}
                     </td>
-                    <td className="td-c font-medium text-slate-900 dark:text-slate-100">
-                      {/* 1.8.0 (S11): reuses Tickets.tsx's existing ?code= search-param
-                          convention - links to /tickets (not /inventory, which is locked
-                          to available/listed and would never show a sold/refunded ticket). */}
-                      <Link
-                        to={`/tickets?code=${encodeURIComponent(s.ticketCode)}`}
-                        title={s.ticketCode}
-                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
-                      >
-                        {s.ticketCode}
-                      </Link>
+                    {/* 1.9.1: the ticket code and order code used to be
+                        <Link>s (into /tickets and /orders/:id respectively)
+                        - removed per marko's request to stop every "this
+                        reference jumps me to a different section" link in
+                        Orders/Tickets/Sales. Both are now plain text. */}
+                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={s.ticketCode}>
+                      {s.ticketCode}
                     </td>
-                    <td className="td-c text-slate-500 dark:text-slate-400">
-                      {/* 1.8.0 (S11): every ticket belongs to exactly one order, so this
-                          is always a concrete link - never Mixed/null like the group-level
-                          header fields above. */}
-                      <Link
-                        to={`/orders/${s.orderId}`}
-                        title={s.orderCode}
-                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
-                      >
-                        {s.orderCode}
-                      </Link>
+                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={s.orderCode}>
+                      {s.orderCode}
                     </td>
                     <td className="td-c truncate text-slate-500 dark:text-slate-400" title={seatLabel}>
                       {seatLabel}

@@ -12,7 +12,6 @@ const FIELD_OPTIONS: { value: BulkTicketField; label: string; kind: "text" | "mo
   { value: "section", label: "Section", kind: "text" },
   { value: "rowLabel", label: "Row", kind: "text" },
   { value: "seat", label: "Seat", kind: "text" },
-  { value: "ticketType", label: "Ticket type", kind: "text" },
   { value: "listingPriceCents", label: "Listing price", kind: "money" },
 ];
 
@@ -21,15 +20,19 @@ const FIELD_OPTIONS: { value: BulkTicketField; label: string; kind: "text" | "mo
  * brief section 7: "ak je rovnaká bulk edit engine využiteľná ... použi
  * spoločnú komponentu"), not two parallel implementations.
  *
- * Deliberately offers only the 5 fields already safe to edit on a ticket
+ * Deliberately offers only the 4 fields already safe to edit on a ticket
  * regardless of its status in the existing single-ticket `TicketEditModal`
- * (section, row, seat, ticket type, listing price) - never status itself.
- * See `bulk_update_tickets_impl` (tickets.rs) for the full safety reasoning:
- * a naive bulk status change could silently create a sold ticket with no
+ * (section, row, seat, listing price) - never status itself. See
+ * `bulk_update_tickets_impl` (tickets.rs) for the full safety reasoning: a
+ * naive bulk status change could silently create a sold ticket with no
  * active sale (or the reverse), which nothing else in the app could detect
  * or repair. This component can only ever call a backend command that has
  * no code path into the `status` column at all - the guard is structural,
- * not just a UI omission. */
+ * not just a UI omission.
+ *
+ * 1.9.1: "Ticket type" used to be a 5th option here - removed at marko's
+ * request; it's now set once when the order is created (see Orders.tsx's
+ * OrderFormModal) instead of being changeable in bulk afterwards. */
 export function BulkTicketEditBar({
   selectedIds,
   currency,

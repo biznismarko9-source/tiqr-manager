@@ -14,6 +14,15 @@ import {
   PageHeader,
   Spinner,
 } from "../components/ui";
+import {
+  eventsExportConfig,
+  inventoryExportConfig,
+  ordersExportConfig,
+  salesExportConfig,
+  ticketsExportConfig,
+  ExportPickerModal,
+  type ExportPickerConfig,
+} from "../components/ExportPickerModal";
 import { IconArrowLeft, IconDatabase, IconDownload, IconSun, IconTag, IconTrash, IconUpload } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
@@ -52,6 +61,11 @@ export default function Settings() {
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
   const [deletingLookup, setDeletingLookup] = useState(false);
+  // 1.9.1: which entity's export picker is open, if any - see
+  // ExportPickerModal.tsx. Replaces the old "click = instant whole-file
+  // download" Export CSV buttons with "click = pick exactly which records"
+  // (marko's request), reusing whichever *ExportConfig matches the button.
+  const [exportConfig, setExportConfig] = useState<ExportPickerConfig<any> | null>(null);
 
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateChecked, setUpdateChecked] = useState(false);
@@ -77,27 +91,6 @@ export default function Settings() {
       toast.error(errMsg(e));
     }
   };
-  const doExport = async (
-    label: string,
-    fileSuggestion: string,
-    fn: (path: string) => Promise<number>,
-  ) => {
-    const path = await save({
-      defaultPath: fileSuggestion,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path) return;
-    setBusyAction(label);
-    try {
-      const count = await fn(path);
-      toast.success(`Exported ${count} rows to ${path}`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
   // 1.8.3 (section 10): only one CSV import exists (orders + tickets
   // together, see csv_import.rs) so only one template is offered - see
   // export_orders_csv_template's doc comment (csv_export.rs).
@@ -317,22 +310,20 @@ export default function Settings() {
 
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h3>
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Save any part of your data as a CSV file.</p>
+                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                  Save part of your data as a CSV file - each button opens a picker so you can choose exactly which
+                  records to include (one, several, or all).
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { label: "Events", key: "events", fn: api.exportEventsCsv, file: "events.csv" },
-                    { label: "Orders", key: "orders", fn: api.exportOrdersCsv, file: "orders.csv" },
-                    { label: "Tickets", key: "tickets", fn: (p: string) => api.exportTicketsCsv(p), file: "tickets.csv" },
-                    { label: "Sales", key: "sales", fn: api.exportSalesCsv, file: "sales.csv" },
-                    { label: "Inventory", key: "inventory", fn: (p: string) => api.exportInventoryCsv(p), file: "inventory.csv" },
+                    { label: "Events", key: "events", config: eventsExportConfig },
+                    { label: "Orders", key: "orders", config: ordersExportConfig },
+                    { label: "Tickets", key: "tickets", config: ticketsExportConfig },
+                    { label: "Sales", key: "sales", config: salesExportConfig },
+                    { label: "Inventory", key: "inventory", config: inventoryExportConfig },
                   ].map((x) => (
-                    <Button
-                      key={x.key}
-                      variant="secondary"
-                      disabled={busyAction === x.key}
-                      onClick={() => doExport(x.key, x.file, x.fn)}
-                    >
-                      {busyAction === x.key ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                    <Button key={x.key} variant="secondary" onClick={() => setExportConfig(x.config)}>
+                      <IconDownload className="h-4 w-4" />
                       {x.label}
                     </Button>
                   ))}
@@ -414,6 +405,8 @@ export default function Settings() {
       )}
 
       <CsvImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
+
+      <ExportPickerModal open={!!exportConfig} config={exportConfig} onClose={() => setExportConfig(null)} />
 
       <ConfirmDialog
         open={!!confirmRestorePath}

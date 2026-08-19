@@ -192,14 +192,21 @@ pub enum BulkTicketField {
     Section,
     RowLabel,
     Seat,
-    TicketType,
     ListingPriceCents,
 }
 
 /// Input for `bulk_update_tickets`: set one field to one value across many
 /// tickets in a single all-or-nothing transaction. `text_value` is used for
-/// Section/RowLabel/Seat/TicketType; `cents_value` is used for
-/// ListingPriceCents. Leaving the relevant one `None` clears that field.
+/// Section/RowLabel/Seat; `cents_value` is used for ListingPriceCents.
+/// Leaving the relevant one `None` clears that field.
+///
+/// 1.9.1: TicketType was removed from this set - marko found it confusing to
+/// have "ticket type" changeable both here AND per-ticket, and asked for it
+/// to be a single one-time choice made when creating the order instead (see
+/// `OrderInput.ticket_type`, unchanged - it already copies onto every
+/// generated ticket). It's still editable per-ticket afterwards via the
+/// single-ticket `TicketUpdateInput`/`TicketEditModal` if one ticket needs
+/// correcting - only the bulk path was removed.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkTicketUpdateInput {

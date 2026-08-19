@@ -15,20 +15,37 @@ fn yesno(b: bool) -> &'static str {
     }
 }
 
-#[tauri::command]
-pub fn export_events_csv(state: State<AppState>, path: String) -> AppResult<i64> {
-    let conn = state.db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, name, artist_team, venue, city, country, event_date, category, status, notes, is_demo, created_at
-         FROM events ORDER BY id",
-    )?;
-    let mut wtr = csv::Writer::from_path(&path)?;
+/// Split out from the `export_events_csv` command (same "impl function +
+/// thin tauri::command wrapper" pattern as `export_sales_csv`/
+/// `write_sales_csv`) so it's directly unit-testable and shared with the new
+/// 1.9.1 "Export selected" wrapper below - `ids: None` means "every event"
+/// (unchanged pre-1.9.1 behaviour), `Some(ids)` restricts to exactly those.
+fn export_events_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) -> AppResult<i64> {
+    let mut sql = "SELECT id, name, artist_team, venue, city, country, event_date, category, status, notes, is_demo, created_at
+         FROM events"
+        .to_string();
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    if let Some(ids) = ids {
+        if ids.is_empty() {
+            return Err(AppError::Validation("Select at least one event to export".into()));
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(" WHERE id IN ({placeholders})"));
+        for i in ids {
+            params_vec.push(Box::new(*i));
+        }
+    }
+    sql.push_str(" ORDER BY id");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
         "id", "name", "artist_team", "venue", "city", "country", "event_date", "category",
         "status", "notes", "is_demo", "created_at",
     ])?;
     let mut count = 0i64;
-    let mut rows = stmt.query([])?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let mut rows = stmt.query(param_refs.as_slice())?;
     while let Some(row) = rows.next()? {
         wtr.write_record([
             row.get::<_, i64>(0)?.to_string(),
@@ -51,26 +68,54 @@ pub fn export_events_csv(state: State<AppState>, path: String) -> AppResult<i64>
 }
 
 #[tauri::command]
-pub fn export_orders_csv(state: State<AppState>, path: String) -> AppResult<i64> {
+pub fn export_events_csv(state: State<AppState>, path: String) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT o.code, e.name, sup.name, p.name, o.purchase_date, o.quantity,
+    export_events_csv_impl(&conn, &path, None)
+}
+
+/// 1.9.1: "pick specific events" export for the new Settings -> Data picker -
+/// same idea as `export_sales_csv_selected` (1.8.0), just for events.
+#[tauri::command]
+pub fn export_events_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    export_events_csv_impl(&conn, &path, Some(&ids))
+}
+
+/// Split out from the `export_orders_csv` command - same pattern/reasoning
+/// as `export_events_csv_impl` above. `ids: None` means "every order"
+/// (unchanged pre-1.9.1 behaviour), `Some(ids)` restricts to exactly those.
+fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) -> AppResult<i64> {
+    let mut sql = "SELECT o.code, e.name, sup.name, p.name, o.purchase_date, o.quantity,
                 o.unit_price_cents, o.fees_cents, o.other_costs_cents, o.total_cost_cents,
                 o.currency, o.payment_status, o.notes, o.is_demo, o.created_at
          FROM orders o
          JOIN events e ON e.id = o.event_id
          LEFT JOIN suppliers sup ON sup.id = o.supplier_id
-         LEFT JOIN platforms p ON p.id = o.platform_id
-         ORDER BY o.id",
-    )?;
-    let mut wtr = csv::Writer::from_path(&path)?;
+         LEFT JOIN platforms p ON p.id = o.platform_id"
+        .to_string();
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    if let Some(ids) = ids {
+        if ids.is_empty() {
+            return Err(AppError::Validation("Select at least one order to export".into()));
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(" WHERE o.id IN ({placeholders})"));
+        for i in ids {
+            params_vec.push(Box::new(*i));
+        }
+    }
+    sql.push_str(" ORDER BY o.id");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
         "order_code", "event", "supplier", "platform", "purchase_date", "quantity",
         "unit_price", "fees", "other_costs", "total_cost", "currency", "payment_status",
         "notes", "is_demo", "created_at",
     ])?;
     let mut count = 0i64;
-    let mut rows = stmt.query([])?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let mut rows = stmt.query(param_refs.as_slice())?;
     while let Some(row) = rows.next()? {
         wtr.write_record([
             row.get::<_, String>(0)?,
@@ -95,13 +140,32 @@ pub fn export_orders_csv(state: State<AppState>, path: String) -> AppResult<i64>
     Ok(count)
 }
 
+#[tauri::command]
+pub fn export_orders_csv(state: State<AppState>, path: String) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    export_orders_csv_impl(&conn, &path, None)
+}
+
+/// 1.9.1: "pick specific orders" export for the new Settings -> Data picker -
+/// same idea as `export_sales_csv_selected` (1.8.0), just for orders.
+#[tauri::command]
+pub fn export_orders_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    export_orders_csv_impl(&conn, &path, Some(&ids))
+}
+
+/// 1.9.1: took a plain `&Connection` instead of `&State<AppState>` from here
+/// on (the callers below now lock the db themselves, one extra line each) so
+/// this is directly unit-testable - same "impl function unit-testable
+/// against a plain Connection" convention as every other command module -
+/// and so it can gain an `ids` filter shared by the three commands below.
 fn export_tickets_inner(
-    state: &State<AppState>,
+    conn: &Connection,
     path: &str,
     status_filter: Option<Vec<String>>,
     event_id: Option<i64>,
+    ids: Option<&[i64]>,
 ) -> AppResult<i64> {
-    let conn = state.db.lock().unwrap();
     let mut sql = "SELECT t.code, e.name, o.code, t.section, t.row_label, t.seat, t.ticket_type,
                 t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents, t.listing_price_cents,
                 t.currency, t.status, t.notes, t.is_demo, t.created_at
@@ -123,6 +187,16 @@ fn export_tickets_inner(
     if let Some(eid) = event_id {
         sql.push_str(" AND t.event_id = ?");
         params_vec.push(Box::new(eid));
+    }
+    if let Some(ids) = ids {
+        if ids.is_empty() {
+            return Err(AppError::Validation("Select at least one ticket to export".into()));
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(" AND t.id IN ({placeholders})"));
+        for i in ids {
+            params_vec.push(Box::new(*i));
+        }
     }
     sql.push_str(" ORDER BY t.id");
 
@@ -169,13 +243,14 @@ pub fn export_tickets_csv(
     status: Option<String>,
     event_id: Option<i64>,
 ) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
     let statuses = status.map(|s| {
         s.split(',')
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>()
     });
-    export_tickets_inner(&state, &path, statuses, event_id)
+    export_tickets_inner(&conn, &path, statuses, event_id, None)
 }
 
 /// "Inventory" = current stock only (available + listed), excluding sold/cancelled.
@@ -185,12 +260,28 @@ pub fn export_inventory_csv(
     path: String,
     event_id: Option<i64>,
 ) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
     export_tickets_inner(
-        &state,
+        &conn,
         &path,
         Some(vec!["available".to_string(), "listed".to_string()]),
         event_id,
+        None,
     )
+}
+
+/// 1.9.1: "pick specific tickets" export for the new Settings -> Data picker
+/// - same idea as `export_sales_csv_selected` (1.8.0), just for tickets.
+/// Also powers the Inventory picker: the frontend only ever offers
+/// available/listed tickets to choose from there (mirroring
+/// `export_inventory_csv`'s own status restriction above), so this command
+/// doesn't need to re-enforce that restriction itself - it exports exactly
+/// the ids it's given, the same "trust the already-filtered selection"
+/// approach `export_sales_csv_selected` already uses for its group ids.
+#[tauri::command]
+pub fn export_tickets_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    export_tickets_inner(&conn, &path, None, None, Some(&ids))
 }
 
 #[tauri::command]
@@ -571,5 +662,132 @@ mod tests {
         let active_row = rows.iter().find(|r| r[10] == "paid").expect("the active line must still be exported");
         // batch_input() above: sale_price 20.00, selling_fees 0.00, cost 10.00 (seed_tickets' 1000 cents) -> profit 10.00.
         assert_eq!(active_row[8], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
+    }
+
+    // ---- 1.9.1: "Export selected" for events/orders/tickets (Settings -> Data picker) ----
+
+    /// Inserts one order (mirrors `seed_tickets` above) and returns just its
+    /// order id, for tests that only care about the order-level export.
+    fn seed_order_id(conn: &mut Connection) -> i64 {
+        let tickets = seed_tickets(conn, 1);
+        conn.query_row("SELECT order_id FROM tickets WHERE id=?1", [tickets[0]], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn export_events_csv_impl_with_no_ids_exports_every_event_unchanged() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Event A')", []).unwrap();
+        conn.execute("INSERT INTO events (name) VALUES ('Event B')", []).unwrap();
+
+        let out = temp_csv_path();
+        let count = export_events_csv_impl(&conn, out.0.to_str().unwrap(), None).unwrap();
+        assert_eq!(count, 2, "None must still mean 'export everything' - unchanged pre-1.9.1 behaviour");
+    }
+
+    #[test]
+    fn export_events_csv_selected_exports_only_the_chosen_ids() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Event A')", []).unwrap();
+        let a_id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO events (name) VALUES ('Event B')", []).unwrap(); // NOT selected
+
+        let out = temp_csv_path();
+        let count = export_events_csv_impl(&conn, out.0.to_str().unwrap(), Some(&[a_id])).unwrap();
+        assert_eq!(count, 1);
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "Event A", "only the selected event's row must be exported");
+    }
+
+    #[test]
+    fn export_events_csv_selected_rejects_an_empty_selection() {
+        let conn = test_conn();
+        let out = temp_csv_path();
+        let err = export_events_csv_impl(&conn, out.0.to_str().unwrap(), Some(&[])).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(!out.0.exists(), "nothing should be written to disk for a rejected empty selection");
+    }
+
+    #[test]
+    fn export_orders_csv_impl_with_no_ids_exports_every_order_unchanged() {
+        let mut conn = test_conn();
+        seed_order_id(&mut conn);
+        seed_order_id(&mut conn);
+
+        let out = temp_csv_path();
+        let count = export_orders_csv_impl(&conn, out.0.to_str().unwrap(), None).unwrap();
+        assert_eq!(count, 2, "None must still mean 'export everything' - unchanged pre-1.9.1 behaviour");
+    }
+
+    #[test]
+    fn export_orders_csv_selected_exports_only_the_chosen_ids() {
+        let mut conn = test_conn();
+        let order_a = seed_order_id(&mut conn);
+        seed_order_id(&mut conn); // NOT selected
+
+        let out = temp_csv_path();
+        let count = export_orders_csv_impl(&conn, out.0.to_str().unwrap(), Some(&[order_a])).unwrap();
+        assert_eq!(count, 1, "only the selected order must be exported");
+    }
+
+    #[test]
+    fn export_orders_csv_selected_rejects_an_empty_selection() {
+        let conn = test_conn();
+        let out = temp_csv_path();
+        let err = export_orders_csv_impl(&conn, out.0.to_str().unwrap(), Some(&[])).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(!out.0.exists(), "nothing should be written to disk for a rejected empty selection");
+    }
+
+    #[test]
+    fn export_tickets_csv_selected_exports_the_chosen_ids_regardless_of_status() {
+        // The plain export_tickets_csv command still filters by status, but
+        // "Export selected" must not - the frontend picker already decided
+        // which tickets are offered (e.g. all statuses for Tickets, only
+        // available/listed for Inventory); once specific ids are picked, this
+        // must export exactly them.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [tickets[0]]).unwrap();
+
+        let out = temp_csv_path();
+        let count =
+            export_tickets_inner(&conn, out.0.to_str().unwrap(), None, None, Some(&[tickets[0], tickets[1]]))
+                .unwrap();
+        assert_eq!(count, 2, "both selected tickets export regardless of their differing status");
+    }
+
+    #[test]
+    fn export_tickets_csv_selected_rejects_an_empty_selection() {
+        let conn = test_conn();
+        let out = temp_csv_path();
+        let err = export_tickets_inner(&conn, out.0.to_str().unwrap(), None, None, Some(&[])).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert!(!out.0.exists(), "nothing should be written to disk for a rejected empty selection");
+    }
+
+    #[test]
+    fn export_tickets_inner_status_and_ids_filters_still_compose() {
+        // Guards the refactor from 1.8.x's &State-based signature to a plain
+        // &Connection (needed for unit-testability, see export_tickets_inner's
+        // doc comment): export_tickets_csv/export_inventory_csv's existing
+        // status_filter/event_id behaviour must be completely unaffected by
+        // the new `ids` parameter when callers pass None for it.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        conn.execute("UPDATE tickets SET status='listed' WHERE id=?1", [tickets[0]]).unwrap();
+        // tickets[1] stays 'available'.
+
+        let out = temp_csv_path();
+        let count = export_tickets_inner(
+            &conn,
+            out.0.to_str().unwrap(),
+            Some(vec!["available".to_string(), "listed".to_string()]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(count, 2, "both tickets match the available+listed status filter, unchanged by the ids param");
     }
 }

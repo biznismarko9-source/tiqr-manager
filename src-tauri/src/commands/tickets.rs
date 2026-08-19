@@ -246,11 +246,13 @@ pub fn update_ticket(
 /// silently create a `status='sold'` ticket with no active `sales` row (or
 /// the reverse) - the exact class of corruption `update_ticket_impl`'s own
 /// guard exists to prevent for a single ticket, and nothing else in the app
-/// could detect or repair it afterwards. Section, row, seat, ticket type and
-/// listing price have no such coupling to sales/inventory state - the
-/// existing single-ticket edit flow (`TicketEditModal`) already allows
-/// editing all five regardless of a ticket's current status - so they're
-/// safe to change in bulk the same way.
+/// could detect or repair it afterwards. Section, row, seat and listing
+/// price have no such coupling to sales/inventory state - the existing
+/// single-ticket edit flow (`TicketEditModal`) already allows editing all
+/// four regardless of a ticket's current status - so they're safe to change
+/// in bulk the same way. (1.9.1: TicketType was also in this set until
+/// marko asked for it to move to order-creation time instead - see
+/// `BulkTicketField`'s doc comment.)
 pub(crate) fn bulk_update_tickets_impl(
     conn: &mut Connection,
     input: &BulkTicketUpdateInput,
@@ -270,7 +272,6 @@ pub(crate) fn bulk_update_tickets_impl(
         BulkTicketField::Section => "section",
         BulkTicketField::RowLabel => "row_label",
         BulkTicketField::Seat => "seat",
-        BulkTicketField::TicketType => "ticket_type",
         BulkTicketField::ListingPriceCents => "listing_price_cents",
     };
 
@@ -331,8 +332,8 @@ pub(crate) fn bulk_update_tickets_impl(
     Ok(ids)
 }
 
-/// Bulk-edit one field (section, row, seat, ticket type or listing price)
-/// across many tickets at once - e.g. correcting the section label for a
+/// Bulk-edit one field (section, row, seat or listing price) across many
+/// tickets at once - e.g. correcting the section label for a
 /// whole block of seats in one action instead of one ticket at a time.
 /// Shared by Sale Detail and Order Detail's bulk-selection UI (one command,
 /// one implementation - see `BulkTicketEditBar.tsx`). Deliberately does NOT

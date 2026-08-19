@@ -23,6 +23,16 @@ import type { OrderRecord } from "../lib/types";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
+// 1.9.1: preset ticket-type options for the New Order form's "Ticket type"
+// field (see submit() below) - the most common delivery formats in ticket
+// resale. Free-form via "Other..." (same toggle pattern as Currency, right
+// below) covers anything not listed here. This replaces "ticket type" as a
+// bulk-edit field (removed from BulkTicketEditBar per marko's request) -
+// it's now a one-time choice made here at order creation, copied onto every
+// generated ticket (see OrderInput.ticketType / insert_order_with_tickets),
+// same as Section/Row already are.
+const TICKET_TYPES = ["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"];
+
 // 1.8.3 (section 8): remembers the last-used search for this app session
 // only, same convention as Sales.tsx's `lastFilters` / Tickets.tsx's
 // `lastTicketsFilters`, so returning here (in particular via Order Detail's
@@ -150,10 +160,16 @@ export default function Orders() {
         // Sales.tsx for the full rationale) instead of the old
         // min-w-[950px]+overflow-x-auto pattern. Also added whole-row
         // click-to-navigate to Order Detail, mirroring Events.tsx's own BUG
-        // #7 fix - a click that lands on the Event link still goes to the
-        // event instead (closest("a") defers to whichever link was actually
-        // clicked). `state={{ from: location.pathname }}` lets Order
-        // Detail's Back link return to this exact page (section 8).
+        // #7 fix - a click that lands on the Order code link still goes to
+        // that link instead (closest("a") defers to whichever link was
+        // actually clicked). `state={{ from: location.pathname }}` lets
+        // Order Detail's Back link return to this exact page (section 8).
+        // 1.9.1: the Event column used to be a <Link> to Event Detail - marko
+        // asked to remove every "this reference jumps me to a different
+        // section" link across Orders/Tickets/Sales (he never wants an
+        // incidental click to auto-navigate him away), so it's now plain
+        // text. The Order code link/row-click above is unaffected - opening
+        // this exact order's own detail page isn't "being thrown elsewhere".
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
@@ -200,9 +216,7 @@ export default function Orders() {
                     </Link>
                   </td>
                   <td className="td-c truncate" title={o.eventName}>
-                    <Link to={`/events/${o.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
-                      {o.eventName}
-                    </Link>
+                    {o.eventName}
                   </td>
                   <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
                   <td className="td-c truncate" title={o.supplierName ?? undefined}>{o.supplierName ?? "-"}</td>
@@ -261,6 +275,8 @@ function OrderFormModal({
   const [currency, setCurrency] = useState("EUR");
   const [customCurrency, setCustomCurrency] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
+  const [ticketType, setTicketType] = useState("");
+  const [customTicketType, setCustomTicketType] = useState(false);
   const [section, setSection] = useState("");
   const [rowLabel, setRowLabel] = useState("");
   const [seatsRaw, setSeatsRaw] = useState("");
@@ -282,6 +298,8 @@ function OrderFormModal({
     setCurrency("EUR");
     setCustomCurrency(false);
     setPaymentStatus("unpaid");
+    setTicketType("");
+    setCustomTicketType(false);
     setSection("");
     setRowLabel("");
     setSeatsRaw("");
@@ -344,7 +362,7 @@ function OrderFormModal({
       currency,
       paymentStatus,
       notes: notes || null,
-      ticketType: null,
+      ticketType: ticketType.trim() || null,
       section: section || null,
       rowLabel: rowLabel || null,
       seats: seats.length > 0 ? seats : null,
@@ -456,6 +474,46 @@ function OrderFormModal({
         <Field label="Other costs (total)" hint="Split evenly across all tickets">
           <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
         </Field>
+
+        {/* 1.9.1: replaces "ticket type" as a bulk-edit field on Sale/Order
+            Detail (removed per marko's request) - set once here, copied onto
+            every ticket this order generates. Same Select + "Other..."
+            freeform toggle pattern as Currency above. */}
+        <div className="col-span-2">
+          <div className="flex items-center justify-between">
+            <span className="label mb-1">Ticket type</span>
+            <button
+              type="button"
+              className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+              onClick={() => setCustomTicketType((c) => !c)}
+            >
+              {customTicketType ? "Choose from list" : "Other..."}
+            </button>
+          </div>
+          {customTicketType ? (
+            <Input
+              autoFocus
+              placeholder="e.g. Will call"
+              value={ticketType}
+              onChange={(e) => setTicketType(e.target.value)}
+            />
+          ) : (
+            <Select value={ticketType} onChange={(e) => setTicketType(e.target.value)}>
+              <option value="">Not specified</option>
+              {/* Same "keep a custom value visible" fallback as Currency above -
+                  without this, toggling back from "Other..." after typing a
+                  value not in the preset list would show a blank-looking
+                  select even though `ticketType` state is still correct. */}
+              {(ticketType && !TICKET_TYPES.includes(ticketType) ? [ticketType, ...TICKET_TYPES] : TICKET_TYPES).map(
+                (t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ),
+              )}
+            </Select>
+          )}
+        </div>
 
         <Field label="Section">
           <Input value={section} onChange={(e) => setSection(e.target.value)} />

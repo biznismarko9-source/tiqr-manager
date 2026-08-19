@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import { formatDate, formatDateCompact, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, titleCase, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
-  CHECKBOX_CLASS,
   EmptyState,
   Field,
   Input,
@@ -19,7 +17,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconChevronDown, IconDownload, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
+import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 // 1.8.0: preferred/well-known currency codes for the Sales screen's Currency
@@ -117,8 +115,6 @@ export default function Sales() {
   const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "");
   const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
 
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [exporting, setExporting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
@@ -127,21 +123,19 @@ export default function Sales() {
     api.listSaleCurrencies().then(setCurrencies).catch(() => {});
   }, []);
 
-  // Lets another page (e.g. a "View sale" link next to a sold ticket in
-  // OrderDetail.tsx) jump here pre-filtered to one ticket's sale, using the
-  // exact same navigate(path, { state }) + consume-and-clear convention
-  // Orders.tsx already uses for presetEventId - not a new pattern, no new
-  // backend query, just reusing the existing ticket-code search (BUG #5).
+  // 1.8.3 (section 11): lets the Dashboard's "New Sale" Quick Action open
+  // this page's New Sale modal directly, via a navigate(path, { state }) +
+  // consume-and-clear convention (same one Orders.tsx uses for
+  // presetEventId).
+  //
+  // 1.9.1: this effect used to also handle a `presetSearch` flag, letting
+  // OrderDetail.tsx's "View sale" link jump here pre-filtered to one
+  // ticket's sale. That link was removed this round (marko: no more
+  // automatic cross-section navigation out of Orders/Tickets/Sales), so
+  // `presetSearch` lost its only caller and was removed here too.
   useEffect(() => {
-    // 1.8.3 (section 11): `openCreate` additionally lets the Dashboard's
-    // "New Sale" Quick Action open this page's New Sale modal directly -
-    // same consume-and-clear convention, just a second, unrelated flag on
-    // the same state object.
-    const state = location.state as { presetSearch?: string; openCreate?: boolean } | null;
-    if (state?.presetSearch) {
-      setSearch(state.presetSearch);
-      navigate(location.pathname, { replace: true, state: null });
-    } else if (state?.openCreate) {
+    const state = location.state as { openCreate?: boolean } | null;
+    if (state?.openCreate) {
       setModalOpen(true);
       navigate(location.pathname, { replace: true, state: null });
     }
@@ -173,10 +167,6 @@ export default function Sales() {
   };
 
   useEffect(() => {
-    // A filter changing invalidates the current selection - a checked row
-    // might not even be part of the new result set anymore, and "Export
-    // selected" must never silently refer to rows the user can no longer see.
-    setSelected(new Set());
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -281,38 +271,6 @@ export default function Sales() {
     setRefundStatus("");
     setDateFrom("");
     setDateTo("");
-  };
-
-  const allVisibleSelected = groups !== null && groups.length > 0 && groups.every((g) => selected.has(g.id));
-  const toggleSelectAll = () => {
-    if (!groups) return;
-    setSelected(allVisibleSelected ? new Set() : new Set(groups.map((g) => g.id)));
-  };
-  const toggleOne = (id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const doExportSelected = async () => {
-    const path = await save({
-      defaultPath: `tiqr-sales-selected-${todayIso()}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path || Array.isArray(path)) return;
-    setExporting(true);
-    try {
-      const ids = Array.from(selected);
-      const count = await api.exportSalesCsvSelected(path, ids);
-      toast.success(`Exported ${count} sale line${count === 1 ? "" : "s"} from ${ids.length} sale${ids.length === 1 ? "" : "s"} to ${path}`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setExporting(false);
-    }
   };
 
   return (
@@ -482,22 +440,6 @@ export default function Sales() {
         </p>
       )}
 
-      {selected.size > 0 && (
-        <div className="mb-4 flex items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">
-          <span className="font-medium text-brand-800 dark:text-brand-300">Selected: {selected.size}</span>
-          <Button variant="secondary" onClick={doExportSelected} disabled={exporting}>
-            <IconDownload className="h-4 w-4" /> {exporting ? "Exporting..." : "Export CSV"}
-          </Button>
-          <button
-            type="button"
-            className="ml-auto text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline"
-            onClick={() => setSelected(new Set())}
-          >
-            Clear selection
-          </button>
-        </div>
-      )}
-
       {groups && groups.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           Showing the most recent 5,000 sales that match your filters. Narrow the date range, event, or payment
@@ -542,20 +484,23 @@ export default function Sales() {
         // column pinned to a pixel width EXCEPT Event, which is left
         // unspecified so it alone absorbs any leftover width. This is a
         // mathematical guarantee against horizontal overflow (not a visual
-        // guess): the 11 fixed columns below sum to 760px, and even this
+        // guess): the 10 fixed columns below sum to 728px, and even this
         // app's smallest possible window (1080px min-width, minus the 224px
         // sidebar and 48px of content padding) leaves 808px to work with -
-        // a 48px floor for Event at the narrowest possible window, growing
+        // an 80px floor for Event at the narrowest possible window, growing
         // from there as the window widens. `overflow-x-auto` stays on the
         // wrapper only as a defensive fallback; it should never actually
         // trigger. See REDESIGN-1.8.2-REPORT.md section 2 for the full
         // column-width table. `.th-c`/`.td-c` (index.css) are new classes
         // scoped to this table and Sale Detail's table only - `.th`/`.td`
-        // (used by Tickets/Orders/Events/Inventory) are untouched.
+        // (used by Tickets/Orders/Events/Inventory) are untouched. (1.9.1:
+        // the leading checkbox column was removed along with row selection -
+        // the checkbox-select-and-export-CSV feature that used to live on
+        // this page moved to Settings -> Data's Export CSV picker instead,
+        // see ExportPickerModal.tsx.)
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
-              <col className="w-8" />
               <col className="w-[90px]" />
               <col />
               <col className="w-[70px]" />
@@ -570,15 +515,6 @@ export default function Sales() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th-c">
-                  <input
-                    type="checkbox"
-                    className={CHECKBOX_CLASS}
-                    checked={allVisibleSelected}
-                    onChange={toggleSelectAll}
-                    aria-label="Select all visible sales"
-                  />
-                </th>
                 <th className="th-c">Sale</th>
                 <th className="th-c">Event</th>
                 <th className="th-c">Platform</th>
@@ -597,19 +533,7 @@ export default function Sales() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {groups.map((g) => (
-                <tr
-                  key={g.id}
-                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(g.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
-                >
-                  <td className="td-c">
-                    <input
-                      type="checkbox"
-                      className={CHECKBOX_CLASS}
-                      checked={selected.has(g.id)}
-                      onChange={() => toggleOne(g.id)}
-                      aria-label={`Select sale ${g.code}`}
-                    />
-                  </td>
+                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td-c">
                     <Link
                       to={`/sales/${g.id}`}
@@ -619,15 +543,15 @@ export default function Sales() {
                       {g.code}
                     </Link>
                   </td>
-                  <td className="td-c">
+                  {/* 1.9.1: the Event name used to be a <Link> to Event
+                      Detail - removed per marko's request to stop every
+                      "this reference jumps me to a different section" link
+                      in Orders/Tickets/Sales. The Sale code link above stays
+                      (opening this exact sale's own detail page isn't a
+                      foreign jump). */}
+                  <td className="td-c truncate" title={g.eventId && g.eventName ? g.eventName : undefined}>
                     {g.eventId && g.eventName ? (
-                      <Link
-                        to={`/events/${g.eventId}`}
-                        title={g.eventName}
-                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400"
-                      >
-                        {g.eventName}
-                      </Link>
+                      g.eventName
                     ) : (
                       <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
                     )}

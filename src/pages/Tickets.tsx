@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, Supplier, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDate, formatMoney } from "../lib/format";
@@ -67,7 +67,6 @@ export function TicketsView({
 }) {
   const toast = useToast();
   const location = useLocation();
-  const navigate = useNavigate();
   const [params] = useSearchParams();
   const cached = lastTicketsFilters.get(location.pathname);
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
@@ -223,14 +222,14 @@ export function TicketsView({
         // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
         // Sales.tsx for the full rationale) instead of the old
         // min-w-[1000px]+overflow-x-auto pattern, which could scroll
-        // horizontally on this app's smallest supported window. Also added
-        // whole-row click-to-navigate, mirroring Events.tsx's own BUG #7 fix
-        // (a click anywhere in the row that doesn't land on a link still
-        // navigates to Order Detail; a click that does land on a link defers
-        // to it, so nothing double-navigates) - this table's hover highlight
-        // already visually implied the whole row was clickable, but only the
-        // two link cells actually were. `state={{ from: location.pathname }}`
-        // lets Order Detail's Back link return to this exact page (section 8).
+        // horizontally on this app's smallest supported window.
+        // 1.9.1: this table used to whole-row-navigate to Order Detail, with
+        // the Order code and Event name cells also individually linking
+        // there - marko asked to remove every "this reference jumps me to a
+        // different section" link across Orders/Tickets/Sales, and singled
+        // out Tickets by name, so this list is now a plain read-only
+        // overview: no row click, no cell links. Open a specific order from
+        // the Orders page instead.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
@@ -261,31 +260,12 @@ export function TicketsView({
               {orders.map((o) => {
                 const inv = inventoryStatus(o);
                 return (
-                  <tr
-                    key={o.id}
-                    className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                    onClick={(e) => {
-                      if ((e.target as HTMLElement).closest("a")) return;
-                      navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
-                    }}
-                  >
-                    <td className="td-c truncate" title={o.code}>
-                      <Link
-                        to={`/orders/${o.id}`}
-                        state={{ from: location.pathname }}
-                        className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
-                      >
-                        {o.code}
-                      </Link>
+                  <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={o.code}>
+                      {o.code}
                     </td>
                     <td className="td-c truncate" title={o.eventName}>
-                      <Link
-                        to={`/orders/${o.id}`}
-                        state={{ from: location.pathname }}
-                        className="hover:text-brand-700 dark:hover:text-brand-400"
-                      >
-                        {o.eventName}
-                      </Link>
+                      {o.eventName}
                     </td>
                     <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.supplierName ?? undefined}>
                       {o.supplierName ?? "-"}
