@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, titleCase, todayIso } from "../lib/format";
+import { formatDate, formatDateCompact, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, titleCase, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -484,11 +484,39 @@ export default function Sales() {
         // which lists every ticket inside that one sale. The data was
         // already grouped this way (SaleGroup/batch_id, see sales.rs) - only
         // the layout changed here, no field or number is new.
+        // 1.8.2: table-layout:fixed + an explicit <colgroup> with every
+        // column pinned to a pixel width EXCEPT Event, which is left
+        // unspecified so it alone absorbs any leftover width. This is a
+        // mathematical guarantee against horizontal overflow (not a visual
+        // guess): the 11 fixed columns below sum to 760px, and even this
+        // app's smallest possible window (1080px min-width, minus the 224px
+        // sidebar and 48px of content padding) leaves 808px to work with -
+        // a 48px floor for Event at the narrowest possible window, growing
+        // from there as the window widens. `overflow-x-auto` stays on the
+        // wrapper only as a defensive fallback; it should never actually
+        // trigger. See REDESIGN-1.8.2-REPORT.md section 2 for the full
+        // column-width table. `.th-c`/`.td-c` (index.css) are new classes
+        // scoped to this table and Sale Detail's table only - `.th`/`.td`
+        // (used by Tickets/Orders/Events/Inventory) are untouched.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1220px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-8" />
+              <col className="w-[90px]" />
+              <col />
+              <col className="w-[70px]" />
+              <col className="w-[76px]" />
+              <col className="w-10" />
+              <col className="w-[84px]" />
+              <col className="w-16" />
+              <col className="w-[72px]" />
+              <col className="w-[72px]" />
+              <col className="w-[68px]" />
+              <col className="w-[92px]" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th w-10">
+                <th className="th-c">
                   <input
                     type="checkbox"
                     className={CHECKBOX_CLASS}
@@ -497,17 +525,20 @@ export default function Sales() {
                     aria-label="Select all visible sales"
                   />
                 </th>
-                <th className="th">Sale</th>
-                <th className="th">Event</th>
-                <th className="th">Platform</th>
-                <th className="th">Sale date</th>
-                <th className="th text-right">Tickets</th>
-                <th className="th text-right">Revenue</th>
-                <th className="th text-right">Fees</th>
-                <th className="th text-right">Cost</th>
-                <th className="th text-right">Profit</th>
-                <th className="th text-right">Margin / ROI</th>
-                <th className="th">Status</th>
+                <th className="th-c">Sale</th>
+                <th className="th-c">Event</th>
+                <th className="th-c">Platform</th>
+                <th className="th-c">Date</th>
+                <th className="th-c text-right" title="Tickets">Tix</th>
+                <th className="th-c text-right">Revenue</th>
+                <th className="th-c text-right">Fees</th>
+                <th className="th-c text-right">Cost</th>
+                <th className="th-c text-right">Profit</th>
+                <th className="th-c text-right leading-tight">
+                  <div>Margin</div>
+                  <div>ROI</div>
+                </th>
+                <th className="th-c">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -516,7 +547,7 @@ export default function Sales() {
                   key={g.id}
                   className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(g.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
                 >
-                  <td className="td">
+                  <td className="td-c">
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASS}
@@ -525,31 +556,40 @@ export default function Sales() {
                       aria-label={`Select sale ${g.code}`}
                     />
                   </td>
-                  <td className="td">
+                  <td className="td-c">
                     <Link
                       to={`/sales/${g.id}`}
-                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      title={g.code}
+                      className="block truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
                       {g.code}
                     </Link>
                   </td>
-                  <td className="td">
+                  <td className="td-c">
                     {g.eventId && g.eventName ? (
-                      <Link to={`/events/${g.eventId}`} className="hover:text-brand-700 dark:hover:text-brand-400">
+                      <Link
+                        to={`/events/${g.eventId}`}
+                        title={g.eventName}
+                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400"
+                      >
                         {g.eventName}
                       </Link>
                     ) : (
                       <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
                     )}
                   </td>
-                  <td className="td text-slate-500 dark:text-slate-400">{g.platformName ?? "-"}</td>
-                  <td className="td whitespace-nowrap">{formatDate(g.saleDate)}</td>
-                  <td className="td text-right tabular-nums">{g.ticketCount}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.costCents, g.currency)}</td>
+                  <td className="td-c truncate text-slate-500 dark:text-slate-400" title={g.platformName ?? undefined}>
+                    {g.platformName ?? "-"}
+                  </td>
+                  <td className="td-c truncate" title={formatDate(g.saleDate)}>
+                    {formatDateCompact(g.saleDate)}
+                  </td>
+                  <td className="td-c text-right tabular-nums">{g.ticketCount}</td>
+                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
+                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(g.costCents, g.currency)}</td>
                   <td
-                    className={`td text-right tabular-nums font-medium ${
+                    className={`td-c text-right tabular-nums font-medium ${
                       g.profitCents > 0
                         ? "text-emerald-600 dark:text-emerald-400"
                         : g.profitCents < 0
@@ -559,14 +599,18 @@ export default function Sales() {
                   >
                     {formatMoneyOrMixed(g.profitCents, g.currency)}
                   </td>
-                  <td className="td text-right tabular-nums">
-                    {formatPercentOrMixed(g.margin, g.currency)} / {formatPercentOrMixed(g.roi, g.currency)}
+                  <td className="td-c text-right tabular-nums text-xs leading-tight">
+                    <div>{formatPercentOrMixed(g.margin, g.currency)}</div>
+                    <div className="text-slate-400 dark:text-slate-500">{formatPercentOrMixed(g.roi, g.currency)}</div>
                   </td>
-                  <td className="td">
+                  <td className="td-c">
                     {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
                     {g.refundedCount > 0 && (
-                      <p className="mt-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-                        {g.refundedCount} of {g.ticketCount} refunded
+                      <p
+                        className="mt-0.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                        title={`${g.refundedCount} of ${g.ticketCount} refunded`}
+                      >
+                        {g.refundedCount}/{g.ticketCount} refunded
                       </p>
                     )}
                   </td>

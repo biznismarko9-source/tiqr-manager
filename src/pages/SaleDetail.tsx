@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { Platform, Sale, SaleEditInput, SalePaymentStatus } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
@@ -173,14 +173,28 @@ export default function SaleDetail() {
         </div>
       </Card>
 
-      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* 1.8.2: SUMMARY - the 6 numbers the brief calls out by name (Revenue,
+          Fees, Cost, Profit, Margin, ROI), each its own card so the page
+          answers "how much / what did it cost / what did I make" at a
+          glance without reading a table. All 6 values were already computed
+          in the `header` useMemo above (including costCents, which existed
+          but had no card before this) - this is a display-only change, nothing
+          about how these numbers are calculated has moved. `lg:` in this
+          app's fixed 1080px-minimum window is effectively always active (see
+          REDESIGN-1.8.2-REPORT.md), so this reads as one row on every real
+          window size; the plain/sm classes are a defensive fallback only. */}
+      <div className="mb-8 grid grid-cols-3 gap-3 lg:grid-cols-6">
         <Card className="p-4">
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Revenue</p>
           <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.revenueCents, header.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Selling fees</p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Fees</p>
           <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.feesCents, header.currency)}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Cost</p>
+          <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.costCents, header.currency)}</p>
         </Card>
         <Card className="p-4">
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Profit</p>
@@ -191,14 +205,16 @@ export default function SaleDetail() {
           </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Margin / ROI</p>
-          <p className="mt-1 text-lg font-semibold">
-            {formatPercentOrMixed(header.margin, header.currency)} / {formatPercentOrMixed(header.roi, header.currency)}
-          </p>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Margin</p>
+          <p className="mt-1 text-lg font-semibold">{formatPercentOrMixed(header.margin, header.currency)}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">ROI</p>
+          <p className="mt-1 text-lg font-semibold">{formatPercentOrMixed(header.roi, header.currency)}</p>
         </Card>
       </div>
       <p className="-mt-5 mb-8 text-xs text-slate-400 dark:text-slate-500">
-        Revenue, fees, profit, margin and ROI above exclude any refunded ticket in this sale - they are never
+        Revenue, fees, cost, profit, margin and ROI above exclude any refunded ticket in this sale - they are never
         counted as realized.
       </p>
 
@@ -206,101 +222,128 @@ export default function SaleDetail() {
       {lines.length === 0 ? (
         <EmptyState title="No tickets found for this sale" />
       ) : (
+        // 1.8.2: same table-layout:fixed + <colgroup> technique as the Sales
+        // list (see Sales.tsx for the full rationale) - 8 fixed columns
+        // summing to 660px, Seat left unspecified to absorb the rest. Even
+        // at this app's smallest possible window (808px of content, see
+        // Sales.tsx's comment for the math) that leaves 148px for Seat,
+        // growing from there. Section/Row/Seat are merged into one Seat
+        // column via formatSeatLocation (lib/format.ts) - the 3 underlying
+        // fields (s.section/s.rowLabel/s.seat) are untouched, only how they
+        // display here changed. `.th-c`/`.td-c` are the same compact classes
+        // Sales.tsx uses - `.th`/`.td` elsewhere are untouched.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1150px] border-collapse">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-[84px]" />
+              <col className="w-[84px]" />
+              <col />
+              <col className="w-20" />
+              <col className="w-[60px]" />
+              <col className="w-[72px]" />
+              <col className="w-[72px]" />
+              <col className="w-24" />
+              <col className="w-[120px]" />
+            </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th">Ticket</th>
-                <th className="th">Order</th>
-                <th className="th">Section</th>
-                <th className="th">Row</th>
-                <th className="th">Seat</th>
-                <th className="th text-right">Purchase cost</th>
-                <th className="th text-right">Sale price</th>
-                <th className="th text-right">Fees</th>
-                <th className="th text-right">Profit</th>
-                <th className="th">Payment</th>
-                <th className="th" />
+                <th className="th-c">Ticket</th>
+                <th className="th-c">Order</th>
+                <th className="th-c">Seat</th>
+                <th className="th-c text-right">Sale price</th>
+                <th className="th-c text-right">Fees</th>
+                <th className="th-c text-right">Cost</th>
+                <th className="th-c text-right">Profit</th>
+                <th className="th-c">Status</th>
+                <th className="th-c" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {lines.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="td font-medium text-slate-900 dark:text-slate-100">
-                    {/* 1.8.0 (S11): reuses Tickets.tsx's existing ?code= search-param
-                        convention - links to /tickets (not /inventory, which is locked
-                        to available/listed and would never show a sold/refunded ticket). */}
-                    <Link
-                      to={`/tickets?code=${encodeURIComponent(s.ticketCode)}`}
-                      className="hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
-                    >
-                      {s.ticketCode}
-                    </Link>
-                  </td>
-                  <td className="td text-slate-500 dark:text-slate-400">
-                    {/* 1.8.0 (S11): every ticket belongs to exactly one order, so this
-                        is always a concrete link - never Mixed/null like the group-level
-                        header fields above. */}
-                    <Link
-                      to={`/orders/${s.orderId}`}
-                      className="hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
-                    >
-                      {s.orderCode}
-                    </Link>
-                  </td>
-                  <td className="td text-slate-500 dark:text-slate-400">{s.section ?? "-"}</td>
-                  <td className="td text-slate-500 dark:text-slate-400">{s.rowLabel ?? "-"}</td>
-                  <td className="td text-slate-500 dark:text-slate-400">{s.seat ?? "-"}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(s.costCents, s.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(s.salePriceCents, s.currency)}</td>
-                  <td className="td text-right tabular-nums">{formatMoney(s.sellingFeesCents, s.currency)}</td>
-                  <td
-                    className={`td text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
-                  >
-                    {formatMoney(s.profitCents, s.currency)}
-                  </td>
-                  <td className="td">
-                    <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
-                    {s.paymentStatus === "refunded" && s.refundedAt && (
-                      <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
-                        {formatDate(s.refundedAt)}
-                        {s.refundReason ? ` · ${s.refundReason}` : ""}
-                      </p>
-                    )}
-                  </td>
-                  <td className="td">
-                    <div className="flex items-center justify-end gap-3">
-                      {s.paymentStatus !== "refunded" && (
-                        <>
-                          <button
-                            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                            onClick={() => setEditTarget(s)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
-                            onClick={() => setRefundTarget(s)}
-                          >
-                            Refund
-                          </button>
-                        </>
-                      )}
-                      <button
-                        className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
-                        title={
-                          s.paymentStatus === "refunded"
-                            ? "Delete refund record (ticket status is not affected)"
-                            : "Delete sale (returns ticket to available)"
-                        }
-                        onClick={() => setDeleteTarget(s)}
+              {lines.map((s) => {
+                const seatLabel = formatSeatLocation(s.section, s.rowLabel, s.seat);
+                return (
+                  <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                    <td className="td-c font-medium text-slate-900 dark:text-slate-100">
+                      {/* 1.8.0 (S11): reuses Tickets.tsx's existing ?code= search-param
+                          convention - links to /tickets (not /inventory, which is locked
+                          to available/listed and would never show a sold/refunded ticket). */}
+                      <Link
+                        to={`/tickets?code=${encodeURIComponent(s.ticketCode)}`}
+                        title={s.ticketCode}
+                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
                       >
-                        <IconTrash className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        {s.ticketCode}
+                      </Link>
+                    </td>
+                    <td className="td-c text-slate-500 dark:text-slate-400">
+                      {/* 1.8.0 (S11): every ticket belongs to exactly one order, so this
+                          is always a concrete link - never Mixed/null like the group-level
+                          header fields above. */}
+                      <Link
+                        to={`/orders/${s.orderId}`}
+                        title={s.orderCode}
+                        className="block truncate hover:text-brand-700 dark:hover:text-brand-400 hover:underline"
+                      >
+                        {s.orderCode}
+                      </Link>
+                    </td>
+                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={seatLabel}>
+                      {seatLabel}
+                    </td>
+                    <td className="td-c text-right tabular-nums">{formatMoney(s.salePriceCents, s.currency)}</td>
+                    <td className="td-c text-right tabular-nums">{formatMoney(s.sellingFeesCents, s.currency)}</td>
+                    <td className="td-c text-right tabular-nums">{formatMoney(s.costCents, s.currency)}</td>
+                    <td
+                      className={`td-c text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                    >
+                      {formatMoney(s.profitCents, s.currency)}
+                    </td>
+                    <td className="td-c">
+                      <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
+                      {s.paymentStatus === "refunded" && s.refundedAt && (
+                        <p
+                          className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500"
+                          title={`${formatDate(s.refundedAt)}${s.refundReason ? ` · ${s.refundReason}` : ""}`}
+                        >
+                          {formatDate(s.refundedAt)}
+                          {s.refundReason ? ` · ${s.refundReason}` : ""}
+                        </p>
+                      )}
+                    </td>
+                    <td className="td-c">
+                      <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
+                        {s.paymentStatus !== "refunded" && (
+                          <>
+                            <button
+                              className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                              onClick={() => setEditTarget(s)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
+                              onClick={() => setRefundTarget(s)}
+                            >
+                              Refund
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
+                          title={
+                            s.paymentStatus === "refunded"
+                              ? "Delete refund record (ticket status is not affected)"
+                              : "Delete sale (returns ticket to available)"
+                          }
+                          onClick={() => setDeleteTarget(s)}
+                        >
+                          <IconTrash className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

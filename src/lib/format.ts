@@ -91,3 +91,37 @@ export function titleCase(s: string | null | undefined): string {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");
 }
+
+/** 1.8.2: a shorter date for narrow table columns (Sales list) - e.g. "15 Aug
+ * 26". Month is a short NAME (never a bare number) so it never reads as
+ * ambiguous DD/MM vs MM/DD, and the 2-digit year is kept (not dropped) since
+ * this app tracks sales across multiple years and two same-day-different-year
+ * sales must still look different in a list. Prefer `formatDate` everywhere
+ * space isn't tight - this exists only for the Sales table's Date column. */
+export function formatDateCompact(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = d.getDate();
+  const month = d.toLocaleDateString(undefined, { month: "short" });
+  const year = String(d.getFullYear()).slice(-2);
+  return `${day} ${month} ${year}`;
+}
+
+/** 1.8.2: combines a ticket's section/row/seat into one compact string for
+ * Sale Detail's merged "Seat" column (was 3 separate columns). Omits
+ * whichever parts are null (general-admission tickets often have none) and
+ * falls back to "General admission" when all three are missing, rather than
+ * a bare "-" that could be mistaken for missing data. */
+export function formatSeatLocation(
+  section: string | null | undefined,
+  rowLabel: string | null | undefined,
+  seat: string | null | undefined,
+): string {
+  const parts = [
+    section ? `Sec ${section}` : null,
+    rowLabel ? `Row ${rowLabel}` : null,
+    seat ? `Seat ${seat}` : null,
+  ].filter((p): p is string => p !== null);
+  return parts.length > 0 ? parts.join(" · ") : "General admission";
+}

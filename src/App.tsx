@@ -33,6 +33,12 @@ export default function App() {
             <Route path="sales" element={<Sales />} />
             <Route path="sales/:id" element={<SaleDetail />} />
             <Route path="settings" element={<Settings />} />
+            {/* 1.8.2: Settings Home (above) plus one real route per section -
+                HashRouter makes this refresh-stable with zero extra config,
+                see REDESIGN-1.8.2-REPORT.md section 5. Settings.tsx branches
+                on useParams().section to render either view - no new page
+                component, no new router. */}
+            <Route path="settings/:section" element={<Settings />} />
           </Route>
         </Routes>
       </HashRouter>

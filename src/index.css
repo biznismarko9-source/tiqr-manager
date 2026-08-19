@@ -28,6 +28,18 @@
   .td {
     @apply px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300;
   }
+  /* 1.8.2: compact table cells for Sales.tsx / SaleDetail.tsx ONLY - a
+     separate class (not an override of .th/.td) so every other table in the
+     app (Tickets, Orders, Events, Inventory) is completely unaffected. Same
+     font size as .th/.td (never shrunk below readable) - only the padding is
+     tighter, which is what actually buys back the horizontal space needed to
+     fit these two tables without a horizontal scrollbar. */
+  .th-c {
+    @apply px-2 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+  }
+  .td-c {
+    @apply px-2 py-2 text-sm text-slate-700 dark:text-slate-300;
+  }
   .card {
     @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
   }

@@ -135,3 +135,16 @@ export const IconDatabase = (p: SVGProps<SVGSVGElement>) => (
     <path d="M3 12a9 3 0 0 0 18 0" />
   </Svg>
 );
+// 1.8.2: Settings Home category icons.
+export const IconTag = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.59 3.24L3 3v6.59a2 2 0 0 0 .59 1.41l9.59 9.59a2 2 0 0 0 2.82 0l4.59-4.59a2 2 0 0 0 0-2.82Z" />
+    <path d="M7 7h.01" />
+  </Svg>
+);
+export const IconSun = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+  </Svg>
+);
