@@ -17,16 +17,55 @@ const UPCOMING_EVENT_WINDOW_DAYS: i64 = 14;
 // Same cap/convention already used for Recent Events/Orders/Sales below.
 const UPCOMING_EVENTS_CAP: i64 = 5;
 
-fn period_bounds(period: Option<&str>, from: Option<String>, to: Option<String>) -> (String, String) {
-    let today = Local::now().date_naive();
+/// Subtracts `months` whole calendar months from `date`, clamping to the
+/// last valid day of the resulting month when `date`'s day-of-month doesn't
+/// exist there (e.g. Mar 31 minus 1 month -> Feb 28, or Feb 29 in a leap
+/// year - never an error, never silently skipping into the next month).
+///
+/// Written from first principles (plain integer year/month arithmetic +
+/// `NaiveDate::from_ymd_opt`) instead of reaching for chrono's `Months`/
+/// `checked_sub_months`, so every step is spelled out and covered by the
+/// tests right below rather than trusted from the dependency - this file
+/// can't be compiled/run in the sandbox that wrote it (see 1.7.5 report),
+/// so the implementation leans on primitives already proven elsewhere in
+/// this file (`NaiveDate::from_ymd_opt`, `Duration::days`) rather than an
+/// API surface nobody here could double-check against the real crate.
+fn months_ago(date: NaiveDate, months: u32) -> NaiveDate {
+    let total_months = date.year() * 12 + date.month() as i32 - 1 - months as i32;
+    let year = total_months.div_euclid(12);
+    let month = (total_months.rem_euclid(12) + 1) as u32;
+    // Last valid day of (year, month) = one day before the 1st of the
+    // following month. Always succeeds for any real (year, month).
+    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+    let last_day_of_month = (first_of_next - Duration::days(1)).day();
+    let day = date.day().min(last_day_of_month);
+    NaiveDate::from_ymd_opt(year, month, day).unwrap()
+}
+
+/// `today` is passed in (rather than calling `Local::now()` here) purely so
+/// this function stays a pure, deterministically unit-testable calculation -
+/// see the "impl function" convention used throughout this codebase. The
+/// only real caller (`get_dashboard_impl`) passes the real wall-clock date.
+///
+/// 1.7.5: replaced the old 7d/30d/month presets with a standard
+/// Today/1W/1M/3M/YTD/1Y/5Y/All range-picker set (marko's reference
+/// screenshot) - relative presets now subtract whole calendar months via
+/// `months_ago` (e.g. "1y" is "the same date last year", not "365 days
+/// ago"), matching how this kind of range picker conventionally works.
+/// "custom" and "all" are unchanged.
+fn period_bounds(period: Option<&str>, from: Option<String>, to: Option<String>, today: NaiveDate) -> (String, String) {
     match period {
         Some("today") | None => (today.to_string(), today.to_string()),
-        Some("7d") => ((today - Duration::days(6)).to_string(), today.to_string()),
-        Some("30d") => ((today - Duration::days(29)).to_string(), today.to_string()),
-        Some("month") => {
-            let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+        Some("1w") => ((today - Duration::days(6)).to_string(), today.to_string()),
+        Some("1m") => (months_ago(today, 1).to_string(), today.to_string()),
+        Some("3m") => (months_ago(today, 3).to_string(), today.to_string()),
+        Some("ytd") => {
+            let start = NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap();
             (start.to_string(), today.to_string())
         }
+        Some("1y") => (months_ago(today, 12).to_string(), today.to_string()),
+        Some("5y") => (months_ago(today, 60).to_string(), today.to_string()),
         Some("custom") => (
             from.filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "0001-01-01".to_string()),
@@ -98,7 +137,8 @@ pub(crate) fn get_dashboard_impl(
     event_id: Option<i64>,
     platform_id: Option<i64>,
 ) -> AppResult<DashboardData> {
-    let (period_from, period_to) = period_bounds(period, from, to);
+    let today = Local::now().date_naive();
+    let (period_from, period_to) = period_bounds(period, from, to, today);
 
     // ---- currency mix detection --------------------------------------
     // Every total below is computed for ONE currency only - mixing e.g. EUR
@@ -249,6 +289,7 @@ pub(crate) fn get_dashboard_impl(
     let bucket_expr = bucket_key_expr(granularity);
     let mut ts_sql = format!(
         "SELECT {bucket_expr} as bucket_key, MIN(s.sale_date) as bucket_start,
+            COUNT(*) as sold_tickets,
             COALESCE(SUM(s.sale_price_cents),0) as revenue_cents,
             COALESCE(SUM(s.selling_fees_cents),0) as selling_fees_cents,
             COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0) as cogs_cents
@@ -278,6 +319,7 @@ pub(crate) fn get_dashboard_impl(
             let cogs_cents: i64 = r.get("cogs_cents")?;
             Ok(RevenueTimeSeriesPoint {
                 bucket_start: r.get("bucket_start")?,
+                sold_tickets: r.get("sold_tickets")?,
                 revenue_cents,
                 selling_fees_cents,
                 cogs_cents,
@@ -740,15 +782,19 @@ mod tests {
         assert_eq!(data.revenue_time_series.len(), 2, "two distinct sale dates -> two buckets");
         assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
         assert_eq!(data.revenue_time_series[0].revenue_cents, 5000, "2000 + 3000 on the same day");
+        assert_eq!(data.revenue_time_series[0].sold_tickets, 2, "two sales lines that day");
         assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-03");
         assert_eq!(data.revenue_time_series[1].revenue_cents, 1500);
+        assert_eq!(data.revenue_time_series[1].sold_tickets, 1);
         // Cross-check against the existing, already-trusted period total -
         // the chart must never be able to silently drift from the StatCards
         // showing the same period.
         let chart_revenue: i64 = data.revenue_time_series.iter().map(|p| p.revenue_cents).sum();
         let chart_profit: i64 = data.revenue_time_series.iter().map(|p| p.profit_cents).sum();
+        let chart_sold_tickets: i64 = data.revenue_time_series.iter().map(|p| p.sold_tickets).sum();
         assert_eq!(chart_revenue, data.period.revenue_cents);
         assert_eq!(chart_profit, data.period.profit_cents);
+        assert_eq!(chart_sold_tickets, data.period.sold_tickets, "1.7.5: same cross-check, now for the Sales metric too");
     }
 
     #[test]
@@ -773,6 +819,104 @@ mod tests {
 
         assert_eq!(data.revenue_time_series.len(), 1, "refunded day contributes no bucket at all");
         assert_eq!(data.revenue_time_series[0].revenue_cents, 2000);
+        assert_eq!(data.revenue_time_series[0].sold_tickets, 1, "the refunded sale must not count as a sold ticket either");
+    }
+
+    // 1.7.5: sold_tickets is a real COUNT(*) of sales lines, deliberately
+    // independent of the money columns on the same row - a bucket's revenue
+    // alone can't tell you how many tickets made it up (one expensive ticket
+    // reads identically to several cheap ones in a money-only view). This
+    // seeds a low-count/high-price bucket next to a high-count/low-price one
+    // so a bug that derived sold_tickets from revenue_cents (or vice versa)
+    // would show up as a wrong count on at least one of them.
+    #[test]
+    fn revenue_time_series_sold_tickets_counts_lines_not_money() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Chart Count Event", "upcoming", None);
+        let expensive = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let cheap_a = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let cheap_b = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        let cheap_c = seed_ticket(&conn, "4", event_id, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, expensive, "2026-03-01", 9000); // 1 ticket, high revenue
+        seed_sale(&mut conn, cheap_a, "2026-03-02", 1000);
+        seed_sale(&mut conn, cheap_b, "2026-03-02", 1000);
+        seed_sale(&mut conn, cheap_c, "2026-03-02", 1000); // 3 tickets, lower total revenue
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.revenue_time_series.len(), 2);
+        assert_eq!(data.revenue_time_series[0].sold_tickets, 1);
+        assert_eq!(data.revenue_time_series[0].revenue_cents, 9000);
+        assert_eq!(data.revenue_time_series[1].sold_tickets, 3);
+        assert_eq!(data.revenue_time_series[1].revenue_cents, 3000);
+    }
+
+    #[test]
+    fn months_ago_subtracts_whole_calendar_months_when_the_day_exists_in_the_target_month() {
+        let d = NaiveDate::from_ymd_opt(2026, 8, 19).unwrap();
+        assert_eq!(months_ago(d, 1), NaiveDate::from_ymd_opt(2026, 7, 19).unwrap());
+        assert_eq!(months_ago(d, 3), NaiveDate::from_ymd_opt(2026, 5, 19).unwrap());
+        assert_eq!(months_ago(d, 12), NaiveDate::from_ymd_opt(2025, 8, 19).unwrap(), "1y = same date last year");
+        assert_eq!(months_ago(d, 60), NaiveDate::from_ymd_opt(2021, 8, 19).unwrap(), "5y = same date 5 years back");
+    }
+
+    #[test]
+    fn months_ago_clamps_to_the_last_day_of_the_target_month_when_the_original_day_does_not_exist() {
+        // March 31 minus 1 month: February never has a 31st. Must clamp to
+        // Feb 28 (2026 is not a leap year), not error and not roll over into
+        // March.
+        let d = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        assert_eq!(months_ago(d, 1), NaiveDate::from_ymd_opt(2026, 2, 28).unwrap());
+    }
+
+    #[test]
+    fn months_ago_clamps_to_february_29_in_a_leap_year() {
+        let d = NaiveDate::from_ymd_opt(2028, 3, 31).unwrap(); // 2028 is a leap year
+        assert_eq!(months_ago(d, 1), NaiveDate::from_ymd_opt(2028, 2, 29).unwrap());
+    }
+
+    #[test]
+    fn period_bounds_relative_presets_match_the_reference_range_picker() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 19).unwrap();
+        assert_eq!(period_bounds(Some("today"), None, None, today), ("2026-08-19".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("1w"), None, None, today), ("2026-08-13".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("1m"), None, None, today), ("2026-07-19".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("3m"), None, None, today), ("2026-05-19".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("1y"), None, None, today), ("2025-08-19".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("5y"), None, None, today), ("2021-08-19".into(), "2026-08-19".into()));
+        assert_eq!(period_bounds(Some("all"), None, None, today), ("0001-01-01".into(), "9999-12-31".into()));
+    }
+
+    #[test]
+    fn period_bounds_ytd_starts_at_january_first_of_todays_year() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 19).unwrap();
+        assert_eq!(period_bounds(Some("ytd"), None, None, today), ("2026-01-01".into(), "2026-08-19".into()));
+
+        // Jan 1st itself: YTD must still be a real, non-empty one-day range,
+        // not an off-by-one that starts "before" today.
+        let jan_first = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        assert_eq!(period_bounds(Some("ytd"), None, None, jan_first), ("2026-01-01".into(), "2026-01-01".into()));
+    }
+
+    #[test]
+    fn period_bounds_custom_is_unaffected_by_the_1_7_5_preset_rename() {
+        // Guards the existing Custom-date-filter fix (BUG list) - "custom"
+        // with both from/to empty must still fall back to the "no bound"
+        // sentinels exactly as before, unrelated to the preset key rename.
+        let today = NaiveDate::from_ymd_opt(2026, 8, 19).unwrap();
+        assert_eq!(
+            period_bounds(Some("custom"), Some("2026-02-01".to_string()), Some("2026-02-15".to_string()), today),
+            ("2026-02-01".into(), "2026-02-15".into())
+        );
+        assert_eq!(period_bounds(Some("custom"), None, None, today), ("0001-01-01".into(), "2026-08-19".into()));
     }
 
     #[test]

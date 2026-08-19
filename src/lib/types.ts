@@ -324,6 +324,10 @@ export interface RevenueTimeSeriesPoint {
   revenueCents: number;
   sellingFeesCents: number;
   cogsCents: number;
+  /** COUNT(*) of (non-refunded) sales lines in this bucket - i.e. tickets
+   * sold. Same definition as the "Tickets sold" StatCard, just broken out
+   * per bucket - powers the Dashboard chart's "Sales" metric (1.7.5). */
+  soldTickets: number;
   profitCents: number;
 }
 

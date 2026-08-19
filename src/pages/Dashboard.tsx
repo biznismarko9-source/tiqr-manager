@@ -4,7 +4,7 @@ import { api, errMsg } from "../lib/api";
 import type { DashboardData, UpcomingEventAlert } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import { Badge, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
-import { RevenueChart } from "../components/RevenueChart";
+import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import { IconAlertTriangle, IconCalendarDays, IconPackage, IconReceipt } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -24,18 +24,53 @@ function periodBoundLabel(iso: string, fallback: string): string {
   return iso === PERIOD_MIN_SENTINEL || iso === PERIOD_MAX_SENTINEL ? fallback : formatDate(iso);
 }
 
+// 1.7.5: replaced with a standard Today/1W/1M/3M/YTD/1Y/5Y/All range-picker
+// set (marko's reference screenshot), still driving both the StatCards below
+// and the chart from this one shared selection - see period_bounds() in
+// dashboard.rs for what each key resolves to. "Custom" is kept at the end -
+// the reference screenshot doesn't show it, but removing the existing
+// custom-date-range feature wasn't part of the ask (see 1.7.5 report).
 const PERIODS: { key: string; label: string }[] = [
   { key: "today", label: "Today" },
-  { key: "7d", label: "Last 7 days" },
-  { key: "30d", label: "Last 30 days" },
-  { key: "month", label: "This month" },
-  { key: "all", label: "All time" },
+  { key: "1w", label: "1 Wk" },
+  { key: "1m", label: "1 Mo" },
+  { key: "3m", label: "3 Mo" },
+  { key: "ytd", label: "YTD" },
+  { key: "1y", label: "1 Yr" },
+  { key: "5y", label: "5 Yr" },
+  { key: "all", label: "All" },
   { key: "custom", label: "Custom" },
 ];
 
+/** The big number in the chart card header - always read straight from
+ * `data.period` (the exact same FinanceSummary the StatCards above already
+ * render), never re-derived from the chart's own bucket array, so this
+ * number can never drift from the StatCard for the same metric. */
+function periodMetricValue(data: DashboardData, metric: MetricKey): number {
+  if (metric === "profit") return data.period.profitCents;
+  if (metric === "sales") return data.period.soldTickets;
+  return data.period.revenueCents;
+}
+
+/** Same emerald/red/slate convention the "Profit" StatCard already uses
+ * (see StatCard's tone prop in ui.tsx) - reused here rather than inventing a
+ * second color rule for the same profit/loss distinction. Revenue and Sales
+ * are never negative, so they're always the neutral/default tone. */
+function periodMetricTone(data: DashboardData, metric: MetricKey): string {
+  if (metric !== "profit") return "text-slate-900 dark:text-slate-100";
+  if (data.period.profitCents > 0) return "text-emerald-600 dark:text-emerald-400";
+  if (data.period.profitCents < 0) return "text-red-600 dark:text-red-400";
+  return "text-slate-900 dark:text-slate-100";
+}
+
 export default function Dashboard() {
   const toast = useToast();
-  const [period, setPeriod] = useState("30d");
+  // 1.7.5: default changed from "30d" to "1y" to match the reference
+  // screenshot's default selection (its "1 Yr" pill is the one shown
+  // active) - purely an initial UI state, one click away from anything
+  // else.
+  const [period, setPeriod] = useState("1y");
+  const [metric, setMetric] = useState<MetricKey>("revenue");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -145,22 +180,49 @@ export default function Dashboard() {
                   sub={`${data.period.purchasedTickets} purchased in period`}
                 />
               </div>
-              {/* Same number as the "Revenue" StatCard above, just broken out
-                  over time instead of collapsed into one total for the
-                  period - never a separate/independent figure, so it can
-                  never contradict it (see revenue_time_series in
-                  dashboard.rs, which shares period_summary's exact scope).
-                  1.7.4: simplified to Revenue only - Profit stays visible as
-                  its own StatCard above, just not broken out bucket-by-bucket
-                  in this chart anymore (see RevenueChart.tsx). */}
+              {/* Big number + line always come straight from data.period /
+                  data.revenueTimeSeries - the exact same source the
+                  StatCards above already render, never re-derived locally -
+                  so this card can never disagree with them (see
+                  revenue_time_series in dashboard.rs, which shares
+                  period_summary's exact scope). 1.7.5: switches between 3
+                  metrics (marko's reference screenshot) instead of always
+                  showing Revenue - see MetricChart.tsx. Tab row reuses the
+                  exact same pill pattern as the period selector above,
+                  rather than a new visual pattern. */}
               <Card className="mb-8 p-4">
-                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                  Revenue over time
-                </p>
-                <RevenueChart
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                      {METRICS.find((m) => m.key === metric)?.label} over time
+                    </p>
+                    <p className={`mt-1 text-2xl font-semibold tabular-nums ${periodMetricTone(data, metric)}`}>
+                      {metric === "sales"
+                        ? String(periodMetricValue(data, metric))
+                        : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+                    {METRICS.map((m) => (
+                      <button
+                        key={m.key}
+                        onClick={() => setMetric(m.key)}
+                        className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                          metric === m.key
+                            ? "bg-brand-600 text-white"
+                            : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <MetricChart
                   points={data.revenueTimeSeries}
                   granularity={data.timeSeriesGranularity}
                   currency={data.primaryCurrency}
+                  metric={metric}
                 />
               </Card>
             </>

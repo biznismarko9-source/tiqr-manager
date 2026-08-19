@@ -394,6 +394,13 @@ pub struct RevenueTimeSeriesPoint {
     pub selling_fees_cents: i64,
     pub cogs_cents: i64,
     pub profit_cents: i64,
+    /// COUNT(*) of (non-refunded) sales lines in this bucket - i.e. tickets
+    /// sold, same definition as `FinanceSummary.sold_tickets` (1.7.5, added
+    /// for the Dashboard chart's "Sales" metric). Independent of the money
+    /// fields above - a bucket's revenue doesn't tell you how many tickets
+    /// made it up (one expensive ticket vs. several cheap ones), so this is
+    /// its own real COUNT(*), not derived from revenue_cents.
+    pub sold_tickets: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
