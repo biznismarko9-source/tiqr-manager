@@ -1,15 +1,31 @@
-# TIQR Manager 1.8.0 — Sales Management / Sales 2.0
+# TIQR Manager 1.8.1 — Sales Management / Sales 2.0 (+ kritická oprava release balenia)
 
 Dátum: 2026-08-19
-Rozsah: FÁZA 0 (overenie prostredia) → FÁZA A (audit Sales modulu) → FÁZA B (reálne bugy: žiadne nájdené, pozri §3) → FÁZA C (search/filtre/sorting) → FÁZA D (bulk select + Export selected) → FÁZA E (UX polish + Ticket/Order/Event prelinkovanie) → FÁZA F (nové testy + regresná kontrola) → FÁZA G (build verification, best-effort) → verzia 1.8.0.
+Rozsah 1.8.1: **kritická oprava release zipu (§0) - žiadna zmena appky/Sales samotnej.** Zvyšok tohto reportu (§1 nižšie, pôvodne 1.8.0) je nezmenený a stále platný - Sales feature samotný sa v 1.8.1 vôbec nemenil.
 
-**Dôležité upozornenie hneď na začiatku (rovnaké ako pri 1.7.5, znova overené TERAZ, nie len prevzaté z minula):** V tomto konkrétnom cloud sandboxe tejto session sa **nedá reálne spustiť** `cargo check/test/clippy` ani `npm install/build`. Nie je to predpoklad ani odhad - skutočne som to teraz priamo vyskúšal (presné príkazy a chybové hlášky v §14) a dostal som:
-- `cargo check --lib` → `error: failed to get 'anyhow' as a dependency... Host not in allowlist: index.crates.io`
-- `npm install` (skutočný, nie dry-run) → `403 Forbidden - GET https://registry.npmjs.org/yallist/-/yallist-3.1.1.tgz`
+## 0. KRITICKÁ OPRAVA v1.8.1: prečo GitHub Actions po `1-CLICK-UPDATE.bat` nič nespustili
 
-Sieťový prístup na crates.io aj na skutočné sťahovanie npm balíčkov je v tomto prostredí zablokovaný allowlistom. Kód nižšie je preto overený **výhradne ručne** - riadok po riadku, opakovane, vrátane finálneho kompletného re-readu celých `sales.rs` (2291 riadkov) a `csv_export.rs` (546 riadkov) ako posledného kroku pred balením zipu. **Než spustíš `1-CLICK-UPDATE.bat`, prosím najprv sám spusti `cargo test --lib` (v `src-tauri/`) a `npm run build` (v koreňovom priečinku) u seba** - ak čokoľvek zlyhá, pošli mi presne to, čo vypíše, opravím to hneď.
+**Nahlásil si:** skript dobehne do "Done" bez chyby, ale na GitHub-e sa nespustí žiadna nová Action.
+
+**Root cause, nájdený a potvrdený:** zdrojový zip pre 1.8.0, ktorý som ti poslal, **chýbal celý `.github/workflows/build-windows.yml` (aj `.gitignore`)**. Spôsobil som to sám - pri príprave zoznamu súborov do zipu som si najprv vypísal obsah priečinka príkazom, ktorý omylom vylúčil aj `.github`, nie len `.git` (vzorka `./.git*` v `find -path` vylúči hocičo začínajúce na ".git", teda aj ".github" - jednoduchá, ale zákerná chyba vo vzorke). Keďže som podľa toho vypísaného zoznamu ručne vymenoval, čo do zipu pôjde (presne podľa pravidla "nikdy nie bare -r/-x, vždy explicitný zoznam"), `.github` sa do zoznamu vôbec nedostal - a keďže som si to jeho neprítomnosť pri finálnej kontrole zipu nevšimol (kontroloval som verzie/nové 1.8.0 zmeny, nie "chýba tam niečo, čo tam bolo predtým"), poslal som ti neúplný zip bez toho, aby som si to všimol.
+
+**Prečo to spôsobilo presne tento príznak (dobehne, ale nič sa nespustí).** `release.ps1` klonuje repo nanovo z GitHub-u (ten klon `.github/workflows/build-windows.yml` MÁ, z tvojej doterajšej histórie) a potom `robocopy /MIR` prekopíruje obsah rozbaleného zipu navrch tohto klonu. `/MIR` znamená "nech cieľ presne zodpovedá zdroju" - teda okrem kopírovania zmenených súborov aj **maže z klonu čokoľvek, čo v zdroji (rozbalenom zipe) nie je**. Keďže zip `.github` neobsahoval, robocopy ho z klonu vymazal - skript potom tento (už bez workflow súboru) stav normálne commitol a pushol na `main`, a následne pushol aj nový tag. Tag push prebehol úspešne (preto "Done", žiadna chyba), ale commit, na ktorý tag ukazuje, už žiadny workflow súbor neobsahoval - GitHub teda nemal čo spustiť. Samotný workflow súbor (trigger `on: push: tags: ["v*"]`) je pritom úplne v poriadku, nič v jeho logike nebolo zle.
+
+**Dopad na tvoj GitHub repozitár:** `main` vetva tam teraz s vysokou pravdepodobnosťou **nemá** `.github/workflows/build-windows.yml` ani `.gitignore` - presne toto zmazal a pushol predchádzajúci beh `1-CLICK-UPDATE.bat` s 1.8.0 zipom. Nie je to vážne (dá sa to opraviť jednoducho ďalším pushom), ale je dôležité to vedieť.
+
+**Overil som, že toto je NOVÁ chyba len v 1.8.0 zipe** - skontroloval som predchádzajúci 1.7.5 zip (mám ho ešte uložený) a ten `.github/workflows/build-windows.yml` aj `.gitignore` **správne obsahoval**. Predchádzajúce vydania (do 1.7.5 vrátane) teda touto chybou postihnuté neboli.
+
+**Oprava v tomto 1.8.1 zipe:** oba súbory (`.github/workflows/build-windows.yml`, `.gitignore`) sú teraz v zipe znova prítomné, overené priamo cez `unzip -l` (pozri nižšie). Keď týmto novým zipom spustíš `1-CLICK-UPDATE.bat`, robocopy tentoraz oba súbory do klonu **vráti** (lebo teraz sú aj v zdroji) a commit/push ich obnoví na GitHub-e - ďalší tag push by už mal Action spustiť normálne. Ak by aj po tomto ešte Action nenaskočila, over prosím priamo na GitHube (záložka Actions), či tam vôbec workflow "Build Windows Installer" figuruje v zozname - ak nie, pošli mi screenshot, poviem ti presne čo ďalej (mohlo by ísť napr. o to, že GitHub Actions sú pre repo vypnuté v Settings, čo viem opraviť len ja cez inštrukcie, nie priamo z tejto sandboxe, keďže nemám sieťový prístup na github.com).
+
+**Čo som si preveril navyše, aby som si bol istý, že v zipe nechýba nič iné:** prešiel som CELÝ zdrojový strom príkazom, ktorý hľadá VŠETKY bodkové súbory/priečinky (opravený, bez chybnej vzorky) - v celom projekte (mimo `node_modules`/`target`/`dist`) existujú presne 2: `.github` a `.gitignore`, oba teraz v zipe. Žiadny ďalší skrytý súbor nechýba.
 
 ---
+
+**Dôležité upozornenie k testovaniu (rovnaké ako pri 1.7.5/1.8.0, stále platí):** V tomto cloud sandboxe sa **nedá reálne spustiť** `cargo check/test/clippy` ani `npm install/build` - sieťový prístup na crates.io aj na skutočné sťahovanie npm balíčkov je zablokovaný allowlistom (presné chybové hlášky v §14 nižšie). Kód je overený **výhradne ručne**. **Než spustíš `1-CLICK-UPDATE.bat`, prosím najprv sám spusti `cargo test --lib` (v `src-tauri/`) a `npm run build` (v koreňovom priečinku) u seba** - ak čokoľvek zlyhá, pošli mi presne to, čo vypíše, opravím to hneď.
+
+---
+
+Zvyšok tohto dokumentu (§1-§22) je pôvodný, nezmenený obsah 1.8.0 reportu - Sales 2.0 feature samotný sa v 1.8.1 vôbec nezmenil, mení sa len release balenie (§0 vyššie).
 
 ## 1. Zhrnutie
 
@@ -175,7 +191,7 @@ Nešlo len o "testy stále existujú" - pre každý bod nižšie som si prešiel
 
 ## 18. Verzia
 
-`package.json`/`src-tauri/tauri.conf.json`/`src-tauri/Cargo.toml`/`src-tauri/Cargo.lock`: **1.7.5 → 1.8.0**, všetky konzistentne. `release.ps1` (`$Version` + commit message opisujúci reálne zmeny tohto vydania) a `1-CLICK-UPDATE.bat` (title + echo, CRLF overené riadok po riadku) tiež aktualizované.
+`package.json`/`src-tauri/tauri.conf.json`/`src-tauri/Cargo.toml`/`src-tauri/Cargo.lock`: **1.7.5 → 1.8.0 → 1.8.1**, všetky konzistentne. `release.ps1` (`$Version` + commit message opisujúci reálne zmeny tohto vydania) a `1-CLICK-UPDATE.bat` (title + echo, CRLF overené riadok po riadku) tiež aktualizované pri oboch krokoch. 1.8.1's commit message v `release.ps1` explicitne opisuje opravu balenia (§0), nie Sales feature (ten sa nemenil).
 
 ## 19. Čo NEBOLO zmenené (§19 zadania)
 
@@ -214,4 +230,4 @@ Search + Event/Platform/Payment/Currency/Date v jednom riadku, sekundárne (Refu
 
 ---
 
-**Podľa zadania (§24): týmto je 1.8.0 hotové.** Nezačínam Payments, Invoices, Cloud, Discord, Accounts ani žiadny ďalší veľký redesign - čakám na tvoju ďalšiu inštrukciu.
+**Podľa zadania (§24): 1.8.0/Sales 2.0 je hotové, 1.8.1 opravuje len release balenie.** Nezačínam Payments, Invoices, Cloud, Discord, Accounts ani žiadny ďalší veľký redesign - čakám na tvoju ďalšiu inštrukciu. Prosím po spustení `1-CLICK-UPDATE.bat` s týmto zipom skontroluj na GitHube (záložka Actions), či sa nová Action skutočne spustila - daj mi vedieť, či to teraz sedí.
