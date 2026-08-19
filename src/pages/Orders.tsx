@@ -217,6 +217,7 @@ function OrderFormModal({
   const [unitFees, setUnitFees] = useState("0");
   const [otherCosts, setOtherCosts] = useState("0");
   const [currency, setCurrency] = useState("EUR");
+  const [customCurrency, setCustomCurrency] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
   const [section, setSection] = useState("");
   const [rowLabel, setRowLabel] = useState("");
@@ -239,6 +240,7 @@ function OrderFormModal({
     setUnitFees("0");
     setOtherCosts("0");
     setCurrency("EUR");
+    setCustomCurrency(false);
     setPaymentStatus("unpaid");
     setSection("");
     setRowLabel("");
@@ -369,16 +371,41 @@ function OrderFormModal({
         <Field label={`Unit purchase price (${currency})`} required>
           <Input inputMode="decimal" placeholder="0.00" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} />
         </Field>
-        <Field label="Currency">
-          <>
-            <Input list="currency-list" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />
-            <datalist id="currency-list">
-              {CURRENCIES.map((c) => (
-                <option key={c} value={c} />
+        <div>
+          {/* 1.7.3: this used to be an <input list="currency-list"> +
+              <datalist> - CURRENCIES already had 13 options (EUR/GBP/USD
+              included) but a plain text input pre-filled with "EUR" gives no
+              visible sign that anything else is pickable, so marko never
+              found them. A real <Select> makes every option visible on
+              click; "Other..." (same toggle pattern as LookupSelect's
+              "+ New") still allows typing any currency code freely. */}
+          <div className="flex items-center justify-between">
+            <span className="label mb-1">Currency</span>
+            <button
+              type="button"
+              className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+              onClick={() => setCustomCurrency((c) => !c)}
+            >
+              {customCurrency ? "Choose from list" : "Other..."}
+            </button>
+          </div>
+          {customCurrency ? (
+            <Input
+              autoFocus
+              placeholder="e.g. AED"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+            />
+          ) : (
+            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
               ))}
-            </datalist>
-          </>
-        </Field>
+            </Select>
+          )}
+        </div>
 
         <Field label={`Unit purchase fees (${currency})`}>
           <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} />

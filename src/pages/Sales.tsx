@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
+import type { EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, todayIso } from "../lib/format";
 import {
   Badge,
@@ -17,7 +17,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
+import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 export default function Sales() {
@@ -289,8 +289,14 @@ function SaleFormModal({
   const [step, setStep] = useState<"pick" | "details">("pick");
   const [selected, setSelected] = useState<Ticket[]>([]);
   const [lines, setLines] = useState<Record<number, SaleLineDraft>>({});
-  const [ticketQuery, setTicketQuery] = useState("");
-  const [ticketOptions, setTicketOptions] = useState<Ticket[]>([]);
+  // 1.7.3: ticket picking is order-grouped now (same pattern as
+  // Tickets/Inventory) instead of one flat searchable ticket list - browse
+  // orders that still have sellable tickets, open one, pick tickets from
+  // just that order. `activeOrder` is null while browsing orders themselves.
+  const [orderQuery, setOrderQuery] = useState("");
+  const [orderOptions, setOrderOptions] = useState<OrderRecord[]>([]);
+  const [activeOrder, setActiveOrder] = useState<OrderRecord | null>(null);
+  const [orderTicketOptions, setOrderTicketOptions] = useState<Ticket[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [platformId, setPlatformId] = useState<number | null>(null);
   const [saleDate, setSaleDate] = useState(todayIso());
@@ -307,8 +313,10 @@ function SaleFormModal({
     setStep("pick");
     setSelected([]);
     setLines({});
-    setTicketQuery("");
-    setTicketOptions([]);
+    setOrderQuery("");
+    setOrderOptions([]);
+    setActiveOrder(null);
+    setOrderTicketOptions([]);
     setPlatformId(null);
     setSaleDate(todayIso());
     setBulkPrice("");
@@ -320,16 +328,33 @@ function SaleFormModal({
     api.listPlatforms().then(setPlatforms).catch(() => {});
   }, [open]);
 
+  // Browse orders that still have at least one sellable ticket. `status`
+  // does the "has a sellable ticket" filtering server-side (same filter
+  // list_orders already supports for the Orders/Tickets pages), and its
+  // `search` already matches order code, event, supplier, platform AND
+  // ticket code (BUG #5) - so typing an exact ticket code here still finds
+  // the right order to open, even though you no longer add it directly.
   useEffect(() => {
-    if (!open || step !== "pick") return;
+    if (!open || step !== "pick" || activeOrder) return;
     const t = setTimeout(() => {
       api
-        .listTickets({ search: ticketQuery || undefined, status: "available,listed", sortBy: "created", sortDir: "desc" })
-        .then((res) => setTicketOptions(res.slice(0, 25)))
+        .listOrders({ search: orderQuery || undefined, status: "available,listed" })
+        .then((res) => setOrderOptions(res.slice(0, 25)))
         .catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [open, step, ticketQuery]);
+  }, [open, step, orderQuery, activeOrder]);
+
+  // Once an order is opened, load just its sellable tickets - this is the
+  // "small window" of tickets to pick from, scoped to one order at a time.
+  useEffect(() => {
+    if (!open || step !== "pick" || !activeOrder) return;
+    setOrderTicketOptions([]);
+    api
+      .listTickets({ orderId: activeOrder.id, status: "available,listed", sortBy: "created", sortDir: "desc" })
+      .then(setOrderTicketOptions)
+      .catch(() => {});
+  }, [open, step, activeOrder]);
 
   // If every ticket gets removed while on the details step, drop back to
   // picking rather than showing an empty pricing form.
@@ -373,7 +398,7 @@ function SaleFormModal({
     });
   };
 
-  const visibleOptions = ticketOptions.filter((t) => !selected.some((s) => s.id === t.id));
+  const visibleOptions = orderTicketOptions.filter((t) => !selected.some((s) => s.id === t.id));
   const singleCurrency =
     selected.length > 0 && selected.every((t) => t.currency === selected[0].currency) ? selected[0].currency : null;
 
@@ -465,44 +490,98 @@ function SaleFormModal({
     <Modal open={open} onClose={onClose} title="New sale" width="max-w-2xl">
       {step === "pick" ? (
         <div>
-          <Field
-            label="Find tickets to sell"
-            required
-            hint="Only Available and Listed tickets can be sold. Add as many as you like to this one sale."
-          >
-            <Input
-              autoFocus
-              placeholder="Search by code, event, seat..."
-              value={ticketQuery}
-              onChange={(e) => setTicketQuery(e.target.value)}
-            />
-          </Field>
-          <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
-            {visibleOptions.length === 0 ? (
-              <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
-                {ticketQuery ? "No matching available/listed tickets" : "Start typing to search your inventory"}
-              </p>
-            ) : (
-              visibleOptions.map((t) => (
+          {!activeOrder ? (
+            <>
+              <Field
+                label="Find an order to sell from"
+                required
+                hint="Only orders with an Available or Listed ticket are shown. Open one to pick which of its tickets to add."
+              >
+                <Input
+                  autoFocus
+                  placeholder="Search by order code, event, platform, ticket code..."
+                  value={orderQuery}
+                  onChange={(e) => setOrderQuery(e.target.value)}
+                />
+              </Field>
+              <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                {orderOptions.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                    {orderQuery ? "No matching orders with sellable tickets" : "Start typing to search your orders"}
+                  </p>
+                ) : (
+                  orderOptions.map((o) => {
+                    const sellable = o.availableCount + o.listedCount;
+                    return (
+                      <button
+                        key={o.id}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                        onClick={() => setActiveOrder(o)}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+                            {o.code} &middot; {o.eventName}
+                          </span>
+                          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                            {o.platformName ?? "No platform"} · {formatDate(o.purchaseDate)}
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span className="whitespace-nowrap rounded-full bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                            {sellable} available
+                          </span>
+                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-400 dark:text-slate-500" />
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between gap-2">
                 <button
-                  key={t.id}
-                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                  onClick={() => addTicket(t)}
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                  onClick={() => setActiveOrder(null)}
                 >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code} &middot; {t.eventName}</span>
-                    <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
-                      {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
-                    </span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <Badge tone={t.status}>{t.status}</Badge>
-                    <IconPlus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-                  </span>
+                  <IconArrowLeft className="h-3.5 w-3.5" /> Back to orders
                 </button>
-              ))
-            )}
-          </div>
+                <span className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">
+                  {activeOrder.code} &middot; {activeOrder.eventName}
+                </span>
+              </div>
+              <div className="max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                {visibleOptions.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                    {orderTicketOptions.length === 0
+                      ? "Loading tickets..."
+                      : "Every sellable ticket from this order is already selected"}
+                  </p>
+                ) : (
+                  visibleOptions.map((t) => (
+                    <button
+                      key={t.id}
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                      onClick={() => addTicket(t)}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
+                        <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                          {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <Badge tone={t.status}>{t.status}</Badge>
+                        <IconPlus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </>
+          )}
 
           {selected.length > 0 && (
             <div className="mt-4">

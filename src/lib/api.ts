@@ -86,6 +86,7 @@ export const api = {
   updateSale: (id: number, input: SaleEditInput) => invoke<Sale>("update_sale", { id, input }),
   refundSale: (id: number, reason?: string | null) => invoke<Sale>("refund_sale", { id, reason: reason || null }),
   deleteSale: (id: number) => invoke<void>("delete_sale", { id }),
+  deleteSaleGroup: (id: number) => invoke<number>("delete_sale_group", { id }),
 
   // Lookups
   listPlatforms: () => invoke<Platform[]>("list_platforms"),

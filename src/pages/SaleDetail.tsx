@@ -39,6 +39,10 @@ export default function SaleDetail() {
   const [refundTarget, setRefundTarget] = useState<Sale | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Sale | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 1.7.3: delete the whole sale (every line) at once, instead of one at a
+  // time - separate from the per-line deleteTarget/deleting above.
+  const [groupDeleteOpen, setGroupDeleteOpen] = useState(false);
+  const [groupDeleting, setGroupDeleting] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -141,6 +145,9 @@ export default function SaleDetail() {
             {header.saleDate && ` · sold ${formatDate(header.saleDate)}`}
           </p>
         </div>
+        <Button variant="danger" onClick={() => setGroupDeleteOpen(true)}>
+          <IconTrash className="h-4 w-4" /> Delete entire sale
+        </Button>
       </div>
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
@@ -352,6 +359,38 @@ export default function SaleDetail() {
             toast.error(errMsg(e));
           } finally {
             setDeleting(false);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={groupDeleteOpen}
+        title="Delete entire sale?"
+        message={
+          <>
+            This permanently deletes all {lines.length} ticket{lines.length === 1 ? "" : "s"} in sale{" "}
+            <b>{header.code}</b> at once. Tickets that are actively sold return to Available; any refunded lines are
+            removed as history with no trace left. This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete entire sale"
+        danger
+        busy={groupDeleting}
+        onCancel={() => setGroupDeleteOpen(false)}
+        onConfirm={async () => {
+          setGroupDeleting(true);
+          try {
+            const count = await api.deleteSaleGroup(saleId);
+            toast.success(`Sale ${header.code} deleted - ${count} ticket${count === 1 ? "" : "s"} affected`);
+            setGroupDeleteOpen(false);
+            // The whole group is gone - nothing left to anchor this page to,
+            // so always go back to the list (unlike per-line delete above,
+            // there's no "reload the remaining lines" case here).
+            navigate("/sales");
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setGroupDeleting(false);
           }
         }}
       />

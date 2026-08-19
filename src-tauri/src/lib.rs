@@ -50,6 +50,7 @@ pub fn run() {
             commands::sales::update_sale,
             commands::sales::refund_sale,
             commands::sales::delete_sale,
+            commands::sales::delete_sale_group,
             commands::lookups::list_platforms,
             commands::lookups::create_platform,
             commands::lookups::delete_platform,

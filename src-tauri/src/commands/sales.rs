@@ -790,6 +790,71 @@ pub fn delete_sale(state: State<AppState>, id: i64) -> AppResult<()> {
     delete_sale_impl(&mut conn, id)
 }
 
+/// Core logic behind `delete_sale_group` - the "Delete entire sale" action
+/// on Sale Detail (1.7.3), for when the whole sale should go away at once
+/// instead of removing lines one at a time. Resolves "the group" exactly
+/// like `list_sales_by_group_impl`: every row sharing this sale's
+/// `batch_id`, or just this one row if it has no `batch_id` (a plain
+/// single-ticket sale) - so "the sale you're looking at" always means the
+/// same set of rows here as it does on the page itself.
+///
+/// Every row in the group is deleted inside ONE transaction, applying the
+/// exact same per-line rule `delete_sale_impl` uses: a non-refunded (active)
+/// line resets its ticket to `available` (it was that ticket's one active
+/// sale); a refunded line never touches ticket status, because that ticket
+/// may have been resold since under a *different*, newer sale outside this
+/// group entirely (see `delete_sale_impl`'s doc comment for the full
+/// reasoning - it applies per-ticket, not per-group). Doing the whole group
+/// in one transaction means a mid-way failure can never leave half a sale
+/// deleted and half still on record.
+fn delete_sale_group_impl(conn: &mut Connection, id: i64) -> AppResult<usize> {
+    let tx = conn.transaction()?;
+
+    let batch_id: Option<String> = tx
+        .query_row("SELECT batch_id FROM sales WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .map_err(|_| AppError::NotFound(format!("Sale #{id} not found")))?;
+
+    let rows: Vec<(i64, i64, String)> = if let Some(b) = &batch_id {
+        let mut stmt =
+            tx.prepare("SELECT id, ticket_id, payment_status FROM sales WHERE batch_id = ?1")?;
+        let mapped = stmt
+            .query_map([b], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    } else {
+        let mut stmt = tx.prepare("SELECT id, ticket_id, payment_status FROM sales WHERE id = ?1")?;
+        let mapped = stmt
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+
+    let count = rows.len();
+    for (sale_id, ticket_id, payment_status) in &rows {
+        tx.execute("DELETE FROM sales WHERE id = ?1", [sale_id])?;
+        if payment_status != "refunded" {
+            tx.execute(
+                "UPDATE tickets SET status='available', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+                [ticket_id],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(count)
+}
+
+/// Deletes an entire sale (every line in its batch, or the single line
+/// itself) in one atomic transaction. Returns how many sale lines were
+/// removed, so the frontend can confirm exactly what happened.
+#[tauri::command]
+pub fn delete_sale_group(state: State<AppState>, id: i64) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    delete_sale_group_impl(&mut conn, id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,6 +1177,80 @@ mod tests {
             ticket_status(&conn, ticket_id),
             "sold",
             "deleting the old refunded record must not un-sell a ticket that is actively sold under a different sale"
+        );
+        let active_still_present: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sales WHERE id = ?1", [active_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(active_still_present, 1, "the newer active sale must be untouched");
+    }
+
+    // ---- 1.7.3: "Delete entire sale" (delete_sale_group_impl) ------------
+
+    #[test]
+    fn delete_sale_group_removes_every_line_in_a_batch_and_resets_only_non_refunded_tickets() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        let ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        assert_eq!(ids.len(), 3);
+
+        // One line refunded before the group delete, so the group is a
+        // realistic mix - exactly the case the per-line rule exists for.
+        refund_sale_impl(&mut conn, ids[0], None).unwrap();
+        assert_eq!(ticket_status(&conn, tickets[0]), "available"); // refunded
+        assert_eq!(ticket_status(&conn, tickets[1]), "sold");
+        assert_eq!(ticket_status(&conn, tickets[2]), "sold");
+
+        // Resolve via ids[1] (a non-refunded line, not the batch's lowest
+        // id) - the group must still be found and deleted as a whole,
+        // proving resolution doesn't depend on which row you start from.
+        let deleted = delete_sale_group_impl(&mut conn, ids[1]).unwrap();
+        assert_eq!(deleted, 3, "all 3 lines in the batch must be deleted");
+
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0, "every row in the group must be gone");
+
+        assert_eq!(ticket_status(&conn, tickets[0]), "available", "was already available from the refund");
+        assert_eq!(ticket_status(&conn, tickets[1]), "available", "was actively sold - must return to Available");
+        assert_eq!(ticket_status(&conn, tickets[2]), "available", "was actively sold - must return to Available");
+    }
+
+    #[test]
+    fn delete_sale_group_on_a_single_non_batch_sale_behaves_like_deleting_just_that_one_line() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+
+        let deleted = delete_sale_group_impl(&mut conn, sale_id).unwrap();
+        assert_eq!(deleted, 1);
+
+        assert_eq!(ticket_status(&conn, tickets[0]), "available");
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn delete_sale_group_never_disturbs_a_different_newer_sale_on_a_resold_ticket() {
+        // Same hazard as deleting a single refunded line (see the test
+        // above this section), but through the group-delete path: the
+        // "group" being deleted here is just the old refunded sale's own
+        // (batch-less) group - a DIFFERENT, newer sale exists on the same
+        // ticket and must survive untouched.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let ticket_id = tickets[0];
+
+        let refunded_id = create_sale_impl(&mut conn, &sale_input(ticket_id, 2000)).unwrap();
+        refund_sale_impl(&mut conn, refunded_id, None).unwrap();
+        let active_id = create_sale_impl(&mut conn, &sale_input(ticket_id, 1800)).unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "sold");
+
+        let deleted = delete_sale_group_impl(&mut conn, refunded_id).unwrap();
+        assert_eq!(deleted, 1, "the refunded sale has no batch_id, so its group is just itself");
+
+        assert_eq!(
+            ticket_status(&conn, ticket_id),
+            "sold",
+            "deleting the old refunded group must not un-sell a ticket actively sold under a different sale"
         );
         let active_still_present: i64 = conn
             .query_row("SELECT COUNT(*) FROM sales WHERE id = ?1", [active_id], |r| r.get(0))
