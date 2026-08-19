@@ -3,7 +3,8 @@ use crate::db::AppState;
 use crate::error::AppResult;
 use crate::finance;
 use crate::models::{
-    DashboardAlerts, DashboardData, InventoryPotential, RevenueTimeSeriesPoint, UpcomingEventAlert,
+    CashflowSummary, DashboardAlerts, DashboardData, InventoryPotential, RevenueTimeSeriesPoint,
+    UpcomingEventAlert,
 };
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
@@ -440,6 +441,28 @@ pub(crate) fn get_dashboard_impl(
         pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
+    // ---- Cashflow (1.9.0) -------------------------------------------------
+    // Money actually collected from buyers vs. still owed to be collected -
+    // built entirely from the existing sales.payment_status field, no new
+    // table. Only ONE new query here (paid_cents): outstanding_cents reuses
+    // pending_sales_amount_cents computed just above (same value, same
+    // query, no reason to ask SQLite twice) and revenue/profit reuse the
+    // already-computed `inventory` FinanceSummary (all-time, realized,
+    // refund-excluded - exactly the scope this section needs). Not
+    // period-filtered, same "right now" rule as pending_sales_amount_cents.
+    let paid_cents: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(sale_price_cents),0) FROM sales WHERE payment_status = 'paid' AND currency = ?1",
+        [&primary_currency],
+        |r| r.get(0),
+    )?;
+    let cashflow = CashflowSummary {
+        revenue_cents: inventory.revenue_cents,
+        profit_cents: inventory.profit_cents,
+        paid_cents,
+        outstanding_cents: pending_sales_amount_cents,
+        currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
+    };
+
     let recent_orders = orders_cmd::fetch_recent(conn, 5)?;
     let recent_sales = sales_cmd::fetch_recent(conn, 5)?;
     let recent_events = events_cmd::fetch_recent(conn, 5)?;
@@ -456,6 +479,7 @@ pub(crate) fn get_dashboard_impl(
         mixed_currencies,
         inventory_potential,
         alerts,
+        cashflow,
         revenue_time_series,
         time_series_granularity: granularity.to_string(),
     })
@@ -606,6 +630,11 @@ mod tests {
         assert_eq!(data.alerts.pending_sales_count, 0);
         assert_eq!(data.alerts.pending_sales_amount_cents, 0);
         assert_eq!(data.alerts.pending_sales_currency, Some("EUR".to_string()));
+        assert_eq!(data.cashflow.paid_cents, 0);
+        assert_eq!(data.cashflow.outstanding_cents, 0);
+        assert_eq!(data.cashflow.revenue_cents, 0);
+        assert_eq!(data.cashflow.profit_cents, 0);
+        assert_eq!(data.cashflow.currency, Some("EUR".to_string()));
     }
 
     // ---- Attention: unpaid orders ------------------------------------------
@@ -715,6 +744,113 @@ mod tests {
             data.alerts.pending_sales_count, 1,
             "pending sales is a right-now fact, like unpaid_orders_count - never period-filtered"
         );
+    }
+
+    // ---- Cashflow (1.9.0) ---------------------------------------------------
+
+    #[test]
+    fn cashflow_splits_revenue_into_paid_and_outstanding_and_the_invariant_holds() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        seed_sale_with_status(&mut conn, t2, "2026-03-02", 3000, "pending");
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.cashflow.paid_cents, 2000);
+        assert_eq!(data.cashflow.outstanding_cents, 3000);
+        assert_eq!(data.cashflow.revenue_cents, 5000);
+        assert_eq!(
+            data.cashflow.revenue_cents,
+            data.cashflow.paid_cents + data.cashflow.outstanding_cents,
+            "revenue must always equal paid + outstanding - every non-refunded sale is exactly one or the other, never both, never neither"
+        );
+        assert_eq!(
+            data.cashflow.profit_cents, data.inventory.profit_cents,
+            "cashflow.profit is the same realized figure as inventory.profit, not a second, independently-computed number"
+        );
+        assert_eq!(data.cashflow.revenue_cents, data.inventory.revenue_cents);
+        assert_eq!(data.cashflow.currency, Some("EUR".to_string()));
+    }
+
+    #[test]
+    fn cashflow_excludes_refunded_sales_from_paid_outstanding_and_revenue() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        seed_sale_with_status(&mut conn, t2, "2026-03-02", 3000, "pending");
+        let refunded_sale_id = seed_sale_with_status(&mut conn, t3, "2026-03-03", 9000, "paid");
+        crate::commands::sales::refund_sale_impl(&mut conn, refunded_sale_id, Some("test refund")).unwrap();
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.cashflow.paid_cents, 2000, "the refunded 9000 must not count as paid");
+        assert_eq!(data.cashflow.outstanding_cents, 3000);
+        assert_eq!(data.cashflow.revenue_cents, 5000, "refunded sale excluded from revenue too");
+    }
+
+    #[test]
+    fn cashflow_outstanding_drops_to_zero_once_a_pending_sale_is_refunded() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let sale_id = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "pending");
+
+        let before = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(before.cashflow.outstanding_cents, 2000);
+
+        crate::commands::sales::refund_sale_impl(&mut conn, sale_id, Some("test refund")).unwrap();
+
+        let after = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(
+            after.cashflow.outstanding_cents, 0,
+            "a refund must remove the sale from outstanding, not leave it stuck there"
+        );
+        assert_eq!(after.cashflow.paid_cents, 0, "a refund must never move money into paid either");
+        assert_eq!(after.cashflow.revenue_cents, 0);
+    }
+
+    #[test]
+    fn cashflow_is_scoped_to_primary_currency_and_shows_none_when_mixed() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let eur_ticket = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let usd_ticket = seed_ticket(&conn, "2", event_id, "available", "USD", 1000, None);
+        seed_sale_with_status(&mut conn, eur_ticket, "2026-03-01", 2000, "paid");
+        seed_sale_with_status(&mut conn, usd_ticket, "2026-03-01", 5000, "paid");
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert!(data.mixed_currencies);
+        assert_eq!(data.cashflow.currency, None, "two currencies present - must never be blended into one figure");
+        assert_eq!(
+            data.cashflow.paid_cents, 2000,
+            "only EUR (the primary currency here) counts - the USD sale must not leak in"
+        );
+    }
+
+    #[test]
+    fn cashflow_reflects_only_the_active_sale_after_refund_then_resell() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+
+        let first_sale_id = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        crate::commands::sales::refund_sale_impl(&mut conn, first_sale_id, Some("buyer cancelled")).unwrap();
+        // Resold at a different price, initially pending - the exact refund
+        // -> resell flow BUG #1 exists to support (see sales.rs).
+        seed_sale_with_status(&mut conn, t1, "2026-03-05", 1800, "pending");
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.cashflow.paid_cents, 0, "the original sale is refunded, not paid");
+        assert_eq!(data.cashflow.outstanding_cents, 1800, "only the new resale counts, at its own price");
+        assert_eq!(data.cashflow.revenue_cents, 1800);
     }
 
     // ---- Attention: upcoming events ----------------------------------------

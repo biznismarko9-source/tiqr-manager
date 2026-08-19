@@ -433,6 +433,42 @@ pub struct DashboardAlerts {
     pub pending_sales_currency: Option<String>,
 }
 
+/// Dashboard "Cashflow" section (1.9.0). A small, transparent snapshot of
+/// what was sold vs. what has actually been collected from buyers vs. what
+/// they still owe - built entirely from the existing `sales.payment_status`
+/// field (pending/paid/refunded), no new payment/transaction table. Not
+/// period-filtered - like `DashboardAlerts`, this is a "right now" fact, all
+/// time, so it never disagrees with `alerts.pending_sales_amount_cents`
+/// (which is exactly `outstanding_cents` below, just also surfaced there).
+///
+/// The four numbers are related by one invariant that always holds (for the
+/// same currency scope): `revenue_cents == paid_cents + outstanding_cents`,
+/// since every non-refunded sale is either 'paid' or 'pending' - never both,
+/// never neither. Refunded sales are excluded from all four fields, same as
+/// every other realized-money figure in this app.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CashflowSummary {
+    /// All-time realized revenue - identical figure to `DashboardData.
+    /// inventory.revenue_cents`, repeated here so this section is
+    /// self-contained and doesn't require cross-referencing another block.
+    pub revenue_cents: i64,
+    /// All-time realized profit - identical figure to `DashboardData.
+    /// inventory.profit_cents`.
+    pub profit_cents: i64,
+    /// SUM(sale_price_cents) of sales with payment_status = 'paid' - money
+    /// actually collected from buyers.
+    pub paid_cents: i64,
+    /// SUM(sale_price_cents) of sales with payment_status = 'pending' -
+    /// money sold but not yet collected. Same query/value as
+    /// `DashboardAlerts.pending_sales_amount_cents`.
+    pub outstanding_cents: i64,
+    /// Some(code) unless the database has more than one currency
+    /// (`mixed_currencies`) - same "null = mixed, never blend" convention as
+    /// every other money block on this dashboard.
+    pub currency: Option<String>,
+}
+
 /// One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same
 /// scope and realized-only/refund-excluded rule as `DashboardData.period`
 /// (see dashboard.rs) - just broken out by date instead of collapsed into
@@ -479,6 +515,8 @@ pub struct DashboardData {
     pub inventory_potential: InventoryPotential,
     /// Attention/alerts - see `DashboardAlerts` doc comment.
     pub alerts: DashboardAlerts,
+    /// Cashflow snapshot (1.9.0) - see `CashflowSummary` doc comment.
+    pub cashflow: CashflowSummary,
     /// Revenue/profit chart data - see `RevenueTimeSeriesPoint` doc comment.
     pub revenue_time_series: Vec<RevenueTimeSeriesPoint>,
     /// "day" | "week" | "month" - the bucket width `revenue_time_series`

@@ -201,6 +201,42 @@ export default function Sales() {
     return { ...sums, currency: summaryCurrency };
   }, [groups]);
 
+  // 1.9.0 (section 3, "Sales - payment summary"): Paid/Outstanding totals,
+  // built only from what's already on each SaleGroup row - no new backend
+  // query. A group's `paymentStatus` is only Some(...) when EVERY line in it
+  // shares one status (see GROUP_BASE_SELECT/map_sale_group in sales.rs) -
+  // for those groups, `revenueCents` (already refund-excluded) IS the full
+  // paid/pending amount, so it can be attributed directly. A "Mixed" group
+  // (some lines paid, some still pending) can't be safely split into
+  // Paid/Outstanding from what this screen has - that would need a new
+  // per-status aggregate on GROUP_BASE_SELECT itself, which is intentionally
+  // left untouched (see the 1.9.0 report) - so those groups are excluded
+  // here and called out explicitly via `excludedCount` rather than guessed.
+  const cashTotals = useMemo(() => {
+    // No results at all (fresh install, or a filter combination matching
+    // nothing) is "nothing to show", not "a currency conflict" - returning
+    // null here (rather than falling through to the empty-array checks
+    // below, which would otherwise resolve to a false "Mixed" for an
+    // honest zero) hides the stats entirely via the `{cashTotals && ...}`
+    // guard in the JSX, the same way `totals.refunded > 0 &&` already hides
+    // an irrelevant zero elsewhere in this same summary bar.
+    if (!groups || groups.length === 0) return null;
+    const definite = groups.filter((g) => g.paymentStatus !== null);
+    const currency =
+      definite.length > 0
+        ? definite.every((g) => g.currency === definite[0].currency)
+          ? definite[0].currency
+          : null
+        : groups.every((g) => g.currency === groups[0].currency)
+          ? groups[0].currency
+          : null;
+    const paid = definite.filter((g) => g.paymentStatus === "paid").reduce((sum, g) => sum + g.revenueCents, 0);
+    const outstanding = definite
+      .filter((g) => g.paymentStatus === "pending")
+      .reduce((sum, g) => sum + g.revenueCents, 0);
+    return { paid, outstanding, currency, excludedCount: groups.length - definite.length };
+  }, [groups]);
+
   const currencyOptions = useMemo(() => {
     const extra = currencies.filter((c) => !PREFERRED_CURRENCIES.includes(c)).sort();
     return [...PREFERRED_CURRENCIES, ...extra];
@@ -411,6 +447,14 @@ export default function Sales() {
                 value={formatMoneyOrMixed(totals.profit, totals.currency)}
                 tone={totals.currency !== null ? (totals.profit > 0 ? "positive" : totals.profit < 0 ? "negative" : undefined) : undefined}
               />
+              {/* 1.9.0 (section 3): Paid/Outstanding totals across every
+                  visible, unambiguous-status sale - see cashTotals above. */}
+              {cashTotals && (
+                <>
+                  <SummaryStat label="Paid" value={formatMoneyOrMixed(cashTotals.paid, cashTotals.currency)} />
+                  <SummaryStat label="Outstanding" value={formatMoneyOrMixed(cashTotals.outstanding, cashTotals.currency)} />
+                </>
+              )}
               {totals.refunded > 0 && (
                 <SummaryStat label="Refunded" value={`${totals.refunded} ticket${totals.refunded === 1 ? "" : "s"}`} />
               )}
@@ -429,6 +473,14 @@ export default function Sales() {
           </Select>
         </div>
       </div>
+
+      {cashTotals && cashTotals.excludedCount > 0 && (
+        <p className="-mt-2 mb-3 text-xs text-slate-400 dark:text-slate-500">
+          {cashTotals.excludedCount} sale{cashTotals.excludedCount === 1 ? "" : "s"} with a mixed payment status
+          (some tickets paid, some still pending) {cashTotals.excludedCount === 1 ? "isn't" : "aren't"} counted in
+          Paid/Outstanding above - open the sale to see its exact breakdown.
+        </p>
+      )}
 
       {selected.size > 0 && (
         <div className="mb-4 flex items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">

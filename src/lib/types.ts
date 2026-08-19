@@ -343,6 +343,26 @@ export interface DashboardAlerts {
   pendingSalesCurrency: string | null;
 }
 
+/** Dashboard "Cashflow" section (1.9.0) - what was sold vs. what has
+ * actually been collected from buyers vs. what they still owe, built
+ * entirely from the existing sales payment status. Not period-filtered -
+ * same "right now" convention as DashboardAlerts. `revenueCents` always
+ * equals `paidCents + outstandingCents` for the same currency scope (every
+ * non-refunded sale is exactly one or the other); refunded sales are
+ * excluded from all four fields. */
+export interface CashflowSummary {
+  /** Same figure as DashboardData.inventory.revenueCents, repeated here so this section is self-contained. */
+  revenueCents: number;
+  /** Same figure as DashboardData.inventory.profitCents. */
+  profitCents: number;
+  /** Money actually collected from buyers (sales with paymentStatus 'paid'). */
+  paidCents: number;
+  /** Money sold but not yet collected (sales with paymentStatus 'pending') - same value as alerts.pendingSalesAmountCents. */
+  outstandingCents: number;
+  /** Null means mixed currencies - same convention as every other money block here. */
+  currency: string | null;
+}
+
 /** One bucket of the Dashboard revenue/profit-over-time chart (1.6.0). Same
  * scope and realized-only/refund-excluded rule as DashboardData.period -
  * just broken out by date instead of collapsed into one total. */
@@ -376,6 +396,8 @@ export interface DashboardData {
   inventoryPotential: InventoryPotential;
   /** Attention/alerts - see DashboardAlerts. */
   alerts: DashboardAlerts;
+  /** Cashflow snapshot (1.9.0) - see CashflowSummary. */
+  cashflow: CashflowSummary;
   /** Revenue/profit chart data - see RevenueTimeSeriesPoint. Same period/
    * currency/event/platform scope as `period` above. */
   revenueTimeSeries: RevenueTimeSeriesPoint[];

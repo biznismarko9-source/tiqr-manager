@@ -272,6 +272,50 @@ export default function Dashboard() {
             <StatCard label="Purchased (total)" value={String(data.inventory.purchasedTickets)} />
           </div>
 
+          {/* Cashflow (1.9.0): what's been sold vs. what's actually been
+              collected from buyers vs. what they still owe - all-time
+              realized figures (not period-filtered), same "right now"
+              convention as Attention below. Revenue/Profit here are the same
+              numbers as data.inventory (already computed, just not
+              previously shown anywhere on this page) - Paid/Outstanding are
+              new. Refunded sales are excluded from all four, same as
+              everywhere else in this app. Deliberately just 4 cards, plain
+              (not a tinted zone like Inventory & Potential Profit below) -
+              this is a realized, not a future/estimated block. */}
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Cashflow (all time)
+          </p>
+          <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard
+              label="Revenue"
+              value={formatMoneyOrMixed(data.cashflow.revenueCents, data.cashflow.currency)}
+              sub="Total sold, realized"
+            />
+            <StatCard
+              label="Profit"
+              value={formatMoneyOrMixed(data.cashflow.profitCents, data.cashflow.currency)}
+              tone={
+                data.cashflow.currency !== null
+                  ? data.cashflow.profitCents > 0
+                    ? "positive"
+                    : data.cashflow.profitCents < 0
+                      ? "negative"
+                      : "default"
+                  : "default"
+              }
+            />
+            <StatCard
+              label="Paid"
+              value={formatMoneyOrMixed(data.cashflow.paidCents, data.cashflow.currency)}
+              sub="Collected from buyers"
+            />
+            <StatCard
+              label="Outstanding"
+              value={formatMoneyOrMixed(data.cashflow.outstandingCents, data.cashflow.currency)}
+              sub="Sold but not yet paid"
+            />
+          </div>
+
           {/* Inventory & Potential Profit: deliberately its own tinted zone
               (not plain StatCards like the sections above) and its own
               "Potential profit" label - never "Profit" alone - so it can

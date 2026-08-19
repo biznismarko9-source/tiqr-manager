@@ -2131,6 +2131,102 @@ mod tests {
         assert_eq!(gbp_none.len(), 0, "a currency with no sales must match nothing");
     }
 
+    // ---- 1.9.0: payment_status filter on list_sale_groups (test gap) -----
+    // The `payment_status` parameter on `list_sale_groups_impl` already
+    // existed before 1.9.0 (it's what powers Sales.tsx's Payment dropdown -
+    // see the "Payment" filter's Select) but, unlike every OTHER positional
+    // filter on this function (search/event/platform/currency/refund_status/
+    // sort_by), it had no direct test of its own. Closing that gap was one
+    // of the 1.9.0 brief's explicit test scenarios ("Sales payment filter") -
+    // this is a test-only addition, the filter implementation itself
+    // (GROUP_BASE_SELECT/the semi-join below it) is untouched.
+
+    /// 1.9.0: the payment_status filter is the same "does this group contain
+    /// at least one line with this status" semi-join already used for event/
+    /// platform/currency/refund_status above (see the doc comment on the
+    /// currency filter). For these 3 groups - each a single-ticket sale, so
+    /// it has only one line to match - that's indistinguishable from "every
+    /// line has this status"; the mixed-group nuance is covered separately
+    /// by the test right below this one.
+    #[test]
+    fn list_sale_groups_payment_status_filter_matches_the_right_groups() {
+        let mut conn = test_conn();
+        let paid_tickets = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &sale_input(paid_tickets[0], 1000)).unwrap(); // sale_input() always uses "paid"
+
+        let pending_tickets = seed_tickets(&mut conn, 1);
+        create_sales_batch_impl(&mut conn, &batch_input(&pending_tickets, 1000, "pending")).unwrap();
+
+        let refunded_tickets = seed_tickets(&mut conn, 1);
+        let refunded_id = create_sale_impl(&mut conn, &sale_input(refunded_tickets[0], 1000)).unwrap();
+        refund_sale_impl(&mut conn, refunded_id, None).unwrap();
+
+        let paid_only =
+            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(paid_only.len(), 1);
+        assert_eq!(paid_only[0].payment_status.as_deref(), Some("paid"));
+
+        let pending_only =
+            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(pending_only.len(), 1);
+        assert_eq!(pending_only[0].payment_status.as_deref(), Some("pending"));
+
+        let refunded_only =
+            list_sale_groups_impl(&conn, None, None, None, Some("refunded".into()), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(refunded_only.len(), 1);
+        assert_eq!(refunded_only[0].payment_status.as_deref(), Some("refunded"));
+    }
+
+    /// The payment_status filter is a "contains a line" semi-join, not an
+    /// "every line matches" filter (see the doc comment on the test above
+    /// and on the pre-existing currency filter). A group with a genuinely
+    /// MIXED status (one line paid, one still pending) therefore matches
+    /// BOTH the "paid" and the "pending" filter - it has a line of each, so
+    /// it is correctly not excluded from either. This mirrors how the
+    /// currency filter already behaves for a mixed-currency batch, and is a
+    /// real, useful property: filtering by "paid" surfaces every sale action
+    /// with at least some money collected, even if part of it is still
+    /// outstanding.
+    #[test]
+    fn list_sale_groups_payment_status_filter_is_a_contains_a_line_semi_join() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        // Move just one line of the batch to pending via a plain edit, so the
+        // group as a whole becomes genuinely mixed (1 paid + 1 pending).
+        update_sale_impl(
+            &conn,
+            ids[0],
+            &crate::models::SaleEditInput {
+                platform_id: None,
+                sale_date: "2026-03-01".to_string(),
+                sale_price_cents: 1000,
+                selling_fees_cents: 0,
+                payment_status: "pending".to_string(),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            all_groups(&conn)[0].payment_status, None,
+            "sanity check: the group is genuinely mixed (1 paid + 1 pending)"
+        );
+
+        let paid_only =
+            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(paid_only.len(), 1, "the group has a paid line, so it must match the 'paid' filter");
+
+        let pending_only =
+            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(pending_only.len(), 1, "the same group also has a pending line, so it matches 'pending' too");
+    }
+
     /// 1.8.0 section 5: sortable results. Revenue and the (revenue - cost -
     /// fees) profit expression both need to actually execute in SQL without
     /// error - profit_cents itself is only computed in Rust afterwards (see

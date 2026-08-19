@@ -91,6 +91,18 @@ export default function OrderDetail() {
     });
   };
 
+  // 1.9.0 (section 5, "Order Detail"): Paid/Outstanding, derived honestly
+  // from the existing order.paymentStatus label. Unlike a Sale, an Order has
+  // no numeric "amount paid so far" field anywhere - payment state here is a
+  // pure status, not a per-line amount - so 'unpaid'/'paid' map to a hard
+  // 0/total (unambiguous), but 'partial' genuinely has no backing number to
+  // show. Rather than guess or fabricate a split, that case is shown as
+  // "Partial" text with no invented cents value - see the 1.9.0 report.
+  const orderPaidCents =
+    order.paymentStatus === "paid" ? order.totalCostCents : order.paymentStatus === "unpaid" ? 0 : null;
+  const orderOutstandingCents =
+    order.paymentStatus === "paid" ? 0 : order.paymentStatus === "unpaid" ? order.totalCostCents : null;
+
   return (
     <div>
       <Link to={backTo} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
@@ -120,7 +132,7 @@ export default function OrderDetail() {
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Card className="p-4">
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Quantity</p>
           <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
@@ -138,6 +150,30 @@ export default function OrderDetail() {
         <Card className="p-4">
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Total cost</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
+        </Card>
+        {/* 1.9.0 (section 5): Paid/Outstanding - see the orderPaidCents/
+            orderOutstandingCents derivation above. 'partial' shows as text,
+            never a fabricated number - the order model has no field to back
+            one (see the 1.9.0 report's audit). */}
+        <Card className="p-4">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Paid</p>
+          <p className={`mt-1 text-lg font-semibold ${orderPaidCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}>
+            {orderPaidCents !== null ? formatMoney(orderPaidCents, order.currency) : "Partial"}
+          </p>
+          {orderPaidCents === null && (
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Exact amount not tracked</p>
+          )}
+        </Card>
+        <Card className="p-4">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Outstanding</p>
+          <p
+            className={`mt-1 text-lg font-semibold ${orderOutstandingCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}
+          >
+            {orderOutstandingCents !== null ? formatMoney(orderOutstandingCents, order.currency) : "Partial"}
+          </p>
+          {orderOutstandingCents === null && (
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Exact amount not tracked</p>
+          )}
         </Card>
       </div>
 

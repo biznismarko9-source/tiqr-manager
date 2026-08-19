@@ -84,6 +84,23 @@ export default function SaleDetail() {
     const platformName = uniform(lines, (s) => s.platformName);
     const paymentStatus = uniform(lines, (s) => s.paymentStatus);
     const refundedCount = lines.filter((s) => s.paymentStatus === "refunded").length;
+    // 1.9.0 (section 6, "Sale Detail"): Paid/Outstanding amounts - same
+    // "only sum within one shared currency" rule as revenue/cost/profit
+    // below, just scoped to the paid-only / pending-only subset of lines
+    // instead of "every non-refunded line". Refunded lines fall into
+    // neither bucket, so they can never end up counted as outstanding (or
+    // paid). Falls back to the group's own `currency` (computed above via
+    // `counted`, itself possibly null/Mixed) when a subset is empty, so an
+    // honestly-zero Paid or Outstanding is never mislabeled "Mixed" just
+    // because that subset has no lines - it can still legitimately show
+    // "Mixed" the same way the rest of this card does, when the group as a
+    // whole spans more than one currency.
+    const paidLines = lines.filter((s) => s.paymentStatus === "paid");
+    const pendingLines = lines.filter((s) => s.paymentStatus === "pending");
+    const paidCents = paidLines.reduce((sum, s) => sum + s.salePriceCents, 0);
+    const outstandingCents = pendingLines.reduce((sum, s) => sum + s.salePriceCents, 0);
+    const paidCurrency = paidLines.length > 0 ? uniform(paidLines, (s) => s.currency) : currency;
+    const outstandingCurrency = pendingLines.length > 0 ? uniform(pendingLines, (s) => s.currency) : currency;
     const revenueCents = counted.reduce((sum, s) => sum + s.salePriceCents, 0);
     const feesCents = counted.reduce((sum, s) => sum + s.sellingFeesCents, 0);
     const costCents = counted.reduce((sum, s) => sum + s.costCents, 0);
@@ -115,6 +132,10 @@ export default function SaleDetail() {
       platformName,
       paymentStatus,
       refundedCount,
+      paidCents,
+      outstandingCents,
+      paidCurrency,
+      outstandingCurrency,
       revenueCents,
       feesCents,
       costCents,
@@ -177,7 +198,7 @@ export default function SaleDetail() {
         </Button>
       </div>
 
-      <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+      <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 lg:grid-cols-6">
         <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{header.platformName ?? "-"}</p>
@@ -196,6 +217,21 @@ export default function SaleDetail() {
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Refunded</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {header.refundedCount} of {lines.length}
+          </p>
+        </div>
+        {/* 1.9.0 (section 6): Paid/Outstanding - see the `header` useMemo
+            above for how these are derived (paid-only / pending-only line
+            subsets, refunded lines counted in neither). */}
+        <div>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Paid</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+            {formatMoneyOrMixed(header.paidCents, header.paidCurrency)}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Outstanding</p>
+          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+            {formatMoneyOrMixed(header.outstandingCents, header.outstandingCurrency)}
           </p>
         </div>
       </Card>
