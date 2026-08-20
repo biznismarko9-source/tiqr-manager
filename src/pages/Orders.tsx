@@ -173,22 +173,29 @@ export default function Orders() {
         // 1.9.2 (section 2): removed the Supplier column entirely from this
         // list (Supplier stays fully intact in the data model, CSV import/
         // export, and Edit Order on Order Detail - this is a list-view-only
-        // simplification, no DB/migration change). Fixed columns here now
-        // sum to 556px (was 648px before removing Supplier's own 92px) -
-        // still comfortably inside the 808px content floor this app
-        // guarantees at its smallest supported window (1080px min-width,
-        // minus the 224px sidebar and 48px of content padding - see
-        // Sales.tsx's own colgroup comment for the full derivation), so
-        // Event (still the one unspecified <col>, absorbing whatever's left)
-        // now has a 252px floor there instead of 160px - strictly more
-        // breathing room, never a gap.
+        // simplification, no DB/migration change). Fixed columns summed to
+        // 556px right after that (was 648px before removing Supplier's own
+        // 92px).
+        // 1.9.4: marko pointed out Platform names were getting truncated
+        // ("Fnac Spect...") with room to spare elsewhere, so Platform grew
+        // 92px -> 160px (+68px, enough for ~20 characters at this cell's
+        // font/padding - covers every platform name in this app's own seed
+        // data, e.g. "Fnac Spectacles"). Fixed columns now sum to 624px -
+        // still well inside the 808px content floor this app guarantees at
+        // its smallest supported window (1080px min-width, minus the 224px
+        // sidebar and 48px of content padding - see Sales.tsx's own colgroup
+        // comment for the full derivation), so Event (still the one
+        // unspecified <col>, absorbing whatever's left) now has a 184px
+        // floor there instead of 252px - less than before, but still ample
+        // for real event names, and it keeps its own title tooltip (below)
+        // for the rare one that still truncates.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />
               <col />
               <col className="w-[84px]" />
-              <col className="w-[92px]" />
+              <col className="w-[160px]" />
               <col className="w-12" />
               <col className="w-[64px]" />
               <col className="w-[88px]" />

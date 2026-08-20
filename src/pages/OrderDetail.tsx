@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { OrderEditInput, OrderPaymentStatus, OrderRecord, OrderSalesSummary, Platform, Supplier, Ticket } from "../lib/types";
+import type { OrderEditInput, OrderPaymentStatus, OrderRecord, OrderSalesSummary, Platform, Ticket } from "../lib/types";
 import { formatDate, formatMoney, formatSeatLocation } from "../lib/format";
 import {
   Badge,
@@ -182,10 +182,6 @@ export default function OrderDetail() {
       </div>
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
-        <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Supplier</p>
-          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.supplierName ?? "-"}</p>
-        </div>
         <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
@@ -484,8 +480,16 @@ function OrderEditModal({
   onSaved: () => void;
 }) {
   const toast = useToast();
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  // 1.9.4: marko wants Supplier out of Order Detail's edit form entirely
+  // (New Order dropped it back in 1.7.4; this was the last manual-entry
+  // FORM that still offered it - CSV import can still set supplier_id via
+  // its own "supplier" column, see csv_import.rs). supplierId itself is
+  // kept and still round-trips through submit() below UNCHANGED from
+  // order.supplierId - only the picker UI is gone, so an order that
+  // already had a supplier keeps it; there's just no way to set or change
+  // it from this form anymore. Deliberately not touching supplier_id in
+  // the DB, CSV import/export, or the data model - see the report.
   const [supplierId, setSupplierId] = useState<number | null>(null);
   const [platformId, setPlatformId] = useState<number | null>(null);
   const [purchaseDate, setPurchaseDate] = useState("");
@@ -497,7 +501,6 @@ function OrderEditModal({
 
   useEffect(() => {
     if (!open) return;
-    api.listSuppliers().then(setSuppliers).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
     setSupplierId(order.supplierId);
     setPlatformId(order.platformId);
@@ -538,30 +541,26 @@ function OrderEditModal({
         individual tickets. Edit ticket cost/listing price directly if you need to fix a mistake.
       </p>
       <div className="grid grid-cols-2 gap-4">
-        <LookupSelect
-          label="Supplier"
-          options={suppliers}
-          value={supplierId}
-          onChange={setSupplierId}
-          onCreate={async (name) => {
-            const s = await api.createSupplier(name);
-            setSuppliers((prev) => [...prev, s]);
-            return s;
-          }}
-        />
-        <LookupSelect
-          label="Platform"
-          // 1.9.3: purchase/both only - see the matching comment in
-          // Orders.tsx's New Order form for the full reasoning.
-          options={platforms.filter((p) => p.kind === "purchase" || p.kind === "both")}
-          value={platformId}
-          onChange={setPlatformId}
-          onCreate={async (name) => {
-            const p = await api.createPlatform(name, "purchase");
-            setPlatforms((prev) => [...prev, p]);
-            return p;
-          }}
-        />
+        {/* 1.9.4: Supplier used to pair with Platform here - marko wants it
+            gone from this form entirely (see supplierId's own comment above).
+            Platform lost its pairing partner, so it now spans the full width
+            alone instead of leaving an empty cell next to it; Purchase
+            date + Currency (already adjacent) become the paired row below. */}
+        <div className="col-span-2">
+          <LookupSelect
+            label="Platform"
+            // 1.9.3: purchase/both only - see the matching comment in
+            // Orders.tsx's New Order form for the full reasoning.
+            options={platforms.filter((p) => p.kind === "purchase" || p.kind === "both")}
+            value={platformId}
+            onChange={setPlatformId}
+            onCreate={async (name) => {
+              const p = await api.createPlatform(name, "purchase");
+              setPlatforms((prev) => [...prev, p]);
+              return p;
+            }}
+          />
+        </div>
         <Field label="Purchase date" required>
           <input
             type="date"

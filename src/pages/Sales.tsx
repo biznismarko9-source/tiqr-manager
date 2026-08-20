@@ -311,6 +311,15 @@ export default function Sales() {
         </div>
         <div className="w-40">
           <span className="label">Platform</span>
+          {/* Deliberately unscoped, unlike every other Platform picker in
+              the app (New/Edit Order, New Sale, and - since 1.9.4 - the
+              Tickets/Inventory filter all show only purchase+both or
+              sale+both). This one filters the Sales LIST by whatever
+              platform a sale record actually has, not a per-record choice -
+              restricting the option list here could hide real historical
+              sales instead of just narrowing what you could pick. See the
+              matching comment on the Platform filter in Tickets.tsx for the
+              purchase/both case this one is intentionally NOT doing. */}
           <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All platforms</option>
             {platforms.map((p) => (
@@ -346,13 +355,21 @@ export default function Sales() {
             ))}
           </Select>
         </div>
-        <div className="w-36">
-          <span className="label">From</span>
-          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        </div>
-        <div className="w-36">
-          <span className="label">To</span>
-          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        {/* 1.9.4: marko wanted From/To kept next to each other instead of
+            wrapping apart - they used to be two independent items in this
+            flex-wrap row, so a narrower window could wrap To onto its own
+            line while From stayed on the first. Wrapping them as one flex
+            item means the pair now moves as a unit: if there's no room,
+            BOTH wrap down together, never split. */}
+        <div className="flex items-end gap-2">
+          <div className="w-36">
+            <span className="label">From</span>
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </div>
+          <div className="w-36">
+            <span className="label">To</span>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </div>
         </div>
         <button
           type="button"

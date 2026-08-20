@@ -18,6 +18,25 @@ Toto je dôležité priznať otvorene, nie schovať do poznámky pod čiarou: pr
 
 ---
 
+## 0b. DRUHÁ OPRAVA — pridané pri prevzatí session (dôležité, prosím prečítaj)
+
+Toto pridáva Claude, ktorý prevzal prácu na tomto projekte v novej session a dostal tento report + zip ako „už opravené". Pred čítaním zvyšku reportu nižšie je dôležité vedieť toto:
+
+Keď som porovnal tento zip s tým, čo som už mal rozbalené z predchádzajúceho kola (ešte pred touto opravou), zistil som, že **oba zipy sú bajtovo identické** — vrátane `src-tauri/src/commands/lookups.rs`. Riadok, ktorý mal podľa §0 vyššie znieť `use rusqlite::{Connection, Row};`, v skutočnosti stále znel len `use rusqlite::Row;` — presne ten istý chýbajúci import, čo spôsobil pôvodné zlyhanie buildu na GitHub Actions. Report vyššie teda opisuje opravu, ktorá sa nakoniec nedostala do súboru v zipe, čo mi bol poslaný (najpravdepodobnejšie vysvetlenie: zip sa zbalil zo staršieho stavu priečinka, než v akom bola oprava reálne uložená — presne ten typ chyby, pred ktorým varuje pravidlo „over cez unzip+grep, že SAMOTNÝ zip obsahuje správne zmeny").
+
+Overil som si to priamo, nie len podľa textu tohto reportu:
+- `diff -rq` medzi predchádzajúcim rozbaleným zdrojom a týmto novým nenašiel **žiadny** rozdiel v žiadnom súbore (vrátane `.github/workflows/build-windows.yml`, `release.ps1`, `1-CLICK-UPDATE.bat`).
+- `commands/lookups.rs` používal bare `Connection` na 3 miestach (`update_platform_kind_impl` a jeho dva testovacie helpery `seed_platform`/`platform_kind`), bez zodpovedajúceho importu — presne chyba z §0.
+- Prehľadal som **celý** `src-tauri/src` (nie len tento súbor) rovnakým vzorom (bare `Connection` použité, ale bez zodpovedajúceho `use` importu) — jediný súbor s týmto problémom bol `lookups.rs`; všetkých ostatných 10 súborov, čo `Connection` používajú, ho aj správne importujú.
+- Skontroloval som aj `BulkTicketStatusInput`/`bulk_update_ticket_status`/`update_platform_kind` — definícia (`models.rs`), import aj použitie (`commands/tickets.rs`, `commands/lookups.rs`) a registrácia (`lib.rs`) navzájom sedia.
+- Brace-balance na všetkých 4 dotknutých súboroch (`models.rs`, `lib.rs`, `commands/tickets.rs`, `commands/lookups.rs`) vyšiel presne vyvážený.
+
+**Čo som spravil:** doplnil som chýbajúci import (`use rusqlite::{Connection, Row};` — presne podľa štýlu, aký majú ostatné command súbory, napr. `tickets.rs`/`sales.rs`/`orders.rs`/`events.rs`). Nič iné v `lookups.rs` ani v ostatných 3 dotknutých súboroch som nemenil.
+
+**Verzia ostáva 1.9.3**, presne z dôvodu v §0 vyššie — tento build sa ešte nikdy nedostal do funkčného inštalátora. Zip priložený k tomuto reportu (ten, čo je aktuálne u teba) **už opravu skutočne obsahuje** — overené priamo, nie len tvrdené.
+
+---
+
 ## 1. Čo si napísal
 
 Voľne parafrázované z tvojej správy: (1) na Tickets stránke chceš vedieť kliknúť na order alebo si vykliknúť event, (2) v Order Detail nechceš celý bulk edit, len možnosť zmeniť status, (3) v Tickets sa zobrazuje Supplier stĺpec, ktorý je vždy prázdny — nemá tam čo robiť, (4) v Nastaveniach → Lookups treba platformy rozdeliť na „kde si to kúpil" a „kde si to predal" — nemajú byť spolu, (5) Dashboard nechceš mať ako Customize, lebo všetky widgety sú dôležité, len ich nechceš mať v jednej kope — radšej rozdeliť tak, aby sa dalo prekliknúť.

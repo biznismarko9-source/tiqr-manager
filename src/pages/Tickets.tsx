@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderRecord, Platform, Supplier, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
+import type { EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDate, formatMoney } from "../lib/format";
 import {
   Badge,
@@ -54,7 +54,6 @@ interface TicketsFilterState {
   search: string;
   status: string;
   eventId: number | "";
-  supplierId: number | "";
   platformId: number | "";
   section: string;
   dateFrom: string;
@@ -91,12 +90,10 @@ export function TicketsView({
   const cached = lastTicketsFilters.get(location.pathname);
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(params.get("code") ?? cached?.search ?? "");
   const [status, setStatus] = useState(lockedStatus ?? cached?.status ?? "");
   const [eventId, setEventId] = useState<number | "">(cached?.eventId ?? "");
-  const [supplierId, setSupplierId] = useState<number | "">(cached?.supplierId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(cached?.platformId ?? "");
   const [section, setSection] = useState(cached?.section ?? "");
   const [dateFrom, setDateFrom] = useState(cached?.dateFrom ?? "");
@@ -104,7 +101,6 @@ export function TicketsView({
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
-    api.listSuppliers().then(setSuppliers).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
   }, []);
 
@@ -113,15 +109,14 @@ export function TicketsView({
   // Detail's now context-aware Back link - finds the same search/filters
   // instead of a blank slate.
   useEffect(() => {
-    lastTicketsFilters.set(location.pathname, { search, status, eventId, supplierId, platformId, section, dateFrom, dateTo });
-  }, [location.pathname, search, status, eventId, supplierId, platformId, section, dateFrom, dateTo]);
+    lastTicketsFilters.set(location.pathname, { search, status, eventId, platformId, section, dateFrom, dateTo });
+  }, [location.pathname, search, status, eventId, platformId, section, dateFrom, dateTo]);
 
   const load = () => {
     api
       .listOrders({
         search: search || undefined,
         eventId: eventId || undefined,
-        supplierId: supplierId || undefined,
         platformId: platformId || undefined,
         status: status || undefined,
         section: section || undefined,
@@ -136,7 +131,7 @@ export function TicketsView({
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, status, eventId, supplierId, platformId, section, dateFrom, dateTo]);
+  }, [search, status, eventId, platformId, section, dateFrom, dateTo]);
 
   const summary = useMemo(() => {
     if (!orders) return null;
@@ -186,25 +181,23 @@ export function TicketsView({
           </Select>
         </div>
         <div className="w-40">
-          <span className="label">Supplier</span>
-          <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">All suppliers</option>
-            {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="w-40">
           <span className="label">Platform</span>
+          {/* 1.9.4: marko - Tickets/Inventory is purchased stock, so only
+              purchase-side platforms make sense to filter by here (a
+              sale-only platform could never match any ticket's own
+              purchase platform anyway). Same purchase/both scoping as the
+              New Order and Edit Order Platform pickers; unlike the Sales
+              list filter, which intentionally stays unscoped - see its own
+              comment in Sales.tsx for why that one's different. */}
           <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All platforms</option>
-            {platforms.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            {platforms
+              .filter((p) => p.kind === "purchase" || p.kind === "both")
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
           </Select>
         </div>
         <div className="w-32">
@@ -259,10 +252,15 @@ export function TicketsView({
         //
         // 1.9.3: Supplier column removed from this table - marko pointed
         // out it's effectively always empty at this order-grouped level of
-        // detail and doesn't belong here. Supplier itself is untouched
-        // everywhere else (the field, CSV export, Edit Order, the Supplier
-        // filter above) - this is a display-only change to this one table,
-        // same treatment Orders.tsx's list got in 1.9.2.
+        // detail and doesn't belong here (same treatment Orders.tsx's list
+        // got in 1.9.2). 1.9.4 went further: the Supplier filter that used
+        // to sit above this table and the Supplier field on Order Detail's
+        // Edit Order form are both gone too - neither Tickets/Inventory nor
+        // Order Detail can view or set an order's supplier anymore. CSV
+        // import can still set supplier_id (it resolves/creates a supplier
+        // by name from its own "supplier" column - see csv_import.rs), and
+        // CSV export still includes it. supplier_id itself and the data
+        // model are otherwise fully untouched - see the 1.9.4 report.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
