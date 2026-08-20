@@ -19,7 +19,6 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { BulkTicketEditBar } from "../components/BulkTicketEditBar";
 import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -45,8 +44,12 @@ export default function SaleDetail() {
   // time - separate from the per-line deleteTarget/deleting above.
   const [groupDeleteOpen, setGroupDeleteOpen] = useState(false);
   const [groupDeleting, setGroupDeleting] = useState(false);
-  // 1.8.3: bulk ticket actions - holds TICKET ids (s.ticketId), not sale ids,
-  // since bulk_update_tickets operates on the tickets table.
+  // 1.8.3: bulk selection - holds TICKET ids (s.ticketId), same as the
+  // per-row checkboxes below key off. 1.9.2: the bulk action that consumes
+  // this changed (payment-status only now, see SalePaymentStatusBar below)
+  // but the selection itself is untouched - a Sale line and its ticket are
+  // 1:1 here, so SalePaymentStatusBar just maps ticketId -> sale id itself
+  // rather than this state needing to change shape.
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const load = useCallback(() => {
@@ -278,9 +281,9 @@ export default function SaleDetail() {
         counted as realized.
       </p>
 
-      <BulkTicketEditBar
-        selectedIds={Array.from(selected)}
-        currency={header.currency}
+      <SalePaymentStatusBar
+        lines={lines}
+        selected={selected}
         onClear={() => setSelected(new Set())}
         onApplied={() => load()}
       />
@@ -539,6 +542,76 @@ export default function SaleDetail() {
           }
         }}
       />
+    </div>
+  );
+}
+
+/** Sale Detail's bulk action (1.9.2, sections 3/4): mark many selected,
+ * non-refunded sale lines as Paid or Pending in one click. Replaces the old
+ * shared `BulkTicketEditBar` that used to sit here (it edited Section/Row/
+ * Seat/Listing price - those stay editable, just one ticket at a time, via
+ * the per-line "Edit" button/`SaleEditModal` above and Order Detail's own
+ * Ticket Edit; `BulkTicketEditBar` itself is unchanged and still used by
+ * Order Detail). Deliberately just two buttons and no modal - the whole
+ * action is "set payment_status on the selection", nothing to configure.
+ *
+ * Refunded lines can never reach here: `selected` is only ever populated
+ * from `selectableLines` (already excludes them - see the page component
+ * above), and `bulk_update_sale_payment_status_impl` rejects a refunded id
+ * in the batch regardless, as defense in depth.
+ *
+ * Takes the page's existing `lines`/`selected` (ticket ids) rather than sale
+ * ids directly, and maps ticketId -> sale id internally (a Sale line and its
+ * ticket are 1:1), so none of the page's selection plumbing (toggleOne/
+ * toggleSelectAll/the table's checkboxes) needed to change shape to support
+ * this. */
+function SalePaymentStatusBar({
+  lines,
+  selected,
+  onClear,
+  onApplied,
+}: {
+  lines: Sale[];
+  selected: Set<number>;
+  onClear: () => void;
+  onApplied: () => void;
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = useState<"pending" | "paid" | null>(null);
+
+  const selectedSaleIds = lines.filter((l) => selected.has(l.ticketId)).map((l) => l.id);
+  if (selectedSaleIds.length === 0) return null;
+
+  const apply = async (paymentStatus: "pending" | "paid") => {
+    setSaving(paymentStatus);
+    try {
+      const updated = await api.bulkUpdateSalePaymentStatus({ saleIds: selectedSaleIds, paymentStatus });
+      toast.success(`${updated.length} sale${updated.length === 1 ? "" : "s"} marked as ${paymentStatus}`);
+      onApplied();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="mb-4 flex items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">
+      <span className="font-medium text-brand-800 dark:text-brand-300">Selected: {selectedSaleIds.length}</span>
+      <Button variant="secondary" onClick={() => apply("paid")} disabled={saving !== null}>
+        {saving === "paid" ? "Marking as Paid..." : "Mark as Paid"}
+      </Button>
+      <Button variant="secondary" onClick={() => apply("pending")} disabled={saving !== null}>
+        {saving === "pending" ? "Marking as Pending..." : "Mark as Pending"}
+      </Button>
+      <button
+        type="button"
+        className="ml-auto text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline disabled:opacity-50"
+        onClick={onClear}
+        disabled={saving !== null}
+      >
+        Clear selection
+      </button>
     </div>
   );
 }

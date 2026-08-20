@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, Supplier, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDate, formatMoney } from "../lib/format";
@@ -60,10 +60,17 @@ export function TicketsView({
   title,
   subtitle,
   lockedStatus,
+  allowCrossLinks = false,
 }: {
   title: string;
   subtitle: string;
   lockedStatus?: string;
+  /** 1.9.2 (section 1): Inventory is the one page allowed to keep
+   * Order->Order Detail / Event->Event Detail as clickable links (marko's
+   * explicit exception to the 1.9.1 "no cross-section navigation links"
+   * rule). Defaults to false so the plain `/tickets` route is unaffected -
+   * only Inventory.tsx passes true. */
+  allowCrossLinks?: boolean;
 }) {
   const toast = useToast();
   const location = useLocation();
@@ -227,9 +234,16 @@ export function TicketsView({
         // the Order code and Event name cells also individually linking
         // there - marko asked to remove every "this reference jumps me to a
         // different section" link across Orders/Tickets/Sales, and singled
-        // out Tickets by name, so this list is now a plain read-only
+        // out Tickets by name, so this list became a plain read-only
         // overview: no row click, no cell links. Open a specific order from
         // the Orders page instead.
+        // 1.9.2 (section 1): marko explicitly carved out ONE exception -
+        // Inventory (this same TicketsView, rendered with allowCrossLinks)
+        // keeps Order->Order Detail and Event->Event Detail as clickable
+        // links, since Inventory's whole purpose is jumping from "what's
+        // still unsold" straight to the order/event behind it. Tickets
+        // itself (the plain `/tickets` route, allowCrossLinks left false)
+        // stays exactly as 1.9.1 left it - no links, no row click.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
@@ -262,10 +276,22 @@ export function TicketsView({
                 return (
                   <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                     <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={o.code}>
-                      {o.code}
+                      {allowCrossLinks ? (
+                        <Link to={`/orders/${o.id}`} className="hover:underline">
+                          {o.code}
+                        </Link>
+                      ) : (
+                        o.code
+                      )}
                     </td>
                     <td className="td-c truncate" title={o.eventName}>
-                      {o.eventName}
+                      {allowCrossLinks ? (
+                        <Link to={`/events/${o.eventId}`} className="hover:underline">
+                          {o.eventName}
+                        </Link>
+                      ) : (
+                        o.eventName
+                      )}
                     </td>
                     <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.supplierName ?? undefined}>
                       {o.supplierName ?? "-"}

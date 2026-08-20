@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BulkSalePaymentStatusInput,
   BulkTicketUpdateInput,
   CsvImportResult,
   CsvPreview,
@@ -93,6 +94,9 @@ export const api = {
   createSale: (input: SaleInput) => invoke<Sale>("create_sale", { input }),
   createSalesBatch: (input: SaleBatchInput) => invoke<Sale[]>("create_sales_batch", { input }),
   updateSale: (id: number, input: SaleEditInput) => invoke<Sale>("update_sale", { id, input }),
+  /** 1.9.2: sets many sales' paymentStatus to "pending"/"paid" at once, in a single all-or-nothing transaction. Powers Sale Detail's "Mark as Paid"/"Mark as Pending" action. */
+  bulkUpdateSalePaymentStatus: (input: BulkSalePaymentStatusInput) =>
+    invoke<Sale[]>("bulk_update_sale_payment_status", { input }),
   refundSale: (id: number, reason?: string | null) => invoke<Sale>("refund_sale", { id, reason: reason || null }),
   deleteSale: (id: number) => invoke<void>("delete_sale", { id }),
   deleteSaleGroup: (id: number) => invoke<number>("delete_sale_group", { id }),

@@ -291,12 +291,24 @@ export default function Settings() {
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h3>
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                  Bulk-add orders (and their tickets) from a spreadsheet. Columns: event, purchase_date, supplier,
-                  platform, quantity, unit_price, fees, other_costs, currency, payment_status, ticket_type, section,
-                  row, seats, notes. "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it
-                  out to import without seat numbers. Everything imports in one all-or-nothing transaction.
-                </p>
+                {/* 1.9.2 (section 8): shortened from a single dense paragraph
+                    to just the 3 things marko asked to keep - the required
+                    columns, the seats note, and the all-or-nothing note.
+                    Import itself (Preview -> Validate -> Confirm -> Import,
+                    still transactional/all-or-nothing) and Download template
+                    below are unchanged - this is a text-only simplification. */}
+                <div className="mb-3 space-y-1 text-xs text-slate-400 dark:text-slate-500">
+                  <p>
+                    <span className="font-medium text-slate-500 dark:text-slate-400">Required format:</span> event,
+                    purchase_date, supplier, platform, quantity, unit_price, fees, other_costs, currency,
+                    payment_status, ticket_type, section, row, seats, notes.
+                  </p>
+                  <p>
+                    "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it out to import
+                    without seat numbers.
+                  </p>
+                  <p>Import is all-or-nothing.</p>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="primary" onClick={() => setImportOpen(true)}>
                     <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview

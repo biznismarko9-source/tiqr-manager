@@ -351,6 +351,22 @@ pub struct SaleEditInput {
     pub notes: Option<String>,
 }
 
+/// Input for `bulk_update_sale_payment_status` (1.9.2): set many sales'
+/// `payment_status` in one all-or-nothing transaction. Deliberately narrower
+/// than `BulkTicketUpdateInput` in two ways: it only ever touches
+/// `sales.payment_status` (never `tickets.status`), and `payment_status` here
+/// is restricted by the impl to "pending"/"paid" only - refunding is a
+/// separate, dedicated, one-way action (`refund_sale_impl`) and stays that
+/// way; a refunded sale can never be reached through this path, in either
+/// direction (can't be set TO refunded, and if it's already refunded the
+/// whole batch is rejected - see sales.rs tests).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkSalePaymentStatusInput {
+    pub sale_ids: Vec<i64>,
+    pub payment_status: String,
+}
+
 /// Dashboard "Inventory & Potential Profit" block - deliberately separate
 /// from `FinanceSummary` (realized numbers). Never mixed into `inventory`
 /// or `period` above, and never labelled "profit" alone - only "Potential

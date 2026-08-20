@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
@@ -170,13 +170,24 @@ export default function Orders() {
         // incidental click to auto-navigate him away), so it's now plain
         // text. The Order code link/row-click above is unaffected - opening
         // this exact order's own detail page isn't "being thrown elsewhere".
+        // 1.9.2 (section 2): removed the Supplier column entirely from this
+        // list (Supplier stays fully intact in the data model, CSV import/
+        // export, and Edit Order on Order Detail - this is a list-view-only
+        // simplification, no DB/migration change). Fixed columns here now
+        // sum to 556px (was 648px before removing Supplier's own 92px) -
+        // still comfortably inside the 808px content floor this app
+        // guarantees at its smallest supported window (1080px min-width,
+        // minus the 224px sidebar and 48px of content padding - see
+        // Sales.tsx's own colgroup comment for the full derivation), so
+        // Event (still the one unspecified <col>, absorbing whatever's left)
+        // now has a 252px floor there instead of 160px - strictly more
+        // breathing room, never a gap.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />
               <col />
               <col className="w-[84px]" />
-              <col className="w-[92px]" />
               <col className="w-[92px]" />
               <col className="w-12" />
               <col className="w-[64px]" />
@@ -188,7 +199,6 @@ export default function Orders() {
                 <th className="th-c">Order</th>
                 <th className="th-c">Event</th>
                 <th className="th-c">Date</th>
-                <th className="th-c">Supplier</th>
                 <th className="th-c">Platform</th>
                 <th className="th-c text-right">Qty</th>
                 <th className="th-c text-right">Sold</th>
@@ -219,7 +229,6 @@ export default function Orders() {
                     {o.eventName}
                   </td>
                   <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
-                  <td className="td-c truncate" title={o.supplierName ?? undefined}>{o.supplierName ?? "-"}</td>
                   <td className="td-c truncate" title={o.platformName ?? undefined}>{o.platformName ?? "-"}</td>
                   <td className="td-c text-right tabular-nums">{o.quantity}</td>
                   <td className="td-c text-right tabular-nums">
@@ -246,6 +255,26 @@ export default function Orders() {
           navigate(`/orders/${order.id}`, { state: { from: location.pathname } });
         }}
       />
+    </div>
+  );
+}
+
+/** 1.9.2 (section 6): purely visual grouping for New Order's fields - wraps a
+ * labelled cluster in its own mini 2-column grid, separated from the group
+ * above it by a thin top border (the first group in a form has none, via
+ * `first:border-t-0`). Local to this file, not promoted to ui.tsx - New
+ * Order is the only form in the app asking for this kind of sectioning so
+ * far; nothing else needs it yet. `title` is optional so the same component
+ * can wrap Payment status/Notes at the bottom (deliberately left out of
+ * marko's 4 named groups - EVENT/TICKETS/PURCHASE/SUMMARY - but still
+ * visually separated from the group above them). */
+function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
+      {title && (
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
+      )}
+      <div className="grid grid-cols-2 gap-4">{children}</div>
     </div>
   );
 }
@@ -310,13 +339,21 @@ function OrderFormModal({
 
   const qNum = parseInt(quantity, 10) || 0;
 
-  const totalPreviewCents = useMemo(() => {
+  // 1.9.2 (section 7): was a single `totalPreviewCents` number - broken into
+  // named subtotals here only so the new SUMMARY bar below can show a
+  // breakdown ("4 tickets / Purchase: X / Fees: X / Total: X"). The formula
+  // itself (fees entered per ticket, same as unit price, so both are
+  // multiplied by quantity; other costs stays a plain order-wide total) is
+  // untouched - purchaseCents + feesCents + otherCents is mathematically
+  // identical to the old totalPreviewCents value.
+  const summary = useMemo(() => {
     const up = decimalStringToCents(unitPrice) ?? 0;
     const f = decimalStringToCents(unitFees) ?? 0;
     const oc = decimalStringToCents(otherCosts) ?? 0;
-    // Fees are entered per ticket now (same as unit price) - multiply by
-    // quantity here too. Other costs stays a plain order-wide total.
-    return qNum * up + qNum * f + oc;
+    const purchaseCents = qNum * up;
+    const feesCents = qNum * f;
+    const otherCents = oc;
+    return { purchaseCents, feesCents, otherCents, totalCents: purchaseCents + feesCents + otherCents };
   }, [qNum, unitPrice, unitFees, otherCosts]);
 
   const submit = async () => {
@@ -382,180 +419,218 @@ function OrderFormModal({
 
   return (
     <Modal open={open} onClose={onClose} title="New order" width="max-w-2xl">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="col-span-2">
-          <Field label="Event" required>
-            <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">Select an event...</option>
-              {events.map((ev) => (
-                <option key={ev.id} value={ev.id}>
-                  {ev.name} {ev.eventDate ? `(${ev.eventDate})` : ""}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-
-        {/* 1.7.4: Supplier used to sit here next to Platform - removed as
-            clutter marko never uses on this form (still settable per-order
-            via Edit on Order Detail, and CSV import still recognizes a
-            "supplier" column, so nothing already using it breaks). Platform
-            now takes the full width on its own row instead of leaving an
-            empty half-row gap. */}
-        <div className="col-span-2">
-          <LookupSelect
-            label="Platform"
-            options={platforms}
-            value={platformId}
-            onChange={setPlatformId}
-            onCreate={async (name) => {
-              const p = await api.createPlatform(name, "purchase");
-              setPlatforms((prev) => [...prev, p]);
-              return p;
-            }}
-          />
-        </div>
-
-        <Field label="Purchase date" required>
-          <Input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
-        </Field>
-        <Field label="Quantity" required hint="One ticket record is generated per unit">
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-          />
-        </Field>
-
-        <Field label={`Unit purchase price (${currency})`} required>
-          <Input inputMode="decimal" placeholder="0.00" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} />
-        </Field>
-        <div>
-          {/* 1.7.3: this used to be an <input list="currency-list"> +
-              <datalist> - CURRENCIES already had 13 options (EUR/GBP/USD
-              included) but a plain text input pre-filled with "EUR" gives no
-              visible sign that anything else is pickable, so marko never
-              found them. A real <Select> makes every option visible on
-              click; "Other..." (same toggle pattern as LookupSelect's
-              "+ New") still allows typing any currency code freely. */}
-          <div className="flex items-center justify-between">
-            <span className="label mb-1">Currency</span>
-            <button
-              type="button"
-              className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-              onClick={() => setCustomCurrency((c) => !c)}
-            >
-              {customCurrency ? "Choose from list" : "Other..."}
-            </button>
-          </div>
-          {customCurrency ? (
-            <Input
-              autoFocus
-              placeholder="e.g. AED"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-            />
-          ) : (
-            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </Select>
-          )}
-        </div>
-
-        <Field label={`Unit purchase fees (${currency})`}>
-          <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} />
-        </Field>
-        <Field label="Other costs (total)" hint="Split evenly across all tickets">
-          <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
-        </Field>
-
-        {/* 1.9.1: replaces "ticket type" as a bulk-edit field on Sale/Order
-            Detail (removed per marko's request) - set once here, copied onto
-            every ticket this order generates. Same Select + "Other..."
-            freeform toggle pattern as Currency above. */}
-        <div className="col-span-2">
-          <div className="flex items-center justify-between">
-            <span className="label mb-1">Ticket type</span>
-            <button
-              type="button"
-              className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-              onClick={() => setCustomTicketType((c) => !c)}
-            >
-              {customTicketType ? "Choose from list" : "Other..."}
-            </button>
-          </div>
-          {customTicketType ? (
-            <Input
-              autoFocus
-              placeholder="e.g. Will call"
-              value={ticketType}
-              onChange={(e) => setTicketType(e.target.value)}
-            />
-          ) : (
-            <Select value={ticketType} onChange={(e) => setTicketType(e.target.value)}>
-              <option value="">Not specified</option>
-              {/* Same "keep a custom value visible" fallback as Currency above -
-                  without this, toggling back from "Other..." after typing a
-                  value not in the preset list would show a blank-looking
-                  select even though `ticketType` state is still correct. */}
-              {(ticketType && !TICKET_TYPES.includes(ticketType) ? [ticketType, ...TICKET_TYPES] : TICKET_TYPES).map(
-                (t) => (
-                  <option key={t} value={t}>
-                    {t}
+      <div className="flex flex-col gap-4">
+        <FormGroup title="Event">
+          <div className="col-span-2">
+            <Field label="Event" required>
+              <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
+                <option value="">Select an event...</option>
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.name} {ev.eventDate ? `(${ev.eventDate})` : ""}
                   </option>
-                ),
-              )}
-            </Select>
-          )}
-        </div>
+                ))}
+              </Select>
+            </Field>
+          </div>
+          <Field label="Purchase date" required>
+            <Input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
+          </Field>
+        </FormGroup>
 
-        <Field label="Section">
-          <Input value={section} onChange={(e) => setSection(e.target.value)} />
-        </Field>
-        <Field label="Row">
-          <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
-        </Field>
-
-        <div className="col-span-2">
-          <Field
-            label="Seats"
-            hint={qNum > 1 ? `One per ticket, e.g. "12-${11 + qNum}" or "12,13,14" - optional` : 'Optional, e.g. "12"'}
-          >
+        <FormGroup title="Tickets">
+          <Field label="Quantity" required hint="One ticket record is generated per unit">
             <Input
-              placeholder={qNum > 1 ? "12-15" : "12"}
-              value={seatsRaw}
-              onChange={(e) => setSeatsRaw(e.target.value)}
+              type="number"
+              min={1}
+              step={1}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
             />
           </Field>
-        </div>
+          {/* 1.9.1: replaces "ticket type" as a bulk-edit field on Sale/Order
+              Detail (removed per marko's request) - set once here, copied onto
+              every ticket this order generates. Same Select + "Other..."
+              freeform toggle pattern as Currency below. 1.9.2 (section 6):
+              now paired half-width with Quantity (same layout Currency
+              already uses next to Unit price) instead of its own full-width
+              row - part of this round's form simplification. */}
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="label mb-1">Ticket type</span>
+              <button
+                type="button"
+                className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                onClick={() => setCustomTicketType((c) => !c)}
+              >
+                {customTicketType ? "Choose from list" : "Other..."}
+              </button>
+            </div>
+            {customTicketType ? (
+              <Input
+                autoFocus
+                placeholder="e.g. Will call"
+                value={ticketType}
+                onChange={(e) => setTicketType(e.target.value)}
+              />
+            ) : (
+              <Select value={ticketType} onChange={(e) => setTicketType(e.target.value)}>
+                <option value="">Not specified</option>
+                {/* Same "keep a custom value visible" fallback as Currency below -
+                    without this, toggling back from "Other..." after typing a
+                    value not in the preset list would show a blank-looking
+                    select even though `ticketType` state is still correct. */}
+                {(ticketType && !TICKET_TYPES.includes(ticketType) ? [ticketType, ...TICKET_TYPES] : TICKET_TYPES).map(
+                  (t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ),
+                )}
+              </Select>
+            )}
+          </div>
 
-        <div className="col-span-2">
-          <Field label="Payment status">
-            <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
-              <option value="unpaid">Unpaid</option>
-              <option value="partial">Partial</option>
-              <option value="paid">Paid</option>
-            </Select>
+          <Field label="Section">
+            <Input value={section} onChange={(e) => setSection(e.target.value)} />
           </Field>
-        </div>
-        <div className="col-span-2">
-          <Field label="Notes">
-            <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <Field label="Row">
+            <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
           </Field>
-        </div>
+
+          <div className="col-span-2">
+            <Field
+              label="Seats"
+              hint={qNum > 1 ? `One per ticket, e.g. "12-${11 + qNum}" or "12,13,14" - optional` : 'Optional, e.g. "12"'}
+            >
+              <Input
+                placeholder={qNum > 1 ? "12-15" : "12"}
+                value={seatsRaw}
+                onChange={(e) => setSeatsRaw(e.target.value)}
+              />
+            </Field>
+          </div>
+        </FormGroup>
+
+        <FormGroup title="Purchase">
+          {/* 1.7.4: Supplier used to sit here next to Platform - removed as
+              clutter marko never uses on this form (still settable per-order
+              via Edit on Order Detail, and CSV import still recognizes a
+              "supplier" column, so nothing already using it breaks - 1.9.2
+              section 6 reconfirms Supplier stays out of this form). Platform
+              takes the full width on its own row instead of leaving an empty
+              half-row gap. */}
+          <div className="col-span-2">
+            <LookupSelect
+              label="Platform"
+              options={platforms}
+              value={platformId}
+              onChange={setPlatformId}
+              onCreate={async (name) => {
+                const p = await api.createPlatform(name, "purchase");
+                setPlatforms((prev) => [...prev, p]);
+                return p;
+              }}
+            />
+          </div>
+
+          <Field label={`Unit purchase price (${currency})`} required>
+            <Input inputMode="decimal" placeholder="0.00" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} />
+          </Field>
+          <div>
+            {/* 1.7.3: this used to be an <input list="currency-list"> +
+                <datalist> - CURRENCIES already had 13 options (EUR/GBP/USD
+                included) but a plain text input pre-filled with "EUR" gives no
+                visible sign that anything else is pickable, so marko never
+                found them. A real <Select> makes every option visible on
+                click; "Other..." (same toggle pattern as LookupSelect's
+                "+ New") still allows typing any currency code freely. */}
+            <div className="flex items-center justify-between">
+              <span className="label mb-1">Currency</span>
+              <button
+                type="button"
+                className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                onClick={() => setCustomCurrency((c) => !c)}
+              >
+                {customCurrency ? "Choose from list" : "Other..."}
+              </button>
+            </div>
+            {customCurrency ? (
+              <Input
+                autoFocus
+                placeholder="e.g. AED"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+              />
+            ) : (
+              <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+
+          <Field label={`Unit purchase fees (${currency})`}>
+            <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} />
+          </Field>
+          <Field label="Other costs (total)" hint="Split evenly across all tickets">
+            <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
+          </Field>
+        </FormGroup>
+
+        {/* Payment status/Notes deliberately aren't one of marko's 4 named
+            groups (EVENT/TICKETS/PURCHASE/SUMMARY) - FormGroup without a
+            title still gives them the same divider separation as a named
+            group, just no heading text. */}
+        <FormGroup>
+          <div className="col-span-2">
+            <Field label="Payment status">
+              <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
+                <option value="unpaid">Unpaid</option>
+                <option value="partial">Partial</option>
+                <option value="paid">Paid</option>
+              </Select>
+            </Field>
+          </div>
+          <div className="col-span-2">
+            <Field label="Notes">
+              <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </Field>
+          </div>
+        </FormGroup>
       </div>
 
-      <div className="mt-4 flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
-        <span className="text-slate-500 dark:text-slate-400">Total cost (preview)</span>
-        <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-          {formatMoney(totalPreviewCents, currency)}
-        </span>
+      {/* 1.9.2 (section 7): was a single "Total cost (preview)" line - kept
+          the exact same underlying calculation (see the `summary` useMemo
+          above; purchaseCents + feesCents + otherCents is mathematically
+          identical to the old totalPreviewCents value) and only improved the
+          presentation, breaking it into the ticket count and each cost
+          component the way marko's brief spelled out, e.g. "4 tickets ·
+          Purchase: EUR200.00 · Fees: EUR8.00 · Total: EUR208.00". */}
+      <div className="mt-4">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Summary</p>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+          <span>
+            {qNum} ticket{qNum === 1 ? "" : "s"}
+          </span>
+          <span className="text-slate-300 dark:text-slate-600">&middot;</span>
+          <span>Purchase: {formatMoney(summary.purchaseCents, currency)}</span>
+          <span className="text-slate-300 dark:text-slate-600">&middot;</span>
+          <span>Fees: {formatMoney(summary.feesCents, currency)}</span>
+          {summary.otherCents !== 0 && (
+            <>
+              <span className="text-slate-300 dark:text-slate-600">&middot;</span>
+              <span>Other costs: {formatMoney(summary.otherCents, currency)}</span>
+            </>
+          )}
+          <span className="text-slate-300 dark:text-slate-600">&middot;</span>
+          <span className="font-semibold text-slate-900 dark:text-slate-100">
+            Total: {formatMoney(summary.totalCents, currency)}
+          </span>
+        </div>
       </div>
 
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}

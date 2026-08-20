@@ -2,7 +2,7 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
-use crate::models::{Sale, SaleBatchInput, SaleEditInput, SaleGroup, SaleInput};
+use crate::models::{BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup, SaleInput};
 use rusqlite::{params, Connection, Row};
 use std::collections::HashSet;
 use tauri::State;
@@ -779,6 +779,108 @@ pub fn update_sale(state: State<AppState>, id: i64, input: SaleEditInput) -> App
     fetch_one(&conn, id)
 }
 
+/// Core logic behind `bulk_update_sale_payment_status` (1.9.2): set many
+/// sales' `payment_status` to "pending" or "paid" in one all-or-nothing
+/// transaction. Deliberately narrower than `update_sale_impl`: it only ever
+/// touches `payment_status` (never `sale_price_cents`/`platform_id`/etc, and
+/// never `tickets.status`), so it's safe to expose as a single small action
+/// next to Sale Detail's selection checkboxes rather than the old general
+/// Bulk Ticket Edit bar (removed from Sale Detail this round - see
+/// SaleDetail.tsx).
+///
+/// Same "validate everything, then write everything" shape as
+/// `bulk_update_tickets_impl` (tickets.rs): every id is checked to exist AND
+/// to not already be `refunded` BEFORE any row is written, so one bad id in
+/// the batch changes nothing at all rather than partially applying. A
+/// refunded sale is locked (see `update_sale_impl`'s doc comment above) - it
+/// must never be silently flipped back to pending/paid by a bulk action just
+/// because it happened to be selected alongside valid rows.
+pub(crate) fn bulk_update_sale_payment_status_impl(
+    conn: &mut Connection,
+    sale_ids: &[i64],
+    payment_status: &str,
+) -> AppResult<Vec<i64>> {
+    if sale_ids.is_empty() {
+        return Err(AppError::Validation(
+            "Select at least one sale to update".into(),
+        ));
+    }
+    if !["pending", "paid"].contains(&payment_status) {
+        return Err(AppError::Validation(
+            "Use the Refund action to refund a sale - bulk status here can only be pending or paid.".into(),
+        ));
+    }
+
+    // Dedupe so the same id selected twice (e.g. a stale double click) is
+    // applied once, not treated as two separate writes - same convention as
+    // bulk_update_tickets_impl.
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut seen = HashSet::new();
+        for &id in sale_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    let tx = conn.transaction()?;
+
+    // Validate every id exists AND is not already refunded BEFORE writing
+    // anything - all-or-nothing. One query, not one per id (same technique
+    // as bulk_update_tickets_impl's own validation step).
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing: std::collections::HashMap<i64, String> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT id, payment_status FROM sales WHERE id IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing.contains_key(id)) {
+        return Err(AppError::Validation(format!("Sale #{missing} does not exist")));
+    }
+    if existing.values().any(|status| status == "refunded") {
+        return Err(AppError::Validation(
+            "One of the selected sales has been refunded and can no longer be edited - nothing was changed. Deselect it and try again.".into(),
+        ));
+    }
+
+    let sql = format!(
+        "UPDATE sales SET payment_status = ?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    update_params.push(Box::new(payment_status.to_string()));
+    for &id in &ids {
+        update_params.push(Box::new(id));
+    }
+    let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, update_refs.as_slice())?;
+
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Sets `payment_status` (pending/paid only - see the impl's doc comment) for
+/// many sales at once, e.g. marking a whole batch as paid once a buyer
+/// settles up. Lives next to Sale Detail's selection checkboxes as a single
+/// small action - replaces the old general Bulk Ticket Edit bar there, which
+/// this round removed in favor of individual per-ticket editing for
+/// Section/Row/Seat/Listing price (see SaleDetail.tsx / BulkTicketEditBar.tsx
+/// doc comments). Returns the updated sales, refetched the same way
+/// `create_sales_batch` does.
+#[tauri::command]
+pub fn bulk_update_sale_payment_status(
+    state: State<AppState>,
+    input: BulkSalePaymentStatusInput,
+) -> AppResult<Vec<Sale>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_sale_payment_status_impl(&mut conn, &input.sale_ids, &input.payment_status)?;
+    ids.into_iter().map(|id| fetch_one(&conn, id)).collect()
+}
+
 /// Core logic behind `refund_sale`. Atomic: the sale becomes `refunded`
 /// (with a timestamp and optional reason) and its ticket returns to
 /// `available` in the same transaction, so it's never possible to observe
@@ -1000,6 +1102,15 @@ mod tests {
         conn.query_row(
             "SELECT status FROM tickets WHERE id = ?1",
             [ticket_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn sale_payment_status(conn: &Connection, sale_id: i64) -> String {
+        conn.query_row(
+            "SELECT payment_status FROM sales WHERE id = ?1",
+            [sale_id],
             |r| r.get(0),
         )
         .unwrap()
@@ -2383,5 +2494,163 @@ mod tests {
         let mut expected = vec![single_id, batch_ids[0], batch_ids[1], batch_ids[2]];
         expected.sort_unstable();
         assert_eq!(resolved, expected, "every line of every selected group, exactly once each");
+    }
+
+    // 1.9.2 (sections 3/4): the new Sale Detail "Mark as Paid"/"Mark as
+    // Pending" bulk action, replacing the old general Bulk Ticket Edit bar
+    // there. See `bulk_update_sale_payment_status_impl`'s doc comment for the
+    // "validate everything, then write everything" contract these tests
+    // check.
+
+    #[test]
+    fn bulk_update_sale_payment_status_only_changes_the_selected_sales_out_of_four() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 4);
+        let sale_ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "pending")).unwrap();
+        let selected = vec![sale_ids[0], sale_ids[1], sale_ids[2]];
+        let untouched = sale_ids[3];
+
+        let updated_ids =
+            bulk_update_sale_payment_status_impl(&mut conn, &selected, "paid").unwrap();
+        assert_eq!(updated_ids.len(), 3);
+
+        for &id in &selected {
+            assert_eq!(sale_payment_status(&conn, id), "paid");
+        }
+        assert_eq!(
+            sale_payment_status(&conn, untouched),
+            "pending",
+            "the 4th sale was never selected, so it must stay untouched"
+        );
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_rejects_a_refunded_sale_and_changes_nothing() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        let sale_ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, sale_ids[0], Some("buyer cancelled")).unwrap();
+
+        let result = bulk_update_sale_payment_status_impl(&mut conn, &sale_ids, "pending");
+        assert!(
+            result.is_err(),
+            "a batch containing a refunded sale must be rejected entirely"
+        );
+
+        assert_eq!(sale_payment_status(&conn, sale_ids[0]), "refunded");
+        for &id in &sale_ids[1..] {
+            assert_eq!(
+                sale_payment_status(&conn, id),
+                "paid",
+                "a failed bulk update must change nothing at all"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_is_all_or_nothing_with_a_missing_id() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "pending")).unwrap();
+
+        let mut selection = sale_ids.clone();
+        selection.push(999_999);
+        let result = bulk_update_sale_payment_status_impl(&mut conn, &selection, "paid");
+        assert!(result.is_err());
+
+        for &id in &sale_ids {
+            assert_eq!(
+                sale_payment_status(&conn, id),
+                "pending",
+                "a failed bulk update must change nothing at all"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_rejects_refunded_as_a_target_status() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+
+        let result = bulk_update_sale_payment_status_impl(&mut conn, &[sale_id], "refunded");
+        assert!(
+            result.is_err(),
+            "refunding must only ever happen via the dedicated refund action"
+        );
+        assert_eq!(sale_payment_status(&conn, sale_id), "paid");
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_rejects_empty_selection() {
+        let mut conn = test_conn();
+        let result = bulk_update_sale_payment_status_impl(&mut conn, &[], "paid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_dedupes_ids() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+        // sale_input() already creates it as "paid" - move it to "pending"
+        // first so the assertion below observes a real change, not a no-op.
+        bulk_update_sale_payment_status_impl(&mut conn, &[sale_id], "pending").unwrap();
+
+        let updated_ids = bulk_update_sale_payment_status_impl(
+            &mut conn,
+            &[sale_id, sale_id, sale_id],
+            "paid",
+        )
+        .unwrap();
+        assert_eq!(updated_ids, vec![sale_id]);
+        assert_eq!(sale_payment_status(&conn, sale_id), "paid");
+    }
+
+    #[test]
+    fn bulk_update_sale_payment_status_can_move_paid_sales_back_to_pending() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+
+        let updated_ids =
+            bulk_update_sale_payment_status_impl(&mut conn, &sale_ids, "pending").unwrap();
+        assert_eq!(updated_ids.len(), 2);
+        for &id in &sale_ids {
+            assert_eq!(sale_payment_status(&conn, id), "pending");
+        }
+    }
+
+    /// Mirrors tickets.rs's
+    /// `bulk_update_tickets_impl_changes_selected_fields_and_ignores_status`:
+    /// a bulk *sale* payment-status change must never touch `tickets.status`
+    /// - the ticket lifecycle (available/listed/sold/cancelled) and the
+    /// money-owed state (pending/paid/refunded) are separate state machines.
+    #[test]
+    fn bulk_update_sale_payment_status_does_not_disturb_ticket_status() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids =
+            create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        for &id in &tickets {
+            assert_eq!(ticket_status(&conn, id), "sold");
+        }
+
+        bulk_update_sale_payment_status_impl(&mut conn, &sale_ids, "pending").unwrap();
+
+        for &id in &sale_ids {
+            assert_eq!(sale_payment_status(&conn, id), "pending");
+        }
+        for &id in &tickets {
+            assert_eq!(
+                ticket_status(&conn, id),
+                "sold",
+                "a bulk payment-status change must never touch ticket status"
+            );
+        }
     }
 }

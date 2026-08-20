@@ -281,6 +281,19 @@ export interface SaleEditInput {
   notes?: string | null;
 }
 
+/** Input for `bulkUpdateSalePaymentStatus` (1.9.2) - sets many sales'
+ * paymentStatus to "pending" or "paid" in one all-or-nothing transaction.
+ * Powers Sale Detail's small "Mark as Paid" / "Mark as Pending" action,
+ * which replaced the old general Bulk Ticket Edit bar there. Refunding stays
+ * its own dedicated action (`refundSale`) - this never accepts "refunded" as
+ * a target, and a batch containing an already-refunded sale is rejected
+ * entirely rather than applied to the rest. See `bulk_update_sale_payment_
+ * status_impl` (sales.rs) for the exact contract. */
+export interface BulkSalePaymentStatusInput {
+  saleIds: number[];
+  paymentStatus: "pending" | "paid";
+}
+
 export interface Platform {
   id: number;
   name: string;
@@ -381,6 +394,32 @@ export interface RevenueTimeSeriesPoint {
    * per bucket - powers the Dashboard chart's "Sales" metric (1.7.5). */
   soldTickets: number;
   profitCents: number;
+}
+
+/** Dashboard "Customize" panel (1.9.2) - which sections are currently shown.
+ * Persisted client-side only, via the existing generic app-settings
+ * key/value mechanism (getAppSetting/setAppSetting) under the key
+ * "dashboardWidgets", as a JSON string of this shape - no new backend
+ * command, no migration. Missing keys (e.g. after an update adds a new
+ * widget) default to `true` - see Dashboard.tsx's merge-with-defaults
+ * loading logic - so an existing saved preference never accidentally hides a
+ * brand new section. `overview` covers the Activity StatCard row - marko's
+ * widget list named "Overview/KPI" and "Activity" separately, but the
+ * codebase only has one matching section (this row), so both map to this
+ * single toggle. The Revenue chart Card is a genuinely separate section and
+ * keeps its own `revenueChart` toggle - see Dashboard.tsx where each is
+ * rendered, right above the respective `widgets.*` check. */
+export interface DashboardWidgets {
+  overview: boolean;
+  revenueChart: boolean;
+  cashflow: boolean;
+  inventory: boolean;
+  potentialProfit: boolean;
+  attention: boolean;
+  recentEvents: boolean;
+  recentOrders: boolean;
+  recentSales: boolean;
+  quickActions: boolean;
 }
 
 export interface DashboardData {
