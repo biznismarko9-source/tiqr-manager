@@ -35,14 +35,28 @@ export default function OrderDetail() {
   // its last search, see lastOrdersSearch) instead of always landing on the
   // plain Orders list. Allowlisted rather than trusting state.from blindly,
   // and falls back to the pre-1.8.3 default when absent (e.g. a direct link
-  // or a page refresh). 1.9.1: Tickets and Inventory used to link into Order
-  // Detail too (and so are still accepted here for backward-compatible
-  // fallback labeling), but marko had that navigation removed entirely - see
-  // Tickets.tsx - so in practice Orders is now the only page this ever
-  // arrives from.
+  // or a page refresh).
+  // 1.9.1 removed Tickets/Inventory's links into this page entirely; 1.9.2
+  // (Inventory) and 1.9.3 (Tickets) brought them back, and 1.9.5 made the
+  // Order-code link on both unconditional - so in practice all three
+  // (Orders, Tickets, Inventory) are live entry points again, not just a
+  // fallback-labeling relic.
   const cameFrom = (location.state as { from?: string } | null)?.from;
   const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
   const backLabel = backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
+  // 1.9.6: marko clarified what he meant by wanting Tickets/Inventory to
+  // behave like Event/Order/Sale's own click-through ("more info about that
+  // object, not thrown elsewhere") - landing here still FEELS like being
+  // thrown to a different section ("Order") even though the data shown
+  // (this order's tickets) genuinely is what a Tickets/Inventory row's own
+  // detail view would show. There's no separate underlying data to show -
+  // the tickets ARE the order's tickets - so instead of a duplicate page,
+  // this eyebrow label reframes the same page contextually: arriving from
+  // Tickets/Inventory reads as "Ticket detail"/"Inventory detail", arriving
+  // from Orders (or a direct link/refresh) reads as "Order detail". The
+  // order code stays as the heading either way - it's still the one
+  // genuinely unique identifier for what's on this page.
+  const detailLabel = backTo === "/tickets" ? "Ticket detail" : backTo === "/inventory" ? "Inventory detail" : "Order detail";
 
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -114,6 +128,7 @@ export default function OrderDetail() {
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">{detailLabel}</p>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
             <Badge tone={order.paymentStatus}>{order.paymentStatus}</Badge>

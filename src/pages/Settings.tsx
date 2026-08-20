@@ -305,7 +305,11 @@ export default function Settings() {
           )}
 
           {section === "data" && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            // 1.9.5: marko wants these stacked instead of side-by-side -
+            // was `grid-cols-1 lg:grid-cols-2` (Import/Export paired on wide
+            // screens, Backup spanning below); now a single column always,
+            // so all three cards read top-to-bottom regardless of width.
+            <div className="grid grid-cols-1 gap-4">
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h3>
                 {/* 1.9.2 (section 8): shortened from a single dense paragraph
@@ -359,7 +363,7 @@ export default function Settings() {
                 </div>
               </Card>
 
-              <Card className="p-5 lg:col-span-2">
+              <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h3>
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
                   Your database lives only on this device. Back it up regularly, especially before big imports.

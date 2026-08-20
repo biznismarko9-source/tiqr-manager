@@ -191,32 +191,12 @@ export default function Dashboard() {
 
       {tab === "overview" && (
         <>
-          {/* 1.8.3 (section 11): small, secondary launcher row - every
-              button just reuses an existing route/modal via the same
-              navigate(path, {state}) convention Orders.tsx/Sales.tsx/
-              Events.tsx already use elsewhere (see their `openCreate`
-              handling); no new backend command and no new page. Kept
-              visually secondary (small, plain buttons, no card/heading) so
-              it doesn't compete with Activity below. 1.9.3: lives in the
-              Overview tab now (marko's chosen grouping) - previously always
-              shown, toggleable via Customize. */}
-          <div className="mb-5 flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
-              <IconPlus className="h-4 w-4" /> New Event
-            </Button>
-            <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
-              <IconPlus className="h-4 w-4" /> New Order
-            </Button>
-            <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
-              <IconPlus className="h-4 w-4" /> New Sale
-            </Button>
-            <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-              <IconUpload className="h-4 w-4" /> Import CSV
-            </Button>
-            <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-              <IconDownload className="h-4 w-4" /> Export CSV
-            </Button>
-          </div>
+          {/* 1.9.6: the Quick Actions row (New Event/Order/Sale/Import/
+              Export) used to open right here, above the period switcher -
+              marko wanted it lower on the page so it's not the first thing
+              you see. It now renders at the very bottom of this tab,
+              after the chart - see the matching comment down there for why
+              that's inside the data-loaded branch instead of up here. */}
 
           {/* 1.9.3: moved here from PageHeader's actions. Financials
               (Cashflow/Inventory/Potential profit) and Activity (Attention/
@@ -354,6 +334,35 @@ export default function Dashboard() {
                 </Card>
                 </>
               )}
+              {/* 1.9.6: relocated here from the top of this tab (see the
+                  comment up there) - marko wanted it lower on the page, not
+                  the first thing you see. Same buttons, same behavior
+                  (reuses existing routes/modals via navigate(path, {state}),
+                  no new backend command or page), just moved. One real
+                  side effect of the move: it's now inside the
+                  `loading || !data` branch, so it briefly doesn't render
+                  during the initial load spinner instead of always being
+                  there - a deliberate small tradeoff for "lower on the
+                  page" actually meaning lower, not just visually secondary
+                  in the same spot. Local SQLite loads are fast enough that
+                  this is a moment, not a real gap. */}
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
+                  <IconPlus className="h-4 w-4" /> New Event
+                </Button>
+                <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
+                  <IconPlus className="h-4 w-4" /> New Order
+                </Button>
+                <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
+                  <IconPlus className="h-4 w-4" /> New Sale
+                </Button>
+                <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+                  <IconUpload className="h-4 w-4" /> Import CSV
+                </Button>
+                <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+                  <IconDownload className="h-4 w-4" /> Export CSV
+                </Button>
+              </div>
             </>
           )}
 

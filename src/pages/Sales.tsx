@@ -311,22 +311,21 @@ export default function Sales() {
         </div>
         <div className="w-40">
           <span className="label">Platform</span>
-          {/* Deliberately unscoped, unlike every other Platform picker in
-              the app (New/Edit Order, New Sale, and - since 1.9.4 - the
-              Tickets/Inventory filter all show only purchase+both or
-              sale+both). This one filters the Sales LIST by whatever
-              platform a sale record actually has, not a per-record choice -
-              restricting the option list here could hide real historical
-              sales instead of just narrowing what you could pick. See the
-              matching comment on the Platform filter in Tickets.tsx for the
-              purchase/both case this one is intentionally NOT doing. */}
+          {/* 1.9.5: this used to be the one deliberately-unscoped Platform
+              picker in the app (filtering the Sales LIST by whatever
+              platform a sale record actually has, not a per-record choice).
+              marko looked at it again and wants it scoped too - now matches
+              every other Platform picker: sale+both here, purchase+both on
+              the Orders side (New/Edit Order, Tickets/Inventory filter). */}
           <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All platforms</option>
-            {platforms.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            {platforms
+              .filter((p) => p.kind === "sale" || p.kind === "both")
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
           </Select>
         </div>
         <div className="w-36">

@@ -186,9 +186,11 @@ export function TicketsView({
               purchase-side platforms make sense to filter by here (a
               sale-only platform could never match any ticket's own
               purchase platform anyway). Same purchase/both scoping as the
-              New Order and Edit Order Platform pickers; unlike the Sales
-              list filter, which intentionally stays unscoped - see its own
-              comment in Sales.tsx for why that one's different. */}
+              New Order and Edit Order Platform pickers. The Sales list
+              filter used to be the one deliberate exception (left
+              unscoped) - as of 1.9.5 it's scoped too (to sale+both, see
+              its own comment in Sales.tsx), so every Platform picker in
+              the app now follows this same purchase/sale split. */}
           <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All platforms</option>
             {platforms
@@ -250,6 +252,25 @@ export function TicketsView({
         // here specifically, not the old blanket removal. Sales stays
         // link-free either way.
         //
+        // 1.9.5: marko pointed out Order should reliably behave like Sale
+        // code on Sales or Order code on Orders - your own record's link,
+        // not something that depends on a toggle. Order Detail IS this
+        // table's own "detail page" (it's literally what a Tickets/
+        // Inventory row groups into), so the Order cell below is now an
+        // unconditional Link regardless of allowCrossLinks - same pattern
+        // as every other list's own-record column. Event stays gated by
+        // allowCrossLinks below it: jumping to Event Detail is a genuine
+        // cross-section link (a different sidebar item entirely), not this
+        // table's own record, so it keeps the toggle Sales still opts out
+        // of. In practice allowCrossLinks is true for both current callers
+        // (Tickets and Inventory), so this doesn't change what's visible
+        // today - it just makes Order's own link independent of that flag
+        // rather than accidentally riding along with it.
+        // marko clarified in 1.9.6 that this alone wasn't the full ask -
+        // the link working reliably was right, but landing on a page that
+        // still reads as "Order" felt like being thrown elsewhere either
+        // way. See OrderDetail.tsx's detailLabel for the rest of that fix.
+        //
         // 1.9.3: Supplier column removed from this table - marko pointed
         // out it's effectively always empty at this order-grouped level of
         // detail and doesn't belong here (same treatment Orders.tsx's list
@@ -291,13 +312,9 @@ export function TicketsView({
                 return (
                   <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                     <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={o.code}>
-                      {allowCrossLinks ? (
-                        <Link to={`/orders/${o.id}`} className="hover:underline">
-                          {o.code}
-                        </Link>
-                      ) : (
-                        o.code
-                      )}
+                      <Link to={`/orders/${o.id}`} className="hover:underline">
+                        {o.code}
+                      </Link>
                     </td>
                     <td className="td-c truncate" title={o.eventName}>
                       {allowCrossLinks ? (
