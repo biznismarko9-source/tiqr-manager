@@ -27,19 +27,9 @@ import type {
   Supplier,
   Ticket,
   TicketUpdateInput,
-  Payment,
-  PaymentInput,
-  PaymentSummary,
 } from "./types";
 
 export const api = {
-  // Payments 2.0
-  getPaymentSummaryForSale: (saleGroupKey: string) => invoke<PaymentSummary>("get_payment_summary_for_sale", { saleGroupKey }),
-  getPaymentSummaryForOrder: (orderId: number) => invoke<PaymentSummary>("get_payment_summary_for_order", { orderId }),
-  createPayment: (input: PaymentInput) => invoke<Payment>("create_payment", { input }),
-  updatePayment: (id: number, input: PaymentInput) => invoke<Payment>("update_payment", { id, input }),
-  deletePayment: (id: number) => invoke<void>("delete_payment", { id }),
-
   // Events
   listEvents: (search?: string) => invoke<EventWithStats[]>("list_events", { search }),
   getEvent: (id: number) => invoke<EventWithStats>("get_event", { id }),

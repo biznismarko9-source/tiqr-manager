@@ -31,7 +31,7 @@ const BASE_SQL: &str = "
 /// NULL batch_id (an ordinary single-ticket sale) is its own group of one -
 /// `'single:' || id` can never collide with a real batch_id, which is always
 /// a `SAL-xxxxxx` code (see migration 003).
-pub(crate) const GROUP_KEY_EXPR: &str = "COALESCE(s.batch_id, 'single:' || s.id)";
+const GROUP_KEY_EXPR: &str = "COALESCE(s.batch_id, 'single:' || s.id)";
 
 fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
     let sale_price_cents: i64 = row.get("sale_price_cents")?;
@@ -195,7 +195,7 @@ pub fn get_sale(state: State<AppState>, id: i64) -> AppResult<Sale> {
     fetch_one(&conn, id)
 }
 
-pub(crate) const GROUP_BASE_SELECT: &str = "
+const GROUP_BASE_SELECT: &str = "
     SELECT
       MIN(s.id) as id,
       MIN(s.code) as code,
@@ -828,60 +828,24 @@ pub(crate) fn bulk_update_sale_payment_status_impl(
 
     // Validate every id exists AND is not already refunded BEFORE writing
     // anything - all-or-nothing. One query, not one per id (same technique
-    // as bulk_update_tickets_impl's own validation step). Also pulls
-    // batch_id/sale_price_cents/currency now (2.0.0) - not for the status
-    // update itself, but to compute which sale GROUP(s) - see
-    // payments::GROUP_KEY_EXPR - the selection touches and how much of each
-    // this bulk action is worth, for the Mark as Paid/Pending shortcut below.
+    // as bulk_update_tickets_impl's own validation step).
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    struct SelectedSaleRow {
-        payment_status: String,
-        batch_id: Option<String>,
-        sale_price_cents: i64,
-        currency: String,
-    }
-    let existing: std::collections::HashMap<i64, SelectedSaleRow> = {
+    let existing: std::collections::HashMap<i64, String> = {
         let mut stmt = tx.prepare(&format!(
-            "SELECT id, payment_status, batch_id, sale_price_cents, currency FROM sales WHERE id IN ({placeholders})"
+            "SELECT id, payment_status FROM sales WHERE id IN ({placeholders})"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                SelectedSaleRow {
-                    payment_status: r.get(1)?,
-                    batch_id: r.get(2)?,
-                    sale_price_cents: r.get(3)?,
-                    currency: r.get(4)?,
-                },
-            ))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?;
         rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?
     };
     if let Some(missing) = ids.iter().copied().find(|id| !existing.contains_key(id)) {
         return Err(AppError::Validation(format!("Sale #{missing} does not exist")));
     }
-    if existing.values().any(|row| row.payment_status == "refunded") {
+    if existing.values().any(|status| status == "refunded") {
         return Err(AppError::Validation(
             "One of the selected sales has been refunded and can no longer be edited - nothing was changed. Deselect it and try again.".into(),
         ));
-    }
-
-    // 2.0.0: which sale group(s) (COALESCE(batch_id, 'single:'||id) - the
-    // exact same key payments.rs itself computes) the selected lines belong
-    // to, and how much of each group's total this specific selection is
-    // worth, grouped by currency too (a batch's own lines aren't guaranteed
-    // to share one currency - see GROUP_BASE_SELECT). In the ordinary case
-    // (selecting rows within one open Sale Detail page) this is exactly one
-    // group; the loop below still handles a selection spanning several
-    // groups/currencies correctly if it ever happens.
-    let mut group_amounts: std::collections::HashMap<(String, String), i64> = std::collections::HashMap::new();
-    for &id in &ids {
-        let row = &existing[&id];
-        let group_key = row
-            .batch_id
-            .clone()
-            .unwrap_or_else(|| format!("single:{id}"));
-        *group_amounts.entry((group_key, row.currency.clone())).or_insert(0) += row.sale_price_cents;
     }
 
     let sql = format!(
@@ -894,29 +858,6 @@ pub(crate) fn bulk_update_sale_payment_status_impl(
     }
     let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
     tx.execute(&sql, update_refs.as_slice())?;
-
-    // 2.0.0: the shortcut itself. "Paid" records one payment per distinct
-    // group+currency covering exactly what this selection is worth; if that
-    // would overpay the group (e.g. it already has a manually-entered
-    // payment covering some of it), apply_paid_shortcut_for_sale_group_impl
-    // rejects it, and - since nothing here has been committed yet - the
-    // whole bulk action (including the payment_status flip above) rolls
-    // back with it, never applying "half" of the request. "Pending" only
-    // removes shortcut-created payments for the group(s) touched, and
-    // refuses per-group if real (non-shortcut) payment history exists there
-    // instead of guessing what's safe to delete.
-    if payment_status == "paid" {
-        for ((group_key, currency), amount_cents) in &group_amounts {
-            crate::commands::payments::apply_paid_shortcut_for_sale_group_impl(&tx, group_key, *amount_cents, currency)?;
-        }
-    } else {
-        let mut reverted_groups: HashSet<String> = HashSet::new();
-        for (group_key, _currency) in group_amounts.keys() {
-            if reverted_groups.insert(group_key.clone()) {
-                crate::commands::payments::revert_paid_shortcut_for_sale_group_impl(&tx, group_key)?;
-            }
-        }
-    }
 
     tx.commit()?;
     Ok(ids)

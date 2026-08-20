@@ -6,7 +6,6 @@ pub mod dashboard;
 pub mod events;
 pub mod lookups;
 pub mod orders;
-pub mod payments;
 pub mod pulls;
 pub mod sales;
 pub mod settings;

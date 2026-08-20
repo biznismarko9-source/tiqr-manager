@@ -19,7 +19,6 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { PaymentsSection } from "../components/PaymentsSection";
 import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -288,8 +287,6 @@ export default function SaleDetail() {
         onClear={() => setSelected(new Set())}
         onApplied={() => load()}
       />
-
-      <PaymentsSection target={{ type: "sale", key: lines[0].batchId ?? `single:${lines[0].id}` }} refreshKey={lines.length} />
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets in this sale ({lines.length})</h2>
       {lines.length === 0 ? (
