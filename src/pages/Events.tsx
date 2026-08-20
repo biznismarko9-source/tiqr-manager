@@ -279,6 +279,14 @@ export function EventFormModal({
 
   return (
     <Modal open={open} onClose={onClose} title={initial ? "Edit event" : "New event"}>
+      {/* 1.9.10: reordered per marko's spec - was Event name / [Category,
+          Venue] / [Event date, City] / Country (full) / Status (full) /
+          Notes (full), 6 rows. Now Event name / [Category, Country] /
+          [Event date, City] / [Status, Venue] / Notes, 5 rows - Country
+          moved up to pair with Category, Status and Venue now pair with
+          each other instead of each sitting alone on a full-width row.
+          Event date/City and Notes are unchanged. No fields added or
+          removed, purely a layout reorder. */}
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2">
           <Field label="Event name" required>
@@ -327,8 +335,8 @@ export function EventFormModal({
             </Select>
           )}
         </Field>
-        <Field label="Venue">
-          <Input value={form.venue ?? ""} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
+        <Field label="Country">
+          <Input value={form.country ?? ""} onChange={(e) => setForm({ ...form, country: e.target.value })} />
         </Field>
         <Field label="Event date">
           <Input
@@ -340,21 +348,19 @@ export function EventFormModal({
         <Field label="City">
           <Input value={form.city ?? ""} onChange={(e) => setForm({ ...form, city: e.target.value })} />
         </Field>
-        <Field label="Country">
-          <Input value={form.country ?? ""} onChange={(e) => setForm({ ...form, country: e.target.value })} />
+        <Field label="Status">
+          <Select
+            value={form.status ?? "upcoming"}
+            onChange={(e) => setForm({ ...form, status: e.target.value as EventStatus })}
+          >
+            <option value="upcoming">Upcoming</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </Select>
         </Field>
-        <div className="col-span-2">
-          <Field label="Status">
-            <Select
-              value={form.status ?? "upcoming"}
-              onChange={(e) => setForm({ ...form, status: e.target.value as EventStatus })}
-            >
-              <option value="upcoming">Upcoming</option>
-              <option value="completed">Completed</option>
-              <option value="cancelled">Cancelled</option>
-            </Select>
-          </Field>
-        </div>
+        <Field label="Venue">
+          <Input value={form.venue ?? ""} onChange={(e) => setForm({ ...form, venue: e.target.value })} />
+        </Field>
         <div className="col-span-2">
           <Field label="Notes">
             <Textarea

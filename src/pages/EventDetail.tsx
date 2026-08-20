@@ -126,42 +126,10 @@ export default function EventDetail() {
         <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
       </div>
 
-      {/* 1.8.3 (section 14): same tinted-zone treatment as the Dashboard's
-          "Inventory & Potential Profit" block, just scoped to this one
-          event - deliberately never called "Profit" alone, so it can't be
-          mistaken for the realized Profit stat above. */}
-      <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-          Potential Profit
-        </p>
-        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-          This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
-        </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Inventory cost"
-            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
-            sub="What unsold tickets cost you"
-          />
-          <StatCard
-            label="Listing value"
-            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
-            sub="Unsold tickets that have a listing price"
-          />
-          <StatCard
-            label="Potential profit"
-            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
-            sub="Listing value minus inventory cost"
-          />
-        </div>
-        {missingListingPriceCount > 0 && (
-          <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
-            {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
-            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what
-            full inventory could be worth once priced.
-          </p>
-        )}
-      </div>
+      {/* 1.9.10: the "Potential Profit" tinted zone used to sit right here,
+          between the realized Profit/Margin/ROI stats and Orders - marko
+          wanted it moved all the way down, below both Orders and Tickets.
+          See the bottom of this component for where it landed. */}
 
       {event.notes && (
         <Card className="mb-8 p-4">
@@ -259,6 +227,45 @@ export default function EventDetail() {
           </table>
         </div>
       )}
+
+      {/* 1.8.3 (section 14): same tinted-zone treatment as the Dashboard's
+          "Inventory & Potential Profit" block, just scoped to this one
+          event - deliberately never called "Profit" alone, so it can't be
+          mistaken for the realized Profit stat up near the top. 1.9.10:
+          relocated to the bottom of the page (below Orders and Tickets) per
+          marko - same content and calculation, purely a position change. */}
+      <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+          Potential Profit
+        </p>
+        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Inventory cost"
+            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
+            sub="What unsold tickets cost you"
+          />
+          <StatCard
+            label="Listing value"
+            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
+            sub="Unsold tickets that have a listing price"
+          />
+          <StatCard
+            label="Potential profit"
+            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
+            sub="Listing value minus inventory cost"
+          />
+        </div>
+        {missingListingPriceCount > 0 && (
+          <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+            {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
+            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what
+            full inventory could be worth once priced.
+          </p>
+        )}
+      </div>
 
       <EventFormModal
         open={editOpen}

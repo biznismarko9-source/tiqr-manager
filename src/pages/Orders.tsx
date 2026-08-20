@@ -178,23 +178,32 @@ export default function Orders() {
         // 92px).
         // 1.9.4: marko pointed out Platform names were getting truncated
         // ("Fnac Spect...") with room to spare elsewhere, so Platform grew
-        // 92px -> 160px (+68px, enough for ~20 characters at this cell's
-        // font/padding - covers every platform name in this app's own seed
-        // data, e.g. "Fnac Spectacles"). Fixed columns now sum to 624px -
-        // still well inside the 808px content floor this app guarantees at
-        // its smallest supported window (1080px min-width, minus the 224px
-        // sidebar and 48px of content padding - see Sales.tsx's own colgroup
-        // comment for the full derivation), so Event (still the one
-        // unspecified <col>, absorbing whatever's left) now has a 184px
-        // floor there instead of 252px - less than before, but still ample
-        // for real event names, and it keeps its own title tooltip (below)
-        // for the rare one that still truncates.
+        // 92px -> 160px. Fixed columns summed to 624px then, Event's floor
+        // 184px.
+        // 1.9.10: marko added a Notes column (between Date and Platform,
+        // truncate + title tooltip like every other text column here - he
+        // didn't ask for full-text visibility the way he did for Pulls'
+        // Seats/More info, so this follows the normal pattern instead of
+        // that one). Fixed columns now sum to 754px (92 Order + 84 Date +
+        // 130 Notes + 160 Platform + 48 Qty + 64 Sold + 88 Total cost + 88
+        // Payment), leaving Event (still the one unspecified <col>) only a
+        // 54px floor at this app's absolute 808px worst-case window width -
+        // genuinely too tight to show much of an event name. Rather than
+        // shrink Notes or Platform back down to force-fit the old 808px
+        // floor, this table now accepts needing horizontal scroll (already
+        // handled by the existing overflow-x-auto below) somewhat below
+        // where it used to - the same tradeoff already made for Pulls this
+        // round for the same underlying reason: more columns/more width
+        // asked for than the original floor was sized for. In normal usage
+        // (wider than the absolute minimum) this isn't noticeable; it only
+        // matters at the smallest supported window.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />
               <col />
               <col className="w-[84px]" />
+              <col className="w-[130px]" />
               <col className="w-[160px]" />
               <col className="w-12" />
               <col className="w-[64px]" />
@@ -206,6 +215,7 @@ export default function Orders() {
                 <th className="th-c">Order</th>
                 <th className="th-c">Event</th>
                 <th className="th-c">Date</th>
+                <th className="th-c">Notes</th>
                 <th className="th-c">Platform</th>
                 <th className="th-c text-right">Qty</th>
                 <th className="th-c text-right">Sold</th>
@@ -236,6 +246,9 @@ export default function Orders() {
                     {o.eventName}
                   </td>
                   <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
+                  <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.notes ?? undefined}>
+                    {o.notes || "-"}
+                  </td>
                   <td className="td-c truncate" title={o.platformName ?? undefined}>{o.platformName ?? "-"}</td>
                   <td className="td-c text-right tabular-nums">{o.quantity}</td>
                   <td className="td-c text-right tabular-nums">

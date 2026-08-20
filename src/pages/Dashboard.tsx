@@ -204,8 +204,16 @@ export default function Dashboard() {
               each one's own comment below) - the period filter never
               affected them even before this round, it just used to sit
               next to sections it had no effect on. Only the StatCards/chart
-              below actually use it, so it now lives only where it matters. */}
-          <div className="mb-4 flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+              below actually use it, so it now lives only where it matters.
+              1.9.10: unlike the tab switcher up in PageHeader's actions
+              (which sits inside a flex header row that naturally sizes it),
+              this box is a standalone block-level element in the page's own
+              flow, so it was stretching to the full content width by
+              default - its bordered/background "rectangle" extended well
+              past the last button (Custom) into empty space. marko wanted
+              it to end right at Custom instead; w-fit makes the box hug its
+              buttons rather than fill the row. */}
+          <div className="mb-4 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
             {PERIODS.map((p) => (
               <button
                 key={p.key}

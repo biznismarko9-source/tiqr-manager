@@ -182,23 +182,35 @@ export default function Pulls() {
         // - marko said no, he wants them as their own columns instead (they
         // were getting lost stacked under the event name), so Event went
         // back to just name + date, and Seats/More info are now two
-        // dedicated columns of their own. Seats shows via the same
-        // formatSeatLocation helper Sale Detail uses (falls back to
-        // "General admission" when Section/Row/Seat are all blank). The old
-        // manual "Deadline" column is still gone - replaced by a warning
-        // that appears automatically starting WARNING_WINDOW_DAYS before the
-        // event date and disappears the moment transfer is marked done.
-        // Row click opens the edit modal (no separate Detail page exists for
-        // Pull, unlike Order/Sale) - guarded so a click on the checkbox
-        // doesn't also open it.
+        // dedicated columns of their own. 1.9.10: marko wanted the exact
+        // same treatment applied to Date - it was still stacked under the
+        // event name in the Event cell, so it's now its own column too;
+        // Event is just the name now. Seats/More info also got noticeably
+        // wider this round (200px/240px, up from 92px/136px) so a full
+        // "Sec 102 · Row 5 · Seat 12"-style location or a typical email in
+        // More info shows completely instead of truncating - marko was
+        // explicit that seeing it all matters more here than fitting the
+        // narrowest supported window without a scrollbar, so unlike every
+        // other table in the app, this one can now need horizontal scroll
+        // (already handled below via overflow-x-auto) below roughly
+        // 1100px, not just below the usual 808px floor. Seats shows via
+        // the same formatSeatLocation helper Sale Detail uses (falls back
+        // to "General admission" when Section/Row/Seat are all blank). The
+        // old manual "Deadline" column is still gone - replaced by a
+        // warning that appears automatically starting WARNING_WINDOW_DAYS
+        // before the event date and disappears the moment transfer is
+        // marked done. Row click opens the edit modal (no separate Detail
+        // page exists for Pull, unlike Order/Sale) - guarded so a click on
+        // the checkbox doesn't also open it.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[80px]" />
               <col className="w-[92px]" />
               <col />
-              <col className="w-[92px]" />
-              <col className="w-[136px]" />
+              <col className="w-[84px]" />
+              <col className="w-[200px]" />
+              <col className="w-[240px]" />
               <col className="w-8" />
               <col className="w-[84px]" />
               <col className="w-[72px]" />
@@ -210,6 +222,7 @@ export default function Pulls() {
                 <th className="th-c">Pull</th>
                 <th className="th-c">For</th>
                 <th className="th-c">Event</th>
+                <th className="th-c">Date</th>
                 <th className="th-c">Seats</th>
                 <th className="th-c">More info</th>
                 <th className="th-c text-right">Ks</th>
@@ -244,15 +257,11 @@ export default function Pulls() {
                     <td className="td-c truncate align-top" title={p.buyerName}>
                       {p.buyerName}
                     </td>
-                    <td className="td-c align-top py-2">
-                      <div className="truncate font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
-                        {p.eventName}
-                      </div>
-                      {p.eventDate && (
-                        <div className="truncate text-xs text-slate-400 dark:text-slate-500">
-                          {formatDate(p.eventDate)}
-                        </div>
-                      )}
+                    <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
+                      {p.eventName}
+                    </td>
+                    <td className="td-c truncate align-top whitespace-nowrap">
+                      {p.eventDate ? formatDate(p.eventDate) : "-"}
                     </td>
                     <td
                       className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"

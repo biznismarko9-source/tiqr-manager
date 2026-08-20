@@ -196,21 +196,27 @@ export default function OrderDetail() {
         </Card>
       </div>
 
+      {/* 1.9.10: marko wanted Platform/Notes/Currency combined into one row
+          in that order - was Platform+Currency on one row with Notes below
+          as its own full-width, conditionally-shown block. Notes now
+          always renders (with a "-" fallback) to match how Platform/
+          Currency already behave, rather than sometimes leaving this row
+          with only 2 of 3 cells filled. Long notes still wrap
+          (whitespace-pre-wrap) instead of truncating - just inside a
+          narrower cell than before. */}
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
         <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
         </div>
         <div>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Notes</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{order.notes || "-"}</p>
+        </div>
+        <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
         </div>
-        {order.notes && (
-          <div className="col-span-2 sm:col-span-3">
-            <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Notes</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{order.notes}</p>
-          </div>
-        )}
       </Card>
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
