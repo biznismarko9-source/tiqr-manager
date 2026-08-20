@@ -178,12 +178,14 @@ export default function Pulls() {
         />
       ) : (
         // Same table-fixed + colgroup convention as Orders.tsx/Sales.tsx.
-        // 1.9.8: the Event column now also carries seat location (Sec/Row/
-        // Seat, via the same formatSeatLocation helper Sale Detail uses) and
-        // More info (marko: "90% casu sa tu dava mail, na ktorom su
-        // listky" - important enough to show, not just searchable), so it's
-        // a taller, denser cell than a plain single-line Order/Sales row.
-        // The old manual "Deadline" column is gone - replaced by a warning
+        // 1.9.8 first put seat location and More info inside the Event cell
+        // - marko said no, he wants them as their own columns instead (they
+        // were getting lost stacked under the event name), so Event went
+        // back to just name + date, and Seats/More info are now two
+        // dedicated columns of their own. Seats shows via the same
+        // formatSeatLocation helper Sale Detail uses (falls back to
+        // "General admission" when Section/Row/Seat are all blank). The old
+        // manual "Deadline" column is still gone - replaced by a warning
         // that appears automatically starting WARNING_WINDOW_DAYS before the
         // event date and disappears the moment transfer is marked done.
         // Row click opens the edit modal (no separate Detail page exists for
@@ -192,20 +194,24 @@ export default function Pulls() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
-              <col className="w-[92px]" />
-              <col className="w-[120px]" />
-              <col />
-              <col className="w-10" />
-              <col className="w-[104px]" />
               <col className="w-[80px]" />
+              <col className="w-[92px]" />
+              <col />
+              <col className="w-[92px]" />
+              <col className="w-[136px]" />
+              <col className="w-8" />
               <col className="w-[84px]" />
-              <col className="w-[56px]" />
+              <col className="w-[72px]" />
+              <col className="w-[76px]" />
+              <col className="w-11" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th-c">Pull</th>
                 <th className="th-c">For</th>
                 <th className="th-c">Event</th>
+                <th className="th-c">Seats</th>
+                <th className="th-c">More info</th>
                 <th className="th-c text-right">Ks</th>
                 <th className="th-c">Platform</th>
                 <th className="th-c text-right">Fee</th>
@@ -217,7 +223,6 @@ export default function Pulls() {
               {pulls.map((p) => {
                 const daysLeft = p.eventDate ? daysUntil(p.eventDate) : null;
                 const seatLocation = formatSeatLocation(p.section, p.rowLabel, p.seat);
-                const hasSeatInfo = p.section || p.rowLabel || p.seat;
                 const showWarning = !p.transferDone && daysLeft !== null && daysLeft <= WARNING_WINDOW_DAYS;
                 const warningText = daysLeft !== null ? warningLabel(daysLeft) : "";
                 const warningTone = daysLeft !== null && daysLeft <= 0 ? "red" : "amber";
@@ -243,16 +248,23 @@ export default function Pulls() {
                       <div className="truncate font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
                         {p.eventName}
                       </div>
-                      <div className="truncate text-xs text-slate-400 dark:text-slate-500">
-                        {p.eventDate && formatDate(p.eventDate)}
-                        {p.eventDate && hasSeatInfo && " · "}
-                        {hasSeatInfo && seatLocation}
-                      </div>
-                      {p.moreInfo && (
-                        <div className="truncate text-xs text-slate-400 dark:text-slate-500" title={p.moreInfo}>
-                          {p.moreInfo}
+                      {p.eventDate && (
+                        <div className="truncate text-xs text-slate-400 dark:text-slate-500">
+                          {formatDate(p.eventDate)}
                         </div>
                       )}
+                    </td>
+                    <td
+                      className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                      title={seatLocation}
+                    >
+                      {seatLocation}
+                    </td>
+                    <td
+                      className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                      title={p.moreInfo ?? undefined}
+                    >
+                      {p.moreInfo || "-"}
                     </td>
                     <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
                     <td className="td-c truncate align-top" title={p.platformName ?? undefined}>
