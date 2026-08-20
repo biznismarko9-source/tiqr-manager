@@ -615,7 +615,6 @@ function OrderFormModal({
             <Field label="Payment status">
               <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
                 <option value="unpaid">Unpaid</option>
-                <option value="partial">Partial</option>
                 <option value="paid">Paid</option>
               </Select>
             </Field>

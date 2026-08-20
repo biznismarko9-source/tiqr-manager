@@ -18,6 +18,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
+import { PaymentsSection } from "../components/PaymentsSection";
 import { IconArrowLeft, IconPencil, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { TicketEditModal } from "./Tickets";
@@ -218,6 +219,8 @@ export default function OrderDetail() {
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
         </div>
       </Card>
+
+      <PaymentsSection target={{ type: "order", orderId: order.id }} />
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
       <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -601,7 +604,6 @@ function OrderEditModal({
           <Field label="Payment status">
             <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
               <option value="unpaid">Unpaid</option>
-              <option value="partial">Partial</option>
               <option value="paid">Paid</option>
             </Select>
           </Field>

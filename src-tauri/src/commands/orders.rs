@@ -362,24 +362,60 @@ pub(crate) fn insert_order_with_tickets(
     Ok(order_id)
 }
 
+/// 2.0.0: "partial" is no longer a directly-selectable target for a new
+/// order's payment_status - it's a derived state now (see payments.rs's
+/// module doc comment), only ever the natural result of real, itemized
+/// payments not covering the whole total. This check is deliberately only
+/// called from create_order_impl, never from insert_order_with_tickets/
+/// validate_order_input (shared with CSV import, which stays exactly as it
+/// was - untouched by this version).
+fn validate_creatable_payment_status(payment_status: &Option<String>) -> AppResult<()> {
+    if let Some(status) = payment_status {
+        if !["unpaid", "paid"].contains(&status.as_str()) {
+            return Err(AppError::Validation(
+                "Payment status here can only be Unpaid or Paid - Partial happens automatically once real payments are recorded, it isn't something you set directly.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn create_order_impl(conn: &Connection, input: &OrderInput) -> AppResult<i64> {
+    validate_creatable_payment_status(&input.payment_status)?;
+    let order_id = insert_order_with_tickets(conn, input, false)?;
+    // A brand new order has no payment history yet, so "Paid" always means
+    // "record one shortcut payment for the whole total" - no outstanding
+    // lookup needed the way update_order_impl's shortcut needs one.
+    if input.payment_status.as_deref() == Some("paid") {
+        let total_cost_cents =
+            input.unit_price_cents * input.quantity + input.fees_cents + input.other_costs_cents;
+        crate::commands::payments::apply_paid_shortcut_for_order_impl(conn, order_id, total_cost_cents, &input.currency)?;
+    }
+    Ok(order_id)
+}
+
 #[tauri::command]
 pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Order> {
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
-    let order_id = insert_order_with_tickets(&tx, &input, false)?;
+    let order_id = create_order_impl(&tx, &input)?;
     tx.commit()?;
     fetch_one(&conn, order_id)
 }
 
-#[tauri::command]
-pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInput) -> AppResult<Order> {
     if input.purchase_date.trim().is_empty() {
         return Err(AppError::Validation("Purchase date is required".into()));
     }
-    if !["unpaid", "partial", "paid"].contains(&input.payment_status.as_str()) {
-        return Err(AppError::Validation("Invalid payment status".into()));
+    // 2.0.0: "partial" is no longer a directly-selectable target here - see
+    // validate_creatable_payment_status's doc comment above. This dropdown
+    // only offers Unpaid/Paid going forward - see the matching change in
+    // OrderDetail.tsx's edit form.
+    if !["unpaid", "paid"].contains(&input.payment_status.as_str()) {
+        return Err(AppError::Validation(
+            "Payment status here can only be Unpaid or Paid - Partial happens automatically once real payments are recorded, it isn't something you set directly.".into(),
+        ));
     }
-    let conn = state.db.lock().unwrap();
     let changed = conn.execute(
         "UPDATE orders SET supplier_id=?1, platform_id=?2, purchase_date=?3, currency=?4,
          payment_status=?5, notes=?6, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -397,7 +433,43 @@ pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> A
     if changed == 0 {
         return Err(AppError::NotFound(format!("Order #{id} not found")));
     }
-    fetch_one(&conn, id)
+
+    // 2.0.0: the Mark as Paid/Unpaid shortcut - see payments.rs's module doc
+    // comment for why this exists instead of removing the field entirely.
+    // "Paid" records one shortcut payment for exactly what's currently
+    // outstanding (bringing received up to the total); if the order already
+    // has payments in a different currency than itself (summary can't
+    // compute a clean outstanding number then), this refuses rather than
+    // guessing. "Unpaid" reverts (deletes) only shortcut-created payments -
+    // see revert_paid_shortcut_for_order_impl - and refuses if real payment
+    // history exists instead of deleting it.
+    if input.payment_status == "paid" {
+        let summary = crate::commands::payments::compute_payment_summary_for_order_impl(conn, id)?;
+        match summary.outstanding_cents {
+            Some(outstanding) if outstanding > 0 => {
+                crate::commands::payments::apply_paid_shortcut_for_order_impl(conn, id, outstanding, &input.currency)?;
+            }
+            Some(_) => {} // already fully paid - nothing to record
+            None => {
+                return Err(AppError::Validation(
+                    "This order already has payments recorded in a different currency than the order itself - review its Payments history instead of using this shortcut.".into(),
+                ));
+            }
+        }
+    } else {
+        crate::commands::payments::revert_paid_shortcut_for_order_impl(conn, id)?;
+    }
+
+    fetch_one(conn, id)
+}
+
+#[tauri::command]
+pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let order = update_order_impl(&tx, id, &input)?;
+    tx.commit()?;
+    Ok(order)
 }
 
 fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {

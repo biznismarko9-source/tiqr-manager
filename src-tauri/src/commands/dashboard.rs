@@ -441,25 +441,45 @@ pub(crate) fn get_dashboard_impl(
         pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
-    // ---- Cashflow (1.9.0) -------------------------------------------------
-    // Money actually collected from buyers vs. still owed to be collected -
-    // built entirely from the existing sales.payment_status field, no new
-    // table. Only ONE new query here (paid_cents): outstanding_cents reuses
-    // pending_sales_amount_cents computed just above (same value, same
-    // query, no reason to ask SQLite twice) and revenue/profit reuse the
-    // already-computed `inventory` FinanceSummary (all-time, realized,
-    // refund-excluded - exactly the scope this section needs). Not
+    // ---- Cashflow (1.9.0, rewired for the real ledger in 2.0.0) -----------
+    // Money actually collected from buyers vs. still owed to be collected.
+    // Through 1.9.x this trusted sales.payment_status='paid' as a binary
+    // yes/no - 2.0.0 replaces that with a real SUM over the payments table,
+    // so a sale that's only partially paid now shows its true partial
+    // amount here instead of counting as either fully paid or fully
+    // outstanding. paid_cents/outstanding_cents keep their names (the
+    // frontend contract is unchanged) - only what computes them changes.
+    // Revenue/profit still reuse the already-computed `inventory`
+    // FinanceSummary (all-time, realized, refund-excluded). Not
     // period-filtered, same "right now" rule as pending_sales_amount_cents.
-    let paid_cents: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(sale_price_cents),0) FROM sales WHERE payment_status = 'paid' AND currency = ?1",
+    //
+    // received_cents only counts a payment toward a sale group while that
+    // group still has at least one non-refunded line - the same
+    // realized-only exclusion GROUP_BASE_SELECT already applies to revenue
+    // itself (see sales.rs). Without this, refunding a sale would zero out
+    // Revenue but leave its old payment sitting in Received forever,
+    // breaking the exact invariant the tests below already pin down: a
+    // refund must drop BOTH paid and outstanding to zero for that sale, not
+    // just outstanding.
+    let received_cents: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(pay.amount_cents), 0)
+         FROM payments pay
+         WHERE pay.currency = ?1
+           AND pay.sale_group_key IN (
+             SELECT COALESCE(s.batch_id, 'single:' || s.id)
+             FROM sales s
+             WHERE s.payment_status != 'refunded' AND s.currency = ?1
+           )",
         [&primary_currency],
         |r| r.get(0),
     )?;
+    let paid_cents = received_cents.min(inventory.revenue_cents);
+    let outstanding_cents = (inventory.revenue_cents - received_cents).max(0);
     let cashflow = CashflowSummary {
         revenue_cents: inventory.revenue_cents,
         profit_cents: inventory.profit_cents,
         paid_cents,
-        outstanding_cents: pending_sales_amount_cents,
+        outstanding_cents,
         currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
@@ -698,6 +718,27 @@ mod tests {
         .unwrap()
     }
 
+    /// 2.0.0: Cashflow's paid_cents/outstanding_cents now come from the real
+    /// payments table, not sales.payment_status - so a test that wants a
+    /// sale to actually count as "paid" needs a matching payment row, not
+    /// just the old status string. Only handles an ungrouped (single-ticket,
+    /// no batch_id) sale - every existing cashflow test uses
+    /// seed_sale_with_status, which never batches - so the group key is
+    /// always `single:<id>` (see sales::GROUP_KEY_EXPR).
+    fn seed_payment_for_sale(conn: &Connection, sale_id: i64, amount_cents: i64, currency: &str) {
+        conn.execute(
+            "INSERT INTO payments (code, sale_group_key, amount_cents, currency, payment_date, method)
+             VALUES (?1, ?2, ?3, ?4, '2026-01-01', 'cash')",
+            params![
+                format!("PAY-TEST-{sale_id}"),
+                format!("single:{sale_id}"),
+                amount_cents,
+                currency,
+            ],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn pending_sales_counts_and_sums_only_pending_payment_status() {
         let mut conn = test_conn();
@@ -754,7 +795,8 @@ mod tests {
         let event_id = seed_event(&conn, "Test Event", "upcoming", None);
         let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
         let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
-        seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        let s1 = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        seed_payment_for_sale(&conn, s1, 2000, "EUR");
         seed_sale_with_status(&mut conn, t2, "2026-03-02", 3000, "pending");
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
@@ -782,14 +824,16 @@ mod tests {
         let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
         let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
         let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
-        seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        let s1 = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        seed_payment_for_sale(&conn, s1, 2000, "EUR");
         seed_sale_with_status(&mut conn, t2, "2026-03-02", 3000, "pending");
         let refunded_sale_id = seed_sale_with_status(&mut conn, t3, "2026-03-03", 9000, "paid");
+        seed_payment_for_sale(&conn, refunded_sale_id, 9000, "EUR");
         crate::commands::sales::refund_sale_impl(&mut conn, refunded_sale_id, Some("test refund")).unwrap();
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
-        assert_eq!(data.cashflow.paid_cents, 2000, "the refunded 9000 must not count as paid");
+        assert_eq!(data.cashflow.paid_cents, 2000, "the refunded sale's real 9000 payment must not count as paid");
         assert_eq!(data.cashflow.outstanding_cents, 3000);
         assert_eq!(data.cashflow.revenue_cents, 5000, "refunded sale excluded from revenue too");
     }
@@ -821,8 +865,10 @@ mod tests {
         let event_id = seed_event(&conn, "Test Event", "upcoming", None);
         let eur_ticket = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
         let usd_ticket = seed_ticket(&conn, "2", event_id, "available", "USD", 1000, None);
-        seed_sale_with_status(&mut conn, eur_ticket, "2026-03-01", 2000, "paid");
-        seed_sale_with_status(&mut conn, usd_ticket, "2026-03-01", 5000, "paid");
+        let eur_sale = seed_sale_with_status(&mut conn, eur_ticket, "2026-03-01", 2000, "paid");
+        seed_payment_for_sale(&conn, eur_sale, 2000, "EUR");
+        let usd_sale = seed_sale_with_status(&mut conn, usd_ticket, "2026-03-01", 5000, "paid");
+        seed_payment_for_sale(&conn, usd_sale, 5000, "USD");
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
@@ -830,7 +876,7 @@ mod tests {
         assert_eq!(data.cashflow.currency, None, "two currencies present - must never be blended into one figure");
         assert_eq!(
             data.cashflow.paid_cents, 2000,
-            "only EUR (the primary currency here) counts - the USD sale must not leak in"
+            "only EUR (the primary currency here) counts - the USD sale's payment must not leak in"
         );
     }
 
@@ -841,6 +887,7 @@ mod tests {
         let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
 
         let first_sale_id = seed_sale_with_status(&mut conn, t1, "2026-03-01", 2000, "paid");
+        seed_payment_for_sale(&conn, first_sale_id, 2000, "EUR");
         crate::commands::sales::refund_sale_impl(&mut conn, first_sale_id, Some("buyer cancelled")).unwrap();
         // Resold at a different price, initially pending - the exact refund
         // -> resell flow BUG #1 exists to support (see sales.rs).
@@ -848,7 +895,7 @@ mod tests {
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
-        assert_eq!(data.cashflow.paid_cents, 0, "the original sale is refunded, not paid");
+        assert_eq!(data.cashflow.paid_cents, 0, "the original sale's real payment is refunded, not paid");
         assert_eq!(data.cashflow.outstanding_cents, 1800, "only the new resale counts, at its own price");
         assert_eq!(data.cashflow.revenue_cents, 1800);
     }

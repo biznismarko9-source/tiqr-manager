@@ -35,6 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_pulls_seat_fields",
         include_str!("../migrations/006_pulls_seat_fields.sql"),
     ),
+    (
+        "007_payments",
+        include_str!("../migrations/007_payments.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -598,5 +602,165 @@ mod migration_004_tests {
             dup.is_err(),
             "a ticket must never have two simultaneously active sales, even after the rebuild"
         );
+    }
+}
+
+/// Regression coverage for migration 007 (the payments table) - mirrors
+/// migration_004_tests' own approach: simulate a real EXISTING install
+/// (here, v1.9.10 - migrations 001-006 already applied, with real sales/
+/// orders data sitting under the old schema) opening the app after an
+/// update, rather than only ever testing against a freshly-migrated empty
+/// database the way test_conn() does.
+#[cfg(test)]
+mod migration_007_tests {
+    use super::*;
+    use crate::commands::orders::insert_order_with_tickets;
+    use crate::commands::payments::{compute_payment_summary_for_order_impl, compute_payment_summary_for_sale_group_impl, create_payment_impl};
+    use crate::models::{OrderInput, PaymentInput};
+
+    #[test]
+    fn migration_007_preserves_existing_data_and_the_new_ledger_works_on_upgrade() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+
+        // Apply exactly what every existing v1.9.10 install already has on
+        // disk today: migrations 001-006, nothing more.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        for (version, sql) in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+            .unwrap();
+        }
+
+        // Seed real pre-existing data under the pre-payments-ledger schema:
+        // an order and a sale, exactly as any real installation would have
+        // right up until the moment it upgrades.
+        conn.execute("INSERT INTO events (name) VALUES ('Old Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let order_input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        let order_id = insert_order_with_tickets(&conn, &order_input, false).unwrap();
+        let ticket_id: i64 = conn
+            .query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000001', ?1, '2026-02-01', 2000, 'paid')",
+            [ticket_id],
+        )
+        .unwrap();
+        let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE code='SAL-000001'", [], |r| r.get(0)).unwrap();
+
+        let orders_before: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, payment_status FROM orders ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        let sales_before: Vec<(i64, String, i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+
+        // The real upgrade moment: run_migrations sees 001-006 already
+        // recorded, so it applies ONLY 007 - exactly like a real upgrade.
+        run_migrations(&conn).expect("migration 007 must apply cleanly on top of real pre-existing data");
+
+        // Nothing about existing orders/sales changed at all - 007 is pure
+        // addition, it touches neither table.
+        let orders_after: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, payment_status FROM orders ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        let sales_after: Vec<(i64, String, i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(orders_before, orders_after, "every pre-existing order must survive the upgrade untouched");
+        assert_eq!(sales_before, sales_after, "every pre-existing sale must survive the upgrade untouched");
+
+        // The new table is immediately usable against this pre-existing
+        // data - a payment can be recorded for the old order and old sale
+        // right after upgrading, with no separate backfill step needed.
+        create_payment_impl(
+            &conn,
+            &PaymentInput {
+                sale_group_key: Some(format!("single:{sale_id}")),
+                order_id: None,
+                amount_cents: 2000,
+                currency: "EUR".to_string(),
+                payment_date: "2026-04-01".to_string(),
+                method: "cash".to_string(),
+                method_other_note: None,
+                reference: None,
+            },
+            false,
+            false,
+        )
+        .expect("the new payments table must work immediately against pre-existing sales after upgrading");
+        let sale_summary = compute_payment_summary_for_sale_group_impl(&conn, &format!("single:{sale_id}")).unwrap();
+        assert_eq!(sale_summary.status, "paid");
+
+        create_payment_impl(
+            &conn,
+            &PaymentInput {
+                sale_group_key: None,
+                order_id: Some(order_id),
+                amount_cents: 500,
+                currency: "EUR".to_string(),
+                payment_date: "2026-04-01".to_string(),
+                method: "cash".to_string(),
+                method_other_note: None,
+                reference: None,
+            },
+            false,
+            false,
+        )
+        .expect("the new payments table must work immediately against pre-existing orders after upgrading");
+        let order_summary = compute_payment_summary_for_order_impl(&conn, order_id).unwrap();
+        assert_eq!(order_summary.status, "partial");
+        assert_eq!(order_summary.received_cents, Some(500));
+
+        // Referential integrity must be clean after the upgrade.
+        let violations: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert!(violations.is_empty(), "foreign_key_check must be clean after the upgrade, found: {violations:?}");
+    }
+
+    #[test]
+    fn migration_007_on_a_completely_fresh_database_starts_with_an_empty_ledger() {
+        // The other half of "old database -> new database": a BRAND NEW
+        // install (test_conn() applies every migration, including 007, to
+        // an empty database) must start with zero payments - upgrading
+        // must never fabricate payment history that never happened.
+        let conn = test_conn();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM payments", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 }

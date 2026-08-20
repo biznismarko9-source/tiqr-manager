@@ -651,3 +651,87 @@ pub struct PullEditInput {
     pub currency: String,
     pub transfer_done: bool,
 }
+
+// ---------------------------------------------------------------------
+// Payments 2.0 (2.0.0) - a real payment ledger. One Sale GROUP (see
+// GROUP_KEY_EXPR in sales.rs - NOT a single `sales` row) or one Order can
+// have many Payments; never the reverse. sales.payment_status and
+// orders.payment_status are untouched columns that still exist, but are no
+// longer the source of truth for "how much has been received" - see
+// payments.rs for how Paid/Partial/Pending/Refunded is now derived from
+// this table instead, and for how the two payment_status columns keep
+// working as a "mark fully paid in one click" shortcut on top of it.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Payment {
+    pub id: i64,
+    pub code: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub payment_date: String,
+    pub method: String,
+    pub method_other_note: Option<String>,
+    pub reference: Option<String>,
+    /// True when this row was auto-created by the Mark as Paid shortcut
+    /// (Sale Detail's bulk action / Order Edit's Payment status field)
+    /// rather than manually entered. Shown in the UI so the history is
+    /// never ambiguous about where an entry came from; also what lets the
+    /// shortcut's reverse direction safely undo only what it itself made.
+    pub is_shortcut: bool,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for both `create_payment` and `update_payment` - every field here
+/// is user-editable in the Add/Edit payment form, so one shape covers both
+/// (unlike Sale/Order/Pull, there's no separate "locked at creation" field
+/// that would need a narrower edit-time type).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentInput {
+    /// Exactly one of these two must be set - `create_payment_impl`
+    /// validates this explicitly (in addition to the DB's own CHECK, which
+    /// is a safety net, not the primary validation path - see payments.rs).
+    /// `sale_group_key` is `COALESCE(batch_id, 'single:'||id)` for the
+    /// target sale group - the same value sales.rs's own GROUP_KEY_EXPR
+    /// computes, never a raw `sales.id`.
+    pub sale_group_key: Option<String>,
+    pub order_id: Option<i64>,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub payment_date: String,
+    pub method: String,
+    pub method_other_note: Option<String>,
+    pub reference: Option<String>,
+}
+
+/// Paid/Outstanding/Status for one Sale group or Order, plus its full
+/// payment history - everything Sale Detail/Order Detail's Payments section
+/// needs in one call. `total_cents`/`total_currency` are None when the sale
+/// group's own lines already span more than one currency (independent of
+/// payments - see SaleGroup.currency) - there's no single well-defined
+/// total to compare payments against in that case, so `status` becomes
+/// "mixed" and `received_cents`/`outstanding_cents`/`currency` are also
+/// None. When the total IS well-defined but the recorded payments
+/// themselves span more than one currency, only `received_cents`/
+/// `outstanding_cents`/`currency` go None - the same "never blend, show
+/// Mixed" rule as everywhere else in this app, applied at whichever level
+/// actually has the ambiguity.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentSummary {
+    pub total_cents: Option<i64>,
+    pub total_currency: Option<String>,
+    pub received_cents: Option<i64>,
+    pub outstanding_cents: Option<i64>,
+    pub currency: Option<String>,
+    /// "pending" | "partial" | "paid" | "refunded" (refunded: sales only,
+    /// never returned for an order) | "mixed" (the sale group's own lines
+    /// span more than one currency, independent of payments - see above) -
+    /// derived, see payments.rs.
+    pub status: String,
+    pub payments: Vec<Payment>,
+}
