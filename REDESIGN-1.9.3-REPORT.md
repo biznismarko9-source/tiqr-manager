@@ -4,6 +4,20 @@ Report k verzii **1.9.3**. Nadväzuje na 1.9.2. Tentokrát nešlo o formálne č
 
 ---
 
+## 0. OPRAVA — prvý build na GitHub Actions zlyhal
+
+Toto je dôležité priznať otvorene, nie schovať do poznámky pod čiarou: prvý zip, čo si dostal, som označil ako „ship as-is" a **skutočný build ti aj tak spadol** na `release-windows` kroku („Command npm run tauri build failed with exit code 1"). Mal si pravdu, že som niekde spravil chybu.
+
+**Čo presne bolo zle:** `src-tauri/src/commands/lookups.rs` malo na začiatku súboru `use rusqlite::Row;`, ale nová funkcia `update_platform_kind_impl` (aj jej dva testovacie helpery) používa typ `&Connection` — ten sa ale nikde v tomto súbore neimportoval. Rust by na to okamžite spadol s `cannot find type Connection in this scope`. Všetky ostatné súbory v `commands/` tento typ už predtým používali, takže mali import odjakživa; `lookups.rs` ho dovtedy nepotreboval (jeho staršie funkcie berú vždy len `state: State<AppState>`) — prvýkrát ho potreboval až tento nový kód, a ja som naň pri písaní zabudol.
+
+**Prečo to prešlo cez review aj cez moje overenie:** presne to je ten scenár, pred ktorým som v §10 (Build) varoval — v tomto sandboxe sa `cargo check` fyzicky nedá spustiť (sieť na `crates.io` je natrvalo zablokovaná), takže jediné overenie backendu bolo manuálne prečítanie kódu mnou aj nezávislým reviewom. Manuálne čítanie vie posúdiť logiku, ale ľahko preskočí „je tento konkrétny typ naozaj importovaný v tomto súbore" — presne tú triedu chyby, čo skutočný kompilátor odchytí okamžite. Skutočný Windows build na GitHub Actions (ktorý internet má) to teda odhalil za mňa.
+
+**Oprava:** pridaný chýbajúci import (`use rusqlite::{Connection, Row};`). Potom som prešiel ešte raz nezávisle, riadok po riadku, všetky 4 dotknuté Rust súbory (`models.rs`, `tickets.rs`, `lookups.rs`, `lib.rs`) a skontroloval každý použitý typ oproti importom na začiatku súboru — a navyše spravil skript, čo prešiel **celý** `src-tauri/src` a hľadal presne tento istý vzor (`Connection` použité, ale neimportované) v akomkoľvek inom súbore. Nič ďalšie sa nenašlo.
+
+**Čo to znamená pre teba:** verzia ostáva **1.9.3** — tá sa reálne nikdy nedostala do funkčného inštalátora (build spadol skôr, než čokoľvek vzniklo), takže niet čo „nahradzovať" vyššou verziou. `release.ps1` má už zabudovanú logiku presne na tento prípad (zmaže a znova vytvorí tag aj GitHub Release pre danú verziu) — stačí znova spustiť `1-CLICK-UPDATE.bat` s týmto opraveným zipom a build by mal tentokrát prejsť.
+
+---
+
 ## 1. Čo si napísal
 
 Voľne parafrázované z tvojej správy: (1) na Tickets stránke chceš vedieť kliknúť na order alebo si vykliknúť event, (2) v Order Detail nechceš celý bulk edit, len možnosť zmeniť status, (3) v Tickets sa zobrazuje Supplier stĺpec, ktorý je vždy prázdny — nemá tam čo robiť, (4) v Nastaveniach → Lookups treba platformy rozdeliť na „kde si to kúpil" a „kde si to predal" — nemajú byť spolu, (5) Dashboard nechceš mať ako Customize, lebo všetky widgety sú dôležité, len ich nechceš mať v jednej kope — radšej rozdeliť tak, aby sa dalo prekliknúť.

@@ -1,7 +1,7 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::models::{Platform, Supplier};
-use rusqlite::Row;
+use rusqlite::{Connection, Row};
 use tauri::State;
 
 fn map_platform(row: &Row) -> rusqlite::Result<Platform> {
