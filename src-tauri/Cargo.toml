@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "1.9.10"
+version = "1.9.11"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"

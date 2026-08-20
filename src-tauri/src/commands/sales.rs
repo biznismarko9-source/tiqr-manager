@@ -31,7 +31,7 @@ const BASE_SQL: &str = "
 /// NULL batch_id (an ordinary single-ticket sale) is its own group of one -
 /// `'single:' || id` can never collide with a real batch_id, which is always
 /// a `SAL-xxxxxx` code (see migration 003).
-const GROUP_KEY_EXPR: &str = "COALESCE(s.batch_id, 'single:' || s.id)";
+pub(crate) const GROUP_KEY_EXPR: &str = "COALESCE(s.batch_id, 'single:' || s.id)";
 
 fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
     let sale_price_cents: i64 = row.get("sale_price_cents")?;
@@ -195,7 +195,7 @@ pub fn get_sale(state: State<AppState>, id: i64) -> AppResult<Sale> {
     fetch_one(&conn, id)
 }
 
-const GROUP_BASE_SELECT: &str = "
+pub(crate) const GROUP_BASE_SELECT: &str = "
     SELECT
       MIN(s.id) as id,
       MIN(s.code) as code,

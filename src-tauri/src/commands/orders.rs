@@ -362,24 +362,23 @@ pub(crate) fn insert_order_with_tickets(
     Ok(order_id)
 }
 
+pub(crate) fn create_order_impl(conn: &Connection, input: &OrderInput) -> AppResult<i64> {
+    insert_order_with_tickets(conn, input, false)
+}
+
 #[tauri::command]
 pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Order> {
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
-    let order_id = insert_order_with_tickets(&tx, &input, false)?;
+    let order_id = create_order_impl(&tx, &input)?;
     tx.commit()?;
     fetch_one(&conn, order_id)
 }
 
-#[tauri::command]
-pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInput) -> AppResult<Order> {
     if input.purchase_date.trim().is_empty() {
         return Err(AppError::Validation("Purchase date is required".into()));
     }
-    if !["unpaid", "partial", "paid"].contains(&input.payment_status.as_str()) {
-        return Err(AppError::Validation("Invalid payment status".into()));
-    }
-    let conn = state.db.lock().unwrap();
     let changed = conn.execute(
         "UPDATE orders SET supplier_id=?1, platform_id=?2, purchase_date=?3, currency=?4,
          payment_status=?5, notes=?6, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -397,7 +396,16 @@ pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> A
     if changed == 0 {
         return Err(AppError::NotFound(format!("Order #{id} not found")));
     }
-    fetch_one(&conn, id)
+    fetch_one(conn, id)
+}
+
+#[tauri::command]
+pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let order = update_order_impl(&tx, id, &input)?;
+    tx.commit()?;
+    Ok(order)
 }
 
 fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {

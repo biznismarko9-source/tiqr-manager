@@ -441,17 +441,22 @@ pub(crate) fn get_dashboard_impl(
         pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
-    // ---- Cashflow (1.9.0) -------------------------------------------------
+    // ---- Cashflow (1.9.0) ---------------------------------------------------
     // Money actually collected from buyers vs. still owed to be collected -
-    // built entirely from the existing sales.payment_status field, no new
-    // table. Only ONE new query here (paid_cents): outstanding_cents reuses
-    // pending_sales_amount_cents computed just above (same value, same
-    // query, no reason to ask SQLite twice) and revenue/profit reuse the
-    // already-computed `inventory` FinanceSummary (all-time, realized,
-    // refund-excluded - exactly the scope this section needs). Not
+    // trusts sales.payment_status='paid'/'pending' as a binary yes/no (no
+    // partial-payment tracking - a sale is either fully paid or not).
+    // Revenue/profit still reuse the already-computed `inventory`
+    // FinanceSummary (all-time, realized, refund-excluded). Not
     // period-filtered, same "right now" rule as pending_sales_amount_cents.
+    // Refunded sales are excluded by construction - payment_status is never
+    // both 'refunded' and 'paid'/'pending' on the same row.
     let paid_cents: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(sale_price_cents),0) FROM sales WHERE payment_status = 'paid' AND currency = ?1",
+        "SELECT COALESCE(SUM(sale_price_cents), 0) FROM sales WHERE payment_status = 'paid' AND currency = ?1",
+        [&primary_currency],
+        |r| r.get(0),
+    )?;
+    let outstanding_cents: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(sale_price_cents), 0) FROM sales WHERE payment_status = 'pending' AND currency = ?1",
         [&primary_currency],
         |r| r.get(0),
     )?;
@@ -459,7 +464,7 @@ pub(crate) fn get_dashboard_impl(
         revenue_cents: inventory.revenue_cents,
         profit_cents: inventory.profit_cents,
         paid_cents,
-        outstanding_cents: pending_sales_amount_cents,
+        outstanding_cents,
         currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
@@ -789,7 +794,7 @@ mod tests {
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
-        assert_eq!(data.cashflow.paid_cents, 2000, "the refunded 9000 must not count as paid");
+        assert_eq!(data.cashflow.paid_cents, 2000, "the refunded sale's real 9000 price must not count as paid");
         assert_eq!(data.cashflow.outstanding_cents, 3000);
         assert_eq!(data.cashflow.revenue_cents, 5000, "refunded sale excluded from revenue too");
     }
@@ -848,7 +853,7 @@ mod tests {
 
         let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
 
-        assert_eq!(data.cashflow.paid_cents, 0, "the original sale is refunded, not paid");
+        assert_eq!(data.cashflow.paid_cents, 0, "the original sale's real payment is refunded, not paid");
         assert_eq!(data.cashflow.outstanding_cents, 1800, "only the new resale counts, at its own price");
         assert_eq!(data.cashflow.revenue_cents, 1800);
     }
