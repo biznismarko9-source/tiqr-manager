@@ -523,7 +523,12 @@ function OrderFormModal({
           <div className="col-span-2">
             <LookupSelect
               label="Platform"
-              options={platforms}
+              // 1.9.3: Orders only offers "purchase"/"both" platforms now -
+              // marko split the shared platform pool into where-you-bought
+              // vs where-you-sold lists (see Settings -> Lookups). onCreate
+              // right below was already tagging new platforms "purchase"
+              // from here even before 1.9.3; only this display filter is new.
+              options={platforms.filter((p) => p.kind === "purchase" || p.kind === "both")}
               value={platformId}
               onChange={setPlatformId}
               onCreate={async (name) => {

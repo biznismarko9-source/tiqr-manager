@@ -20,7 +20,18 @@ import { IconBoxes, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 export default function Tickets() {
-  return <TicketsView title="Tickets" subtitle="Every order you've purchased, grouped with its tickets." />;
+  return (
+    <TicketsView
+      title="Tickets"
+      subtitle="Every order you've purchased, grouped with its tickets."
+      // 1.9.3: marko asked for the Order/Event links back on this page -
+      // the 1.9.1 "no cross-section navigation" rule turned out to be too
+      // broad here. Inventory already had this exception (see
+      // allowCrossLinks' doc comment below); Tickets now gets the exact
+      // same treatment. Sales stays link-free - it wasn't part of this ask.
+      allowCrossLinks
+    />
+  );
 }
 
 /** An order's inventory status, derived purely from its ticket counts (there
@@ -65,11 +76,13 @@ export function TicketsView({
   title: string;
   subtitle: string;
   lockedStatus?: string;
-  /** 1.9.2 (section 1): Inventory is the one page allowed to keep
-   * Order->Order Detail / Event->Event Detail as clickable links (marko's
-   * explicit exception to the 1.9.1 "no cross-section navigation links"
-   * rule). Defaults to false so the plain `/tickets` route is unaffected -
-   * only Inventory.tsx passes true. */
+  /** 1.9.2 (section 1) carved out Inventory as the one page allowed to keep
+   * Order->Order Detail / Event->Event Detail as clickable links, as an
+   * exception to the 1.9.1 "no cross-section navigation links" rule. 1.9.3
+   * extended the same exception to Tickets itself - marko asked for the
+   * links back there too. Sales (which shares none of this component) stays
+   * link-free; it was never part of either ask. Defaults to false only as a
+   * safe fallback for any future caller that doesn't specify it. */
   allowCrossLinks?: boolean;
 }) {
   const toast = useToast();
@@ -237,19 +250,24 @@ export function TicketsView({
         // out Tickets by name, so this list became a plain read-only
         // overview: no row click, no cell links. Open a specific order from
         // the Orders page instead.
-        // 1.9.2 (section 1): marko explicitly carved out ONE exception -
-        // Inventory (this same TicketsView, rendered with allowCrossLinks)
-        // keeps Order->Order Detail and Event->Event Detail as clickable
-        // links, since Inventory's whole purpose is jumping from "what's
-        // still unsold" straight to the order/event behind it. Tickets
-        // itself (the plain `/tickets` route, allowCrossLinks left false)
-        // stays exactly as 1.9.1 left it - no links, no row click.
+        // 1.9.2 (section 1) carved out Inventory as an exception to the
+        // 1.9.1 "no cross-section navigation" rule; 1.9.3 extended the same
+        // Order->Order Detail / Event->Event Detail links to Tickets itself
+        // (see allowCrossLinks' doc comment above) - marko wanted them back
+        // here specifically, not the old blanket removal. Sales stays
+        // link-free either way.
+        //
+        // 1.9.3: Supplier column removed from this table - marko pointed
+        // out it's effectively always empty at this order-grouped level of
+        // detail and doesn't belong here. Supplier itself is untouched
+        // everywhere else (the field, CSV export, Edit Order, the Supplier
+        // filter above) - this is a display-only change to this one table,
+        // same treatment Orders.tsx's list got in 1.9.2.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />
               <col />
-              <col className="w-[100px]" />
               <col className="w-[88px]" />
               <col className="w-12" />
               <col className="w-[70px]" />
@@ -261,7 +279,6 @@ export function TicketsView({
               <tr>
                 <th className="th-c">Order</th>
                 <th className="th-c">Event</th>
-                <th className="th-c">Supplier</th>
                 <th className="th-c">Purchase date</th>
                 <th className="th-c text-right">Total</th>
                 <th className="th-c text-right">Available</th>
@@ -292,9 +309,6 @@ export function TicketsView({
                       ) : (
                         o.eventName
                       )}
-                    </td>
-                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.supplierName ?? undefined}>
-                      {o.supplierName ?? "-"}
                     </td>
                     <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
                     <td className="td-c text-right tabular-nums">{o.quantity}</td>

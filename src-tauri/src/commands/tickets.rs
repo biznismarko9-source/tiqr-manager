@@ -1,6 +1,6 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{BulkTicketField, BulkTicketUpdateInput, Ticket, TicketUpdateInput};
+use crate::models::{BulkTicketField, BulkTicketStatusInput, BulkTicketUpdateInput, Ticket, TicketUpdateInput};
 use rusqlite::{params, Connection, Row};
 use std::collections::HashSet;
 use tauri::State;
@@ -351,6 +351,106 @@ pub fn bulk_update_tickets(state: State<AppState>, input: BulkTicketUpdateInput)
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Input for `bulk_update_ticket_status` (1.9.3): set many tickets' `status`
+/// in one all-or-nothing transaction, restricted to the same three values a
+/// ticket can freely move between outside of a sale - see the doc comment on
+/// `bulk_update_tickets_impl` above for the full reasoning: `status='sold'`
+/// must always correspond to an active `sales` row, so a bulk endpoint that
+/// could set or unset it freely could silently create exactly the orphaned
+/// state `update_ticket_impl`'s single-ticket guard exists to prevent, with
+/// nothing else in the app able to detect or repair it afterwards. `sold` is
+/// therefore unreachable here both as a target status AND as a starting
+/// point being moved away from - moving a ticket into or out of `sold` still
+/// only ever happens via the Sales screen (create, refund or delete a sale).
+pub(crate) fn bulk_update_ticket_status_impl(
+    conn: &mut Connection,
+    ticket_ids: &[i64],
+    status: &str,
+) -> AppResult<Vec<i64>> {
+    if ticket_ids.is_empty() {
+        return Err(AppError::Validation(
+            "Select at least one ticket to update".into(),
+        ));
+    }
+    if !["available", "listed", "cancelled"].contains(&status) {
+        return Err(AppError::Validation(
+            "Ticket status can only be bulk-changed to Available, Listed or Cancelled - Sold can only be set via the Sales screen (create a sale)."
+                .into(),
+        ));
+    }
+
+    // Dedupe so the same id selected twice (e.g. a stale double click) is
+    // applied once, not treated as two separate writes - same convention as
+    // bulk_update_tickets_impl.
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut seen = HashSet::new();
+        for &id in ticket_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    let tx = conn.transaction()?;
+
+    // Validate every id exists AND is not currently sold BEFORE writing
+    // anything - all-or-nothing, one query not one per id (same technique as
+    // bulk_update_tickets_impl's own validation step, and the same shape as
+    // bulk_update_sale_payment_status_impl's refunded guard in sales.rs).
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing: std::collections::HashMap<i64, String> = {
+        let mut stmt = tx.prepare(&format!("SELECT id, status FROM tickets WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing.contains_key(id)) {
+        return Err(AppError::Validation(format!("Ticket #{missing} does not exist")));
+    }
+    if existing.values().any(|s| s == "sold") {
+        return Err(AppError::Validation(
+            "One of the selected tickets is sold and can only be changed via the Sales screen (create, refund or delete a sale) - nothing was changed. Deselect it and try again.".into(),
+        ));
+    }
+
+    let sql = format!(
+        "UPDATE tickets SET status = ?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    update_params.push(Box::new(status.to_string()));
+    for &id in &ids {
+        update_params.push(Box::new(id));
+    }
+    let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, update_refs.as_slice())?;
+
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Sets `status` (available/listed/cancelled only - see the impl's doc
+/// comment) for many tickets at once. Lives next to Order Detail's selection
+/// checkboxes as a single narrow action - replaces the general
+/// `BulkTicketEditBar` there (1.9.3: marko didn't want the Section/Row/
+/// Seat/Listing-price editor on Order Detail any more, just a status
+/// switch). Sale Detail is untouched by this - it already has its own
+/// narrow action (`bulk_update_sale_payment_status`) for `sales.
+/// payment_status`, a completely different column on a different table.
+/// Returns the updated tickets, refetched in a single query the same way
+/// `bulk_update_tickets` does.
+#[tauri::command]
+pub fn bulk_update_ticket_status(state: State<AppState>, input: BulkTicketStatusInput) -> AppResult<Vec<Ticket>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_ticket_status_impl(&mut conn, &input.ticket_ids, &input.status)?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("{BASE_SQL} WHERE t.id IN ({placeholders}) ORDER BY t.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_ticket)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,5 +725,135 @@ mod tests {
             "bulk-editing an unrelated field must not disturb which sale is active"
         );
         assert_eq!(ticket.status, "sold");
+    }
+
+    // --- 1.9.3: bulk_update_ticket_status_impl ------------------------------
+
+    fn ticket_status(conn: &Connection, id: i64) -> String {
+        conn.query_row("SELECT status FROM tickets WHERE id=?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_only_changes_the_selected_tickets_out_of_four() {
+        let mut conn = test_conn();
+        let ids: Vec<i64> = (0..4).map(|_| seed_one_ticket(&conn)).collect();
+        let selected = vec![ids[0], ids[1], ids[2]];
+        let untouched = ids[3];
+
+        let updated_ids = bulk_update_ticket_status_impl(&mut conn, &selected, "listed").unwrap();
+        assert_eq!(updated_ids.len(), 3);
+
+        for &id in &selected {
+            assert_eq!(ticket_status(&conn, id), "listed");
+        }
+        assert_eq!(
+            ticket_status(&conn, untouched),
+            "available",
+            "the 4th ticket was never selected, so it must stay untouched"
+        );
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_rejects_a_sold_ticket_and_changes_nothing() {
+        let mut conn = test_conn();
+        let available_id = seed_one_ticket(&conn);
+        let sold_id = seed_one_ticket(&conn);
+        let sale = SaleInput {
+            ticket_id: sold_id,
+            platform_id: None,
+            sale_date: "2026-03-01".to_string(),
+            sale_price_cents: 5000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sale_impl(&mut conn, &sale).unwrap();
+
+        let result = bulk_update_ticket_status_impl(&mut conn, &[available_id, sold_id], "cancelled");
+        assert!(
+            result.is_err(),
+            "a batch containing a sold ticket must be rejected entirely"
+        );
+        assert_eq!(ticket_status(&conn, available_id), "available");
+        assert_eq!(ticket_status(&conn, sold_id), "sold");
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_is_all_or_nothing_with_a_missing_id() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_status_impl(&mut conn, &[id, 999_999], "listed");
+        assert!(result.is_err());
+        assert_eq!(
+            ticket_status(&conn, id),
+            "available",
+            "a failed bulk update must change nothing at all"
+        );
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_rejects_sold_as_a_target_status() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_status_impl(&mut conn, &[id], "sold");
+        assert!(
+            result.is_err(),
+            "a ticket can only become sold via the Sales screen, never through this bulk action"
+        );
+        assert_eq!(ticket_status(&conn, id), "available");
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_rejects_empty_selection() {
+        let mut conn = test_conn();
+        assert!(bulk_update_ticket_status_impl(&mut conn, &[], "listed").is_err());
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_dedupes_ids() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let updated_ids = bulk_update_ticket_status_impl(&mut conn, &[id, id, id], "listed").unwrap();
+        assert_eq!(updated_ids, vec![id]);
+        assert_eq!(ticket_status(&conn, id), "listed");
+    }
+
+    #[test]
+    fn bulk_update_ticket_status_moves_between_available_listed_and_cancelled_freely() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        for target in ["listed", "cancelled", "available", "listed"] {
+            bulk_update_ticket_status_impl(&mut conn, &[id], target).unwrap();
+            assert_eq!(ticket_status(&conn, id), target);
+        }
+    }
+
+    /// Edge case: a ticket whose only sale was refunded is back to
+    /// `available` (see `refund_sale_impl`) - the "sold" guard above looks
+    /// at `tickets.status`, not "has this ticket ever had a sale", so it
+    /// must be reachable through this bulk action again like any other
+    /// available ticket.
+    #[test]
+    fn bulk_update_ticket_status_allows_a_ticket_whose_sale_was_refunded() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        let sale_id = create_sale_impl(&mut conn, &sale).unwrap();
+        refund_sale_impl(&mut conn, sale_id, Some("buyer cancelled")).unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "available");
+
+        bulk_update_ticket_status_impl(&mut conn, &[ticket_id], "listed").unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "listed");
     }
 }

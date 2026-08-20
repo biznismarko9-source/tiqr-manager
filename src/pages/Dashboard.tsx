@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { DashboardData, DashboardWidgets, UpcomingEventAlert } from "../lib/types";
+import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
-import { Badge, Button, CHECKBOX_CLASS, Card, EmptyState, LoadingBlock, Modal, ModalFooter, PageHeader, StatCard } from "../components/ui";
+import { Badge, Button, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import {
   IconAlertTriangle,
@@ -12,7 +12,6 @@ import {
   IconPackage,
   IconPlus,
   IconReceipt,
-  IconSettings,
   IconUpload,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
@@ -72,65 +71,45 @@ function periodMetricTone(data: DashboardData, metric: MetricKey): string {
   return "text-slate-900 dark:text-slate-100";
 }
 
-// 1.9.2 (section 5, "Customize"): which Dashboard sections are shown, stored
-// under this one app_settings key (same generic key/value mechanism
-// lib/theme.ts's useTheme already established for the dark-mode preference -
-// see useDashboardWidgets below, which mirrors its load/persist shape) as a
-// JSON string of DashboardWidgets. No new backend command, no migration.
-const DASHBOARD_WIDGETS_KEY = "dashboardWidgets";
+// 1.9.3: which Dashboard tab is active, stored under this one app_settings
+// key (same generic key/value mechanism lib/theme.ts's useTheme already
+// established for the dark-mode preference - see useDashboardTab below,
+// which mirrors its load/persist shape) as a plain string. No new backend
+// command, no migration.
+//
+// Replaces 1.9.2's "Customize" panel entirely (DashboardWidgets, its 10
+// show/hide toggles, the Customize button+modal) - marko tried it and
+// decided against it: every section is important enough that hiding one
+// felt wrong, but scrolling past all ten in one long page was the actual
+// complaint. The fix is navigation, not visibility - nothing on this page
+// can be hidden any more, you just jump straight to the group you want.
+const DASHBOARD_TAB_KEY = "dashboardTab";
 
-// Every section defaults ON - an existing install that never opens
-// Customize sees exactly the same dashboard it always has.
-const DEFAULT_DASHBOARD_WIDGETS: DashboardWidgets = {
-  overview: true,
-  revenueChart: true,
-  cashflow: true,
-  inventory: true,
-  potentialProfit: true,
-  attention: true,
-  recentEvents: true,
-  recentOrders: true,
-  recentSales: true,
-  quickActions: true,
-};
+const TABS: { key: DashboardTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "financials", label: "Financials" },
+  { key: "activity", label: "Activity" },
+];
 
-function isDashboardWidgetKey(key: string): key is keyof DashboardWidgets {
-  return Object.prototype.hasOwnProperty.call(DEFAULT_DASHBOARD_WIDGETS, key);
+function isDashboardTab(value: string): value is DashboardTab {
+  return TABS.some((t) => t.key === value);
 }
 
-/** Loads/persists which Dashboard sections are visible. Mirrors useTheme's
- * (lib/theme.ts) load-on-mount + persist-immediately-on-change shape, just
- * local to this page since only Dashboard.tsx reads this preference.
- *
- * Merges the saved value over the defaults rather than replacing them
- * outright, and ignores any saved key that isn't a real widget - so a
- * preference saved by an older/newer build (missing a widget added later,
- * or naming one since removed) never crashes this page or leaves a
- * newly-added section incorrectly hidden; it just defaults ON like a user
- * who never touched Customize at all. */
-function useDashboardWidgets(): [DashboardWidgets, (key: keyof DashboardWidgets, value: boolean) => void] {
-  const [widgets, setWidgetsState] = useState<DashboardWidgets>(DEFAULT_DASHBOARD_WIDGETS);
+/** Loads/persists the active tab. Mirrors useTheme's (lib/theme.ts)
+ * load-on-mount + persist-immediately-on-change shape, just a single string
+ * instead of an object of booleans. An unrecognized saved value (an older
+ * build's leftover, or a corrupted setting) falls back to "overview" rather
+ * than crashing this page. */
+function useDashboardTab(): [DashboardTab, (tab: DashboardTab) => void] {
+  const [tab, setTabState] = useState<DashboardTab>("overview");
 
   useEffect(() => {
     let cancelled = false;
     api
-      .getAppSetting(DASHBOARD_WIDGETS_KEY)
+      .getAppSetting(DASHBOARD_TAB_KEY)
       .then((raw) => {
-        if (cancelled || !raw) return;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          return; // Malformed saved value - keep defaults rather than crash.
-        }
-        if (!parsed || typeof parsed !== "object") return;
-        setWidgetsState((prev) => {
-          const merged = { ...prev };
-          for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-            if (isDashboardWidgetKey(key) && typeof value === "boolean") merged[key] = value;
-          }
-          return merged;
-        });
+        if (cancelled || !raw || !isDashboardTab(raw)) return;
+        setTabState(raw);
       })
       .catch(() => {});
     return () => {
@@ -138,40 +117,13 @@ function useDashboardWidgets(): [DashboardWidgets, (key: keyof DashboardWidgets,
     };
   }, []);
 
-  const setWidget = useCallback((key: keyof DashboardWidgets, value: boolean) => {
-    setWidgetsState((prev) => {
-      const next = { ...prev, [key]: value };
-      api.setAppSetting(DASHBOARD_WIDGETS_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
+  const setTab = useCallback((next: DashboardTab) => {
+    setTabState(next);
+    api.setAppSetting(DASHBOARD_TAB_KEY, next).catch(() => {});
   }, []);
 
-  return [widgets, setWidget];
+  return [tab, setTab];
 }
-
-// Static lookup (not a template-literal class name) so every possible class
-// stays statically visible to Tailwind's build-time scanner - a
-// `` `lg:grid-cols-${n}` `` string would get purged from the production CSS
-// since the scanner can't see interpolated values.
-const RECENT_GRID_COLS: Record<number, string> = {
-  0: "",
-  1: "lg:grid-cols-1",
-  2: "lg:grid-cols-2",
-  3: "lg:grid-cols-3",
-};
-
-const WIDGET_LABELS: { key: keyof DashboardWidgets; label: string }[] = [
-  { key: "quickActions", label: "Quick actions" },
-  { key: "overview", label: "Overview / Activity" },
-  { key: "revenueChart", label: "Revenue chart" },
-  { key: "cashflow", label: "Cashflow" },
-  { key: "inventory", label: "Current inventory" },
-  { key: "potentialProfit", label: "Inventory & potential profit" },
-  { key: "attention", label: "Attention" },
-  { key: "recentEvents", label: "Recent events" },
-  { key: "recentOrders", label: "Recent orders" },
-  { key: "recentSales", label: "Recent sales" },
-];
 
 export default function Dashboard() {
   const toast = useToast();
@@ -186,24 +138,14 @@ export default function Dashboard() {
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  // 1.9.2 (section 5): which sections are shown - see useDashboardWidgets
-  // above. Purely a client-side display preference; `load()`/`data` below
-  // are completely unaffected by it, so hiding a widget never changes what
-  // gets fetched (section 13: no extra/fewer SQL queries just because a
-  // widget is hidden).
-  const [widgets, setWidget] = useDashboardWidgets();
-  const [customizeOpen, setCustomizeOpen] = useState(false);
+  // 1.9.3: which Dashboard tab is active - see useDashboardTab above.
+  const [tab, setTab] = useDashboardTab();
   // BUG (Custom date filter): Custom with both From/To empty must not
   // silently behave like "All time" (see period_bounds() fallback in
   // dashboard.rs). This is recomputed from current state on every render,
   // so it can never get "stuck" - the moment either date is filled in, or
   // the user switches to a different period button, it clears itself.
   const customDatesMissing = period === "custom" && !from && !to;
-  // 1.9.2 (section 5): drives the "everything hidden" empty state below -
-  // Customize (in PageHeader's actions, never gated) is always reachable to
-  // undo this.
-  const allWidgetsHidden = Object.values(widgets).every((v) => !v);
-  const recentVisibleCount = [widgets.recentEvents, widgets.recentOrders, widgets.recentSales].filter(Boolean).length;
 
   const load = useCallback(() => {
     setLoading(true);
@@ -225,106 +167,121 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="A real-time snapshot of your ticket reselling business."
         actions={
-          <>
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
-              {PERIODS.map((p) => (
-                <button
-                  key={p.key}
-                  onClick={() => setPeriod(p.key)}
-                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    period === p.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {/* 1.9.2 (section 5): lives in PageHeader's actions - like the
-                period pills above it, this is never hidden by the widget
-                prefs it controls (unlike the Quick Actions row below, which
-                IS itself one of the 10 toggleable sections) - otherwise
-                turning Quick Actions off would remove the only way to turn
-                anything back on. */}
-            <Button variant="secondary" onClick={() => setCustomizeOpen(true)}>
-              <IconSettings className="h-4 w-4" /> Customize
-            </Button>
-          </>
+          // 1.9.3: replaces the old period-pills-plus-Customize-button
+          // actions row. This is now the dashboard's primary navigation -
+          // see the tab-gated sections below - so it lives here, in the
+          // same prominent spot Customize used to occupy. The period picker
+          // itself moved into the Overview tab's own content (below) since
+          // it's the only tab it actually affects - see that comment for why.
+          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         }
       />
 
-      {/* 1.8.3 (section 11): small, secondary launcher row - every button
-          just reuses an existing route/modal via the same navigate(path,
-          {state}) convention Orders.tsx/Sales.tsx/Events.tsx already use
-          elsewhere (see their `openCreate` handling); no new backend
-          command and no new page. Kept visually secondary (small, plain
-          buttons, no card/heading) so it doesn't compete with Activity
-          below. */}
-      {widgets.quickActions && (
-        <div className="mb-5 flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
-            <IconPlus className="h-4 w-4" /> New Event
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
-            <IconPlus className="h-4 w-4" /> New Order
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
-            <IconPlus className="h-4 w-4" /> New Sale
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-            <IconUpload className="h-4 w-4" /> Import CSV
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-            <IconDownload className="h-4 w-4" /> Export CSV
-          </Button>
-        </div>
-      )}
+      {tab === "overview" && (
+        <>
+          {/* 1.8.3 (section 11): small, secondary launcher row - every
+              button just reuses an existing route/modal via the same
+              navigate(path, {state}) convention Orders.tsx/Sales.tsx/
+              Events.tsx already use elsewhere (see their `openCreate`
+              handling); no new backend command and no new page. Kept
+              visually secondary (small, plain buttons, no card/heading) so
+              it doesn't compete with Activity below. 1.9.3: lives in the
+              Overview tab now (marko's chosen grouping) - previously always
+              shown, toggleable via Customize. */}
+          <div className="mb-5 flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
+              <IconPlus className="h-4 w-4" /> New Event
+            </Button>
+            <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
+              <IconPlus className="h-4 w-4" /> New Order
+            </Button>
+            <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
+              <IconPlus className="h-4 w-4" /> New Sale
+            </Button>
+            <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+              <IconUpload className="h-4 w-4" /> Import CSV
+            </Button>
+            <Button variant="secondary" onClick={() => navigate("/settings/data")}>
+              <IconDownload className="h-4 w-4" /> Export CSV
+            </Button>
+          </div>
 
-      {period === "custom" && (
-        <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
-          <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-            From
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="input mt-1"
-            />
-          </label>
-          <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-            To
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input mt-1" />
-          </label>
-        </Card>
+          {/* 1.9.3: moved here from PageHeader's actions. Financials
+              (Cashflow/Inventory/Potential profit) and Activity (Attention/
+              Recent) are all explicitly all-time or right-now sections (see
+              each one's own comment below) - the period filter never
+              affected them even before this round, it just used to sit
+              next to sections it had no effect on. Only the StatCards/chart
+              below actually use it, so it now lives only where it matters. */}
+          <div className="mb-4 flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+            {PERIODS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setPeriod(p.key)}
+                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  period === p.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {period === "custom" && (
+            <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
+              <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                From
+                <input
+                  type="date"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                  className="input mt-1"
+                />
+              </label>
+              <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                To
+                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input mt-1" />
+              </label>
+            </Card>
+          )}
+        </>
       )}
 
       {loading || !data ? (
         <LoadingBlock label="Loading dashboard..." />
       ) : (
         <>
-          {data.mixedCurrencies && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-              You have data in more than one currency. To avoid adding different currencies together, the totals
-              below only include <b>{data.primaryCurrency}</b>. Filter by event/platform to see the others.
-            </div>
-          )}
-          {customDatesMissing ? (
-            // Custom filter selected but both From/To are empty: previously
-            // this silently fell back to an (effectively) All-time range on
-            // the backend (period_bounds()) with no indication to the user.
-            // Show a clear inline message instead of any period numbers,
-            // reusing the existing amber warning-banner style used
-            // elsewhere on this page (mixed-currency notice above).
-            <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-              Please select at least one date.
-            </div>
-          ) : (
+          {tab === "overview" && (
             <>
-              {/* 1.9.2 (section 5): "Overview/KPI" and "Activity" in marko's
-                  widget list both map to this one StatCard row (there's no
-                  separate KPI section elsewhere in the code) - merged into
-                  the single `overview` toggle, see DEFAULT_DASHBOARD_WIDGETS'
-                  doc comment above. */}
-              {widgets.overview && (
+              {data.mixedCurrencies && (
+                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+                  You have data in more than one currency. To avoid adding different currencies together, the totals
+                  below only include <b>{data.primaryCurrency}</b>. Filter by event/platform to see the others.
+                </div>
+              )}
+              {customDatesMissing ? (
+                // Custom filter selected but both From/To are empty: previously
+                // this silently fell back to an (effectively) All-time range on
+                // the backend (period_bounds()) with no indication to the user.
+                // Show a clear inline message instead of any period numbers,
+                // reusing the existing amber warning-banner style used
+                // elsewhere on this page (mixed-currency notice above).
+                <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+                  Please select at least one date.
+                </div>
+              ) : (
                 <>
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                     Activity{" "}
@@ -348,22 +305,19 @@ export default function Dashboard() {
                       sub={`${data.period.purchasedTickets} purchased in period`}
                     />
                   </div>
-                </>
-              )}
-              {/* Big number + line always come straight from data.period /
-                  data.revenueTimeSeries - the exact same source the
-                  StatCards above already render, never re-derived locally -
-                  so this card can never disagree with them (see
-                  revenue_time_series in dashboard.rs, which shares
-                  period_summary's exact scope). 1.7.5: switches between 3
-                  metrics (marko's reference screenshot) instead of always
-                  showing Revenue - see MetricChart.tsx. Tab row reuses the
-                  exact same pill pattern as the period selector above,
-                  rather than a new visual pattern. 1.9.2: independently
-                  toggleable from the StatCard row above (`revenueChart` vs.
-                  `overview`) - marko's widget list named them separately. */}
-              {widgets.revenueChart && (
-                <Card className="mb-8 p-4">
+                  {/* Big number + line always come straight from data.period /
+                      data.revenueTimeSeries - the exact same source the
+                      StatCards above already render, never re-derived locally -
+                      so this card can never disagree with them (see
+                      revenue_time_series in dashboard.rs, which shares
+                      period_summary's exact scope). 1.7.5: switches between 3
+                      metrics (marko's reference screenshot) instead of always
+                      showing Revenue - see MetricChart.tsx. Tab row reuses the
+                      exact same pill pattern as the period selector above,
+                      rather than a new visual pattern. 1.9.3: no longer
+                      independently toggleable - both this and the StatCards
+                      above are simply "the Overview tab" now. */}
+                  <Card className="mb-8 p-4">
                   <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
@@ -398,11 +352,12 @@ export default function Dashboard() {
                     metric={metric}
                   />
                 </Card>
+                </>
               )}
             </>
           )}
 
-          {widgets.inventory && (
+          {tab === "financials" && (
             <>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                 Current inventory (all time)
@@ -413,21 +368,18 @@ export default function Dashboard() {
                 <StatCard label="Sold (total)" value={String(data.inventory.soldTickets)} />
                 <StatCard label="Purchased (total)" value={String(data.inventory.purchasedTickets)} />
               </div>
-            </>
-          )}
 
-          {/* Cashflow (1.9.0): what's been sold vs. what's actually been
-              collected from buyers vs. what they still owe - all-time
-              realized figures (not period-filtered), same "right now"
-              convention as Attention below. Revenue/Profit here are the same
-              numbers as data.inventory (already computed, just not
-              previously shown anywhere on this page) - Paid/Outstanding are
-              new. Refunded sales are excluded from all four, same as
-              everywhere else in this app. Deliberately just 4 cards, plain
-              (not a tinted zone like Inventory & Potential Profit below) -
-              this is a realized, not a future/estimated block. */}
-          {widgets.cashflow && (
-            <>
+              {/* Cashflow (1.9.0): what's been sold vs. what's actually been
+                  collected from buyers vs. what they still owe - all-time
+                  realized figures (not period-filtered), same "right now"
+                  convention as Attention on the Activity tab. Revenue/Profit
+                  here are the same numbers as data.inventory (already
+                  computed, just not previously shown anywhere on this page)
+                  - Paid/Outstanding are new. Refunded sales are excluded
+                  from all four, same as everywhere else in this app.
+                  Deliberately just 4 cards, plain (not a tinted zone like
+                  Inventory & Potential Profit below) - this is a realized,
+                  not a future/estimated block. */}
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                 Cashflow (all time)
               </p>
@@ -461,56 +413,54 @@ export default function Dashboard() {
                   sub="Sold but not yet paid"
                 />
               </div>
+
+              {/* Inventory & Potential Profit: deliberately its own tinted
+                  zone (not plain StatCards like the sections above) and its
+                  own "Potential profit" label - never "Profit" alone - so
+                  it can never be mistaken for the realized Profit above.
+                  Not affected by the period filter (unsold stock is a
+                  right-now state, same reasoning as "Current inventory"). */}
+              <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  Inventory &amp; Potential Profit
+                </p>
+                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                  Current unsold stock (available + listed), not affected by the period filter above. This is an
+                  estimate, not realized profit.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <StatCard
+                    label="Inventory cost"
+                    value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}
+                    sub="What unsold tickets cost you"
+                  />
+                  <StatCard
+                    label="Listing value"
+                    value={formatMoneyOrMixed(data.inventoryPotential.listingValueCents, data.inventoryPotential.currency)}
+                    sub="Unsold tickets that have a listing price"
+                  />
+                  <StatCard
+                    label="Potential profit"
+                    value={formatMoneyOrMixed(data.inventoryPotential.potentialProfitCents, data.inventoryPotential.currency)}
+                    sub="Listing value minus inventory cost"
+                  />
+                </div>
+                {data.alerts.missingListingPriceCount > 0 && (
+                  <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+                    {data.alerts.missingListingPriceCount} unsold ticket{data.alerts.missingListingPriceCount === 1 ? "" : "s"} still{" "}
+                    {data.alerts.missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit
+                    understates what full inventory could be worth once priced - see Attention on the Activity tab.
+                  </p>
+                )}
+              </div>
             </>
           )}
 
-          {/* Inventory & Potential Profit: deliberately its own tinted zone
-              (not plain StatCards like the sections above) and its own
-              "Potential profit" label - never "Profit" alone - so it can
-              never be mistaken for the realized Profit shown in Activity
-              above. Not affected by the period filter (unsold stock is a
-              right-now state, same reasoning as "Current inventory"). */}
-          {widgets.potentialProfit && (
-            <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                Inventory &amp; Potential Profit
-              </p>
-              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                Current unsold stock (available + listed), not affected by the period filter above. This is an
-                estimate, not realized profit.
-              </p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <StatCard
-                  label="Inventory cost"
-                  value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}
-                  sub="What unsold tickets cost you"
-                />
-                <StatCard
-                  label="Listing value"
-                  value={formatMoneyOrMixed(data.inventoryPotential.listingValueCents, data.inventoryPotential.currency)}
-                  sub="Unsold tickets that have a listing price"
-                />
-                <StatCard
-                  label="Potential profit"
-                  value={formatMoneyOrMixed(data.inventoryPotential.potentialProfitCents, data.inventoryPotential.currency)}
-                  sub="Listing value minus inventory cost"
-                />
-              </div>
-              {data.alerts.missingListingPriceCount > 0 && (
-                <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
-                  {data.alerts.missingListingPriceCount} unsold ticket{data.alerts.missingListingPriceCount === 1 ? "" : "s"} still{" "}
-                  {data.alerts.missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit
-                  understates what full inventory could be worth once priced - see Attention below.
-                </p>
-              )}
-            </div>
-          )}
+          {tab === "activity" && (
+            <>
+              <AttentionSection data={data} />
 
-          {widgets.attention && <AttentionSection data={data} />}
-
-          {recentVisibleCount > 0 && (
-            <div className={`grid grid-cols-1 gap-5 ${RECENT_GRID_COLS[recentVisibleCount]}`}>
-              {widgets.recentEvents && (
+              <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
                 <RecentCard title="Recent events" icon={<IconCalendarDays className="h-4 w-4" />}>
                   {data.recentEvents.length === 0 ? (
                     <EmptyRow text="No events yet" />
@@ -533,9 +483,7 @@ export default function Dashboard() {
                     </ul>
                   )}
                 </RecentCard>
-              )}
 
-              {widgets.recentOrders && (
                 <RecentCard title="Recent orders" icon={<IconPackage className="h-4 w-4" />}>
                   {data.recentOrders.length === 0 ? (
                     <EmptyRow text="No orders yet" />
@@ -560,9 +508,7 @@ export default function Dashboard() {
                     </ul>
                   )}
                 </RecentCard>
-              )}
 
-              {widgets.recentSales && (
                 <RecentCard title="Recent sales" icon={<IconReceipt className="h-4 w-4" />}>
                   {data.recentSales.length === 0 ? (
                     <EmptyRow text="No sales yet" />
@@ -596,76 +542,13 @@ export default function Dashboard() {
                     </ul>
                   )}
                 </RecentCard>
-              )}
-            </div>
+              </div>
+            </>
           )}
 
-          {/* 1.9.2 (section 5): reachable only by turning every one of the 10
-              widgets off via Customize - not one of marko's named sections,
-              just a small guard so that state reads as "you did this on
-              purpose" instead of a blank/broken-looking page. Customize
-              itself lives in PageHeader's actions above, so it's never
-              hidden by this. */}
-          {allWidgetsHidden && (
-            <EmptyState title="Every dashboard section is hidden" description="Use Customize above to turn sections back on." />
-          )}
         </>
       )}
-
-      <DashboardCustomizeModal
-        open={customizeOpen}
-        widgets={widgets}
-        onSetWidget={setWidget}
-        onClose={() => setCustomizeOpen(false)}
-      />
     </div>
-  );
-}
-
-/** 1.9.2 (section 5): the "Customize" panel - simple ON/OFF checkboxes per
- * section, persisted immediately via `onSetWidget` (see useDashboardWidgets
- * above; every click writes straight through, so there's no separate
- * save/cancel state to manage here - "Done" only closes the panel). No
- * drag-and-drop, no layout editor - deliberately just visibility toggles, as
- * asked for. */
-function DashboardCustomizeModal({
-  open,
-  widgets,
-  onSetWidget,
-  onClose,
-}: {
-  open: boolean;
-  widgets: DashboardWidgets;
-  onSetWidget: (key: keyof DashboardWidgets, value: boolean) => void;
-  onClose: () => void;
-}) {
-  return (
-    <Modal open={open} onClose={onClose} title="Dashboard widgets" width="max-w-sm">
-      <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-        Choose which sections this dashboard shows. Changes are saved automatically.
-      </p>
-      <div className="flex flex-col gap-0.5">
-        {WIDGET_LABELS.map((w) => (
-          <label
-            key={w.key}
-            className="flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/60"
-          >
-            {w.label}
-            <input
-              type="checkbox"
-              className={CHECKBOX_CLASS}
-              checked={widgets[w.key]}
-              onChange={(e) => onSetWidget(w.key, e.target.checked)}
-            />
-          </label>
-        ))}
-      </div>
-      <ModalFooter>
-        <Button variant="primary" onClick={onClose}>
-          Done
-        </Button>
-      </ModalFooter>
-    </Modal>
   );
 }
 

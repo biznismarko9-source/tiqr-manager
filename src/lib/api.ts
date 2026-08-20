@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
   BulkSalePaymentStatusInput,
+  BulkTicketStatusInput,
   BulkTicketUpdateInput,
   CsvImportResult,
   CsvPreview,
@@ -64,6 +65,7 @@ export const api = {
   updateTicket: (id: number, input: TicketUpdateInput) => invoke<Ticket>("update_ticket", { id, input }),
   /** 1.8.3: set one field to one value across many tickets at once, in a single all-or-nothing transaction. */
   bulkUpdateTickets: (input: BulkTicketUpdateInput) => invoke<Ticket[]>("bulk_update_tickets", { input }),
+  bulkUpdateTicketStatus: (input: BulkTicketStatusInput) => invoke<Ticket[]>("bulk_update_ticket_status", { input }),
 
   // Sales
   listSales: (params: {
@@ -103,8 +105,10 @@ export const api = {
 
   // Lookups
   listPlatforms: () => invoke<Platform[]>("list_platforms"),
-  createPlatform: (name: string, kind?: string) => invoke<Platform>("create_platform", { name, kind }),
+  createPlatform: (name: string, kind?: "purchase" | "sale" | "both") => invoke<Platform>("create_platform", { name, kind }),
   deletePlatform: (id: number) => invoke<void>("delete_platform", { id }),
+  updatePlatformKind: (id: number, kind: "purchase" | "sale" | "both") =>
+    invoke<Platform>("update_platform_kind", { id, kind }),
   listSuppliers: () => invoke<Supplier[]>("list_suppliers"),
   createSupplier: (name: string, contact?: string) => invoke<Supplier>("create_supplier", { name, contact }),
   deleteSupplier: (id: number) => invoke<void>("delete_supplier", { id }),

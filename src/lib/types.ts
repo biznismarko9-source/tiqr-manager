@@ -174,6 +174,18 @@ export interface BulkTicketUpdateInput {
   centsValue?: number | null;
 }
 
+/** Input for `bulkUpdateTicketStatus` (1.9.3): set many tickets' `status` in
+ * one all-or-nothing transaction. Only "available" | "listed" | "cancelled"
+ * are accepted - "sold" is deliberately unreachable here, both as a target
+ * and as a starting point being moved away from, since it must always
+ * correspond to an active sale. See `bulk_update_ticket_status_impl`
+ * (tickets.rs) for the full reasoning. Replaces `BulkTicketUpdateInput` on
+ * Order Detail, which now only offers this narrow status action. */
+export interface BulkTicketStatusInput {
+  ticketIds: number[];
+  status: "available" | "listed" | "cancelled";
+}
+
 export interface Sale {
   id: number;
   code: string;
@@ -294,10 +306,14 @@ export interface BulkSalePaymentStatusInput {
   paymentStatus: "pending" | "paid";
 }
 
+/** 1.9.3: "purchase" platforms populate Order forms, "sale" platforms
+ * populate Sale forms, "both" populates either. Was already the schema's
+ * design from the very first migration - this round just started exposing
+ * it in the UI (Settings -> Lookups' split Purchase/Selling lists). */
 export interface Platform {
   id: number;
   name: string;
-  kind: string;
+  kind: "purchase" | "sale" | "both";
   isDemo: boolean;
   createdAt: string;
 }
@@ -396,31 +412,14 @@ export interface RevenueTimeSeriesPoint {
   profitCents: number;
 }
 
-/** Dashboard "Customize" panel (1.9.2) - which sections are currently shown.
- * Persisted client-side only, via the existing generic app-settings
- * key/value mechanism (getAppSetting/setAppSetting) under the key
- * "dashboardWidgets", as a JSON string of this shape - no new backend
- * command, no migration. Missing keys (e.g. after an update adds a new
- * widget) default to `true` - see Dashboard.tsx's merge-with-defaults
- * loading logic - so an existing saved preference never accidentally hides a
- * brand new section. `overview` covers the Activity StatCard row - marko's
- * widget list named "Overview/KPI" and "Activity" separately, but the
- * codebase only has one matching section (this row), so both map to this
- * single toggle. The Revenue chart Card is a genuinely separate section and
- * keeps its own `revenueChart` toggle - see Dashboard.tsx where each is
- * rendered, right above the respective `widgets.*` check. */
-export interface DashboardWidgets {
-  overview: boolean;
-  revenueChart: boolean;
-  cashflow: boolean;
-  inventory: boolean;
-  potentialProfit: boolean;
-  attention: boolean;
-  recentEvents: boolean;
-  recentOrders: boolean;
-  recentSales: boolean;
-  quickActions: boolean;
-}
+/** Which Dashboard tab is active (1.9.3) - replaces the 1.9.2 "Customize"
+ * show/hide-per-section panel (that `DashboardWidgets` type is gone; nothing
+ * on the dashboard can be hidden any more, only navigated to). Persisted
+ * client-side only, via the existing generic app-settings key/value
+ * mechanism (getAppSetting/setAppSetting) under the key "dashboardTab" as a
+ * plain string - no new backend command, no migration. See Dashboard.tsx's
+ * useDashboardTab for the load/persist logic. */
+export type DashboardTab = "overview" | "financials" | "activity";
 
 export interface DashboardData {
   inventory: FinanceSummary;

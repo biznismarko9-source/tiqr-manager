@@ -18,7 +18,6 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { BulkTicketEditBar } from "../components/BulkTicketEditBar";
 import { IconArrowLeft, IconPencil, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { TicketEditModal } from "./Tickets";
@@ -74,11 +73,13 @@ export default function OrderDetail() {
 
   if (!order) return <LoadingBlock />;
 
-  // 1.8.3: bulk ticket actions - unlike Sale Detail, no ticket here is
-  // excluded from selection: the existing single-ticket TicketEditModal
-  // already allows editing section/row/seat/type/listing price regardless of
-  // a ticket's status (only the Status field itself is locked when sold),
-  // so bulk-editing those same fields is safe for every ticket in this list.
+  // 1.8.3: bulk ticket actions. Selection itself stays unrestricted - any
+  // ticket, sold or not, can be checked - but 1.9.3 narrowed what applying
+  // the selection actually does: it's now a status-only action
+  // (TicketStatusBar below) that rejects the whole batch if it contains a
+  // sold ticket, rather than the old Section/Row/Seat/Listing-price editor
+  // that had no such restriction. See bulk_update_ticket_status_impl's doc
+  // comment (tickets.rs) for why sold tickets are excluded.
   const allSelected = tickets !== null && tickets.length > 0 && tickets.every((t) => selected.has(t.id));
   const toggleSelectAll = () => {
     if (!tickets) return;
@@ -257,9 +258,8 @@ export default function OrderDetail() {
           counted correctly everywhere else, they just aren&apos;t listed individually below.
         </div>
       )}
-      <BulkTicketEditBar
+      <TicketStatusBar
         selectedIds={Array.from(selected)}
-        currency={order.currency}
         onClear={() => setSelected(new Set())}
         onApplied={() => load()}
       />
@@ -277,7 +277,7 @@ export default function OrderDetail() {
         // via formatSeatLocation (lib/format.ts, same treatment Sale Detail
         // got in 1.8.2) - the 3 underlying fields are untouched, only how
         // they display here changed. Also added the leading checkbox column
-        // (bulk actions, see BulkTicketEditBar above).
+        // (bulk actions, see TicketStatusBar above).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
@@ -410,6 +410,68 @@ export default function OrderDetail() {
   );
 }
 
+/** 1.9.3: Order Detail's bulk action, narrowed to status only - replaces the
+ * general BulkTicketEditBar that used to live here (marko: "jedine chcem
+ * tam mat na vyber zmenenie statusu" - the only thing he wants here is a
+ * status choice). Mirrors Sale Detail's SalePaymentStatusBar pattern
+ * exactly, just a 3-way status instead of a 2-way payment status.
+ * Deliberately never offers "Sold" as a destination - see
+ * `bulk_update_ticket_status_impl`'s doc comment (tickets.rs) for why that
+ * transition only ever happens via the Sales screen (create a sale). If the
+ * selection includes an already-sold ticket, the backend rejects the whole
+ * batch rather than silently skipping it - the error surfaces as a toast,
+ * same as every other bulk action in this app. */
+function TicketStatusBar({
+  selectedIds,
+  onClear,
+  onApplied,
+}: {
+  selectedIds: number[];
+  onClear: () => void;
+  onApplied: () => void;
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = useState<"available" | "listed" | "cancelled" | null>(null);
+
+  if (selectedIds.length === 0) return null;
+
+  const apply = async (status: "available" | "listed" | "cancelled") => {
+    setSaving(status);
+    try {
+      const updated = await api.bulkUpdateTicketStatus({ ticketIds: selectedIds, status });
+      toast.success(`${updated.length} ticket${updated.length === 1 ? "" : "s"} marked as ${status}`);
+      onApplied();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">
+      <span className="font-medium text-brand-800 dark:text-brand-300">Selected: {selectedIds.length}</span>
+      <Button variant="secondary" onClick={() => apply("available")} disabled={saving !== null}>
+        {saving === "available" ? "Marking as Available..." : "Mark as Available"}
+      </Button>
+      <Button variant="secondary" onClick={() => apply("listed")} disabled={saving !== null}>
+        {saving === "listed" ? "Marking as Listed..." : "Mark as Listed"}
+      </Button>
+      <Button variant="secondary" onClick={() => apply("cancelled")} disabled={saving !== null}>
+        {saving === "cancelled" ? "Marking as Cancelled..." : "Mark as Cancelled"}
+      </Button>
+      <button
+        type="button"
+        className="ml-auto text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline disabled:opacity-50"
+        onClick={onClear}
+        disabled={saving !== null}
+      >
+        Clear selection
+      </button>
+    </div>
+  );
+}
+
 function OrderEditModal({
   open,
   order,
@@ -489,7 +551,9 @@ function OrderEditModal({
         />
         <LookupSelect
           label="Platform"
-          options={platforms}
+          // 1.9.3: purchase/both only - see the matching comment in
+          // Orders.tsx's New Order form for the full reasoning.
+          options={platforms.filter((p) => p.kind === "purchase" || p.kind === "both")}
           value={platformId}
           onChange={setPlatformId}
           onCreate={async (name) => {

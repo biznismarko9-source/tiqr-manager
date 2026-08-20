@@ -551,8 +551,13 @@ export default function SaleDetail() {
  * shared `BulkTicketEditBar` that used to sit here (it edited Section/Row/
  * Seat/Listing price - those stay editable, just one ticket at a time, via
  * the per-line "Edit" button/`SaleEditModal` above and Order Detail's own
- * Ticket Edit; `BulkTicketEditBar` itself is unchanged and still used by
- * Order Detail). Deliberately just two buttons and no modal - the whole
+ * Ticket Edit). 1.9.3: Order Detail also moved off `BulkTicketEditBar`, onto
+ * its own narrow `TicketStatusBar` - so nothing in the UI renders
+ * `BulkTicketEditBar` any more. It's left in place regardless (same
+ * "small, self-contained, already-tested code - deleting it would only add
+ * risk, not value" reasoning as the unused CSV "export everything" backend
+ * commands from 1.9.1's report), in case a general bulk field editor is
+ * ever wanted again on some page. Deliberately just two buttons and no modal - the whole
  * action is "set payment_status on the selection", nothing to configure.
  *
  * Refunded lines can never reach here: `selected` is only ever populated
@@ -743,7 +748,12 @@ function SaleEditModal({
       <div className="grid grid-cols-2 gap-4">
         <LookupSelect
           label="Platform"
-          options={platforms}
+          // 1.9.3: sale/both only - marko split the shared platform pool
+          // into where-you-bought vs where-you-sold lists (Settings ->
+          // Lookups). onCreate right below was already tagging new
+          // platforms "sale" from here even before 1.9.3; only this display
+          // filter is new.
+          options={platforms.filter((p) => p.kind === "sale" || p.kind === "both")}
           value={platformId}
           onChange={setPlatformId}
           onCreate={async (name) => {

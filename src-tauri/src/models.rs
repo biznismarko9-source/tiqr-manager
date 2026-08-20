@@ -216,6 +216,21 @@ pub struct BulkTicketUpdateInput {
     pub cents_value: Option<i64>,
 }
 
+/// Input for `bulk_update_ticket_status` (1.9.3): set many tickets'
+/// `status` in one all-or-nothing transaction. Deliberately a plain
+/// `String` rather than a closed enum here (unlike `BulkTicketField` above) -
+/// the safety guarantee for this endpoint isn't "which column can be
+/// written", it's "which values `status` may take", and that's enforced by
+/// `bulk_update_ticket_status_impl`'s own validation (available/listed/
+/// cancelled only - never `sold`, see that function's doc comment in
+/// tickets.rs for the full reasoning).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketStatusInput {
+    pub ticket_ids: Vec<i64>,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Sale {

@@ -1070,7 +1070,13 @@ function SaleFormModal({
           <div className="mt-4 grid grid-cols-2 gap-4">
             <LookupSelect
               label="Platform"
-              options={platforms}
+              // 1.9.3: sale/both only - see the matching comment in
+              // SaleDetail.tsx's Edit Sale form for the full reasoning. The
+              // list-page filter dropdown above (`All platforms`) is
+              // deliberately left showing every platform regardless of kind
+              // - it filters existing recorded sales, which may reference a
+              // platform since re-tagged out of "sale".
+              options={platforms.filter((p) => p.kind === "sale" || p.kind === "both")}
               value={platformId}
               onChange={setPlatformId}
               onCreate={async (name) => {

@@ -12,6 +12,7 @@ import {
   Modal,
   ModalFooter,
   PageHeader,
+  Select,
   Spinner,
 } from "../components/ui";
 import {
@@ -55,7 +56,6 @@ export default function Settings() {
   const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
-  const [newPlatform, setNewPlatform] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
@@ -81,11 +81,25 @@ export default function Settings() {
 
   useEffect(reload, []);
 
-  const addPlatform = async () => {
-    if (!newPlatform.trim()) return;
+  // 1.9.3: platforms are now added straight into one of the two lists
+  // (Purchase/Selling) below, so `addPlatform` needs to know which `kind` to
+  // create with - see PlatformList, which owns its own input state and
+  // calls this with its own fixed `kind`.
+  const addPlatform = async (name: string, kind: "purchase" | "sale") => {
     try {
-      await api.createPlatform(newPlatform.trim());
-      setNewPlatform("");
+      await api.createPlatform(name, kind);
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  // 1.9.3: re-tags an existing platform (e.g. a pre-1.9.3 platform, which
+  // defaulted to "both" and so still shows in both lists) between Purchase/
+  // Sale/Both - see PlatformList's per-row Select.
+  const changePlatformKind = async (p: Platform, kind: "purchase" | "sale" | "both") => {
+    try {
+      await api.updatePlatformKind(p.id, kind);
       reload();
     } catch (e) {
       toast.error(errMsg(e));
@@ -257,33 +271,36 @@ export default function Settings() {
           )}
 
           {section === "lookups" && (
-            <Card className="p-5 lg:max-w-xl">
+            <Card className="p-5 lg:max-w-3xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
-              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">Used when recording orders and sales. Not hardcoded — add as many as you like.</p>
-              <div className="mb-3 flex gap-2">
-                <Input
-                  placeholder="e.g. Ticketmaster"
-                  value={newPlatform}
-                  onChange={(e) => setNewPlatform(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addPlatform()}
+              {/* 1.9.3: split into two lists - marko didn't want "where you
+                  bought it" and "where you sold it" sharing one pool any
+                  more. Backed by the same `platforms` table either way (its
+                  `kind` column has existed since the first migration, so no
+                  schema change was needed) - a platform tagged "Both" simply
+                  appears in both lists below, via PlatformList's own filter. */}
+              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+                Purchase platforms show up when recording an order; Selling platforms show up when recording a sale.
+                Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.
+              </p>
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <PlatformList
+                  heading="Purchase platforms"
+                  kind="purchase"
+                  platforms={platforms}
+                  onAdd={addPlatform}
+                  onDelete={setConfirmDeletePlatform}
+                  onChangeKind={changePlatformKind}
                 />
-                <Button onClick={addPlatform}>Add</Button>
+                <PlatformList
+                  heading="Selling platforms"
+                  kind="sale"
+                  platforms={platforms}
+                  onAdd={addPlatform}
+                  onDelete={setConfirmDeletePlatform}
+                  onChangeKind={changePlatformKind}
+                />
               </div>
-              <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-                {platforms.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
-                {platforms.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                    <span>{p.name}</span>
-                    <button
-                      className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
-                      title="Remove"
-                      onClick={() => setConfirmDeletePlatform(p)}
-                    >
-                      <IconTrash className="h-4 w-4" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
             </Card>
           )}
 
@@ -465,6 +482,77 @@ export default function Settings() {
         }}
       />
 
+    </div>
+  );
+}
+
+/** 1.9.3: one of the two platform lists (Purchase / Selling) on the Lookups
+ * page - same list backs both, filtered by `kind` (a "both"-tagged platform
+ * appears in both, by design). Owns its own "add" input state since the two
+ * lists are otherwise independent of each other. The per-row Select lets an
+ * existing platform be re-tagged after the fact (mainly useful right after
+ * upgrading: every platform created before 1.9.3 defaulted to "both" and so
+ * starts out in both lists, until re-tagged here). */
+function PlatformList({
+  heading,
+  kind,
+  platforms,
+  onAdd,
+  onDelete,
+  onChangeKind,
+}: {
+  heading: string;
+  kind: "purchase" | "sale";
+  platforms: Platform[];
+  onAdd: (name: string, kind: "purchase" | "sale") => void;
+  onDelete: (platform: Platform) => void;
+  onChangeKind: (platform: Platform, kind: "purchase" | "sale" | "both") => void;
+}) {
+  const [value, setValue] = useState("");
+  const visible = platforms.filter((p) => p.kind === kind || p.kind === "both");
+
+  const add = () => {
+    if (!value.trim()) return;
+    onAdd(value.trim(), kind);
+    setValue("");
+  };
+
+  return (
+    <div>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{heading}</h4>
+      <div className="mb-2 flex gap-2">
+        <Input
+          placeholder="e.g. Ticketmaster"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <Button onClick={add}>Add</Button>
+      </div>
+      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+        {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
+        {visible.map((p) => (
+          <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+            <span className="truncate">{p.name}</span>
+            <div className="flex shrink-0 items-center gap-2">
+              <div className="w-[112px]">
+                <Select value={p.kind} onChange={(e) => onChangeKind(p, e.target.value as "purchase" | "sale" | "both")}>
+                  <option value="purchase">Purchase only</option>
+                  <option value="sale">Selling only</option>
+                  <option value="both">Both</option>
+                </Select>
+              </div>
+              <button
+                className="text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
+                title="Remove"
+                onClick={() => onDelete(p)}
+              >
+                <IconTrash className="h-4 w-4" />
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
