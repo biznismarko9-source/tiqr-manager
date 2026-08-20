@@ -476,7 +476,11 @@ export interface RestoreOutcome {
 // Pull (1.9.7) - buying tickets on someone else's behalf for a fee. See
 // src-tauri/migrations/005_pulls.sql for the full feature rationale.
 // Deliberately not linked to Event/Order/Ticket/Sale - see that file's
-// comment for why.
+// comment for why. 1.9.8 (src-tauri/migrations/006_pulls_seat_fields.sql)
+// reshaped the old single `seats` free-text field into `section`/`rowLabel`/
+// `seat` (same shape as `Ticket`'s own fields - see formatSeatLocation in
+// format.ts), and dropped the manual transfer-deadline input in favor of an
+// automatic warning computed client-side from `eventDate` (see Pulls.tsx).
 // ---------------------------------------------------------------------------
 
 export interface Pull {
@@ -488,11 +492,16 @@ export interface Pull {
   quantity: number;
   platformId: number | null;
   platformName: string | null;
-  seats: string | null;
+  section: string | null;
+  rowLabel: string | null;
+  seat: string | null;
   moreInfo: string | null;
   /** marko's own fee for doing the pull - never the ticket price itself (paid by the other person's card, not marko's money). */
   priceCents: number;
   currency: string;
+  /** 1.9.8: no longer settable from the UI - replaced by an automatic
+   * "N days before the event" warning computed from `eventDate` (see
+   * Pulls.tsx). Kept readable here only in case an older pull still has one. */
   transferDeadline: string | null;
   transferDone: boolean;
   transferDoneAt: string | null;
@@ -503,18 +512,20 @@ export interface Pull {
 
 /** Input for `createPull`. `transferDone`/`transferDoneAt` deliberately
  * aren't here - a brand new pull always starts not-transferred; use
- * `setPullTransferDone` (or edit it afterwards) once it's actually done. */
+ * `setPullTransferDone` (or edit it afterwards) once it's actually done.
+ * No `transferDeadline` either as of 1.9.8 - see `Pull`'s comment above. */
 export interface PullInput {
   buyerName: string;
   eventName: string;
   eventDate?: string | null;
   quantity: number;
   platformId?: number | null;
-  seats?: string | null;
+  section?: string | null;
+  rowLabel?: string | null;
+  seat?: string | null;
   moreInfo?: string | null;
   priceCents: number;
   currency: string;
-  transferDeadline?: string | null;
 }
 
 /** Input for `updatePull` - the full edit form. Unlike `PullInput`, this DOES
@@ -526,10 +537,11 @@ export interface PullEditInput {
   eventDate?: string | null;
   quantity: number;
   platformId?: number | null;
-  seats?: string | null;
+  section?: string | null;
+  rowLabel?: string | null;
+  seat?: string | null;
   moreInfo?: string | null;
   priceCents: number;
   currency: string;
-  transferDeadline?: string | null;
   transferDone: boolean;
 }

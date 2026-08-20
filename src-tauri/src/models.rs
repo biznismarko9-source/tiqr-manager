@@ -565,10 +565,20 @@ pub struct DashboardData {
 }
 
 // ---------------------------------------------------------------------------
-// Pull (1.9.7) - buying tickets on someone else's behalf for a fee. See
-// migrations/005_pulls.sql for the full rationale (why this is standalone,
-// not linked to events/orders/tickets/sales/finance.rs). `commands/pulls.rs`
-// has the impl+wrapper functions.
+// Pull (1.9.7, seat fields reshaped in 1.9.8) - buying tickets on someone
+// else's behalf for a fee. See migrations/005_pulls.sql for the full
+// rationale (why this is standalone, not linked to
+// events/orders/tickets/sales/finance.rs) and migrations/006_pulls_seat_
+// fields.sql for why `seats` (one free-text field) became `section`/
+// `row_label`/`seat` (three fields, mirroring `Ticket`'s own shape).
+// `commands/pulls.rs` has the impl+wrapper functions.
+//
+// `transfer_deadline` (on `Pull` only) is a 1.9.7 leftover: 1.9.8 replaced
+// the manual deadline field with an automatic "3 days before the event"
+// warning computed client-side from `event_date`, so nothing in the app
+// sets this column any more (`PullInput`/`PullEditInput` below no longer
+// have it) - it's kept readable here only so old data already in the column
+// isn't hidden, not because anything still writes it.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Clone)]
@@ -582,12 +592,16 @@ pub struct Pull {
     pub quantity: i64,
     pub platform_id: Option<i64>,
     pub platform_name: Option<String>,
-    pub seats: Option<String>,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub seat: Option<String>,
     pub more_info: Option<String>,
     /// marko's own fee for doing the pull - never the ticket price (paid by
     /// the other person's card, not marko's money).
     pub price_cents: i64,
     pub currency: String,
+    /// 1.9.8: no longer settable from the UI - see this section's doc
+    /// comment above. Still readable for any pre-1.9.8 pull that has one.
     pub transfer_deadline: Option<String>,
     pub transfer_done: bool,
     pub transfer_done_at: Option<String>,
@@ -599,6 +613,8 @@ pub struct Pull {
 /// Input for `create_pull`. `transfer_done`/`transfer_done_at` deliberately
 /// aren't here - a brand new pull always starts not-transferred; use
 /// `set_pull_transfer_done` (or edit it afterwards) once it's actually done.
+/// No `transfer_deadline` either as of 1.9.8 - see the section doc comment
+/// above.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PullInput {
@@ -607,11 +623,12 @@ pub struct PullInput {
     pub event_date: Option<String>,
     pub quantity: i64,
     pub platform_id: Option<i64>,
-    pub seats: Option<String>,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub seat: Option<String>,
     pub more_info: Option<String>,
     pub price_cents: i64,
     pub currency: String,
-    pub transfer_deadline: Option<String>,
 }
 
 /// Input for `update_pull` - the full edit form. Unlike `PullInput`, this
@@ -626,10 +643,11 @@ pub struct PullEditInput {
     pub event_date: Option<String>,
     pub quantity: i64,
     pub platform_id: Option<i64>,
-    pub seats: Option<String>,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub seat: Option<String>,
     pub more_info: Option<String>,
     pub price_cents: i64,
     pub currency: String,
-    pub transfer_deadline: Option<String>,
     pub transfer_done: bool,
 }

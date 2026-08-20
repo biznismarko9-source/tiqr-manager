@@ -1,7 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, errMsg } from "../lib/api";
 import type { Platform, Pull, PullEditInput, PullInput } from "../lib/types";
-import { centsToDecimalString, decimalStringToCents, formatDate, formatMoney, todayIso } from "../lib/format";
+import {
+  centsToDecimalString,
+  decimalStringToCents,
+  formatDate,
+  formatMoney,
+  formatSeatLocation,
+  todayIso,
+} from "../lib/format";
 import {
   Button,
   CHECKBOX_CLASS,
@@ -31,7 +38,29 @@ const LIST_CAP = 5000;
 // lastOrdersSearch / Sales.tsx's lastFilters - resets on app restart.
 let lastPullsSearch: string | null = null;
 
+// 1.9.8: how many days before the event the "transfer this!" warning starts
+// showing (and keeps showing every day, escalating once the event date
+// itself has passed) - replaces the old manual "Transfer deadline" field
+// marko had to fill in by hand. Local to this file only.
+const WARNING_WINDOW_DAYS = 3;
+
 type TransferFilter = "all" | "pending" | "done";
+
+/** Whole days between today and `dateIso` (positive = in the future,
+ * negative = already passed). Plain calendar-day difference, not
+ * time-of-day-sensitive - matches how `eventDate`/`todayIso()` are always
+ * plain "YYYY-MM-DD" strings in this app. */
+function daysUntil(dateIso: string): number {
+  const start = new Date(`${todayIso()}T00:00:00`);
+  const end = new Date(dateIso.length <= 10 ? `${dateIso}T00:00:00` : dateIso);
+  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+}
+
+function warningLabel(daysLeft: number): string {
+  if (daysLeft > 0) return `${daysLeft}d left`;
+  if (daysLeft === 0) return "Today!";
+  return `${Math.abs(daysLeft)}d overdue`;
+}
 
 /** Pull (1.9.7): tickets bought on someone else's behalf for a fee. Unlike
  * Orders/Sales, a pull has no child entities (no tickets are generated) so
@@ -149,25 +178,28 @@ export default function Pulls() {
         />
       ) : (
         // Same table-fixed + colgroup convention as Orders.tsx/Sales.tsx.
-        // Fixed columns sum to 638px, leaving Event (the one unspecified
-        // <col>) a ~170px floor at this app's 1080px minimum window width -
-        // same derivation Orders.tsx's own colgroup comment spells out.
-        // Seats/More info are captured in the form but deliberately left out
-        // of this table (would make 10 columns) - see REDESIGN-1.9.7-REPORT.md.
+        // 1.9.8: the Event column now also carries seat location (Sec/Row/
+        // Seat, via the same formatSeatLocation helper Sale Detail uses) and
+        // More info (marko: "90% casu sa tu dava mail, na ktorom su
+        // listky" - important enough to show, not just searchable), so it's
+        // a taller, denser cell than a plain single-line Order/Sales row.
+        // The old manual "Deadline" column is gone - replaced by a warning
+        // that appears automatically starting WARNING_WINDOW_DAYS before the
+        // event date and disappears the moment transfer is marked done.
         // Row click opens the edit modal (no separate Detail page exists for
         // Pull, unlike Order/Sale) - guarded so a click on the checkbox
         // doesn't also open it.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
-              <col className="w-[96px]" />
-              <col className="w-[140px]" />
-              <col />
-              <col className="w-11" />
+              <col className="w-[92px]" />
               <col className="w-[120px]" />
-              <col className="w-[88px]" />
-              <col className="w-[110px]" />
-              <col className="w-[64px]" />
+              <col />
+              <col className="w-10" />
+              <col className="w-[104px]" />
+              <col className="w-[80px]" />
+              <col className="w-[84px]" />
+              <col className="w-[56px]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -177,14 +209,18 @@ export default function Pulls() {
                 <th className="th-c text-right">Ks</th>
                 <th className="th-c">Platform</th>
                 <th className="th-c text-right">Fee</th>
-                <th className="th-c">Deadline</th>
+                <th className="th-c">Warning</th>
                 <th className="th-c text-center">Done</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {pulls.map((p) => {
-                const deadline = p.transferDeadline;
-                const overdue = !p.transferDone && deadline !== null && deadline < todayIso();
+                const daysLeft = p.eventDate ? daysUntil(p.eventDate) : null;
+                const seatLocation = formatSeatLocation(p.section, p.rowLabel, p.seat);
+                const hasSeatInfo = p.section || p.rowLabel || p.seat;
+                const showWarning = !p.transferDone && daysLeft !== null && daysLeft <= WARNING_WINDOW_DAYS;
+                const warningText = daysLeft !== null ? warningLabel(daysLeft) : "";
+                const warningTone = daysLeft !== null && daysLeft <= 0 ? "red" : "amber";
                 return (
                   <tr
                     key={p.id}
@@ -195,44 +231,47 @@ export default function Pulls() {
                     }}
                   >
                     <td
-                      className="td-c truncate font-medium text-slate-900 dark:text-slate-100"
+                      className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
                       title={`Added ${formatDate(p.createdAt)}`}
                     >
                       {p.code}
                     </td>
-                    <td className="td-c truncate" title={p.buyerName}>
+                    <td className="td-c truncate align-top" title={p.buyerName}>
                       {p.buyerName}
                     </td>
-                    <td className="td-c truncate">
-                      <div className="truncate" title={p.eventName}>
+                    <td className="td-c align-top py-2">
+                      <div className="truncate font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
                         {p.eventName}
                       </div>
-                      {p.eventDate && (
-                        <div className="truncate text-xs text-slate-400 dark:text-slate-500">
-                          {formatDate(p.eventDate)}
+                      <div className="truncate text-xs text-slate-400 dark:text-slate-500">
+                        {p.eventDate && formatDate(p.eventDate)}
+                        {p.eventDate && hasSeatInfo && " · "}
+                        {hasSeatInfo && seatLocation}
+                      </div>
+                      {p.moreInfo && (
+                        <div className="truncate text-xs text-slate-400 dark:text-slate-500" title={p.moreInfo}>
+                          {p.moreInfo}
                         </div>
                       )}
                     </td>
-                    <td className="td-c text-right tabular-nums">{p.quantity}</td>
-                    <td className="td-c truncate" title={p.platformName ?? undefined}>
+                    <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
+                    <td className="td-c truncate align-top" title={p.platformName ?? undefined}>
                       {p.platformName ?? "-"}
                     </td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(p.priceCents, p.currency)}</td>
-                    <td className="td-c whitespace-nowrap">
-                      {p.transferDeadline ? (
+                    <td className="td-c text-right align-top tabular-nums">{formatMoney(p.priceCents, p.currency)}</td>
+                    <td className="td-c align-top">
+                      {showWarning && (
                         <span
-                          className={
-                            overdue ? "inline-flex items-center gap-1 font-medium text-red-600 dark:text-red-400" : ""
-                          }
+                          className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium ${
+                            warningTone === "red" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
+                          }`}
                         >
-                          {overdue && <IconAlertTriangle className="h-3.5 w-3.5" />}
-                          {formatDate(p.transferDeadline)}
+                          <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          {warningText}
                         </span>
-                      ) : (
-                        "-"
                       )}
                     </td>
-                    <td className="td-c text-center">
+                    <td className="td-c text-center align-top">
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -316,12 +355,13 @@ function PullFormModal({
   const [eventDate, setEventDate] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [platformId, setPlatformId] = useState<number | null>(null);
-  const [seats, setSeats] = useState("");
+  const [section, setSection] = useState("");
+  const [rowLabel, setRowLabel] = useState("");
+  const [seat, setSeat] = useState("");
   const [moreInfo, setMoreInfo] = useState("");
   const [price, setPrice] = useState("");
   const [currency, setCurrency] = useState("EUR");
   const [customCurrency, setCustomCurrency] = useState(false);
-  const [transferDeadline, setTransferDeadline] = useState("");
   const [transferDone, setTransferDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -335,12 +375,13 @@ function PullFormModal({
       setEventDate(pull.eventDate ?? "");
       setQuantity(String(pull.quantity));
       setPlatformId(pull.platformId);
-      setSeats(pull.seats ?? "");
+      setSection(pull.section ?? "");
+      setRowLabel(pull.rowLabel ?? "");
+      setSeat(pull.seat ?? "");
       setMoreInfo(pull.moreInfo ?? "");
       setPrice(centsToDecimalString(pull.priceCents));
       setCurrency(pull.currency);
       setCustomCurrency(!CURRENCIES.includes(pull.currency));
-      setTransferDeadline(pull.transferDeadline ?? "");
       setTransferDone(pull.transferDone);
     } else {
       setBuyerName("");
@@ -348,12 +389,13 @@ function PullFormModal({
       setEventDate("");
       setQuantity("1");
       setPlatformId(null);
-      setSeats("");
+      setSection("");
+      setRowLabel("");
+      setSeat("");
       setMoreInfo("");
       setPrice("");
       setCurrency("EUR");
       setCustomCurrency(false);
-      setTransferDeadline("");
       setTransferDone(false);
     }
     setError(null);
@@ -380,11 +422,12 @@ function PullFormModal({
           eventDate: eventDate || null,
           quantity: q,
           platformId,
-          seats: seats.trim() || null,
+          section: section.trim() || null,
+          rowLabel: rowLabel.trim() || null,
+          seat: seat.trim() || null,
           moreInfo: moreInfo.trim() || null,
           priceCents,
           currency,
-          transferDeadline: transferDeadline || null,
           transferDone,
         };
         const updated = await api.updatePull(pull.id, input);
@@ -397,11 +440,12 @@ function PullFormModal({
           eventDate: eventDate || null,
           quantity: q,
           platformId,
-          seats: seats.trim() || null,
+          section: section.trim() || null,
+          rowLabel: rowLabel.trim() || null,
+          seat: seat.trim() || null,
           moreInfo: moreInfo.trim() || null,
           priceCents,
           currency,
-          transferDeadline: transferDeadline || null,
         };
         const created = await api.createPull(input);
         toast.success(`Pull ${created.code} created`);
@@ -445,11 +489,17 @@ function PullFormModal({
           </div>
         </FormGroup>
 
-        <FormGroup title="Details">
-          <Field label="Seats" hint="Optional">
-            <Input value={seats} onChange={(e) => setSeats(e.target.value)} />
+        <FormGroup title="Seats & details">
+          <Field label="Section" hint="Optional - leave blank for general admission">
+            <Input value={section} onChange={(e) => setSection(e.target.value)} />
           </Field>
-          <Field label="More info" hint="Optional">
+          <Field label="Row" hint="Optional">
+            <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
+          </Field>
+          <Field label="Seat" hint="Optional">
+            <Input value={seat} onChange={(e) => setSeat(e.target.value)} />
+          </Field>
+          <Field label="More info" hint="Optional - e.g. the email the tickets will arrive on">
             <Textarea rows={2} value={moreInfo} onChange={(e) => setMoreInfo(e.target.value)} />
           </Field>
         </FormGroup>
@@ -486,20 +536,24 @@ function PullFormModal({
               </Select>
             )}
           </div>
-          <Field label="Transfer deadline" hint="By when the tickets must be transferred">
-            <Input type="date" value={transferDeadline} onChange={(e) => setTransferDeadline(e.target.value)} />
-          </Field>
-          {editing && (
-            <label className="flex items-center gap-2 self-end pb-2">
-              <input
-                type="checkbox"
-                className={CHECKBOX_CLASS}
-                checked={transferDone}
-                onChange={(e) => setTransferDone(e.target.checked)}
-              />
-              <span className="text-sm text-slate-700 dark:text-slate-300">Transfer done</span>
-            </label>
-          )}
+          <div className="col-span-2">
+            {editing ? (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className={CHECKBOX_CLASS}
+                  checked={transferDone}
+                  onChange={(e) => setTransferDone(e.target.checked)}
+                />
+                <span className="text-sm text-slate-700 dark:text-slate-300">Transfer done</span>
+              </label>
+            ) : (
+              <p className="text-xs text-slate-400 dark:text-slate-500">
+                A warning appears automatically starting {WARNING_WINDOW_DAYS} days before the event date, and every
+                day after that, until this pull is marked as transferred.
+              </p>
+            )}
+          </div>
         </FormGroup>
       </div>
 

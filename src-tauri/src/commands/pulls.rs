@@ -1,7 +1,13 @@
 //! Pull (1.9.7): buying tickets on someone else's behalf for a fee. See
 //! migrations/005_pulls.sql for the full feature rationale and why this is
 //! deliberately standalone (no FK to events/orders/tickets/sales, never
-//! folded into finance.rs/Dashboard numbers).
+//! folded into finance.rs/Dashboard numbers). 1.9.8 (migrations/
+//! 006_pulls_seat_fields.sql) reshaped the old single `seats` free-text
+//! field into `section`/`row_label`/`seat`, mirroring `Ticket`'s own shape,
+//! and dropped the manual `transfer_deadline` input in favor of a
+//! client-side "N days before the event" warning computed from `event_date`
+//! (see `Pull.transfer_deadline`'s doc comment in models.rs for why the
+//! column itself is still kept around, just unused going forward).
 
 use crate::codes;
 use crate::db::AppState;
@@ -17,9 +23,9 @@ const LIST_CAP: i64 = 5000;
 
 const BASE_SQL: &str = "
     SELECT p.id, p.code, p.buyer_name, p.event_name, p.event_date, p.quantity,
-      p.platform_id, pl.name as platform_name, p.seats, p.more_info,
-      p.price_cents, p.currency, p.transfer_deadline, p.transfer_done, p.transfer_done_at,
-      p.is_demo, p.created_at, p.updated_at
+      p.platform_id, pl.name as platform_name, p.section, p.row_label, p.seat,
+      p.more_info, p.price_cents, p.currency, p.transfer_deadline, p.transfer_done,
+      p.transfer_done_at, p.is_demo, p.created_at, p.updated_at
     FROM pulls p
     LEFT JOIN platforms pl ON pl.id = p.platform_id
 ";
@@ -34,7 +40,9 @@ fn map_pull(row: &Row) -> rusqlite::Result<Pull> {
         quantity: row.get("quantity")?,
         platform_id: row.get("platform_id")?,
         platform_name: row.get("platform_name")?,
-        seats: row.get("seats")?,
+        section: row.get("section")?,
+        row_label: row.get("row_label")?,
+        seat: row.get("seat")?,
         more_info: row.get("more_info")?,
         price_cents: row.get("price_cents")?,
         currency: row.get("currency")?,
@@ -54,9 +62,9 @@ fn fetch_one(conn: &Connection, id: i64) -> AppResult<Pull> {
 }
 
 /// Free-text search across every field marko would actually recognize a
-/// pull by (buyer, event, own code, platform, seats, more info) - same
-/// `LIKE` OR-chain convention as list_orders_impl's search, just without a
-/// semi-join since pulls has no child rows to search through.
+/// pull by (buyer, event, own code, platform, section/row/seat, more info) -
+/// same `LIKE` OR-chain convention as list_orders_impl's search, just
+/// without a semi-join since pulls has no child rows to search through.
 fn list_pulls_impl(conn: &Connection, search: Option<String>, transfer_done: Option<bool>) -> AppResult<Vec<Pull>> {
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
@@ -69,10 +77,11 @@ fn list_pulls_impl(conn: &Connection, search: Option<String>, transfer_done: Opt
         let q = q.trim();
         if !q.is_empty() {
             sql.push_str(
-                " AND (p.buyer_name LIKE ? OR p.event_name LIKE ? OR p.code LIKE ? OR pl.name LIKE ? OR p.seats LIKE ? OR p.more_info LIKE ?)",
+                " AND (p.buyer_name LIKE ? OR p.event_name LIKE ? OR p.code LIKE ? OR pl.name LIKE ? \
+                 OR p.section LIKE ? OR p.row_label LIKE ? OR p.seat LIKE ? OR p.more_info LIKE ?)",
             );
             let like = format!("%{q}%");
-            for _ in 0..6 {
+            for _ in 0..8 {
                 params_vec.push(Box::new(like.clone()));
             }
         }
@@ -136,8 +145,8 @@ pub(crate) fn create_pull_impl(conn: &Connection, input: &PullInput, is_demo: bo
     let code = codes::next_code(conn, "pull", "PULL")?;
     conn.execute(
         "INSERT INTO pulls (code, buyer_name, event_name, event_date, quantity, platform_id,
-           seats, more_info, price_cents, currency, transfer_deadline, is_demo)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+           section, row_label, seat, more_info, price_cents, currency, is_demo)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![
             code,
             input.buyer_name.trim(),
@@ -145,11 +154,12 @@ pub(crate) fn create_pull_impl(conn: &Connection, input: &PullInput, is_demo: bo
             input.event_date,
             input.quantity,
             input.platform_id,
-            input.seats,
+            input.section,
+            input.row_label,
+            input.seat,
             input.more_info,
             input.price_cents,
             input.currency,
-            input.transfer_deadline,
             is_demo as i64,
         ],
     )?;
@@ -163,9 +173,9 @@ pub fn create_pull(state: State<AppState>, input: PullInput) -> AppResult<Pull> 
     create_pull_impl(&conn, &input, false)
 }
 
-/// Full-edit path (buyer/event/quantity/platform/seats/more info/price/
-/// currency/deadline, AND transfer_done - see `PullEditInput`'s doc comment
-/// for why the checkbox is correctable here too). `transfer_done_at` is kept
+/// Full-edit path (buyer/event/quantity/platform/section/row/seat/more info/
+/// price/currency, AND transfer_done - see `PullEditInput`'s doc comment for
+/// why the checkbox is correctable here too). `transfer_done_at` is kept
 /// consistent with whatever `transfer_done` ends up being via the same
 /// three-way rule `set_pull_transfer_done_impl` uses below: only touched on
 /// an actual false->true or true->false flip, left exactly as it was on a
@@ -198,11 +208,11 @@ pub(crate) fn update_pull_impl(conn: &Connection, id: i64, input: &PullEditInput
     let sql = format!(
         "UPDATE pulls SET
             buyer_name = ?1, event_name = ?2, event_date = ?3, quantity = ?4,
-            platform_id = ?5, seats = ?6, more_info = ?7, price_cents = ?8,
-            currency = ?9, transfer_deadline = ?10, transfer_done = ?11,
+            platform_id = ?5, section = ?6, row_label = ?7, seat = ?8, more_info = ?9,
+            price_cents = ?10, currency = ?11, transfer_done = ?12,
             transfer_done_at = {transfer_done_at_sql},
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?12"
+         WHERE id = ?13"
     );
     let updated = conn.execute(
         &sql,
@@ -212,11 +222,12 @@ pub(crate) fn update_pull_impl(conn: &Connection, id: i64, input: &PullEditInput
             input.event_date,
             input.quantity,
             input.platform_id,
-            input.seats,
+            input.section,
+            input.row_label,
+            input.seat,
             input.more_info,
             input.price_cents,
             input.currency,
-            input.transfer_deadline,
             input.transfer_done as i64,
             id,
         ],
@@ -286,11 +297,12 @@ mod tests {
             event_date: Some("2026-09-01".to_string()),
             quantity: 2,
             platform_id: None,
-            seats: None,
+            section: None,
+            row_label: None,
+            seat: None,
             more_info: None,
             price_cents: 1500,
             currency: "EUR".to_string(),
-            transfer_deadline: Some("2026-08-20".to_string()),
         }
     }
 
@@ -301,11 +313,12 @@ mod tests {
             event_date: p.event_date.clone(),
             quantity: p.quantity,
             platform_id: p.platform_id,
-            seats: p.seats.clone(),
+            section: p.section.clone(),
+            row_label: p.row_label.clone(),
+            seat: p.seat.clone(),
             more_info: p.more_info.clone(),
             price_cents: p.price_cents,
             currency: p.currency.clone(),
-            transfer_deadline: p.transfer_deadline.clone(),
             transfer_done,
         }
     }
@@ -388,6 +401,28 @@ mod tests {
         assert!(p.platform_name.is_none());
     }
 
+    #[test]
+    fn create_pull_stores_section_row_and_seat() {
+        let conn = test_conn();
+        let mut input = base_input("Jano");
+        input.section = Some("Floor".to_string());
+        input.row_label = Some("A".to_string());
+        input.seat = Some("12".to_string());
+        let p = create_pull_impl(&conn, &input, false).unwrap();
+        assert_eq!(p.section.as_deref(), Some("Floor"));
+        assert_eq!(p.row_label.as_deref(), Some("A"));
+        assert_eq!(p.seat.as_deref(), Some("12"));
+    }
+
+    #[test]
+    fn create_pull_leaves_section_row_seat_null_when_general_admission() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        assert!(p.section.is_none());
+        assert!(p.row_label.is_none());
+        assert!(p.seat.is_none());
+    }
+
     // ---- list / search ------------------------------------------------------
 
     #[test]
@@ -435,6 +470,39 @@ mod tests {
     }
 
     #[test]
+    fn list_pulls_search_finds_by_section() {
+        let conn = test_conn();
+        let mut input = base_input("Jano");
+        input.section = Some("VIP Floor".to_string());
+        create_pull_impl(&conn, &input, false).unwrap();
+        create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
+        let results = list_pulls_impl(&conn, Some("vip floor".to_string()), None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn list_pulls_search_finds_by_row_label() {
+        let conn = test_conn();
+        let mut input = base_input("Jano");
+        input.row_label = Some("Row Z".to_string());
+        create_pull_impl(&conn, &input, false).unwrap();
+        create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
+        let results = list_pulls_impl(&conn, Some("row z".to_string()), None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn list_pulls_search_finds_by_seat() {
+        let conn = test_conn();
+        let mut input = base_input("Jano");
+        input.seat = Some("Seat 42".to_string());
+        create_pull_impl(&conn, &input, false).unwrap();
+        create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
+        let results = list_pulls_impl(&conn, Some("seat 42".to_string()), None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
     fn list_pulls_search_by_nonexistent_term_returns_no_results() {
         let conn = test_conn();
         create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
@@ -470,6 +538,20 @@ mod tests {
         let updated = update_pull_impl(&conn, p.id, &edit).unwrap();
         assert_eq!(updated.buyer_name, "Jano Novak");
         assert_eq!(updated.price_cents, 2000);
+    }
+
+    #[test]
+    fn update_pull_can_set_section_row_and_seat() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let mut edit = edit_input_from(&p, false);
+        edit.section = Some("Floor".to_string());
+        edit.row_label = Some("B".to_string());
+        edit.seat = Some("7".to_string());
+        let updated = update_pull_impl(&conn, p.id, &edit).unwrap();
+        assert_eq!(updated.section.as_deref(), Some("Floor"));
+        assert_eq!(updated.row_label.as_deref(), Some("B"));
+        assert_eq!(updated.seat.as_deref(), Some("7"));
     }
 
     #[test]
