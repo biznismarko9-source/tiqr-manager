@@ -471,3 +471,65 @@ export interface AppInfo {
 export interface RestoreOutcome {
   safetyBackupPath: string;
 }
+
+// ---------------------------------------------------------------------------
+// Pull (1.9.7) - buying tickets on someone else's behalf for a fee. See
+// src-tauri/migrations/005_pulls.sql for the full feature rationale.
+// Deliberately not linked to Event/Order/Ticket/Sale - see that file's
+// comment for why.
+// ---------------------------------------------------------------------------
+
+export interface Pull {
+  id: number;
+  code: string;
+  buyerName: string;
+  eventName: string;
+  eventDate: string | null;
+  quantity: number;
+  platformId: number | null;
+  platformName: string | null;
+  seats: string | null;
+  moreInfo: string | null;
+  /** marko's own fee for doing the pull - never the ticket price itself (paid by the other person's card, not marko's money). */
+  priceCents: number;
+  currency: string;
+  transferDeadline: string | null;
+  transferDone: boolean;
+  transferDoneAt: string | null;
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Input for `createPull`. `transferDone`/`transferDoneAt` deliberately
+ * aren't here - a brand new pull always starts not-transferred; use
+ * `setPullTransferDone` (or edit it afterwards) once it's actually done. */
+export interface PullInput {
+  buyerName: string;
+  eventName: string;
+  eventDate?: string | null;
+  quantity: number;
+  platformId?: number | null;
+  seats?: string | null;
+  moreInfo?: string | null;
+  priceCents: number;
+  currency: string;
+  transferDeadline?: string | null;
+}
+
+/** Input for `updatePull` - the full edit form. Unlike `PullInput`, this DOES
+ * include `transferDone` (so a mistaken checkbox click, or backfilling older
+ * data, can be corrected here too). */
+export interface PullEditInput {
+  buyerName: string;
+  eventName: string;
+  eventDate?: string | null;
+  quantity: number;
+  platformId?: number | null;
+  seats?: string | null;
+  moreInfo?: string | null;
+  priceCents: number;
+  currency: string;
+  transferDeadline?: string | null;
+  transferDone: boolean;
+}

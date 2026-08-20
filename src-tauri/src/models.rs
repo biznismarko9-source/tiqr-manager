@@ -563,3 +563,73 @@ pub struct DashboardData {
     /// appropriately without re-deriving the same span logic itself.
     pub time_series_granularity: String,
 }
+
+// ---------------------------------------------------------------------------
+// Pull (1.9.7) - buying tickets on someone else's behalf for a fee. See
+// migrations/005_pulls.sql for the full rationale (why this is standalone,
+// not linked to events/orders/tickets/sales/finance.rs). `commands/pulls.rs`
+// has the impl+wrapper functions.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Pull {
+    pub id: i64,
+    pub code: String,
+    pub buyer_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    pub platform_id: Option<i64>,
+    pub platform_name: Option<String>,
+    pub seats: Option<String>,
+    pub more_info: Option<String>,
+    /// marko's own fee for doing the pull - never the ticket price (paid by
+    /// the other person's card, not marko's money).
+    pub price_cents: i64,
+    pub currency: String,
+    pub transfer_deadline: Option<String>,
+    pub transfer_done: bool,
+    pub transfer_done_at: Option<String>,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for `create_pull`. `transfer_done`/`transfer_done_at` deliberately
+/// aren't here - a brand new pull always starts not-transferred; use
+/// `set_pull_transfer_done` (or edit it afterwards) once it's actually done.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PullInput {
+    pub buyer_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    pub platform_id: Option<i64>,
+    pub seats: Option<String>,
+    pub more_info: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub transfer_deadline: Option<String>,
+}
+
+/// Input for `update_pull` - the full edit form. Unlike `PullInput`, this
+/// DOES include `transfer_done` (so a mistaken checkbox click, or backfilling
+/// older data, can be corrected here too) - see `update_pull_impl`'s doc
+/// comment for how `transfer_done_at` is kept consistent with it either way.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PullEditInput {
+    pub buyer_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    pub platform_id: Option<i64>,
+    pub seats: Option<String>,
+    pub more_info: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub transfer_deadline: Option<String>,
+    pub transfer_done: bool,
+}

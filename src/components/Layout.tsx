@@ -8,6 +8,7 @@ import {
   IconReceipt,
   IconSettings,
   IconTicket,
+  IconUsers,
 } from "./icons";
 import { checkForUpdate } from "../lib/updater";
 import { useToast } from "../lib/toast";
@@ -20,6 +21,7 @@ const NAV = [
   { to: "/tickets", label: "Tickets", icon: IconTicket },
   { to: "/sales", label: "Sales", icon: IconReceipt },
   { to: "/inventory", label: "Inventory", icon: IconBoxes },
+  { to: "/pulls", label: "Pulls", icon: IconUsers },
   { to: "/settings", label: "Settings", icon: IconSettings },
 ];
 

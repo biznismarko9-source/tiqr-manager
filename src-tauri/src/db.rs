@@ -27,6 +27,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "004_sales_active_unique",
         include_str!("../migrations/004_sales_active_unique.sql"),
     ),
+    (
+        "005_pulls",
+        include_str!("../migrations/005_pulls.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

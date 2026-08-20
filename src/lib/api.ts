@@ -15,6 +15,9 @@ import type {
   OrderRecord,
   OrderSalesSummary,
   Platform,
+  Pull,
+  PullEditInput,
+  PullInput,
   RestoreOutcome,
   Sale,
   SaleBatchInput,
@@ -66,6 +69,16 @@ export const api = {
   /** 1.8.3: set one field to one value across many tickets at once, in a single all-or-nothing transaction. */
   bulkUpdateTickets: (input: BulkTicketUpdateInput) => invoke<Ticket[]>("bulk_update_tickets", { input }),
   bulkUpdateTicketStatus: (input: BulkTicketStatusInput) => invoke<Ticket[]>("bulk_update_ticket_status", { input }),
+
+  // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
+  // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.
+  listPulls: (params: { search?: string; transferDone?: boolean } = {}) => invoke<Pull[]>("list_pulls", params),
+  getPull: (id: number) => invoke<Pull>("get_pull", { id }),
+  createPull: (input: PullInput) => invoke<Pull>("create_pull", { input }),
+  updatePull: (id: number, input: PullEditInput) => invoke<Pull>("update_pull", { id, input }),
+  deletePull: (id: number) => invoke<void>("delete_pull", { id }),
+  /** Dedicated quick-action for the Pulls list's inline "Done" checkbox - see set_pull_transfer_done_impl (pulls.rs). */
+  setPullTransferDone: (id: number, done: boolean) => invoke<Pull>("set_pull_transfer_done", { id, done }),
 
   // Sales
   listSales: (params: {

@@ -11,6 +11,7 @@ import Tickets from "./pages/Tickets";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
+import Pulls from "./pages/Pulls";
 import Settings from "./pages/Settings";
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="inventory" element={<Inventory />} />
             <Route path="sales" element={<Sales />} />
             <Route path="sales/:id" element={<SaleDetail />} />
+            <Route path="pulls" element={<Pulls />} />
             <Route path="settings" element={<Settings />} />
             {/* 1.8.2: Settings Home (above) plus one real route per section -
                 HashRouter makes this refresh-stable with zero extra config,
