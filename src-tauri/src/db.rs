@@ -607,7 +607,7 @@ mod migration_004_tests {
 
 /// Regression coverage for migration 007 (the `payments` table). The 2.0.0
 /// Payments Ledger feature that used to read/write this table was reverted
-/// in 1.9.11 (marko tried it and decided against it) - but the migration
+/// in 2.0.1 (marko tried it and decided against it) - but the migration
 /// itself, and any real `payments` rows an already-installed 2.0.0 build may
 /// have written, must never be touched: migrations are forward-only (see
 /// this file's module doc comment), and this table can hold real user data
@@ -616,7 +616,7 @@ mod migration_004_tests {
 /// 001-006 already applied, with real sales/orders data sitting under the
 /// old schema - opening the app after an update) but only proves the
 /// migration itself is still safe and the table it creates is usable via
-/// plain SQL - it no longer exercises payments.rs (removed in 1.9.11, since
+/// plain SQL - it no longer exercises payments.rs (removed in 2.0.1, since
 /// nothing in the app calls into it any more).
 #[cfg(test)]
 mod migration_007_tests {
@@ -711,7 +711,7 @@ mod migration_007_tests {
 
         // The table is immediately usable via plain SQL against this
         // pre-existing data, even though nothing in the app writes to it any
-        // more after 1.9.11 - a stray already-upgraded 2.0.0 install must
+        // more after 2.0.1 - a stray already-upgraded 2.0.0 install must
         // never see the table become unusable/corrupt.
         conn.execute(
             "INSERT INTO payments (code, sale_group_key, amount_cents, currency, payment_date, method)
