@@ -43,6 +43,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "008_sheet_sync",
         include_str!("../migrations/008_sheet_sync.sql"),
     ),
+    (
+        "009_orders_external_reference",
+        include_str!("../migrations/009_orders_external_reference.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

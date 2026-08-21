@@ -1,0 +1,16 @@
+-- 009_orders_external_reference
+-- Orders/Tickets Google Sheet sync (commands/orders_sheet_sync.rs, 2.0.8)
+-- needs somewhere to keep the sheet's own "Order ID" column - marko's own
+-- reference for that order, independent of this app's generated `code`
+-- (e.g. "ORD-000001"). Deliberately NOT added to OrderInput/the create/edit
+-- forms - `OrderInput` is built via struct literal in 11 places across 6
+-- files (models.rs, db.rs, sales.rs, csv_import.rs, tickets.rs, orders.rs,
+-- csv_export.rs), so a new required-at-construction field would mean editing
+-- every one of them for a value only the sheet sync path ever actually sets.
+-- A plain nullable column, written by a single follow-up UPDATE right after
+-- an order is created, avoids all of that - see apply_order_rows.
+--
+-- Purely additive - touches no existing row, no existing query. NULL for
+-- every order that isn't linked to a sheet (i.e. everything created before
+-- 2.0.8, and anything typed by hand afterwards).
+ALTER TABLE orders ADD COLUMN external_reference TEXT;

@@ -6,12 +6,13 @@ import { api, errMsg } from "../lib/api";
 import {
   CURRENCY_OPTIONS,
   type AppInfo,
+  type CreatedSheetResult,
   type CsvPreview,
   type GoogleSignInStatus,
   type Platform,
-  type PullsSyncResult,
   type SheetsConnectionStatus,
   type SheetsConnectionTestResult,
+  type SheetSyncResult,
 } from "../lib/types";
 import {
   Badge,
@@ -69,7 +70,7 @@ const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
 const SECTIONS = [
   { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
   { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
-  { key: "integrations", title: "Integrations", description: "Connect Pulls to a Google Sheet.", icon: IconLink },
+  { key: "integrations", title: "Integrations", description: "Connect Pulls, Orders and Tickets to a Google Sheet.", icon: IconLink },
   { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
 ];
@@ -420,7 +421,31 @@ export default function Settings() {
           {section === "integrations" && (
             <div className="grid grid-cols-1 gap-4 lg:max-w-3xl">
               <GoogleSignInCard onChange={setGoogleStatus} />
-              <SheetsConnectionCard dataSource="pulls" label="Pulls" canSync googleStatus={googleStatus} />
+              <SheetsConnectionCard
+                dataSource="pulls"
+                label="Pulls"
+                googleStatus={googleStatus}
+                onSync={api.syncPulls}
+                syncDescription={`"Sync now" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, except its own row IDs.`}
+                onCreate={api.createPullsSheet}
+                currencyHint="Applies to every row synced from this sheet - it has no currency column of its own."
+              />
+              {/* 2.0.8: one row = one order (marko's own choice) - creates the
+                  order and all its tickets from the sheet's first batch of
+                  columns; the sheet's second batch (Sales) is a later,
+                  separate sync against these same rows - see
+                  commands/orders_sheet_sync.rs's module doc comment. No
+                  "Create a new sheet for me" here yet (onCreate omitted) -
+                  marko already has a real sheet, unlike Pulls' original
+                  from-scratch setup. */}
+              <SheetsConnectionCard
+                dataSource="orders"
+                label="Orders & Tickets"
+                googleStatus={googleStatus}
+                onSync={api.syncOrders}
+                syncDescription={`"Sync now" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
+                currencyHint="Used only when a row's own currency cell is blank - a row with its own currency uses that instead."
+              />
             </div>
           )}
 
@@ -711,18 +736,38 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 function SheetsConnectionCard({
   dataSource,
   label,
-  canSync,
+  onSync,
+  syncDescription,
+  onCreate,
+  currencyHint,
   googleStatus,
 }: {
   dataSource: string;
   label: string;
-  /** 2.0.3: only Pulls has real sync logic (commands::pulls_sheet_sync) so
-   * far - a future Tickets card can reuse this whole component, just
-   * without "Sync now" yet, until its own sync logic exists. 2.0.4: also
-   * gates "Create a new sheet for me" (commands::pulls_sheet_sync::
-   * create_pulls_sheet), which is equally Pulls-specific - both flags travel
-   * together until a second data source gets its own real backend logic. */
-  canSync?: boolean;
+  /** The "Sync now" call for this data source, e.g. api.syncPulls /
+   * api.syncOrders. 2.0.3: only Pulls had this at first; 2.0.8 generalized it
+   * to a prop (was a hardcoded api.syncPulls() call) so a second data source
+   * could bring its own sync function without this component needing to
+   * know which one it is. Omit for a data source with no sync logic yet
+   * (connection-only, like Sales before its own sync ships) - the card still
+   * lets you connect/test but hides "Sync now" entirely. */
+  onSync?: () => Promise<SheetSyncResult>;
+  /** Shown next to "Sync now" explaining exactly what it does for this data
+   * source - each one behaves differently (Pulls creates+updates; Orders v1
+   * only ever creates, see commands/orders_sheet_sync.rs's module doc
+   * comment) so one shared sentence would misdescribe at least one of them.
+   * Required whenever `onSync` is set. */
+  syncDescription?: string;
+  /** "Create a new sheet for me", e.g. api.createPullsSheet. 2.0.8:
+   * generalized to a prop alongside onSync, but kept independent of it -
+   * Orders has real sync logic but, unlike Pulls' original from-scratch
+   * setup, no auto-create-a-blank-sheet flow yet (marko already has a real
+   * sheet). Omit to hide that whole section. */
+  onCreate?: (email: string, currency: string) => Promise<CreatedSheetResult>;
+  /** Currency field's hint text - differs because Pulls' sheet has no
+   * currency column of its own (one currency applies to every row) while
+   * Orders' does (per-row, this is just the fallback for a blank cell). */
+  currencyHint: string;
   /** 2.0.5: from GoogleSignInCard via the parent Settings component - see
    * that state's own comment for why it is fetched once up there rather
    * than a second time in here. */
@@ -738,7 +783,7 @@ function SheetsConnectionCard({
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "test" | "sync" | "create" | "disconnect" | null>(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
-  const [syncResult, setSyncResult] = useState<PullsSyncResult | null>(null);
+  const [syncResult, setSyncResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const oauthEmail = googleStatus?.signedInEmail ?? null;
@@ -785,10 +830,11 @@ function SheetsConnectionCard({
   // `currency` state as the paste-URL form either way, so there is only ever
   // one currency selector on this card.
   const doCreate = async () => {
+    if (!onCreate) return;
     setBusy("create");
     setCreatedUrl(null);
     try {
-      const result = await api.createPullsSheet(oauthEmail ?? createEmail, currency);
+      const result = await onCreate(oauthEmail ?? createEmail, currency);
       setCreatedUrl(result.spreadsheetUrl);
       setCreateEmail("");
       toast.success(oauthEmail ? "New sheet created in your Google Drive" : "New sheet created and shared");
@@ -813,10 +859,11 @@ function SheetsConnectionCard({
   };
 
   const doSync = async () => {
+    if (!onSync) return;
     setBusy("sync");
     setSyncResult(null);
     try {
-      const result = await api.syncPulls();
+      const result = await onSync();
       setSyncResult(result);
       toast.success(`Synced: ${result.created} created, ${result.updated} updated, ${result.unchanged} unchanged`);
       reload();
@@ -869,8 +916,8 @@ function SheetsConnectionCard({
         <>
           <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
             Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.{" "}
-            {canSync
-              ? "\"Sync now\" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, only its own row IDs."
+            {onSync
+              ? syncDescription
               : `Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
             {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
           </p>
@@ -887,7 +934,7 @@ function SheetsConnectionCard({
               <Field label="Sheet/tab name">
                 <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
               </Field>
-              <Field label="Currency" hint="Applies to every row synced from this sheet - it has no currency column of its own.">
+              <Field label="Currency" hint={currencyHint}>
                 <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
                   {CURRENCY_OPTIONS.map((c) => (
                     <option key={c} value={c}>
@@ -914,7 +961,7 @@ function SheetsConnectionCard({
                   {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
                   Test connection
                 </Button>
-                {canSync && (
+                {onSync && (
                   <Button variant="secondary" disabled={busy === "sync"} onClick={doSync}>
                     {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
                     {busy === "sync" ? "Syncing..." : "Sync now"}
@@ -927,7 +974,7 @@ function SheetsConnectionCard({
             )}
           </div>
 
-          {!connected && canSync && (
+          {!connected && onCreate && (
             <>
               <div className="my-4 flex items-center gap-3">
                 <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />

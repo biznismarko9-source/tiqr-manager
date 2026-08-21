@@ -597,8 +597,9 @@ export interface CreatedSheetResult {
 }
 
 // ---------------------------------------------------------------------------
-// Pulls <-> Google Sheet row sync (2.0.3). Sheet -> app only - see
-// commands/pulls_sheet_sync.rs's module doc comment.
+// Sheet <-> app row sync (2.0.3, generalized 2.0.8). Sheet -> app only - see
+// commands/pulls_sheet_sync.rs's and commands/orders_sheet_sync.rs's module
+// doc comments.
 // ---------------------------------------------------------------------------
 
 export interface SheetSyncIssue {
@@ -606,7 +607,11 @@ export interface SheetSyncIssue {
   message: string;
 }
 
-export interface PullsSyncResult {
+/** Result of one "Sync now" run, shown as-is in Settings -> Integrations.
+ * Named generically (not e.g. "PullsSyncResult") since 2.0.8 - this shape was
+ * never actually specific to Pulls, and commands::orders_sheet_sync reuses it
+ * verbatim for Orders/Tickets sync. */
+export interface SheetSyncResult {
   created: number;
   updated: number;
   unchanged: number;

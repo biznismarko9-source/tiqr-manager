@@ -20,7 +20,6 @@ import type {
   Pull,
   PullEditInput,
   PullInput,
-  PullsSyncResult,
   RestoreOutcome,
   Sale,
   SaleBatchInput,
@@ -30,6 +29,7 @@ import type {
   SheetsConnectionConfig,
   SheetsConnectionStatus,
   SheetsConnectionTestResult,
+  SheetSyncResult,
   Supplier,
   Ticket,
   TicketUpdateInput,
@@ -187,12 +187,16 @@ export const api = {
   testSheetsConnection: (dataSource: string) => invoke<SheetsConnectionTestResult>("test_sheets_connection", { dataSource }),
   /** 2.0.3: reads the connected sheet and creates/updates matching Pulls -
    * sheet -> app only, see commands/pulls_sheet_sync.rs. */
-  syncPulls: () => invoke<PullsSyncResult>("sync_pulls"),
+  syncPulls: () => invoke<SheetSyncResult>("sync_pulls"),
   /** 2.0.4: auto-creates a brand-new Pulls sheet, shares it with `email`, and
    * connects it - no Google sign-in window. Sits next to setSheetsConnection
    * as a second way to arrive at a connection, not a replacement for it. */
   createPullsSheet: (email: string, currency: string) =>
     invoke<CreatedSheetResult>("create_pulls_sheet", { email, currency }),
+  /** 2.0.8: reads the connected sheet and creates a new order (with its
+   * tickets) for every row it hasn't seen before - creation-only, sheet ->
+   * app only, see commands/orders_sheet_sync.rs. */
+  syncOrders: () => invoke<SheetSyncResult>("sync_orders"),
   /** 2.0.5: installation-wide "Sign in with Google" - see
    * commands/google_auth.rs's module doc comment. `startGoogleSignIn` opens
    * the system browser and blocks (up to 5 minutes) until the person

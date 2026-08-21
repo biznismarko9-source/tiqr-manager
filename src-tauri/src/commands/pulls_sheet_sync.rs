@@ -55,7 +55,7 @@ use crate::commands::sheets_sync::{last_synced_key, load_connection, set_setting
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{CreatedSheetResult, PullEditInput, PullInput, PullsSyncResult, SheetSyncIssue};
+use crate::models::{CreatedSheetResult, PullEditInput, PullInput, SheetSyncIssue, SheetSyncResult};
 use crate::money::parse_decimal_to_cents;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -279,7 +279,14 @@ fn parse_sheet_date(raw: &str) -> Result<Option<String>, String> {
 /// real date, but a wildly out-of-range one reads more like a mistake (a
 /// stray row number, a quantity typed in the wrong column) than an
 /// intentional 15th- or 22nd-century pull.
-fn parse_sheet_serial_date(digits: &str) -> Result<Option<String>, String> {
+///
+/// `pub(crate)` (not just `fn`) since 2.0.8: commands::orders_sheet_sync
+/// reuses this exact same conversion for its own "Date (DD/MM/YYYY)" column,
+/// which hits the identical Sheets serial-number wire format whenever
+/// someone types an actual date rather than plain text - no reason to
+/// duplicate the epoch/range logic a second time for the same underlying
+/// fact.
+pub(crate) fn parse_sheet_serial_date(digits: &str) -> Result<Option<String>, String> {
     let serial: i64 = digits.parse().map_err(|_| format!("'{digits}' is not a recognized date"))?;
     let epoch = chrono::NaiveDate::from_ymd_opt(1899, 12, 30).expect("1899-12-30 is a valid calendar date");
     let date = epoch
@@ -399,7 +406,7 @@ fn apply_pull_rows(
     data_rows: &[Vec<String>],
     currency: &str,
     marker_col_index: usize,
-) -> AppResult<(PullsSyncResult, Vec<(usize, String)>)> {
+) -> AppResult<(SheetSyncResult, Vec<(usize, String)>)> {
     let map = build_header_map(headers);
     check_required_headers(&map)?;
 
@@ -415,7 +422,7 @@ fn apply_pull_rows(
     let transfer_col = find_col(&map, &["transfer"]);
     let price_col = find_col(&map, &["price"]);
 
-    let mut result = PullsSyncResult {
+    let mut result = SheetSyncResult {
         created: 0,
         updated: 0,
         unchanged: 0,
@@ -648,7 +655,7 @@ fn apply_pull_rows(
 // module doc comment for why this half can't be exercised in this sandbox.
 // ---------------------------------------------------------------------------
 
-fn sync_pulls_impl(conn: &Connection) -> AppResult<PullsSyncResult> {
+fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let connection = load_connection(conn, "pulls")?
         .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Pulls yet - connect one in Settings first.".to_string()))?;
     // 2.0.5: the signed-in person's own OAuth token when there is one, the
@@ -695,7 +702,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<PullsSyncResult> {
 /// Manual "Sync now" button (Settings -> Integrations, Pulls card). Never
 /// runs on its own.
 #[tauri::command]
-pub fn sync_pulls(state: State<AppState>) -> AppResult<PullsSyncResult> {
+pub fn sync_pulls(state: State<AppState>) -> AppResult<SheetSyncResult> {
     let conn = state.db.lock().unwrap();
     sync_pulls_impl(&conn)
 }

@@ -739,9 +739,14 @@ pub struct SheetSyncIssue {
 }
 
 /// Result of one "Sync now" run, shown as-is in Settings -> Integrations.
+/// Named generically (not e.g. `PullsSyncResult`) since 2.0.8, matching
+/// `SheetSyncIssue` right above it - this shape was never actually specific
+/// to Pulls, it's just "how many rows did what" plus row-level issues, and
+/// commands::orders_sheet_sync (2.0.8) reuses it verbatim for Orders/Tickets
+/// sync rather than a second, identically-shaped struct.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PullsSyncResult {
+pub struct SheetSyncResult {
     pub created: i64,
     pub updated: i64,
     pub unchanged: i64,
