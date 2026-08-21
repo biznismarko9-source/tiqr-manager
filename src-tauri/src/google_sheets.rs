@@ -217,6 +217,27 @@ where
     Ok(grid.into_iter().map(|row| row.into_iter().map(cell_json_to_string).collect()).collect())
 }
 
+/// Formats a sheet/tab name and a plain cell range (e.g. `"A1:Z"`, `"B12"`)
+/// into one valid A1-notation range string, e.g. `'My Tab'!A1:Z`. Always
+/// wraps the tab name in single quotes and doubles any embedded single quote
+/// (the standard A1-notation escape - identical to Excel's own range syntax)
+/// rather than only quoting when it looks "necessary": a bare single-word
+/// name like `Pulls` is exactly as valid quoted as unquoted, so always
+/// quoting means this never has to guess which names need it.
+///
+/// This is not optional for a real sheet: an *unquoted* tab name is only
+/// valid A1 syntax when it is a single bare word - the instant it contains a
+/// space or most punctuation, Google rejects the whole request with
+/// "Unable to parse range: ...". That is exactly what happened with a real
+/// tab named "Tiqr manager event + order" (see
+/// REDESIGN-2.0.9-REPORT.md) - `sheets_values_url` below still correctly
+/// percent-encodes whatever range string it's given for the URL itself, but
+/// percent-encoding an already-invalid, unquoted range does not make it
+/// valid A1 notation once Google decodes and parses it server-side.
+pub(crate) fn a1_range(sheet_tab: &str, cell_range: &str) -> String {
+    format!("'{}'!{cell_range}", sheet_tab.replace('\'', "''"))
+}
+
 fn sheets_values_url(spreadsheet_id: &str, range: &str) -> String {
     let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
     let encoded_range = utf8_percent_encode(range, NON_ALPHANUMERIC);
@@ -536,6 +557,25 @@ mod tests {
         let url = sheets_values_url("abc123", "Ťahy 2026!A1:Z");
         assert!(!url.contains(' '), "a raw space would produce an invalid URL");
         assert!(url.starts_with("https://sheets.googleapis.com/v4/spreadsheets/abc123/values/"));
+    }
+
+    #[test]
+    fn a1_range_quotes_a_tab_name_containing_spaces_and_punctuation() {
+        // The exact real tab name that used to make Google reject every
+        // request with "Unable to parse range" - see REDESIGN-2.0.9-REPORT.md.
+        assert_eq!(a1_range("Tiqr manager event + order", "A1:Z"), "'Tiqr manager event + order'!A1:Z");
+    }
+
+    #[test]
+    fn a1_range_quotes_a_plain_single_word_tab_name_too() {
+        // Quoting is always valid, even when not strictly required - this
+        // function never has to guess which names need it.
+        assert_eq!(a1_range("Pulls", "A1:A1"), "'Pulls'!A1:A1");
+    }
+
+    #[test]
+    fn a1_range_doubles_an_embedded_single_quote() {
+        assert_eq!(a1_range("Marko's Tickets", "A1:Z"), "'Marko''s Tickets'!A1:Z");
     }
 
     #[test]

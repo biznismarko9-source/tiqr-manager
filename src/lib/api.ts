@@ -197,6 +197,12 @@ export const api = {
    * tickets) for every row it hasn't seen before - creation-only, sheet ->
    * app only, see commands/orders_sheet_sync.rs. */
   syncOrders: () => invoke<SheetSyncResult>("sync_orders"),
+  /** 2.0.9: auto-creates a brand-new Orders & Tickets sheet, shares it with
+   * `email`, and connects it - no Google sign-in window. Mirrors
+   * createPullsSheet exactly; sits next to setSheetsConnection as a second
+   * way to arrive at a connection, not a replacement for it. */
+  createOrdersSheet: (email: string, currency: string) =>
+    invoke<CreatedSheetResult>("create_orders_sheet", { email, currency }),
   /** 2.0.5: installation-wide "Sign in with Google" - see
    * commands/google_auth.rs's module doc comment. `startGoogleSignIn` opens
    * the system browser and blocks (up to 5 minutes) until the person

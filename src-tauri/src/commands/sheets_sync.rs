@@ -195,7 +195,7 @@ fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResul
         Err(e) => return Ok(SheetsConnectionTestResult { ok: false, message: e.to_string() }),
     };
     let token = credential.access_token();
-    let range = format!("{}!A1:A1", connection.sheet_tab);
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:A1");
     match google_sheets::get_values(token, &connection.spreadsheet_id, &range) {
         Ok(_) => Ok(SheetsConnectionTestResult {
             ok: true,

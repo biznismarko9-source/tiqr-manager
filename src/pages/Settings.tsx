@@ -434,16 +434,17 @@ export default function Settings() {
                   order and all its tickets from the sheet's first batch of
                   columns; the sheet's second batch (Sales) is a later,
                   separate sync against these same rows - see
-                  commands/orders_sheet_sync.rs's module doc comment. No
-                  "Create a new sheet for me" here yet (onCreate omitted) -
-                  marko already has a real sheet, unlike Pulls' original
-                  from-scratch setup. */}
+                  commands/orders_sheet_sync.rs's module doc comment.
+                  2.0.9: "Create a new sheet for me" added (onCreate) -
+                  mirrors Pulls' own from-scratch setup, for anyone who
+                  doesn't already have a real sheet like marko's. */}
               <SheetsConnectionCard
                 dataSource="orders"
                 label="Orders & Tickets"
                 googleStatus={googleStatus}
                 onSync={api.syncOrders}
                 syncDescription={`"Sync now" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
+                onCreate={api.createOrdersSheet}
                 currencyHint="Used only when a row's own currency cell is blank - a row with its own currency uses that instead."
               />
             </div>
@@ -758,11 +759,10 @@ function SheetsConnectionCard({
    * comment) so one shared sentence would misdescribe at least one of them.
    * Required whenever `onSync` is set. */
   syncDescription?: string;
-  /** "Create a new sheet for me", e.g. api.createPullsSheet. 2.0.8:
-   * generalized to a prop alongside onSync, but kept independent of it -
-   * Orders has real sync logic but, unlike Pulls' original from-scratch
-   * setup, no auto-create-a-blank-sheet flow yet (marko already has a real
-   * sheet). Omit to hide that whole section. */
+  /** "Create a new sheet for me", e.g. api.createPullsSheet /
+   * api.createOrdersSheet. 2.0.8: generalized to a prop alongside onSync,
+   * but kept independent of it - not every data source necessarily gets an
+   * auto-create-a-blank-sheet flow. Omit to hide that whole section. */
   onCreate?: (email: string, currency: string) => Promise<CreatedSheetResult>;
   /** Currency field's hint text - differs because Pulls' sheet has no
    * currency column of its own (one currency applies to every row) while

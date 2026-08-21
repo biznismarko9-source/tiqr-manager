@@ -666,7 +666,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
     let token = credential.access_token();
 
-    let range = format!("{}!A1:Z", connection.sheet_tab);
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
     let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
     if value_range.values.is_empty() {
         return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
@@ -677,7 +677,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let (marker_col_index, marker_exists) = resolve_marker_column(&headers);
     let letter = column_index_to_a1(marker_col_index);
     if !marker_exists {
-        let header_range = format!("{}!{letter}1", connection.sheet_tab);
+        let header_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}1"));
         google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
@@ -685,7 +685,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
     for (row_idx, marker_value) in marker_writes {
         let sheet_row_number = (row_idx + 2) as i64;
-        let cell_range = format!("{}!{letter}{sheet_row_number}", connection.sheet_tab);
+        let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}{sheet_row_number}"));
         if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![marker_value]]) {
             result.errors.push(SheetSyncIssue {
                 row_number: sheet_row_number,
@@ -742,7 +742,13 @@ const NEW_SHEET_TAB_NAME: &str = "Pulls";
 /// a real API round-trip on it - and, more importantly, before creating and
 /// sharing a real sheet first and only then discovering the address was
 /// never usable.
-fn validate_share_email(email: &str) -> AppResult<String> {
+///
+/// `pub(crate)` (not just `fn`) since 2.0.9: commands::orders_sheet_sync
+/// reuses this exact same check for its own "Create a new sheet for me"
+/// button - the rule is generic (a plausible email address is a plausible
+/// email address, regardless of which sheet it's sharing), so there's no
+/// reason to duplicate it a second time for the same underlying rule.
+pub(crate) fn validate_share_email(email: &str) -> AppResult<String> {
     let trimmed = email.trim();
     if trimmed.is_empty() {
         return Err(AppError::Validation("Enter the email address to share the new sheet with.".to_string()));
@@ -763,7 +769,12 @@ fn validate_share_email(email: &str) -> AppResult<String> {
 /// sheet orphaned (created, shared with someone, but never connected in the
 /// app). Checking it here first means a bad currency never reaches the
 /// network at all.
-fn validate_currency(currency: &str) -> AppResult<String> {
+///
+/// `pub(crate)` (not just `fn`) since 2.0.9: commands::orders_sheet_sync
+/// reuses this exact same check for its own "Create a new sheet for me"
+/// button - `ALLOWED_CURRENCIES` is a single shared list either way, so
+/// there's no reason to duplicate the check itself a second time.
+pub(crate) fn validate_currency(currency: &str) -> AppResult<String> {
     let upper = currency.trim().to_uppercase();
     if !ALLOWED_CURRENCIES.contains(&upper.as_str()) {
         return Err(AppError::Validation(format!(
@@ -801,7 +812,7 @@ fn create_pulls_sheet_impl(conn: &Connection, email: &str, currency: &str) -> Ap
     let created = google_sheets::create_spreadsheet(token, NEW_SHEET_TITLE, NEW_SHEET_TAB_NAME)?;
 
     let header_row: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
-    let header_range = format!("{NEW_SHEET_TAB_NAME}!A1");
+    let header_range = google_sheets::a1_range(NEW_SHEET_TAB_NAME, "A1");
     google_sheets::update_values(token, &created.spreadsheet_id, &header_range, &[header_row])?;
 
     if !credential.is_oauth() {

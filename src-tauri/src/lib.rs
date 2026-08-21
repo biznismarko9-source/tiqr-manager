@@ -99,6 +99,7 @@ pub fn run() {
             commands::pulls_sheet_sync::sync_pulls,
             commands::pulls_sheet_sync::create_pulls_sheet,
             commands::orders_sheet_sync::sync_orders,
+            commands::orders_sheet_sync::create_orders_sheet,
             commands::google_auth::get_google_sign_in_status,
             commands::google_auth::start_google_sign_in,
             commands::google_auth::google_sign_out,

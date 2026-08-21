@@ -57,11 +57,13 @@
 use crate::commands::csv_import::resolve_or_create_platform;
 use crate::commands::orders::insert_order_with_tickets;
 use crate::commands::pulls_sheet_sync::parse_sheet_serial_date;
-use crate::commands::sheets_sync::{last_synced_key, load_connection, set_setting, ALLOWED_CURRENCIES};
+use crate::commands::sheets_sync::{
+    last_synced_key, load_connection, set_setting, set_sheets_connection_impl, ALLOWED_CURRENCIES,
+};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{OrderInput, SheetSyncIssue, SheetSyncResult};
+use crate::models::{CreatedSheetResult, OrderInput, SheetSyncIssue, SheetSyncResult};
 use crate::money::{format_cents, parse_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -506,7 +508,7 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
     let token = credential.access_token();
 
-    let range = format!("{}!A1:Z", connection.sheet_tab);
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
     let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
     if value_range.values.is_empty() {
         return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
@@ -517,7 +519,7 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let (marker_col_index, marker_exists) = resolve_marker_column(&headers);
     let letter = column_index_to_a1(marker_col_index);
     if !marker_exists {
-        let header_range = format!("{}!{letter}1", connection.sheet_tab);
+        let header_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}1"));
         google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
@@ -525,7 +527,7 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
     for (row_idx, marker_value) in marker_writes {
         let sheet_row_number = (row_idx + 2) as i64;
-        let cell_range = format!("{}!{letter}{sheet_row_number}", connection.sheet_tab);
+        let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}{sheet_row_number}"));
         if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![marker_value]]) {
             result.errors.push(SheetSyncIssue {
                 row_number: sheet_row_number,
@@ -545,6 +547,81 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 pub fn sync_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
     let conn = state.db.lock().unwrap();
     sync_orders_impl(&conn)
+}
+
+// ---------------------------------------------------------------------------
+// "Create a new sheet for me" (2.0.9) - mirrors pulls_sheet_sync.rs's own
+// PULLS_SHEET_HEADERS/NEW_SHEET_TITLE/NEW_SHEET_TAB_NAME/
+// create_pulls_sheet_impl/create_pulls_sheet exactly, reusing that module's
+// validate_share_email/validate_currency directly (see their doc comments)
+// rather than duplicating them - only the header list, sheet name, and
+// data_source string differ.
+// ---------------------------------------------------------------------------
+
+/// Header row written into a freshly-created "Orders & Tickets" sheet -
+/// exactly the columns `apply_order_rows` above understands, in the same
+/// order as the mapping table in this module's doc comment (and the exact
+/// order this module's own `full_headers()` test fixture already uses, so a
+/// freshly auto-created sheet and the test fixtures can never quietly drift
+/// apart from each other). Deliberately excludes `TIQR ID` - sync appends
+/// that itself the first time it's missing, see `resolve_marker_column` -
+/// same reasoning as `PULLS_SHEET_HEADERS`.
+const ORDERS_SHEET_HEADERS: &[&str] = &[
+    "Event Name",
+    "Date (DD/MM/YYYY)",
+    "platform",
+    "Section",
+    "Row",
+    "Seats",
+    "Order ID",
+    "Total Purchase Price",
+    "Number of Tickets",
+    "Price Per Ticket",
+    "currency",
+    "Email (used)",
+    "Ticket Type",
+];
+
+const NEW_SHEET_TITLE: &str = "TIQR Manager - Orders";
+const NEW_SHEET_TAB_NAME: &str = "Orders";
+
+/// Creates a brand-new Google Sheet for Orders & Tickets, writes
+/// `ORDERS_SHEET_HEADERS` as its header row, and connects it - all in one
+/// call, with no Google sign-in window at any point. See
+/// `pulls_sheet_sync::create_pulls_sheet_impl`'s doc comment (this function
+/// mirrors it line for line) for why `email`/`currency` are validated before
+/// the first network call, and for the OAuth-vs-service-account share-step
+/// distinction.
+fn create_orders_sheet_impl(conn: &Connection, email: &str, currency: &str) -> AppResult<CreatedSheetResult> {
+    let email = crate::commands::pulls_sheet_sync::validate_share_email(email)?;
+    let currency_upper = crate::commands::pulls_sheet_sync::validate_currency(currency)?;
+
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, true)?;
+    let token = credential.access_token();
+
+    let created = google_sheets::create_spreadsheet(token, NEW_SHEET_TITLE, NEW_SHEET_TAB_NAME)?;
+
+    let header_row: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+    let header_range = google_sheets::a1_range(NEW_SHEET_TAB_NAME, "A1");
+    google_sheets::update_values(token, &created.spreadsheet_id, &header_range, &[header_row])?;
+
+    if !credential.is_oauth() {
+        google_sheets::share_file(token, &created.spreadsheet_id, &email)?;
+    }
+
+    let connection =
+        set_sheets_connection_impl(conn, "orders", &created.spreadsheet_id, NEW_SHEET_TAB_NAME, &currency_upper)?;
+
+    Ok(CreatedSheetResult { connection, spreadsheet_url: created.spreadsheet_url })
+}
+
+/// "Create a new sheet for me" button (Settings -> Integrations, Orders &
+/// Tickets card) - sits right next to the existing paste-a-URL form as a
+/// second way to connect, not a replacement for it. Never runs on its own.
+#[tauri::command]
+pub fn create_orders_sheet(state: State<AppState>, email: String, currency: String) -> AppResult<CreatedSheetResult> {
+    let conn = state.db.lock().unwrap();
+    create_orders_sheet_impl(&conn, &email, &currency)
 }
 
 #[cfg(test)]
@@ -889,5 +966,63 @@ mod tests {
         let event_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
         assert_eq!(platform_count, 0, "an already-synced row must do nothing at all, not even side-effect auto-creates");
         assert_eq!(event_count, 0);
+    }
+
+    // ---- "Create a new sheet for me" (2.0.9) -------------------------------
+    //
+    // create_orders_sheet_impl reuses pulls_sheet_sync::validate_share_email/
+    // validate_currency directly rather than duplicating them, and those two
+    // functions already have their own thorough tests in
+    // pulls_sheet_sync.rs's test module - no need to re-test the same shared
+    // logic a second time here. What IS specific to this module, and does
+    // need its own coverage: that ORDERS_SHEET_HEADERS actually satisfies
+    // this module's own required-header check, and that
+    // create_orders_sheet_impl wires validation + the network call together
+    // correctly (same "only the parts before the first network call are
+    // exercised here" limitation as pulls_sheet_sync.rs's own equivalent
+    // tests - see that module's comment just above its mirrored tests).
+
+    #[test]
+    fn orders_sheet_headers_satisfy_the_required_header_check() {
+        // Regression guard: if apply_order_rows's required-header list ever
+        // grows, a freshly auto-created sheet must still pass its own sync
+        // immediately, with zero manual editing needed first.
+        let headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let map = build_header_map(&headers);
+        assert!(check_required_headers(&map).is_ok(), "a freshly auto-created sheet must satisfy its own required columns");
+    }
+
+    #[test]
+    fn orders_sheet_headers_match_full_headers_test_fixture_exactly() {
+        // Regression guard for the doc comment's own claim: the header list
+        // written into a freshly-created sheet and the full_headers() sample
+        // row used throughout this module's tests must never quietly drift
+        // apart from each other.
+        let headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(headers, full_headers());
+    }
+
+    #[test]
+    fn create_orders_sheet_rejects_a_bad_email_before_touching_anything_else() {
+        let conn = test_conn();
+        let err = create_orders_sheet_impl(&conn, "not-an-email", "EUR").unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("email"), "the error must mention the actual problem: {err}");
+    }
+
+    #[test]
+    fn create_orders_sheet_rejects_a_bad_currency_before_touching_anything_else() {
+        let conn = test_conn();
+        let err = create_orders_sheet_impl(&conn, "marko@example.com", "CZK").unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("currency"), "the error must mention the actual problem: {err}");
+    }
+
+    #[test]
+    fn create_orders_sheet_with_valid_input_fails_cleanly_when_no_service_account_is_embedded() {
+        let conn = test_conn();
+        let err = create_orders_sheet_impl(&conn, "marko@example.com", "EUR").unwrap_err();
+        assert!(
+            err.to_string().contains("isn't available in this build"),
+            "fully valid input must still stop cleanly before any network call in a test build: {err}"
+        );
     }
 }
