@@ -39,6 +39,21 @@ name: Build Windows Installer
 # Without this secret, both build paths still succeed - the app just reports
 # "Google Sheets sync isn't available in this build" instead of erroring, see
 # src-tauri/build.rs and google_sheets.rs's embedded_service_account().
+#
+# "Sign in with Google" (2.0.5+) needs TWO MORE repository secrets, added the
+# same way, also used by BOTH build paths above:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     Name:  GOOGLE_OAUTH_CLIENT_ID
+#     Value: the Client ID from a Google Cloud Console OAuth client of type
+#            "Desktop app" (see REDESIGN-2.0.5-REPORT.md for how to create one)
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     Name:  GOOGLE_OAUTH_CLIENT_SECRET
+#     Value: the Client Secret shown alongside that same Client ID
+# Without these two secrets, both build paths still succeed - the "Sign in
+# with Google" card just reports "isn't available in this build" instead of
+# erroring, see src-tauri/build.rs and google_oauth.rs's
+# embedded_oauth_client(). Independent of GOOGLE_SERVICE_ACCOUNT_JSON above -
+# either can be present without the other.
 
 on:
   workflow_dispatch: {}
@@ -79,6 +94,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
         with:
           tauriScript: npx tauri
 
@@ -153,6 +170,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TIQR Manager ${{ github.ref_name }}"
