@@ -237,6 +237,18 @@ fn parse_sheet_date(raw: &str) -> Result<Option<String>, String> {
     if s.is_empty() {
         return Ok(None);
     }
+
+    // A cell someone typed an actual date into (rather than typing the date
+    // as plain text) comes back from Sheets as a bare serial-day number -
+    // see google_sheets::ValueRange's doc comment for why the wire format
+    // allows this at all. Recognized here, ahead of the DD.MM.YYYY text
+    // parsing below, by "every character is a digit": a real DD.MM.YYYY (or
+    // DD.<sk month>.YYYY) string always contains at least one '.', so there
+    // is no overlap between the two forms.
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        return parse_sheet_serial_date(s);
+    }
+
     let parts: Vec<&str> = s.split('.').map(|p| p.trim()).collect();
     if parts.len() != 3 {
         return Err(format!("'{s}' is not a recognized date (expected DD.MM.YYYY or DD.Mon.YYYY)"));
@@ -254,6 +266,31 @@ fn parse_sheet_date(raw: &str) -> Result<Option<String>, String> {
     chrono::NaiveDate::from_ymd_opt(year, month, day)
         .map(|d| Some(d.format("%Y-%m-%d").to_string()))
         .ok_or_else(|| format!("'{s}' is not a valid calendar date"))
+}
+
+/// Converts a Google Sheets/Excel serial-date number (days since
+/// 1899-12-30 - the long-standing Lotus-1-2-3-compatible epoch both Sheets
+/// and Excel still use, deliberately including its famous "Feb 29 1900
+/// never existed" quirk, which this epoch anchor already absorbs for every
+/// real calendar date after that point) into the same `YYYY-MM-DD` shape
+/// `parse_sheet_date` already returns for text input. Rejects the same
+/// implausible range (year 2000-2100) as the text path and for the same
+/// reason: a bare number in the event-date column is almost certainly a
+/// real date, but a wildly out-of-range one reads more like a mistake (a
+/// stray row number, a quantity typed in the wrong column) than an
+/// intentional 15th- or 22nd-century pull.
+fn parse_sheet_serial_date(digits: &str) -> Result<Option<String>, String> {
+    let serial: i64 = digits.parse().map_err(|_| format!("'{digits}' is not a recognized date"))?;
+    let epoch = chrono::NaiveDate::from_ymd_opt(1899, 12, 30).expect("1899-12-30 is a valid calendar date");
+    let date = epoch
+        .checked_add_signed(chrono::Duration::days(serial))
+        .ok_or_else(|| format!("'{digits}' is not a recognized date"))?;
+    let min_date = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).expect("2000-01-01 is a valid calendar date");
+    let max_date = chrono::NaiveDate::from_ymd_opt(2100, 12, 31).expect("2100-12-31 is a valid calendar date");
+    if date < min_date || date > max_date {
+        return Err(format!("'{digits}' has an implausible year"));
+    }
+    Ok(Some(date.format("%Y-%m-%d").to_string()))
 }
 
 fn now_iso(conn: &Connection) -> AppResult<String> {
@@ -917,6 +954,43 @@ mod tests {
         assert!(parse_sheet_date("31.02.2026").is_err(), "February never has 31 days");
         assert!(parse_sheet_date("IDK").is_err());
         assert!(parse_sheet_date("2026-01-26").is_err(), "ISO input is not the sheet's own format");
+    }
+
+    #[test]
+    fn parse_sheet_date_converts_a_sheets_serial_date_number() {
+        // 46291 = 2026-09-26 - what a cell someone typed a real date into
+        // looks like by the time it reaches this function (Sheets returns
+        // its underlying serial-day number for such a cell; see
+        // google_sheets::ValueRange's doc comment for why, and
+        // REDESIGN-2.0.7-REPORT.md for the bug this fixes).
+        assert_eq!(parse_sheet_date("46291").unwrap(), Some("2026-09-26".to_string()));
+    }
+
+    #[test]
+    fn parse_sheet_date_rejects_an_implausible_serial_number() {
+        assert!(parse_sheet_date("5").is_err(), "day 5 of the 1899 epoch is not a plausible pull date");
+    }
+
+    #[test]
+    fn a_row_with_a_real_sheets_date_and_numeric_columns_syncs_cleanly() {
+        // The exact real-world shape that used to crash the whole sync
+        // before it even reached this function (google_sheets.rs's
+        // deserialization) - and would have failed here too, wrongly, had
+        // "46291" stayed unrecognized as a date. See REDESIGN-2.0.7-REPORT.md.
+        let conn = test_conn();
+        let sheet_row = row(&[
+            "sojky", "England vs Spain", "46291", "8", "ticketmaster", "", "410", "25", "11-18", "", "TRUE", "50", "",
+        ]);
+        let (result, _writes) = apply_pull_rows(&conn, &full_headers(), &[sheet_row], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
+        assert_eq!(result.created, 1);
+        let pull = fetch_pull(&conn, 1).unwrap();
+        assert_eq!(pull.event_date.as_deref(), Some("2026-09-26"));
+        assert_eq!(pull.quantity, 8);
+        assert_eq!(pull.section.as_deref(), Some("410"));
+        assert_eq!(pull.row_label.as_deref(), Some("25"));
+        assert_eq!(pull.price_cents, 5000);
+        assert!(pull.transfer_done);
     }
 
     // ---- apply_pull_rows: creating ---------------------------------------

@@ -167,12 +167,54 @@ pub fn fetch_access_token(key: &ServiceAccountKey, scope: &str) -> AppResult<Str
 /// always parses/validates values itself afterward (same principle CSV
 /// import already follows), never trusts Sheets' own type guessing about
 /// what a cell "means".
+///
+/// Getting there takes one extra step, though (since 2.0.7): with
+/// `valueRenderOption=UNFORMATTED_VALUE` below, Google sends a cell's *own*
+/// JSON type, not always a string - a cell holding the number `50` comes
+/// back as the JSON number `50`, and a cell someone typed a real date into
+/// (as opposed to typing the date as text) comes back as its underlying
+/// serial-date number. Deserializing `values` straight into
+/// `Vec<Vec<String>>` used to hard-fail the instant any cell held a
+/// non-string JSON value - see REDESIGN-2.0.7-REPORT.md for the exact error
+/// this produced the first time a real user typed a normal number into a
+/// normal cell. `deserialize_cell_grid` below is what still lets this field
+/// be `Vec<Vec<String>>` (nothing downstream has to change) while actually
+/// tolerating what Sheets really sends.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ValueRange {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_cell_grid")]
     pub values: Vec<Vec<String>>,
+}
+
+/// Turns one already-JSON-parsed Sheets cell into the exact text this app
+/// treats every cell as (see `ValueRange`'s doc comment above). Numbers go
+/// through `serde_json::Number`'s own `Display`, which prints the *shortest
+/// decimal that round-trips back to the same value* - so `50` stringifies
+/// to `"50"` and `12.5` to `"12.5"`, never a floating-point artifact like
+/// `"12.499999999999998"`. That is what makes it safe to feed straight into
+/// `money::parse_decimal_to_cents` afterward without that function - or
+/// anything else downstream - ever having to touch a float itself.
+fn cell_json_to_string(value: serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => if b { "TRUE" } else { "FALSE" }.to_string(),
+        serde_json::Value::Null => String::new(),
+        // A Sheets cell is always one of the four above in practice - kept
+        // total rather than assuming that, so a surprising response can
+        // never panic this far from the actual HTTP boundary.
+        other => other.to_string(),
+    }
+}
+
+fn deserialize_cell_grid<'de, D>(deserializer: D) -> Result<Vec<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let grid: Vec<Vec<serde_json::Value>> = Deserialize::deserialize(deserializer)?;
+    Ok(grid.into_iter().map(|row| row.into_iter().map(cell_json_to_string).collect()).collect())
 }
 
 fn sheets_values_url(spreadsheet_id: &str, range: &str) -> String {
@@ -494,6 +536,38 @@ mod tests {
         let url = sheets_values_url("abc123", "Ťahy 2026!A1:Z");
         assert!(!url.contains(' '), "a raw space would produce an invalid URL");
         assert!(url.starts_with("https://sheets.googleapis.com/v4/spreadsheets/abc123/values/"));
+    }
+
+    #[test]
+    fn cell_json_to_string_stringifies_every_json_scalar_type_exactly() {
+        assert_eq!(cell_json_to_string(serde_json::json!("ticketmaster")), "ticketmaster");
+        assert_eq!(cell_json_to_string(serde_json::json!(50)), "50");
+        assert_eq!(cell_json_to_string(serde_json::json!(12.5)), "12.5", "must be the shortest round-tripping decimal, never a float artifact");
+        assert_eq!(cell_json_to_string(serde_json::json!(true)), "TRUE");
+        assert_eq!(cell_json_to_string(serde_json::json!(false)), "FALSE");
+        assert_eq!(cell_json_to_string(serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn value_range_deserializes_a_real_row_with_mixed_cell_types_without_erroring() {
+        // The exact shape of response that used to hard-fail sync entirely
+        // the moment a normal user typed a normal number - or a real date -
+        // into a sheet cell. See REDESIGN-2.0.7-REPORT.md.
+        let json = r#"{
+            "range": "Pulls!A1:Z1000",
+            "majorDimension": "ROWS",
+            "values": [
+                ["pull", "Event name", "event date", "Ks", "Platform", "More info", "Section", "Row", "Seats", "Transfer", "Price"],
+                ["sojky", "England vs Spain", 46291, 8, "ticketmaster", "", 410, 25, "11-18", true, 50]
+            ]
+        }"#;
+        let parsed: ValueRange = serde_json::from_str(json).expect("must no longer fail on numeric/boolean cells");
+        assert_eq!(parsed.values[1][0], "sojky");
+        assert_eq!(parsed.values[1][2], "46291", "the raw serial-date number, unconverted at this layer - see pulls_sheet_sync::parse_sheet_date");
+        assert_eq!(parsed.values[1][3], "8");
+        assert_eq!(parsed.values[1][6], "410");
+        assert_eq!(parsed.values[1][9], "TRUE");
+        assert_eq!(parsed.values[1][10], "50");
     }
 
     fn base64_url_decode(s: &str) -> Vec<u8> {
