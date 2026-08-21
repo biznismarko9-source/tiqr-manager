@@ -896,6 +896,11 @@ function SheetsConnectionCard({
   const [detectedTabs, setDetectedTabs] = useState<string[] | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectMessage, setDetectMessage] = useState<string | null>(null);
+  // 2.0.15: the concrete next step (e.g. the exact e-mail to share with),
+  // shown as its own line below `detectMessage` - see
+  // SpreadsheetTabsResult's doc comment for why this is a separate field
+  // rather than one long string.
+  const [detectHint, setDetectHint] = useState<string | null>(null);
   const [manualTabEntry, setManualTabEntry] = useState(false);
 
   const oauthEmail = googleStatus?.signedInEmail ?? null;
@@ -913,6 +918,7 @@ function SheetsConnectionCard({
     if (!trimmed) {
       setDetectedTabs(null);
       setDetectMessage(null);
+      setDetectHint(null);
       return;
     }
     setDetecting(true);
@@ -921,6 +927,7 @@ function SheetsConnectionCard({
       if (result.ok) {
         setDetectedTabs(result.tabs);
         setDetectMessage(null);
+        setDetectHint(null);
         setManualTabEntry(false);
         // Keep the current value if it's actually one of the real tabs;
         // otherwise default to the first real one - this is exactly what
@@ -930,10 +937,12 @@ function SheetsConnectionCard({
       } else {
         setDetectedTabs(null);
         setDetectMessage(result.message);
+        setDetectHint(result.hint ?? null);
       }
     } catch (e) {
       setDetectedTabs(null);
       setDetectMessage(errMsg(e));
+      setDetectHint(null);
     } finally {
       setDetecting(false);
     }
@@ -953,6 +962,7 @@ function SheetsConnectionCard({
         } else {
           setDetectedTabs(null);
           setDetectMessage(null);
+          setDetectHint(null);
           setManualTabEntry(false);
         }
       })
@@ -1132,6 +1142,7 @@ function SheetsConnectionCard({
                   // the sheet that used to be pasted here.
                   setDetectedTabs(null);
                   setDetectMessage(null);
+                  setDetectHint(null);
                 }}
                 onBlur={() => detectTabs(spreadsheetInput)}
               />
@@ -1173,7 +1184,12 @@ function SheetsConnectionCard({
                       value={sheetTab}
                       onChange={(e) => setSheetTab(e.target.value)}
                     />
-                    {detectMessage && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>}
+                    {detectMessage && (
+                      <div className="mt-1">
+                        <p className="text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>
+                        {detectHint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{detectHint}</p>}
+                      </div>
+                    )}
                     {detectedTabs && detectedTabs.length > 0 && (
                       <button
                         type="button"
@@ -1270,11 +1286,12 @@ function SheetsConnectionCard({
           )}
 
           {testResult && (
-            <p
-              className={`mt-3 text-xs ${testResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-            >
-              {testResult.message}
-            </p>
+            <div className="mt-3">
+              <p className={`text-xs ${testResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                {testResult.message}
+              </p>
+              {testResult.hint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{testResult.hint}</p>}
+            </div>
           )}
 
           {syncResult && (

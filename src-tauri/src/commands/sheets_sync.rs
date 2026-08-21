@@ -182,38 +182,77 @@ pub fn clear_sheets_connection(state: State<AppState>, data_source: String) -> A
 }
 
 /// Whether an error message looks like the Sheets API's "the tab name in
-/// this range does not exist in that spreadsheet" case - worth enriching
-/// with the spreadsheet's actual tab titles (see `format_with_real_tab_titles`
-/// below) rather than leaving marko to guess. 2.0.13: marko's own report -
-/// the plain-English hint google_sheets::describe_error_response already
-/// adds ("check the tab label...") kept the error recurring anyway, because
-/// knowing a mismatch is LIKELY still doesn't say what the right name IS.
+/// this range does not exist in that spreadsheet" case - worth replacing
+/// with a short, concrete headline (see `short_missing_tab_message` below)
+/// rather than leaving marko to guess, or to read Google's raw JSON. 2.0.13:
+/// marko's own report - the plain-English hint
+/// google_sheets::describe_error_response already adds ("check the tab
+/// label...") kept the error recurring anyway, because knowing a mismatch is
+/// LIKELY still doesn't say what the right name IS.
 fn looks_like_a_missing_tab_error(message: &str) -> bool {
     message.contains("Unable to parse range")
 }
 
-/// Appends the spreadsheet's real, exact tab titles to `message` - turning
-/// "the tab name probably doesn't exist" into a straight copy-paste of what
-/// it should actually be. Pure and unit-tested on its own; the network call
-/// that produces `titles` lives in `test_sheets_connection_impl` below, the
-/// same "pure logic vs. untested network shell" split every other command
-/// in this app already uses (see e.g. pulls_sheet_sync.rs's own module
-/// comment). Leaves `message` untouched when `titles` is empty - a
-/// spreadsheet reporting zero sheets is not itself useful information to
-/// hand back, and never worth pretending otherwise.
-fn format_with_real_tab_titles(message: &str, titles: &[String]) -> String {
-    if titles.is_empty() {
-        return message.to_string();
-    }
+/// Whether an error message looks like Google's "this identity doesn't have
+/// access to that file" response - worth replacing with a short headline too
+/// (see `short_permission_denied_message` below). Google's JSON body always
+/// carries this exact status string for the case (see
+/// google_sheets::describe_error_response's own 403+PERMISSION_DENIED check,
+/// which this mirrors).
+fn looks_like_a_permission_denied_error(message: &str) -> bool {
+    message.contains("PERMISSION_DENIED")
+}
+
+/// Turns "the tab name probably doesn't exist" into a short headline plus a
+/// straight copy-paste of what it should actually be, instead of Google's
+/// raw JSON error body (2.0.15: marko's own request - reading that raw text
+/// at a glance was too much). Pure and unit-tested on its own; the network
+/// call that produces `titles` lives in `test_sheets_connection_impl` below,
+/// same "pure logic vs. untested network shell" split every other command in
+/// this app already uses. Only called with non-empty `titles` - see that
+/// function's own comment for why an empty/failed lookup falls back to the
+/// original raw message instead of this short (but then unconfirmed)
+/// headline.
+fn short_missing_tab_message(titles: &[String]) -> (String, Option<String>) {
     let quoted = titles.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(", ");
-    format!(
-        "{message} The tabs that actually exist in this spreadsheet are: {quoted}. Update \"Sheet/tab name\" to match one of these exactly."
-    )
+    ("That tab doesn't exist in this spreadsheet.".to_string(), Some(format!("The tabs that actually exist are: {quoted}.")))
+}
+
+/// Turns Google's raw 403 PERMISSION_DENIED body into a short headline plus
+/// one concrete next step (2.0.15: marko's own request). `used_oauth`
+/// matters because the fix is genuinely different depending on which
+/// identity the failing request used: telling someone already signed in
+/// with their own Google account to "sign in" again would be circular and
+/// wrong - their sign-in itself is fine, the sheet just isn't shared with
+/// THAT account (or a different one is signed in than the sheet's owner).
+/// `service_account_email` is `None` only on a plain local dev build with no
+/// service account embedded at all (see
+/// google_sheets::embedded_service_account's doc comment) - there is no
+/// concrete address to offer in that case, so the hint falls back to
+/// pointing at Settings instead.
+fn short_permission_denied_message(used_oauth: bool, service_account_email: Option<&str>) -> (String, Option<String>) {
+    let headline = "Can't access this spreadsheet yet.".to_string();
+    let hint = if used_oauth {
+        "This spreadsheet isn't shared with your signed-in Google account (or a different account is signed in than the one that owns it)."
+            .to_string()
+    } else {
+        match service_account_email {
+            Some(email) => format!(
+                "Share it with {email} (Editor access) in Google Sheets, or sign in with Google above since it's your own sheet."
+            ),
+            None => "Sign in with Google above, or check Settings -> Integrations for the address to share it with.".to_string(),
+        }
+    };
+    (headline, Some(hint))
 }
 
 fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResult<SheetsConnectionTestResult> {
     let Some(connection) = load_connection(conn, data_source)? else {
-        return Ok(SheetsConnectionTestResult { ok: false, message: "No spreadsheet is connected yet.".to_string() });
+        return Ok(SheetsConnectionTestResult {
+            ok: false,
+            message: "No spreadsheet is connected yet.".to_string(),
+            hint: None,
+        });
     };
 
     // 2.0.5: the signed-in person's own OAuth token when there is one, the
@@ -224,28 +263,35 @@ fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResul
     // before this credential resolution moved behind that one shared call.
     let credential = match crate::commands::google_auth::resolve_google_credential(conn, false) {
         Ok(c) => c,
-        Err(e) => return Ok(SheetsConnectionTestResult { ok: false, message: e.to_string() }),
+        Err(e) => return Ok(SheetsConnectionTestResult { ok: false, message: e.to_string(), hint: None }),
     };
+    let used_oauth = credential.is_oauth();
     let token = credential.access_token();
     let range = google_sheets::a1_range(&connection.sheet_tab, "A1:A1");
     match google_sheets::get_values(token, &connection.spreadsheet_id, &range) {
         Ok(_) => Ok(SheetsConnectionTestResult {
             ok: true,
             message: format!("Connected - the app can read \"{}\".", connection.sheet_tab),
+            hint: None,
         }),
         Err(e) => {
-            let mut message = e.to_string();
-            // 2.0.13: best-effort only - a spreadsheet this credential can't
-            // even read the metadata of (e.g. the exact same permission
-            // problem that made the original call fail) just keeps the
-            // original message, never a second, more confusing failure
-            // layered on top of the first.
-            if looks_like_a_missing_tab_error(&message) {
-                if let Ok(titles) = google_sheets::get_spreadsheet_sheet_titles(token, &connection.spreadsheet_id) {
-                    message = format_with_real_tab_titles(&message, &titles);
+            let raw = e.to_string();
+            let (message, hint) = if looks_like_a_missing_tab_error(&raw) {
+                // 2.0.13: best-effort only - a spreadsheet this credential
+                // can't even read the metadata of (e.g. the exact same
+                // permission problem that made the original call fail)
+                // falls back to the original raw message, never a shortened
+                // headline the app can't actually back up with real titles.
+                match google_sheets::get_spreadsheet_sheet_titles(token, &connection.spreadsheet_id) {
+                    Ok(titles) if !titles.is_empty() => short_missing_tab_message(&titles),
+                    _ => (raw, None),
                 }
-            }
-            Ok(SheetsConnectionTestResult { ok: false, message })
+            } else if looks_like_a_permission_denied_error(&raw) {
+                short_permission_denied_message(used_oauth, google_sheets::embedded_service_account().map(|a| a.client_email).as_deref())
+            } else {
+                (raw, None)
+            };
+            Ok(SheetsConnectionTestResult { ok: false, message, hint })
         }
     }
 }
@@ -282,20 +328,35 @@ fn detect_spreadsheet_tabs_impl(conn: &Connection, spreadsheet_url_or_id: &str) 
             ok: false,
             tabs: vec![],
             message: "That doesn't look like a Google Sheets URL or ID yet.".to_string(),
+            hint: None,
         });
     };
     let credential = match crate::commands::google_auth::resolve_google_credential(conn, false) {
         Ok(c) => c,
-        Err(e) => return Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message: e.to_string() }),
+        Err(e) => return Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message: e.to_string(), hint: None }),
     };
+    let used_oauth = credential.is_oauth();
     match google_sheets::get_spreadsheet_sheet_titles(credential.access_token(), &spreadsheet_id) {
         Ok(tabs) if tabs.is_empty() => Ok(SpreadsheetTabsResult {
             ok: false,
             tabs: vec![],
             message: "Google reported no tabs at all in that spreadsheet.".to_string(),
+            hint: None,
         }),
-        Ok(tabs) => Ok(SpreadsheetTabsResult { ok: true, tabs, message: String::new() }),
-        Err(e) => Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message: e.to_string() }),
+        Ok(tabs) => Ok(SpreadsheetTabsResult { ok: true, tabs, message: String::new(), hint: None }),
+        Err(e) => {
+            let raw = e.to_string();
+            // 2.0.15: same short-headline treatment as test_sheets_connection_impl
+            // - by far the most common failure here in practice (marko's own
+            // report): not signed in, and the sheet was never shared with the
+            // service account either.
+            let (message, hint) = if looks_like_a_permission_denied_error(&raw) {
+                short_permission_denied_message(used_oauth, google_sheets::embedded_service_account().map(|a| a.client_email).as_deref())
+            } else {
+                (raw, None)
+            };
+            Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message, hint })
+        }
     }
 }
 
@@ -465,16 +526,48 @@ mod tests {
     }
 
     #[test]
-    fn format_with_real_tab_titles_lists_every_tab_quoted_and_comma_separated() {
-        let message = format_with_real_tab_titles("original error", &["Objednávky".to_string(), "Predaje".to_string()]);
-        assert!(message.starts_with("original error"), "must keep Google's own message intact: {message}");
-        assert!(message.contains("\"Objednávky\", \"Predaje\""), "{message}");
+    fn looks_like_a_permission_denied_error_matches_the_real_google_wording() {
+        assert!(looks_like_a_permission_denied_error(
+            "Google Sheets rejected the request (403 Forbidden): { \"error\": { \"code\": 403, \"message\": \"The caller does not have permission\", \"status\": \"PERMISSION_DENIED\" } }"
+        ));
+        assert!(!looks_like_a_permission_denied_error(
+            "Google Sheets rejected the request (400 Bad Request): { \"error\": { \"message\": \"Unable to parse range: 'Orders'!A1:A1\" } }"
+        ));
     }
 
     #[test]
-    fn format_with_real_tab_titles_leaves_the_message_alone_when_there_are_no_titles() {
-        let message = format_with_real_tab_titles("original error", &[]);
-        assert_eq!(message, "original error", "no titles to suggest is not itself useful information to append");
+    fn short_missing_tab_message_is_short_and_lists_every_tab_quoted_and_comma_separated() {
+        let (headline, hint) = short_missing_tab_message(&["Objednávky".to_string(), "Predaje".to_string()]);
+        assert_eq!(headline, "That tab doesn't exist in this spreadsheet.");
+        let hint = hint.expect("a non-empty title list must always produce a hint");
+        assert!(hint.contains("\"Objednávky\", \"Predaje\""), "{hint}");
+        assert!(!hint.contains('{'), "must never leak Google's raw JSON body: {hint}");
+    }
+
+    #[test]
+    fn short_permission_denied_message_names_the_service_account_email_when_not_signed_in() {
+        let (headline, hint) = short_permission_denied_message(false, Some("tiqr-sync@example.iam.gserviceaccount.com"));
+        assert_eq!(headline, "Can't access this spreadsheet yet.");
+        let hint = hint.expect("the service-account path must always produce a hint");
+        assert!(hint.contains("tiqr-sync@example.iam.gserviceaccount.com"), "{hint}");
+        assert!(!hint.contains('{'), "must never leak Google's raw JSON body: {hint}");
+    }
+
+    #[test]
+    fn short_permission_denied_message_never_tells_an_already_signed_in_person_to_sign_in_again() {
+        let (_, hint) = short_permission_denied_message(true, Some("tiqr-sync@example.iam.gserviceaccount.com"));
+        let hint = hint.unwrap();
+        assert!(!hint.contains("sign in"), "circular advice for someone already signed in: {hint}");
+        // Must still mention the OAuth-specific fix (their own account not
+        // actually having access), not the service-account e-mail - that
+        // address is irrelevant on the OAuth path.
+        assert!(!hint.contains("tiqr-sync@example.iam.gserviceaccount.com"), "{hint}");
+    }
+
+    #[test]
+    fn short_permission_denied_message_falls_back_cleanly_with_no_service_account_configured() {
+        let (_, hint) = short_permission_denied_message(false, None);
+        assert!(hint.is_some(), "still must not leave marko with no next step at all");
     }
 
     #[test]
@@ -487,6 +580,7 @@ mod tests {
         let result = test_sheets_connection_impl(&conn, "pulls").unwrap();
         assert!(!result.ok);
         assert!(!result.message.is_empty());
+        assert!(result.hint.is_none(), "an unrecognized/expected-config failure has nothing to hint at");
     }
 
     #[test]
@@ -496,6 +590,7 @@ mod tests {
         assert!(!result.ok);
         assert!(result.tabs.is_empty());
         assert!(!result.message.is_empty());
+        assert!(result.hint.is_none());
     }
 
     #[test]
@@ -510,5 +605,6 @@ mod tests {
         assert!(!result.ok);
         assert!(result.tabs.is_empty());
         assert!(!result.message.is_empty());
+        assert!(result.hint.is_none());
     }
 }

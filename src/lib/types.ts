@@ -576,9 +576,17 @@ export interface SheetsConnectionStatus {
   lastSyncedAt?: string | null;
 }
 
+/** `message` is deliberately short and glanceable (2.0.15) - for a failure
+ * the app recognizes (not shared, wrong tab name) it's a plain headline like
+ * "Can't access this spreadsheet yet.", with `hint` carrying the concrete
+ * next step (e.g. the exact e-mail to share it with) as its own line. `hint`
+ * is `null`/absent both on success and for a failure the app doesn't
+ * recognize - there, `message` itself keeps the full underlying detail, see
+ * commands/sheets_sync.rs::test_sheets_connection_impl. */
 export interface SheetsConnectionTestResult {
   ok: boolean;
   message: string;
+  hint?: string | null;
 }
 
 /** Result of a best-effort attempt to detect a pasted spreadsheet's real tab
@@ -586,11 +594,13 @@ export interface SheetsConnectionTestResult {
  * requiring the exact tab name to be typed by hand - see
  * commands/sheets_sync.rs::detect_spreadsheet_tabs_impl's doc comment for
  * why. `tabs` is always empty when `ok` is false; `message` is empty when
- * `ok` is true. */
+ * `ok` is true. Same short-`message`-plus-optional-`hint` split as
+ * SheetsConnectionTestResult (2.0.15) and for the same reason. */
 export interface SpreadsheetTabsResult {
   ok: boolean;
   tabs: string[];
   message: string;
+  hint?: string | null;
 }
 
 /** Installation-wide "Sign in with Google" state (2.0.5) - one signed-in

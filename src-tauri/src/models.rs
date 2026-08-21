@@ -699,17 +699,22 @@ pub struct SheetsConnectionStatus {
     pub last_synced_at: Option<String>,
 }
 
-/// Result of a manual "Test connection" click. Deliberately just
-/// success/failure plus a human-readable message rather than a typed error
-/// enum: the message is whatever Google itself said (e.g. "the caller does
-/// not have permission" when the sheet hasn't been shared with the service
-/// account yet), which is more actionable than the app guessing and
-/// re-wording it.
+/// Result of a manual "Test connection" click. `message` is deliberately kept
+/// short and glanceable (2.0.15: marko's own request - the previous version
+/// echoed Google's raw JSON error body directly into `message`, which was too
+/// much to read at a glance); `hint` carries the concrete next step (e.g.
+/// which e-mail to share the sheet with) as a separate line, for the small
+/// set of failures the app can recognize and explain plainly. `hint` is
+/// `None` both on success and for a failure the app doesn't recognize -
+/// there, `message` itself keeps the full underlying detail (see
+/// commands/sheets_sync.rs::test_sheets_connection_impl), since a vague short
+/// headline would be worse than the real error for something unrecognized.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetsConnectionTestResult {
     pub ok: bool,
     pub message: String,
+    pub hint: Option<String>,
 }
 
 /// Result of a best-effort attempt to detect a pasted spreadsheet's real tab
@@ -721,13 +726,16 @@ pub struct SheetsConnectionTestResult {
 /// soon as the URL field loses focus), and a half-typed or not-yet-shared
 /// URL is the normal case, not something worth surfacing as a hard failure.
 /// `tabs` is always empty when `ok` is false; `message` is empty when `ok` is
-/// true (nothing to explain).
+/// true (nothing to explain). Same short-`message`-plus-optional-`hint` split
+/// as `SheetsConnectionTestResult` (2.0.15) and for the same reason - see its
+/// doc comment.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SpreadsheetTabsResult {
     pub ok: bool,
     pub tabs: Vec<String>,
     pub message: String,
+    pub hint: Option<String>,
 }
 
 /// Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
