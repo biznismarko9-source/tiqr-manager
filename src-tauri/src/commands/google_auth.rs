@@ -78,21 +78,39 @@ fn require_oauth_client() -> AppResult<OAuthClient> {
 // mirroring pulls_sheet_sync.rs's split between a fully-tested offline core
 // (apply_pull_rows) and an untested network-calling shell (sync_pulls_impl).
 //
-// 2.0.12: creates a fresh cancel flag for THIS attempt, stores a clone of it
-// in `state.oauth_cancel_flag` so `cancel_google_sign_in` below can reach it
-// while this call is still blocked inside `run_sign_in`, then always clears
-// that slot back to `None` once this attempt is over (success, error, or
-// cancelled) - via the `result` binding below rather than an early `?`, so
-// the clearing step is never skipped by an early return. Leaving a stale
-// `Some` behind would let a *later*, unrelated sign-in attempt be cancelled
-// by a leftover flag nobody meant for it.
+// 2.0.12 gave this a cancel flag (see `cancel_google_sign_in` below), but
+// marko's own report was that clicking "Cancel" still did nothing - the app
+// still needed a restart. Root cause, confirmed against Tauri's own docs:
+// a PLAIN (non-`async`) `#[tauri::command]` fn runs on the app's MAIN
+// thread in Tauri 2, not a background one. The 2.0.12 version of this
+// function was exactly that - so it blocked the main thread itself for up
+// to the full 5-minute SIGN_IN_TIMEOUT. Since the main thread is also what
+// dispatches every OTHER IPC command, a "Cancel" click's own
+// `cancel_google_sign_in` invocation had nowhere to actually run until
+// THIS command finished on its own - the flag it set could never be
+// noticed in time to matter. 2.0.13: this is now genuinely `async`, with
+// the real blocking work (`run_sign_in`) moved onto its own dedicated
+// thread via `tauri::async_runtime::spawn_blocking` and `.await`ed here -
+// so the main thread, and therefore every other command including a
+// Cancel click, stays free for the entire wait. Nothing about
+// `cancel_google_sign_in`/`run_sign_in`/`accept_one_redirect` needed to
+// change beyond this - the cancel-flag mechanism itself was always
+// correct (see its own tests), it just could never be reached in time.
 #[tauri::command]
-pub fn start_google_sign_in(state: State<AppState>, app: tauri::AppHandle) -> AppResult<GoogleSignInStatus> {
+pub async fn start_google_sign_in(state: State<'_, AppState>, app: tauri::AppHandle) -> AppResult<GoogleSignInStatus> {
     let client = require_oauth_client()?;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
     *state.oauth_cancel_flag.lock().unwrap() = Some(cancel_flag.clone());
-    let result = google_oauth::run_sign_in(&client, &app, &cancel_flag);
+
+    let cancel_for_task = cancel_flag.clone();
+    let app_for_task = app.clone();
+    let result: AppResult<google_oauth::SignedInAccount> = tauri::async_runtime::spawn_blocking(move || {
+        google_oauth::run_sign_in(&client, &app_for_task, &cancel_for_task)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the sign-in task did not complete cleanly: {e}")))?;
+
     *state.oauth_cancel_flag.lock().unwrap() = None;
     let account = result?;
 

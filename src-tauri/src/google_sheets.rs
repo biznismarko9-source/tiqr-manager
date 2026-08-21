@@ -306,6 +306,52 @@ pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
     parse_json_response::<serde_json::Value>(resp).map(|_| ())
 }
 
+/// The (partial) shape of the Sheets API's `spreadsheets.get` response this
+/// app reads for `get_spreadsheet_sheet_titles` below - `fields=` on that
+/// call already asks Google to omit everything else (every sheet's full
+/// grid contents/formatting), so there is little left for `serde` to ignore
+/// here, unlike the other response shapes in this module.
+#[derive(Debug, Deserialize)]
+struct SpreadsheetMetadata {
+    sheets: Vec<SheetMetadataEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SheetMetadataEntry {
+    properties: SheetMetadataProperties,
+}
+
+#[derive(Debug, Deserialize)]
+struct SheetMetadataProperties {
+    title: String,
+}
+
+/// Returns the exact title of every tab in spreadsheet `spreadsheet_id`, in
+/// the order Google itself returns them (left to right, as shown in the
+/// spreadsheet's own tab bar). 2.0.13: exists purely so a failed connection
+/// test can tell marko exactly what to type, instead of describing the
+/// problem in the abstract - see
+/// commands::sheets_sync::test_sheets_connection_impl for the one caller.
+///
+/// `fields=sheets.properties.title` asks Google to send back only this one
+/// field per sheet rather than each tab's full grid contents/formatting/
+/// conditional-formatting rules/etc. - the same "ask for less, get a
+/// smaller and cheaper response" principle `valueRenderOption` already
+/// applies to `get_values`, just via the Sheets API's separate `fields`
+/// partial-response mechanism this time.
+pub fn get_spreadsheet_sheet_titles(token: &str, spreadsheet_id: &str) -> AppResult<Vec<String>> {
+    let client = reqwest::blocking::Client::new();
+    let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
+    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title");
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
+    Ok(parsed.sheets.into_iter().map(|s| s.properties.title).collect())
+}
+
 /// The (partial) shape of the Sheets API's `spreadsheets.create` response
 /// this app actually reads. Sheets returns a great deal more (every sheet's
 /// full grid properties, default formatting, ...) - `serde` silently ignores
@@ -410,6 +456,23 @@ fn describe_error_response(status: reqwest::StatusCode, body: &str) -> String {
              syntax problem. Check the tab label at the bottom of the Google Sheet itself (not the \
              spreadsheet file's own name, which can read very similarly) - it must match the \
              \"Sheet/tab name\" field exactly, including capitalization and spacing.",
+        );
+    } else if status == reqwest::StatusCode::FORBIDDEN && body.contains("PERMISSION_DENIED") {
+        // 2.0.13: marko's own report - hit for a manually-pasted sheet that
+        // was never actually shared with whichever Google identity this
+        // request used. The two identities need this in different ways
+        // (see commands::google_auth::resolve_google_credential's doc
+        // comment): signed in with his own Google account, the sheet needs
+        // to already be his or shared with THAT account; not signed in
+        // (the shared service account), it needs to be shared with the
+        // service account's own e-mail specifically - Settings shows
+        // exactly which one applies and the exact address to share with.
+        message.push_str(
+            " - this usually means the Google identity this request used does not have access to \
+             that spreadsheet yet. Check Settings -> Integrations for the exact e-mail to share it \
+             with (it differs depending on whether you're signed in with your own Google account or \
+             using the app's shared one), then share the spreadsheet with that address (Editor \
+             access) in Google Sheets itself.",
         );
     }
     message
@@ -623,12 +686,41 @@ mod tests {
     }
 
     #[test]
-    fn describe_error_response_adds_no_hint_for_an_unrelated_error() {
+    fn describe_error_response_adds_a_sharing_hint_for_permission_denied() {
+        // The exact real error marko reported (2.0.13) for a manually
+        // connected sheet never shared with the identity making the request.
         let status = reqwest::StatusCode::FORBIDDEN;
         let body = r#"{ "error": { "code": 403, "message": "The caller does not have permission", "status": "PERMISSION_DENIED" } }"#;
         let message = describe_error_response(status, body);
         assert!(message.contains("permission"), "must still include Google's own raw message: {message}");
+        assert!(message.to_lowercase().contains("share"), "must add a clarifying hint about sharing the sheet: {message}");
+        assert!(!message.to_lowercase().contains("tab label"), "a permission error must not get the range-parsing hint: {message}");
+    }
+
+    #[test]
+    fn describe_error_response_adds_no_hint_for_an_unrelated_error() {
+        let status = reqwest::StatusCode::NOT_FOUND;
+        let body = r#"{ "error": { "code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND" } }"#;
+        let message = describe_error_response(status, body);
+        assert!(message.contains("not found"), "must still include Google's own raw message: {message}");
         assert!(!message.to_lowercase().contains("tab label"), "must not add an irrelevant hint to a different kind of error: {message}");
+        assert!(!message.to_lowercase().contains("share the spreadsheet"), "must not add an irrelevant hint to a different kind of error: {message}");
+    }
+
+    #[test]
+    fn spreadsheet_metadata_deserializes_the_real_shape_spreadsheets_get_returns() {
+        // The exact shape `?fields=sheets.properties.title` produces - a
+        // real spreadsheet has 1+ sheets, each carrying (among many other
+        // fields this app never asks for) its own tab title.
+        let json = r#"{
+            "sheets": [
+                { "properties": { "title": "Objednávky" } },
+                { "properties": { "title": "Predaje 2026" } }
+            ]
+        }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse a real spreadsheets.get response");
+        let titles: Vec<String> = parsed.sheets.into_iter().map(|s| s.properties.title).collect();
+        assert_eq!(titles, vec!["Objednávky".to_string(), "Predaje 2026".to_string()]);
     }
 
     #[test]

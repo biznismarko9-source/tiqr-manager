@@ -179,6 +179,36 @@ pub fn clear_sheets_connection(state: State<AppState>, data_source: String) -> A
     clear_sheets_connection_impl(&conn, &data_source)
 }
 
+/// Whether an error message looks like the Sheets API's "the tab name in
+/// this range does not exist in that spreadsheet" case - worth enriching
+/// with the spreadsheet's actual tab titles (see `format_with_real_tab_titles`
+/// below) rather than leaving marko to guess. 2.0.13: marko's own report -
+/// the plain-English hint google_sheets::describe_error_response already
+/// adds ("check the tab label...") kept the error recurring anyway, because
+/// knowing a mismatch is LIKELY still doesn't say what the right name IS.
+fn looks_like_a_missing_tab_error(message: &str) -> bool {
+    message.contains("Unable to parse range")
+}
+
+/// Appends the spreadsheet's real, exact tab titles to `message` - turning
+/// "the tab name probably doesn't exist" into a straight copy-paste of what
+/// it should actually be. Pure and unit-tested on its own; the network call
+/// that produces `titles` lives in `test_sheets_connection_impl` below, the
+/// same "pure logic vs. untested network shell" split every other command
+/// in this app already uses (see e.g. pulls_sheet_sync.rs's own module
+/// comment). Leaves `message` untouched when `titles` is empty - a
+/// spreadsheet reporting zero sheets is not itself useful information to
+/// hand back, and never worth pretending otherwise.
+fn format_with_real_tab_titles(message: &str, titles: &[String]) -> String {
+    if titles.is_empty() {
+        return message.to_string();
+    }
+    let quoted = titles.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(", ");
+    format!(
+        "{message} The tabs that actually exist in this spreadsheet are: {quoted}. Update \"Sheet/tab name\" to match one of these exactly."
+    )
+}
+
 fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResult<SheetsConnectionTestResult> {
     let Some(connection) = load_connection(conn, data_source)? else {
         return Ok(SheetsConnectionTestResult { ok: false, message: "No spreadsheet is connected yet.".to_string() });
@@ -201,7 +231,20 @@ fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResul
             ok: true,
             message: format!("Connected - the app can read \"{}\".", connection.sheet_tab),
         }),
-        Err(e) => Ok(SheetsConnectionTestResult { ok: false, message: e.to_string() }),
+        Err(e) => {
+            let mut message = e.to_string();
+            // 2.0.13: best-effort only - a spreadsheet this credential can't
+            // even read the metadata of (e.g. the exact same permission
+            // problem that made the original call fail) just keeps the
+            // original message, never a second, more confusing failure
+            // layered on top of the first.
+            if looks_like_a_missing_tab_error(&message) {
+                if let Ok(titles) = google_sheets::get_spreadsheet_sheet_titles(token, &connection.spreadsheet_id) {
+                    message = format_with_real_tab_titles(&message, &titles);
+                }
+            }
+            Ok(SheetsConnectionTestResult { ok: false, message })
+        }
     }
 }
 
@@ -359,6 +402,29 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sheet_sync_links WHERE data_source='tickets'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(links, 1);
+    }
+
+    #[test]
+    fn looks_like_a_missing_tab_error_matches_the_real_google_wording() {
+        assert!(looks_like_a_missing_tab_error(
+            "Google Sheets rejected the request (400 Bad Request): { \"error\": { \"message\": \"Unable to parse range: 'TIQR Manager - Orders'!A1:A1\" } }"
+        ));
+        assert!(!looks_like_a_missing_tab_error(
+            "Google Sheets rejected the request (403 Forbidden): { \"error\": { \"message\": \"The caller does not have permission\" } }"
+        ));
+    }
+
+    #[test]
+    fn format_with_real_tab_titles_lists_every_tab_quoted_and_comma_separated() {
+        let message = format_with_real_tab_titles("original error", &["Objednávky".to_string(), "Predaje".to_string()]);
+        assert!(message.starts_with("original error"), "must keep Google's own message intact: {message}");
+        assert!(message.contains("\"Objednávky\", \"Predaje\""), "{message}");
+    }
+
+    #[test]
+    fn format_with_real_tab_titles_leaves_the_message_alone_when_there_are_no_titles() {
+        let message = format_with_real_tab_titles("original error", &[]);
+        assert_eq!(message, "original error", "no titles to suggest is not itself useful information to append");
     }
 
     #[test]
