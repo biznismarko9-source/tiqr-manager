@@ -574,6 +574,16 @@ export interface SheetsConnectionTestResult {
   message: string;
 }
 
+/** Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
+ * alternative to pasting an existing sheet's URL, no Google sign-in window.
+ * `connection` is already persisted by the time this returns. `spreadsheetUrl`
+ * is shown as selectable text, not a clickable link (no shell-opener
+ * dependency in this app - see Settings.tsx). */
+export interface CreatedSheetResult {
+  connection: SheetsConnectionConfig;
+  spreadsheetUrl: string;
+}
+
 // ---------------------------------------------------------------------------
 // Pulls <-> Google Sheet row sync (2.0.3). Sheet -> app only - see
 // commands/pulls_sheet_sync.rs's module doc comment.

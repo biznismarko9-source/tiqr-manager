@@ -51,11 +51,11 @@
 
 use crate::commands::csv_import::resolve_or_create_platform;
 use crate::commands::pulls::{create_pull_impl, fetch_one as fetch_pull, set_pull_transfer_done_impl, update_pull_impl};
-use crate::commands::sheets_sync::{last_synced_key, load_connection, set_setting};
+use crate::commands::sheets_sync::{last_synced_key, load_connection, set_setting, set_sheets_connection_impl, ALLOWED_CURRENCIES};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{PullEditInput, PullInput, PullsSyncResult, SheetSyncIssue};
+use crate::models::{CreatedSheetResult, PullEditInput, PullInput, PullsSyncResult, SheetSyncIssue};
 use crate::money::parse_decimal_to_cents;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -660,6 +660,110 @@ pub fn sync_pulls(state: State<AppState>) -> AppResult<PullsSyncResult> {
     sync_pulls_impl(&conn)
 }
 
+// ---------------------------------------------------------------------------
+// Auto-create-and-share (2.0.4) - "Create a new sheet for me", the
+// alternative to pasting an existing sheet's URL, built for marko's original
+// ask: one click, a brand-new Pulls sheet appears already shared with him,
+// no Google sign-in window (see google_sheets.rs's `SHEETS_AND_DRIVE_SCOPE`
+// doc comment for the full design rationale versus real OAuth). Fully
+// additive: the paste-a-URL flow (commands/sheets_sync.rs::
+// set_sheets_connection) keeps working exactly as before, unchanged, for
+// marko's own historical sheet - this is a second way to arrive at the same
+// connected state, not a replacement.
+// ---------------------------------------------------------------------------
+
+/// The header row written into a freshly-created sheet - exactly the columns
+/// `apply_pull_rows` above understands, in the same order as the mapping
+/// table in this module's doc comment. Deliberately excludes `date` and the
+/// unnamed blank column (nothing reads either) and `TIQR ID` (sync appends
+/// that itself the first time it's missing - see `resolve_marker_column`),
+/// so someone opening a freshly-created sheet sees only columns that
+/// actually do something.
+const PULLS_SHEET_HEADERS: &[&str] =
+    &["pull", "Event name", "event date", "Ks", "Platform", "More info", "Section", "Row", "Seats", "Transfer", "Price"];
+
+const NEW_SHEET_TITLE: &str = "TIQR Manager - Pulls";
+const NEW_SHEET_TAB_NAME: &str = "Pulls";
+
+/// A light, offline pre-check - not a full RFC 5322 parser. Drive itself is
+/// the real, authoritative validator (a syntactically plausible but
+/// non-existent address just fails later at `share_file` with Google's own
+/// message); this only exists so an obvious mistake (empty, no "@", "@" at
+/// the very start/end, embedded whitespace) fails instantly, before spending
+/// a real API round-trip on it - and, more importantly, before creating and
+/// sharing a real sheet first and only then discovering the address was
+/// never usable.
+fn validate_share_email(email: &str) -> AppResult<String> {
+    let trimmed = email.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation("Enter the email address to share the new sheet with.".to_string()));
+    }
+    if trimmed.chars().any(|c| c.is_whitespace()) {
+        return Err(AppError::Validation("Email address must not contain spaces.".to_string()));
+    }
+    match trimmed.find('@') {
+        Some(pos) if pos > 0 && pos < trimmed.len() - 1 => Ok(trimmed.to_string()),
+        _ => Err(AppError::Validation("That doesn't look like a valid email address.".to_string())),
+    }
+}
+
+/// Deliberately duplicates `set_sheets_connection_impl`'s own currency
+/// check: that function only runs at the very end of
+/// `create_pulls_sheet_impl`, *after* a real spreadsheet has already been
+/// created and shared - failing late on a bad currency would leave that real
+/// sheet orphaned (created, shared with someone, but never connected in the
+/// app). Checking it here first means a bad currency never reaches the
+/// network at all.
+fn validate_currency(currency: &str) -> AppResult<String> {
+    let upper = currency.trim().to_uppercase();
+    if !ALLOWED_CURRENCIES.contains(&upper.as_str()) {
+        return Err(AppError::Validation(format!(
+            "Currency must be one of {} - got '{currency}'",
+            ALLOWED_CURRENCIES.join(", ")
+        )));
+    }
+    Ok(upper)
+}
+
+/// Creates a brand-new Google Sheet for Pulls, shares it with `email`,
+/// writes `PULLS_SHEET_HEADERS` as its header row, and connects it - all in
+/// one call, with no Google sign-in window at any point (the same service
+/// account every other connection in this app already uses). `email` and
+/// `currency` are fully validated before the first network call - see
+/// `validate_share_email`/`validate_currency`'s doc comments for why that
+/// ordering matters here specifically.
+fn create_pulls_sheet_impl(conn: &Connection, email: &str, currency: &str) -> AppResult<CreatedSheetResult> {
+    let email = validate_share_email(email)?;
+    let currency_upper = validate_currency(currency)?;
+
+    let account = google_sheets::embedded_service_account().ok_or_else(|| {
+        AppError::External("Google Sheets sync isn't available in this build (no service account configured).".to_string())
+    })?;
+    let token = google_sheets::fetch_access_token(&account, google_sheets::SHEETS_AND_DRIVE_SCOPE)?;
+
+    let created = google_sheets::create_spreadsheet(&token, NEW_SHEET_TITLE, NEW_SHEET_TAB_NAME)?;
+
+    let header_row: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+    let header_range = format!("{NEW_SHEET_TAB_NAME}!A1");
+    google_sheets::update_values(&token, &created.spreadsheet_id, &header_range, &[header_row])?;
+
+    google_sheets::share_file(&token, &created.spreadsheet_id, &email)?;
+
+    let connection =
+        set_sheets_connection_impl(conn, "pulls", &created.spreadsheet_id, NEW_SHEET_TAB_NAME, &currency_upper)?;
+
+    Ok(CreatedSheetResult { connection, spreadsheet_url: created.spreadsheet_url })
+}
+
+/// "Create a new sheet for me" button (Settings -> Integrations, Pulls card)
+/// - sits right next to the existing paste-a-URL form as a second way to
+/// connect, not a replacement for it. Never runs on its own.
+#[tauri::command]
+pub fn create_pulls_sheet(state: State<AppState>, email: String, currency: String) -> AppResult<CreatedSheetResult> {
+    let conn = state.db.lock().unwrap();
+    create_pulls_sheet_impl(&conn, &email, &currency)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,5 +1122,74 @@ mod tests {
     fn headers_with_marker_helper_lines_up_with_marker_col_constant() {
         // Guards the two test fixtures above against silently drifting apart.
         assert_eq!(headers_with_marker().len() - 1, MARKER_COL);
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-create-and-share (2.0.4). `create_pulls_sheet_impl` itself calls
+    // out to Google (create + write header + share) once validation passes,
+    // so - same limitation as `sync_pulls_impl` - only the parts before that
+    // first network call are exercised here: input validation, and that a
+    // fully valid call still fails cleanly rather than reaching the network
+    // when this test build has no service account embedded (see
+    // google_sheets.rs's embedded_service_account_is_none_on_a_plain_local_build
+    // test, which the last test below relies on).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pulls_sheet_headers_satisfy_the_required_header_check() {
+        // Regression guard: if apply_pull_rows's required-header list ever
+        // grows, a freshly auto-created sheet must still pass its own sync
+        // immediately, with zero manual editing needed first.
+        let headers: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let map = build_header_map(&headers);
+        assert!(check_required_headers(&map).is_ok(), "a freshly auto-created sheet must satisfy its own required columns");
+    }
+
+    #[test]
+    fn validate_share_email_accepts_ordinary_addresses() {
+        for ok in ["marko@example.com", "  marko@example.com  ", "a@b.co"] {
+            assert!(validate_share_email(ok).is_ok(), "'{ok}' must be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_share_email_rejects_empty_missing_at_or_whitespace() {
+        for bad in ["", "   ", "not-an-email", "@example.com", "marko@", "mar ko@example.com", "marko@exa mple.com"] {
+            assert!(validate_share_email(bad).is_err(), "'{bad}' must be rejected");
+        }
+    }
+
+    #[test]
+    fn validate_currency_accepts_only_eur_usd_gbp_and_uppercases() {
+        for ok in ["EUR", "usd", "Gbp"] {
+            assert_eq!(validate_currency(ok).unwrap(), ok.to_uppercase());
+        }
+        for bad in ["CZK", "", "   ", "EURO"] {
+            assert!(validate_currency(bad).is_err(), "'{bad}' must be rejected");
+        }
+    }
+
+    #[test]
+    fn create_pulls_sheet_rejects_a_bad_email_before_touching_anything_else() {
+        let conn = test_conn();
+        let err = create_pulls_sheet_impl(&conn, "not-an-email", "EUR").unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("email"), "the error must mention the actual problem: {err}");
+    }
+
+    #[test]
+    fn create_pulls_sheet_rejects_a_bad_currency_before_touching_anything_else() {
+        let conn = test_conn();
+        let err = create_pulls_sheet_impl(&conn, "marko@example.com", "CZK").unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("currency"), "the error must mention the actual problem: {err}");
+    }
+
+    #[test]
+    fn create_pulls_sheet_with_valid_input_fails_cleanly_when_no_service_account_is_embedded() {
+        let conn = test_conn();
+        let err = create_pulls_sheet_impl(&conn, "marko@example.com", "EUR").unwrap_err();
+        assert!(
+            err.to_string().contains("isn't available in this build"),
+            "fully valid input must still stop cleanly before any network call in a test build: {err}"
+        );
     }
 }

@@ -62,6 +62,20 @@ use serde::{Deserialize, Serialize};
 
 pub const SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
 
+/// Combined scope for the one flow that needs both APIs: auto-creating a
+/// brand-new sheet (Sheets API) and sharing it with whoever asked for it
+/// (Drive API) - see commands::pulls_sheet_sync::create_pulls_sheet. Every
+/// other flow here only ever reads/writes an *existing* sheet's values, so
+/// it keeps using the narrower `SHEETS_SCOPE` above, unchanged. `drive.file`
+/// (never the much broader `drive` scope) on purpose: this service account
+/// only ever needs to touch files it created itself, never anything else in
+/// anyone's Drive. Requires the Google Drive API to be enabled on the same
+/// GCP project the service account belongs to (Cloud Console -> APIs &
+/// Services -> Library -> Google Drive API -> Enable) - a one-time step,
+/// same category as enabling the Sheets API itself.
+pub const SHEETS_AND_DRIVE_SCOPE: &str =
+    "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file";
+
 /// The embedded service account key, written by build.rs from the
 /// GOOGLE_SERVICE_ACCOUNT_JSON GitHub Actions secret at real build time.
 /// Empty on any local `cargo build`/`cargo test` - see build.rs's doc
@@ -226,6 +240,81 @@ pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
         .json(&body)
         .send()
         .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    parse_json_response::<serde_json::Value>(resp).map(|_| ())
+}
+
+/// The (partial) shape of the Sheets API's `spreadsheets.create` response
+/// this app actually reads. Sheets returns a great deal more (every sheet's
+/// full grid properties, default formatting, ...) - `serde` silently ignores
+/// all of it, same principle as `ServiceAccountKey` above.
+#[derive(Debug, Deserialize)]
+struct CreateSpreadsheetResponse {
+    #[serde(rename = "spreadsheetId")]
+    spreadsheet_id: String,
+    #[serde(rename = "spreadsheetUrl")]
+    spreadsheet_url: String,
+}
+
+/// What `create_spreadsheet` hands back to its caller - just the two things
+/// commands::pulls_sheet_sync needs: the ID to connect to (same shape as if
+/// the user had pasted an existing sheet's ID) and the URL to show them.
+#[derive(Debug, Clone)]
+pub struct CreatedSpreadsheet {
+    pub spreadsheet_id: String,
+    pub spreadsheet_url: String,
+}
+
+/// Creates a brand-new spreadsheet titled `title`, with a single sheet
+/// (tab) named `sheet_tab`, and returns its ID/URL. Requires `token` to have
+/// been fetched with `SHEETS_AND_DRIVE_SCOPE` (create itself only needs the
+/// Sheets scope, but the caller's very next step is always `share_file`,
+/// which does need Drive - see that constant's doc comment).
+///
+/// The service account becomes the sole owner of the new file, exactly like
+/// any file it creates via the Sheets API always has been - `share_file`
+/// below is what makes it visible/editable to an actual person afterward.
+pub fn create_spreadsheet(token: &str, title: &str, sheet_tab: &str) -> AppResult<CreatedSpreadsheet> {
+    let client = reqwest::blocking::Client::new();
+    let body = serde_json::json!({
+        "properties": { "title": title },
+        "sheets": [{ "properties": { "title": sheet_tab } }],
+    });
+    let resp = client
+        .post("https://sheets.googleapis.com/v4/spreadsheets")
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    let parsed: CreateSpreadsheetResponse = parse_json_response(resp)?;
+    Ok(CreatedSpreadsheet {
+        spreadsheet_id: parsed.spreadsheet_id,
+        spreadsheet_url: parsed.spreadsheet_url,
+    })
+}
+
+/// Shares Drive file `file_id` with `email` as an editor ("writer"), and
+/// asks Drive to send that person its normal "X shared a file with you"
+/// notification e-mail so they actually notice the new sheet exists.
+/// Requires `token` to have been fetched with `SHEETS_AND_DRIVE_SCOPE`
+/// (`drive.file`) - see that constant's doc comment for why this app never
+/// requests the broader `drive` scope.
+pub fn share_file(token: &str, file_id: &str, email: &str) -> AppResult<()> {
+    let client = reqwest::blocking::Client::new();
+    let encoded_id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let url = format!(
+        "https://www.googleapis.com/drive/v3/files/{encoded_id}/permissions?sendNotificationEmail=true"
+    );
+    let body = serde_json::json!({
+        "role": "writer",
+        "type": "user",
+        "emailAddress": email,
+    });
+    let resp = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Drive: {e}")))?;
     parse_json_response::<serde_json::Value>(resp).map(|_| ())
 }
 

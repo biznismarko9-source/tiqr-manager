@@ -93,6 +93,7 @@ pub fn run() {
             commands::sheets_sync::clear_sheets_connection,
             commands::sheets_sync::test_sheets_connection,
             commands::pulls_sheet_sync::sync_pulls,
+            commands::pulls_sheet_sync::create_pulls_sheet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

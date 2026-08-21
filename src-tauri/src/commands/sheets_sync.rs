@@ -112,7 +112,13 @@ pub fn get_sheets_connection_status(state: State<AppState>, data_source: String)
     get_sheets_connection_status_impl(&conn, &data_source)
 }
 
-fn set_sheets_connection_impl(
+// `pub(crate)` since 2.0.4: commands::pulls_sheet_sync::create_pulls_sheet_impl
+// reuses this directly as the single source of truth for persisting a
+// connection, once it has just created+shared a brand-new spreadsheet itself
+// - rather than a second, easily-drifting copy of the same validate-and-save
+// logic. `spreadsheet_url_or_id` accepts a bare ID there too, same as a
+// pasted URL would: `extract_spreadsheet_id` already handles both.
+pub(crate) fn set_sheets_connection_impl(
     conn: &Connection,
     data_source: &str,
     spreadsheet_url_or_id: &str,

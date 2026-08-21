@@ -34,7 +34,17 @@ import {
   ExportPickerModal,
   type ExportPickerConfig,
 } from "../components/ExportPickerModal";
-import { IconArrowLeft, IconDatabase, IconDownload, IconLink, IconSun, IconTag, IconTrash, IconUpload } from "../components/icons";
+import {
+  IconArrowLeft,
+  IconDatabase,
+  IconDownload,
+  IconLink,
+  IconPlus,
+  IconSun,
+  IconTag,
+  IconTrash,
+  IconUpload,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { useTheme, type ThemeMode } from "../lib/theme";
@@ -595,7 +605,10 @@ function SheetsConnectionCard({
   label: string;
   /** 2.0.3: only Pulls has real sync logic (commands::pulls_sheet_sync) so
    * far - a future Tickets card can reuse this whole component, just
-   * without "Sync now" yet, until its own sync logic exists. */
+   * without "Sync now" yet, until its own sync logic exists. 2.0.4: also
+   * gates "Create a new sheet for me" (commands::pulls_sheet_sync::
+   * create_pulls_sheet), which is equally Pulls-specific - both flags travel
+   * together until a second data source gets its own real backend logic. */
   canSync?: boolean;
 }) {
   const toast = useToast();
@@ -604,7 +617,9 @@ function SheetsConnectionCard({
   const [spreadsheetInput, setSpreadsheetInput] = useState("");
   const [sheetTab, setSheetTab] = useState("");
   const [currency, setCurrency] = useState<string>(CURRENCY_OPTIONS[0]);
-  const [busy, setBusy] = useState<"save" | "test" | "sync" | "disconnect" | null>(null);
+  const [createEmail, setCreateEmail] = useState("");
+  const [createdUrl, setCreatedUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"save" | "test" | "sync" | "create" | "disconnect" | null>(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<PullsSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
@@ -628,9 +643,30 @@ function SheetsConnectionCard({
   const doConnect = async () => {
     setBusy("save");
     setTestResult(null);
+    setCreatedUrl(null);
     try {
       await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab, currency);
       toast.success("Sheet connected");
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 2.0.4: the alternative to pasting an existing sheet's URL above - creates
+  // a brand-new sheet, already shared with `createEmail`, and connects it.
+  // Reuses the same `currency` state as the paste-URL form so there is only
+  // ever one currency selector on this card, whichever path is used.
+  const doCreate = async () => {
+    setBusy("create");
+    setCreatedUrl(null);
+    try {
+      const result = await api.createPullsSheet(createEmail, currency);
+      setCreatedUrl(result.spreadsheetUrl);
+      setCreateEmail("");
+      toast.success("New sheet created and shared");
       reload();
     } catch (e) {
       toast.error(errMsg(e));
@@ -673,6 +709,7 @@ function SheetsConnectionCard({
       setConfirmDisconnect(false);
       setTestResult(null);
       setSyncResult(null);
+      setCreatedUrl(null);
       toast.success("Sheet disconnected");
       reload();
     } catch (e) {
@@ -764,6 +801,36 @@ function SheetsConnectionCard({
             )}
           </div>
 
+          {!connected && canSync && (
+            <>
+              <div className="my-4 flex items-center gap-3">
+                <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+                <span className="text-xs text-slate-400 dark:text-slate-500">or</span>
+                <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+              </div>
+              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                Don&apos;t have a sheet yet? The app can create one for you - already set up with the right columns -
+                and share it with your Google account. No Google sign-in window.
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[240px] flex-1">
+                  <Field label="Your email (to share the new sheet with)">
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={createEmail}
+                      onChange={(e) => setCreateEmail(e.target.value)}
+                    />
+                  </Field>
+                </div>
+                <Button variant="secondary" disabled={busy === "create" || !createEmail.trim()} onClick={doCreate}>
+                  {busy === "create" ? <Spinner className="h-4 w-4" /> : <IconPlus className="h-4 w-4" />}
+                  {busy === "create" ? "Creating..." : "Create a new sheet for me"}
+                </Button>
+              </div>
+            </>
+          )}
+
           {testResult && (
             <p
               className={`mt-3 text-xs ${testResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
@@ -804,6 +871,17 @@ function SheetsConnectionCard({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {createdUrl && (
+            <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/40">
+              <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                New sheet created and shared - tap to select the link, then copy it to open in your browser:
+              </p>
+              <p className="mt-1 select-all break-all font-mono text-xs text-emerald-800 dark:text-emerald-300">
+                {createdUrl}
+              </p>
             </div>
           )}
 

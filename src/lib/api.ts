@@ -4,6 +4,7 @@ import type {
   BulkSalePaymentStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
+  CreatedSheetResult,
   CsvImportResult,
   CsvPreview,
   DashboardData,
@@ -186,6 +187,11 @@ export const api = {
   /** 2.0.3: reads the connected sheet and creates/updates matching Pulls -
    * sheet -> app only, see commands/pulls_sheet_sync.rs. */
   syncPulls: () => invoke<PullsSyncResult>("sync_pulls"),
+  /** 2.0.4: auto-creates a brand-new Pulls sheet, shares it with `email`, and
+   * connects it - no Google sign-in window. Sits next to setSheetsConnection
+   * as a second way to arrive at a connection, not a replacement for it. */
+  createPullsSheet: (email: string, currency: string) =>
+    invoke<CreatedSheetResult>("create_pulls_sheet", { email, currency }),
 };
 
 export function errMsg(e: unknown): string {

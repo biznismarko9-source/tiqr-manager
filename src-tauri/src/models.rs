@@ -704,6 +704,21 @@ pub struct SheetsConnectionTestResult {
     pub message: String,
 }
 
+/// Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
+/// flow that replaces a Google sign-in window with the same service account
+/// every other connection uses (see commands/pulls_sheet_sync.rs::
+/// create_pulls_sheet_impl and google_sheets.rs's `SHEETS_AND_DRIVE_SCOPE`
+/// doc comment for why this needs no login popup). `connection` is already
+/// persisted by the time this is returned - Settings just reloads its status
+/// from it like any other connection change. `spreadsheet_url` is shown as
+/// selectable text, not a clickable link (see Settings.tsx).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedSheetResult {
+    pub connection: SheetsConnectionConfig,
+    pub spreadsheet_url: String,
+}
+
 // ---------------------------------------------------------------------------
 // Pulls <-> Google Sheet sync (2.0.3). See commands/pulls_sheet_sync.rs for
 // the full column mapping and matching/conflict rules. Sheet -> app only in
