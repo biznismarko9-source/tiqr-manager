@@ -555,7 +555,12 @@ export interface PullEditInput {
 export interface SheetsConnectionConfig {
   spreadsheetId: string;
   sheetTab: string;
+  /** 2.0.3: one currency applies to every row synced from this sheet - see
+   * models.rs's matching field doc comment for why. One of CURRENCY_OPTIONS. */
+  currency: string;
 }
+
+export const CURRENCY_OPTIONS = ["EUR", "USD", "GBP"] as const;
 
 export interface SheetsConnectionStatus {
   syncAvailable: boolean;
@@ -567,4 +572,23 @@ export interface SheetsConnectionStatus {
 export interface SheetsConnectionTestResult {
   ok: boolean;
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pulls <-> Google Sheet row sync (2.0.3). Sheet -> app only - see
+// commands/pulls_sheet_sync.rs's module doc comment.
+// ---------------------------------------------------------------------------
+
+export interface SheetSyncIssue {
+  rowNumber: number;
+  message: string;
+}
+
+export interface PullsSyncResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  conflicts: SheetSyncIssue[];
+  errors: SheetSyncIssue[];
+  syncedAt: string;
 }

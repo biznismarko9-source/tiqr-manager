@@ -7,6 +7,7 @@ pub mod events;
 pub mod lookups;
 pub mod orders;
 pub mod pulls;
+pub mod pulls_sheet_sync;
 pub mod sales;
 pub mod settings;
 pub mod sheets_sync;

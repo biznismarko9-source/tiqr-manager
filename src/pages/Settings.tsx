@@ -3,7 +3,15 @@ import { Link, useParams } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
-import type { AppInfo, CsvPreview, Platform, SheetsConnectionStatus, SheetsConnectionTestResult } from "../lib/types";
+import {
+  CURRENCY_OPTIONS,
+  type AppInfo,
+  type CsvPreview,
+  type Platform,
+  type PullsSyncResult,
+  type SheetsConnectionStatus,
+  type SheetsConnectionTestResult,
+} from "../lib/types";
 import {
   Badge,
   Button,
@@ -394,7 +402,7 @@ export default function Settings() {
 
           {section === "integrations" && (
             <div className="grid grid-cols-1 gap-4 lg:max-w-3xl">
-              <SheetsConnectionCard dataSource="pulls" label="Pulls" />
+              <SheetsConnectionCard dataSource="pulls" label="Pulls" canSync />
             </div>
           )}
 
@@ -578,14 +586,27 @@ function PlatformList({
 // source, see sheets_sync.rs). Deliberately only sets up and tests the
 // connection - no row import/export UI yet, see REDESIGN-2.0.2-REPORT.md for
 // why that's a separate, later pass.
-function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label: string }) {
+function SheetsConnectionCard({
+  dataSource,
+  label,
+  canSync,
+}: {
+  dataSource: string;
+  label: string;
+  /** 2.0.3: only Pulls has real sync logic (commands::pulls_sheet_sync) so
+   * far - a future Tickets card can reuse this whole component, just
+   * without "Sync now" yet, until its own sync logic exists. */
+  canSync?: boolean;
+}) {
   const toast = useToast();
   const [status, setStatus] = useState<SheetsConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [spreadsheetInput, setSpreadsheetInput] = useState("");
   const [sheetTab, setSheetTab] = useState("");
-  const [busy, setBusy] = useState<"save" | "test" | "disconnect" | null>(null);
+  const [currency, setCurrency] = useState<string>(CURRENCY_OPTIONS[0]);
+  const [busy, setBusy] = useState<"save" | "test" | "sync" | "disconnect" | null>(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
+  const [syncResult, setSyncResult] = useState<PullsSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const reload = () => {
@@ -596,6 +617,7 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
         setStatus(s);
         setSpreadsheetInput(s.connection?.spreadsheetId ?? "");
         setSheetTab(s.connection?.sheetTab ?? "");
+        setCurrency(s.connection?.currency ?? CURRENCY_OPTIONS[0]);
       })
       .catch((e) => toast.error(errMsg(e)))
       .finally(() => setLoading(false));
@@ -607,7 +629,7 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
     setBusy("save");
     setTestResult(null);
     try {
-      await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab);
+      await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab, currency);
       toast.success("Sheet connected");
       reload();
     } catch (e) {
@@ -629,12 +651,28 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
     }
   };
 
+  const doSync = async () => {
+    setBusy("sync");
+    setSyncResult(null);
+    try {
+      const result = await api.syncPulls();
+      setSyncResult(result);
+      toast.success(`Synced: ${result.created} created, ${result.updated} updated, ${result.unchanged} unchanged`);
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const doDisconnect = async () => {
     setBusy("disconnect");
     try {
       await api.clearSheetsConnection(dataSource);
       setConfirmDisconnect(false);
       setTestResult(null);
+      setSyncResult(null);
       toast.success("Sheet disconnected");
       reload();
     } catch (e) {
@@ -668,11 +706,13 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
       ) : (
         <>
           <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect. Reading and writing{" "}
-            {label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.
+            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.{" "}
+            {canSync
+              ? "\"Sync now\" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, only its own row IDs."
+              : `Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
           </p>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3">
             <Field label="Spreadsheet URL or ID">
               <Input
                 placeholder="https://docs.google.com/spreadsheets/d/..."
@@ -680,9 +720,20 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
                 onChange={(e) => setSpreadsheetInput(e.target.value)}
               />
             </Field>
-            <Field label="Sheet/tab name">
-              <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
-            </Field>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Sheet/tab name">
+                <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
+              </Field>
+              <Field label="Currency" hint="Applies to every row synced from this sheet - it has no currency column of its own.">
+                <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                  {CURRENCY_OPTIONS.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -700,6 +751,12 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
                   {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
                   Test connection
                 </Button>
+                {canSync && (
+                  <Button variant="secondary" disabled={busy === "sync"} onClick={doSync}>
+                    {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "sync" ? "Syncing..." : "Sync now"}
+                  </Button>
+                )}
                 <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
                   Disconnect
                 </Button>
@@ -713,6 +770,41 @@ function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label
             >
               {testResult.message}
             </p>
+          )}
+
+          {syncResult && (
+            <div className="mt-3 rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Created <b>{syncResult.created}</b>, updated <b>{syncResult.updated}</b>, unchanged{" "}
+                <b>{syncResult.unchanged}</b>.
+              </p>
+              {syncResult.conflicts.length > 0 && (
+                <div className="mt-2 max-h-40 overflow-y-auto">
+                  <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                    {syncResult.conflicts.length} row{syncResult.conflicts.length === 1 ? "" : "s"} need
+                    {syncResult.conflicts.length === 1 ? "s" : ""} your attention - both the sheet and the app changed
+                    them since the last sync:
+                  </p>
+                  {syncResult.conflicts.map((c, i) => (
+                    <p key={i} className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+                      Row {c.rowNumber}: {c.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {syncResult.errors.length > 0 && (
+                <div className="mt-2 max-h-40 overflow-y-auto">
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                    {syncResult.errors.length} row{syncResult.errors.length === 1 ? "" : "s"} skipped:
+                  </p>
+                  {syncResult.errors.map((e, i) => (
+                    <p key={i} className="mt-0.5 text-xs text-red-600 dark:text-red-400">
+                      Row {e.rowNumber}: {e.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {status?.serviceAccountEmail && (

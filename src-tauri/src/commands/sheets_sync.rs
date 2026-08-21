@@ -20,11 +20,23 @@ use crate::models::{SheetsConnectionConfig, SheetsConnectionStatus, SheetsConnec
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::State;
 
-fn connection_key(data_source: &str) -> String {
+/// The only currencies a connected sheet's rows can be synced as (2.0.3:
+/// marko's Pulls tracker has no currency column of its own - see
+/// `SheetsConnectionConfig::currency`'s doc comment). Deliberately a short,
+/// explicit allow-list rather than accepting any free-text currency code:
+/// this is money, and this app never lets a value it can't vouch for reach
+/// `price_cents`/`currency` (same principle as `money.rs`).
+pub const ALLOWED_CURRENCIES: &[&str] = &["EUR", "USD", "GBP"];
+
+// `pub(crate)` (not just `fn`) on this group since 2.0.3: commands::
+// pulls_sheet_sync reuses the exact same app_settings key naming and
+// load/save behavior for the connection itself and its last-synced stamp,
+// rather than a second, easily-drifting copy of this scheme.
+pub(crate) fn connection_key(data_source: &str) -> String {
     format!("sheets_connection:{data_source}")
 }
 
-fn last_synced_key(data_source: &str) -> String {
+pub(crate) fn last_synced_key(data_source: &str) -> String {
     format!("sheets_last_synced:{data_source}")
 }
 
@@ -34,7 +46,7 @@ fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
         .optional()?)
 }
 
-fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+pub(crate) fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -48,7 +60,7 @@ fn delete_setting(conn: &Connection, key: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn load_connection(conn: &Connection, data_source: &str) -> AppResult<Option<SheetsConnectionConfig>> {
+pub(crate) fn load_connection(conn: &Connection, data_source: &str) -> AppResult<Option<SheetsConnectionConfig>> {
     match get_setting(conn, &connection_key(data_source))? {
         None => Ok(None),
         Some(json) => serde_json::from_str(&json)
@@ -105,6 +117,7 @@ fn set_sheets_connection_impl(
     data_source: &str,
     spreadsheet_url_or_id: &str,
     sheet_tab: &str,
+    currency: &str,
 ) -> AppResult<SheetsConnectionConfig> {
     let spreadsheet_id = extract_spreadsheet_id(spreadsheet_url_or_id)
         .ok_or_else(|| AppError::Validation("That doesn't look like a Google Sheets URL or ID".to_string()))?;
@@ -112,7 +125,14 @@ fn set_sheets_connection_impl(
     if sheet_tab.is_empty() {
         return Err(AppError::Validation("Sheet/tab name is required".to_string()));
     }
-    let config = SheetsConnectionConfig { spreadsheet_id, sheet_tab: sheet_tab.to_string() };
+    let currency_upper = currency.trim().to_uppercase();
+    if !ALLOWED_CURRENCIES.contains(&currency_upper.as_str()) {
+        return Err(AppError::Validation(format!(
+            "Currency must be one of {} - got '{currency}'",
+            ALLOWED_CURRENCIES.join(", ")
+        )));
+    }
+    let config = SheetsConnectionConfig { spreadsheet_id, sheet_tab: sheet_tab.to_string(), currency: currency_upper };
     let json = serde_json::to_string(&config).map_err(|e| AppError::Other(e.to_string()))?;
     set_setting(conn, &connection_key(data_source), &json)?;
     Ok(config)
@@ -124,9 +144,10 @@ pub fn set_sheets_connection(
     data_source: String,
     spreadsheet_url_or_id: String,
     sheet_tab: String,
+    currency: String,
 ) -> AppResult<SheetsConnectionConfig> {
     let conn = state.db.lock().unwrap();
-    set_sheets_connection_impl(&conn, &data_source, &spreadsheet_url_or_id, &sheet_tab)
+    set_sheets_connection_impl(&conn, &data_source, &spreadsheet_url_or_id, &sheet_tab, &currency)
 }
 
 fn clear_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResult<()> {
@@ -223,10 +244,12 @@ mod tests {
             "pulls",
             "https://docs.google.com/spreadsheets/d/1AbC-XyZ_9900/edit",
             "Pulls",
+            "EUR",
         )
-        .expect("a valid URL and tab name must be accepted");
+        .expect("a valid URL, tab name and currency must be accepted");
         assert_eq!(saved.spreadsheet_id, "1AbC-XyZ_9900");
         assert_eq!(saved.sheet_tab, "Pulls");
+        assert_eq!(saved.currency, "EUR");
 
         let status = get_sheets_connection_status_impl(&conn, "pulls").unwrap();
         assert_eq!(status.connection, Some(saved));
@@ -235,8 +258,32 @@ mod tests {
     #[test]
     fn set_sheets_connection_rejects_an_empty_tab_name() {
         let conn = test_conn();
-        let result = set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "   ");
+        let result = set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "   ", "EUR");
         assert!(result.is_err(), "an empty tab name must be rejected before anything is saved");
+    }
+
+    #[test]
+    fn set_sheets_connection_accepts_only_eur_usd_gbp() {
+        let conn = test_conn();
+        for ok in ["EUR", "USD", "GBP", "eur", "usd", "gbp"] {
+            assert!(
+                set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", ok).is_ok(),
+                "'{ok}' must be accepted"
+            );
+        }
+        for bad in ["CZK", "PLN", "", "   ", "EURO"] {
+            assert!(
+                set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", bad).is_err(),
+                "'{bad}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn set_sheets_connection_stores_currency_uppercased_regardless_of_input_case() {
+        let conn = test_conn();
+        let saved = set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "gbp").unwrap();
+        assert_eq!(saved.currency, "GBP");
     }
 
     #[test]
@@ -250,8 +297,8 @@ mod tests {
     #[test]
     fn two_data_sources_keep_completely_independent_connections() {
         let conn = test_conn();
-        set_sheets_connection_impl(&conn, "pulls", "1PullsSheetId000", "Pulls").unwrap();
-        set_sheets_connection_impl(&conn, "tickets", "1TicketsSheetId0", "Tickets").unwrap();
+        set_sheets_connection_impl(&conn, "pulls", "1PullsSheetId000", "Pulls", "EUR").unwrap();
+        set_sheets_connection_impl(&conn, "tickets", "1TicketsSheetId0", "Tickets", "USD").unwrap();
 
         let pulls_status = get_sheets_connection_status_impl(&conn, "pulls").unwrap();
         let tickets_status = get_sheets_connection_status_impl(&conn, "tickets").unwrap();
@@ -262,7 +309,7 @@ mod tests {
     #[test]
     fn clear_sheets_connection_forgets_the_connection_and_every_sync_link() {
         let conn = test_conn();
-        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls").unwrap();
+        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "EUR").unwrap();
         conn.execute(
             "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
              VALUES ('pulls', 1, 'PULL-000001', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
@@ -283,8 +330,8 @@ mod tests {
     #[test]
     fn clear_sheets_connection_never_touches_a_different_data_sources_links() {
         let conn = test_conn();
-        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls").unwrap();
-        set_sheets_connection_impl(&conn, "tickets", "1TicketsSheetId0", "Tickets").unwrap();
+        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "EUR").unwrap();
+        set_sheets_connection_impl(&conn, "tickets", "1TicketsSheetId0", "Tickets", "USD").unwrap();
         conn.execute(
             "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
              VALUES ('tickets', 1, 'ORD-000001', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",

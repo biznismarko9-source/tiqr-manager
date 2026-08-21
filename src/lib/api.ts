@@ -18,6 +18,7 @@ import type {
   Pull,
   PullEditInput,
   PullInput,
+  PullsSyncResult,
   RestoreOutcome,
   Sale,
   SaleBatchInput,
@@ -178,10 +179,13 @@ export const api = {
   // comment. Connection setup/test only for now - no row sync yet.
   getSheetsConnectionStatus: (dataSource: string) =>
     invoke<SheetsConnectionStatus>("get_sheets_connection_status", { dataSource }),
-  setSheetsConnection: (dataSource: string, spreadsheetUrlOrId: string, sheetTab: string) =>
-    invoke<SheetsConnectionConfig>("set_sheets_connection", { dataSource, spreadsheetUrlOrId, sheetTab }),
+  setSheetsConnection: (dataSource: string, spreadsheetUrlOrId: string, sheetTab: string, currency: string) =>
+    invoke<SheetsConnectionConfig>("set_sheets_connection", { dataSource, spreadsheetUrlOrId, sheetTab, currency }),
   clearSheetsConnection: (dataSource: string) => invoke<void>("clear_sheets_connection", { dataSource }),
   testSheetsConnection: (dataSource: string) => invoke<SheetsConnectionTestResult>("test_sheets_connection", { dataSource }),
+  /** 2.0.3: reads the connected sheet and creates/updates matching Pulls -
+   * sheet -> app only, see commands/pulls_sheet_sync.rs. */
+  syncPulls: () => invoke<PullsSyncResult>("sync_pulls"),
 };
 
 export function errMsg(e: unknown): string {

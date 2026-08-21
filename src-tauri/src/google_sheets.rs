@@ -185,10 +185,11 @@ pub fn get_values(token: &str, spreadsheet_id: &str, range: &str) -> AppResult<V
 /// date string), the same "never let anything guess" principle `money.rs`
 /// and CSV import already hold everywhere else in this app.
 ///
-/// Not called anywhere yet (hence `#[allow(dead_code)]`) - the two-way sync
-/// logic that will call this, per data source, is next; see the 2.0.2
-/// report for why that's deliberately not in this pass yet.
-#[allow(dead_code)]
+/// Used by commands::pulls_sheet_sync (2.0.3) for exactly two things: adding
+/// the app's own "TIQR ID" marker column header the first time a sheet is
+/// synced, and writing that marker into a newly-created row afterward -
+/// never anything else, and never any of a row's real data (sheet -> app
+/// only in this pass, see that module's doc comment).
 pub fn update_values(token: &str, spreadsheet_id: &str, range: &str, values: &[Vec<String>]) -> AppResult<()> {
     let client = reqwest::blocking::Client::new();
     let url = format!("{}?valueInputOption=RAW", sheets_values_url(spreadsheet_id, range));
@@ -207,7 +208,10 @@ pub fn update_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
 /// itself via `insertDataOption=INSERT_ROWS`), rather than overwriting
 /// anything. `valueInputOption=RAW` for the same reason as `update_values`.
 ///
-/// Not called anywhere yet - see `update_values`'s doc comment above.
+/// Still not called anywhere (hence `#[allow(dead_code)]`): sync is
+/// sheet -> app only as of 2.0.3 (commands::pulls_sheet_sync), so nothing
+/// ever appends a *new* row to the sheet yet - that's the app -> sheet push
+/// direction, deliberately a separate, later step. Kept ready for it.
 #[allow(dead_code)]
 pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[Vec<String>]) -> AppResult<()> {
     let client = reqwest::blocking::Client::new();

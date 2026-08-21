@@ -310,7 +310,11 @@ fn resolve_or_create_supplier(conn: &Connection, name: &str) -> AppResult<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-fn resolve_or_create_platform(conn: &Connection, name: &str) -> AppResult<i64> {
+/// `pub(crate)` (not just `fn`) since 2.0.3: `commands::pulls_sheet_sync`
+/// reuses this exact same "match by name, case-insensitive, else create as
+/// a purchase platform" behavior for Google Sheets sync, so platform
+/// handling never diverges between the two import paths.
+pub(crate) fn resolve_or_create_platform(conn: &Connection, name: &str) -> AppResult<i64> {
     if let Some(id) = conn
         .query_row(
             "SELECT id FROM platforms WHERE LOWER(name) = LOWER(?1)",

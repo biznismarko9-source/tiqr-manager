@@ -55,7 +55,10 @@ fn map_pull(row: &Row) -> rusqlite::Result<Pull> {
     })
 }
 
-fn fetch_one(conn: &Connection, id: i64) -> AppResult<Pull> {
+/// `pub(crate)` since 2.0.3: commands::pulls_sheet_sync reuses this to load
+/// the current app-side state of a linked pull before deciding whether an
+/// incoming sheet change is safe to apply or is a genuine two-sided conflict.
+pub(crate) fn fetch_one(conn: &Connection, id: i64) -> AppResult<Pull> {
     let sql = format!("{BASE_SQL} WHERE p.id = ?1");
     conn.query_row(&sql, [id], map_pull)
         .map_err(|_| AppError::NotFound(format!("Pull #{id} not found")))

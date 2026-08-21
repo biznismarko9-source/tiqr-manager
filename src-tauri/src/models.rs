@@ -668,6 +668,12 @@ pub struct PullEditInput {
 pub struct SheetsConnectionConfig {
     pub spreadsheet_id: String,
     pub sheet_tab: String,
+    /// 2.0.3: the sheet has no currency column of its own (marko's Pulls
+    /// tracker never had one) - one currency applies to every row synced
+    /// from this sheet instead. Restricted to EUR/USD/GBP (marko: "menu
+    /// mozes dat na EUR, USD a GBP, nic ine") - see
+    /// commands/sheets_sync.rs::ALLOWED_CURRENCIES.
+    pub currency: String,
 }
 
 /// What Settings shows for one data source's "Integrations" card.
@@ -696,4 +702,35 @@ pub struct SheetsConnectionStatus {
 pub struct SheetsConnectionTestResult {
     pub ok: bool,
     pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Pulls <-> Google Sheet sync (2.0.3). See commands/pulls_sheet_sync.rs for
+// the full column mapping and matching/conflict rules. Sheet -> app only in
+// this pass - see that file's module doc comment for why.
+// ---------------------------------------------------------------------------
+
+/// One row-level problem from a sync run - either a parse/validation error
+/// (that row was skipped) or a genuine two-sided conflict (that row was left
+/// untouched on both sides, never guessed at - see
+/// pulls_sheet_sync.rs::apply_pull_rows's doc comment). `row_number` is the
+/// sheet's own row number (header = row 1), so it points at exactly the row
+/// marko would scroll to in Google Sheets.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetSyncIssue {
+    pub row_number: i64,
+    pub message: String,
+}
+
+/// Result of one "Sync now" run, shown as-is in Settings -> Integrations.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullsSyncResult {
+    pub created: i64,
+    pub updated: i64,
+    pub unchanged: i64,
+    pub conflicts: Vec<SheetSyncIssue>,
+    pub errors: Vec<SheetSyncIssue>,
+    pub synced_at: String,
 }
