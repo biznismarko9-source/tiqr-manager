@@ -29,6 +29,7 @@ import type {
   SheetsConnectionConfig,
   SheetsConnectionStatus,
   SheetsConnectionTestResult,
+  SpreadsheetTabsResult,
   SheetSyncResult,
   Supplier,
   Ticket,
@@ -185,6 +186,16 @@ export const api = {
     invoke<SheetsConnectionConfig>("set_sheets_connection", { dataSource, spreadsheetUrlOrId, sheetTab, currency }),
   clearSheetsConnection: (dataSource: string) => invoke<void>("clear_sheets_connection", { dataSource }),
   testSheetsConnection: (dataSource: string) => invoke<SheetsConnectionTestResult>("test_sheets_connection", { dataSource }),
+  /** 2.0.14: best-effort lookup of a pasted spreadsheet's real tab names, so
+   * Settings can offer them as a dropdown instead of requiring the exact tab
+   * name to be typed by hand - see
+   * commands/sheets_sync.rs::detect_spreadsheet_tabs_impl's doc comment.
+   * Takes the raw URL/ID text directly (not a saved `dataSource` connection)
+   * since this runs while the form is still being filled in. Never throws
+   * for an expected non-result (incomplete paste, not shared yet) - check
+   * `.ok` on the result instead. */
+  detectSpreadsheetTabs: (spreadsheetUrlOrId: string) =>
+    invoke<SpreadsheetTabsResult>("detect_spreadsheet_tabs", { spreadsheetUrlOrId }),
   /** 2.0.3: reads the connected sheet and creates/updates matching Pulls -
    * sheet -> app only, see commands/pulls_sheet_sync.rs. */
   syncPulls: () => invoke<SheetSyncResult>("sync_pulls"),

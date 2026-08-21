@@ -97,6 +97,7 @@ pub fn run() {
             commands::sheets_sync::set_sheets_connection,
             commands::sheets_sync::clear_sheets_connection,
             commands::sheets_sync::test_sheets_connection,
+            commands::sheets_sync::detect_spreadsheet_tabs,
             commands::pulls_sheet_sync::sync_pulls,
             commands::pulls_sheet_sync::create_pulls_sheet,
             commands::orders_sheet_sync::sync_orders,

@@ -16,7 +16,9 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{SheetsConnectionConfig, SheetsConnectionStatus, SheetsConnectionTestResult};
+use crate::models::{
+    SheetsConnectionConfig, SheetsConnectionStatus, SheetsConnectionTestResult, SpreadsheetTabsResult,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::State;
 
@@ -261,6 +263,54 @@ pub fn test_sheets_connection(state: State<AppState>, data_source: String) -> Ap
     test_sheets_connection_impl(&conn, &data_source)
 }
 
+/// Best-effort lookup of a pasted spreadsheet's real tab names, so the
+/// frontend can offer them as a dropdown instead of asking marko to type the
+/// exact tab name by hand (2.0.14: his own report - even with
+/// `format_with_real_tab_titles` above telling him the exact right answer,
+/// still having to hand-type it afterwards remained the actual recurring
+/// failure - "nejde tam manualne dat svoju tabulku, skus zmenit styl akoto
+/// funguje"). Deliberately takes the raw URL/ID text directly, not a saved
+/// `data_source` connection - this runs BEFORE anything is saved, as the user
+/// is still filling in the "Spreadsheet URL or ID" field. Same "never
+/// propagate AppError, always a readable ok:false" convention as
+/// `test_sheets_connection_impl`: an incomplete paste, no signed-in/no
+/// service account, or a not-yet-shared sheet are all expected, ordinary
+/// states while the form is being filled in, not errors to surface loudly.
+fn detect_spreadsheet_tabs_impl(conn: &Connection, spreadsheet_url_or_id: &str) -> AppResult<SpreadsheetTabsResult> {
+    let Some(spreadsheet_id) = extract_spreadsheet_id(spreadsheet_url_or_id) else {
+        return Ok(SpreadsheetTabsResult {
+            ok: false,
+            tabs: vec![],
+            message: "That doesn't look like a Google Sheets URL or ID yet.".to_string(),
+        });
+    };
+    let credential = match crate::commands::google_auth::resolve_google_credential(conn, false) {
+        Ok(c) => c,
+        Err(e) => return Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message: e.to_string() }),
+    };
+    match google_sheets::get_spreadsheet_sheet_titles(credential.access_token(), &spreadsheet_id) {
+        Ok(tabs) if tabs.is_empty() => Ok(SpreadsheetTabsResult {
+            ok: false,
+            tabs: vec![],
+            message: "Google reported no tabs at all in that spreadsheet.".to_string(),
+        }),
+        Ok(tabs) => Ok(SpreadsheetTabsResult { ok: true, tabs, message: String::new() }),
+        Err(e) => Ok(SpreadsheetTabsResult { ok: false, tabs: vec![], message: e.to_string() }),
+    }
+}
+
+/// Called from Settings as soon as the "Spreadsheet URL or ID" field loses
+/// focus (and once on load for an already-connected sheet) - see
+/// `detect_spreadsheet_tabs_impl`'s doc comment for why this exists.
+#[tauri::command]
+pub fn detect_spreadsheet_tabs(
+    state: State<AppState>,
+    spreadsheet_url_or_id: String,
+) -> AppResult<SpreadsheetTabsResult> {
+    let conn = state.db.lock().unwrap();
+    detect_spreadsheet_tabs_impl(&conn, &spreadsheet_url_or_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +486,29 @@ mod tests {
         let conn = test_conn();
         let result = test_sheets_connection_impl(&conn, "pulls").unwrap();
         assert!(!result.ok);
+        assert!(!result.message.is_empty());
+    }
+
+    #[test]
+    fn detect_spreadsheet_tabs_reports_a_clear_reason_for_input_that_is_not_a_url_or_id() {
+        let conn = test_conn();
+        let result = detect_spreadsheet_tabs_impl(&conn, "not a url or id").unwrap();
+        assert!(!result.ok);
+        assert!(result.tabs.is_empty());
+        assert!(!result.message.is_empty());
+    }
+
+    #[test]
+    fn detect_spreadsheet_tabs_reports_a_clear_reason_when_no_credential_is_available() {
+        // Same guarantee this whole test suite relies on elsewhere (see
+        // test_connection_reports_a_clear_reason_instead_of_an_error_when_nothing_is_connected_yet
+        // above): no embedded service account and nobody signed in, so this
+        // never makes a real network call - it fails fast on credential
+        // resolution alone.
+        let conn = test_conn();
+        let result = detect_spreadsheet_tabs_impl(&conn, "1AbC-XyZ_9900").unwrap();
+        assert!(!result.ok);
+        assert!(result.tabs.is_empty());
         assert!(!result.message.is_empty());
     }
 }

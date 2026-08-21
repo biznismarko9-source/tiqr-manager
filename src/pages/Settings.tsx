@@ -13,6 +13,7 @@ import {
   type SheetsConnectionStatus,
   type SheetsConnectionTestResult,
   type SheetSyncResult,
+  type SpreadsheetTabsResult,
 } from "../lib/types";
 import {
   Badge,
@@ -883,8 +884,60 @@ function SheetsConnectionCard({
   // the second overwriting the first.
   const [secondarySyncResult, setSecondarySyncResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  // 2.0.14: "Sheet/tab name" used to be free-text only, and marko's own
+  // reports (twice) showed that typing the exact tab name by hand - even
+  // once told what it should be - was itself the recurring failure, not just
+  // a lack of explanation. `detectedTabs` holds the spreadsheet's real tab
+  // names once known (null = not detected yet, or detection failed/isn't
+  // possible right now - see `detectMessage`); when set and non-empty the
+  // field below renders as a dropdown of real tabs instead of an <Input>.
+  // `manualTabEntry` is an explicit escape hatch back to free text (e.g. the
+  // tab doesn't exist yet, or the user just prefers typing it).
+  const [detectedTabs, setDetectedTabs] = useState<string[] | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectMessage, setDetectMessage] = useState<string | null>(null);
+  const [manualTabEntry, setManualTabEntry] = useState(false);
 
   const oauthEmail = googleStatus?.signedInEmail ?? null;
+
+  // 2.0.14: runs the spreadsheet through detect_spreadsheet_tabs - called on
+  // blur of the URL/ID field below, and once on load whenever a connection
+  // already exists (so reopening Settings on a sheet that was saved with the
+  // wrong tab name shows the real options immediately, with no retyping of
+  // the URL needed). Deliberately swallows network errors into
+  // `detectMessage` rather than toasting - an incomplete paste or a
+  // not-yet-shared sheet is the ordinary state of a half-filled form, not a
+  // failure worth interrupting the user over.
+  const detectTabs = async (spreadsheetUrlOrId: string) => {
+    const trimmed = spreadsheetUrlOrId.trim();
+    if (!trimmed) {
+      setDetectedTabs(null);
+      setDetectMessage(null);
+      return;
+    }
+    setDetecting(true);
+    try {
+      const result: SpreadsheetTabsResult = await api.detectSpreadsheetTabs(trimmed);
+      if (result.ok) {
+        setDetectedTabs(result.tabs);
+        setDetectMessage(null);
+        setManualTabEntry(false);
+        // Keep the current value if it's actually one of the real tabs;
+        // otherwise default to the first real one - this is exactly what
+        // auto-corrects marko's reported mistake (spreadsheet file name
+        // typed into the tab field) without him retyping anything.
+        setSheetTab((current) => (result.tabs.includes(current) ? current : result.tabs[0]));
+      } else {
+        setDetectedTabs(null);
+        setDetectMessage(result.message);
+      }
+    } catch (e) {
+      setDetectedTabs(null);
+      setDetectMessage(errMsg(e));
+    } finally {
+      setDetecting(false);
+    }
+  };
 
   const reload = () => {
     setLoading(true);
@@ -895,6 +948,13 @@ function SheetsConnectionCard({
         setSpreadsheetInput(s.connection?.spreadsheetId ?? "");
         setSheetTab(s.connection?.sheetTab ?? "");
         setCurrency(s.connection?.currency ?? CURRENCY_OPTIONS[0]);
+        if (s.connection?.spreadsheetId) {
+          detectTabs(s.connection.spreadsheetId);
+        } else {
+          setDetectedTabs(null);
+          setDetectMessage(null);
+          setManualTabEntry(false);
+        }
       })
       .catch((e) => toast.error(errMsg(e)))
       .finally(() => setLoading(false));
@@ -1065,15 +1125,66 @@ function SheetsConnectionCard({
               <Input
                 placeholder="https://docs.google.com/spreadsheets/d/..."
                 value={spreadsheetInput}
-                onChange={(e) => setSpreadsheetInput(e.target.value)}
+                onChange={(e) => {
+                  setSpreadsheetInput(e.target.value);
+                  // A different spreadsheet invalidates any previously
+                  // detected tab list - never leave a stale dropdown from
+                  // the sheet that used to be pasted here.
+                  setDetectedTabs(null);
+                  setDetectMessage(null);
+                }}
+                onBlur={() => detectTabs(spreadsheetInput)}
               />
             </Field>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="Sheet/tab name"
-                hint="The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
+                hint={
+                  detectedTabs && detectedTabs.length > 0 && !manualTabEntry
+                    ? "Detected directly from the spreadsheet - pick the tab this data source should use."
+                    : "The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
+                }
               >
-                <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
+                {detecting ? (
+                  <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
+                    <Spinner className="h-4 w-4" /> Detecting tabs...
+                  </div>
+                ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
+                  <>
+                    <Select value={sheetTab} onChange={(e) => setSheetTab(e.target.value)}>
+                      {detectedTabs.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </Select>
+                    <button
+                      type="button"
+                      className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                      onClick={() => setManualTabEntry(true)}
+                    >
+                      Type it in manually instead
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Input
+                      placeholder={`e.g. ${label}`}
+                      value={sheetTab}
+                      onChange={(e) => setSheetTab(e.target.value)}
+                    />
+                    {detectMessage && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>}
+                    {detectedTabs && detectedTabs.length > 0 && (
+                      <button
+                        type="button"
+                        className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        onClick={() => setManualTabEntry(false)}
+                      >
+                        Pick from detected tabs instead
+                      </button>
+                    )}
+                  </>
+                )}
               </Field>
               <Field label="Currency" hint={currencyHint}>
                 <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>

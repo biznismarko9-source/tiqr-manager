@@ -712,6 +712,24 @@ pub struct SheetsConnectionTestResult {
     pub message: String,
 }
 
+/// Result of a best-effort attempt to detect a pasted spreadsheet's real tab
+/// names (2.0.14), so Settings can offer them as a dropdown instead of
+/// requiring marko to type the exact tab name by hand - see
+/// commands/sheets_sync.rs::detect_spreadsheet_tabs_impl's doc comment for
+/// why. Same "always a readable ok:false, never a thrown error" convention as
+/// `SheetsConnectionTestResult` - the frontend calls this eagerly (e.g. as
+/// soon as the URL field loses focus), and a half-typed or not-yet-shared
+/// URL is the normal case, not something worth surfacing as a hard failure.
+/// `tabs` is always empty when `ok` is false; `message` is empty when `ok` is
+/// true (nothing to explain).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SpreadsheetTabsResult {
+    pub ok: bool,
+    pub tabs: Vec<String>,
+    pub message: String,
+}
+
 /// Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
 /// flow that replaces a Google sign-in window with the same service account
 /// every other connection uses (see commands/pulls_sheet_sync.rs::

@@ -581,6 +581,18 @@ export interface SheetsConnectionTestResult {
   message: string;
 }
 
+/** Result of a best-effort attempt to detect a pasted spreadsheet's real tab
+ * names (2.0.14), so Settings can offer them as a dropdown instead of
+ * requiring the exact tab name to be typed by hand - see
+ * commands/sheets_sync.rs::detect_spreadsheet_tabs_impl's doc comment for
+ * why. `tabs` is always empty when `ok` is false; `message` is empty when
+ * `ok` is true. */
+export interface SpreadsheetTabsResult {
+  ok: boolean;
+  tabs: string[];
+  message: string;
+}
+
 /** Installation-wide "Sign in with Google" state (2.0.5) - one signed-in
  * account per copy of the app, orthogonal to which spreadsheet is connected
  * for any given data source. See commands/google_auth.rs's module doc
