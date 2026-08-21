@@ -8,10 +8,17 @@
 //!
 //! marko's real sheet is one combined "buy + sell" tracker: he fills in one
 //! batch of columns when he buys tickets, then a second, later batch of
-//! columns on the SAME row once they sell. This module only reads the FIRST
-//! batch - creating an Order (and one Ticket per unit) from it. The second
-//! batch (Sales) is a separate, later sync against the same rows, matched
-//! back to these tickets via the same "TIQR ID" marker this module writes.
+//! columns on the SAME row once they sell. This module has two separate sync
+//! entry points, both against the exact same connection (`load_connection`
+//! with data_source `"orders"` - marko deliberately only ever connects this
+//! sheet once, see REDESIGN-2.0.10-REPORT.md), so he never has to paste the
+//! same URL/tab twice: `sync_orders` reads the FIRST batch, creating an
+//! Order (and one Ticket per unit) from it - see "Column mapping (first
+//! batch)" below. `sync_sales` (2.0.10) reads the SECOND batch from the SAME
+//! rows, matching back to the tickets `sync_orders` already created via the
+//! "TIQR ID" marker it writes - see "Column mapping (second batch - Sales)"
+//! further down. Settings -> Integrations shows both as two buttons - "Order
+//! sync" / "Sales sync" - on the one "Orders & Tickets" card.
 //!
 //! **Creation-only in this pass, deliberately** - unlike Pulls sync
 //! (commands::pulls_sheet_sync), which also updates an already-linked row
@@ -53,17 +60,54 @@
 //! one-off file gets reviewed by hand first) - a sync is meant to be re-run
 //! against a sheet marko is actively filling in, so requiring every event to
 //! be pre-created by hand in the app first would defeat the point.
+//!
+//! ## Column mapping (second batch - Sales sync, 2.0.10)
+//!
+//! | Sheet column | Field |
+//! |---|---|
+//! | `Site Listed` | `Sale.platform_id` (resolve-or-create by name - see `resolve_or_create_sale_platform`, deliberately NOT `csv_import::resolve_or_create_platform`: a brand-new platform here is created with `kind='sale'`, and an existing `kind='purchase'` platform found by the same name is promoted to `'both'`, so it actually shows up in the Sales screen's own platform picker, which filters to `kind IN ('sale','both')`) |
+//! | `Payout Per Ticket` | `Sale.sale_price_cents` - same value on every line of the batch (same "one row = N tickets" convention as Section/Row/Ticket Type above). Presence of this column is what tells this sync a row is actually ready to be recorded as sold at all - see `apply_sales_rows` |
+//! | `Revenue`, `Profit` | not read at all (marko's own choice) - the app always computes both itself from `Sale.sale_price_cents` and the ticket's own purchase cost (see finance.rs), never stores them, so there is nothing here to cross-check against without risking exactly the kind of drift finance.rs's own module doc comment says never to allow |
+//! | `Status` | `Ticket.resale_status` (new free-text field, 2.0.10 - migrations/010) - stamped on every ticket of the order, same convention as Section/Row. Deliberately separate from `Ticket.status`, which this sync never touches directly - creating the sale already flips that to `'sold'` |
+//! | `Delivery status` | `Ticket.delivery_status` (new free-text field, 2.0.10 - migrations/010), same stamp-on-every-ticket convention |
+//! | `Payout status` | `Sale.payment_status` - blank means `pending` (same default `create_sales_batch_impl` itself uses); `pending`/`paid` map directly; anything else (including `refunded` - a sale can't be created as already refunded, same rule `validate_new_payment_status` already enforces) is a row error |
+//! | (a date column - see `find_col` aliases in `apply_sales_rows`) | `Sale.sale_date`, required whenever `Payout Per Ticket` is present. marko's own past description of this column was ambiguous (see REDESIGN-2.0.10-REPORT.md) - deliberately NOT defaulted to today's date or the order's own purchase date, since either could silently mis-date months of real sales history. A sheet where none of the tried aliases match fails every such row with one clear, specific message instead |
+//! | `paid by` | `Sale.buyer_reference` |
+//! | `pull`, `who pulled`, `how much pull` | folded into `Sale.notes` as plain text (marko's own choice - keeps the standalone Pulls feature exactly as standalone as migrations/005_pulls.sql originally decided; no real link to a `pulls` row is ever created) |
+//!
+//! Sales sync is creation-only, same philosophy as `sync_orders` above and
+//! marko's own explicit choice for this pass too: a ticket that already has
+//! an active sale is left completely alone on every later sync, including
+//! its `resale_status`/`delivery_status` - see `apply_sales_rows`. Unlike
+//! `sync_orders`, it never writes anything back to the sheet at all (no new
+//! marker column) - idempotency instead comes directly from each ticket's
+//! own `status`/active `sales` row, checked fresh every run, and a row with
+//! no "TIQR ID" yet is simply not ready for this sync (silently skipped, not
+//! an error - it hasn't been through `sync_orders` yet).
+//!
+//! Every ticket belonging to one sheet row's order is sold together in one
+//! `create_sales_batch_impl` call (same all-or-nothing "New sale" action the
+//! UI itself uses for a multi-seat sale, and the exact function the UI uses
+//! even for a single ticket - see that function's own doc comment) rather
+//! than one `create_sale_impl` call per ticket - this also means marko sees
+//! all N tickets from one sheet row grouped as a single sale on the Sales
+//! screen, matching how his own sheet row represents one sale transaction.
+//! Only tickets not already sold/cancelled are included in that batch; a
+//! ticket that's already sold is left alone, one that's cancelled is simply
+//! never offered to the batch (offering it would fail the WHOLE batch, since
+//! `create_sales_batch_impl` is all-or-nothing).
 
 use crate::commands::csv_import::resolve_or_create_platform;
 use crate::commands::orders::insert_order_with_tickets;
 use crate::commands::pulls_sheet_sync::parse_sheet_serial_date;
+use crate::commands::sales::create_sales_batch_impl;
 use crate::commands::sheets_sync::{
     last_synced_key, load_connection, set_setting, set_sheets_connection_impl, ALLOWED_CURRENCIES,
 };
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{CreatedSheetResult, OrderInput, SheetSyncIssue, SheetSyncResult};
+use crate::models::{CreatedSheetResult, OrderInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult};
 use crate::money::{format_cents, parse_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -550,6 +594,275 @@ pub fn sync_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Sales sync (2.0.10) - second batch of the SAME sheet rows, same
+// connection. See this module's own doc comment ("Column mapping (second
+// batch - Sales sync, 2.0.10)") for the full column mapping and design
+// rationale.
+// ---------------------------------------------------------------------------
+
+/// Same lookup-by-name-or-create pattern as
+/// `csv_import::resolve_or_create_platform`, but for a SALE-side platform
+/// (marko's "Site Listed" column) rather than a purchase-side one: a
+/// brand-new platform is created with `kind='sale'` so it immediately shows
+/// up in the Sales/Sale Detail platform pickers (which filter to
+/// `kind IN ('sale','both')` - see Sales.tsx/SaleDetail.tsx), and an
+/// EXISTING platform found by name that currently has `kind='purchase'` is
+/// promoted to `'both'` rather than left as-is, since it's now confirmed
+/// used for a real sale too - otherwise it would stay invisible in those
+/// same pickers even though a real sale now references it. A platform
+/// that's already `'sale'` or `'both'` is left untouched.
+fn resolve_or_create_sale_platform(conn: &Connection, name: &str) -> AppResult<i64> {
+    if let Some((id, kind)) = conn
+        .query_row("SELECT id, kind FROM platforms WHERE LOWER(name) = LOWER(?1)", [name], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional()?
+    {
+        if kind == "purchase" {
+            conn.execute("UPDATE platforms SET kind = 'both' WHERE id = ?1", [id])?;
+        }
+        return Ok(id);
+    }
+    conn.execute("INSERT INTO platforms(name, kind) VALUES (?1, 'sale')", [name])?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Core logic behind `sync_sales`, taking a plain connection so it's
+/// directly unit-testable without a Tauri app around it. Mutable (unlike
+/// `apply_order_rows`'s `&Connection`) because `create_sales_batch_impl`
+/// needs its own transaction per row.
+fn apply_sales_rows(
+    conn: &mut Connection,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+    marker_col_index: usize,
+) -> AppResult<SheetSyncResult> {
+    let map = build_header_map(headers);
+
+    let payout_col = find_col(&map, &["payout per ticket", "payout"]);
+    if payout_col.is_none() {
+        return Err(AppError::Validation(
+            "The connected sheet is missing required column(s): \"Payout Per Ticket\"".to_string(),
+        ));
+    }
+    let site_listed_col = find_col(&map, &["site listed", "site", "listing site"]);
+    let status_col = find_col(&map, &["status"]);
+    let delivery_status_col = find_col(&map, &["delivery status", "delivery"]);
+    let payout_status_col = find_col(&map, &["payout status"]);
+    let sale_date_col = find_col(
+        &map,
+        &["date sold", "sale date", "date of sale", "date of purchase", "sold date", "payout date"],
+    );
+    let paid_by_col = find_col(&map, &["paid by", "paidby"]);
+    let pull_col = find_col(&map, &["pull"]);
+    let who_pulled_col = find_col(&map, &["who pulled"]);
+    let how_much_pull_col = find_col(&map, &["how much pull"]);
+
+    let mut result =
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+
+    for (i, raw_row) in data_rows.iter().enumerate() {
+        let row_number = (i + 2) as i64;
+
+        // No "TIQR ID" yet - this row hasn't even been through Order sync,
+        // so there is no order/tickets to attach sales info to. Not an
+        // error, not even worth counting - completely normal for a row
+        // marko is still filling in.
+        let Some(order_code) = cell(raw_row, Some(marker_col_index)) else {
+            continue;
+        };
+
+        // Order exists but nothing sold yet on this row - normal, and
+        // (unlike the no-TIQR-ID case above) counted, since this row WAS
+        // looked at - same convention as sync_orders's own already-marked
+        // rows.
+        let Some(payout_raw) = cell(raw_row, payout_col) else {
+            result.unchanged += 1;
+            continue;
+        };
+
+        let mut row_errors: Vec<String> = vec![];
+
+        let sale_price_cents = match parse_decimal_to_cents(&payout_raw) {
+            Ok(v) if v >= 0 => Some(v),
+            Ok(_) => {
+                row_errors.push("'Payout Per Ticket' cannot be negative".to_string());
+                None
+            }
+            Err(e) => {
+                row_errors.push(format!("'Payout Per Ticket': {e}"));
+                None
+            }
+        };
+
+        let sale_date = match cell(raw_row, sale_date_col).as_deref().map(parse_order_date) {
+            Some(Ok(d)) => Some(d),
+            Some(Err(e)) => {
+                row_errors.push(format!("sale date: {e}"));
+                None
+            }
+            None => {
+                row_errors.push(
+                    "missing a recognized sale-date column (tried \"Date sold\"/\"Sale date\"/\"Date of sale\"/\"Date of purchase\"/\"Sold date\"/\"Payout date\") - tell marko which header your sheet actually uses"
+                        .to_string(),
+                );
+                None
+            }
+        };
+
+        let payment_status = match cell(raw_row, payout_status_col).as_deref().map(|v| v.trim().to_lowercase()) {
+            None => "pending".to_string(),
+            Some(v) if v == "pending" => "pending".to_string(),
+            Some(v) if v == "paid" => "paid".to_string(),
+            Some(v) if v == "refunded" => {
+                row_errors.push(
+                    "'Payout status' can't be 'refunded' from a sync - record it as pending/paid here, then use the Refund action in the app"
+                        .to_string(),
+                );
+                "pending".to_string()
+            }
+            Some(v) => {
+                row_errors.push(format!("'Payout status' must be 'pending' or 'paid' - got '{v}'"));
+                "pending".to_string()
+            }
+        };
+
+        if !row_errors.is_empty() {
+            result.errors.push(SheetSyncIssue { row_number, message: row_errors.join("; ") });
+            continue;
+        }
+        let sale_price_cents = sale_price_cents.unwrap();
+        let sale_date = sale_date.unwrap();
+
+        let order_id: Option<i64> =
+            conn.query_row("SELECT id FROM orders WHERE code = ?1", [&order_code], |r| r.get(0)).optional()?;
+        let Some(order_id) = order_id else {
+            result.errors.push(SheetSyncIssue {
+                row_number,
+                message: format!("'TIQR ID' value '{order_code}' does not match any order in the app - was it edited by hand?"),
+            });
+            continue;
+        };
+
+        let platform_name = cell(raw_row, site_listed_col);
+        let platform_id = match &platform_name {
+            Some(name) => match resolve_or_create_sale_platform(conn, name) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    result.errors.push(SheetSyncIssue { row_number, message: format!("'Site Listed' platform '{name}': {e}") });
+                    continue;
+                }
+            },
+            None => None,
+        };
+
+        let ticket_rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, status FROM tickets WHERE order_id = ?1 ORDER BY id")?;
+            let rows = stmt.query_map([order_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let sellable_ticket_ids: Vec<i64> = ticket_rows
+            .iter()
+            .filter(|(_, status)| status == "available" || status == "listed")
+            .map(|(id, _)| *id)
+            .collect();
+
+        if sellable_ticket_ids.is_empty() {
+            // Every ticket on this order already has an active sale (or is
+            // cancelled) - fully synced already, nothing new to do. Same
+            // creation-only rule as sync_orders: resale_status/
+            // delivery_status are NOT touched here either once a row is
+            // fully synced - see this module's own doc comment.
+            result.unchanged += 1;
+            continue;
+        }
+
+        let mut notes_parts: Vec<String> = vec![];
+        if let Some(v) = cell(raw_row, pull_col) {
+            notes_parts.push(format!("Pull: {v}"));
+        }
+        if let Some(v) = cell(raw_row, who_pulled_col) {
+            notes_parts.push(format!("Who pulled: {v}"));
+        }
+        if let Some(v) = cell(raw_row, how_much_pull_col) {
+            notes_parts.push(format!("How much pull: {v}"));
+        }
+        let notes = if notes_parts.is_empty() { None } else { Some(notes_parts.join("; ")) };
+
+        let batch_input = SaleBatchInput {
+            lines: sellable_ticket_ids
+                .iter()
+                .map(|&ticket_id| SaleBatchLineInput { ticket_id, sale_price_cents, selling_fees_cents: 0 })
+                .collect(),
+            platform_id,
+            sale_date,
+            payment_status: Some(payment_status),
+            buyer_reference: cell(raw_row, paid_by_col),
+            notes,
+        };
+
+        match create_sales_batch_impl(conn, &batch_input) {
+            Ok(_sale_ids) => {
+                let resale_status = cell(raw_row, status_col);
+                let delivery_status = cell(raw_row, delivery_status_col);
+                for (ticket_id, _) in &ticket_rows {
+                    conn.execute(
+                        "UPDATE tickets SET resale_status=?1, delivery_status=?2, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3",
+                        params![resale_status, delivery_status, ticket_id],
+                    )?;
+                }
+                result.created += 1;
+            }
+            Err(e) => {
+                result.errors.push(SheetSyncIssue { row_number, message: e.to_string() });
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// The network-calling shell for Sales sync - fetches the SAME connected
+/// sheet `sync_orders_impl` reads (data_source `"orders"` - see this
+/// module's own doc comment for why there is only ever one connection to
+/// manage), then hands off to `apply_sales_rows`. Never writes anything back
+/// to the sheet itself, unlike `sync_orders_impl` writing the "TIQR ID"
+/// marker - see `apply_sales_rows`'s own doc comment above for why none is
+/// needed.
+fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "orders")?
+        .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Orders yet - connect one in Settings first.".to_string()))?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+    if value_range.values.is_empty() {
+        return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
+    }
+    let headers = value_range.values[0].clone();
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    let (marker_col_index, _marker_exists) = resolve_marker_column(&headers);
+
+    let mut result = apply_sales_rows(conn, &headers, data_rows, marker_col_index)?;
+
+    result.synced_at = now_iso(conn)?;
+    set_setting(conn, &last_synced_key("orders"), &result.synced_at)?;
+    Ok(result)
+}
+
+/// Manual "Sales sync" button (Settings -> Integrations, Orders & Tickets
+/// card) - sits next to "Order sync" on the same card, same connection.
+/// Never runs on its own.
+#[tauri::command]
+pub fn sync_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let mut conn = state.db.lock().unwrap();
+    sync_sales_impl(&mut conn)
+}
+
+// ---------------------------------------------------------------------------
 // "Create a new sheet for me" (2.0.9) - mirrors pulls_sheet_sync.rs's own
 // PULLS_SHEET_HEADERS/NEW_SHEET_TITLE/NEW_SHEET_TAB_NAME/
 // create_pulls_sheet_impl/create_pulls_sheet exactly, reusing that module's
@@ -1024,5 +1337,368 @@ mod tests {
             err.to_string().contains("isn't available in this build"),
             "fully valid input must still stop cleanly before any network call in a test build: {err}"
         );
+    }
+
+    // =========================================================================
+    // Sales sync (2.0.10) - apply_sales_rows
+    // =========================================================================
+
+    // Header order is irrelevant here (unlike full_headers() above, which
+    // mirrors marko's real column order for documentation purposes) - every
+    // column is looked up by name via build_header_map/find_col, never by
+    // position, so this fixture is free to list "TIQR ID" wherever's
+    // convenient.
+    fn sales_headers() -> Vec<String> {
+        vec![
+            "TIQR ID",
+            "Site Listed",
+            "Payout Per Ticket",
+            "Status",
+            "Delivery status",
+            "Payout status",
+            "Date sold",
+            "paid by",
+            "pull",
+            "who pulled",
+            "how much pull",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    fn sales_row(order_code: &str, payout: &str) -> Vec<String> {
+        vec![order_code, "viagogo", payout, "Listed", "Not yet", "paid", "20/09/2026", "buyer@example.com", "", "", ""]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    /// Seeds a real Order + N Tickets via apply_order_rows itself (the same
+    /// path sync_orders uses), so Sales sync tests exercise the real
+    /// TIQR-ID-lookup integration rather than hand-inserted rows. Returns
+    /// the generated order code (the value that goes in a sales row's own
+    /// "TIQR ID" cell). Total Purchase Price and Seats are left blank so
+    /// this works for any quantity without those cross-checks getting in
+    /// the way.
+    fn seed_order_with_quantity(conn: &Connection, quantity: i64) -> String {
+        let mut cells = row(&[
+            "Coldplay Arena Show",
+            "15/09/2026",
+            "ticketmaster",
+            "410",
+            "25",
+            "",
+            "TM-88213",
+            "",
+            "",
+            "50.00",
+            "EUR",
+            "buyer@example.com",
+            "e-ticket",
+        ]);
+        cells[8] = quantity.to_string();
+        cells.push(String::new());
+        let (_, writes) = apply_order_rows(conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
+        writes[0].1.clone()
+    }
+
+    fn ticket_ids_for_order(conn: &Connection, order_code: &str) -> Vec<i64> {
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [order_code], |r| r.get(0)).unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id").unwrap();
+        stmt.query_map([order_id], |r| r.get(0)).unwrap().collect::<Result<Vec<i64>, _>>().unwrap()
+    }
+
+    #[test]
+    fn a_row_with_no_tiqr_id_yet_is_silently_skipped() {
+        let mut conn = test_conn();
+        let mut blank_marker_row = sales_row("", "45.00");
+        blank_marker_row[0] = String::new();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[blank_marker_row], 0).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.unchanged, 0, "not even counted - this row simply hasn't been through Order sync yet");
+        assert_eq!(result.errors.len(), 0);
+    }
+
+    #[test]
+    fn a_row_with_tiqr_id_but_no_payout_yet_is_counted_unchanged() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "");
+        r[2] = String::new(); // Payout Per Ticket blank
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.errors.len(), 0);
+    }
+
+    #[test]
+    fn sales_sync_creates_a_sale_for_a_row_with_tiqr_id_and_payout() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.errors.len(), 0);
+
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let (sale_price_cents, payment_status, status): (i64, String, String) = conn
+            .query_row(
+                "SELECT s.sale_price_cents, s.payment_status, t.status FROM sales s JOIN tickets t ON t.id = s.ticket_id WHERE s.ticket_id = ?1",
+                [ticket_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sale_price_cents, 4500);
+        assert_eq!(payment_status, "paid");
+        assert_eq!(status, "sold");
+    }
+
+    #[test]
+    fn sales_sync_sells_every_ticket_of_a_multi_ticket_order_together_as_one_batch() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(result.created, 1, "one ROW created, even though it sells 2 tickets - same per-row counting as sync_orders");
+
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        assert_eq!(ticket_ids.len(), 2);
+        let batch_ids: Vec<Option<String>> = ticket_ids
+            .iter()
+            .map(|&tid| conn.query_row("SELECT batch_id FROM sales WHERE ticket_id = ?1", [tid], |r| r.get(0)).unwrap())
+            .collect();
+        assert!(batch_ids[0].is_some(), "2 tickets sold together must share a real batch_id");
+        assert_eq!(batch_ids[0], batch_ids[1]);
+    }
+
+    #[test]
+    fn a_row_whose_tiqr_id_does_not_match_any_order_is_reported() {
+        let mut conn = test_conn();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row("ORD-999999", "45.00")], 0).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("does not match any order"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn already_fully_sold_row_is_unchanged_on_a_second_sync_and_touches_nothing_further() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let first = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(first.created, 1);
+
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let sales_count_before: i64 = conn.query_row("SELECT COUNT(*) FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+
+        // Same row, but now with different Status/Delivery status/Payout -
+        // a second sync must change nothing, same creation-only rule as
+        // sync_orders.
+        let mut changed_row = sales_row(&code, "999.00");
+        changed_row[3] = "Sold - different".to_string();
+        let second = apply_sales_rows(&mut conn, &sales_headers(), &[changed_row], 0).unwrap();
+        assert_eq!(second.created, 0);
+        assert_eq!(second.unchanged, 1);
+
+        let sales_count_after: i64 = conn.query_row("SELECT COUNT(*) FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        assert_eq!(sales_count_before, sales_count_after);
+        let resale_status: Option<String> =
+            conn.query_row("SELECT resale_status FROM tickets WHERE id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        assert_eq!(resale_status.as_deref(), Some("Listed"), "must keep the FIRST sync's value, not the second sync's");
+    }
+
+    #[test]
+    fn negative_payout_per_ticket_is_rejected() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "-5.00")], 0).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("Payout Per Ticket"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn non_numeric_payout_per_ticket_is_rejected() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "abc")], 0).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("Payout Per Ticket"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn missing_sale_date_is_rejected_with_a_clear_message() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[6] = String::new(); // Date sold
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("sale-date"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn invalid_payout_status_value_is_rejected() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[5] = "banana".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("Payout status"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn refunded_payout_status_is_rejected_with_a_clear_message() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[5] = "refunded".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.to_lowercase().contains("refund"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn blank_payout_status_defaults_to_pending() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[5] = String::new();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 1);
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let payment_status: String =
+            conn.query_row("SELECT payment_status FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        assert_eq!(payment_status, "pending");
+    }
+
+    #[test]
+    fn site_listed_platform_is_created_with_kind_sale() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let kind: String = conn.query_row("SELECT kind FROM platforms WHERE LOWER(name) = 'viagogo'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "sale");
+    }
+
+    #[test]
+    fn an_existing_purchase_platform_is_promoted_to_both_when_also_used_for_a_sale() {
+        let mut conn = test_conn();
+        // seed_order_with_quantity's own order uses "ticketmaster" as its
+        // PURCHASE platform (via resolve_or_create_platform, kind='purchase').
+        let code = seed_order_with_quantity(&conn, 1);
+        let (purchase_platform_id, kind_before): (i64, String) =
+            conn.query_row("SELECT id, kind FROM platforms WHERE LOWER(name) = 'ticketmaster'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(kind_before, "purchase");
+
+        let mut r = sales_row(&code, "45.00");
+        r[1] = "ticketmaster".to_string(); // Site Listed - same name, same platform
+        apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+
+        let (platform_id_after, kind_after): (i64, String) =
+            conn.query_row("SELECT id, kind FROM platforms WHERE LOWER(name) = 'ticketmaster'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(platform_id_after, purchase_platform_id, "must reuse the SAME platform row, not create a duplicate");
+        assert_eq!(kind_after, "both");
+    }
+
+    #[test]
+    fn resale_status_and_delivery_status_are_stamped_on_every_ticket_of_the_order() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        for ticket_id in ticket_ids_for_order(&conn, &code) {
+            let (resale_status, delivery_status): (Option<String>, Option<String>) = conn
+                .query_row("SELECT resale_status, delivery_status FROM tickets WHERE id = ?1", [ticket_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(resale_status.as_deref(), Some("Listed"));
+            assert_eq!(delivery_status.as_deref(), Some("Not yet"));
+        }
+    }
+
+    #[test]
+    fn pull_who_pulled_and_how_much_pull_are_folded_into_sale_notes() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let notes: Option<String> = conn.query_row("SELECT notes FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        let notes = notes.unwrap();
+        assert!(notes.contains("Pull: yes"), "{notes}");
+        assert!(notes.contains("Who pulled: Jozef"), "{notes}");
+        assert!(notes.contains("How much pull: 15"), "{notes}");
+    }
+
+    #[test]
+    fn paid_by_maps_to_buyer_reference() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let buyer_reference: Option<String> =
+            conn.query_row("SELECT buyer_reference FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        assert_eq!(buyer_reference.as_deref(), Some("buyer@example.com"));
+    }
+
+    #[test]
+    fn missing_payout_per_ticket_column_entirely_fails_the_whole_sync() {
+        let mut conn = test_conn();
+        let headers: Vec<String> = vec!["TIQR ID".to_string(), "Status".to_string()];
+        let err = apply_sales_rows(&mut conn, &headers, &[], 0).unwrap_err();
+        assert!(err.to_string().contains("Payout Per Ticket"), "{err}");
+    }
+
+    #[test]
+    fn a_cancelled_ticket_in_the_order_is_excluded_from_the_batch_and_does_not_block_the_others() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        conn.execute("UPDATE tickets SET status = 'cancelled' WHERE id = ?1", [ticket_ids[0]]).unwrap();
+
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.errors.len(), 0);
+
+        let sold_count: i64 = conn.query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0)).unwrap();
+        assert_eq!(sold_count, 1, "only the non-cancelled ticket must have been sold");
+        let cancelled_still_cancelled: String =
+            conn.query_row("SELECT status FROM tickets WHERE id = ?1", [ticket_ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(cancelled_still_cancelled, "cancelled");
+    }
+
+    #[test]
+    fn a_ticket_already_sold_before_this_sync_is_left_alone_and_only_the_remaining_one_is_sold() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+
+        // Simulate marko having already recorded a sale for one ticket by
+        // hand in the app (same create_sales_batch_impl the UI itself uses)
+        // before ever running Sales sync.
+        create_sales_batch_impl(
+            &mut conn,
+            &SaleBatchInput {
+                lines: vec![SaleBatchLineInput { ticket_id: ticket_ids[0], sale_price_cents: 3000, selling_fees_cents: 0 }],
+                platform_id: None,
+                sale_date: "2026-01-01".to_string(),
+                payment_status: Some("paid".to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(result.created, 1, "the row still counts as created - a NEW sale was made for the other ticket");
+
+        let total_sales: i64 = conn.query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0)).unwrap();
+        assert_eq!(total_sales, 2, "1 pre-existing + 1 new");
+        let first_ticket_price: i64 =
+            conn.query_row("SELECT sale_price_cents FROM sales WHERE ticket_id = ?1", [ticket_ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(first_ticket_price, 3000, "the pre-existing sale must be untouched, not overwritten with this sync's 45.00");
     }
 }

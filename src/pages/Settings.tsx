@@ -432,18 +432,27 @@ export default function Settings() {
               />
               {/* 2.0.8: one row = one order (marko's own choice) - creates the
                   order and all its tickets from the sheet's first batch of
-                  columns; the sheet's second batch (Sales) is a later,
-                  separate sync against these same rows - see
-                  commands/orders_sheet_sync.rs's module doc comment.
-                  2.0.9: "Create a new sheet for me" added (onCreate) -
-                  mirrors Pulls' own from-scratch setup, for anyone who
-                  doesn't already have a real sheet like marko's. */}
+                  columns. 2.0.9: "Create a new sheet for me" added
+                  (onCreate) - mirrors Pulls' own from-scratch setup, for
+                  anyone who doesn't already have a real sheet like marko's.
+                  2.0.10: "Sales sync" (secondarySync) reads the sheet's
+                  SECOND batch of columns (same rows, same connection - marko
+                  only ever connects this sheet once) and records a sale for
+                  every ticket an already-synced row's order hasn't sold yet -
+                  see commands/orders_sheet_sync.rs's module doc comment. */}
               <SheetsConnectionCard
                 dataSource="orders"
                 label="Orders & Tickets"
                 googleStatus={googleStatus}
                 onSync={api.syncOrders}
-                syncDescription={`"Sync now" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
+                syncLabel="Order sync"
+                syncDescription={`"Order sync" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
+                secondarySync={{
+                  label: "Sales sync",
+                  description:
+                    "Reads the SAME sheet's second batch of columns and records a sale for every ticket that isn't sold yet on a row Order sync already created - creation-only, same as Order sync: once a ticket has an active sale, later syncs leave it completely alone.",
+                  run: api.syncSales,
+                }}
                 onCreate={api.createOrdersSheet}
                 currencyHint="Used only when a row's own currency cell is blank - a row with its own currency uses that instead."
               />
@@ -734,11 +743,52 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
   );
 }
 
+// 2.0.10: pulled out of SheetsConnectionCard so a card with two sync actions
+// (Orders & Tickets: Order sync / Sales sync) can render both results without
+// duplicating this conflicts/errors markup twice.
+function SyncResultView({ result }: { result: SheetSyncResult }) {
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+      <p className="text-xs text-slate-600 dark:text-slate-300">
+        Created <b>{result.created}</b>, updated <b>{result.updated}</b>, unchanged <b>{result.unchanged}</b>.
+      </p>
+      {result.conflicts.length > 0 && (
+        <div className="mt-2 max-h-40 overflow-y-auto">
+          <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+            {result.conflicts.length} row{result.conflicts.length === 1 ? "" : "s"} need
+            {result.conflicts.length === 1 ? "s" : ""} your attention - both the sheet and the app changed them since
+            the last sync:
+          </p>
+          {result.conflicts.map((c, i) => (
+            <p key={i} className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+              Row {c.rowNumber}: {c.message}
+            </p>
+          ))}
+        </div>
+      )}
+      {result.errors.length > 0 && (
+        <div className="mt-2 max-h-40 overflow-y-auto">
+          <p className="text-xs font-medium text-red-600 dark:text-red-400">
+            {result.errors.length} row{result.errors.length === 1 ? "" : "s"} skipped:
+          </p>
+          {result.errors.map((e, i) => (
+            <p key={i} className="mt-0.5 text-xs text-red-600 dark:text-red-400">
+              Row {e.rowNumber}: {e.message}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SheetsConnectionCard({
   dataSource,
   label,
   onSync,
+  syncLabel,
   syncDescription,
+  secondarySync,
   onCreate,
   currencyHint,
   googleStatus,
@@ -750,15 +800,29 @@ function SheetsConnectionCard({
    * to a prop (was a hardcoded api.syncPulls() call) so a second data source
    * could bring its own sync function without this component needing to
    * know which one it is. Omit for a data source with no sync logic yet
-   * (connection-only, like Sales before its own sync ships) - the card still
-   * lets you connect/test but hides "Sync now" entirely. */
+   * (connection-only) - the card still lets you connect/test but hides this
+   * button entirely. */
   onSync?: () => Promise<SheetSyncResult>;
-  /** Shown next to "Sync now" explaining exactly what it does for this data
-   * source - each one behaves differently (Pulls creates+updates; Orders v1
-   * only ever creates, see commands/orders_sheet_sync.rs's module doc
-   * comment) so one shared sentence would misdescribe at least one of them.
-   * Required whenever `onSync` is set. */
+  /** Button text for `onSync` - defaults to "Sync now" (Pulls, and every
+   * other single-action card, omits this). 2.0.10: Orders & Tickets sets
+   * this to "Order sync" now that it has a second action (`secondarySync`)
+   * on the same card, so the two buttons read clearly side by side. */
+  syncLabel?: string;
+  /** Shown next to the sync button explaining exactly what it does for this
+   * data source - each one behaves differently (Pulls creates+updates;
+   * Orders v1 only ever creates, see commands/orders_sheet_sync.rs's module
+   * doc comment) so one shared sentence would misdescribe at least one of
+   * them. Required whenever `onSync` is set. */
   syncDescription?: string;
+  /** 2.0.10: an optional SECOND sync action on the same card/connection -
+   * marko's own request, so Orders & Tickets (one physical sheet, two
+   * batches of columns) never needs a second, separate connection just to
+   * offer "Sales sync" alongside "Order sync". Fully independent of
+   * `onSync`/`syncLabel`/`syncDescription` - own button, own description, own
+   * result block - so this stays a plain, generic "up to two named sync
+   * actions" card rather than anything Orders-specific. Omit entirely for a
+   * card with only one sync action (e.g. Pulls). */
+  secondarySync?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
   /** "Create a new sheet for me", e.g. api.createPullsSheet /
    * api.createOrdersSheet. 2.0.8: generalized to a prop alongside onSync,
    * but kept independent of it - not every data source necessarily gets an
@@ -781,9 +845,14 @@ function SheetsConnectionCard({
   const [currency, setCurrency] = useState<string>(CURRENCY_OPTIONS[0]);
   const [createEmail, setCreateEmail] = useState("");
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "test" | "sync" | "create" | "disconnect" | null>(null);
+  const [busy, setBusy] = useState<"save" | "test" | "sync" | "sync2" | "create" | "disconnect" | null>(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<SheetSyncResult | null>(null);
+  // 2.0.10: result of `secondarySync`, kept fully separate from `syncResult`
+  // above rather than one shared slot - so running both actions back to back
+  // (e.g. Order sync then Sales sync) shows both outcomes at once instead of
+  // the second overwriting the first.
+  const [secondarySyncResult, setSecondarySyncResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const oauthEmail = googleStatus?.signedInEmail ?? null;
@@ -874,6 +943,25 @@ function SheetsConnectionCard({
     }
   };
 
+  // 2.0.10 - see `secondarySync` prop's own comment.
+  const doSecondarySync = async () => {
+    if (!secondarySync) return;
+    setBusy("sync2");
+    setSecondarySyncResult(null);
+    try {
+      const result = await secondarySync.run();
+      setSecondarySyncResult(result);
+      toast.success(
+        `${secondarySync.label}: ${result.created} created, ${result.updated} updated, ${result.unchanged} unchanged`,
+      );
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const doDisconnect = async () => {
     setBusy("disconnect");
     try {
@@ -881,6 +969,7 @@ function SheetsConnectionCard({
       setConfirmDisconnect(false);
       setTestResult(null);
       setSyncResult(null);
+      setSecondarySyncResult(null);
       setCreatedUrl(null);
       toast.success("Sheet disconnected");
       reload();
@@ -921,6 +1010,11 @@ function SheetsConnectionCard({
               : `Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
             {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
           </p>
+          {secondarySync && (
+            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
+              <b>{secondarySync.label}:</b> {secondarySync.description}
+            </p>
+          )}
 
           <div className="grid grid-cols-1 gap-3">
             <Field label="Spreadsheet URL or ID">
@@ -964,7 +1058,13 @@ function SheetsConnectionCard({
                 {onSync && (
                   <Button variant="secondary" disabled={busy === "sync"} onClick={doSync}>
                     {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "sync" ? "Syncing..." : "Sync now"}
+                    {busy === "sync" ? "Syncing..." : (syncLabel ?? "Sync now")}
+                  </Button>
+                )}
+                {secondarySync && (
+                  <Button variant="secondary" disabled={busy === "sync2"} onClick={doSecondarySync}>
+                    {busy === "sync2" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "sync2" ? "Syncing..." : secondarySync.label}
                   </Button>
                 )}
                 <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
@@ -1020,37 +1120,23 @@ function SheetsConnectionCard({
           )}
 
           {syncResult && (
-            <div className="mt-3 rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-              <p className="text-xs text-slate-600 dark:text-slate-300">
-                Created <b>{syncResult.created}</b>, updated <b>{syncResult.updated}</b>, unchanged{" "}
-                <b>{syncResult.unchanged}</b>.
-              </p>
-              {syncResult.conflicts.length > 0 && (
-                <div className="mt-2 max-h-40 overflow-y-auto">
-                  <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                    {syncResult.conflicts.length} row{syncResult.conflicts.length === 1 ? "" : "s"} need
-                    {syncResult.conflicts.length === 1 ? "s" : ""} your attention - both the sheet and the app changed
-                    them since the last sync:
-                  </p>
-                  {syncResult.conflicts.map((c, i) => (
-                    <p key={i} className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
-                      Row {c.rowNumber}: {c.message}
-                    </p>
-                  ))}
-                </div>
+            <div className="mt-3">
+              {/* 2.0.10: only labeled when there's a second action to tell it
+                  apart from - Pulls' single-action card looks exactly as it
+                  always did. */}
+              {secondarySync && (
+                <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  {syncLabel ?? "Sync now"} result
+                </p>
               )}
-              {syncResult.errors.length > 0 && (
-                <div className="mt-2 max-h-40 overflow-y-auto">
-                  <p className="text-xs font-medium text-red-600 dark:text-red-400">
-                    {syncResult.errors.length} row{syncResult.errors.length === 1 ? "" : "s"} skipped:
-                  </p>
-                  {syncResult.errors.map((e, i) => (
-                    <p key={i} className="mt-0.5 text-xs text-red-600 dark:text-red-400">
-                      Row {e.rowNumber}: {e.message}
-                    </p>
-                  ))}
-                </div>
-              )}
+              <SyncResultView result={syncResult} />
+            </div>
+          )}
+
+          {secondarySyncResult && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{secondarySync?.label} result</p>
+              <SyncResultView result={secondarySyncResult} />
             </div>
           )}
 

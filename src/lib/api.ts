@@ -197,6 +197,11 @@ export const api = {
    * tickets) for every row it hasn't seen before - creation-only, sheet ->
    * app only, see commands/orders_sheet_sync.rs. */
   syncOrders: () => invoke<SheetSyncResult>("sync_orders"),
+  /** 2.0.10: reads the SAME connected sheet's second batch of columns and
+   * records a sale (with the right platform/date/payout status) for every
+   * ticket that isn't sold yet on a row already created by syncOrders -
+   * creation-only, sheet -> app only, see commands/orders_sheet_sync.rs. */
+  syncSales: () => invoke<SheetSyncResult>("sync_sales"),
   /** 2.0.9: auto-creates a brand-new Orders & Tickets sheet, shares it with
    * `email`, and connects it - no Google sign-in window. Mirrors
    * createPullsSheet exactly; sits next to setSheetsConnection as a second

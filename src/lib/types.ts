@@ -138,6 +138,11 @@ export interface Ticket {
   listingPriceCents: number | null;
   currency: string;
   status: TicketStatus;
+  /** 2.0.10: marko's own free-text "Status"/"Delivery status" tracking from
+   * his sheet (Sales sync) - distinct from `status` above, which the app
+   * manages automatically. See migration 010's doc comment. */
+  resaleStatus: string | null;
+  deliveryStatus: string | null;
   notes: string | null;
   isDemo: boolean;
   createdAt: string;
@@ -152,6 +157,8 @@ export interface TicketUpdateInput {
   ticketType?: string | null;
   listingPriceCents?: number | null;
   status?: TicketStatus | null;
+  resaleStatus?: string | null;
+  deliveryStatus?: string | null;
   notes?: string | null;
 }
 

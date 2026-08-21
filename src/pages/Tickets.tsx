@@ -362,6 +362,8 @@ export function TicketEditModal({
   const [ticketType, setTicketType] = useState("");
   const [listingPrice, setListingPrice] = useState("");
   const [status, setStatus] = useState<TicketStatus>("available");
+  const [resaleStatus, setResaleStatus] = useState("");
+  const [deliveryStatus, setDeliveryStatus] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -374,6 +376,8 @@ export function TicketEditModal({
     setTicketType(ticket.ticketType ?? "");
     setListingPrice(ticket.listingPriceCents != null ? (ticket.listingPriceCents / 100).toFixed(2) : "");
     setStatus(ticket.status);
+    setResaleStatus(ticket.resaleStatus ?? "");
+    setDeliveryStatus(ticket.deliveryStatus ?? "");
     setNotes(ticket.notes ?? "");
     setError(null);
   }, [ticket]);
@@ -399,6 +403,8 @@ export function TicketEditModal({
       ticketType: ticketType || null,
       listingPriceCents: listingCents,
       status: locked ? undefined : status,
+      resaleStatus: resaleStatus || null,
+      deliveryStatus: deliveryStatus || null,
       notes: notes || null,
     };
     setSaving(true);
@@ -444,6 +450,12 @@ export function TicketEditModal({
               <option value="cancelled">Cancelled</option>
             </Select>
           )}
+        </Field>
+        <Field label="Resale status" hint="Your own free-text tracking, e.g. from a Sales sync - separate from Status above.">
+          <Input value={resaleStatus} onChange={(e) => setResaleStatus(e.target.value)} />
+        </Field>
+        <Field label="Delivery status">
+          <Input value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} />
         </Field>
         <div className="col-span-2">
           <Field label="Notes">

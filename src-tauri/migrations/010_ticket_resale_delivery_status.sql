@@ -1,0 +1,27 @@
+-- 010_ticket_resale_delivery_status
+-- 2.0.10: Sales sync (Settings -> Integrations, Orders & Tickets card) reads
+-- marko's own "Status" and "Delivery status" sheet columns. He asked for
+-- these as real, editable fields in the app (see REDESIGN-2.0.10-REPORT.md)
+-- rather than folded into sales.notes as plain text, unlike "pull"/"who
+-- pulled"/"how much pull" (his own choice) or Email in 2.0.8.
+--
+-- Both are plain free text, deliberately NOT a CHECK-constrained enum: unlike
+-- tickets.status (available/listed/sold/cancelled, tightly coupled to sale
+-- creation - see update_ticket_impl/create_sale_impl/create_sales_batch_impl)
+-- or sales.payment_status (pending/paid/refunded), marko's exact vocabulary
+-- for these two columns isn't nailed down - a fixed set risks rejecting a
+-- legitimate value a sync (or a manual edit) never anticipated. Easy to
+-- tighten into a real enum later once real-world values are seen.
+--
+-- Live on `tickets`, not `sales`: both describe the physical/digital ticket
+-- itself (its resale listing state, whether it's been handed over) rather
+-- than the sale transaction, and stay meaningful even before a sale exists -
+-- same placement as section/row_label/seat/ticket_type.
+--
+-- `resale_status`, not `status`: tickets.status already exists with its own
+-- specific, automatically-managed meaning (available/listed/sold/cancelled -
+-- flipped to 'sold' the instant a sale is created). Reusing that name for a
+-- second, unrelated free-text concept from marko's sheet would be actively
+-- confusing, not just redundant.
+ALTER TABLE tickets ADD COLUMN resale_status TEXT;
+ALTER TABLE tickets ADD COLUMN delivery_status TEXT;

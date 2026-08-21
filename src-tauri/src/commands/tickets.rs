@@ -25,7 +25,8 @@ const BASE_SQL: &str = "
     SELECT t.id, t.code, t.event_id, e.name as event_name, t.order_id, o.code as order_code,
       t.section, t.row_label, t.seat, t.ticket_type,
       t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents,
-      t.listing_price_cents, t.currency, t.status, t.notes, t.is_demo,
+      t.listing_price_cents, t.currency, t.status, t.resale_status, t.delivery_status,
+      t.notes, t.is_demo,
       t.created_at, t.updated_at, sa.sale_price_cents as sale_price_cents
     FROM tickets t
     JOIN events e ON e.id = t.event_id
@@ -55,6 +56,8 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         listing_price_cents: row.get("listing_price_cents")?,
         currency: row.get("currency")?,
         status: row.get("status")?,
+        resale_status: row.get("resale_status")?,
+        delivery_status: row.get("delivery_status")?,
         notes: row.get("notes")?,
         is_demo: row.get("is_demo")?,
         created_at: row.get("created_at")?,
@@ -200,8 +203,9 @@ pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdat
 
     conn.execute(
         "UPDATE tickets SET section=?1, row_label=?2, seat=?3, ticket_type=?4,
-         listing_price_cents=?5, status=?6, notes=?7, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?8",
+         listing_price_cents=?5, status=?6, resale_status=?7, delivery_status=?8, notes=?9,
+         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id=?10",
         params![
             input.section,
             input.row_label,
@@ -209,6 +213,8 @@ pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdat
             input.ticket_type,
             input.listing_price_cents,
             next_status,
+            input.resale_status,
+            input.delivery_status,
             input.notes,
             id,
         ],

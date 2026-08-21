@@ -47,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "009_orders_external_reference",
         include_str!("../migrations/009_orders_external_reference.sql"),
     ),
+    (
+        "010_ticket_resale_delivery_status",
+        include_str!("../migrations/010_ticket_resale_delivery_status.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

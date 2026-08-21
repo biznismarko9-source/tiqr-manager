@@ -161,6 +161,11 @@ pub struct Ticket {
     pub listing_price_cents: Option<i64>,
     pub currency: String,
     pub status: String,
+    /// 2.0.10: marko's own free-text "Status"/"Delivery status" tracking,
+    /// distinct from `status` above - see migration 010's doc comment for
+    /// why these aren't folded into that field or into a CHECK enum.
+    pub resale_status: Option<String>,
+    pub delivery_status: Option<String>,
     pub notes: Option<String>,
     pub is_demo: bool,
     pub created_at: String,
@@ -177,6 +182,9 @@ pub struct TicketUpdateInput {
     pub ticket_type: Option<String>,
     pub listing_price_cents: Option<i64>,
     pub status: Option<String>,
+    /// 2.0.10 - see `Ticket::resale_status`/`Ticket::delivery_status`.
+    pub resale_status: Option<String>,
+    pub delivery_status: Option<String>,
     pub notes: Option<String>,
 }
 
