@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.0.1"
+version = "2.0.2"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -25,6 +25,20 @@ chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
 anyhow = "1"
 thiserror = "2"
+# Google Sheets sync (Settings -> Integrations). Deliberately NOT the
+# generated google-sheets4/yup-oauth2 clients - see google_sheets.rs's module
+# doc comment for why a small hand-rolled REST client fits this codebase
+# better. rustls-tls avoids depending on a system OpenSSL install on the
+# Windows GitHub Actions runner that actually produces the shipped installer.
+# Pinned to the same major version tauri-plugin-updater already pulls in
+# transitively, so the dependency tree only ever builds one copy of reqwest.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "form", "rustls"] }
+jsonwebtoken = "9"
+percent-encoding = "2"
+# Only used directly in google_sheets.rs's own test module, to decode a JWT
+# segment for a self-check - jsonwebtoken depends on it too, but a crate may
+# only `use` what it declares itself.
+base64 = "0.22"
 
 [profile.release]
 panic = "abort"

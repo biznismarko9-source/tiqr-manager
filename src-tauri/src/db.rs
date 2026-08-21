@@ -39,6 +39,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "007_payments",
         include_str!("../migrations/007_payments.sql"),
     ),
+    (
+        "008_sheet_sync",
+        include_str!("../migrations/008_sheet_sync.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -737,5 +741,103 @@ mod migration_007_tests {
         let conn = test_conn();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM payments", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);
+    }
+}
+
+/// Regression coverage for migration 008 (`sheet_sync_links` - Google Sheets
+/// sync, see commands/sheets_sync.rs and google_sheets.rs). Same shape as
+/// migration_007_tests: prove the migration is safe on top of a real
+/// existing install's data, and that a brand-new database starts with no
+/// sync history fabricated out of nothing.
+#[cfg(test)]
+mod migration_008_tests {
+    use super::*;
+
+    #[test]
+    fn migration_008_preserves_existing_data_and_creates_a_usable_empty_table_on_upgrade() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("enable foreign keys");
+
+        // Apply exactly what every existing v2.0.1 install already has on
+        // disk today: migrations 001-007, nothing more.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        for (version, sql) in &MIGRATIONS[..7] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+            .unwrap();
+        }
+
+        // Seed real pre-existing data (a pull, exactly the kind of record
+        // 008 exists to sync) under the pre-sync schema.
+        conn.execute(
+            "INSERT INTO pulls (code, buyer_name, event_name, quantity, price_cents, currency, transfer_done)
+             VALUES ('PULL-000001', 'A Buyer', 'An Event', 2, 5000, 'EUR', 0)",
+            [],
+        )
+        .unwrap();
+        let pulls_before: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, buyer_name FROM pulls ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+
+        // The real upgrade moment: run_migrations sees 001-007 already
+        // recorded, so it applies ONLY 008 - exactly like a real upgrade.
+        run_migrations(&conn).expect("migration 008 must apply cleanly on top of real pre-existing data");
+
+        let pulls_after: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare("SELECT id, code, buyer_name FROM pulls ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(pulls_before, pulls_after, "every pre-existing pull must survive the upgrade untouched");
+
+        // The new table is immediately usable via plain SQL.
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('pulls', 1, 'PULL-000001', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            [],
+        )
+        .expect("the sheet_sync_links table must be usable right after the upgrade");
+
+        let violations: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert!(violations.is_empty(), "foreign_key_check must be clean after the upgrade, found: {violations:?}");
+    }
+
+    #[test]
+    fn migration_008_on_a_completely_fresh_database_starts_with_no_sync_links() {
+        let conn = test_conn();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM sheet_sync_links", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn migration_008_rejects_a_duplicate_link_for_the_same_data_source_and_local_id() {
+        // The primary key is the whole safety property here: it's what
+        // stops a repeat sync from ever double-linking the same local
+        // record to two different sheet rows.
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('pulls', 1, 'PULL-000001', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('pulls', 1, 'PULL-000002', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            [],
+        );
+        assert!(dup.is_err(), "a local record must never be linked to two different sheet rows at once");
     }
 }

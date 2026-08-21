@@ -3,11 +3,13 @@ import { Link, useParams } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
-import type { AppInfo, CsvPreview, Platform } from "../lib/types";
+import type { AppInfo, CsvPreview, Platform, SheetsConnectionStatus, SheetsConnectionTestResult } from "../lib/types";
 import {
+  Badge,
   Button,
   Card,
   ConfirmDialog,
+  Field,
   Input,
   Modal,
   ModalFooter,
@@ -24,7 +26,7 @@ import {
   ExportPickerModal,
   type ExportPickerConfig,
 } from "../components/ExportPickerModal";
-import { IconArrowLeft, IconDatabase, IconDownload, IconSun, IconTag, IconTrash, IconUpload } from "../components/icons";
+import { IconArrowLeft, IconDatabase, IconDownload, IconLink, IconSun, IconTag, IconTrash, IconUpload } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { useTheme, type ThemeMode } from "../lib/theme";
@@ -43,9 +45,12 @@ const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
 // type annotation - TS infers `icon` as the shared icon-component type from
 // the 4 actual values, which keeps this safe from any structural-typing
 // mismatch that a hand-written narrower prop type could risk introducing.
+// 2.0.2: Integrations - connect Pulls (Tickets later) to a Google Sheet. See
+// SheetsConnectionCard below and REDESIGN-2.0.2-REPORT.md.
 const SECTIONS = [
   { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
   { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
+  { key: "integrations", title: "Integrations", description: "Connect Pulls to a Google Sheet.", icon: IconLink },
   { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
 ];
@@ -387,6 +392,12 @@ export default function Settings() {
             </div>
           )}
 
+          {section === "integrations" && (
+            <div className="grid grid-cols-1 gap-4 lg:max-w-3xl">
+              <SheetsConnectionCard dataSource="pulls" label="Pulls" />
+            </div>
+          )}
+
           {section === "software" && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
@@ -558,6 +569,184 @@ function PlatformList({
         ))}
       </ul>
     </div>
+  );
+}
+
+// 2.0.2: Settings -> Integrations card for one data source ("pulls" today;
+// "tickets" will reuse this same component once its row-sync logic exists -
+// the connection commands underneath are already fully generic per data
+// source, see sheets_sync.rs). Deliberately only sets up and tests the
+// connection - no row import/export UI yet, see REDESIGN-2.0.2-REPORT.md for
+// why that's a separate, later pass.
+function SheetsConnectionCard({ dataSource, label }: { dataSource: string; label: string }) {
+  const toast = useToast();
+  const [status, setStatus] = useState<SheetsConnectionStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [spreadsheetInput, setSpreadsheetInput] = useState("");
+  const [sheetTab, setSheetTab] = useState("");
+  const [busy, setBusy] = useState<"save" | "test" | "disconnect" | null>(null);
+  const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+
+  const reload = () => {
+    setLoading(true);
+    api
+      .getSheetsConnectionStatus(dataSource)
+      .then((s) => {
+        setStatus(s);
+        setSpreadsheetInput(s.connection?.spreadsheetId ?? "");
+        setSheetTab(s.connection?.sheetTab ?? "");
+      })
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(reload, [dataSource]);
+
+  const doConnect = async () => {
+    setBusy("save");
+    setTestResult(null);
+    try {
+      await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab);
+      toast.success("Sheet connected");
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doTest = async () => {
+    setBusy("test");
+    setTestResult(null);
+    try {
+      setTestResult(await api.testSheetsConnection(dataSource));
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDisconnect = async () => {
+    setBusy("disconnect");
+    try {
+      await api.clearSheetsConnection(dataSource);
+      setConfirmDisconnect(false);
+      setTestResult(null);
+      toast.success("Sheet disconnected");
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  const connected = !!status?.connection;
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</h3>
+        <Badge tone={connected ? "sold" : "available"}>{connected ? "Connected" : "Not connected"}</Badge>
+      </div>
+
+      {!status?.syncAvailable ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">Google Sheets sync isn&apos;t available in this build.</p>
+      ) : (
+        <>
+          <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect. Reading and writing{" "}
+            {label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.
+          </p>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Spreadsheet URL or ID">
+              <Input
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                value={spreadsheetInput}
+                onChange={(e) => setSpreadsheetInput(e.target.value)}
+              />
+            </Field>
+            <Field label="Sheet/tab name">
+              <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
+            </Field>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              disabled={busy === "save" || !spreadsheetInput.trim() || !sheetTab.trim()}
+              onClick={doConnect}
+            >
+              {busy === "save" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
+              {connected ? "Save" : "Connect"}
+            </Button>
+            {connected && (
+              <>
+                <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
+                  {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
+                  Test connection
+                </Button>
+                <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
+                  Disconnect
+                </Button>
+              </>
+            )}
+          </div>
+
+          {testResult && (
+            <p
+              className={`mt-3 text-xs ${testResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+            >
+              {testResult.message}
+            </p>
+          )}
+
+          {status?.serviceAccountEmail && (
+            <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
+              Share the sheet with{" "}
+              <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
+              (Editor access) so the app can read and write it.
+            </p>
+          )}
+
+          {status?.lastSyncedAt && (
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+              Last synced: {new Date(status.lastSyncedAt).toLocaleString()}
+            </p>
+          )}
+        </>
+      )}
+
+      <ConfirmDialog
+        open={confirmDisconnect}
+        title={`Disconnect ${label}?`}
+        message={
+          <>
+            The app forgets this sheet connection. Nothing in your {label.toLowerCase()} data is deleted - you can
+            reconnect (even to the same sheet) any time.
+          </>
+        }
+        confirmLabel="Disconnect"
+        danger
+        busy={busy === "disconnect"}
+        onCancel={() => setConfirmDisconnect(false)}
+        onConfirm={doDisconnect}
+      />
+    </Card>
   );
 }
 

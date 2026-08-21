@@ -24,6 +24,9 @@ import type {
   SaleEditInput,
   SaleGroup,
   SaleInput,
+  SheetsConnectionConfig,
+  SheetsConnectionStatus,
+  SheetsConnectionTestResult,
   Supplier,
   Ticket,
   TicketUpdateInput,
@@ -169,6 +172,16 @@ export const api = {
   // Settings (generic key/value, e.g. theme preference)
   getAppSetting: (key: string) => invoke<string | null>("get_app_setting", { key }),
   setAppSetting: (key: string, value: string) => invoke<void>("set_app_setting", { key, value }),
+
+  // Google Sheets sync (Settings -> Integrations, 2.0.2+). `dataSource` is a
+  // plain string key ("pulls" today) - see sheets_sync.rs's module doc
+  // comment. Connection setup/test only for now - no row sync yet.
+  getSheetsConnectionStatus: (dataSource: string) =>
+    invoke<SheetsConnectionStatus>("get_sheets_connection_status", { dataSource }),
+  setSheetsConnection: (dataSource: string, spreadsheetUrlOrId: string, sheetTab: string) =>
+    invoke<SheetsConnectionConfig>("set_sheets_connection", { dataSource, spreadsheetUrlOrId, sheetTab }),
+  clearSheetsConnection: (dataSource: string) => invoke<void>("clear_sheets_connection", { dataSource }),
+  testSheetsConnection: (dataSource: string) => invoke<SheetsConnectionTestResult>("test_sheets_connection", { dataSource }),
 };
 
 export function errMsg(e: unknown): string {

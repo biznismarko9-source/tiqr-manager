@@ -27,6 +27,18 @@ name: Build Windows Installer
 #      git push origin v1.0.1
 #    The release goes live immediately once the workflow finishes - existing
 #    installs will offer it the next time they check for updates.
+#
+# Google Sheets sync (Settings -> Integrations, 2.0.2+) needs ONE MORE
+# repository secret, added the same way, and used by BOTH build paths above
+# (a test build needs it too, so "Test connection" actually works before you
+# ever cut a real release):
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     Name:  GOOGLE_SERVICE_ACCOUNT_JSON
+#     Value: the full contents of the service-account .json key file, pasted
+#            as-is (it's plain JSON text, not a file upload here)
+# Without this secret, both build paths still succeed - the app just reports
+# "Google Sheets sync isn't available in this build" instead of erroring, see
+# src-tauri/build.rs and google_sheets.rs's embedded_service_account().
 
 on:
   workflow_dispatch: {}
@@ -66,6 +78,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         with:
           tauriScript: npx tauri
 
@@ -139,6 +152,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TIQR Manager ${{ github.ref_name }}"

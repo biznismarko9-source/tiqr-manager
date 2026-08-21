@@ -9,4 +9,5 @@ pub mod orders;
 pub mod pulls;
 pub mod sales;
 pub mod settings;
+pub mod sheets_sync;
 pub mod tickets;

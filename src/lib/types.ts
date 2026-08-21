@@ -545,3 +545,26 @@ export interface PullEditInput {
   currency: string;
   transferDone: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Google Sheets sync (Settings -> Integrations, 2.0.2+). `dataSource` is
+// always a plain string key ("pulls" today, "tickets" planned next) - see
+// models.rs's matching Rust section for why.
+// ---------------------------------------------------------------------------
+
+export interface SheetsConnectionConfig {
+  spreadsheetId: string;
+  sheetTab: string;
+}
+
+export interface SheetsConnectionStatus {
+  syncAvailable: boolean;
+  serviceAccountEmail?: string | null;
+  connection?: SheetsConnectionConfig | null;
+  lastSyncedAt?: string | null;
+}
+
+export interface SheetsConnectionTestResult {
+  ok: boolean;
+  message: string;
+}

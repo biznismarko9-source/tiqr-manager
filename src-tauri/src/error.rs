@@ -14,6 +14,13 @@ pub enum AppError {
     Io(String),
     #[error("{0}")]
     Other(String),
+    /// A call to an external service (currently only Google Sheets) failed
+    /// or was rejected - network error, Google returned a non-2xx status,
+    /// or the app has no service account credentials embedded in this build.
+    /// Kept distinct from `Other` so the frontend can, if useful, show sync
+    /// failures differently from ordinary validation/db errors.
+    #[error("{0}")]
+    External(String),
 }
 
 impl From<rusqlite::Error> for AppError {

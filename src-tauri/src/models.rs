@@ -651,3 +651,49 @@ pub struct PullEditInput {
     pub currency: String,
     pub transfer_done: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Google Sheets sync (Settings -> Integrations, 2.0.2+). See
+// google_sheets.rs and commands/sheets_sync.rs for the full mechanism.
+// Deliberately data-source-agnostic (a plain `data_source` string, e.g.
+// "pulls" today) so a second connected sheet never needs its own struct.
+// ---------------------------------------------------------------------------
+
+/// Which spreadsheet+tab (if any) is linked for one data source. Stored as
+/// JSON under an `app_settings` key (see commands/settings.rs's existing
+/// generic key/value store) - this is configuration, not business data,
+/// exactly what that table already exists for.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetsConnectionConfig {
+    pub spreadsheet_id: String,
+    pub sheet_tab: String,
+}
+
+/// What Settings shows for one data source's "Integrations" card.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetsConnectionStatus {
+    /// Whether this build was even compiled with a service account embedded
+    /// (false on a plain local dev build - see
+    /// `google_sheets::embedded_service_account`'s doc comment).
+    pub sync_available: bool,
+    /// The address to show ("share your sheet with this address") when
+    /// `sync_available` is true.
+    pub service_account_email: Option<String>,
+    pub connection: Option<SheetsConnectionConfig>,
+    pub last_synced_at: Option<String>,
+}
+
+/// Result of a manual "Test connection" click. Deliberately just
+/// success/failure plus a human-readable message rather than a typed error
+/// enum: the message is whatever Google itself said (e.g. "the caller does
+/// not have permission" when the sheet hasn't been shared with the service
+/// account yet), which is more actionable than the app guessing and
+/// re-wording it.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetsConnectionTestResult {
+    pub ok: bool,
+    pub message: String,
+}

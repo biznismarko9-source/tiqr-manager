@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod finance;
+mod google_sheets;
 mod models;
 mod money;
 
@@ -87,6 +88,10 @@ pub fn run() {
             commands::app_info::get_app_info,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
+            commands::sheets_sync::get_sheets_connection_status,
+            commands::sheets_sync::set_sheets_connection,
+            commands::sheets_sync::clear_sheets_connection,
+            commands::sheets_sync::test_sheets_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
