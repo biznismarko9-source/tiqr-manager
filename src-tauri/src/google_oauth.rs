@@ -70,6 +70,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -228,10 +229,22 @@ fn parse_redirect_request_line(line: &str) -> RedirectResult {
 }
 
 /// Blocks until exactly one connection arrives on `listener` (Google's
-/// redirect, once the person finishes in their browser) or `timeout`
-/// elapses first, then answers it with a plain "you can close this tab" page
-/// and shuts down - this listener only ever serves this one request.
-fn accept_one_redirect(listener: &TcpListener, timeout: Duration) -> AppResult<RedirectResult> {
+/// redirect, once the person finishes in their browser), `timeout` elapses
+/// first, or `cancel` is flipped to `true` from elsewhere (see
+/// commands::google_auth::cancel_google_sign_in - the "Cancel" button shown
+/// while Settings reads "Waiting for you to finish in your browser...") -
+/// then answers a real connection with a plain "you can close this tab" page
+/// and shuts down. This listener only ever serves this one request.
+///
+/// The `cancel` check exists because a closed browser tab, or picking
+/// "use another account" and never finishing, leaves this otherwise blocked
+/// for the full `timeout` (a generous 5 minutes - see `SIGN_IN_TIMEOUT`)
+/// with no way back into the app: marko's own report was that "Sign in with
+/// Google", left uncompleted, made the whole sign-in card look frozen until
+/// he restarted the app. `cancel` is checked on the same 200ms poll this
+/// loop already runs for the timeout check, so a cancellation is noticed
+/// within one polling interval, not the full wait.
+fn accept_one_redirect(listener: &TcpListener, timeout: Duration, cancel: &AtomicBool) -> AppResult<RedirectResult> {
     listener
         .set_nonblocking(true)
         .map_err(|e| AppError::External(format!("could not configure the local sign-in listener: {e}")))?;
@@ -240,6 +253,9 @@ fn accept_one_redirect(listener: &TcpListener, timeout: Duration) -> AppResult<R
         match listener.accept() {
             Ok((stream, _)) => break stream,
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Validation("Google sign-in was cancelled.".to_string()));
+                }
                 if start.elapsed() > timeout {
                     return Err(AppError::External(
                         "Timed out waiting for Google sign-in - the browser window may have been closed before finishing. Please try again.".to_string(),
@@ -369,8 +385,12 @@ pub struct SignedInAccount {
 /// for tokens, and looks up which account they signed in as. Blocking, with
 /// a generous timeout (`SIGN_IN_TIMEOUT`) - matches how every other command
 /// in this app is a plain synchronous function (see db.rs's AppState doc
-/// comment), no async runtime needed here either.
-pub fn run_sign_in(client: &OAuthClient, app: &tauri::AppHandle) -> AppResult<SignedInAccount> {
+/// comment), no async runtime needed here either. `cancel` is a fresh flag
+/// the caller creates for this one attempt (see
+/// commands::google_auth::start_google_sign_in) - flipping it to `true`
+/// from elsewhere unblocks `accept_one_redirect` below promptly instead of
+/// leaving this waiting out the full timeout.
+pub fn run_sign_in(client: &OAuthClient, app: &tauri::AppHandle, cancel: &AtomicBool) -> AppResult<SignedInAccount> {
     use tauri_plugin_opener::OpenerExt;
 
     let listener = bind_loopback_listener()?;
@@ -383,7 +403,7 @@ pub fn run_sign_in(client: &OAuthClient, app: &tauri::AppHandle) -> AppResult<Si
         .open_url(auth_url, None::<&str>)
         .map_err(|e| AppError::External(format!("could not open the browser for Google sign-in: {e}")))?;
 
-    let redirect = accept_one_redirect(&listener, SIGN_IN_TIMEOUT)?;
+    let redirect = accept_one_redirect(&listener, SIGN_IN_TIMEOUT, cancel)?;
 
     if let Some(err) = redirect.error {
         return Err(AppError::Validation(format!("Google sign-in was not completed: {err}")));
@@ -541,7 +561,8 @@ mod tests {
         assert!(uri.starts_with("http://127.0.0.1:"));
 
         let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || accept_one_redirect(&listener, Duration::from_secs(5)));
+        let no_cancel = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || accept_one_redirect(&listener, Duration::from_secs(5), &no_cancel));
 
         // Give the listener a moment to actually be polling accept() before
         // this test connects to it.
@@ -560,7 +581,40 @@ mod tests {
     #[test]
     fn accept_one_redirect_times_out_instead_of_hanging_forever_if_nothing_ever_connects() {
         let listener = bind_loopback_listener().unwrap();
-        let result = accept_one_redirect(&listener, Duration::from_millis(150));
+        let no_cancel = AtomicBool::new(false);
+        let result = accept_one_redirect(&listener, Duration::from_millis(150), &no_cancel);
         assert!(result.is_err(), "no connection ever arriving must time out, not hang");
+    }
+
+    #[test]
+    fn accept_one_redirect_is_interrupted_promptly_when_cancelled_instead_of_waiting_out_the_full_timeout() {
+        // 2.0.12: marko's own report - closing the browser tab (or picking
+        // "use another account" and never finishing) before Google's
+        // redirect ever arrives used to leave this blocked for the full,
+        // generous SIGN_IN_TIMEOUT (5 minutes) with no way back into the
+        // app. Proves the actual fix: flipping `cancel` unblocks this within
+        // about one polling interval (200ms), not anywhere near a real
+        // multi-minute timeout - using one here (300s) that would fail this
+        // test outright (via the 2s assertion below) if cancellation were
+        // silently not being checked.
+        let listener = bind_loopback_listener().unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_for_thread = cancel.clone();
+        let handle =
+            std::thread::spawn(move || accept_one_redirect(&listener, Duration::from_secs(300), &cancel_for_thread));
+
+        // Give the listener a moment to actually start polling accept()
+        // before this test flips the flag it should be watching.
+        std::thread::sleep(Duration::from_millis(50));
+        cancel.store(true, Ordering::Relaxed);
+
+        let start = std::time::Instant::now();
+        let result = handle.join().unwrap();
+        assert!(result.is_err(), "a cancelled wait must return an error, never a successful RedirectResult");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "cancellation must be noticed within a polling interval or two, not anywhere near the 300s timeout - took {:?}",
+            start.elapsed()
+        );
     }
 }

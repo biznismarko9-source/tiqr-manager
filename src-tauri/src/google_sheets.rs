@@ -381,6 +381,40 @@ pub fn share_file(token: &str, file_id: &str, email: &str) -> AppResult<()> {
     parse_json_response::<serde_json::Value>(resp).map(|_| ())
 }
 
+/// Builds the human-facing message for a non-2xx Google API response.
+/// Pulled out of `parse_json_response` below purely so this is directly unit
+/// testable: nothing in this crate can construct a real
+/// `reqwest::blocking::Response` without an actual HTTP round trip, which
+/// this sandbox can't make either way (see this module's doc comment).
+///
+/// 2.0.12: appends a clarifying hint whenever Google's own message is
+/// "Unable to parse range: ..." - marko's own report, hit for a manually
+/// (not app-)created sheet: this exact error is misleading, since Google
+/// returns the identical wording both for a genuinely malformed A1 range
+/// (the bug `a1_range` above already fixed in 2.0.9) AND for a
+/// syntactically-fine range whose sheet/tab name simply is not found in that
+/// spreadsheet - the far more likely case once quoting is handled correctly.
+/// A person pasting an existing sheet's URL by hand has no way to tell those
+/// two apart from Google's wording alone, especially since "sheet" is
+/// genuinely ambiguous (the whole spreadsheet *file*, vs. the specific
+/// *tab* inside it Google's API actually means) - "Test connection"/"Sync"
+/// failing with this exact error right after "Save" reported success (Save
+/// never made a network call at all until 2.0.12 - see
+/// commands::sheets_sync::set_sheets_connection_impl) is the single most
+/// common way that confusion has actually surfaced.
+fn describe_error_response(status: reqwest::StatusCode, body: &str) -> String {
+    let mut message = format!("Google Sheets rejected the request ({status}): {body}");
+    if body.contains("Unable to parse range") {
+        message.push_str(
+            " - this usually means the exact tab name was not found in that spreadsheet, not a \
+             syntax problem. Check the tab label at the bottom of the Google Sheet itself (not the \
+             spreadsheet file's own name, which can read very similarly) - it must match the \
+             \"Sheet/tab name\" field exactly, including capitalization and spacing.",
+        );
+    }
+    message
+}
+
 // `pub(crate)` since 2.0.5: google_oauth.rs talks to a different set of
 // Google endpoints (accounts.google.com/oauth2.googleapis.com's user-facing
 // token endpoint, not this module's service-account one) but the shape of
@@ -392,9 +426,7 @@ pub(crate) fn parse_json_response<T: serde::de::DeserializeOwned>(resp: reqwest:
         .text()
         .map_err(|e| AppError::External(format!("could not read Google's response: {e}")))?;
     if !status.is_success() {
-        return Err(AppError::External(format!(
-            "Google Sheets rejected the request ({status}): {body}"
-        )));
+        return Err(AppError::External(describe_error_response(status, &body)));
     }
     serde_json::from_str(&body)
         .map_err(|e| AppError::External(format!("unexpected response from Google Sheets: {e} (body: {body})")))
@@ -576,6 +608,27 @@ mod tests {
     #[test]
     fn a1_range_doubles_an_embedded_single_quote() {
         assert_eq!(a1_range("Marko's Tickets", "A1:Z"), "'Marko''s Tickets'!A1:Z");
+    }
+
+    #[test]
+    fn describe_error_response_adds_a_tab_name_hint_for_unable_to_parse_range() {
+        // The exact real error marko reported (2.0.12) for a manually
+        // connected sheet whose tab name did not actually exist - proves the
+        // clarifying hint fires for the real-world case, not a hypothetical.
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        let body = r#"{ "error": { "code": 400, "message": "Unable to parse range: 'TIQR Manager - Pulls'!A1:A1", "status": "INVALID_ARGUMENT" } }"#;
+        let message = describe_error_response(status, body);
+        assert!(message.contains("Unable to parse range"), "must still include Google's own raw message: {message}");
+        assert!(message.to_lowercase().contains("tab"), "must add a clarifying hint mentioning the tab name: {message}");
+    }
+
+    #[test]
+    fn describe_error_response_adds_no_hint_for_an_unrelated_error() {
+        let status = reqwest::StatusCode::FORBIDDEN;
+        let body = r#"{ "error": { "code": 403, "message": "The caller does not have permission", "status": "PERMISSION_DENIED" } }"#;
+        let message = describe_error_response(status, body);
+        assert!(message.contains("permission"), "must still include Google's own raw message: {message}");
+        assert!(!message.to_lowercase().contains("tab label"), "must not add an irrelevant hint to a different kind of error: {message}");
     }
 
     #[test]

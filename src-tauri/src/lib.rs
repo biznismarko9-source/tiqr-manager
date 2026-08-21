@@ -28,6 +28,7 @@ pub fn run() {
             db::run_migrations(&conn).map_err(|e| e.to_string())?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                oauth_cancel_flag: Mutex::new(None),
             });
             Ok(())
         })
@@ -103,6 +104,7 @@ pub fn run() {
             commands::orders_sheet_sync::create_orders_sheet,
             commands::google_auth::get_google_sign_in_status,
             commands::google_auth::start_google_sign_in,
+            commands::google_auth::cancel_google_sign_in,
             commands::google_auth::google_sign_out,
         ])
         .run(tauri::generate_context!())

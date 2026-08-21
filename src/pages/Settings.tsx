@@ -439,10 +439,14 @@ export default function Settings() {
                   SECOND batch of columns (same rows, same connection - marko
                   only ever connects this sheet once) and records a sale for
                   every ticket an already-synced row's order hasn't sold yet -
-                  see commands/orders_sheet_sync.rs's module doc comment. */}
+                  see commands/orders_sheet_sync.rs's module doc comment.
+                  2.0.12: renamed from "Orders & Tickets" to "Orders & Sales"
+                  (marko's own request) - purely the on-screen label; the
+                  data_source key ("orders"), and every already-connected
+                  sheet, are untouched. */}
               <SheetsConnectionCard
                 dataSource="orders"
-                label="Orders & Tickets"
+                label="Orders & Sales"
                 googleStatus={googleStatus}
                 onSync={api.syncOrders}
                 syncLabel="Order sync"
@@ -454,7 +458,7 @@ export default function Settings() {
                   run: api.syncSales,
                 }}
                 onCreate={api.createOrdersSheet}
-                currencyHint="Used only when a row's own currency cell is blank - a row with its own currency uses that instead."
+                currencyHint="Not the main source - a row's own currency column (EUR/USD/GBP) is read and used automatically for that row. This only fills in for a row whose currency cell is left blank."
               />
             </div>
           )}
@@ -680,6 +684,23 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
     }
   };
 
+  // 2.0.12: marko's own report - closing the browser tab (or picking "use
+  // another account" and never finishing there) left this card stuck reading
+  // "Waiting for you to finish in your browser..." for the full 5-minute
+  // timeout with no way back into the app, which read as a frozen app and
+  // needing a restart. Does not itself clear `busy`/show a result - doSignIn's
+  // own `finally` above does that once its now-interrupted promise actually
+  // settles, moments after the backend notices the flag this sets (see
+  // accept_one_redirect's doc comment) - so the button/spinner flips back to
+  // normal exactly once.
+  const doCancelSignIn = async () => {
+    try {
+      await api.cancelGoogleSignIn();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   const doSignOut = async () => {
     setBusy("out");
     try {
@@ -733,10 +754,17 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
             identity instead of the app&apos;s shared one. Opens your own browser - nothing happens inside the app
             itself, and nobody but you sees your Google password.
           </p>
-          <Button variant="primary" disabled={busy === "in"} onClick={doSignIn}>
-            {busy === "in" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
-            {busy === "in" ? "Waiting for you to finish in your browser..." : "Sign in with Google"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" disabled={busy === "in"} onClick={doSignIn}>
+              {busy === "in" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
+              {busy === "in" ? "Waiting for you to finish in your browser..." : "Sign in with Google"}
+            </Button>
+            {busy === "in" && (
+              <Button variant="ghost" onClick={doCancelSignIn}>
+                Cancel
+              </Button>
+            )}
+          </div>
         </>
       )}
     </Card>
@@ -744,7 +772,7 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 }
 
 // 2.0.10: pulled out of SheetsConnectionCard so a card with two sync actions
-// (Orders & Tickets: Order sync / Sales sync) can render both results without
+// (Orders & Sales: Order sync / Sales sync) can render both results without
 // duplicating this conflicts/errors markup twice.
 function SyncResultView({ result }: { result: SheetSyncResult }) {
   return (
@@ -804,7 +832,7 @@ function SheetsConnectionCard({
    * button entirely. */
   onSync?: () => Promise<SheetSyncResult>;
   /** Button text for `onSync` - defaults to "Sync now" (Pulls, and every
-   * other single-action card, omits this). 2.0.10: Orders & Tickets sets
+   * other single-action card, omits this). 2.0.10: Orders & Sales sets
    * this to "Order sync" now that it has a second action (`secondarySync`)
    * on the same card, so the two buttons read clearly side by side. */
   syncLabel?: string;
@@ -815,13 +843,14 @@ function SheetsConnectionCard({
    * them. Required whenever `onSync` is set. */
   syncDescription?: string;
   /** 2.0.10: an optional SECOND sync action on the same card/connection -
-   * marko's own request, so Orders & Tickets (one physical sheet, two
+   * marko's own request, so Orders & Sales (one physical sheet, two
    * batches of columns) never needs a second, separate connection just to
-   * offer "Sales sync" alongside "Order sync". Fully independent of
-   * `onSync`/`syncLabel`/`syncDescription` - own button, own description, own
-   * result block - so this stays a plain, generic "up to two named sync
-   * actions" card rather than anything Orders-specific. Omit entirely for a
-   * card with only one sync action (e.g. Pulls). */
+   * offer "Sales sync" alongside "Order sync" on the Orders & Sales card.
+   * Fully independent of `onSync`/`syncLabel`/`syncDescription` - own
+   * button, own description, own result block - so this stays a plain,
+   * generic "up to two named sync actions" card rather than anything
+   * Orders-specific. Omit entirely for a card with only one sync action
+   * (e.g. Pulls). */
   secondarySync?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
   /** "Create a new sheet for me", e.g. api.createPullsSheet /
    * api.createOrdersSheet. 2.0.8: generalized to a prop alongside onSync,
@@ -879,8 +908,23 @@ function SheetsConnectionCard({
     setCreatedUrl(null);
     try {
       await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab, currency);
-      toast.success("Sheet connected");
       reload();
+      // 2.0.12: immediately run the same check "Test connection" always ran,
+      // right here - marko's own report. Saving used to report success
+      // purely because the input LOOKED valid (a well-formed URL/ID, a
+      // non-empty tab name) with no network call at all, so a tab name that
+      // does not actually exist in the spreadsheet (a very easy mistake -
+      // "sheet" is ambiguous between the spreadsheet FILE's own name and the
+      // specific TAB inside it Google actually means, see
+      // google_sheets::describe_error_response's doc comment) only surfaced
+      // later, confusingly, on the first Sync click. This closes that gap.
+      const result = await api.testSheetsConnection(dataSource);
+      setTestResult(result);
+      if (result.ok) {
+        toast.success("Sheet connected");
+      } else {
+        toast.error(`Saved, but the connection test failed: ${result.message}`);
+      }
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -1025,7 +1069,10 @@ function SheetsConnectionCard({
               />
             </Field>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Sheet/tab name">
+              <Field
+                label="Sheet/tab name"
+                hint="The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
+              >
                 <Input placeholder={`e.g. ${label}`} value={sheetTab} onChange={(e) => setSheetTab(e.target.value)} />
               </Field>
               <Field label="Currency" hint={currencyHint}>

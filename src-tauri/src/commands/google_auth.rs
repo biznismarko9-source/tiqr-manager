@@ -20,6 +20,8 @@ use crate::google_oauth::{self, OAuthClient};
 use crate::google_sheets;
 use rusqlite::Connection;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 const REFRESH_TOKEN_KEY: &str = "google_oauth_refresh_token";
@@ -75,14 +77,55 @@ fn require_oauth_client() -> AppResult<OAuthClient> {
 // google_oauth.rs's module doc comment). Reviewed by hand instead,
 // mirroring pulls_sheet_sync.rs's split between a fully-tested offline core
 // (apply_pull_rows) and an untested network-calling shell (sync_pulls_impl).
+//
+// 2.0.12: creates a fresh cancel flag for THIS attempt, stores a clone of it
+// in `state.oauth_cancel_flag` so `cancel_google_sign_in` below can reach it
+// while this call is still blocked inside `run_sign_in`, then always clears
+// that slot back to `None` once this attempt is over (success, error, or
+// cancelled) - via the `result` binding below rather than an early `?`, so
+// the clearing step is never skipped by an early return. Leaving a stale
+// `Some` behind would let a *later*, unrelated sign-in attempt be cancelled
+// by a leftover flag nobody meant for it.
 #[tauri::command]
 pub fn start_google_sign_in(state: State<AppState>, app: tauri::AppHandle) -> AppResult<GoogleSignInStatus> {
     let client = require_oauth_client()?;
-    let account = google_oauth::run_sign_in(&client, &app)?;
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    *state.oauth_cancel_flag.lock().unwrap() = Some(cancel_flag.clone());
+    let result = google_oauth::run_sign_in(&client, &app, &cancel_flag);
+    *state.oauth_cancel_flag.lock().unwrap() = None;
+    let account = result?;
+
     let conn = state.db.lock().unwrap();
     set_setting(&conn, REFRESH_TOKEN_KEY, &account.refresh_token)?;
     set_setting(&conn, EMAIL_KEY, &account.email)?;
     sign_in_status_impl(&conn)
+}
+
+/// The actual logic behind `cancel_google_sign_in` below, taking the cancel
+/// slot directly rather than `State<AppState>` so it's unit-testable without
+/// a running Tauri app around it (same reasoning as every other `_impl`
+/// function in this codebase). A safe no-op, never an error, when nothing is
+/// actually in flight - a stray double-click, or the sign-in attempt already
+/// finished on its own a moment earlier (see `start_google_sign_in`'s doc
+/// comment for when the slot is `None` vs `Some`).
+fn cancel_google_sign_in_impl(cancel_flag_slot: &Mutex<Option<Arc<AtomicBool>>>) {
+    if let Some(flag) = cancel_flag_slot.lock().unwrap().as_ref() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// "Cancel" button shown while Settings reads "Waiting for you to finish in
+/// your browser..." (`busy === "in"` in GoogleSignInCard) - lets marko get
+/// straight back to a usable app instead of the sign-in card looking frozen
+/// for up to 5 minutes (or needing an app restart) if he closes the browser
+/// tab, or picks "use another account" and never actually finishes there.
+/// See `accept_one_redirect`'s own doc comment for exactly how the flag this
+/// sets is noticed.
+#[tauri::command]
+pub fn cancel_google_sign_in(state: State<AppState>) -> AppResult<()> {
+    cancel_google_sign_in_impl(&state.oauth_cancel_flag);
+    Ok(())
 }
 
 /// Returns a ready-to-use access token for the signed-in Google account, or
@@ -223,6 +266,33 @@ mod tests {
         let conn = test_conn();
         let err = resolve_google_credential(&conn, false).unwrap_err();
         assert!(err.to_string().contains("isn't available in this build"));
+    }
+
+    #[test]
+    fn cancel_google_sign_in_impl_is_a_safe_no_op_when_nothing_is_in_flight() {
+        let slot: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+        cancel_google_sign_in_impl(&slot); // must not panic
+        assert!(slot.lock().unwrap().is_none(), "must not conjure a flag out of nothing");
+    }
+
+    #[test]
+    fn cancel_google_sign_in_impl_flips_the_flag_when_a_sign_in_is_in_flight() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let slot: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(Some(flag.clone()));
+        cancel_google_sign_in_impl(&slot);
+        assert!(flag.load(Ordering::Relaxed), "the in-flight attempt's own flag must be set");
+    }
+
+    #[test]
+    fn cancel_google_sign_in_impl_never_touches_a_different_attempts_flag() {
+        // A leftover flag from an attempt that already finished (slot back
+        // to None) must never let a cancel meant for THAT attempt bleed into
+        // whatever comes next - this proves the stale flag itself (still
+        // held here, just no longer stored in the slot) is left alone.
+        let stale_flag = Arc::new(AtomicBool::new(false));
+        let slot: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+        cancel_google_sign_in_impl(&slot);
+        assert!(!stale_flag.load(Ordering::Relaxed), "a flag no longer stored in the slot must never be touched");
     }
 
     #[test]

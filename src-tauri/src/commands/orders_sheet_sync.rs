@@ -18,7 +18,7 @@
 //! rows, matching back to the tickets `sync_orders` already created via the
 //! "TIQR ID" marker it writes - see "Column mapping (second batch - Sales)"
 //! further down. Settings -> Integrations shows both as two buttons - "Order
-//! sync" / "Sales sync" - on the one "Orders & Tickets" card.
+//! sync" / "Sales sync" - on the one "Orders & Sales" card.
 //!
 //! **Creation-only in this pass, deliberately** - unlike Pulls sync
 //! (commands::pulls_sheet_sync), which also updates an already-linked row
@@ -46,7 +46,7 @@
 //! | `Number of Tickets` | `Order.quantity` |
 //! | `Price Per Ticket` | `Order.unit_price_cents` |
 //! | `currency` | `Order.currency` - a row's own value if present and one of EUR/USD/GBP, otherwise the connection's configured currency (unlike Pulls, whose sheet has no currency column at all) |
-//! | `Email (used)` | folded into `Order.notes` as "Email used: ..." - no dedicated field for this exists anywhere in the schema |
+//! | `Email (used)` | copied as-is into `Order.notes` (raw value, no label prefix - see 2.0.12) - no dedicated field for this exists anywhere in the schema |
 //! | `Ticket Type` | `Order.ticket_type` (existing field, copied onto every generated ticket - unchanged behaviour) |
 //! | `TIQR ID` (appended by the app itself the first time it's missing) | the sync marker - never typed by hand |
 //!
@@ -488,7 +488,15 @@ fn apply_order_rows(
             other_costs_cents: 0,
             currency,
             payment_status: None,
-            notes: email.as_ref().map(|e| format!("Email used: {e}")),
+            // 2.0.12: the raw cell value, unlabeled - marko's own report:
+            // this used to prepend "Email used: " (see the module doc
+            // comment's "Column mapping" table), which was never what he
+            // wanted to see on the order. Order.notes has nothing else
+            // folded into it in this first batch (unlike Sale.notes in the
+            // second - see apply_sales_rows - which genuinely does combine
+            // several sheet columns and still needs its own structure), so
+            // there is no ambiguity a label was ever disambiguating here.
+            notes: email.clone(),
             ticket_type: cell(raw_row, ticket_type_col),
             section: cell(raw_row, section_col),
             row_label: cell(raw_row, row_col),
@@ -591,7 +599,7 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     Ok(result)
 }
 
-/// Manual "Sync now" button (Settings -> Integrations, Orders & Tickets
+/// Manual "Sync now" button (Settings -> Integrations, Orders & Sales
 /// card). Never runs on its own.
 #[tauri::command]
 pub fn sync_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
@@ -865,7 +873,7 @@ fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
     Ok(result)
 }
 
-/// Manual "Sales sync" button (Settings -> Integrations, Orders & Tickets
+/// Manual "Sales sync" button (Settings -> Integrations, Orders & Sales
 /// card) - sits next to "Order sync" on the same card, same connection.
 /// Never runs on its own.
 #[tauri::command]
@@ -883,7 +891,7 @@ pub fn sync_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
 // data_source string differ.
 // ---------------------------------------------------------------------------
 
-/// Header row written into a freshly-created "Orders & Tickets" sheet.
+/// Header row written into a freshly-created "Orders & Sales" sheet.
 /// Covers BOTH sync entry points that read this one connection (2.0.11) -
 /// marko's own real sheet is one combined buy+sell tracker, and a freshly
 /// auto-created sheet must be immediately ready for both "Order sync" AND
@@ -936,7 +944,7 @@ const ORDERS_SHEET_HEADERS: &[&str] = &[
 const NEW_SHEET_TITLE: &str = "TIQR Manager - Orders";
 const NEW_SHEET_TAB_NAME: &str = "Orders";
 
-/// Creates a brand-new Google Sheet for Orders & Tickets, writes
+/// Creates a brand-new Google Sheet for Orders & Sales, writes
 /// `ORDERS_SHEET_HEADERS` as its header row, and connects it - all in one
 /// call, with no Google sign-in window at any point. See
 /// `pulls_sheet_sync::create_pulls_sheet_impl`'s doc comment (this function
@@ -1122,7 +1130,9 @@ mod tests {
         assert_eq!(currency, "EUR");
         assert_eq!(quantity, 2);
         assert_eq!(unit_price_cents, 5000);
-        assert_eq!(notes.as_deref(), Some("Email used: buyer@example.com"));
+        // 2.0.12: the raw cell value only, no "Email used: " label prefix -
+        // marko's own report.
+        assert_eq!(notes.as_deref(), Some("buyer@example.com"));
 
         let event_name: String = conn.query_row("SELECT name FROM events WHERE id = ?1", [event_id], |r| r.get(0)).unwrap();
         assert_eq!(event_name, "Coldplay Arena Show");

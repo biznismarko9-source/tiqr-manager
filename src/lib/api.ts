@@ -202,7 +202,7 @@ export const api = {
    * ticket that isn't sold yet on a row already created by syncOrders -
    * creation-only, sheet -> app only, see commands/orders_sheet_sync.rs. */
   syncSales: () => invoke<SheetSyncResult>("sync_sales"),
-  /** 2.0.9: auto-creates a brand-new Orders & Tickets sheet, shares it with
+  /** 2.0.9: auto-creates a brand-new Orders & Sales sheet, shares it with
    * `email`, and connects it - no Google sign-in window. Mirrors
    * createPullsSheet exactly; sits next to setSheetsConnection as a second
    * way to arrive at a connection, not a replacement for it. */
@@ -211,9 +211,18 @@ export const api = {
   /** 2.0.5: installation-wide "Sign in with Google" - see
    * commands/google_auth.rs's module doc comment. `startGoogleSignIn` opens
    * the system browser and blocks (up to 5 minutes) until the person
-   * finishes there or it times out. */
+   * finishes there, it times out, or `cancelGoogleSignIn` interrupts it
+   * (2.0.12) - closing the browser tab or picking "use another account" and
+   * never finishing used to leave this pending for the full 5 minutes with
+   * no way back into the app. */
   getGoogleSignInStatus: () => invoke<GoogleSignInStatus>("get_google_sign_in_status"),
   startGoogleSignIn: () => invoke<GoogleSignInStatus>("start_google_sign_in"),
+  /** 2.0.12: the "Cancel" button shown while startGoogleSignIn's own promise
+   * is still pending - a safe no-op if nothing is actually in flight (e.g. a
+   * stray double-click). Does not itself resolve startGoogleSignIn's promise;
+   * that happens moments later, on its own, once the backend notices the flag
+   * this sets. */
+  cancelGoogleSignIn: () => invoke<void>("cancel_google_sign_in"),
   googleSignOut: () => invoke<void>("google_sign_out"),
 };
 

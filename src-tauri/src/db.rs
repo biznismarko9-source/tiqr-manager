@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// Shared app state: a single mutex-guarded SQLite connection.
@@ -8,6 +9,15 @@ use tauri::Manager;
 /// is simple and safe, and plenty fast for tens of thousands of rows.
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// 2.0.12: lets a "Cancel" click interrupt an in-flight "Sign in with
+    /// Google" wait (see google_oauth::run_sign_in/accept_one_redirect) -
+    /// `Some` only while commands::google_auth::start_google_sign_in is
+    /// actually blocked waiting for Google's browser redirect, `None`
+    /// otherwise (including right after an attempt finishes on its own, so a
+    /// stale cancel can never reach a later, unrelated sign-in attempt). A
+    /// plain `Mutex`, not part of the `db` one above - cancelling must never
+    /// have to wait on whatever the database happens to be doing.
+    pub oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[

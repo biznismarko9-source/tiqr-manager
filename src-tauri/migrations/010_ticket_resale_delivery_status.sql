@@ -1,5 +1,5 @@
 -- 010_ticket_resale_delivery_status
--- 2.0.10: Sales sync (Settings -> Integrations, Orders & Tickets card) reads
+-- 2.0.10: Sales sync (Settings -> Integrations, Orders & Sales card) reads
 -- marko's own "Status" and "Delivery status" sheet columns. He asked for
 -- these as real, editable fields in the app (see REDESIGN-2.0.10-REPORT.md)
 -- rather than folded into sales.notes as plain text, unlike "pull"/"who
