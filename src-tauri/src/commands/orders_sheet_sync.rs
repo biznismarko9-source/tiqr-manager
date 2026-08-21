@@ -552,7 +552,13 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
     let token = credential.access_token();
 
-    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
+    // 2.0.11: widened from "A1:Z" now that ORDERS_SHEET_HEADERS itself is 25
+    // columns wide - together with the "TIQR ID" marker sync appends as
+    // column 26, that already lands exactly on Z with zero room left for any
+    // column marko adds later (a silent truncation, not an error, if it ever
+    // happened). "A1:AZ" covers 52 columns - the same generous headroom the
+    // 13-column original had relative to its own needs, restored.
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
     let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
     if value_range.values.is_empty() {
         return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
@@ -836,7 +842,13 @@ fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
     let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
     let token = credential.access_token();
 
-    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
+    // 2.0.11: widened from "A1:Z" now that ORDERS_SHEET_HEADERS itself is 25
+    // columns wide - together with the "TIQR ID" marker sync appends as
+    // column 26, that already lands exactly on Z with zero room left for any
+    // column marko adds later (a silent truncation, not an error, if it ever
+    // happened). "A1:AZ" covers 52 columns - the same generous headroom the
+    // 13-column original had relative to its own needs, restored.
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
     let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
     if value_range.values.is_empty() {
         return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
@@ -871,14 +883,28 @@ pub fn sync_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
 // data_source string differ.
 // ---------------------------------------------------------------------------
 
-/// Header row written into a freshly-created "Orders & Tickets" sheet -
-/// exactly the columns `apply_order_rows` above understands, in the same
-/// order as the mapping table in this module's doc comment (and the exact
-/// order this module's own `full_headers()` test fixture already uses, so a
-/// freshly auto-created sheet and the test fixtures can never quietly drift
-/// apart from each other). Deliberately excludes `TIQR ID` - sync appends
-/// that itself the first time it's missing, see `resolve_marker_column` -
-/// same reasoning as `PULLS_SHEET_HEADERS`.
+/// Header row written into a freshly-created "Orders & Tickets" sheet.
+/// Covers BOTH sync entry points that read this one connection (2.0.11) -
+/// marko's own real sheet is one combined buy+sell tracker, and a freshly
+/// auto-created sheet must be immediately ready for both "Order sync" AND
+/// "Sales sync" with zero manual column-editing first, exactly like his own
+/// real sheet already is. In marko's own exact column order: the 13 columns
+/// `apply_order_rows` understands (Order sync's own batch - see the "Column
+/// mapping (first batch)" table above), followed by the columns
+/// `apply_sales_rows` understands (Sales sync's own batch - `Site Listed`
+/// through `how much pull`, see the "Column mapping (second batch)" table
+/// above), including `Revenue`/`Profit` - neither sync ever reads those two
+/// (see that same table), they're written here purely as marko's own
+/// on-sheet reference, since the app always computes both figures itself
+/// (finance.rs) rather than trusting a stored number that could drift out of
+/// sync with what the app actually shows. Deliberately excludes `TIQR ID` -
+/// sync appends that itself the first time it's missing, see
+/// `resolve_marker_column` - same reasoning as `PULLS_SHEET_HEADERS`. Only
+/// the first 13 entries are asserted equal to this module's own
+/// `full_headers()` test fixture (see
+/// `orders_sheet_headers_start_with_order_sync_full_headers` below) - that
+/// fixture deliberately stays the 13-column Order-sync-only shape, since
+/// every existing Order sync test already builds rows against it.
 const ORDERS_SHEET_HEADERS: &[&str] = &[
     "Event Name",
     "Date (DD/MM/YYYY)",
@@ -893,6 +919,18 @@ const ORDERS_SHEET_HEADERS: &[&str] = &[
     "currency",
     "Email (used)",
     "Ticket Type",
+    "Site Listed",
+    "Payout Per Ticket",
+    "Revenue",
+    "Profit",
+    "Status",
+    "Delivery status",
+    "Payout status",
+    "date of purchase",
+    "paid by",
+    "pull",
+    "who pulled",
+    "how much pull",
 ];
 
 const NEW_SHEET_TITLE: &str = "TIQR Manager - Orders";
@@ -1306,13 +1344,67 @@ mod tests {
     }
 
     #[test]
-    fn orders_sheet_headers_match_full_headers_test_fixture_exactly() {
-        // Regression guard for the doc comment's own claim: the header list
-        // written into a freshly-created sheet and the full_headers() sample
-        // row used throughout this module's tests must never quietly drift
-        // apart from each other.
+    fn orders_sheet_headers_start_with_order_sync_full_headers() {
+        // Regression guard, updated for 2.0.11: ORDERS_SHEET_HEADERS grew
+        // from 13 to 25 columns (Order sync's own batch, followed by Sales
+        // sync's - see its own doc comment), so it can no longer be exactly
+        // equal to full_headers(), which deliberately stays the 13-column
+        // Order-sync-only fixture every existing Order sync test already
+        // builds rows against, unchanged. What must still hold: the
+        // original 13 columns are still there, unchanged, in the same
+        // order, at the front - so a freshly auto-created sheet is still
+        // exactly as valid for Order sync as it always was.
         let headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
-        assert_eq!(headers, full_headers());
+        let order_sync_prefix = &headers[..full_headers().len()];
+        assert_eq!(order_sync_prefix, &full_headers()[..], "the first 13 columns must still match full_headers() exactly");
+    }
+
+    #[test]
+    fn orders_sheet_headers_satisfy_the_sales_sync_required_header_check() {
+        // Same idea as orders_sheet_headers_satisfy_the_required_header_
+        // check above, but for Sales sync's own requirement (2.0.11): a
+        // freshly auto-created sheet must be immediately ready for "Sales
+        // sync" too, with zero manual editing needed first - not only
+        // "Order sync". apply_sales_rows only hard-requires "Payout Per
+        // Ticket", already present in ORDERS_SHEET_HEADERS. "TIQR ID" is
+        // appended by hand here since ORDERS_SHEET_HEADERS deliberately
+        // excludes it (sync appends it itself) - this mirrors exactly what
+        // a real sheet looks like after its first successful Order sync
+        // run, which is the only time Sales sync is ever actually run
+        // against it.
+        let mut headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        headers.push("TIQR ID".to_string());
+        let (marker_col_index, marker_exists) = resolve_marker_column(&headers);
+        assert!(marker_exists);
+        let mut conn = test_conn();
+        let result = apply_sales_rows(&mut conn, &headers, &[], marker_col_index);
+        assert!(
+            result.is_ok(),
+            "a freshly auto-created sheet (plus its own TIQR ID marker) must satisfy Sales sync's own required columns: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn sales_sync_recognizes_marko_confirmed_sale_date_column_name() {
+        // marko confirmed (2.0.11) that "date of purchase" is the real,
+        // exact header text his own sheet uses for the sale-date column -
+        // resolving the uncertainty flagged in REDESIGN-2.0.10-REPORT.md
+        // section 3 (until now, only the "Date sold" alias was exercised by
+        // a real test). Swaps just that one header for marko's own
+        // confirmed real text - everything else, including sales_row()'s
+        // own column order, stays exactly as
+        // sales_sync_creates_a_sale_for_a_row_with_tiqr_id_and_payout above
+        // already exercises.
+        let mut headers = sales_headers();
+        let date_col = headers.iter().position(|h| h == "Date sold").unwrap();
+        headers[date_col] = "date of purchase".to_string();
+
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let result = apply_sales_rows(&mut conn, &headers, &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(result.created, 1, "\"date of purchase\" must be recognized as the sale-date column, not rejected as missing");
+        assert_eq!(result.errors.len(), 0);
     }
 
     #[test]
