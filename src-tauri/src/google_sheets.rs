@@ -318,7 +318,12 @@ pub fn share_file(token: &str, file_id: &str, email: &str) -> AppResult<()> {
     parse_json_response::<serde_json::Value>(resp).map(|_| ())
 }
 
-fn parse_json_response<T: serde::de::DeserializeOwned>(resp: reqwest::blocking::Response) -> AppResult<T> {
+// `pub(crate)` since 2.0.5: google_oauth.rs talks to a different set of
+// Google endpoints (accounts.google.com/oauth2.googleapis.com's user-facing
+// token endpoint, not this module's service-account one) but the shape of
+// "is this a 2xx JSON response, and if not, surface Google's own error body"
+// is identical - reused rather than re-written a second time.
+pub(crate) fn parse_json_response<T: serde::de::DeserializeOwned>(resp: reqwest::blocking::Response) -> AppResult<T> {
     let status = resp.status();
     let body = resp
         .text()

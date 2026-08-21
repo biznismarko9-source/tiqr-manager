@@ -4,6 +4,7 @@ pub mod csv_export;
 pub mod csv_import;
 pub mod dashboard;
 pub mod events;
+pub mod google_auth;
 pub mod lookups;
 pub mod orders;
 pub mod pulls;

@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.0.4"
+version = "2.0.5"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -18,6 +18,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+# 2.0.5: opens the user's default system browser to Google's real sign-in
+# page for the new "Sign in with Google" flow (google_oauth.rs) - the app has
+# no other way to launch an external browser from Rust. Not needed by (and
+# does not affect) the existing service-account flows, which never show the
+# user anything in a browser.
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
@@ -39,6 +45,15 @@ percent-encoding = "2"
 # segment for a self-check - jsonwebtoken depends on it too, but a crate may
 # only `use` what it declares itself.
 base64 = "0.22"
+# 2.0.5: PKCE (RFC 7636) for the new "Sign in with Google" flow -
+# google_oauth.rs generates a random code_verifier (rand) and its SHA-256
+# code_challenge (sha2), the standard way an installed/desktop app proves to
+# Google it's the same client that started the sign-in when it later
+# exchanges the authorization code for tokens. Not used by, and not needed
+# by, the existing service-account JWT flow (google_sheets.rs), which
+# authenticates as a fixed machine identity rather than a human signing in.
+rand = "0.9"
+sha2 = "0.10"
 
 [profile.release]
 panic = "abort"

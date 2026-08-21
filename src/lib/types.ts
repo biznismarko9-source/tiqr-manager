@@ -574,6 +574,18 @@ export interface SheetsConnectionTestResult {
   message: string;
 }
 
+/** Installation-wide "Sign in with Google" state (2.0.5) - one signed-in
+ * account per copy of the app, orthogonal to which spreadsheet is connected
+ * for any given data source. See commands/google_auth.rs's module doc
+ * comment. */
+export interface GoogleSignInStatus {
+  /** Whether this build was compiled with an OAuth client embedded - same
+   * convention as SheetsConnectionStatus.syncAvailable on the
+   * service-account side. */
+  signInAvailable: boolean;
+  signedInEmail?: string | null;
+}
+
 /** Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
  * alternative to pasting an existing sheet's URL, no Google sign-in window.
  * `connection` is already persisted by the time this returns. `spreadsheetUrl`

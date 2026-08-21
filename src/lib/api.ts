@@ -11,6 +11,7 @@ import type {
   EventInput,
   EventRecord,
   EventWithStats,
+  GoogleSignInStatus,
   OrderEditInput,
   OrderInput,
   OrderRecord,
@@ -192,6 +193,13 @@ export const api = {
    * as a second way to arrive at a connection, not a replacement for it. */
   createPullsSheet: (email: string, currency: string) =>
     invoke<CreatedSheetResult>("create_pulls_sheet", { email, currency }),
+  /** 2.0.5: installation-wide "Sign in with Google" - see
+   * commands/google_auth.rs's module doc comment. `startGoogleSignIn` opens
+   * the system browser and blocks (up to 5 minutes) until the person
+   * finishes there or it times out. */
+  getGoogleSignInStatus: () => invoke<GoogleSignInStatus>("get_google_sign_in_status"),
+  startGoogleSignIn: () => invoke<GoogleSignInStatus>("start_google_sign_in"),
+  googleSignOut: () => invoke<void>("google_sign_out"),
 };
 
 export function errMsg(e: unknown): string {

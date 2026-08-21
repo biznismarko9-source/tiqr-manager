@@ -7,6 +7,7 @@ import {
   CURRENCY_OPTIONS,
   type AppInfo,
   type CsvPreview,
+  type GoogleSignInStatus,
   type Platform,
   type PullsSyncResult,
   type SheetsConnectionStatus,
@@ -96,6 +97,12 @@ export default function Settings() {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<UpdateProgress | null>(null);
+
+  // 2.0.5: lifted up here (rather than fetched independently inside
+  // SheetsConnectionCard too) so a sign-in/sign-out in GoogleSignInCard is
+  // reflected in SheetsConnectionCard immediately, with exactly one fetch of
+  // this status per Settings visit rather than one per card.
+  const [googleStatus, setGoogleStatus] = useState<GoogleSignInStatus | null>(null);
 
   const reload = () => {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
@@ -412,7 +419,8 @@ export default function Settings() {
 
           {section === "integrations" && (
             <div className="grid grid-cols-1 gap-4 lg:max-w-3xl">
-              <SheetsConnectionCard dataSource="pulls" label="Pulls" canSync />
+              <GoogleSignInCard onChange={setGoogleStatus} />
+              <SheetsConnectionCard dataSource="pulls" label="Pulls" canSync googleStatus={googleStatus} />
             </div>
           )}
 
@@ -596,10 +604,115 @@ function PlatformList({
 // source, see sheets_sync.rs). Deliberately only sets up and tests the
 // connection - no row import/export UI yet, see REDESIGN-2.0.2-REPORT.md for
 // why that's a separate, later pass.
+/// 2.0.5: installation-wide "Sign in with Google" - one signed-in account
+/// per copy of the app (not per data source), sitting above the
+/// per-data-source cards below. Purely additive: signing in changes *which*
+/// credential SheetsConnectionCard's Connect/Create/Sync now/Test calls use
+/// underneath (see commands::google_auth::resolve_google_credential's doc
+/// comment) - the shared service account keeps working unchanged for
+/// anyone who never signs in.
+function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus) => void }) {
+  const toast = useToast();
+  const [status, setStatus] = useState<GoogleSignInStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<"in" | "out" | null>(null);
+
+  const reload = () => {
+    setLoading(true);
+    api
+      .getGoogleSignInStatus()
+      .then((s) => {
+        setStatus(s);
+        onChange(s);
+      })
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(reload, []);
+
+  const doSignIn = async () => {
+    setBusy("in");
+    try {
+      const result = await api.startGoogleSignIn();
+      setStatus(result);
+      onChange(result);
+      toast.success(`Signed in as ${result.signedInEmail}`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doSignOut = async () => {
+    setBusy("out");
+    try {
+      await api.googleSignOut();
+      toast.success("Signed out");
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  const signedIn = !!status?.signedInEmail;
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Sign in with Google</h3>
+        {signedIn && <Badge tone="sold">Signed in</Badge>}
+      </div>
+
+      {!status?.signInAvailable ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">Google sign-in isn&apos;t available in this build.</p>
+      ) : signedIn ? (
+        <>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Connecting or creating a sheet below now uses your own Google account (
+            <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.signedInEmail}</span>)
+            instead of the app&apos;s shared account - no separate sharing step needed for a sheet you create.
+          </p>
+          <Button variant="ghost" disabled={busy === "out"} onClick={doSignOut}>
+            {busy === "out" ? <Spinner className="h-4 w-4" /> : null}
+            Sign out
+          </Button>
+        </>
+      ) : (
+        <>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Optional. Sign in with your own Google account so connecting or creating a Pulls sheet below uses your
+            identity instead of the app&apos;s shared one. Opens your own browser - nothing happens inside the app
+            itself, and nobody but you sees your Google password.
+          </p>
+          <Button variant="primary" disabled={busy === "in"} onClick={doSignIn}>
+            {busy === "in" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
+            {busy === "in" ? "Waiting for you to finish in your browser..." : "Sign in with Google"}
+          </Button>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function SheetsConnectionCard({
   dataSource,
   label,
   canSync,
+  googleStatus,
 }: {
   dataSource: string;
   label: string;
@@ -610,6 +723,10 @@ function SheetsConnectionCard({
    * create_pulls_sheet), which is equally Pulls-specific - both flags travel
    * together until a second data source gets its own real backend logic. */
   canSync?: boolean;
+  /** 2.0.5: from GoogleSignInCard via the parent Settings component - see
+   * that state's own comment for why it is fetched once up there rather
+   * than a second time in here. */
+  googleStatus: GoogleSignInStatus | null;
 }) {
   const toast = useToast();
   const [status, setStatus] = useState<SheetsConnectionStatus | null>(null);
@@ -623,6 +740,8 @@ function SheetsConnectionCard({
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<PullsSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+
+  const oauthEmail = googleStatus?.signedInEmail ?? null;
 
   const reload = () => {
     setLoading(true);
@@ -656,17 +775,23 @@ function SheetsConnectionCard({
   };
 
   // 2.0.4: the alternative to pasting an existing sheet's URL above - creates
-  // a brand-new sheet, already shared with `createEmail`, and connects it.
-  // Reuses the same `currency` state as the paste-URL form so there is only
-  // ever one currency selector on this card, whichever path is used.
+  // a brand-new sheet and connects it. 2.0.5: signed in with Google
+  // (oauthEmail set), the new sheet is already the signed-in person's own -
+  // no separate share step, no email field shown, so `email` here is just
+  // `oauthEmail` itself (still a real address, trivially satisfies the
+  // backend's validation, and is ignored server-side on that path anyway -
+  // see create_pulls_sheet_impl's doc comment). Not signed in, this is
+  // `createEmail` from the field below, exactly as in 2.0.4. Reuses the same
+  // `currency` state as the paste-URL form either way, so there is only ever
+  // one currency selector on this card.
   const doCreate = async () => {
     setBusy("create");
     setCreatedUrl(null);
     try {
-      const result = await api.createPullsSheet(createEmail, currency);
+      const result = await api.createPullsSheet(oauthEmail ?? createEmail, currency);
       setCreatedUrl(result.spreadsheetUrl);
       setCreateEmail("");
-      toast.success("New sheet created and shared");
+      toast.success(oauthEmail ? "New sheet created in your Google Drive" : "New sheet created and shared");
       reload();
     } catch (e) {
       toast.error(errMsg(e));
@@ -747,6 +872,7 @@ function SheetsConnectionCard({
             {canSync
               ? "\"Sync now\" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, only its own row IDs."
               : `Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
+            {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
           </p>
 
           <div className="grid grid-cols-1 gap-3">
@@ -809,21 +935,28 @@ function SheetsConnectionCard({
                 <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
               </div>
               <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                Don&apos;t have a sheet yet? The app can create one for you - already set up with the right columns -
-                and share it with your Google account. No Google sign-in window.
+                {oauthEmail
+                  ? "Don't have a sheet yet? The app can create one for you - already set up with the right columns - directly in your own Google Drive."
+                  : "Don't have a sheet yet? The app can create one for you - already set up with the right columns - and share it with your Google account. No Google sign-in window."}
               </p>
               <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-[240px] flex-1">
-                  <Field label="Your email (to share the new sheet with)">
-                    <Input
-                      type="email"
-                      placeholder="you@example.com"
-                      value={createEmail}
-                      onChange={(e) => setCreateEmail(e.target.value)}
-                    />
-                  </Field>
-                </div>
-                <Button variant="secondary" disabled={busy === "create" || !createEmail.trim()} onClick={doCreate}>
+                {!oauthEmail && (
+                  <div className="min-w-[240px] flex-1">
+                    <Field label="Your email (to share the new sheet with)">
+                      <Input
+                        type="email"
+                        placeholder="you@example.com"
+                        value={createEmail}
+                        onChange={(e) => setCreateEmail(e.target.value)}
+                      />
+                    </Field>
+                  </div>
+                )}
+                <Button
+                  variant="secondary"
+                  disabled={busy === "create" || (!oauthEmail && !createEmail.trim())}
+                  onClick={doCreate}
+                >
                   {busy === "create" ? <Spinner className="h-4 w-4" /> : <IconPlus className="h-4 w-4" />}
                   {busy === "create" ? "Creating..." : "Create a new sheet for me"}
                 </Button>
@@ -885,12 +1018,20 @@ function SheetsConnectionCard({
             </div>
           )}
 
-          {status?.serviceAccountEmail && (
+          {oauthEmail ? (
             <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
-              Share the sheet with{" "}
-              <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
-              (Editor access) so the app can read and write it.
+              Pasting an existing sheet&apos;s URL above needs that sheet to already be yours or shared with{" "}
+              <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> (Editor
+              access) - the same as sharing with any other collaborator in Google Sheets.
             </p>
+          ) : (
+            status?.serviceAccountEmail && (
+              <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
+                Share the sheet with{" "}
+                <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
+                (Editor access) so the app can read and write it.
+              </p>
+            )
           )}
 
           {status?.lastSyncedAt && (

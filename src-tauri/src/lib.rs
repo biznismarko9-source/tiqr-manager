@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod finance;
+mod google_oauth;
 mod google_sheets;
 mod models;
 mod money;
@@ -17,6 +18,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 2.0.5: opens the system browser for "Sign in with Google" - see
+        // google_oauth.rs's module doc comment.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
@@ -94,6 +98,9 @@ pub fn run() {
             commands::sheets_sync::test_sheets_connection,
             commands::pulls_sheet_sync::sync_pulls,
             commands::pulls_sheet_sync::create_pulls_sheet,
+            commands::google_auth::get_google_sign_in_status,
+            commands::google_auth::start_google_sign_in,
+            commands::google_auth::google_sign_out,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

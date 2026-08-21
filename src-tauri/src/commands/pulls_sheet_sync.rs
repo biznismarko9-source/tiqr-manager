@@ -612,15 +612,18 @@ fn apply_pull_rows(
 // ---------------------------------------------------------------------------
 
 fn sync_pulls_impl(conn: &Connection) -> AppResult<PullsSyncResult> {
-    let account = google_sheets::embedded_service_account().ok_or_else(|| {
-        AppError::External("Google Sheets sync isn't available in this build (no service account configured).".to_string())
-    })?;
     let connection = load_connection(conn, "pulls")?
         .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Pulls yet - connect one in Settings first.".to_string()))?;
+    // 2.0.5: the signed-in person's own OAuth token when there is one, the
+    // shared service account otherwise - see
+    // commands::google_auth::resolve_google_credential's doc comment. Either
+    // way this is just a bearer token from here on; get_values/update_values
+    // below do not need to know or care which kind it is.
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
 
-    let token = google_sheets::fetch_access_token(&account, google_sheets::SHEETS_SCOPE)?;
     let range = format!("{}!A1:Z", connection.sheet_tab);
-    let value_range = google_sheets::get_values(&token, &connection.spreadsheet_id, &range)?;
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
     if value_range.values.is_empty() {
         return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
     }
@@ -631,7 +634,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<PullsSyncResult> {
     let letter = column_index_to_a1(marker_col_index);
     if !marker_exists {
         let header_range = format!("{}!{letter}1", connection.sheet_tab);
-        google_sheets::update_values(&token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
+        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
     let (mut result, marker_writes) = apply_pull_rows(conn, &headers, data_rows, &connection.currency, marker_col_index)?;
@@ -639,7 +642,7 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<PullsSyncResult> {
     for (row_idx, marker_value) in marker_writes {
         let sheet_row_number = (row_idx + 2) as i64;
         let cell_range = format!("{}!{letter}{sheet_row_number}", connection.sheet_tab);
-        if let Err(e) = google_sheets::update_values(&token, &connection.spreadsheet_id, &cell_range, &[vec![marker_value]]) {
+        if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![marker_value]]) {
             result.errors.push(SheetSyncIssue {
                 row_number: sheet_row_number,
                 message: format!("saved in the app, but could not write its ID back to the sheet: {e}"),
@@ -661,15 +664,17 @@ pub fn sync_pulls(state: State<AppState>) -> AppResult<PullsSyncResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-create-and-share (2.0.4) - "Create a new sheet for me", the
-// alternative to pasting an existing sheet's URL, built for marko's original
-// ask: one click, a brand-new Pulls sheet appears already shared with him,
-// no Google sign-in window (see google_sheets.rs's `SHEETS_AND_DRIVE_SCOPE`
-// doc comment for the full design rationale versus real OAuth). Fully
-// additive: the paste-a-URL flow (commands/sheets_sync.rs::
-// set_sheets_connection) keeps working exactly as before, unchanged, for
-// marko's own historical sheet - this is a second way to arrive at the same
-// connected state, not a replacement.
+// Auto-create-and-share (2.0.4, OAuth-aware since 2.0.5) - "Create a new
+// sheet for me", the alternative to pasting an existing sheet's URL, built
+// for marko's original ask: one click, a brand-new Pulls sheet appears
+// already ready to use, no Google sign-in window forced on anyone who does
+// not want one (see google_sheets.rs's `SHEETS_AND_DRIVE_SCOPE` doc comment
+// for the original service-account-only design). Whether the new sheet
+// needs an explicit *share* step at all now depends on which credential
+// created it - see `create_pulls_sheet_impl`'s doc comment. Fully additive
+// either way: the paste-a-URL flow (commands/sheets_sync.rs::
+// set_sheets_connection) keeps working exactly as before, unchanged - this
+// is one more way to arrive at the same connected state, not a replacement.
 // ---------------------------------------------------------------------------
 
 /// The header row written into a freshly-created sheet - exactly the columns
@@ -725,29 +730,39 @@ fn validate_currency(currency: &str) -> AppResult<String> {
     Ok(upper)
 }
 
-/// Creates a brand-new Google Sheet for Pulls, shares it with `email`,
-/// writes `PULLS_SHEET_HEADERS` as its header row, and connects it - all in
-/// one call, with no Google sign-in window at any point (the same service
-/// account every other connection in this app already uses). `email` and
-/// `currency` are fully validated before the first network call - see
-/// `validate_share_email`/`validate_currency`'s doc comments for why that
-/// ordering matters here specifically.
+/// Creates a brand-new Google Sheet for Pulls, writes `PULLS_SHEET_HEADERS`
+/// as its header row, and connects it - all in one call, with no Google
+/// sign-in window at any point. `email` and `currency` are fully validated
+/// before the first network call - see `validate_share_email`/
+/// `validate_currency`'s doc comments for why that ordering matters here
+/// specifically.
+///
+/// 2.0.5: uses the signed-in person's own OAuth token when there is one, the
+/// shared service account otherwise (see
+/// commands::google_auth::resolve_google_credential's doc comment) - but
+/// `email` is only ever *used* on the service-account path. Signed in via
+/// OAuth, the new sheet already belongs to the signed-in person the moment
+/// Sheets creates it, so there is no separate *share* step to run at all;
+/// `email` is still validated regardless of which path runs (simpler than
+/// making validation itself conditional, and it costs nothing - the
+/// frontend never shows that field, or asks for it, once someone is signed
+/// in - see Settings.tsx).
 fn create_pulls_sheet_impl(conn: &Connection, email: &str, currency: &str) -> AppResult<CreatedSheetResult> {
     let email = validate_share_email(email)?;
     let currency_upper = validate_currency(currency)?;
 
-    let account = google_sheets::embedded_service_account().ok_or_else(|| {
-        AppError::External("Google Sheets sync isn't available in this build (no service account configured).".to_string())
-    })?;
-    let token = google_sheets::fetch_access_token(&account, google_sheets::SHEETS_AND_DRIVE_SCOPE)?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, true)?;
+    let token = credential.access_token();
 
-    let created = google_sheets::create_spreadsheet(&token, NEW_SHEET_TITLE, NEW_SHEET_TAB_NAME)?;
+    let created = google_sheets::create_spreadsheet(token, NEW_SHEET_TITLE, NEW_SHEET_TAB_NAME)?;
 
     let header_row: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
     let header_range = format!("{NEW_SHEET_TAB_NAME}!A1");
-    google_sheets::update_values(&token, &created.spreadsheet_id, &header_range, &[header_row])?;
+    google_sheets::update_values(token, &created.spreadsheet_id, &header_range, &[header_row])?;
 
-    google_sheets::share_file(&token, &created.spreadsheet_id, &email)?;
+    if !credential.is_oauth() {
+        google_sheets::share_file(token, &created.spreadsheet_id, &email)?;
+    }
 
     let connection =
         set_sheets_connection_impl(conn, "pulls", &created.spreadsheet_id, NEW_SHEET_TAB_NAME, &currency_upper)?;

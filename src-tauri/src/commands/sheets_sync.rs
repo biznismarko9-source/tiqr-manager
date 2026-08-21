@@ -40,7 +40,13 @@ pub(crate) fn last_synced_key(data_source: &str) -> String {
     format!("sheets_last_synced:{data_source}")
 }
 
-fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
+// `pub(crate)` on this trio since 2.0.5: commands::google_auth reuses the
+// same generic app_settings key/value store for the signed-in Google
+// account (a different concept entirely - one per installation, not one per
+// data source - but the same underlying table and the same tested
+// read/write/delete behavior, not worth a second copy of three SQL
+// statements).
+pub(crate) fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
     Ok(conn
         .query_row("SELECT value FROM app_settings WHERE key = ?1", params![key], |r| r.get(0))
         .optional()?)
@@ -55,7 +61,7 @@ pub(crate) fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResul
     Ok(())
 }
 
-fn delete_setting(conn: &Connection, key: &str) -> AppResult<()> {
+pub(crate) fn delete_setting(conn: &Connection, key: &str) -> AppResult<()> {
     conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
     Ok(())
 }
@@ -174,23 +180,23 @@ pub fn clear_sheets_connection(state: State<AppState>, data_source: String) -> A
 }
 
 fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResult<SheetsConnectionTestResult> {
-    let Some(account) = google_sheets::embedded_service_account() else {
-        return Ok(SheetsConnectionTestResult {
-            ok: false,
-            message: "Google Sheets sync isn't available in this build (no service account configured)."
-                .to_string(),
-        });
-    };
     let Some(connection) = load_connection(conn, data_source)? else {
         return Ok(SheetsConnectionTestResult { ok: false, message: "No spreadsheet is connected yet.".to_string() });
     };
 
-    let token = match google_sheets::fetch_access_token(&account, google_sheets::SHEETS_SCOPE) {
-        Ok(t) => t,
+    // 2.0.5: the signed-in person's own OAuth token when there is one, the
+    // shared service account otherwise - see
+    // commands::google_auth::resolve_google_credential's doc comment. Same
+    // "never propagate AppError, always a readable ok:false" convention this
+    // function already used for embedded_service_account/fetch_access_token
+    // before this credential resolution moved behind that one shared call.
+    let credential = match crate::commands::google_auth::resolve_google_credential(conn, false) {
+        Ok(c) => c,
         Err(e) => return Ok(SheetsConnectionTestResult { ok: false, message: e.to_string() }),
     };
+    let token = credential.access_token();
     let range = format!("{}!A1:A1", connection.sheet_tab);
-    match google_sheets::get_values(&token, &connection.spreadsheet_id, &range) {
+    match google_sheets::get_values(token, &connection.spreadsheet_id, &range) {
         Ok(_) => Ok(SheetsConnectionTestResult {
             ok: true,
             message: format!("Connected - the app can read \"{}\".", connection.sheet_tab),
