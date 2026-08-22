@@ -20,6 +20,9 @@ import type {
   Pull,
   PullEditInput,
   PullInput,
+  PullReceived,
+  PullReceivedEditInput,
+  PullReceivedInput,
   RestoreOutcome,
   Sale,
   SaleBatchInput,
@@ -86,6 +89,16 @@ export const api = {
   deletePull: (id: number) => invoke<void>("delete_pull", { id }),
   /** Dedicated quick-action for the Pulls list's inline "Done" checkbox - see set_pull_transfer_done_impl (pulls.rs). */
   setPullTransferDone: (id: number, done: boolean) => invoke<Pull>("set_pull_transfer_done", { id, done }),
+
+  // Pulls received (2.0.17) - the mirror direction: pulls marko TOOK from
+  // other people, instead of pulls he did FOR them. Can be typed manually
+  // and/or auto-linked from Orders & Sales sheet sync ("pull" = "yes") - see
+  // src-tauri/migrations/011_pulls_received.sql.
+  listPullsReceived: (params: { search?: string } = {}) => invoke<PullReceived[]>("list_pulls_received", params),
+  getPullReceived: (id: number) => invoke<PullReceived>("get_pull_received", { id }),
+  createPullReceived: (input: PullReceivedInput) => invoke<PullReceived>("create_pull_received", { input }),
+  updatePullReceived: (id: number, input: PullReceivedEditInput) => invoke<PullReceived>("update_pull_received", { id, input }),
+  deletePullReceived: (id: number) => invoke<void>("delete_pull_received", { id }),
 
   // Sales
   listSales: (params: {

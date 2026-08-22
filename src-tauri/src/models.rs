@@ -661,6 +661,86 @@ pub struct PullEditInput {
 }
 
 // ---------------------------------------------------------------------------
+// Pull received (2.0.17): the mirror direction of Pull above - someone ELSE
+// pulls tickets FOR marko (marko pays them a fee) instead of marko pulling
+// for someone else. See migrations/011_pulls_received.sql for the full
+// schema rationale, and commands/pulls_received.rs for the CRUD logic.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PullReceived {
+    pub id: i64,
+    pub code: String,
+    pub puller_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    /// marko's fee to the puller - informational only, never summed into
+    /// FinanceSummary/CashflowSummary/Dashboard anywhere (marko confirmed
+    /// via AskUserQuestion - the same standalone-from-finance choice
+    /// `Pull.price_cents` already made for the other direction).
+    pub amount_cents: i64,
+    pub currency: String,
+    pub more_info: Option<String>,
+    /// Which Order these pulled tickets became, if any. Nullable: marko
+    /// confirmed (via AskUserQuestion) a received pull must also work fully
+    /// standalone, with no order to link to at all.
+    pub order_id: Option<i64>,
+    /// Convenience join of `orders.code` for display, e.g. "ORD-000042" -
+    /// `None` whenever `order_id` is `None`. Same LEFT JOIN pattern as
+    /// `Pull.platform_name`.
+    pub order_code: Option<String>,
+    /// `"manual"` (typed directly in the app) or `"sheet_sync"` (auto-created
+    /// by Orders & Sales sheet sync when a synced row's `pull` column says
+    /// "yes" - see commands/orders_sheet_sync.rs::maybe_link_pull_received).
+    /// Not user-editable after creation - see `PullReceivedEditInput`'s doc
+    /// comment.
+    pub source: String,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for `create_pull_received`. `source` deliberately isn't here as
+/// free user input - see `create_pull_received_impl`/
+/// `create_pull_received_with_source` in commands/pulls_received.rs for how
+/// each creation path (the manual command vs. sheet sync) supplies its own
+/// fixed `source` value. `order_id` IS user-settable here - an optional
+/// manual link to an existing order.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PullReceivedInput {
+    pub puller_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub more_info: Option<String>,
+    pub order_id: Option<i64>,
+}
+
+/// Input for `update_pull_received` - the full edit form. Same fields as
+/// `PullReceivedInput` (including `order_id`, so marko can link or unlink a
+/// standalone row to/from an order later); deliberately does NOT include
+/// `source` - whether a row started out manual or sheet-sync-created is
+/// provenance, not something an edit form should be able to rewrite, same
+/// as `is_demo` never appearing in any *EditInput* in this codebase.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PullReceivedEditInput {
+    pub puller_name: String,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub quantity: i64,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub more_info: Option<String>,
+    pub order_id: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
 // Google Sheets sync (Settings -> Integrations, 2.0.2+). See
 // google_sheets.rs and commands/sheets_sync.rs for the full mechanism.
 // Deliberately data-source-agnostic (a plain `data_source` string, e.g.

@@ -1,6 +1,16 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { Platform, Pull, PullEditInput, PullInput } from "../lib/types";
+import type {
+  OrderRecord,
+  Platform,
+  Pull,
+  PullEditInput,
+  PullInput,
+  PullReceived,
+  PullReceivedEditInput,
+  PullReceivedInput,
+} from "../lib/types";
 import {
   centsToDecimalString,
   decimalStringToCents,
@@ -10,6 +20,7 @@ import {
   todayIso,
 } from "../lib/format";
 import {
+  Badge,
   Button,
   CHECKBOX_CLASS,
   ConfirmDialog,
@@ -24,27 +35,33 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconAlertTriangle, IconPlus, IconSearch, IconUsers } from "../components/icons";
+import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconUsers } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
 // Same safety-cap convention as Orders.tsx/Tickets.tsx/Sales.tsx - mirrors
-// the backend's own LIST_CAP (commands/pulls.rs) so the banner below only
-// ever shows once the backend has actually truncated the results.
+// the backend's own LIST_CAP (commands/pulls.rs, commands/pulls_received.rs)
+// so the banner below only ever shows once the backend has actually
+// truncated the results.
 const LIST_CAP = 5000;
 
 // Session-only "remember the last search" convention, same as Orders.tsx's
-// lastOrdersSearch / Sales.tsx's lastFilters - resets on app restart.
+// lastOrdersSearch / Sales.tsx's lastFilters - resets on app restart. Each
+// category keeps its own remembered search, since they're two unrelated lists.
 let lastPullsSearch: string | null = null;
+let lastPullsReceivedSearch: string | null = null;
 
 // 1.9.8: how many days before the event the "transfer this!" warning starts
 // showing (and keeps showing every day, escalating once the event date
 // itself has passed) - replaces the old manual "Transfer deadline" field
-// marko had to fill in by hand. Local to this file only.
+// marko had to fill in by hand. Local to this file only. Given-pulls only -
+// see this file's module doc comment for why received pulls have no
+// equivalent "transfer" concept.
 const WARNING_WINDOW_DAYS = 3;
 
 type TransferFilter = "all" | "pending" | "done";
+type PullCategory = "given" | "received";
 
 /** Whole days between today and `dateIso` (positive = in the future,
  * negative = already passed). Plain calendar-day difference, not
@@ -62,12 +79,78 @@ function warningLabel(daysLeft: number): string {
   return `${Math.abs(daysLeft)}d overdue`;
 }
 
-/** Pull (1.9.7): tickets bought on someone else's behalf for a fee. Unlike
- * Orders/Sales, a pull has no child entities (no tickets are generated) so
- * there's no separate Detail page - this single list page owns both create
- * and edit via one shared PullFormModal below. See
- * src-tauri/migrations/005_pulls.sql for the full feature rationale. */
+/** Pulls (1.9.7, category toggle added 2.0.17): a toggle between pulls marko
+ * did FOR other people ("Given" - the original feature, unchanged) and pulls
+ * marko TOOK FROM other people ("Received" - 2.0.17). The two directions
+ * share almost no fields and no lifecycle (Given pulls never become marko's
+ * own inventory and track a "transfer done" deadline; Received pulls DO
+ * become his own inventory - see PullReceived's shape in types.ts - can
+ * optionally link to the resulting Order, and can be auto-created by Orders
+ * & Sales sheet sync whenever a synced row's "pull" column says "yes"), so
+ * this is two entirely separate lists/forms/tables under one shared toggle,
+ * rather than one table with a filter - marko's own 2.0.17 request. */
 export default function Pulls() {
+  const [category, setCategory] = useState<PullCategory>("given");
+
+  return (
+    <div>
+      <PageHeader
+        title="Pulls"
+        subtitle={
+          category === "given"
+            ? "Tickets bought on someone else's behalf for a fee - queue, pay, transfer, get paid."
+            : "Tickets someone else pulled for you - who pulled them, what you paid, and which order they became."
+        }
+        actions={
+          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5">
+            {(["given", "received"] as const).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCategory(c)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  category === c
+                    ? "bg-brand-600 text-white"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+                }`}
+              >
+                {c === "given" ? "Given" : "Received"}
+              </button>
+            ))}
+          </div>
+        }
+      />
+      {category === "given" ? <GivenPulls /> : <ReceivedPulls />}
+    </div>
+  );
+}
+
+/** Same lightweight section-grouping helper as Orders.tsx's own local
+ * FormGroup - kept local here too rather than promoted to ui.tsx, same
+ * reasoning as that file's comment (still only a handful of forms in the app
+ * want this kind of sectioning). Shared by both PullFormModal and
+ * PullReceivedFormModal below. */
+function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
+      {title && (
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
+      )}
+      <div className="grid grid-cols-2 gap-4">{children}</div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Given pulls (1.9.7) - the original feature, unchanged by 2.0.17 beyond
+// being moved into its own component and gaining a "New Pull" button next to
+// its search/filter row instead of in a page-level header (now shared with
+// Received pulls above). A pull has no child entities (no tickets are
+// generated) so there's no separate Detail page - this owns both create and
+// edit via one shared PullFormModal below.
+// ---------------------------------------------------------------------------
+
+function GivenPulls() {
   const toast = useToast();
   const [pulls, setPulls] = useState<Pull[] | null>(null);
   const [search, setSearch] = useState(lastPullsSearch ?? "");
@@ -126,34 +209,29 @@ export default function Pulls() {
   };
 
   return (
-    <div>
-      <PageHeader
-        title="Pulls"
-        subtitle="Tickets bought on someone else's behalf for a fee - queue, pay, transfer, get paid."
-        actions={
-          <Button variant="primary" onClick={() => setModalPull(null)}>
-            <IconPlus className="h-4 w-4" /> New Pull
-          </Button>
-        }
-      />
-
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative max-w-xs flex-1">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-          <Input
-            placeholder="Search pulls..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+    <>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative max-w-xs flex-1">
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <Input
+              placeholder="Search pulls..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <div className="w-48">
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
+              <option value="all">All pulls</option>
+              <option value="pending">Not transferred yet</option>
+              <option value="done">Transferred</option>
+            </Select>
+          </div>
         </div>
-        <div className="w-48">
-          <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
-            <option value="all">All pulls</option>
-            <option value="pending">Not transferred yet</option>
-            <option value="done">Transferred</option>
-          </Select>
-        </div>
+        <Button variant="primary" onClick={() => setModalPull(null)}>
+          <IconPlus className="h-4 w-4" /> New Pull
+        </Button>
       </div>
 
       {pulls && pulls.length >= LIST_CAP && (
@@ -335,22 +413,7 @@ export default function Pulls() {
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
       />
-    </div>
-  );
-}
-
-/** Same lightweight section-grouping helper as Orders.tsx's own local
- * FormGroup - kept local here too rather than promoted to ui.tsx, same
- * reasoning as that file's comment (still only two forms in the app want
- * this kind of sectioning). */
-function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
-      {title && (
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
-      )}
-      <div className="grid grid-cols-2 gap-4">{children}</div>
-    </div>
+    </>
   );
 }
 
@@ -590,6 +653,517 @@ function PullFormModal({
         </Button>
         <Button variant="primary" onClick={submit} disabled={saving}>
           {saving ? "Saving..." : editing ? "Save changes" : "Create pull"}
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Received pulls (2.0.17) - the mirror direction: someone ELSE pulls tickets
+// FOR marko, marko pays them a fee, and (unlike Given pulls) the tickets DO
+// become marko's own inventory - so a row here can optionally link to the
+// resulting Order. Also auto-created by Orders & Sales sheet sync whenever a
+// synced row's "pull" column says "yes" (source shows as "Synced" below) -
+// see src-tauri/commands/orders_sheet_sync.rs::maybe_link_pull_received.
+// Structurally mirrors GivenPulls/PullFormModal above (list + one shared
+// create/edit modal, no separate Detail page), minus the concepts that don't
+// carry over: no seats/platform (not tracked for this direction), no
+// "transfer done" warning (nothing is being transferred BY marko here).
+// ---------------------------------------------------------------------------
+
+function ReceivedPulls() {
+  const toast = useToast();
+  const [pulls, setPulls] = useState<PullReceived[] | null>(null);
+  const [search, setSearch] = useState(lastPullsReceivedSearch ?? "");
+  // undefined = modal closed, null = create mode, a PullReceived = edit mode.
+  const [modalPull, setModalPull] = useState<PullReceived | null | undefined>(undefined);
+  const [deleteTarget, setDeleteTarget] = useState<PullReceived | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    lastPullsReceivedSearch = search;
+  }, [search]);
+
+  const load = (q?: string) => {
+    api
+      .listPullsReceived({ search: q || undefined })
+      .then(setPulls)
+      .catch((e) => toast.error(errMsg(e)));
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => load(search), 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.deletePullReceived(deleteTarget.id);
+      toast.success(`Pull ${deleteTarget.code} deleted`);
+      setDeleteTarget(null);
+      setModalPull(undefined);
+      load(search);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="relative max-w-xs flex-1">
+          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+          <Input
+            placeholder="Search received pulls..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <Button variant="primary" onClick={() => setModalPull(null)}>
+          <IconPlus className="h-4 w-4" /> New received pull
+        </Button>
+      </div>
+
+      {pulls && pulls.length >= LIST_CAP && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+          Showing the most recent {LIST_CAP.toLocaleString()} received pulls that match your search. Narrow the
+          search to see the rest.
+        </div>
+      )}
+
+      {pulls === null ? (
+        <LoadingBlock />
+      ) : pulls.length === 0 ? (
+        <EmptyState
+          icon={<IconLink className="h-8 w-8" />}
+          title="No received pulls yet"
+          description="Record it when someone else pulls tickets for you - manually, or automatically once your Orders & Sales sheet syncs a row with Pull = yes."
+          action={
+            <Button variant="primary" onClick={() => setModalPull(null)}>
+              <IconPlus className="h-4 w-4" /> New received pull
+            </Button>
+          }
+        />
+      ) : (
+        // Same table-fixed + colgroup + guarded-row-click convention as
+        // GivenPulls' own table above. The Order cell contains a real link
+        // (react-router <Link>, not just a <button>/<input>) so the row-click
+        // guard here also checks for "a", unlike GivenPulls' table which has
+        // no links inside its rows.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full table-fixed border-collapse">
+            <colgroup>
+              <col className="w-[92px]" />
+              <col className="w-[150px]" />
+              <col />
+              <col className="w-[84px]" />
+              <col className="w-8" />
+              <col className="w-[92px]" />
+              <col className="w-[170px]" />
+              <col className="w-[220px]" />
+            </colgroup>
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <tr>
+                <th className="th-c">Pull</th>
+                <th className="th-c">From</th>
+                <th className="th-c">Event</th>
+                <th className="th-c">Date</th>
+                <th className="th-c text-right">Ks</th>
+                <th className="th-c text-right">Fee</th>
+                <th className="th-c">Order</th>
+                <th className="th-c">More info</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {pulls.map((p) => (
+                <tr
+                  key={p.id}
+                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest("input, button, a")) return;
+                    setModalPull(p);
+                  }}
+                >
+                  <td
+                    className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
+                    title={`Added ${formatDate(p.createdAt)}`}
+                  >
+                    {p.code}
+                  </td>
+                  <td className="td-c truncate align-top" title={p.pullerName}>
+                    {p.pullerName}
+                  </td>
+                  <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
+                    {p.eventName}
+                  </td>
+                  <td className="td-c truncate align-top whitespace-nowrap">
+                    {p.eventDate ? formatDate(p.eventDate) : "-"}
+                  </td>
+                  <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
+                  <td className="td-c text-right align-top tabular-nums">{formatMoney(p.amountCents, p.currency)}</td>
+                  <td className="td-c align-top">
+                    {p.orderId && p.orderCode ? (
+                      <div className="flex items-center gap-1.5">
+                        <Link
+                          to={`/orders/${p.orderId}`}
+                          className="truncate font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                          title={`Open order ${p.orderCode}`}
+                        >
+                          {p.orderCode}
+                        </Link>
+                        {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500">Standalone</span>
+                    )}
+                  </td>
+                  <td
+                    className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                    title={p.moreInfo ?? undefined}
+                  >
+                    {p.moreInfo || "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <PullReceivedFormModal
+        open={modalPull !== undefined}
+        pull={modalPull ?? null}
+        onClose={() => setModalPull(undefined)}
+        onSaved={() => {
+          setModalPull(undefined);
+          load(search);
+        }}
+        onRequestDelete={(p) => setDeleteTarget(p)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete this received pull?"
+        message={
+          <>
+            This removes <strong>{deleteTarget?.code}</strong> ({deleteTarget?.pullerName} - {deleteTarget?.eventName}
+            ) permanently. This can't be undone{deleteTarget?.orderId ? " (the linked order itself is not affected)" : ""}.
+          </>
+        }
+        confirmLabel="Delete"
+        danger
+        busy={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
+    </>
+  );
+}
+
+/** Search-as-you-type picker for optionally linking a received pull to an
+ * existing Order. Deliberately not LookupSelect (components/LookupSelect.tsx)
+ * - that component is a plain <select> of a short, fully-loaded list with an
+ * inline "+ New" affordance, neither of which fits here: Orders can run into
+ * the thousands (a <select> with every one of them would be unusable), and
+ * "+ New" makes no sense for linking to an order that must already exist. */
+function OrderLinkPicker({
+  orderId,
+  orderCode,
+  onChange,
+}: {
+  orderId: number | null;
+  orderCode: string | null;
+  onChange: (order: { id: number; code: string } | null) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<OrderRecord[]>([]);
+  const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    if (!open || !query.trim()) {
+      setResults([]);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(() => {
+      api
+        .listOrders({ search: query.trim() })
+        .then((rows) => setResults(rows.slice(0, 20)))
+        .catch(() => setResults([]))
+        .finally(() => setSearching(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, open]);
+
+  if (orderId && orderCode && !open) {
+    return (
+      <div>
+        <span className="label mb-1 block">Linked order</span>
+        <div className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+          <IconLink className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" />
+          <Link
+            to={`/orders/${orderId}`}
+            className="flex-1 truncate text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline"
+          >
+            {orderCode}
+          </Link>
+          <button
+            type="button"
+            className="text-xs font-medium text-slate-400 hover:text-red-600 dark:text-slate-500 dark:hover:text-red-400"
+            onClick={() => onChange(null)}
+          >
+            Unlink
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <span className="label mb-1 block">Linked order</span>
+      <Input
+        placeholder="Search by order code or event..."
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+      />
+      {open && query.trim() && (
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg">
+          {searching ? (
+            <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">Searching...</p>
+          ) : results.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">No matching orders</p>
+          ) : (
+            results.map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                className="block w-full truncate px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange({ id: o.id, code: o.code });
+                  setQuery("");
+                  setOpen(false);
+                }}
+              >
+                <span className="font-medium text-slate-800 dark:text-slate-200">{o.code}</span>
+                <span className="ml-2 text-slate-400 dark:text-slate-500">
+                  {o.eventName} · {formatDate(o.purchaseDate)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+        Optional - link this to the order these tickets became, or leave it standalone.
+      </p>
+    </div>
+  );
+}
+
+function PullReceivedFormModal({
+  open,
+  pull,
+  onClose,
+  onSaved,
+  onRequestDelete,
+}: {
+  open: boolean;
+  pull: PullReceived | null;
+  onClose: () => void;
+  onSaved: (pull: PullReceived) => void;
+  onRequestDelete: (pull: PullReceived) => void;
+}) {
+  const toast = useToast();
+  const editing = pull !== null;
+
+  const [pullerName, setPullerName] = useState("");
+  const [eventName, setEventName] = useState("");
+  const [eventDate, setEventDate] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [amount, setAmount] = useState("");
+  const [currency, setCurrency] = useState("EUR");
+  const [customCurrency, setCustomCurrency] = useState(false);
+  const [moreInfo, setMoreInfo] = useState("");
+  const [linkedOrder, setLinkedOrder] = useState<{ id: number; code: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (pull) {
+      setPullerName(pull.pullerName);
+      setEventName(pull.eventName);
+      setEventDate(pull.eventDate ?? "");
+      setQuantity(String(pull.quantity));
+      setAmount(centsToDecimalString(pull.amountCents));
+      setCurrency(pull.currency);
+      setCustomCurrency(!CURRENCIES.includes(pull.currency));
+      setMoreInfo(pull.moreInfo ?? "");
+      setLinkedOrder(pull.orderId && pull.orderCode ? { id: pull.orderId, code: pull.orderCode } : null);
+    } else {
+      setPullerName("");
+      setEventName("");
+      setEventDate("");
+      setQuantity("1");
+      setAmount("");
+      setCurrency("EUR");
+      setCustomCurrency(false);
+      setMoreInfo("");
+      setLinkedOrder(null);
+    }
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, pull]);
+
+  const submit = async () => {
+    setError(null);
+    const q = parseInt(quantity, 10);
+    const amountCents = decimalStringToCents(amount);
+
+    if (!pullerName.trim()) return setError("Puller name is required");
+    if (!eventName.trim()) return setError("Event name is required");
+    if (!Number.isFinite(q) || q < 1) return setError("Quantity must be at least 1");
+    if (amountCents === null) return setError("Fee is not a valid amount");
+    if (!currency.trim()) return setError("Currency is required");
+
+    setSaving(true);
+    try {
+      if (editing && pull) {
+        const input: PullReceivedEditInput = {
+          pullerName: pullerName.trim(),
+          eventName: eventName.trim(),
+          eventDate: eventDate || null,
+          quantity: q,
+          amountCents,
+          currency,
+          moreInfo: moreInfo.trim() || null,
+          orderId: linkedOrder?.id ?? null,
+        };
+        const updated = await api.updatePullReceived(pull.id, input);
+        toast.success(`Pull ${updated.code} updated`);
+        onSaved(updated);
+      } else {
+        const input: PullReceivedInput = {
+          pullerName: pullerName.trim(),
+          eventName: eventName.trim(),
+          eventDate: eventDate || null,
+          quantity: q,
+          amountCents,
+          currency,
+          moreInfo: moreInfo.trim() || null,
+          orderId: linkedOrder?.id ?? null,
+        };
+        const created = await api.createPullReceived(input);
+        toast.success(`Pull ${created.code} created`);
+        onSaved(created);
+      }
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title={editing ? `Edit ${pull?.code}` : "New received pull"} width="max-w-2xl">
+      <div className="flex flex-col gap-4">
+        {editing && pull?.source === "sheet_sync" && (
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-400">
+            <IconLink className="h-3.5 w-3.5 shrink-0" />
+            Auto-linked from your Orders & Sales sheet sync. You can still edit anything below by hand.
+          </div>
+        )}
+
+        <FormGroup title="Pull">
+          <Field label="From (who pulled for you)" required hint="Who pulled these tickets for you">
+            <Input value={pullerName} onChange={(e) => setPullerName(e.target.value)} />
+          </Field>
+          <Field label="Quantity" required>
+            <Input type="number" min={1} step={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+          </Field>
+          <Field label="Event name" required hint="Free text - not linked to your Events list">
+            <Input value={eventName} onChange={(e) => setEventName(e.target.value)} />
+          </Field>
+          <Field label="Event date">
+            <Input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
+          </Field>
+        </FormGroup>
+
+        <FormGroup title="Fee & link">
+          <Field label={`Fee you paid (${currency})`} required hint="What you paid the puller - not the ticket price">
+            <Input inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </Field>
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="label mb-1">Currency</span>
+              <button
+                type="button"
+                className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                onClick={() => setCustomCurrency((c) => !c)}
+              >
+                {customCurrency ? "Choose from list" : "Other..."}
+              </button>
+            </div>
+            {customCurrency ? (
+              <Input
+                autoFocus
+                placeholder="e.g. AED"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+              />
+            ) : (
+              <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+          <div className="col-span-2">
+            <Field label="More info" hint="Optional">
+              <Textarea rows={2} value={moreInfo} onChange={(e) => setMoreInfo(e.target.value)} />
+            </Field>
+          </div>
+          <div className="col-span-2">
+            <OrderLinkPicker orderId={linkedOrder?.id ?? null} orderCode={linkedOrder?.code ?? null} onChange={setLinkedOrder} />
+          </div>
+        </FormGroup>
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      <ModalFooter>
+        {editing && pull && (
+          <Button variant="danger" className="mr-auto" onClick={() => onRequestDelete(pull)} disabled={saving}>
+            Delete
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={submit} disabled={saving}>
+          {saving ? "Saving..." : editing ? "Save changes" : "Create received pull"}
         </Button>
       </ModalFooter>
     </Modal>

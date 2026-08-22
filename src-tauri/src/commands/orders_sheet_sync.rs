@@ -73,7 +73,7 @@
 //! | `Payout status` | `Sale.payment_status` - blank means `pending` (same default `create_sales_batch_impl` itself uses); `pending`/`paid` map directly; anything else (including `refunded` - a sale can't be created as already refunded, same rule `validate_new_payment_status` already enforces) is a row error |
 //! | (a date column - see `find_col` aliases in `apply_sales_rows`) | `Sale.sale_date`, required whenever `Payout Per Ticket` is present. marko's own past description of this column was ambiguous (see REDESIGN-2.0.10-REPORT.md) - deliberately NOT defaulted to today's date or the order's own purchase date, since either could silently mis-date months of real sales history. A sheet where none of the tried aliases match fails every such row with one clear, specific message instead |
 //! | `paid by` | `Sale.buyer_reference` |
-//! | `pull`, `who pulled`, `how much pull` | folded into `Sale.notes` as plain text (marko's own choice - keeps the standalone Pulls feature exactly as standalone as migrations/005_pulls.sql originally decided; no real link to a `pulls` row is ever created) |
+//! | `pull`, `who pulled`, `how much pull` | 2.0.17: when `pull` trims+lowercases to exactly "yes" AND `who pulled` isn't blank, creates one linked `pulls_received` row instead (`who pulled` -> `puller_name`, `how much pull` -> `amount_cents`, defaulting to 0 if blank/unparseable - see `maybe_link_pull_received`). Idempotent per order, same creation-only spirit as the rest of this module: a second sync of the same order (e.g. partial-fulfillment, see below) never creates a second linked row. Replaces the pre-2.0.17 behaviour of folding these 3 columns into `Sale.notes` as plain text entirely - marko's own request, so this data shows up as a real, browsable record instead ("aby si mal o tom dobry prehlad") |
 //!
 //! Sales sync is creation-only, same philosophy as `sync_orders` above and
 //! marko's own explicit choice for this pass too: a ticket that already has
@@ -99,6 +99,7 @@
 
 use crate::commands::csv_import::resolve_or_create_platform;
 use crate::commands::orders::insert_order_with_tickets;
+use crate::commands::pulls_received;
 use crate::commands::pulls_sheet_sync::parse_sheet_serial_date;
 use crate::commands::sales::create_sales_batch_impl;
 use crate::commands::sheets_sync::{
@@ -107,7 +108,9 @@ use crate::commands::sheets_sync::{
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
-use crate::models::{CreatedSheetResult, OrderInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult};
+use crate::models::{
+    CreatedSheetResult, OrderInput, PullReceivedInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult,
+};
 use crate::money::{format_cents, parse_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -792,17 +795,13 @@ fn apply_sales_rows(
             continue;
         }
 
-        let mut notes_parts: Vec<String> = vec![];
-        if let Some(v) = cell(raw_row, pull_col) {
-            notes_parts.push(format!("Pull: {v}"));
-        }
-        if let Some(v) = cell(raw_row, who_pulled_col) {
-            notes_parts.push(format!("Who pulled: {v}"));
-        }
-        if let Some(v) = cell(raw_row, how_much_pull_col) {
-            notes_parts.push(format!("How much pull: {v}"));
-        }
-        let notes = if notes_parts.is_empty() { None } else { Some(notes_parts.join("; ")) };
+        // 2.0.17: these 3 cells used to be folded into Sale.notes as plain
+        // text - now they (optionally) create a real linked `pulls_received`
+        // row instead, once the sale itself is safely created below. See
+        // `maybe_link_pull_received`'s own doc comment.
+        let pull_cell = cell(raw_row, pull_col);
+        let who_pulled_cell = cell(raw_row, who_pulled_col);
+        let how_much_pull_cell = cell(raw_row, how_much_pull_col);
 
         let batch_input = SaleBatchInput {
             lines: sellable_ticket_ids
@@ -813,7 +812,7 @@ fn apply_sales_rows(
             sale_date,
             payment_status: Some(payment_status),
             buyer_reference: cell(raw_row, paid_by_col),
-            notes,
+            notes: None,
         };
 
         match create_sales_batch_impl(conn, &batch_input) {
@@ -826,6 +825,14 @@ fn apply_sales_rows(
                         params![resale_status, delivery_status, ticket_id],
                     )?;
                 }
+                maybe_link_pull_received(
+                    conn,
+                    order_id,
+                    sellable_ticket_ids.len() as i64,
+                    pull_cell.as_deref(),
+                    who_pulled_cell.as_deref(),
+                    how_much_pull_cell.as_deref(),
+                )?;
                 result.created += 1;
             }
             Err(e) => {
@@ -835,6 +842,80 @@ fn apply_sales_rows(
     }
 
     Ok(result)
+}
+
+/// After a Sales-sync row successfully creates a real sale, mirrors a
+/// `pull` = "yes" cell into a real, linked `pulls_received` row (2.0.17) -
+/// see this module's own doc comment's "Column mapping (second batch)" table
+/// for the full rationale. Does nothing at all (not even counted as an
+/// error) unless `pull_cell` trims+lowercases to exactly "yes" AND
+/// `who_pulled_cell` isn't blank - `who_pulled_cell` becomes `puller_name`,
+/// which the schema requires, so there is simply nothing sensible to create
+/// without it; the sale itself has already fully succeeded by the time this
+/// runs either way, so a missing/unusable puller name never blocks it.
+///
+/// Idempotent per order: guarded by a `SELECT` before inserting (and backed
+/// by a DB-level partial UNIQUE index as a second line of defence - see
+/// migrations/011_pulls_received.sql), so an order that gets synced across
+/// more than one `apply_sales_rows` run - e.g. only some of its tickets were
+/// sellable in an earlier run, see this module's own "creation-only" doc
+/// comment above - never ends up with two linked rows for the same order.
+/// This mirrors the same creation-only philosophy the rest of this module
+/// already follows: once linked, a `pulls_received` row is never revisited
+/// or updated by a later sync, even if the sheet's own cells change
+/// afterwards (marko can still edit it by hand in the app - see
+/// commands/pulls_received.rs).
+///
+/// A blank or unparseable "how much pull" cell defaults `amount_cents` to 0
+/// rather than blocking anything - this whole record is informational only
+/// (marko confirmed via AskUserQuestion: never affects Profit/Revenue).
+/// event_name/event_date/currency are copied from the order's own linked
+/// event/currency rather than asked of the sheet a second time, since the
+/// sheet has no columns of its own for either.
+fn maybe_link_pull_received(
+    conn: &Connection,
+    order_id: i64,
+    quantity: i64,
+    pull_cell: Option<&str>,
+    who_pulled_cell: Option<&str>,
+    how_much_pull_cell: Option<&str>,
+) -> AppResult<()> {
+    let pull_is_yes = pull_cell.map(|v| v.trim().eq_ignore_ascii_case("yes")).unwrap_or(false);
+    if !pull_is_yes {
+        return Ok(());
+    }
+    let Some(puller_name) = who_pulled_cell.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(());
+    };
+
+    let already_linked: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pulls_received WHERE order_id = ?1 AND source = 'sheet_sync')",
+        [order_id],
+        |r| r.get(0),
+    )?;
+    if already_linked {
+        return Ok(());
+    }
+
+    let (event_id, currency): (i64, String) =
+        conn.query_row("SELECT event_id, currency FROM orders WHERE id = ?1", [order_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let (event_name, event_date): (String, Option<String>) =
+        conn.query_row("SELECT name, event_date FROM events WHERE id = ?1", [event_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+    let amount_cents = how_much_pull_cell.and_then(|v| parse_decimal_to_cents(v).ok()).unwrap_or(0);
+
+    let input = PullReceivedInput {
+        puller_name: puller_name.to_string(),
+        event_name,
+        event_date,
+        quantity,
+        amount_cents,
+        currency,
+        more_info: None,
+        order_id: Some(order_id),
+    };
+    pulls_received::create_pull_received_with_source(conn, &input, false, "sheet_sync")?;
+    Ok(())
 }
 
 /// The network-calling shell for Sales sync - fetches the SAME connected
@@ -1718,8 +1799,44 @@ mod tests {
         }
     }
 
+    // ---- pull / who pulled / how much pull -> linked pulls_received (2.0.17) --
+
+    fn pulls_received_for_order(conn: &Connection, order_code: &str) -> Vec<(String, String, i64, i64, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT pr.puller_name, pr.event_name, pr.quantity, pr.amount_cents, pr.source
+                 FROM pulls_received pr JOIN orders o ON o.id = pr.order_id WHERE o.code = ?1",
+            )
+            .unwrap();
+        stmt.query_map([order_code], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
     #[test]
-    fn pull_who_pulled_and_how_much_pull_are_folded_into_sale_notes() {
+    fn pull_yes_with_who_pulled_creates_one_linked_pulls_received_row() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 1);
+
+        let rows = pulls_received_for_order(&conn, &code);
+        assert_eq!(rows.len(), 1);
+        let (puller_name, event_name, quantity, amount_cents, source) = &rows[0];
+        assert_eq!(puller_name, "Jozef");
+        assert_eq!(event_name, "Coldplay Arena Show", "copied from the order's own linked event");
+        assert_eq!(*quantity, 1);
+        assert_eq!(*amount_cents, 1500);
+        assert_eq!(source, "sheet_sync");
+    }
+
+    #[test]
+    fn sale_notes_no_longer_contain_the_pull_columns() {
         let mut conn = test_conn();
         let code = seed_order_with_quantity(&conn, 1);
         let mut r = sales_row(&code, "45.00");
@@ -1729,10 +1846,81 @@ mod tests {
         apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
         let ticket_id = ticket_ids_for_order(&conn, &code)[0];
         let notes: Option<String> = conn.query_row("SELECT notes FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
-        let notes = notes.unwrap();
-        assert!(notes.contains("Pull: yes"), "{notes}");
-        assert!(notes.contains("Who pulled: Jozef"), "{notes}");
-        assert!(notes.contains("How much pull: 15"), "{notes}");
+        assert!(notes.is_none(), "2.0.17: pull data now lives in a real linked pulls_received row, not folded into notes - {notes:?}");
+    }
+
+    #[test]
+    fn pull_not_yes_creates_no_linked_row() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "no".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert!(pulls_received_for_order(&conn, &code).is_empty());
+    }
+
+    #[test]
+    fn blank_pull_cell_creates_no_linked_row() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert!(pulls_received_for_order(&conn, &code).is_empty());
+    }
+
+    #[test]
+    fn pull_yes_with_blank_who_pulled_creates_no_linked_row_but_the_sale_still_succeeds() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        // r[9] (who pulled) left blank
+        r[10] = "15".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 1, "a missing puller name must never block the sale itself");
+        assert!(pulls_received_for_order(&conn, &code).is_empty());
+    }
+
+    #[test]
+    fn unparseable_how_much_pull_defaults_the_linked_rows_amount_to_zero_and_does_not_block_the_sale() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "not a number".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 1);
+        let rows = pulls_received_for_order(&conn, &code);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, 0, "unparseable amount must default to 0, never block the sale");
+    }
+
+    #[test]
+    fn resyncing_the_same_order_never_creates_a_second_linked_pulls_received_row() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        // Simulate one ticket not yet being sellable on the first sync pass
+        // (this module's own "creation-only" doc comment: partial
+        // fulfillment across more than one apply_sales_rows run).
+        conn.execute("UPDATE tickets SET status = 'cancelled' WHERE id = ?1", [ticket_ids[1]]).unwrap();
+
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        let first = apply_sales_rows(&mut conn, &sales_headers(), &[r.clone()], 0).unwrap();
+        assert_eq!(first.created, 1);
+        assert_eq!(pulls_received_for_order(&conn, &code).len(), 1);
+
+        // The second ticket becomes sellable and the SAME row is synced
+        // again - must create the second Sale, but never a second linked row.
+        conn.execute("UPDATE tickets SET status = 'available' WHERE id = ?1", [ticket_ids[1]]).unwrap();
+        let second = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(second.created, 1, "the newly-sellable ticket must still get its own Sale");
+        assert_eq!(pulls_received_for_order(&conn, &code).len(), 1, "must not create a second linked pulls_received row for the same order");
     }
 
     #[test]

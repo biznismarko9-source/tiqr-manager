@@ -554,6 +554,59 @@ export interface PullEditInput {
 }
 
 // ---------------------------------------------------------------------------
+// Pull received (2.0.17) - the mirror direction of Pull above: someone ELSE
+// pulls tickets FOR marko (marko pays them a fee) instead of marko pulling
+// for someone else. See src-tauri/migrations/011_pulls_received.sql.
+// ---------------------------------------------------------------------------
+
+export interface PullReceived {
+  id: number;
+  code: string;
+  pullerName: string;
+  eventName: string;
+  eventDate: string | null;
+  quantity: number;
+  /** marko's fee to the puller - informational only, never affects Profit/Revenue anywhere. */
+  amountCents: number;
+  currency: string;
+  moreInfo: string | null;
+  /** Which Order these pulled tickets became, if any - null when this row is standalone. */
+  orderId: number | null;
+  /** The linked order's own code (e.g. "ORD-000042"), for display only - null whenever orderId is null. */
+  orderCode: string | null;
+  /** "manual" (typed in the app) or "sheet_sync" (auto-created by Orders & Sales sheet sync). */
+  source: "manual" | "sheet_sync";
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PullReceivedInput {
+  pullerName: string;
+  eventName: string;
+  eventDate?: string | null;
+  quantity: number;
+  amountCents: number;
+  currency: string;
+  moreInfo?: string | null;
+  orderId?: number | null;
+}
+
+/** Input for `updatePullReceived` - the full edit form. Deliberately has no
+ * `source` field - whether a row started out manual or sheet-sync-created is
+ * provenance, not editable from the form. */
+export interface PullReceivedEditInput {
+  pullerName: string;
+  eventName: string;
+  eventDate?: string | null;
+  quantity: number;
+  amountCents: number;
+  currency: string;
+  moreInfo?: string | null;
+  orderId?: number | null;
+}
+
+// ---------------------------------------------------------------------------
 // Google Sheets sync (Settings -> Integrations, 2.0.2+). `dataSource` is
 // always a plain string key ("pulls" today, "tickets" planned next) - see
 // models.rs's matching Rust section for why.
