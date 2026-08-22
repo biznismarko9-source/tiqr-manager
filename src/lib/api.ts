@@ -212,6 +212,11 @@ export const api = {
   /** 2.0.3: reads the connected sheet and creates/updates matching Pulls -
    * sheet -> app only, see commands/pulls_sheet_sync.rs. */
   syncPulls: () => invoke<SheetSyncResult>("sync_pulls"),
+  /** 2.0.18: the other direction - pushes app-only/app-changed Pulls out to
+   * the connected sheet (new rows appended, changed rows updated cell by
+   * cell). Sits next to syncPulls as a separate button, never runs as part
+   * of it - see commands/pulls_sheet_sync.rs::push_pulls_impl. */
+  pushPulls: () => invoke<SheetSyncResult>("push_pulls"),
   /** 2.0.4: auto-creates a brand-new Pulls sheet, shares it with `email`, and
    * connects it - no Google sign-in window. Sits next to setSheetsConnection
    * as a second way to arrive at a connection, not a replacement for it. */
@@ -221,11 +226,25 @@ export const api = {
    * tickets) for every row it hasn't seen before - creation-only, sheet ->
    * app only, see commands/orders_sheet_sync.rs. */
   syncOrders: () => invoke<SheetSyncResult>("sync_orders"),
+  /** 2.0.18: pushes brand-new local orders out to the connected sheet as new
+   * rows - append-only, an order that already has a "TIQR ID" is never
+   * revisited (editing its purchase-side numbers after tickets exist would
+   * touch protected cost-allocation logic - see push_orders_impl's own doc
+   * comment). Sits next to syncOrders as a separate button. */
+  pushOrders: () => invoke<SheetSyncResult>("push_orders"),
   /** 2.0.10: reads the SAME connected sheet's second batch of columns and
    * records a sale (with the right platform/date/payout status) for every
    * ticket that isn't sold yet on a row already created by syncOrders -
    * creation-only, sheet -> app only, see commands/orders_sheet_sync.rs. */
   syncSales: () => invoke<SheetSyncResult>("sync_sales"),
+  /** 2.0.18: fills in the Sales-sync batch of columns (Site Listed ...
+   * how much pull) for an already-linked order, but only when every one of
+   * those cells is still completely blank on the sheet - never overwrites
+   * anything already there. Needs every ticket on the order sold uniformly
+   * (same platform/price/date/status) to have one clean value to push - see
+   * push_sales_impl's own doc comment for exactly what counts. Sits next to
+   * syncSales as a separate button. */
+  pushSales: () => invoke<SheetSyncResult>("push_sales"),
   /** 2.0.9: auto-creates a brand-new Orders & Sales sheet, shares it with
    * `email`, and connects it - no Google sign-in window. Mirrors
    * createPullsSheet exactly; sits next to setSheetsConnection as a second

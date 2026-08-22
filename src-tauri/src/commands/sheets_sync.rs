@@ -42,6 +42,13 @@ pub(crate) fn last_synced_key(data_source: &str) -> String {
     format!("sheets_last_synced:{data_source}")
 }
 
+/// 2.0.18: the app -> sheet push direction's own last-run stamp, deliberately
+/// a separate key from `last_synced_key` (which is sheet -> app only) - see
+/// `SheetsConnectionStatus::last_pushed_at`'s doc comment.
+pub(crate) fn last_pushed_key(data_source: &str) -> String {
+    format!("sheets_last_pushed:{data_source}")
+}
+
 // `pub(crate)` on this trio since 2.0.5: commands::google_auth reuses the
 // same generic app_settings key/value store for the signed-in Google
 // account (a different concept entirely - one per installation, not one per
@@ -111,6 +118,7 @@ fn get_sheets_connection_status_impl(conn: &Connection, data_source: &str) -> Ap
         service_account_email: account.map(|a| a.client_email),
         connection: load_connection(conn, data_source)?,
         last_synced_at: get_setting(conn, &last_synced_key(data_source))?,
+        last_pushed_at: get_setting(conn, &last_pushed_key(data_source))?,
     })
 }
 
@@ -167,6 +175,7 @@ pub fn set_sheets_connection(
 fn clear_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResult<()> {
     delete_setting(conn, &connection_key(data_source))?;
     delete_setting(conn, &last_synced_key(data_source))?;
+    delete_setting(conn, &last_pushed_key(data_source))?;
     conn.execute("DELETE FROM sheet_sync_links WHERE data_source = ?1", params![data_source])?;
     Ok(())
 }
@@ -458,6 +467,19 @@ mod tests {
         let status = get_sheets_connection_status_impl(&conn, "pulls").unwrap();
         assert_eq!(status.connection, None);
         assert_eq!(status.last_synced_at, None);
+        assert_eq!(status.last_pushed_at, None);
+    }
+
+    #[test]
+    fn last_pushed_at_is_tracked_independently_of_last_synced_at() {
+        let conn = test_conn();
+        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "EUR").unwrap();
+        set_setting(&conn, &last_synced_key("pulls"), "2026-01-01T00:00:00.000Z").unwrap();
+        set_setting(&conn, &last_pushed_key("pulls"), "2026-01-02T00:00:00.000Z").unwrap();
+
+        let status = get_sheets_connection_status_impl(&conn, "pulls").unwrap();
+        assert_eq!(status.last_synced_at.as_deref(), Some("2026-01-01T00:00:00.000Z"));
+        assert_eq!(status.last_pushed_at.as_deref(), Some("2026-01-02T00:00:00.000Z"));
     }
 
     #[test]
@@ -476,6 +498,8 @@ mod tests {
     fn clear_sheets_connection_forgets_the_connection_and_every_sync_link() {
         let conn = test_conn();
         set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "EUR").unwrap();
+        set_setting(&conn, &last_synced_key("pulls"), "2026-01-01T00:00:00.000Z").unwrap();
+        set_setting(&conn, &last_pushed_key("pulls"), "2026-01-02T00:00:00.000Z").unwrap();
         conn.execute(
             "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
              VALUES ('pulls', 1, 'PULL-000001', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
@@ -487,6 +511,8 @@ mod tests {
 
         let status = get_sheets_connection_status_impl(&conn, "pulls").unwrap();
         assert_eq!(status.connection, None);
+        assert_eq!(status.last_synced_at, None, "disconnecting must also forget the last-synced stamp");
+        assert_eq!(status.last_pushed_at, None, "disconnecting must also forget the last-pushed stamp");
         let links: i64 = conn
             .query_row("SELECT COUNT(*) FROM sheet_sync_links WHERE data_source='pulls'", [], |r| r.get(0))
             .unwrap();

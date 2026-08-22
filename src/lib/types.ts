@@ -627,6 +627,9 @@ export interface SheetsConnectionStatus {
   serviceAccountEmail?: string | null;
   connection?: SheetsConnectionConfig | null;
   lastSyncedAt?: string | null;
+  /** 2.0.18: the "Push to sheet" direction's own separate timestamp - see
+   * SheetsConnectionStatus::last_pushed_at's doc comment (models.rs). */
+  lastPushedAt?: string | null;
 }
 
 /** `message` is deliberately short and glanceable (2.0.15) - for a failure

@@ -431,6 +431,8 @@ export default function Settings() {
                   googleStatus={googleStatus}
                   onSync={api.syncPulls}
                   syncDescription={`"Sync now" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, except its own row IDs.`}
+                  onPush={api.pushPulls}
+                  pushDescription={`"Push to sheet" is the other direction: brand-new pulls you added in the app become new rows, and changes to an already-synced pull are written back cell by cell - but only when the sheet itself hasn't changed that row since the last sync (if it has, the row is reported so you can "Sync now" first, then push again).`}
                   onCreate={api.createPullsSheet}
                 />
                 {/* 2.0.8: one row = one order (marko's own choice) - creates the
@@ -459,6 +461,15 @@ export default function Settings() {
                     description:
                       "Reads the SAME sheet's second batch of columns and records a sale for every ticket that isn't sold yet on a row Order sync already created - creation-only, same as Order sync: once a ticket has an active sale, later syncs leave it completely alone.",
                     run: api.syncSales,
+                  }}
+                  onPush={api.pushOrders}
+                  pushLabel="Push orders"
+                  pushDescription="Adds brand-new orders you created in the app as new rows in the sheet - append-only, an order that's already in the sheet is never edited here again (its costs are already split across its tickets, so that stays a change you make by hand)."
+                  secondaryPush={{
+                    label: "Push sales",
+                    description:
+                      "Fills in the SAME row's Site Listed/Payout/Status/Payout status/paid-by columns (and pull/who pulled/how much pull, from a linked received pull) once every ticket on that order has sold the same way - but only into cells that are still completely blank, so it never overwrites anything already in the sheet.",
+                    run: api.pushSales,
                   }}
                   onCreate={api.createOrdersSheet}
                 />
@@ -787,8 +798,7 @@ function SyncResultView({ result }: { result: SheetSyncResult }) {
         <div className="mt-2 max-h-40 overflow-y-auto">
           <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
             {result.conflicts.length} row{result.conflicts.length === 1 ? "" : "s"} need
-            {result.conflicts.length === 1 ? "s" : ""} your attention - both the sheet and the app changed them since
-            the last sync:
+            {result.conflicts.length === 1 ? "s" : ""} your attention:
           </p>
           {result.conflicts.map((c, i) => (
             <p key={i} className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
@@ -830,6 +840,10 @@ function SheetsConnectionCard({
   syncLabel,
   syncDescription,
   secondarySync,
+  onPush,
+  pushLabel,
+  pushDescription,
+  secondaryPush,
   onCreate,
   googleStatus,
 }: {
@@ -864,6 +878,21 @@ function SheetsConnectionCard({
    * Orders-specific. Omit entirely for a card with only one sync action
    * (e.g. Pulls). */
   secondarySync?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
+  /** 2.0.18: the app -> sheet direction, e.g. api.pushPulls / api.pushOrders -
+   * a separate button next to `onSync`, never combined with it (marko's own
+   * choice: "Dve tlačidlá" - two buttons - rather than one that does both
+   * directions). Omit for a data source with no push logic yet. */
+  onPush?: () => Promise<SheetSyncResult>;
+  /** Button text for `onPush` - defaults to "Push to sheet". */
+  pushLabel?: string;
+  /** Shown next to the push button, same one-per-data-source rationale as
+   * `syncDescription`. Required whenever `onPush` is set. */
+  pushDescription?: string;
+  /** 2.0.18: the push direction's own second action, mirroring
+   * `secondarySync` exactly - Orders & Sales gets "Push sales" alongside
+   * "Push orders" here, same as "Sales sync" sits alongside "Order sync"
+   * above. */
+  secondaryPush?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
   /** "Create a new sheet for me", e.g. api.createPullsSheet /
    * api.createOrdersSheet. 2.0.8: generalized to a prop alongside onSync,
    * but kept independent of it - not every data source necessarily gets an
@@ -881,7 +910,9 @@ function SheetsConnectionCard({
   const [sheetTab, setSheetTab] = useState("");
   const [createEmail, setCreateEmail] = useState("");
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "test" | "sync" | "sync2" | "create" | "disconnect" | null>(null);
+  const [busy, setBusy] = useState<"save" | "test" | "sync" | "sync2" | "push" | "push2" | "create" | "disconnect" | null>(
+    null,
+  );
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<SheetSyncResult | null>(null);
   // 2.0.10: result of `secondarySync`, kept fully separate from `syncResult`
@@ -889,6 +920,10 @@ function SheetsConnectionCard({
   // (e.g. Order sync then Sales sync) shows both outcomes at once instead of
   // the second overwriting the first.
   const [secondarySyncResult, setSecondarySyncResult] = useState<SheetSyncResult | null>(null);
+  // 2.0.18: same "own slot per action" reasoning as secondarySyncResult
+  // above, now for the push direction.
+  const [pushResult, setPushResult] = useState<SheetSyncResult | null>(null);
+  const [secondaryPushResult, setSecondaryPushResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   // 2.0.14: "Sheet/tab name" used to be free-text only, and marko's own
   // reports (twice) showed that typing the exact tab name by hand - even
@@ -1079,6 +1114,42 @@ function SheetsConnectionCard({
     }
   };
 
+  // 2.0.18 - see `onPush` prop's own comment.
+  const doPush = async () => {
+    if (!onPush) return;
+    setBusy("push");
+    setPushResult(null);
+    try {
+      const result = await onPush();
+      setPushResult(result);
+      toast.success(`Pushed: ${result.created} added, ${result.updated} updated, ${result.unchanged} unchanged`);
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 2.0.18 - see `secondaryPush` prop's own comment.
+  const doSecondaryPush = async () => {
+    if (!secondaryPush) return;
+    setBusy("push2");
+    setSecondaryPushResult(null);
+    try {
+      const result = await secondaryPush.run();
+      setSecondaryPushResult(result);
+      toast.success(
+        `${secondaryPush.label}: ${result.created} added, ${result.updated} updated, ${result.unchanged} unchanged`,
+      );
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const doDisconnect = async () => {
     setBusy("disconnect");
     try {
@@ -1087,6 +1158,8 @@ function SheetsConnectionCard({
       setTestResult(null);
       setSyncResult(null);
       setSecondarySyncResult(null);
+      setPushResult(null);
+      setSecondaryPushResult(null);
       setCreatedUrl(null);
       toast.success("Sheet disconnected");
       reload();
@@ -1130,6 +1203,16 @@ function SheetsConnectionCard({
           {secondarySync && (
             <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
               <b>{secondarySync.label}:</b> {secondarySync.description}
+            </p>
+          )}
+          {onPush && (
+            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
+              <b>{pushLabel ?? "Push to sheet"}:</b> {pushDescription}
+            </p>
+          )}
+          {secondaryPush && (
+            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
+              <b>{secondaryPush.label}:</b> {secondaryPush.description}
             </p>
           )}
 
@@ -1233,6 +1316,18 @@ function SheetsConnectionCard({
                     {busy === "sync2" ? "Syncing..." : secondarySync.label}
                   </Button>
                 )}
+                {onPush && (
+                  <Button variant="secondary" disabled={busy === "push"} onClick={doPush}>
+                    {busy === "push" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "push" ? "Pushing..." : (pushLabel ?? "Push to sheet")}
+                  </Button>
+                )}
+                {secondaryPush && (
+                  <Button variant="secondary" disabled={busy === "push2"} onClick={doSecondaryPush}>
+                    {busy === "push2" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "push2" ? "Pushing..." : secondaryPush.label}
+                  </Button>
+                )}
                 <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
                   Disconnect
                 </Button>
@@ -1307,6 +1402,24 @@ function SheetsConnectionCard({
             </div>
           )}
 
+          {pushResult && (
+            <div className="mt-3">
+              {secondaryPush && (
+                <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  {pushLabel ?? "Push to sheet"} result
+                </p>
+              )}
+              <SyncResultView result={pushResult} />
+            </div>
+          )}
+
+          {secondaryPushResult && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{secondaryPush?.label} result</p>
+              <SyncResultView result={secondaryPushResult} />
+            </div>
+          )}
+
           {createdUrl && (
             <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/40">
               <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
@@ -1332,6 +1445,12 @@ function SheetsConnectionCard({
                 (Editor access) so the app can read and write it.
               </p>
             )
+          )}
+
+          {status?.lastPushedAt && (
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+              Last pushed: {new Date(status.lastPushedAt).toLocaleString()}
+            </p>
           )}
 
           {status?.lastSyncedAt && (

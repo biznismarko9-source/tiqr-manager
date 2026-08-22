@@ -103,7 +103,7 @@ use crate::commands::pulls_received;
 use crate::commands::pulls_sheet_sync::parse_sheet_serial_date;
 use crate::commands::sales::create_sales_batch_impl;
 use crate::commands::sheets_sync::{
-    last_synced_key, load_connection, set_setting, set_sheets_connection_impl, ALLOWED_CURRENCIES,
+    last_pushed_key, last_synced_key, load_connection, set_setting, set_sheets_connection_impl, ALLOWED_CURRENCIES,
 };
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
@@ -255,6 +255,25 @@ fn parse_ticket_count(raw: &str) -> Result<i64, String> {
         return Err("must be at least 1".to_string());
     }
     Ok(n)
+}
+
+/// The inverse of `parse_order_date` for plain `DD/MM/YYYY` text (never the
+/// serial-number variant - that's only ever something this app *reads*, a
+/// side effect of someone typing an actual date into a cell rather than
+/// text, not something it should start writing back out): turns a stored
+/// `YYYY-MM-DD` date (an `Order.purchase_date` or `Sale.sale_date`) back
+/// into the sheet's own display format. Falls back to the raw value
+/// unchanged if it isn't actually `YYYY-MM-DD` (should never happen - see
+/// `pulls_sheet_sync::format_date_for_sheet`'s identical doc comment for why
+/// guessing is never worth the risk here either). Shared by both push
+/// directions below (`build_order_append_row`, `uniform_sale_for_order`)
+/// since both write a date back into this same sheet's own DD/MM/YYYY
+/// convention.
+fn format_order_date_for_sheet(iso: &str) -> String {
+    match chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d") {
+        Ok(d) => d.format("%d/%m/%Y").to_string(),
+        Err(_) => iso.to_string(),
+    }
 }
 
 /// Case-insensitive find-or-create by name, mirroring
@@ -611,6 +630,255 @@ pub fn sync_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Push (app -> sheet), 2.0.18 - the Order-sync half. Deliberately
+// APPEND-ONLY: an order that already carries a "TIQR ID" (i.e. already has a
+// `sheet_sync_links` row - whether it got there via Order sync above or via
+// this very push, on an earlier run) is never revisited here, full stop, no
+// comparison, no update path at all - see this module's own "Creation-only
+// in this pass, deliberately" doc comment above for exactly why: editing an
+// order's purchase-side numbers after tickets exist would touch
+// `insert_order_with_tickets`'s exact-cent cost allocation, which is
+// protected financial logic this project's house rules say not to touch
+// without asking first. Only a brand-new, never-linked local order becomes
+// a new sheet row. Unlike Pulls push, there is therefore no snapshot/
+// conflict machinery needed at all here - "never linked yet" is the only
+// case this handles.
+// ---------------------------------------------------------------------------
+
+/// Just enough of one order to build its pushed sheet row - a dedicated,
+/// narrower shape than the full `Order` model (which doesn't even carry
+/// `external_reference` - see `commands::orders::map_order` - and whose
+/// `section`/`row_label`/`ticket_type` genuinely live on `Ticket`, not
+/// `Order`, per `insert_order_with_tickets`'s own stamp-onto-every-ticket
+/// convention).
+struct OrderForPush {
+    id: i64,
+    code: String,
+    event_name: String,
+    purchase_date: String,
+    platform_name: Option<String>,
+    quantity: i64,
+    unit_price_cents: i64,
+    currency: String,
+    notes: Option<String>,
+    external_reference: Option<String>,
+}
+
+/// Section/Row/Ticket Type are stamped identically across every ticket of an
+/// order by `insert_order_with_tickets` - this only ever reads the first
+/// ticket's copy of each, on that assumption. `seat` is the one field that
+/// genuinely varies per ticket (see `join_seats` below).
+struct TicketForPush {
+    section: Option<String>,
+    row_label: Option<String>,
+    ticket_type: Option<String>,
+    seat: Option<String>,
+}
+
+/// Rebuilds the sheet's comma-separated "Seats" cell from individual ticket
+/// rows - the exact inverse of `apply_order_rows`'s own `seats` parsing.
+/// Blank unless *every* ticket has its own seat (the same "one seat per
+/// ticket, or none at all" rule the read direction already enforces on the
+/// way in - a partial mix, e.g. after a manual per-ticket edit, has no
+/// faithful single-cell representation, so this never guesses at one).
+fn join_seats(tickets: &[TicketForPush]) -> String {
+    if tickets.is_empty() {
+        return String::new();
+    }
+    let seats: Vec<&str> = tickets.iter().filter_map(|t| t.seat.as_deref()).collect();
+    if seats.len() == tickets.len() {
+        seats.join(", ")
+    } else {
+        String::new()
+    }
+}
+
+/// Lays out one brand-new order as a full positional sheet row (plus its
+/// marker cell), ready for `append_values` - same "every in-between column
+/// accounted for" reasoning as `pulls_sheet_sync::build_pull_append_row`.
+/// Never touches `Site Listed`/`Payout Per Ticket`/.../`how much pull` (the
+/// Sales-sync batch of columns) - those are `push_sales`'s job, once this
+/// order has actually sold something.
+fn build_order_append_row(
+    map: &HashMap<String, usize>,
+    marker_col_index: usize,
+    header_count: usize,
+    order: &OrderForPush,
+    tickets: &[TicketForPush],
+) -> Vec<String> {
+    let mut cells: Vec<(usize, String)> = vec![];
+    if let Some(c) = find_col(map, &["event name", "event"]) {
+        cells.push((c, order.event_name.clone()));
+    }
+    if let Some(c) = find_col(map, &["date (dd/mm/yyyy)", "date"]) {
+        cells.push((c, format_order_date_for_sheet(&order.purchase_date)));
+    }
+    if let Some(c) = find_col(map, &["platform"]) {
+        cells.push((c, order.platform_name.clone().unwrap_or_default()));
+    }
+    if let Some(c) = find_col(map, &["section"]) {
+        cells.push((c, tickets.first().and_then(|t| t.section.clone()).unwrap_or_default()));
+    }
+    if let Some(c) = find_col(map, &["row"]) {
+        cells.push((c, tickets.first().and_then(|t| t.row_label.clone()).unwrap_or_default()));
+    }
+    if let Some(c) = find_col(map, &["seats", "seat"]) {
+        cells.push((c, join_seats(tickets)));
+    }
+    if let Some(c) = find_col(map, &["order id", "orderid"]) {
+        cells.push((c, order.external_reference.clone().unwrap_or_default()));
+    }
+    if let Some(c) = find_col(map, &["total purchase price", "total price"]) {
+        cells.push((c, format_cents(order.unit_price_cents * order.quantity)));
+    }
+    if let Some(c) = find_col(map, &["number of tickets", "quantity", "qty", "ks"]) {
+        cells.push((c, order.quantity.to_string()));
+    }
+    if let Some(c) = find_col(map, &["price per ticket", "unit price", "price"]) {
+        cells.push((c, format_cents(order.unit_price_cents)));
+    }
+    if let Some(c) = find_col(map, &["currency"]) {
+        cells.push((c, order.currency.clone()));
+    }
+    if let Some(c) = find_col(map, &["email (used)", "email"]) {
+        cells.push((c, order.notes.clone().unwrap_or_default()));
+    }
+    if let Some(c) = find_col(map, &["ticket type"]) {
+        cells.push((c, tickets.first().and_then(|t| t.ticket_type.clone()).unwrap_or_default()));
+    }
+    cells.push((marker_col_index, order.code.clone()));
+
+    let width = cells.iter().map(|(i, _)| i + 1).max().unwrap_or(0).max(header_count);
+    let mut row = vec![String::new(); width];
+    for (i, v) in cells {
+        row[i] = v;
+    }
+    row
+}
+
+/// The push direction's own core for Order sync - see this section's own
+/// doc comment above for the append-only scope. Every non-demo, never-linked
+/// order becomes one appended row; a `sheet_sync_links` row is inserted
+/// immediately (marker = the order's own `code`, already generated at
+/// creation - same placeholder `'{}'` snapshot `apply_order_rows`'s own
+/// create path already uses, since there is no update path here to ever
+/// compare it against).
+fn apply_order_push(
+    conn: &Connection,
+    headers: &[String],
+    marker_col_index: usize,
+) -> AppResult<(SheetSyncResult, Vec<Vec<String>>)> {
+    let map = build_header_map(headers);
+    check_required_headers(&map)?;
+
+    let mut result =
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+    let mut append_rows = vec![];
+
+    let orders: Vec<OrderForPush> = {
+        let mut stmt = conn.prepare(
+            "SELECT o.id, o.code, e.name, o.purchase_date, p.name, o.quantity, o.unit_price_cents, o.currency, o.notes, o.external_reference
+             FROM orders o
+             JOIN events e ON e.id = o.event_id
+             LEFT JOIN platforms p ON p.id = o.platform_id
+             WHERE o.is_demo = 0
+               AND NOT EXISTS (SELECT 1 FROM sheet_sync_links l WHERE l.data_source = 'orders' AND l.local_id = o.id)
+             ORDER BY o.id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(OrderForPush {
+                    id: r.get(0)?,
+                    code: r.get(1)?,
+                    event_name: r.get(2)?,
+                    purchase_date: r.get(3)?,
+                    platform_name: r.get(4)?,
+                    quantity: r.get(5)?,
+                    unit_price_cents: r.get(6)?,
+                    currency: r.get(7)?,
+                    notes: r.get(8)?,
+                    external_reference: r.get(9)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    for order in orders {
+        let tickets: Vec<TicketForPush> = {
+            let mut stmt = conn.prepare("SELECT section, row_label, ticket_type, seat FROM tickets WHERE order_id = ?1 ORDER BY id")?;
+            let rows = stmt
+                .query_map([order.id], |r| {
+                    Ok(TicketForPush { section: r.get(0)?, row_label: r.get(1)?, ticket_type: r.get(2)?, seat: r.get(3)? })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let now = now_iso(conn)?;
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('orders', ?1, ?2, '{}', ?3)",
+            params![order.id, order.code, now],
+        )?;
+        let row = build_order_append_row(&map, marker_col_index, headers.len(), &order, &tickets);
+        append_rows.push(row);
+        result.created += 1;
+    }
+
+    Ok((result, append_rows))
+}
+
+/// The push direction's own network-calling shell for Order sync - same
+/// split as `sync_orders_impl` above (fetch the sheet once, hand its parsed
+/// shape to the pure core, then perform whatever writes it asked for).
+fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "orders")?
+        .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Orders yet - connect one in Settings first.".to_string()))?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+    if value_range.values.is_empty() {
+        return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
+    }
+    let headers = value_range.values[0].clone();
+
+    let (marker_col_index, marker_exists) = resolve_marker_column(&headers);
+    let letter = column_index_to_a1(marker_col_index);
+    if !marker_exists {
+        let header_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}1"));
+        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
+    }
+
+    let (mut result, append_rows) = apply_order_push(conn, &headers, marker_col_index)?;
+
+    if !append_rows.is_empty() {
+        let new_count = append_rows.len();
+        let append_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
+        if let Err(e) = google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
+            result.errors.push(SheetSyncIssue {
+                row_number: 0,
+                message: format!("{new_count} new order(s) were prepared but could not be written to the sheet: {e}"),
+            });
+        }
+    }
+
+    result.synced_at = now_iso(conn)?;
+    set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
+    Ok(result)
+}
+
+/// "Push orders" button (Settings -> Integrations, Orders & Sales card) -
+/// the new sibling of "Order sync". Never runs on its own.
+#[tauri::command]
+pub fn push_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let conn = state.db.lock().unwrap();
+    push_orders_impl(&conn)
+}
+
+// ---------------------------------------------------------------------------
 // Sales sync (2.0.10) - second batch of the SAME sheet rows, same
 // connection. See this module's own doc comment ("Column mapping (second
 // batch - Sales sync, 2.0.10)") for the full column mapping and design
@@ -961,6 +1229,322 @@ fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
 pub fn sync_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
     let mut conn = state.db.lock().unwrap();
     sync_sales_impl(&mut conn)
+}
+
+// ---------------------------------------------------------------------------
+// Push (app -> sheet), 2.0.18 - the Sales-sync half. Unlike Order push
+// above, this never appends a new row at all - it only ever fills in the
+// Sales-sync batch of columns (`Site Listed` through `paid by`, plus `pull`/
+// `who pulled`/`how much pull`) on a row that is ALREADY linked (has a
+// "TIQR ID" - whether that got there via Order sync or Order push), and only
+// when every one of those target cells is still completely blank. That
+// "only when fully blank" rule is deliberately simpler than Pulls push's own
+// snapshot-based conflict detection: marko's normal workflow already has him
+// filling the sheet's Sales-sync columns in by hand and then running "Sales
+// sync" to pull them in, so a row that already has ANY value there is left
+// alone unconditionally, never compared cell-by-cell - there is no realistic
+// case where this app would know better than a value marko already typed,
+// and "never touch a row with anything already in it" is impossible to get
+// subtly wrong. The rows this actually helps are the ones that came from
+// Order push itself (blank Sales-sync columns by construction) and later
+// sold from inside the app.
+// ---------------------------------------------------------------------------
+
+/// One ticket's currently active (non-refunded) sale, just the fields
+/// `uniform_sale_for_order` needs to compare across every ticket of an
+/// order. A ticket with `status = 'sold'` is guaranteed to have exactly one
+/// of these - `refund_sale_impl` atomically flips the sale to `refunded` AND
+/// the ticket back to `available` in the same transaction, so "sold but no
+/// active sale" is not a state this app can normally produce (see that
+/// function's own doc comment) - `uniform_sale_for_order` still treats it as
+/// "can't push" rather than panicking, on this module's usual "never guess"
+/// principle.
+struct ActiveSale {
+    platform_id: Option<i64>,
+    sale_price_cents: i64,
+    payment_status: String,
+    sale_date: String,
+    buyer_reference: Option<String>,
+}
+
+/// What `push_sales` actually writes for one order's Sales-sync batch of
+/// columns, once every ticket agrees closely enough to be represented as
+/// this sheet's single row per order.
+struct UniformSale {
+    platform_name: Option<String>,
+    sale_price_cents: i64,
+    payment_status: String,
+    sale_date: String,
+    buyer_reference: Option<String>,
+    resale_status: Option<String>,
+    delivery_status: Option<String>,
+}
+
+/// `Ok(None)` for anything short of "every ticket in this order is sold,
+/// with one identical active sale (same platform/price/date/payment status/
+/// buyer reference) and identical resale_status/delivery_status stamped on
+/// every ticket" - not ready yet, or a real but sheet-unrepresentable state
+/// (e.g. marko split one order's tickets across two different listings at
+/// two different prices - the sheet only has one row for the whole order).
+/// Both are simply "nothing to push" here, not an error - see this
+/// section's own doc comment for why marko is never alarmed about either.
+fn uniform_sale_for_order(conn: &Connection, order_id: i64) -> AppResult<Option<UniformSale>> {
+    let tickets: Vec<(i64, String, Option<String>, Option<String>)> = {
+        let mut stmt = conn.prepare("SELECT id, status, resale_status, delivery_status FROM tickets WHERE order_id = ?1 ORDER BY id")?;
+        let rows = stmt
+            .query_map([order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    if tickets.is_empty() || tickets.iter().any(|(_, status, _, _)| status != "sold") {
+        return Ok(None);
+    }
+    let (first_resale, first_delivery) = (tickets[0].2.clone(), tickets[0].3.clone());
+    if !tickets.iter().all(|(_, _, rs, ds)| *rs == first_resale && *ds == first_delivery) {
+        return Ok(None);
+    }
+
+    let mut sales: Vec<ActiveSale> = Vec::with_capacity(tickets.len());
+    for (ticket_id, _, _, _) in &tickets {
+        let sale: Option<ActiveSale> = conn
+            .query_row(
+                "SELECT platform_id, sale_price_cents, payment_status, sale_date, buyer_reference
+                 FROM sales WHERE ticket_id = ?1 AND payment_status != 'refunded'",
+                [ticket_id],
+                |r| {
+                    Ok(ActiveSale {
+                        platform_id: r.get(0)?,
+                        sale_price_cents: r.get(1)?,
+                        payment_status: r.get(2)?,
+                        sale_date: r.get(3)?,
+                        buyer_reference: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(sale) = sale else {
+            return Ok(None);
+        };
+        sales.push(sale);
+    }
+
+    let first = &sales[0];
+    let uniform = sales.iter().all(|s| {
+        s.platform_id == first.platform_id
+            && s.sale_price_cents == first.sale_price_cents
+            && s.payment_status == first.payment_status
+            && s.sale_date == first.sale_date
+            && s.buyer_reference == first.buyer_reference
+    });
+    if !uniform {
+        return Ok(None);
+    }
+
+    let platform_name: Option<String> = match first.platform_id {
+        Some(pid) => conn.query_row("SELECT name FROM platforms WHERE id = ?1", [pid], |r| r.get(0)).optional()?,
+        None => None,
+    };
+
+    Ok(Some(UniformSale {
+        platform_name,
+        sale_price_cents: first.sale_price_cents,
+        payment_status: first.payment_status.clone(),
+        sale_date: first.sale_date.clone(),
+        buyer_reference: first.buyer_reference.clone(),
+        resale_status: first_resale,
+        delivery_status: first_delivery,
+    }))
+}
+
+/// One order can have several manually-added `pulls_received` rows linked
+/// to it (only the auto-linked-from-sheet-sync kind is limited to one per
+/// order - see migrations/011_pulls_received.sql's partial unique index) -
+/// `Ok(None)` whenever there isn't *exactly* one, same "can't represent,
+/// nothing to push" spirit as `uniform_sale_for_order` above, rather than
+/// guessing which one the sheet's single trio of columns should show.
+fn linked_pull_received_for_order(conn: &Connection, order_id: i64) -> AppResult<Option<(String, i64)>> {
+    let rows: Vec<(String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT puller_name, amount_cents FROM pulls_received WHERE order_id = ?1 AND is_demo = 0 ORDER BY id")?;
+        let rows = stmt.query_map([order_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    if rows.len() == 1 {
+        Ok(Some(rows.into_iter().next().unwrap()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The push direction's own core for Sales sync - see this section's own doc
+/// comment for the "only when fully blank" rule. Walks every linked order
+/// (`sheet_sync_links` for data_source `"orders"`, regardless of whether it
+/// got linked via Order sync or Order push), finds its current row in the
+/// sheet's already-fetched data, and queues per-cell writes for whichever of
+/// the two independent column groups (sale info / linked pull info) is both
+/// ready on the app side and still blank on the sheet side. An order whose
+/// marker isn't found anywhere in the sheet's current data (row deleted, or
+/// an Order push whose append never actually landed) is quietly skipped,
+/// not reported - `push_orders`/a future re-sync already surfaces that
+/// loudly on its own.
+fn apply_sales_push(
+    conn: &Connection,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+    marker_col_index: usize,
+) -> AppResult<(SheetSyncResult, Vec<(i64, Vec<(usize, String)>)>)> {
+    let map = build_header_map(headers);
+    let payout_col = find_col(&map, &["payout per ticket", "payout"]);
+    if payout_col.is_none() {
+        return Err(AppError::Validation(
+            "The connected sheet is missing required column(s): \"Payout Per Ticket\"".to_string(),
+        ));
+    }
+    let site_listed_col = find_col(&map, &["site listed", "site", "listing site"]);
+    let status_col = find_col(&map, &["status"]);
+    let delivery_status_col = find_col(&map, &["delivery status", "delivery"]);
+    let payout_status_col = find_col(&map, &["payout status"]);
+    let sale_date_col = find_col(
+        &map,
+        &["date sold", "sale date", "date of sale", "date of purchase", "sold date", "payout date"],
+    );
+    let paid_by_col = find_col(&map, &["paid by", "paidby"]);
+    let pull_col = find_col(&map, &["pull"]);
+    let who_pulled_col = find_col(&map, &["who pulled"]);
+    let how_much_pull_col = find_col(&map, &["how much pull"]);
+
+    let mut marker_row_map: HashMap<String, usize> = HashMap::new();
+    for (i, raw_row) in data_rows.iter().enumerate() {
+        if let Some(marker) = cell(raw_row, Some(marker_col_index)) {
+            marker_row_map.insert(marker, i);
+        }
+    }
+
+    let mut result =
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+    let mut writes: Vec<(i64, Vec<(usize, String)>)> = vec![];
+
+    let links: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT l.local_id, l.sheet_marker FROM sheet_sync_links l
+             JOIN orders o ON o.id = l.local_id
+             WHERE l.data_source = 'orders' AND o.is_demo = 0
+             ORDER BY l.local_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    for (order_id, marker) in links {
+        let Some(&row_idx) = marker_row_map.get(&marker) else {
+            continue;
+        };
+        let row_number = (row_idx + 2) as i64;
+        let raw_row = &data_rows[row_idx];
+
+        let mut cells: Vec<(usize, String)> = vec![];
+
+        if let Some(sale) = uniform_sale_for_order(conn, order_id)? {
+            let target_cols = [site_listed_col, payout_col, status_col, delivery_status_col, payout_status_col, sale_date_col, paid_by_col];
+            if target_cols.iter().all(|c| cell(raw_row, *c).is_none()) {
+                if let Some(c) = site_listed_col {
+                    cells.push((c, sale.platform_name.clone().unwrap_or_default()));
+                }
+                if let Some(c) = payout_col {
+                    cells.push((c, format_cents(sale.sale_price_cents)));
+                }
+                if let Some(c) = status_col {
+                    cells.push((c, sale.resale_status.clone().unwrap_or_default()));
+                }
+                if let Some(c) = delivery_status_col {
+                    cells.push((c, sale.delivery_status.clone().unwrap_or_default()));
+                }
+                if let Some(c) = payout_status_col {
+                    cells.push((c, sale.payment_status.clone()));
+                }
+                if let Some(c) = sale_date_col {
+                    cells.push((c, format_order_date_for_sheet(&sale.sale_date)));
+                }
+                if let Some(c) = paid_by_col {
+                    cells.push((c, sale.buyer_reference.clone().unwrap_or_default()));
+                }
+            }
+        }
+
+        if let Some((puller_name, amount_cents)) = linked_pull_received_for_order(conn, order_id)? {
+            let target_cols = [pull_col, who_pulled_col, how_much_pull_col];
+            if target_cols.iter().all(|c| cell(raw_row, *c).is_none()) {
+                if let Some(c) = pull_col {
+                    cells.push((c, "yes".to_string()));
+                }
+                if let Some(c) = who_pulled_col {
+                    cells.push((c, puller_name.clone()));
+                }
+                if let Some(c) = how_much_pull_col {
+                    cells.push((c, format_cents(amount_cents)));
+                }
+            }
+        }
+
+        if cells.is_empty() {
+            result.unchanged += 1;
+        } else {
+            result.updated += 1;
+            writes.push((row_number, cells));
+        }
+    }
+
+    Ok((result, writes))
+}
+
+/// The push direction's own network-calling shell for Sales sync. Never
+/// creates the "TIQR ID" marker column if it's missing (unlike
+/// `push_orders_impl`) - this never assigns a new marker to anything, only
+/// ever matches against markers that already exist, so an absent marker
+/// column just means every link fails to find its row (handled the same as
+/// any other not-found row) rather than something worth creating.
+fn push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "orders")?
+        .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Orders yet - connect one in Settings first.".to_string()))?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+    if value_range.values.is_empty() {
+        return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
+    }
+    let headers = value_range.values[0].clone();
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    let (marker_col_index, _marker_exists) = resolve_marker_column(&headers);
+
+    let (mut result, writes) = apply_sales_push(conn, &headers, data_rows, marker_col_index)?;
+
+    for (sheet_row_number, cells) in writes {
+        for (col, value) in cells {
+            let col_letter = column_index_to_a1(col);
+            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{sheet_row_number}"));
+            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                result.errors.push(SheetSyncIssue {
+                    row_number: sheet_row_number,
+                    message: format!("saved locally, but could not write this change back to the sheet: {e}"),
+                });
+            }
+        }
+    }
+
+    result.synced_at = now_iso(conn)?;
+    set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
+    Ok(result)
+}
+
+/// "Push sales" button (Settings -> Integrations, Orders & Sales card) -
+/// the new sibling of "Sales sync". Never runs on its own.
+#[tauri::command]
+pub fn push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let conn = state.db.lock().unwrap();
+    push_sales_impl(&conn)
 }
 
 // ---------------------------------------------------------------------------
@@ -1990,5 +2574,323 @@ mod tests {
         let first_ticket_price: i64 =
             conn.query_row("SELECT sale_price_cents FROM sales WHERE ticket_id = ?1", [ticket_ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(first_ticket_price, 3000, "the pre-existing sale must be untouched, not overwritten with this sync's 45.00");
+    }
+
+    // =========================================================================
+    // Push (app -> sheet), 2.0.18
+    // =========================================================================
+
+    fn seed_event(conn: &Connection) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES ('Coldplay Arena Show')", []).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// A brand-new, never-synced local order - the opposite starting point
+    /// from `seed_order_with_quantity` above (which goes through
+    /// `apply_order_rows`, so is already linked). No seats, so this works
+    /// for any quantity without that cross-check getting in the way.
+    fn local_order_input(event_id: i64, quantity: i64) -> OrderInput {
+        OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-09-15".to_string(),
+            quantity,
+            unit_price_cents: 5000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: None,
+            notes: Some("buyer@example.com".to_string()),
+            ticket_type: Some("e-ticket".to_string()),
+            section: Some("410".to_string()),
+            row_label: Some("25".to_string()),
+            seats: None,
+        }
+    }
+
+    // ---- push_orders: build_order_append_row / join_seats -------------------
+
+    #[test]
+    fn build_order_append_row_places_every_field_at_its_real_column_position() {
+        let order = OrderForPush {
+            id: 1,
+            code: "ORD-000001".to_string(),
+            event_name: "Coldplay Arena Show".to_string(),
+            purchase_date: "2026-09-15".to_string(),
+            platform_name: Some("ticketmaster".to_string()),
+            quantity: 2,
+            unit_price_cents: 5000,
+            currency: "EUR".to_string(),
+            notes: Some("buyer@example.com".to_string()),
+            external_reference: Some("TM-88213".to_string()),
+        };
+        let tickets = vec![
+            TicketForPush {
+                section: Some("410".to_string()),
+                row_label: Some("25".to_string()),
+                ticket_type: Some("e-ticket".to_string()),
+                seat: Some("11".to_string()),
+            },
+            TicketForPush {
+                section: Some("410".to_string()),
+                row_label: Some("25".to_string()),
+                ticket_type: Some("e-ticket".to_string()),
+                seat: Some("12".to_string()),
+            },
+        ];
+        let map = build_header_map(&full_headers());
+        let row = build_order_append_row(&map, MARKER_COL, full_headers().len(), &order, &tickets);
+
+        assert_eq!(row.len(), MARKER_COL + 1);
+        assert_eq!(row[0], "Coldplay Arena Show");
+        assert_eq!(row[1], "15/09/2026", "must round-trip to DD/MM/YYYY, not the app's internal ISO storage");
+        assert_eq!(row[2], "ticketmaster");
+        assert_eq!(row[3], "410");
+        assert_eq!(row[4], "25");
+        assert_eq!(row[5], "11, 12");
+        assert_eq!(row[6], "TM-88213");
+        assert_eq!(row[7], "100.00", "Total Purchase Price = unit price x quantity");
+        assert_eq!(row[8], "2");
+        assert_eq!(row[9], "50.00");
+        assert_eq!(row[10], "EUR");
+        assert_eq!(row[11], "buyer@example.com");
+        assert_eq!(row[12], "e-ticket");
+        assert_eq!(row[MARKER_COL], "ORD-000001");
+    }
+
+    #[test]
+    fn join_seats_is_blank_unless_every_ticket_has_its_own_seat() {
+        let blank_ticket = || TicketForPush { section: None, row_label: None, ticket_type: None, seat: None };
+        let all_seated = vec![
+            TicketForPush { seat: Some("1".to_string()), ..blank_ticket() },
+            TicketForPush { seat: Some("2".to_string()), ..blank_ticket() },
+        ];
+        assert_eq!(join_seats(&all_seated), "1, 2");
+
+        let partially_seated = vec![TicketForPush { seat: Some("1".to_string()), ..blank_ticket() }, blank_ticket()];
+        assert_eq!(join_seats(&partially_seated), "", "a partial mix has no faithful single-cell representation");
+
+        assert_eq!(join_seats(&[]), "");
+    }
+
+    // ---- push_orders: apply_order_push ---------------------------------------
+
+    #[test]
+    fn a_never_linked_order_is_queued_as_an_append_and_linked_immediately() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        insert_order_with_tickets(&conn, &local_order_input(event_id, 2), false).unwrap();
+
+        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.errors.len(), 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "Coldplay Arena Show");
+
+        let links: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sheet_sync_links WHERE data_source='orders'", [], |r| r.get(0)).unwrap();
+        assert_eq!(links, 1, "must be linked right away, exactly like apply_order_rows's own create path");
+    }
+
+    #[test]
+    fn a_demo_order_is_never_pushed() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        insert_order_with_tickets(&conn, &local_order_input(event_id, 1), true).unwrap(); // is_demo = true
+
+        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        assert_eq!(result.created, 0);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn an_already_linked_order_is_never_touched_by_push() {
+        let conn = test_conn();
+        seed_order_with_quantity(&conn, 1); // via apply_order_rows -> already linked
+
+        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        assert_eq!(result.created, 0, "an order that already has a TIQR ID must never be re-appended");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn pushing_two_brand_new_orders_appends_both() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        insert_order_with_tickets(&conn, &local_order_input(event_id, 1), false).unwrap();
+        insert_order_with_tickets(&conn, &local_order_input(event_id, 3), false).unwrap();
+
+        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        assert_eq!(result.created, 2);
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn apply_order_push_also_requires_the_first_batch_headers() {
+        let conn = test_conn();
+        let headers: Vec<String> = vec!["platform".to_string()];
+        let err = apply_order_push(&conn, &headers, 1).unwrap_err();
+        assert!(err.to_string().contains("Event Name"), "{err}");
+    }
+
+    // ---- push_sales: apply_sales_push ----------------------------------------
+
+    fn blank_sales_row(marker: &str) -> Vec<String> {
+        vec![marker, "", "", "", "", "", "", "", "", "", ""].into_iter().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_fully_and_uniformly_sold_linked_order_with_a_blank_sheet_row_gets_pushed() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(result.unchanged, 0);
+        assert_eq!(writes.len(), 1);
+        let (row_number, cells) = &writes[0];
+        assert_eq!(*row_number, 2);
+        let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
+        assert_eq!(as_map.get(&1), Some(&"viagogo".to_string()), "Site Listed");
+        assert_eq!(as_map.get(&2), Some(&"45.00".to_string()), "Payout Per Ticket");
+        assert_eq!(as_map.get(&3), Some(&"Listed".to_string()), "Status");
+        assert_eq!(as_map.get(&4), Some(&"Not yet".to_string()), "Delivery status");
+        assert_eq!(as_map.get(&5), Some(&"paid".to_string()), "Payout status");
+        assert_eq!(as_map.get(&6), Some(&"20/09/2026".to_string()), "sale date, DD/MM/YYYY");
+        assert_eq!(as_map.get(&7), Some(&"buyer@example.com".to_string()), "paid by");
+    }
+
+    #[test]
+    fn an_order_not_fully_sold_yet_is_left_alone() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1); // never sold
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn a_row_that_already_has_any_sale_info_is_never_touched_even_if_incomplete() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        let mut partially_filled = blank_sales_row(&code);
+        partially_filled[1] = "someone typed this by hand".to_string(); // Site Listed
+
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[partially_filled], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty(), "must never touch a row that already has anything in its sale-info columns");
+    }
+
+    #[test]
+    fn non_uniform_sales_across_tickets_of_one_order_are_left_alone() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        // Sold separately at two different prices - a real, valid app state
+        // the sheet's one-row-per-order model simply can't represent.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+             VALUES ('SALE-000001', ?1, '2026-09-20', 4000, 'EUR', 'paid')",
+            [ticket_ids[0]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [ticket_ids[0]]).unwrap();
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+             VALUES ('SALE-000002', ?1, '2026-09-20', 5000, 'EUR', 'paid')",
+            [ticket_ids[1]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [ticket_ids[1]]).unwrap();
+
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn a_linked_pull_received_row_is_pushed_into_blank_pull_columns() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        let input = PullReceivedInput {
+            puller_name: "Ivan".to_string(),
+            event_name: "Coldplay Arena Show".to_string(),
+            event_date: None,
+            quantity: 1,
+            amount_cents: 1000,
+            currency: "EUR".to_string(),
+            more_info: None,
+            order_id: Some(order_id),
+        };
+        pulls_received::create_pull_received_with_source(&conn, &input, false, "manual").unwrap();
+
+        // This order was never sold at all - proving the pull-info group
+        // pushes independently of the sale-info group.
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(writes.len(), 1);
+        let as_map: HashMap<usize, String> = writes[0].1.iter().cloned().collect();
+        assert_eq!(as_map.get(&8), Some(&"yes".to_string()), "pull");
+        assert_eq!(as_map.get(&9), Some(&"Ivan".to_string()), "who pulled");
+        assert_eq!(as_map.get(&10), Some(&"10.00".to_string()), "how much pull");
+    }
+
+    #[test]
+    fn more_than_one_linked_pull_received_row_is_left_alone() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        for name in ["Ivan", "Peter"] {
+            let input = PullReceivedInput {
+                puller_name: name.to_string(),
+                event_name: "Coldplay Arena Show".to_string(),
+                event_date: None,
+                quantity: 1,
+                amount_cents: 1000,
+                currency: "EUR".to_string(),
+                more_info: None,
+                order_id: Some(order_id),
+            };
+            pulls_received::create_pull_received_with_source(&conn, &input, false, "manual").unwrap();
+        }
+
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty(), "ambiguous which of 2 linked pulls to show - must not guess");
+    }
+
+    #[test]
+    fn an_order_whose_marker_is_not_in_the_current_sheet_is_quietly_skipped() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        // The sheet's currently-fetched data doesn't contain this order's
+        // row at all (e.g. it scrolled outside a narrower range, or was
+        // deleted) - nothing to push onto, and nothing worth alarming marko
+        // about either; push_orders/a future Order sync already surfaces
+        // row-level problems loudly on their own.
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 0, "not found at all - not even counted");
+        assert!(result.errors.is_empty());
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn apply_sales_push_still_requires_the_payout_per_ticket_column() {
+        let conn = test_conn();
+        let headers: Vec<String> = vec!["TIQR ID".to_string(), "Site Listed".to_string()];
+        let err = apply_sales_push(&conn, &headers, &[], 0).unwrap_err();
+        assert!(err.to_string().contains("Payout Per Ticket"), "{err}");
     }
 }

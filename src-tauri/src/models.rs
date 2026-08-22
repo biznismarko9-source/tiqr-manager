@@ -777,6 +777,11 @@ pub struct SheetsConnectionStatus {
     pub service_account_email: Option<String>,
     pub connection: Option<SheetsConnectionConfig>,
     pub last_synced_at: Option<String>,
+    /// 2.0.18: the "Push to sheet" direction's own separate timestamp - kept
+    /// apart from `last_synced_at` (which only ever means "last pulled sheet
+    /// -> app") precisely so the two directions never get blurred together in
+    /// the UI. `None` until the first successful push for this data source.
+    pub last_pushed_at: Option<String>,
 }
 
 /// Result of a manual "Test connection" click. `message` is deliberately kept

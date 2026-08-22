@@ -285,11 +285,10 @@ pub fn update_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
 /// itself via `insertDataOption=INSERT_ROWS`), rather than overwriting
 /// anything. `valueInputOption=RAW` for the same reason as `update_values`.
 ///
-/// Still not called anywhere (hence `#[allow(dead_code)]`): sync is
-/// sheet -> app only as of 2.0.3 (commands::pulls_sheet_sync), so nothing
-/// ever appends a *new* row to the sheet yet - that's the app -> sheet push
-/// direction, deliberately a separate, later step. Kept ready for it.
-#[allow(dead_code)]
+/// 2.0.18: the app -> sheet push direction (commands::pulls_sheet_sync::
+/// push_pulls_impl, commands::orders_sheet_sync's own push) - a brand-new
+/// local-only Pull/Order becomes a new row via this, appended after
+/// whatever the sheet already has.
 pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[Vec<String>]) -> AppResult<()> {
     let client = reqwest::blocking::Client::new();
     let url = format!(
