@@ -73,17 +73,21 @@
 //! | `Payout status` | `Sale.payment_status` - blank means `pending` (same default `create_sales_batch_impl` itself uses); `pending`/`paid` map directly; anything else (including `refunded` - a sale can't be created as already refunded, same rule `validate_new_payment_status` already enforces) is a row error |
 //! | (a date column - see `find_col` aliases in `apply_sales_rows`) | `Sale.sale_date`, required whenever `Payout Per Ticket` is present. marko's own past description of this column was ambiguous (see REDESIGN-2.0.10-REPORT.md) - deliberately NOT defaulted to today's date or the order's own purchase date, since either could silently mis-date months of real sales history. A sheet where none of the tried aliases match fails every such row with one clear, specific message instead |
 //! | `paid by` | `Sale.buyer_reference` |
-//! | `pull`, `who pulled`, `how much pull` | 2.0.17: when `pull` trims+lowercases to exactly "yes" AND `who pulled` isn't blank, creates one linked `pulls_received` row instead (`who pulled` -> `puller_name`, `how much pull` -> `amount_cents`, defaulting to 0 if blank/unparseable - see `maybe_link_pull_received`). Idempotent per order, same creation-only spirit as the rest of this module: a second sync of the same order (e.g. partial-fulfillment, see below) never creates a second linked row. Replaces the pre-2.0.17 behaviour of folding these 3 columns into `Sale.notes` as plain text entirely - marko's own request, so this data shows up as a real, browsable record instead ("aby si mal o tom dobry prehlad") |
+//! | `pull`, `who pulled`, `how much pull` | 2.0.17: when `pull` trims+lowercases to exactly "yes" AND `who pulled` isn't blank, creates one linked `pulls_received` row instead (`who pulled` -> `puller_name`, `how much pull` -> `amount_cents`, defaulting to 0 if blank/unparseable - see `maybe_link_pull_received`). Idempotent per order: no sequence of syncs ever creates a second linked row. Replaces the pre-2.0.17 behaviour of folding these 3 columns into `Sale.notes` as plain text entirely - marko's own request, so this data shows up as a real, browsable record instead ("aby si mal o tom dobry prehlad"). **2.0.23: unlike every other column in this table, these 3 are (re-)checked on EVERY sync of a linked row, not only the one that first creates the sale** - marko's real workflow is often "sync the sale first, add pull info to that same row later", and he expects that to still link automatically on the next sync rather than only working when both land in the same sync pass |
 //!
-//! Sales sync is creation-only, same philosophy as `sync_orders` above and
-//! marko's own explicit choice for this pass too: a ticket that already has
-//! an active sale is left completely alone on every later sync, including
-//! its `resale_status`/`delivery_status` - see `apply_sales_rows`. Unlike
-//! `sync_orders`, it never writes anything back to the sheet at all (no new
-//! marker column) - idempotency instead comes directly from each ticket's
-//! own `status`/active `sales` row, checked fresh every run, and a row with
-//! no "TIQR ID" yet is simply not ready for this sync (silently skipped, not
-//! an error - it hasn't been through `sync_orders` yet).
+//! Sales sync is creation-only for the sale itself, same philosophy as
+//! `sync_orders` above and marko's own explicit choice for this pass too: a
+//! ticket that already has an active sale is left completely alone on every
+//! later sync, including its `resale_status`/`delivery_status` - see
+//! `apply_sales_rows`. The one deliberate exception is `pull`/`who pulled`/
+//! `how much pull` - see the table row above and `maybe_link_pull_received`'s
+//! own doc comment for why linking is (idempotently) re-attempted on every
+//! sync of an already-sold row, not just its first. Unlike `sync_orders`, it
+//! never writes anything back to the sheet at all (no new marker column) -
+//! idempotency instead comes directly from each ticket's own `status`/active
+//! `sales` row, checked fresh every run, and a row with no "TIQR ID" yet is
+//! simply not ready for this sync (silently skipped, not an error - it
+//! hasn't been through `sync_orders` yet).
 //!
 //! Every ticket belonging to one sheet row's order is sold together in one
 //! `create_sales_batch_impl` call (same all-or-nothing "New sale" action the
@@ -1067,11 +1071,46 @@ fn apply_sales_rows(
 
         if sellable_ticket_ids.is_empty() {
             // Every ticket on this order already has an active sale (or is
-            // cancelled) - fully synced already, nothing new to do. Same
-            // creation-only rule as sync_orders: resale_status/
-            // delivery_status are NOT touched here either once a row is
-            // fully synced - see this module's own doc comment.
-            result.unchanged += 1;
+            // cancelled) - fully synced already, nothing new for the sale
+            // itself to do. Same creation-only rule as sync_orders:
+            // resale_status/delivery_status are NOT touched here either once
+            // a row is fully synced - see this module's own doc comment.
+            //
+            // 2.0.23: pull/who pulled/how much pull are the one deliberate
+            // exception - marko's real workflow is often "sync the sale
+            // first, add pull info to that same row later" (or edit it after
+            // an earlier pull-less sync), and he expects that to still end
+            // up linked without retyping the sale's own columns just to
+            // force a fresh "creation". `maybe_link_pull_received`'s own
+            // idempotency check (by order_id, not by row/sync-pass) makes
+            // this safe to attempt on every single sync, however many times
+            // - see its own doc comment. Quantity here is the order's actual
+            // SOLD ticket count (not `sellable_ticket_ids.len()`, which is 0
+            // in this branch by definition) - linking is skipped entirely,
+            // same as a blank pull cell, when nothing on the order has sold
+            // yet (e.g. every ticket cancelled), so this never attempts to
+            // link a pull with a zero/invalid quantity.
+            let pull_cell = cell(raw_row, pull_col);
+            let who_pulled_cell = cell(raw_row, who_pulled_col);
+            let how_much_pull_cell = cell(raw_row, how_much_pull_col);
+            let sold_quantity = ticket_rows.iter().filter(|(_, status)| status == "sold").count() as i64;
+            let newly_linked = if sold_quantity > 0 {
+                maybe_link_pull_received(
+                    conn,
+                    order_id,
+                    sold_quantity,
+                    pull_cell.as_deref(),
+                    who_pulled_cell.as_deref(),
+                    how_much_pull_cell.as_deref(),
+                )?
+            } else {
+                false
+            };
+            if newly_linked {
+                result.updated += 1;
+            } else {
+                result.unchanged += 1;
+            }
             continue;
         }
 
@@ -1124,34 +1163,46 @@ fn apply_sales_rows(
     Ok(result)
 }
 
-/// After a Sales-sync row successfully creates a real sale, mirrors a
-/// `pull` = "yes" cell into a real, linked `pulls_received` row (2.0.17) -
-/// see this module's own doc comment's "Column mapping (second batch)" table
-/// for the full rationale. Does nothing at all (not even counted as an
-/// error) unless `pull_cell` trims+lowercases to exactly "yes" AND
-/// `who_pulled_cell` isn't blank - `who_pulled_cell` becomes `puller_name`,
-/// which the schema requires, so there is simply nothing sensible to create
-/// without it; the sale itself has already fully succeeded by the time this
-/// runs either way, so a missing/unusable puller name never blocks it.
+/// Mirrors a `pull` = "yes" cell into a real, linked `pulls_received` row
+/// (2.0.17) - see this module's own doc comment's "Column mapping (second
+/// batch)" table for the full rationale. Does nothing at all (not even
+/// counted as an error) unless `pull_cell` trims+lowercases to exactly "yes"
+/// AND `who_pulled_cell` isn't blank - `who_pulled_cell` becomes
+/// `puller_name`, which the schema requires, so there is simply nothing
+/// sensible to create without it. Returns whether it actually linked a new
+/// row - `false` covers every "nothing to do" case above, plus "already
+/// linked" below - so callers can tell "created something new" apart from
+/// "truly nothing happened" for their own `SheetSyncResult` counters.
 ///
-/// Idempotent per order: guarded by a `SELECT` before inserting (and backed
+/// 2.0.23: called from TWO places in `apply_sales_rows` now - right after a
+/// sale is newly created (as before 2.0.23), AND, separately, on a row whose
+/// order was ALREADY fully sold before this sync even started (see that
+/// function's own `sellable_ticket_ids.is_empty()` branch). marko's real
+/// workflow is often "sync the sale first, fill in pull info on that same
+/// row later" - he expects that to still end up linked on the next sync,
+/// not only when both happen to land in the same sync pass.
+///
+/// Idempotent per order regardless of which of those two call sites reaches
+/// it, or how many times: guarded by a `SELECT` before inserting (and backed
 /// by a DB-level partial UNIQUE index as a second line of defence - see
-/// migrations/011_pulls_received.sql), so an order that gets synced across
-/// more than one `apply_sales_rows` run - e.g. only some of its tickets were
-/// sellable in an earlier run, see this module's own "creation-only" doc
-/// comment above - never ends up with two linked rows for the same order.
-/// This mirrors the same creation-only philosophy the rest of this module
-/// already follows: once linked, a `pulls_received` row is never revisited
-/// or updated by a later sync, even if the sheet's own cells change
-/// afterwards (marko can still edit it by hand in the app - see
-/// commands/pulls_received.rs).
+/// migrations/011_pulls_received.sql), so an order can never end up with two
+/// linked rows no matter how many times it gets synced. Once linked though,
+/// a `pulls_received` row is still never revisited or updated by a later
+/// sync - only the one-time act of creating the link at all is
+/// re-attempted on every sync; the row's own fields, once created, follow
+/// the same creation-only philosophy as the rest of this module (marko can
+/// still edit it by hand in the app - see commands/pulls_received.rs).
 ///
 /// A blank or unparseable "how much pull" cell defaults `amount_cents` to 0
 /// rather than blocking anything - this whole record is informational only
 /// (marko confirmed via AskUserQuestion: never affects Profit/Revenue).
 /// event_name/event_date/currency are copied from the order's own linked
 /// event/currency rather than asked of the sheet a second time, since the
-/// sheet has no columns of its own for either.
+/// sheet has no columns of its own for either. `quantity` is passed in by
+/// the caller rather than derived here, since its correct source differs
+/// between the two call sites (the tickets just sold THIS pass, vs. the
+/// order's total already-sold count for a row that was already fully sold
+/// before this sync started).
 fn maybe_link_pull_received(
     conn: &Connection,
     order_id: i64,
@@ -1159,13 +1210,13 @@ fn maybe_link_pull_received(
     pull_cell: Option<&str>,
     who_pulled_cell: Option<&str>,
     how_much_pull_cell: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let pull_is_yes = pull_cell.map(|v| v.trim().eq_ignore_ascii_case("yes")).unwrap_or(false);
     if !pull_is_yes {
-        return Ok(());
+        return Ok(false);
     }
     let Some(puller_name) = who_pulled_cell.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(());
+        return Ok(false);
     };
 
     let already_linked: bool = conn.query_row(
@@ -1174,7 +1225,7 @@ fn maybe_link_pull_received(
         |r| r.get(0),
     )?;
     if already_linked {
-        return Ok(());
+        return Ok(false);
     }
 
     let (event_id, currency): (i64, String) =
@@ -1195,7 +1246,7 @@ fn maybe_link_pull_received(
         order_id: Some(order_id),
     };
     pulls_received::create_pull_received_with_source(conn, &input, false, "sheet_sync")?;
-    Ok(())
+    Ok(true)
 }
 
 /// The network-calling shell for Sales sync - fetches the SAME connected
@@ -2894,6 +2945,93 @@ mod tests {
         let rows = pulls_received_for_order(&conn, &code);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].3, 0, "unparseable amount must default to 0, never block the sale");
+    }
+
+    #[test]
+    fn pull_info_added_to_an_already_fully_synced_row_still_links_on_a_later_sync() {
+        // 2.0.23: marko's real workflow - sync the sale first, add pull info
+        // to that same sheet row afterwards, sync again.
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+
+        let first = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(first.created, 1);
+        assert!(pulls_received_for_order(&conn, &code).is_empty(), "no pull info yet - nothing to link");
+
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        let second = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(second.created, 0, "the sale itself was already synced - nothing new to create there");
+        assert_eq!(second.updated, 1, "a freshly linked pulls_received row is a real change, not a no-op");
+        assert_eq!(second.unchanged, 0);
+
+        let rows = pulls_received_for_order(&conn, &code);
+        assert_eq!(rows.len(), 1);
+        let (puller_name, event_name, quantity, amount_cents, source) = &rows[0];
+        assert_eq!(puller_name, "Jozef");
+        assert_eq!(event_name, "Coldplay Arena Show", "copied from the order's own linked event");
+        assert_eq!(*quantity, 1);
+        assert_eq!(*amount_cents, 1500);
+        assert_eq!(source, "sheet_sync");
+    }
+
+    #[test]
+    fn a_pull_already_linked_on_an_already_sold_row_stays_unchanged_and_unduplicated_on_a_further_sync() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        apply_sales_rows(&mut conn, &sales_headers(), &[r.clone()], 0).unwrap();
+        assert_eq!(pulls_received_for_order(&conn, &code).len(), 1);
+
+        let third = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(third.created, 0);
+        assert_eq!(third.updated, 0, "already linked - a further sync must settle back to unchanged");
+        assert_eq!(third.unchanged, 1);
+        assert_eq!(pulls_received_for_order(&conn, &code).len(), 1, "must not create a second linked row");
+    }
+
+    #[test]
+    fn pull_info_added_later_uses_the_orders_full_sold_quantity_not_zero() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let first = apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        assert_eq!(first.created, 1);
+
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        let second = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(second.updated, 1);
+
+        let rows = pulls_received_for_order(&conn, &code);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2, 2, "both tickets were sold - quantity must reflect the order's real sold count, not the 0 sellable at sync time");
+    }
+
+    #[test]
+    fn pull_info_on_a_row_with_no_sold_tickets_at_all_never_links_and_stays_unchanged() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        conn.execute("UPDATE tickets SET status = 'cancelled' WHERE id = ?1", [ticket_id]).unwrap();
+
+        let mut r = sales_row(&code, "45.00");
+        r[8] = "yes".to_string();
+        r[9] = "Jozef".to_string();
+        r[10] = "15".to_string();
+        let result = apply_sales_rows(&mut conn, &sales_headers(), &[r], 0).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.updated, 0, "nothing on this order ever sold - must never try to link a zero-quantity pull");
+        assert_eq!(result.unchanged, 1);
+        assert!(result.errors.is_empty());
+        assert!(pulls_received_for_order(&conn, &code).is_empty());
     }
 
     #[test]
