@@ -6,6 +6,7 @@ import { decimalStringToCents, formatDate, formatMoney, todayIso } from "../lib/
 import {
   Badge,
   Button,
+  CHECKBOX_CLASS,
   EmptyState,
   Field,
   Input,
@@ -331,6 +332,15 @@ function OrderFormModal({
   const [unitPrice, setUnitPrice] = useState("");
   const [unitFees, setUnitFees] = useState("0");
   const [otherCosts, setOtherCosts] = useState("0");
+  // 2.0.25: "Did you buy this through a pull?" - marko's own request, moved
+  // here from Order Detail (see that page's 2.0.24 "Received pulls" section,
+  // still there for editing/adding one later) since he wants this recorded
+  // at the moment he creates the order, not as a separate later step. Only
+  // asks for the 2 things this form can't already derive - who pulled, and
+  // the fee - exactly like Order Detail's own "Add pull info" action.
+  const [pulled, setPulled] = useState(false);
+  const [pullerName, setPullerName] = useState("");
+  const [pullFee, setPullFee] = useState("0");
   const [currency, setCurrency] = useState("EUR");
   const [customCurrency, setCustomCurrency] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
@@ -355,6 +365,9 @@ function OrderFormModal({
     setUnitPrice("");
     setUnitFees("0");
     setOtherCosts("0");
+    setPulled(false);
+    setPullerName("");
+    setPullFee("0");
     setCurrency("EUR");
     setCustomCurrency(false);
     setPaymentStatus("unpaid");
@@ -377,15 +390,31 @@ function OrderFormModal({
   // multiplied by quantity; other costs stays a plain order-wide total) is
   // untouched - purchaseCents + feesCents + otherCents is mathematically
   // identical to the old totalPreviewCents value.
+  // 2.0.25: `pullFeeCents` folds into `totalCents` the exact same way
+  // `otherCents` already does - marko's own worked example ("buy tickets for
+  // 200, buy the pull for 20, total purchase becomes 220"). Kept as its own
+  // named field (not just added straight into `otherCents`) purely so the
+  // SUMMARY bar below can show it as its own line - `submit()` further down
+  // is what actually combines it into the one `otherCostsCents` this form
+  // has always sent the backend, so nothing about OrderInput's shape or
+  // insert_order_with_tickets's existing, tested cost allocation changes.
   const summary = useMemo(() => {
     const up = decimalStringToCents(unitPrice) ?? 0;
     const f = decimalStringToCents(unitFees) ?? 0;
     const oc = decimalStringToCents(otherCosts) ?? 0;
+    const pf = pulled ? decimalStringToCents(pullFee) ?? 0 : 0;
     const purchaseCents = qNum * up;
     const feesCents = qNum * f;
     const otherCents = oc;
-    return { purchaseCents, feesCents, otherCents, totalCents: purchaseCents + feesCents + otherCents };
-  }, [qNum, unitPrice, unitFees, otherCosts]);
+    const pullFeeCents = pf;
+    return {
+      purchaseCents,
+      feesCents,
+      otherCents,
+      pullFeeCents,
+      totalCents: purchaseCents + feesCents + otherCents + pullFeeCents,
+    };
+  }, [qNum, unitPrice, unitFees, otherCosts, pulled, pullFee]);
 
   const submit = async () => {
     setError(null);
@@ -393,6 +422,10 @@ function OrderFormModal({
     const upCents = decimalStringToCents(unitPrice);
     const unitFeesCents = decimalStringToCents(unitFees);
     const otherCents = decimalStringToCents(otherCosts);
+    // 2.0.25: only parsed/validated at all when the checkbox is on - an
+    // untouched "0" left over from before unchecking it must never block
+    // submit.
+    const pullFeeCents = pulled ? decimalStringToCents(pullFee) : 0;
     const seats = parseSeats(seatsRaw);
 
     if (!eventId) return setError("Please select an event");
@@ -400,6 +433,8 @@ function OrderFormModal({
     if (upCents === null) return setError("Unit price is not a valid amount");
     if (unitFeesCents === null) return setError("Fees is not a valid amount");
     if (otherCents === null) return setError("Other costs is not a valid amount");
+    if (pulled && !pullerName.trim()) return setError("Who pulled is required");
+    if (pullFeeCents === null) return setError("Pull fee is not a valid amount");
     if (!purchaseDate) return setError("Purchase date is required");
     if (seats.length > 0 && seats.length !== q) {
       return setError(`You entered ${seats.length} seat(s) but quantity is ${q} - provide one seat per ticket, or clear the Seats field`);
@@ -426,7 +461,15 @@ function OrderFormModal({
       // exact multiple of quantity, so allocate_cents hands every ticket
       // back exactly this per-unit amount with zero remainder to distribute.
       feesCents: unitFeesCents * q,
-      otherCostsCents: otherCents,
+      // 2.0.25: the pull fee (if any) is simply added on top of whatever
+      // marko typed into "Other costs" - see the `summary` useMemo's own
+      // comment above for why this is the ONLY change here: otherCostsCents
+      // already meant "one order-wide total, split evenly across every
+      // ticket via allocate_cents" before this, and the pull fee is exactly
+      // that same kind of cost, so it needs no new backend field, no new
+      // migration, and doesn't touch insert_order_with_tickets's actual
+      // allocation logic at all - only what value this form sends it.
+      otherCostsCents: otherCents + pullFeeCents,
       currency,
       paymentStatus,
       notes: notes || null,
@@ -440,6 +483,20 @@ function OrderFormModal({
     try {
       const created = await api.createOrder(input);
       toast.success(`Order ${created.code} created with ${created.quantity} tickets`);
+      // 2.0.25: reuses the exact same linking action Order Detail's own
+      // "Add pull info" (2.0.24) already calls - see
+      // commands::pulls_received::link_pull_received_to_order's doc comment.
+      // A failure here is deliberately never fatal to order creation itself
+      // (the order and its tickets are already fully real at this point) -
+      // it surfaces as its own toast instead, and marko can still add the
+      // pull by hand from Order Detail's own section if this one step failed.
+      if (pulled && pullerName.trim()) {
+        try {
+          await api.linkPullReceivedToOrder(created.id, pullerName.trim(), pullFeeCents);
+        } catch (e) {
+          toast.error(`Order created, but the pull could not be linked: ${errMsg(e)}`);
+        }
+      }
       onCreated(created);
     } catch (e) {
       setError(errMsg(e));
@@ -616,6 +673,35 @@ function OrderFormModal({
           <Field label="Other costs (total)" hint="Split evenly across all tickets">
             <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
           </Field>
+
+          {/* 2.0.25: marko's own request - record a pull right when creating
+              the order, instead of a separate trip to Order Detail
+              afterwards (that page's own "Received pulls" section, added in
+              2.0.24, still exists for editing one or adding one later).
+              Collapsed behind a checkbox rather than always-visible fields,
+              same "only ask when relevant" pattern as Currency/Ticket type's
+              own "Other..." toggles above - most orders were never pulled. */}
+          <div className="col-span-2">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className={CHECKBOX_CLASS}
+                checked={pulled}
+                onChange={(e) => setPulled(e.target.checked)}
+              />
+              <span className="text-sm text-slate-700 dark:text-slate-300">This order was pulled by someone else</span>
+            </label>
+          </div>
+          {pulled && (
+            <>
+              <Field label="Who pulled" required hint="Who pulled these tickets for you">
+                <Input autoFocus value={pullerName} onChange={(e) => setPullerName(e.target.value)} />
+              </Field>
+              <Field label={`Pull fee (${currency})`} hint="What you paid them - added to the total purchase price below">
+                <Input inputMode="decimal" placeholder="0.00" value={pullFee} onChange={(e) => setPullFee(e.target.value)} />
+              </Field>
+            </>
+          )}
         </FormGroup>
 
         {/* Payment status/Notes deliberately aren't one of marko's 4 named
@@ -661,6 +747,12 @@ function OrderFormModal({
             <>
               <span className="text-slate-300 dark:text-slate-600">&middot;</span>
               <span>Other costs: {formatMoney(summary.otherCents, currency)}</span>
+            </>
+          )}
+          {summary.pullFeeCents !== 0 && (
+            <>
+              <span className="text-slate-300 dark:text-slate-600">&middot;</span>
+              <span>Pull fee: {formatMoney(summary.pullFeeCents, currency)}</span>
             </>
           )}
           <span className="text-slate-300 dark:text-slate-600">&middot;</span>
