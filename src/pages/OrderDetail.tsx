@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { OrderEditInput, OrderPaymentStatus, OrderRecord, OrderSalesSummary, Platform, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatSeatLocation } from "../lib/format";
+import type {
+  OrderEditInput,
+  OrderPaymentStatus,
+  OrderRecord,
+  OrderSalesSummary,
+  Platform,
+  PullReceived,
+  Ticket,
+} from "../lib/types";
+import { decimalStringToCents, formatDate, formatMoney, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
@@ -11,6 +19,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  Input,
   LoadingBlock,
   Modal,
   ModalFooter,
@@ -18,9 +27,10 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconPencil, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { TicketEditModal } from "./Tickets";
+import { PullReceivedFormModal } from "./Pulls";
 
 export default function OrderDetail() {
   const { id } = useParams();
@@ -67,6 +77,17 @@ export default function OrderDetail() {
   const [editTicket, setEditTicket] = useState<Ticket | null>(null);
   // 1.8.3: bulk ticket actions.
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // 2.0.24: "Received pulls" section - see that section's own comment below.
+  const [pullsReceived, setPullsReceived] = useState<PullReceived[] | null>(null);
+  const [addPullOpen, setAddPullOpen] = useState(false);
+  const [editPull, setEditPull] = useState<PullReceived | null>(null);
+  const [deletePullTarget, setDeletePullTarget] = useState<PullReceived | null>(null);
+  const [deletingPull, setDeletingPull] = useState(false);
+
+  const loadPullsReceived = useCallback(() => {
+    api.listPullsReceivedForOrder(orderId).then(setPullsReceived).catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId]);
 
   const load = useCallback(() => {
     // Every reload (mount, edit, delete, or a bulk edit just applied) starts
@@ -78,6 +99,7 @@ export default function OrderDetail() {
       .then(setTickets)
       .catch((e) => toast.error(errMsg(e)));
     api.getOrderSalesSummary(orderId).then(setSalesSummary).catch((e) => toast.error(errMsg(e)));
+    loadPullsReceived();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
 
@@ -217,6 +239,55 @@ export default function OrderDetail() {
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
         </div>
+      </Card>
+
+      {/* 2.0.24: marko's own request - fill in who pulled this order (and
+          for how much) right here, instead of only via the connected Google
+          Sheet (orders_sheet_sync::maybe_link_pull_received) or by leaving
+          this page to search for the order on the Pulls screen. A list, not
+          a single optional slot - nothing stops more than one linked row per
+          order (see api.listPullsReceivedForOrder's own doc comment), and
+          most orders have none at all, which is why this card always shows
+          but the "no pulls" state is a plain one-line sentence, not an
+          EmptyState block. */}
+      <Card className="mb-8 p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+            Received pulls{pullsReceived && pullsReceived.length > 0 ? ` (${pullsReceived.length})` : ""}
+          </h2>
+          <Button variant="secondary" onClick={() => setAddPullOpen(true)}>
+            <IconPlus className="h-4 w-4" /> Add pull info
+          </Button>
+        </div>
+        {pullsReceived === null ? (
+          <LoadingBlock />
+        ) : pullsReceived.length === 0 ? (
+          <p className="text-sm text-slate-400 dark:text-slate-500">
+            Nobody pulled this order for you yet - or it just hasn&apos;t been recorded.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {pullsReceived.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-left hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
+                onClick={() => setEditPull(p)}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <IconLink className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" />
+                  <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{p.pullerName}</span>
+                  {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
+                </span>
+                <span className="flex shrink-0 items-center gap-3 text-sm text-slate-500 dark:text-slate-400">
+                  <span className="tabular-nums">{p.quantity}&times;</span>
+                  <span className="tabular-nums">{formatMoney(p.amountCents, p.currency)}</span>
+                  <IconPencil className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </Card>
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
@@ -423,6 +494,57 @@ export default function OrderDetail() {
           }
         }}
       />
+
+      <AddOrderPullModal
+        open={addPullOpen}
+        orderId={orderId}
+        currency={order.currency}
+        onClose={() => setAddPullOpen(false)}
+        onSaved={() => {
+          setAddPullOpen(false);
+          loadPullsReceived();
+        }}
+      />
+
+      {/* Reuses Pulls.tsx's own full edit form (event/date/quantity/
+          currency/more info/re-link) - see that component's own 2.0.24 doc
+          comment for why editing an existing linked pull gets the full form
+          while creating one here deliberately doesn't. */}
+      <PullReceivedFormModal
+        open={editPull !== null}
+        pull={editPull}
+        onClose={() => setEditPull(null)}
+        onSaved={() => {
+          setEditPull(null);
+          loadPullsReceived();
+        }}
+        onRequestDelete={(p) => setDeletePullTarget(p)}
+      />
+
+      <ConfirmDialog
+        open={deletePullTarget !== null}
+        title="Delete this received pull?"
+        message={`This removes ${deletePullTarget?.code} (${deletePullTarget?.pullerName}) permanently. This can't be undone (the order itself is not affected).`}
+        confirmLabel="Delete"
+        danger
+        busy={deletingPull}
+        onCancel={() => setDeletePullTarget(null)}
+        onConfirm={async () => {
+          if (!deletePullTarget) return;
+          setDeletingPull(true);
+          try {
+            await api.deletePullReceived(deletePullTarget.id);
+            toast.success(`Pull ${deletePullTarget.code} deleted`);
+            setDeletePullTarget(null);
+            setEditPull(null);
+            loadPullsReceived();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeletingPull(false);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -619,6 +741,88 @@ function OrderEditModal({
         </Button>
         <Button variant="primary" onClick={submit} disabled={saving}>
           {saving ? "Saving..." : "Save changes"}
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+/** 2.0.24: Order Detail's lean "Add pull info" action - see this file's
+ * "Received pulls" card and commands::pulls_received's module doc comment
+ * (Rust) for the full rationale. Deliberately only 2 fields, unlike Pulls
+ * screen's full PullReceivedFormModal (reused here only for EDITING an
+ * already-linked pull, further down): event name/date, quantity and
+ * currency are all already visible elsewhere on this exact page and get
+ * copied from the order automatically by `link_pull_received_to_order` -
+ * asking marko to retype any of them here would just be a second, possibly
+ * drifting copy of numbers the order itself already owns. */
+function AddOrderPullModal({
+  open,
+  orderId,
+  currency,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  orderId: number;
+  currency: string;
+  onClose: () => void;
+  onSaved: (pull: PullReceived) => void;
+}) {
+  const toast = useToast();
+  const [pullerName, setPullerName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setPullerName("");
+    setAmount("");
+    setError(null);
+  }, [open]);
+
+  const submit = async () => {
+    setError(null);
+    if (!pullerName.trim()) return setError("Who pulled is required");
+    // Same "blank is fine, defaults to 0" rule as the sheet-sync path's own
+    // "how much pull" cell - this is informational only, never required.
+    const amountCents = amount.trim() ? decimalStringToCents(amount) : 0;
+    if (amountCents === null) return setError("Amount is not a valid number");
+
+    setSaving(true);
+    try {
+      const created = await api.linkPullReceivedToOrder(orderId, pullerName.trim(), amountCents);
+      toast.success(`Pull ${created.code} linked`);
+      onSaved(created);
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add pull info">
+      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+        Event, quantity and currency are copied from this order automatically - just fill in who pulled it and what
+        you paid them.
+      </p>
+      <div className="flex flex-col gap-4">
+        <Field label="Who pulled" required hint="Who pulled these tickets for you">
+          <Input autoFocus value={pullerName} onChange={(e) => setPullerName(e.target.value)} />
+        </Field>
+        <Field label={`How much (${currency})`} hint="What you paid the puller - optional, defaults to 0">
+          <Input inputMode="decimal" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </Field>
+      </div>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={submit} disabled={saving}>
+          {saving ? "Saving..." : "Save"}
         </Button>
       </ModalFooter>
     </Modal>

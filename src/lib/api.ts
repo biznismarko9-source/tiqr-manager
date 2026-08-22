@@ -104,6 +104,15 @@ export const api = {
   createPullReceived: (input: PullReceivedInput) => invoke<PullReceived>("create_pull_received", { input }),
   updatePullReceived: (id: number, input: PullReceivedEditInput) => invoke<PullReceived>("update_pull_received", { id, input }),
   deletePullReceived: (id: number) => invoke<void>("delete_pull_received", { id }),
+  /** 2.0.24: Order Detail's own lean "Add pull info" action - event name/
+   * date/quantity/currency are all derived server-side from the order
+   * itself, never sent from here. See commands::pulls_received's module doc
+   * comment for how this differs from `createPullReceived` above. */
+  linkPullReceivedToOrder: (orderId: number, pullerName: string, amountCents: number) =>
+    invoke<PullReceived>("link_pull_received_to_order", { orderId, pullerName, amountCents }),
+  /** 2.0.24: every pulls_received row linked to one order - see that
+   * command's own doc comment for why this is a list, not just one. */
+  listPullsReceivedForOrder: (orderId: number) => invoke<PullReceived[]>("list_pulls_received_for_order", { orderId }),
 
   // Sales
   listSales: (params: {

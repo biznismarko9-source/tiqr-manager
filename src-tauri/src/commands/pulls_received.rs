@@ -6,13 +6,21 @@
 //! `orders` row - nullable, since marko confirmed (via AskUserQuestion) this
 //! must also work fully standalone, with no order at all.
 //!
-//! Two ways a row gets created: typed directly in the app
-//! (`create_pull_received`, `source = "manual"`), or auto-created by Orders
+//! THREE ways a row gets created: typed directly in the app via the full
+//! form on the Pulls screen (`create_pull_received`, `source = "manual"`,
+//! optionally linked to any existing order by hand through that form's own
+//! order picker - see Pulls.tsx's `OrderLinkPicker`); auto-created by Orders
 //! & Sales sheet sync when a synced row's `pull` column says "yes" (see
 //! commands::orders_sheet_sync::maybe_link_pull_received, `source =
-//! "sheet_sync"`) - `create_pull_received_with_source` is `pub(crate)`
-//! specifically so that sync path reuses the exact same validate+insert
-//! logic instead of duplicating it, same convention as
+//! "sheet_sync"`); or, since 2.0.24, filled in directly on the Order Detail
+//! screen itself (`link_pull_received_to_order`, also `source = "manual"` -
+//! it's the exact same kind of manually-typed row as the Pulls-screen form
+//! produces, just entered from a different, narrower screen that already
+//! knows which order it's for) - marko's own request, so he isn't forced to
+//! leave the order he's looking at and search for it again on the Pulls
+//! screen just to record who pulled it. `create_pull_received_with_source`
+//! is `pub(crate)` specifically so every one of these paths reuses the exact
+//! same validate+insert logic instead of duplicating it, same convention as
 //! commands::pulls::fetch_one being `pub(crate)` for commands::pulls_sheet_sync
 //! to reuse.
 
@@ -20,7 +28,7 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::models::{PullReceived, PullReceivedEditInput, PullReceivedInput};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::State;
 
 // Same safety cap and rationale as every other unfiltered list view in this
@@ -215,6 +223,89 @@ pub fn delete_pull_received(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     conn.execute("DELETE FROM pulls_received WHERE id = ?1", [id])?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Order Detail's own "Received pulls" section (2.0.24) - see this module's
+// own doc comment above for why this is a third, narrower creation path
+// rather than reusing the full Pulls-screen form. Deliberately only 2 real
+// inputs (puller_name, amount_cents) - event_name/event_date/quantity/
+// currency are always copied fresh from the order/event themselves, the
+// same server-side auto-derivation `maybe_link_pull_received`
+// (orders_sheet_sync.rs) already does for the sheet-sync path, and for the
+// same reason: Order Detail already shows all of that about the order, so
+// asking marko to retype it here would be redundant AND a second, possibly
+// drifting copy of numbers the order itself already owns.
+// ---------------------------------------------------------------------------
+
+/// Order Detail's "Add pull info" action. No idempotency guard, deliberately
+/// - unlike the sheet-sync path (which must never turn one sheet row into
+/// two rows across repeated syncs of the SAME data), every call here is a
+/// distinct, explicit action marko took on purpose, exactly like clicking
+/// "New received pull" on the Pulls screen itself (which has never had a
+/// "only one per order" rule either - see Pulls.tsx's `OrderLinkPicker`,
+/// which lets ANY order be linked from there with no such limit). The
+/// frontend is what keeps this sane in practice: it only offers this action
+/// at all, and disables it while saving - see `list_pulls_received_for_order`
+/// below for how Order Detail then shows however many rows exist.
+fn link_pull_received_to_order_impl(
+    conn: &Connection,
+    order_id: i64,
+    puller_name: &str,
+    amount_cents: i64,
+) -> AppResult<PullReceived> {
+    let (event_id, quantity, currency): (i64, i64, String) = conn
+        .query_row("SELECT event_id, quantity, currency FROM orders WHERE id = ?1", [order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Order #{order_id} not found")))?;
+    let (event_name, event_date): (String, Option<String>) =
+        conn.query_row("SELECT name, event_date FROM events WHERE id = ?1", [event_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+    let input = PullReceivedInput {
+        puller_name: puller_name.to_string(),
+        event_name,
+        event_date,
+        quantity,
+        amount_cents,
+        currency,
+        more_info: None,
+        order_id: Some(order_id),
+    };
+    create_pull_received_with_source(conn, &input, false, "manual")
+}
+
+#[tauri::command]
+pub fn link_pull_received_to_order(
+    state: State<AppState>,
+    order_id: i64,
+    puller_name: String,
+    amount_cents: i64,
+) -> AppResult<PullReceived> {
+    let conn = state.db.lock().unwrap();
+    link_pull_received_to_order_impl(&conn, order_id, &puller_name, amount_cents)
+}
+
+/// Powers Order Detail's "Received pulls" section - same small, dedicated
+/// fetch alongside the main entity as `commands::orders::get_order_sales_summary`,
+/// rather than folding this onto `Order`/`OrderRecord` itself. Returns every
+/// row linked to this order, not just one - nothing stops marko manually
+/// linking more than one to the same order from the Pulls screen's own
+/// picker (see `link_pull_received_to_order`'s own doc comment), so an
+/// `Option` here would silently hide a second or third one. Oldest first,
+/// matching the order marko most likely added them in.
+fn list_pulls_received_for_order_impl(conn: &Connection, order_id: i64) -> AppResult<Vec<PullReceived>> {
+    let sql = format!("{BASE_SQL} WHERE pr.order_id = ?1 ORDER BY pr.id ASC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([order_id], map_pull_received)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn list_pulls_received_for_order(state: State<AppState>, order_id: i64) -> AppResult<Vec<PullReceived>> {
+    let conn = state.db.lock().unwrap();
+    list_pulls_received_for_order_impl(&conn, order_id)
 }
 
 #[cfg(test)]
@@ -489,5 +580,119 @@ mod tests {
         let p = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
         conn.execute("DELETE FROM pulls_received WHERE id = ?1", [p.id]).unwrap();
         assert!(fetch_one(&conn, p.id).is_err());
+    }
+
+    // ---- link_pull_received_to_order (Order Detail, 2.0.24) -------------------
+
+    /// Same idea as `seed_order` above, but with a non-default quantity/
+    /// currency/event_date so a passing test can't be accidentally hiding a
+    /// bug where the copy-through silently falls back to some default
+    /// instead of genuinely reading the order's own values.
+    fn seed_order_with(conn: &Connection, code: &str, quantity: i64, currency: &str, event_date: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO events(name, event_date) VALUES ('Ed Sheeran Tour', ?1)",
+            [event_date],
+        )
+        .unwrap();
+        let event_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO orders(code, event_id, purchase_date, quantity, currency) VALUES (?1, ?2, '2026-08-01', ?3, ?4)",
+            params![code, event_id, quantity, currency],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn link_pull_received_to_order_copies_event_quantity_and_currency_from_the_order_itself() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 3, "USD", "2026-10-15");
+        let p = link_pull_received_to_order_impl(&conn, order_id, "Jozef", 1500).unwrap();
+        assert_eq!(p.puller_name, "Jozef");
+        assert_eq!(p.event_name, "Ed Sheeran Tour");
+        assert_eq!(p.event_date.as_deref(), Some("2026-10-15"));
+        assert_eq!(p.quantity, 3, "must be the order's own quantity, not a hardcoded 1");
+        assert_eq!(p.currency, "USD", "must be the order's own currency, not a hardcoded default");
+        assert_eq!(p.amount_cents, 1500);
+        assert_eq!(p.order_id, Some(order_id));
+        assert_eq!(p.order_code.as_deref(), Some("ORD-000042"));
+    }
+
+    #[test]
+    fn link_pull_received_to_order_uses_manual_as_the_source() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        let p = link_pull_received_to_order_impl(&conn, order_id, "Jozef", 0).unwrap();
+        assert_eq!(p.source, "manual", "typed on Order Detail is just as manual as the Pulls screen's own form");
+    }
+
+    #[test]
+    fn link_pull_received_to_order_accepts_a_zero_amount() {
+        // "How much pull" is informational only and optional in spirit, same
+        // as the sheet-sync path's own blank-defaults-to-0 rule - the
+        // frontend sends 0 rather than blank, but the backend must not
+        // reject it either way.
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        let p = link_pull_received_to_order_impl(&conn, order_id, "Jozef", 0).unwrap();
+        assert_eq!(p.amount_cents, 0);
+    }
+
+    #[test]
+    fn link_pull_received_to_order_rejects_an_empty_puller_name() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        assert!(link_pull_received_to_order_impl(&conn, order_id, "   ", 1500).is_err());
+    }
+
+    #[test]
+    fn link_pull_received_to_order_rejects_a_negative_amount() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        assert!(link_pull_received_to_order_impl(&conn, order_id, "Jozef", -1).is_err());
+    }
+
+    #[test]
+    fn link_pull_received_to_order_rejects_a_nonexistent_order() {
+        let conn = test_conn();
+        let err = link_pull_received_to_order_impl(&conn, 999_999, "Jozef", 1500).unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn link_pull_received_to_order_allows_linking_a_second_row_to_the_same_order() {
+        // Deliberately no "already linked" guard here - see this function's
+        // own doc comment for why. Mirrors the Pulls screen's own
+        // OrderLinkPicker, which has never restricted this either.
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 2, "EUR", "2026-10-15");
+        link_pull_received_to_order_impl(&conn, order_id, "Jozef", 1000).unwrap();
+        link_pull_received_to_order_impl(&conn, order_id, "Maria", 500).unwrap();
+        let rows = list_pulls_received_for_order_impl(&conn, order_id).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    // ---- list_pulls_received_for_order (Order Detail, 2.0.24) -----------------
+
+    #[test]
+    fn list_pulls_received_for_order_returns_only_that_orders_rows_oldest_first() {
+        let conn = test_conn();
+        let order_a = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        let order_b = seed_order_with(&conn, "ORD-000043", 1, "EUR", "2026-10-16");
+        let first = link_pull_received_to_order_impl(&conn, order_a, "Jozef", 1000).unwrap();
+        let second = link_pull_received_to_order_impl(&conn, order_a, "Maria", 500).unwrap();
+        link_pull_received_to_order_impl(&conn, order_b, "Someone else entirely", 200).unwrap();
+
+        let rows = list_pulls_received_for_order_impl(&conn, order_a).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, first.id);
+        assert_eq!(rows[1].id, second.id);
+    }
+
+    #[test]
+    fn list_pulls_received_for_order_is_empty_for_an_order_with_no_linked_pulls() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
+        assert!(list_pulls_received_for_order_impl(&conn, order_id).unwrap().is_empty());
     }
 }

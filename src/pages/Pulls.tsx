@@ -980,7 +980,14 @@ function OrderLinkPicker({
   );
 }
 
-function PullReceivedFormModal({
+/** Exported since 2.0.24 - OrderDetail.tsx reuses this exact modal (in
+ * edit-only mode, `pull` always non-null there) so editing a received pull
+ * linked to the order you're already looking at gets the full form (event/
+ * date/quantity/currency/more info/re-link), without a second, duplicate
+ * edit UI. Creating one FROM Order Detail deliberately does NOT reuse this -
+ * see OrderDetail.tsx's own `AddOrderPullModal` for why a full 8-field form
+ * (most of it already visible on the order itself) would be redundant there. */
+export function PullReceivedFormModal({
   open,
   pull,
   onClose,

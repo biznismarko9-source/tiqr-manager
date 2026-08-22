@@ -61,6 +61,8 @@ pub fn run() {
             commands::pulls_received::create_pull_received,
             commands::pulls_received::update_pull_received,
             commands::pulls_received::delete_pull_received,
+            commands::pulls_received::link_pull_received_to_order,
+            commands::pulls_received::list_pulls_received_for_order,
             commands::sales::list_sales,
             commands::sales::list_sale_groups,
             commands::sales::list_sale_currencies,
