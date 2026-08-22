@@ -1693,6 +1693,17 @@ const DELIVERY_STATUS_OPTIONS: &[&str] = &["Delivered", "Not delivered"];
 const PAYOUT_STATUS_OPTIONS: &[&str] = &["Pending", "Paid"];
 const PULL_OPTIONS: &[&str] = &["Yes", "No"];
 
+/// Background colors for `plan_sheet_color_updates` below - marko's own
+/// request (2.0.22), given as plain color names ("oranzova"/"hneda"/
+/// "zelena"), not exact shades, so these are this app's own reasonable pick
+/// for each - light/pastel enough that the cell's default black text stays
+/// easily readable on top. `(red, green, blue)`, each 0.0-1.0, the Sheets API
+/// `Color` shape `google_sheets::add_conditional_format_color_request`
+/// expects directly.
+const COLOR_GREEN: (f64, f64, f64) = (0.71, 0.88, 0.80);
+const COLOR_ORANGE: (f64, f64, f64) = (0.99, 0.80, 0.61);
+const COLOR_BROWN: (f64, f64, f64) = (0.82, 0.70, 0.55);
+
 /// How many data rows (below the header) the dropdown validations cover, at
 /// minimum - deliberately far beyond however much data is in the sheet right
 /// now, so marko (or a future sync) can add a new row and immediately have a
@@ -1826,6 +1837,58 @@ fn plan_sheet_structure_updates(
     Ok((dropdowns, revenue, profit))
 }
 
+struct ColorSpec {
+    col_index: usize,
+    /// Exact cell text -> background color, e.g. `("Listed", COLOR_ORANGE)`.
+    /// Every color-coded column in this app is a FIXED-option one (Status/
+    /// Delivery status/Payout status here, Transfer in
+    /// pulls_sheet_sync::plan_pulls_sheet_color_updates) - unlike
+    /// `plan_sheet_structure_updates` above, this never needs `conn`, since
+    /// there is no growable/DB-backed column among the ones marko asked to
+    /// color (Ticket Type/Site Listed/pull are deliberately NOT in this
+    /// list - marko listed exactly Status/Delivery status/Payout status for
+    /// Orders & Sales, nothing else).
+    colors: Vec<(String, (f64, f64, f64))>,
+}
+
+/// Pure core, sibling of `plan_sheet_structure_updates` above rather than
+/// folded into it - color-coding is a separate kind of structure decision
+/// (conditional formatting, not data validation) that happens to target some
+/// of the same columns. marko's own request (2.0.22): "pri status listed
+/// oranzova farba, pri unlisted hneda, pri sold zelena... pri delivery
+/// status delivered zelena not delivered oranzova, a payout status pending
+/// oranzova paid zelena." Same tolerance as everywhere else in this module:
+/// a column not present in `headers` is simply skipped, never an error.
+fn plan_sheet_color_updates(headers: &[String]) -> Vec<ColorSpec> {
+    let map = build_header_map(headers);
+    let mut specs: Vec<ColorSpec> = vec![];
+
+    if let Some(c) = find_col(&map, &["status"]) {
+        specs.push(ColorSpec {
+            col_index: c,
+            colors: vec![
+                ("Listed".to_string(), COLOR_ORANGE),
+                ("Unlisted".to_string(), COLOR_BROWN),
+                ("Sold".to_string(), COLOR_GREEN),
+            ],
+        });
+    }
+    if let Some(c) = find_col(&map, &["delivery status", "delivery"]) {
+        specs.push(ColorSpec {
+            col_index: c,
+            colors: vec![("Delivered".to_string(), COLOR_GREEN), ("Not delivered".to_string(), COLOR_ORANGE)],
+        });
+    }
+    if let Some(c) = find_col(&map, &["payout status"]) {
+        specs.push(ColorSpec {
+            col_index: c,
+            colors: vec![("Pending".to_string(), COLOR_ORANGE), ("Paid".to_string(), COLOR_GREEN)],
+        });
+    }
+
+    specs
+}
+
 /// The network shell for `plan_sheet_structure_updates` above - sends its
 /// plan as real `batchUpdate` (dropdowns) and `update_values_as_formulas`
 /// (Revenue/Profit) calls. Called at the end of `sync_orders_impl`/
@@ -1846,15 +1909,50 @@ fn ensure_orders_sheet_structure(
     data_rows: &[Vec<String>],
 ) -> AppResult<()> {
     let (dropdowns, revenue, profit) = plan_sheet_structure_updates(conn, headers, data_rows.len())?;
+    let colors = plan_sheet_color_updates(headers);
 
-    if !dropdowns.is_empty() {
-        let sheet_id = google_sheets::get_sheet_numeric_id(token, spreadsheet_id, sheet_tab)?;
+    if !dropdowns.is_empty() || !colors.is_empty() {
+        // One shared metadata fetch for both - `get_sheet_structure_metadata`
+        // folds in the same numeric sheetId `get_sheet_numeric_id` alone
+        // would return, so there is never a reason to call both.
+        let metadata = google_sheets::get_sheet_structure_metadata(token, spreadsheet_id, sheet_tab)?;
+        let sheet_id = metadata.sheet_id;
         let end_row = (data_rows.len() as i64).max(DROPDOWN_ROW_BUFFER) + 1;
-        let requests: Vec<serde_json::Value> = dropdowns
-            .iter()
-            .map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values))
-            .collect();
-        google_sheets::batch_update(token, spreadsheet_id, requests)?;
+        let mut requests: Vec<serde_json::Value> = vec![];
+
+        if !colors.is_empty() {
+            // Delete THIS refresh's own previously-added color rules before
+            // re-adding - never anything on a column colors doesn't cover
+            // (see conditional_format_indices_to_replace's own doc comment).
+            // Ordered before every add below in the same batchUpdate call,
+            // so no add can ever land at an index a still-pending delete is
+            // about to shift.
+            let managed_columns: Vec<i64> = colors.iter().map(|c| c.col_index as i64).collect();
+            let to_delete = google_sheets::conditional_format_indices_to_replace(&metadata.conditional_format_columns, &managed_columns);
+            for index in to_delete {
+                requests.push(google_sheets::delete_conditional_format_rule_request(sheet_id, index));
+            }
+            for spec in &colors {
+                for (value, color) in &spec.colors {
+                    requests.push(google_sheets::add_conditional_format_color_request(
+                        sheet_id,
+                        1,
+                        end_row,
+                        spec.col_index as i64,
+                        value,
+                        *color,
+                    ));
+                }
+            }
+        }
+
+        requests.extend(
+            dropdowns.iter().map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values)),
+        );
+
+        if !requests.is_empty() {
+            google_sheets::batch_update(token, spreadsheet_id, requests)?;
+        }
     }
 
     for spec in [revenue, profit].into_iter().flatten() {
@@ -3422,6 +3520,73 @@ mod tests {
         // formula list, exactly matching there being 0 real data rows yet.
         assert_eq!(revenue.unwrap().formulas.len(), 0);
         assert_eq!(profit.unwrap().formulas.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Color-coding (2.0.22) - marko's own request, exactly the three columns
+    // he named (Status/Delivery status/Payout status) - never Ticket
+    // Type/Site Listed/pull, which he did not mention.
+    // -----------------------------------------------------------------------
+
+    fn color_values<'a>(specs: &'a [ColorSpec], headers: &[String], header_name: &str) -> Option<&'a Vec<(String, (f64, f64, f64))>> {
+        let col = headers.iter().position(|h| h.eq_ignore_ascii_case(header_name))?;
+        specs.iter().find(|s| s.col_index == col).map(|s| &s.colors)
+    }
+
+    #[test]
+    fn plan_sheet_color_updates_status_colors_are_exactly_listed_orange_unlisted_brown_sold_green() {
+        let headers = structure_headers();
+        let specs = plan_sheet_color_updates(&headers);
+        assert_eq!(
+            color_values(&specs, &headers, "Status"),
+            Some(&vec![
+                ("Listed".to_string(), COLOR_ORANGE),
+                ("Unlisted".to_string(), COLOR_BROWN),
+                ("Sold".to_string(), COLOR_GREEN),
+            ])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_color_updates_delivery_status_colors_are_exactly_delivered_green_not_delivered_orange() {
+        let headers = structure_headers();
+        let specs = plan_sheet_color_updates(&headers);
+        assert_eq!(
+            color_values(&specs, &headers, "Delivery status"),
+            Some(&vec![("Delivered".to_string(), COLOR_GREEN), ("Not delivered".to_string(), COLOR_ORANGE)])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_color_updates_payout_status_colors_are_exactly_pending_orange_paid_green() {
+        let headers = structure_headers();
+        let specs = plan_sheet_color_updates(&headers);
+        assert_eq!(
+            color_values(&specs, &headers, "Payout status"),
+            Some(&vec![("Pending".to_string(), COLOR_ORANGE), ("Paid".to_string(), COLOR_GREEN)])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_color_updates_skips_a_column_the_sheet_does_not_have() {
+        // Only "Status" exists - no Delivery status/Payout status anywhere.
+        let headers: Vec<String> = vec!["Status".to_string()];
+        let specs = plan_sheet_color_updates(&headers);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].col_index, 0);
+    }
+
+    #[test]
+    fn plan_sheet_color_updates_never_colors_ticket_type_site_listed_or_pull() {
+        // marko listed exactly Status/Delivery status/Payout status for
+        // colors on this sheet - Ticket Type/Site Listed/pull already have
+        // their own dropdown (2.0.19) but must never gain a color rule too.
+        let headers = structure_headers();
+        let specs = plan_sheet_color_updates(&headers);
+        assert!(color_values(&specs, &headers, "Ticket Type").is_none());
+        assert!(color_values(&specs, &headers, "Site Listed").is_none());
+        assert!(color_values(&specs, &headers, "pull").is_none());
+        assert_eq!(specs.len(), 3, "exactly Status, Delivery status, Payout status - nothing else");
     }
 
     // -----------------------------------------------------------------------

@@ -1270,6 +1270,17 @@ pub fn create_pulls_sheet(state: State<AppState>, email: String, currency: Strin
 /// understands too.
 const TRANSFER_OPTIONS: &[&str] = &["Yes", "No"];
 
+/// Background colors for `plan_pulls_sheet_color_updates` below - marko's
+/// own request (2.0.21 follow-up, 2.0.22): "yes zelenou, nie modrou". Given
+/// as plain color names, not exact shades, so these are this app's own
+/// reasonable pick - light/pastel enough that the cell's default black text
+/// stays easily readable on top. Same shade of green as
+/// orders_sheet_sync::COLOR_GREEN, kept as this module's own copy rather
+/// than a shared constant - same file-local duplication convention this
+/// module already follows for column_index_to_a1/now_iso/DROPDOWN_ROW_BUFFER.
+const COLOR_GREEN: (f64, f64, f64) = (0.71, 0.88, 0.80);
+const COLOR_BLUE: (f64, f64, f64) = (0.79, 0.86, 0.97);
+
 /// Same reasoning/value as orders_sheet_sync::DROPDOWN_ROW_BUFFER - far
 /// beyond however much data is in the sheet right now, so a newly-added row
 /// has a working dropdown immediately, without needing a re-run just to get
@@ -1324,9 +1335,36 @@ fn plan_pulls_sheet_structure_updates(conn: &Connection, headers: &[String]) -> 
     Ok(dropdowns)
 }
 
-/// The network shell for `plan_pulls_sheet_structure_updates` above - sends
-/// its plan as real `batchUpdate` (Data validation) calls, same pattern as
-/// orders_sheet_sync::ensure_orders_sheet_structure just without a
+struct ColorSpec {
+    col_index: usize,
+    /// Exact cell text -> background color. Sibling of `DropdownSpec` above
+    /// rather than folded into it - color-coding is a separate kind of
+    /// structure decision (conditional formatting, not data validation) that
+    /// happens to target the same column here. Never needs `conn`: Transfer
+    /// is a fixed-option column, not a growable/DB-backed one (Platform is
+    /// deliberately NOT colored - marko only asked for Transfer here).
+    colors: Vec<(String, (f64, f64, f64))>,
+}
+
+/// Pure core, mirrors orders_sheet_sync::plan_sheet_color_updates - marko's
+/// own request: "yes zelenou, nie modrou" for this sheet's Transfer column.
+/// Same tolerance as everywhere else in this module: skipped entirely when
+/// the column isn't present in `headers`.
+fn plan_pulls_sheet_color_updates(headers: &[String]) -> Vec<ColorSpec> {
+    let map = build_header_map(headers);
+    let mut specs: Vec<ColorSpec> = vec![];
+
+    if let Some(c) = find_col(&map, &["transfer"]) {
+        specs.push(ColorSpec { col_index: c, colors: vec![("Yes".to_string(), COLOR_GREEN), ("No".to_string(), COLOR_BLUE)] });
+    }
+
+    specs
+}
+
+/// The network shell for `plan_pulls_sheet_structure_updates`/
+/// `plan_pulls_sheet_color_updates` above - sends their plan as real
+/// `batchUpdate` (Data validation + conditional formatting) calls, same
+/// pattern as orders_sheet_sync::ensure_orders_sheet_structure just without a
 /// formula-writing half (nothing here needs one).
 fn ensure_pulls_sheet_structure(
     conn: &Connection,
@@ -1337,15 +1375,44 @@ fn ensure_pulls_sheet_structure(
     data_row_count: usize,
 ) -> AppResult<()> {
     let dropdowns = plan_pulls_sheet_structure_updates(conn, headers)?;
-    if dropdowns.is_empty() {
+    let colors = plan_pulls_sheet_color_updates(headers);
+    if dropdowns.is_empty() && colors.is_empty() {
         return Ok(());
     }
-    let sheet_id = google_sheets::get_sheet_numeric_id(token, spreadsheet_id, sheet_tab)?;
+
+    // One shared metadata fetch for both - see
+    // orders_sheet_sync::ensure_orders_sheet_structure's own comment on the
+    // same call for why this replaces a separate get_sheet_numeric_id call.
+    let metadata = google_sheets::get_sheet_structure_metadata(token, spreadsheet_id, sheet_tab)?;
+    let sheet_id = metadata.sheet_id;
     let end_row = (data_row_count as i64).max(DROPDOWN_ROW_BUFFER) + 1;
-    let requests: Vec<serde_json::Value> = dropdowns
-        .iter()
-        .map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values))
-        .collect();
+    let mut requests: Vec<serde_json::Value> = vec![];
+
+    if !colors.is_empty() {
+        let managed_columns: Vec<i64> = colors.iter().map(|c| c.col_index as i64).collect();
+        let to_delete = google_sheets::conditional_format_indices_to_replace(&metadata.conditional_format_columns, &managed_columns);
+        for index in to_delete {
+            requests.push(google_sheets::delete_conditional_format_rule_request(sheet_id, index));
+        }
+        for spec in &colors {
+            for (value, color) in &spec.colors {
+                requests.push(google_sheets::add_conditional_format_color_request(
+                    sheet_id,
+                    1,
+                    end_row,
+                    spec.col_index as i64,
+                    value,
+                    *color,
+                ));
+            }
+        }
+    }
+
+    requests.extend(dropdowns.iter().map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values)));
+
+    if requests.is_empty() {
+        return Ok(());
+    }
     google_sheets::batch_update(token, spreadsheet_id, requests)
 }
 
@@ -2238,5 +2305,43 @@ mod tests {
         let headers = full_headers();
         let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
         assert_eq!(dropdowns.len(), 2, "exactly Platform and Transfer, nothing else");
+    }
+
+    // -----------------------------------------------------------------------
+    // Color-coding (2.0.22) - marko's own request: "yes zelenou, nie
+    // modrou" for Transfer - never Platform, which he did not mention.
+    // -----------------------------------------------------------------------
+
+    fn color_values<'a>(specs: &'a [ColorSpec], headers: &[String], header_name: &str) -> Option<&'a Vec<(String, (f64, f64, f64))>> {
+        let col = headers.iter().position(|h| h.eq_ignore_ascii_case(header_name))?;
+        specs.iter().find(|s| s.col_index == col).map(|s| &s.colors)
+    }
+
+    #[test]
+    fn plan_pulls_sheet_color_updates_transfer_colors_are_exactly_yes_green_no_blue() {
+        let headers = full_headers();
+        let specs = plan_pulls_sheet_color_updates(&headers);
+        assert_eq!(
+            color_values(&specs, &headers, "Transfer"),
+            Some(&vec![("Yes".to_string(), COLOR_GREEN), ("No".to_string(), COLOR_BLUE)])
+        );
+    }
+
+    #[test]
+    fn plan_pulls_sheet_color_updates_skips_when_transfer_column_is_absent() {
+        let headers: Vec<String> = vec!["Platform".to_string()];
+        let specs = plan_pulls_sheet_color_updates(&headers);
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn plan_pulls_sheet_color_updates_never_colors_platform() {
+        // marko only asked for Transfer's colors on this sheet - Platform
+        // already has its own (growable) dropdown but must never gain a
+        // color rule too.
+        let headers = full_headers();
+        let specs = plan_pulls_sheet_color_updates(&headers);
+        assert!(color_values(&specs, &headers, "Platform").is_none());
+        assert_eq!(specs.len(), 1, "exactly Transfer, nothing else");
     }
 }

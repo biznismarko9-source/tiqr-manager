@@ -333,8 +333,8 @@ pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
 }
 
 /// The (partial) shape of the Sheets API's `spreadsheets.get` response this
-/// app reads for `get_spreadsheet_sheet_titles`/`get_sheet_numeric_id` below
-/// - `fields=` on that call already asks Google to omit everything else
+/// app reads for `get_spreadsheet_sheet_titles`/`get_sheet_structure_metadata`
+/// below - `fields=` on that call already asks Google to omit everything else
 /// (every sheet's full grid contents/formatting), so there is little left
 /// for `serde` to ignore here, unlike the other response shapes in this
 /// module.
@@ -346,26 +346,61 @@ struct SpreadsheetMetadata {
 #[derive(Debug, Deserialize)]
 struct SheetMetadataEntry {
     properties: SheetMetadataProperties,
+    // 2.0.22: added alongside `properties`, same "one shared struct,
+    // tolerate whichever subset of fields THIS particular fields= query
+    // actually asked for" principle the 2.0.20 fix established for
+    // `sheet_id` right below - only `get_sheet_structure_metadata`'s own
+    // query actually requests `conditionalFormats`, so `#[serde(default)]`
+    // is required here too: `get_spreadsheet_sheet_titles`'s response
+    // genuinely never carries this field at all, not even as an empty array.
+    #[serde(default, rename = "conditionalFormats")]
+    conditional_formats: Vec<ConditionalFormatEntry>,
+}
+
+/// The (partial) shape of one existing `ConditionalFormatRule` as
+/// `get_sheet_structure_metadata` below reads it back - just enough to work
+/// out which single column (if any) it targets, nothing about its actual
+/// condition/color (this app never needs to read those back, only decide
+/// whether a rule is a deletion candidate - see
+/// `conditional_format_indices_to_replace`).
+#[derive(Debug, Deserialize)]
+struct ConditionalFormatEntry {
+    #[serde(default)]
+    ranges: Vec<ConditionalFormatGridRange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConditionalFormatGridRange {
+    #[serde(rename = "startColumnIndex")]
+    start_column_index: Option<i64>,
+    #[serde(rename = "endColumnIndex")]
+    end_column_index: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SheetMetadataProperties {
     title: String,
     // 2.0.19: added alongside `title` (was title-only) - see
-    // `get_sheet_numeric_id`'s own doc comment for why this is now needed
-    // too, and why it is a completely different thing from the tab's name.
+    // `get_sheet_structure_metadata`'s own doc comment for why this is
+    // needed, and why it is a completely different thing from the tab's
+    // name.
     //
     // `Option`, NOT a plain `i64` - both `get_spreadsheet_sheet_titles` and
-    // `get_sheet_numeric_id` deserialize into this SAME struct, but only the
-    // second one's `fields=` query actually asks Google for `sheetId`; the
-    // first's response genuinely never has it. 2.0.20 bug fix: this was a
-    // required `i64` for one release, which broke `get_spreadsheet_sheet_
-    // titles` - i.e. every "paste a URL" tab auto-detect, on both the Pulls
-    // and Orders & Sales cards - with a hard "missing field `sheetId`" on
-    // every real spreadsheet, since that call's own response never carries
-    // it. `get_sheet_numeric_id` below is the one place that actually needs
-    // the number, and is responsible for treating a bare `None` as an error
-    // - `get_spreadsheet_sheet_titles` never looks at this field at all.
+    // `get_sheet_structure_metadata` deserialize into this SAME struct, but
+    // only the second one's `fields=` query actually asks Google for
+    // `sheetId`; the first's response genuinely never has it. 2.0.20 bug
+    // fix: this was a required `i64` for one release, which broke
+    // `get_spreadsheet_sheet_titles` - i.e. every "paste a URL" tab
+    // auto-detect, on both the Pulls and Orders & Sales cards - with a hard
+    // "missing field `sheetId`" on every real spreadsheet, since that call's
+    // own response never carries it. `get_sheet_structure_metadata` below is
+    // the one place that actually needs the number, and is responsible for
+    // treating a bare `None` as an error - `get_spreadsheet_sheet_titles`
+    // never looks at this field at all. (2.0.19 originally introduced this
+    // field for a narrower `get_sheet_numeric_id` function that only
+    // returned the ID; 2.0.22 folded that into `get_sheet_structure_metadata`
+    // below, which every caller that needs the ID also needs the
+    // conditional-format info from, and removed the narrower function.)
     #[serde(rename = "sheetId")]
     sheet_id: Option<i64>,
 }
@@ -394,37 +429,6 @@ pub fn get_spreadsheet_sheet_titles(token: &str, spreadsheet_id: &str) -> AppRes
         .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
     let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
     Ok(parsed.sheets.into_iter().map(|s| s.properties.title).collect())
-}
-
-/// Returns the internal numeric grid ID Google assigns to the tab named
-/// `sheet_tab` - NOT the same thing as the tab's name/title, and required by
-/// every `batchUpdate` request (`set_data_validation_request` below, and any
-/// future formatting/structural request) since that whole endpoint addresses
-/// sheets by this ID, never by name, unlike every other endpoint in this
-/// module.
-///
-/// 2.0.19: added for commands::orders_sheet_sync's dropdown-setup step. Errs
-/// clearly (rather than silently picking the first tab) if `sheet_tab` isn't
-/// found - the same "never guess" rule as everywhere else in this module.
-pub fn get_sheet_numeric_id(token: &str, spreadsheet_id: &str, sheet_tab: &str) -> AppResult<i64> {
-    let client = reqwest::blocking::Client::new();
-    let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
-    let url =
-        format!("https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title,sheets.properties.sheetId");
-    let resp = client
-        .get(&url)
-        .bearer_auth(token)
-        .send()
-        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
-    let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
-    let entry = parsed
-        .sheets
-        .into_iter()
-        .find(|s| s.properties.title == sheet_tab)
-        .ok_or_else(|| AppError::Validation(format!("Tab \"{sheet_tab}\" was not found in this spreadsheet.")))?;
-    entry.properties.sheet_id.ok_or_else(|| {
-        AppError::External(format!("Google Sheets did not return an internal ID for tab \"{sheet_tab}\"."))
-    })
 }
 
 /// Sends a `spreadsheets.batchUpdate` request - the Sheets API's mechanism
@@ -479,6 +483,163 @@ pub fn set_data_validation_request(sheet_id: i64, start_row: i64, end_row: i64, 
                 "showCustomUi": true,
                 "strict": false
             }
+        }
+    })
+}
+
+/// Everything `ensure_orders_sheet_structure`/`ensure_pulls_sheet_structure`
+/// need from ONE network round-trip, whether a particular refresh needs
+/// dropdowns, color-coding, or both: the tab's internal numeric `sheetId` -
+/// NOT the same thing as the tab's name/title, and required by every
+/// `batchUpdate` request (`set_data_validation_request`,
+/// `add_conditional_format_color_request`/`delete_conditional_format_rule_
+/// request` below) since that whole endpoint addresses sheets by this ID,
+/// never by name, unlike every other endpoint in this module - plus, for
+/// every conditional-format rule ALREADY on the sheet, the single column it
+/// targets, so a caller can work out exactly which of ITS OWN
+/// previously-added color rules need deleting before adding fresh ones (see
+/// `conditional_format_indices_to_replace` below), without ever touching a
+/// rule on a column it doesn't manage.
+///
+/// 2.0.19: introduced (as a narrower `get_sheet_numeric_id`, sheetId only)
+/// for commands::orders_sheet_sync's dropdown-setup step. 2.0.22: folded in
+/// the conditional-format lookup too, for the Status/Delivery status/Payout
+/// status/Transfer color-coding feature (marko's own request) - every caller
+/// that needs the ID also needs this now, so one shared fetch replaces what
+/// would otherwise be two. Errs clearly (rather than silently picking the
+/// first tab) if `sheet_tab` isn't found - the same "never guess" rule as
+/// everywhere else in this module. A rule whose `ranges` isn't exactly one
+/// single-column range - anything this app itself could not have created,
+/// e.g. something marko added by hand covering multiple columns, or an
+/// unbounded range - maps to `None`, so it is never treated as "ours" and
+/// never becomes a deletion candidate.
+pub struct SheetStructureMetadata {
+    pub sheet_id: i64,
+    pub conditional_format_columns: Vec<Option<i64>>,
+}
+
+pub fn get_sheet_structure_metadata(token: &str, spreadsheet_id: &str, sheet_tab: &str) -> AppResult<SheetStructureMetadata> {
+    let client = reqwest::blocking::Client::new();
+    let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title,sheets.properties.sheetId,sheets.conditionalFormats.ranges.startColumnIndex,sheets.conditionalFormats.ranges.endColumnIndex"
+    );
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
+    let entry = parsed
+        .sheets
+        .into_iter()
+        .find(|s| s.properties.title == sheet_tab)
+        .ok_or_else(|| AppError::Validation(format!("Tab \"{sheet_tab}\" was not found in this spreadsheet.")))?;
+    let sheet_id = entry.properties.sheet_id.ok_or_else(|| {
+        AppError::External(format!("Google Sheets did not return an internal ID for tab \"{sheet_tab}\"."))
+    })?;
+    let conditional_format_columns = entry.conditional_formats.iter().map(|f| single_column_index(&f.ranges)).collect();
+    Ok(SheetStructureMetadata { sheet_id, conditional_format_columns })
+}
+
+/// Pure core of `get_sheet_structure_metadata`'s conditional-format reading:
+/// `Some(column)` only when `ranges` is exactly one range that covers a
+/// single whole column (both `startColumnIndex`/`endColumnIndex` present,
+/// exactly one column apart) - the only shape
+/// `add_conditional_format_color_request` below ever produces. Anything else
+/// - more than one range, no ranges at all, or a range missing either bound
+/// (Google reports an unbounded side as simply absent, not zero) - is `None`,
+/// so a rule shaped like that (marko's own manual conditional formatting
+/// almost certainly is) is never mistaken for one this app created.
+fn single_column_index(ranges: &[ConditionalFormatGridRange]) -> Option<i64> {
+    match ranges {
+        [r] => match (r.start_column_index, r.end_column_index) {
+            (Some(start), Some(end)) if end == start + 1 => Some(start),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Given the sheet's existing conditional-format rules (`existing_columns`,
+/// one entry per rule in Sheets' own index order - see
+/// `get_sheet_structure_metadata` above) and the column indices a refresh is
+/// about to (re-)color (`managed_columns`), returns exactly which existing
+/// indices must be deleted first: every rule whose column is one about to be
+/// managed, and ONLY those - a rule on any other column (something marko
+/// added himself, or simply a column this particular refresh doesn't color)
+/// is never touched. Returned in descending order: `deleteConditionalFormatRule`
+/// requests inside one `batchUpdate` apply in array order and each delete
+/// shifts every later index down by one, so deleting highest-first keeps
+/// every remaining index in the list valid for the next delete in the same
+/// call.
+pub fn conditional_format_indices_to_replace(existing_columns: &[Option<i64>], managed_columns: &[i64]) -> Vec<i64> {
+    let mut indices: Vec<i64> = existing_columns
+        .iter()
+        .enumerate()
+        .filter_map(|(i, col)| col.filter(|c| managed_columns.contains(c)).map(|_| i as i64))
+        .collect();
+    indices.sort_unstable_by(|a, b| b.cmp(a));
+    indices
+}
+
+/// Builds one `addConditionalFormatRule` request: cells in `sheet_id`'s
+/// column `col_index` (0-based) across rows `start_row..end_row` (both
+/// 0-based, `end_row` exclusive - same convention as
+/// `set_data_validation_request` above) that exactly equal `text_value` get
+/// `color` (red, green, blue - each 0.0-1.0, the Sheets API's own `Color`
+/// shape) as their background.
+///
+/// `index: 0` always - correct regardless of how many rules already exist on
+/// the sheet (Sheets simply inserts at the front, shifting everything else
+/// down by one); safe here specifically because every rule this app ever
+/// creates has a condition that can never match the same cell as another
+/// rule it creates in the same batch (a cell holds exactly one exact text
+/// value), so which one ends up "first" in the list is never visible in the
+/// result.
+pub fn add_conditional_format_color_request(
+    sheet_id: i64,
+    start_row: i64,
+    end_row: i64,
+    col_index: i64,
+    text_value: &str,
+    color: (f64, f64, f64),
+) -> serde_json::Value {
+    let (red, green, blue) = color;
+    serde_json::json!({
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [{
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "endRowIndex": end_row,
+                    "startColumnIndex": col_index,
+                    "endColumnIndex": col_index + 1
+                }],
+                "booleanRule": {
+                    "condition": {
+                        "type": "TEXT_EQ",
+                        "values": [{ "userEnteredValue": text_value }]
+                    },
+                    "format": {
+                        "backgroundColor": { "red": red, "green": green, "blue": blue }
+                    }
+                }
+            },
+            "index": 0
+        }
+    })
+}
+
+/// Builds one `deleteConditionalFormatRule` request removing the rule
+/// currently at `index` (0-based, Sheets' own index order) on `sheet_id`.
+/// See `conditional_format_indices_to_replace` above for how a caller works
+/// out which indices are safe to pass here.
+pub fn delete_conditional_format_rule_request(sheet_id: i64, index: i64) -> serde_json::Value {
+    serde_json::json!({
+        "deleteConditionalFormatRule": {
+            "sheetId": sheet_id,
+            "index": index
         }
     })
 }
@@ -865,8 +1026,8 @@ mod tests {
         // field - Google omits it entirely rather than sending `null`. Both
         // functions share this one struct, so it must tolerate a response
         // from EITHER `fields=` query, not just the one `sheetId`-aware
-        // caller (get_sheet_numeric_id) happens to send. Real error this
-        // reproduces: "missing field `sheetId`" on every single "paste a
+        // caller (get_sheet_structure_metadata) happens to send. Real error
+        // this reproduces: "missing field `sheetId`" on every single "paste a
         // URL" tab auto-detect, the very first time marko connected a sheet
         // after 2.0.19 shipped.
         let json = r#"{ "sheets": [ { "properties": { "title": "Pulls" } } ] }"#;
@@ -877,11 +1038,12 @@ mod tests {
     }
 
     #[test]
-    fn get_sheet_numeric_id_finds_the_matching_tab_by_title_not_position() {
+    fn spreadsheet_metadata_finds_the_matching_tab_by_title_not_position() {
         // Same real-shape JSON as the test above, parsed the same way
-        // `get_sheet_numeric_id` itself does - the tab it wants is second in
-        // the list, so this also guards against accidentally returning
-        // "just the first sheet" instead of actually matching the title.
+        // `get_sheet_structure_metadata` itself does - the tab it wants is
+        // second in the list, so this also guards against accidentally
+        // returning "just the first sheet" instead of actually matching the
+        // title.
         let json = r#"{
             "sheets": [
                 { "properties": { "title": "Objednávky", "sheetId": 0 } },
@@ -891,6 +1053,131 @@ mod tests {
         let parsed: SpreadsheetMetadata = serde_json::from_str(json).unwrap();
         let found = parsed.sheets.into_iter().find(|s| s.properties.title == "Predaje 2026").and_then(|s| s.properties.sheet_id);
         assert_eq!(found, Some(987654321));
+    }
+
+    #[test]
+    fn spreadsheet_metadata_parses_a_real_conditional_formats_shape_with_existing_rules() {
+        // The exact shape `?fields=...sheets.conditionalFormats.ranges.
+        // startColumnIndex,sheets.conditionalFormats.ranges.endColumnIndex`
+        // produces on a sheet that already has 2.0.19/2.0.21's own dropdowns
+        // plus one earlier color rule on the Status column (index 17).
+        let json = r#"{
+            "sheets": [
+                {
+                    "properties": { "title": "Orders", "sheetId": 42 },
+                    "conditionalFormats": [
+                        { "ranges": [ { "sheetId": 42, "startRowIndex": 1, "endRowIndex": 501, "startColumnIndex": 17, "endColumnIndex": 18 } ] },
+                        { "ranges": [ { "sheetId": 42, "startRowIndex": 1, "endRowIndex": 501, "startColumnIndex": 17, "endColumnIndex": 18 } ] }
+                    ]
+                }
+            ]
+        }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse a real conditionalFormats shape");
+        let columns: Vec<Option<i64>> =
+            parsed.sheets[0].conditional_formats.iter().map(|f| single_column_index(&f.ranges)).collect();
+        assert_eq!(columns, vec![Some(17), Some(17)]);
+    }
+
+    #[test]
+    fn spreadsheet_metadata_defaults_conditional_formats_to_empty_when_the_field_is_entirely_absent() {
+        // get_spreadsheet_sheet_titles's/a freshly-created sheet's own
+        // response shape - no conditionalFormats key at all, not even an
+        // empty array. Same #[serde(default)] tolerance sheet_id already
+        // needed (2.0.20).
+        let json = r#"{ "sheets": [ { "properties": { "title": "Pulls" } } ] }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse with no conditionalFormats key at all");
+        assert!(parsed.sheets[0].conditional_formats.is_empty());
+    }
+
+    #[test]
+    fn single_column_index_recognizes_exactly_the_shape_this_app_itself_creates() {
+        let one_column = vec![ConditionalFormatGridRange { start_column_index: Some(4), end_column_index: Some(5) }];
+        assert_eq!(single_column_index(&one_column), Some(4));
+    }
+
+    #[test]
+    fn single_column_index_is_none_for_a_range_spanning_more_than_one_column() {
+        // Not a shape this app ever creates - almost certainly something
+        // marko added by hand - must never be mistaken for "ours".
+        let multi_column = vec![ConditionalFormatGridRange { start_column_index: Some(0), end_column_index: Some(3) }];
+        assert_eq!(single_column_index(&multi_column), None);
+    }
+
+    #[test]
+    fn single_column_index_is_none_for_more_than_one_range_or_zero_ranges() {
+        let two_ranges = vec![
+            ConditionalFormatGridRange { start_column_index: Some(1), end_column_index: Some(2) },
+            ConditionalFormatGridRange { start_column_index: Some(3), end_column_index: Some(4) },
+        ];
+        assert_eq!(single_column_index(&two_ranges), None);
+        assert_eq!(single_column_index(&[]), None);
+    }
+
+    #[test]
+    fn single_column_index_is_none_when_a_bound_is_unset_ie_an_unbounded_range() {
+        // Google reports an unbounded side of a range as simply absent, not
+        // a sentinel like 0 or -1 - a rule marko set covering "the whole
+        // column" via the Sheets UI shortcut looks exactly like this.
+        let unbounded_end = vec![ConditionalFormatGridRange { start_column_index: Some(2), end_column_index: None }];
+        assert_eq!(single_column_index(&unbounded_end), None);
+    }
+
+    #[test]
+    fn conditional_format_indices_to_replace_finds_only_rules_on_managed_columns_descending() {
+        // Index 0 -> column 4 (managed), index 1 -> column 9 (NOT managed,
+        // e.g. something marko added himself), index 2 -> column 4 again
+        // (managed) - must return exactly [2, 0], never touching index 1.
+        let existing = vec![Some(4), Some(9), Some(4)];
+        assert_eq!(conditional_format_indices_to_replace(&existing, &[4, 17]), vec![2, 0]);
+    }
+
+    #[test]
+    fn conditional_format_indices_to_replace_skips_rules_that_are_not_single_column_ie_none() {
+        let existing = vec![None, Some(4)];
+        assert_eq!(conditional_format_indices_to_replace(&existing, &[4]), vec![1]);
+    }
+
+    #[test]
+    fn conditional_format_indices_to_replace_is_empty_when_nothing_existing_matches() {
+        let existing = vec![Some(9), None];
+        assert!(conditional_format_indices_to_replace(&existing, &[4, 17]).is_empty());
+    }
+
+    #[test]
+    fn add_conditional_format_color_request_builds_the_exact_shape_google_documents() {
+        let req = add_conditional_format_color_request(555, 1, 501, 17, "Sold", (0.71, 0.88, 0.80));
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": 555,
+                            "startRowIndex": 1,
+                            "endRowIndex": 501,
+                            "startColumnIndex": 17,
+                            "endColumnIndex": 18
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "TEXT_EQ",
+                                "values": [{ "userEnteredValue": "Sold" }]
+                            },
+                            "format": {
+                                "backgroundColor": { "red": 0.71, "green": 0.88, "blue": 0.80 }
+                            }
+                        }
+                    },
+                    "index": 0
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn delete_conditional_format_rule_request_builds_the_exact_shape_google_documents() {
+        let req = delete_conditional_format_rule_request(555, 2);
+        assert_eq!(req, serde_json::json!({ "deleteConditionalFormatRule": { "sheetId": 555, "index": 2 } }));
     }
 
     #[test]
