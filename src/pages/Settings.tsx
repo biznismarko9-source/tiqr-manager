@@ -4,7 +4,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
 import {
-  CURRENCY_OPTIONS,
   type AppInfo,
   type CreatedSheetResult,
   type CsvPreview,
@@ -420,47 +419,50 @@ export default function Settings() {
           )}
 
           {section === "integrations" && (
-            <div className="grid grid-cols-1 gap-4 lg:max-w-3xl">
+            <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
               <GoogleSignInCard onChange={setGoogleStatus} />
-              <SheetsConnectionCard
-                dataSource="pulls"
-                label="Pulls"
-                googleStatus={googleStatus}
-                onSync={api.syncPulls}
-                syncDescription={`"Sync now" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, except its own row IDs.`}
-                onCreate={api.createPullsSheet}
-                currencyHint="Applies to every row synced from this sheet - it has no currency column of its own."
-              />
-              {/* 2.0.8: one row = one order (marko's own choice) - creates the
-                  order and all its tickets from the sheet's first batch of
-                  columns. 2.0.9: "Create a new sheet for me" added
-                  (onCreate) - mirrors Pulls' own from-scratch setup, for
-                  anyone who doesn't already have a real sheet like marko's.
-                  2.0.10: "Sales sync" (secondarySync) reads the sheet's
-                  SECOND batch of columns (same rows, same connection - marko
-                  only ever connects this sheet once) and records a sale for
-                  every ticket an already-synced row's order hasn't sold yet -
-                  see commands/orders_sheet_sync.rs's module doc comment.
-                  2.0.12: renamed from "Orders & Tickets" to "Orders & Sales"
-                  (marko's own request) - purely the on-screen label; the
-                  data_source key ("orders"), and every already-connected
-                  sheet, are untouched. */}
-              <SheetsConnectionCard
-                dataSource="orders"
-                label="Orders & Sales"
-                googleStatus={googleStatus}
-                onSync={api.syncOrders}
-                syncLabel="Order sync"
-                syncDescription={`"Order sync" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
-                secondarySync={{
-                  label: "Sales sync",
-                  description:
-                    "Reads the SAME sheet's second batch of columns and records a sale for every ticket that isn't sold yet on a row Order sync already created - creation-only, same as Order sync: once a ticket has an active sale, later syncs leave it completely alone.",
-                  run: api.syncSales,
-                }}
-                onCreate={api.createOrdersSheet}
-                currencyHint="Not the main source - a row's own currency column (EUR/USD/GBP) is read and used automatically for that row. This only fills in for a row whose currency cell is left blank."
-              />
+              {/* 2.0.16: Pulls and Orders & Sales side by side (marko's own
+                  request) now that Sign in with Google always sits above
+                  both, full width - was a single stacked column. */}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <SheetsConnectionCard
+                  dataSource="pulls"
+                  label="Pulls"
+                  googleStatus={googleStatus}
+                  onSync={api.syncPulls}
+                  syncDescription={`"Sync now" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, except its own row IDs.`}
+                  onCreate={api.createPullsSheet}
+                />
+                {/* 2.0.8: one row = one order (marko's own choice) - creates the
+                    order and all its tickets from the sheet's first batch of
+                    columns. 2.0.9: "Create a new sheet for me" added
+                    (onCreate) - mirrors Pulls' own from-scratch setup, for
+                    anyone who doesn't already have a real sheet like marko's.
+                    2.0.10: "Sales sync" (secondarySync) reads the sheet's
+                    SECOND batch of columns (same rows, same connection - marko
+                    only ever connects this sheet once) and records a sale for
+                    every ticket an already-synced row's order hasn't sold yet -
+                    see commands/orders_sheet_sync.rs's module doc comment.
+                    2.0.12: renamed from "Orders & Tickets" to "Orders & Sales"
+                    (marko's own request) - purely the on-screen label; the
+                    data_source key ("orders"), and every already-connected
+                    sheet, are untouched. */}
+                <SheetsConnectionCard
+                  dataSource="orders"
+                  label="Orders & Sales"
+                  googleStatus={googleStatus}
+                  onSync={api.syncOrders}
+                  syncLabel="Order sync"
+                  syncDescription={`"Order sync" reads the sheet and creates a new order (with its tickets) for every row it hasn't seen before - it never edits an order once created, and never writes your data back to the sheet except its own row IDs. Add new rows any time and sync again.`}
+                  secondarySync={{
+                    label: "Sales sync",
+                    description:
+                      "Reads the SAME sheet's second batch of columns and records a sale for every ticket that isn't sold yet on a row Order sync already created - creation-only, same as Order sync: once a ticket has an active sale, later syncs leave it completely alone.",
+                    run: api.syncSales,
+                  }}
+                  onCreate={api.createOrdersSheet}
+                />
+              </div>
             </div>
           )}
 
@@ -811,6 +813,16 @@ function SyncResultView({ result }: { result: SheetSyncResult }) {
   );
 }
 
+// 2.0.16: marko's own request - Currency is no longer a per-connection
+// choice; it never really needed to be. Orders & Sales rows already carry
+// and use their own currency column automatically (see orders_sheet_sync.rs
+// - unaffected by this change); Pulls has no currency column at all, so this
+// fixed value is now simply what the app assumes wherever a sheet doesn't
+// say otherwise - Pulls always, Orders & Sales only for a row whose currency
+// cell is left blank. Change this one constant (nowhere else) if that
+// assumption ever needs to be anything other than EUR.
+const FIXED_CONNECTION_CURRENCY = "EUR";
+
 function SheetsConnectionCard({
   dataSource,
   label,
@@ -819,7 +831,6 @@ function SheetsConnectionCard({
   syncDescription,
   secondarySync,
   onCreate,
-  currencyHint,
   googleStatus,
 }: {
   dataSource: string;
@@ -858,10 +869,6 @@ function SheetsConnectionCard({
    * but kept independent of it - not every data source necessarily gets an
    * auto-create-a-blank-sheet flow. Omit to hide that whole section. */
   onCreate?: (email: string, currency: string) => Promise<CreatedSheetResult>;
-  /** Currency field's hint text - differs because Pulls' sheet has no
-   * currency column of its own (one currency applies to every row) while
-   * Orders' does (per-row, this is just the fallback for a blank cell). */
-  currencyHint: string;
   /** 2.0.5: from GoogleSignInCard via the parent Settings component - see
    * that state's own comment for why it is fetched once up there rather
    * than a second time in here. */
@@ -872,7 +879,6 @@ function SheetsConnectionCard({
   const [loading, setLoading] = useState(true);
   const [spreadsheetInput, setSpreadsheetInput] = useState("");
   const [sheetTab, setSheetTab] = useState("");
-  const [currency, setCurrency] = useState<string>(CURRENCY_OPTIONS[0]);
   const [createEmail, setCreateEmail] = useState("");
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "test" | "sync" | "sync2" | "create" | "disconnect" | null>(null);
@@ -956,7 +962,6 @@ function SheetsConnectionCard({
         setStatus(s);
         setSpreadsheetInput(s.connection?.spreadsheetId ?? "");
         setSheetTab(s.connection?.sheetTab ?? "");
-        setCurrency(s.connection?.currency ?? CURRENCY_OPTIONS[0]);
         if (s.connection?.spreadsheetId) {
           detectTabs(s.connection.spreadsheetId);
         } else {
@@ -977,7 +982,7 @@ function SheetsConnectionCard({
     setTestResult(null);
     setCreatedUrl(null);
     try {
-      await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab, currency);
+      await api.setSheetsConnection(dataSource, spreadsheetInput, sheetTab, FIXED_CONNECTION_CURRENCY);
       reload();
       // 2.0.12: immediately run the same check "Test connection" always ran,
       // right here - marko's own report. Saving used to report success
@@ -1009,15 +1014,13 @@ function SheetsConnectionCard({
   // `oauthEmail` itself (still a real address, trivially satisfies the
   // backend's validation, and is ignored server-side on that path anyway -
   // see create_pulls_sheet_impl's doc comment). Not signed in, this is
-  // `createEmail` from the field below, exactly as in 2.0.4. Reuses the same
-  // `currency` state as the paste-URL form either way, so there is only ever
-  // one currency selector on this card.
+  // `createEmail` from the field below, exactly as in 2.0.4.
   const doCreate = async () => {
     if (!onCreate) return;
     setBusy("create");
     setCreatedUrl(null);
     try {
-      const result = await onCreate(oauthEmail ?? createEmail, currency);
+      const result = await onCreate(oauthEmail ?? createEmail, FIXED_CONNECTION_CURRENCY);
       setCreatedUrl(result.spreadsheetUrl);
       setCreateEmail("");
       toast.success(oauthEmail ? "New sheet created in your Google Drive" : "New sheet created and shared");
@@ -1147,71 +1150,60 @@ function SheetsConnectionCard({
                 onBlur={() => detectTabs(spreadsheetInput)}
               />
             </Field>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Sheet/tab name"
-                hint={
-                  detectedTabs && detectedTabs.length > 0 && !manualTabEntry
-                    ? "Detected directly from the spreadsheet - pick the tab this data source should use."
-                    : "The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
-                }
-              >
-                {detecting ? (
-                  <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-                    <Spinner className="h-4 w-4" /> Detecting tabs...
-                  </div>
-                ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
-                  <>
-                    <Select value={sheetTab} onChange={(e) => setSheetTab(e.target.value)}>
-                      {detectedTabs.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </Select>
+            <Field
+              label="Sheet/tab name"
+              hint={
+                detectedTabs && detectedTabs.length > 0 && !manualTabEntry
+                  ? "Detected directly from the spreadsheet - pick the tab this data source should use."
+                  : "The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
+              }
+            >
+              {detecting ? (
+                <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
+                  <Spinner className="h-4 w-4" /> Detecting tabs...
+                </div>
+              ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
+                <>
+                  <Select value={sheetTab} onChange={(e) => setSheetTab(e.target.value)}>
+                    {detectedTabs.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </Select>
+                  <button
+                    type="button"
+                    className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                    onClick={() => setManualTabEntry(true)}
+                  >
+                    Type it in manually instead
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Input
+                    placeholder={`e.g. ${label}`}
+                    value={sheetTab}
+                    onChange={(e) => setSheetTab(e.target.value)}
+                  />
+                  {detectMessage && (
+                    <div className="mt-1">
+                      <p className="text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>
+                      {detectHint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{detectHint}</p>}
+                    </div>
+                  )}
+                  {detectedTabs && detectedTabs.length > 0 && (
                     <button
                       type="button"
                       className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                      onClick={() => setManualTabEntry(true)}
+                      onClick={() => setManualTabEntry(false)}
                     >
-                      Type it in manually instead
+                      Pick from detected tabs instead
                     </button>
-                  </>
-                ) : (
-                  <>
-                    <Input
-                      placeholder={`e.g. ${label}`}
-                      value={sheetTab}
-                      onChange={(e) => setSheetTab(e.target.value)}
-                    />
-                    {detectMessage && (
-                      <div className="mt-1">
-                        <p className="text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>
-                        {detectHint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{detectHint}</p>}
-                      </div>
-                    )}
-                    {detectedTabs && detectedTabs.length > 0 && (
-                      <button
-                        type="button"
-                        className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                        onClick={() => setManualTabEntry(false)}
-                      >
-                        Pick from detected tabs instead
-                      </button>
-                    )}
-                  </>
-                )}
-              </Field>
-              <Field label="Currency" hint={currencyHint}>
-                <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-                  {CURRENCY_OPTIONS.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </div>
+                  )}
+                </>
+              )}
+            </Field>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
