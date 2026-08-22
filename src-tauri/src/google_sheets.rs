@@ -354,8 +354,20 @@ struct SheetMetadataProperties {
     // 2.0.19: added alongside `title` (was title-only) - see
     // `get_sheet_numeric_id`'s own doc comment for why this is now needed
     // too, and why it is a completely different thing from the tab's name.
+    //
+    // `Option`, NOT a plain `i64` - both `get_spreadsheet_sheet_titles` and
+    // `get_sheet_numeric_id` deserialize into this SAME struct, but only the
+    // second one's `fields=` query actually asks Google for `sheetId`; the
+    // first's response genuinely never has it. 2.0.20 bug fix: this was a
+    // required `i64` for one release, which broke `get_spreadsheet_sheet_
+    // titles` - i.e. every "paste a URL" tab auto-detect, on both the Pulls
+    // and Orders & Sales cards - with a hard "missing field `sheetId`" on
+    // every real spreadsheet, since that call's own response never carries
+    // it. `get_sheet_numeric_id` below is the one place that actually needs
+    // the number, and is responsible for treating a bare `None` as an error
+    // - `get_spreadsheet_sheet_titles` never looks at this field at all.
     #[serde(rename = "sheetId")]
-    sheet_id: i64,
+    sheet_id: Option<i64>,
 }
 
 /// Returns the exact title of every tab in spreadsheet `spreadsheet_id`, in
@@ -405,12 +417,14 @@ pub fn get_sheet_numeric_id(token: &str, spreadsheet_id: &str, sheet_tab: &str) 
         .send()
         .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
     let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
-    parsed
+    let entry = parsed
         .sheets
         .into_iter()
         .find(|s| s.properties.title == sheet_tab)
-        .map(|s| s.properties.sheet_id)
-        .ok_or_else(|| AppError::Validation(format!("Tab \"{sheet_tab}\" was not found in this spreadsheet.")))
+        .ok_or_else(|| AppError::Validation(format!("Tab \"{sheet_tab}\" was not found in this spreadsheet.")))?;
+    entry.properties.sheet_id.ok_or_else(|| {
+        AppError::External(format!("Google Sheets did not return an internal ID for tab \"{sheet_tab}\"."))
+    })
 }
 
 /// Sends a `spreadsheets.batchUpdate` request - the Sheets API's mechanism
@@ -839,8 +853,27 @@ mod tests {
         let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse a real spreadsheets.get response");
         let titles: Vec<String> = parsed.sheets.iter().map(|s| s.properties.title.clone()).collect();
         assert_eq!(titles, vec!["Objednávky".to_string(), "Predaje 2026".to_string()]);
-        let ids: Vec<i64> = parsed.sheets.iter().map(|s| s.properties.sheet_id).collect();
-        assert_eq!(ids, vec![0, 1234567890]);
+        let ids: Vec<Option<i64>> = parsed.sheets.iter().map(|s| s.properties.sheet_id).collect();
+        assert_eq!(ids, vec![Some(0), Some(1234567890)]);
+    }
+
+    #[test]
+    fn spreadsheet_metadata_also_parses_the_title_only_shape_get_spreadsheet_sheet_titles_actually_receives() {
+        // 2.0.20 regression test for the exact bug marko hit: `?fields=
+        // sheets.properties.title` (get_spreadsheet_sheet_titles's own
+        // query - no sheetId requested at all) genuinely never carries this
+        // field - Google omits it entirely rather than sending `null`. Both
+        // functions share this one struct, so it must tolerate a response
+        // from EITHER `fields=` query, not just the one `sheetId`-aware
+        // caller (get_sheet_numeric_id) happens to send. Real error this
+        // reproduces: "missing field `sheetId`" on every single "paste a
+        // URL" tab auto-detect, the very first time marko connected a sheet
+        // after 2.0.19 shipped.
+        let json = r#"{ "sheets": [ { "properties": { "title": "Pulls" } } ] }"#;
+        let parsed: SpreadsheetMetadata =
+            serde_json::from_str(json).expect("a response with no sheetId at all must still parse");
+        assert_eq!(parsed.sheets[0].properties.title, "Pulls");
+        assert_eq!(parsed.sheets[0].properties.sheet_id, None);
     }
 
     #[test]
@@ -856,7 +889,7 @@ mod tests {
             ]
         }"#;
         let parsed: SpreadsheetMetadata = serde_json::from_str(json).unwrap();
-        let found = parsed.sheets.into_iter().find(|s| s.properties.title == "Predaje 2026").map(|s| s.properties.sheet_id);
+        let found = parsed.sheets.into_iter().find(|s| s.properties.title == "Predaje 2026").and_then(|s| s.properties.sheet_id);
         assert_eq!(found, Some(987654321));
     }
 

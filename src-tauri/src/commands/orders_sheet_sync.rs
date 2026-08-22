@@ -1893,6 +1893,78 @@ fn refresh_sheet_structure_soft_fail(
     }
 }
 
+// ---------------------------------------------------------------------------
+// "Update sheet" (2.0.20) - the Orders & Sales sibling of
+// pulls_sheet_sync::setup_pulls_sheet, see that function's own doc comment
+// for marko's exact request. Unlike Pulls, a freshly-written header here is
+// not the whole story - Orders & Sales also has real dropdowns/formulas
+// (`ensure_orders_sheet_structure`, 2.0.19) that a brand-new header needs
+// applied to it right away rather than waiting for the next Order sync/Sales
+// sync/Push orders/Push sales, so this command always runs that step too,
+// whether or not the header itself needed writing.
+// ---------------------------------------------------------------------------
+
+/// Writes `ORDERS_SHEET_HEADERS` as row 1 of the already-connected sheet/tab
+/// when it currently has no header row at all (never touches an existing
+/// header), then always runs `ensure_orders_sheet_structure` on whatever
+/// header is now in place - so this doubles as the on-demand way to
+/// (re-)apply dropdowns/formulas immediately, without needing to click one of
+/// the four sync/push buttons first. See this section's own doc comment.
+fn setup_orders_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "orders")?.ok_or_else(|| {
+        AppError::Validation("No spreadsheet is connected for Orders & Sales yet - connect one in Settings first.".to_string())
+    })?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+
+    let mut result = SheetSyncResult {
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        conflicts: vec![],
+        errors: vec![],
+        synced_at: String::new(),
+    };
+
+    let headers: Vec<String> = if value_range.values.is_empty() {
+        let header_row: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let header_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
+        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[header_row.clone()])?;
+        result.created = 1;
+        header_row
+    } else {
+        result.unchanged = 1;
+        value_range.values[0].clone()
+    };
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    refresh_sheet_structure_soft_fail(
+        conn,
+        token,
+        &connection.spreadsheet_id,
+        &connection.sheet_tab,
+        &headers,
+        data_rows,
+        &mut result,
+    );
+
+    result.synced_at = now_iso(conn)?;
+    Ok(result)
+}
+
+/// "Update sheet" button (Settings -> Integrations, Orders & Sales card) -
+/// sits next to "Order sync"/"Sales sync"/"Push orders"/"Push sales", for the
+/// already-connected sheet rather than the separate "Create a new sheet for
+/// me" flow. Never runs on its own.
+#[tauri::command]
+pub fn setup_orders_sheet(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let conn = state.db.lock().unwrap();
+    setup_orders_sheet_impl(&conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3350,5 +3422,33 @@ mod tests {
         // formula list, exactly matching there being 0 real data rows yet.
         assert_eq!(revenue.unwrap().formulas.len(), 0);
         assert_eq!(profit.unwrap().formulas.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // "Update sheet" (2.0.20) - same two tests as
+    // pulls_sheet_sync::setup_pulls_sheet, see those tests' own comments for
+    // why a real network call is never needed to exercise both of these
+    // paths in this sandbox.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn setup_orders_sheet_rejects_up_front_when_nothing_is_connected_yet() {
+        let conn = test_conn();
+        let err = setup_orders_sheet_impl(&conn).unwrap_err();
+        assert!(
+            err.to_string().contains("No spreadsheet is connected"),
+            "must fail with the same clear message sync/push already use, not a generic error: {err}"
+        );
+    }
+
+    #[test]
+    fn setup_orders_sheet_with_a_real_connection_fails_cleanly_when_no_service_account_is_embedded() {
+        let conn = test_conn();
+        set_sheets_connection_impl(&conn, "orders", "1AbC-XyZ_9900", "Orders", "EUR").unwrap();
+        let err = setup_orders_sheet_impl(&conn).unwrap_err();
+        assert!(
+            err.to_string().contains("isn't available in this build"),
+            "a real connection must reach the credential step (not panic/short-circuit some other way) and then stop cleanly before any network call in a test build: {err}"
+        );
     }
 }

@@ -227,6 +227,13 @@ export const api = {
    * as a second way to arrive at a connection, not a replacement for it. */
   createPullsSheet: (email: string, currency: string) =>
     invoke<CreatedSheetResult>("create_pulls_sheet", { email, currency }),
+  /** 2.0.20: "Update sheet" - for a sheet/tab already connected by pasting
+   * its URL/ID (not createPullsSheet's brand-new-sheet flow) that turns out
+   * to have no header row yet, e.g. a blank tab. Writes the header row only
+   * when the sheet is currently empty; a sheet that already has a header is
+   * left completely untouched and this just reports `unchanged` - always a
+   * safe click. See commands/pulls_sheet_sync.rs::setup_pulls_sheet_impl. */
+  setupPullsSheet: () => invoke<SheetSyncResult>("setup_pulls_sheet"),
   /** 2.0.8: reads the connected sheet and creates a new order (with its
    * tickets) for every row it hasn't seen before - creation-only, sheet ->
    * app only, see commands/orders_sheet_sync.rs. */
@@ -256,6 +263,14 @@ export const api = {
    * way to arrive at a connection, not a replacement for it. */
   createOrdersSheet: (email: string, currency: string) =>
     invoke<CreatedSheetResult>("create_orders_sheet", { email, currency }),
+  /** 2.0.20: "Update sheet" - mirrors setupPullsSheet exactly (writes the
+   * header row only when the connected sheet/tab is currently empty), but
+   * for Orders & Sales this ALSO always (re-)applies the dropdowns and
+   * Revenue/Profit formulas (the same structure Order sync/Sales sync/Push
+   * orders/Push sales already keep up to date) right away, rather than
+   * waiting for one of those four buttons to be clicked next. See
+   * commands/orders_sheet_sync.rs::setup_orders_sheet_impl. */
+  setupOrdersSheet: () => invoke<SheetSyncResult>("setup_orders_sheet"),
   /** 2.0.5: installation-wide "Sign in with Google" - see
    * commands/google_auth.rs's module doc comment. `startGoogleSignIn` opens
    * the system browser and blocks (up to 5 minutes) until the person

@@ -1217,6 +1217,67 @@ pub fn create_pulls_sheet(state: State<AppState>, email: String, currency: Strin
     create_pulls_sheet_impl(&conn, &email, &currency)
 }
 
+// ---------------------------------------------------------------------------
+// "Update sheet" (2.0.20) - marko hit a real "missing field `sheetId`" error
+// (fixed in google_sheets.rs - see that module's SpreadsheetMetadata doc
+// comment) while connecting a sheet by pasting its URL, and asked in the same
+// message for a way to bring an already-connected sheet up to the correct
+// shape on demand: "ked manualne si tam das tabulku tak vies si dat update
+// tlacitko a ten sheet ti vytvorí presne tak ako ma byt keby nahodou mu tam
+// posles prazny" - i.e. a button for the case where the sheet/tab he pasted
+// in (not "Create a new sheet for me", which already always writes a correct
+// header) turns out to have no header row yet. `create_pulls_sheet_impl`
+// above can't be reused directly: it always creates a brand-new spreadsheet,
+// never writes into a sheet that's already connected.
+// ---------------------------------------------------------------------------
+
+/// Writes `PULLS_SHEET_HEADERS` as row 1 of the already-connected sheet/tab,
+/// but ONLY when it currently has no header row at all - an existing header
+/// (whatever its exact columns are) is never touched, reordered, or
+/// overwritten, so clicking this on a sheet that's already set up correctly
+/// is always a safe no-op that simply reports `unchanged`. See this
+/// section's own doc comment above for why this exists alongside
+/// `create_pulls_sheet_impl` rather than replacing it.
+fn setup_pulls_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "pulls")?
+        .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Pulls yet - connect one in Settings first.".to_string()))?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:Z");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+
+    let mut result = SheetSyncResult {
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        conflicts: vec![],
+        errors: vec![],
+        synced_at: String::new(),
+    };
+
+    if value_range.values.is_empty() {
+        let header_row: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let header_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
+        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[header_row])?;
+        result.created = 1;
+    } else {
+        result.unchanged = 1;
+    }
+
+    result.synced_at = now_iso(conn)?;
+    Ok(result)
+}
+
+/// "Update sheet" button (Settings -> Integrations, Pulls card) - sits next
+/// to "Sync now"/"Push to sheet", for the already-connected sheet rather than
+/// the separate "Create a new sheet for me" flow. Never runs on its own.
+#[tauri::command]
+pub fn setup_pulls_sheet(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let conn = state.db.lock().unwrap();
+    setup_pulls_sheet_impl(&conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1921,6 +1982,27 @@ mod tests {
         assert!(
             err.to_string().contains("isn't available in this build"),
             "fully valid input must still stop cleanly before any network call in a test build: {err}"
+        );
+    }
+
+    #[test]
+    fn setup_pulls_sheet_rejects_up_front_when_nothing_is_connected_yet() {
+        let conn = test_conn();
+        let err = setup_pulls_sheet_impl(&conn).unwrap_err();
+        assert!(
+            err.to_string().contains("No spreadsheet is connected"),
+            "must fail with the same clear message sync/push already use, not a generic error: {err}"
+        );
+    }
+
+    #[test]
+    fn setup_pulls_sheet_with_a_real_connection_fails_cleanly_when_no_service_account_is_embedded() {
+        let conn = test_conn();
+        set_sheets_connection_impl(&conn, "pulls", "1AbC-XyZ_9900", "Pulls", "EUR").unwrap();
+        let err = setup_pulls_sheet_impl(&conn).unwrap_err();
+        assert!(
+            err.to_string().contains("isn't available in this build"),
+            "a real connection must reach the credential step (not panic/short-circuit some other way) and then stop cleanly before any network call in a test build: {err}"
         );
     }
 }

@@ -433,6 +433,8 @@ export default function Settings() {
                   syncDescription={`"Sync now" reads the sheet and creates/updates matching pulls in the app - it never writes your data back to the sheet yet, except its own row IDs.`}
                   onPush={api.pushPulls}
                   pushDescription={`"Push to sheet" is the other direction: brand-new pulls you added in the app become new rows, and changes to an already-synced pull are written back cell by cell - but only when the sheet itself hasn't changed that row since the last sync (if it has, the row is reported so you can "Sync now" first, then push again).`}
+                  onSetup={api.setupPullsSheet}
+                  setupDescription={`For a sheet you connected above that's still completely blank: writes the correct header row for you, exactly as "Create a new sheet for me" below would - use this instead when you already have the specific sheet/tab you want to keep using, just empty.`}
                   onCreate={api.createPullsSheet}
                 />
                 {/* 2.0.8: one row = one order (marko's own choice) - creates the
@@ -471,6 +473,8 @@ export default function Settings() {
                       "Fills in the SAME row's Site Listed/Payout/Status/Payout status/paid-by columns (and pull/who pulled/how much pull, from a linked received pull) once every ticket on that order has sold the same way - but only into cells that are still completely blank, so it never overwrites anything already in the sheet.",
                     run: api.pushSales,
                   }}
+                  onSetup={api.setupOrdersSheet}
+                  setupDescription="For a sheet you connected above that's still completely blank: writes the correct header row for you, then immediately sets up its dropdowns and Revenue/Profit formulas - the same structure Order sync/Sales sync/Push orders/Push sales already keep up to date, applied right away instead of waiting for one of those."
                   onCreate={api.createOrdersSheet}
                 />
               </div>
@@ -844,6 +848,8 @@ function SheetsConnectionCard({
   pushLabel,
   pushDescription,
   secondaryPush,
+  onSetup,
+  setupDescription,
   onCreate,
   googleStatus,
 }: {
@@ -893,6 +899,21 @@ function SheetsConnectionCard({
    * "Push orders" here, same as "Sales sync" sits alongside "Order sync"
    * above. */
   secondaryPush?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
+  /** 2.0.20: "Update sheet" - e.g. api.setupPullsSheet / api.setupOrdersSheet.
+   * For a sheet/tab that's already connected (pasted URL/ID, not "Create a
+   * new sheet for me" below) but turns out to have no header row yet - marko
+   * hit exactly this after a real bug (see google_sheets.rs's
+   * SpreadsheetMetadata doc comment) and asked for a way to bring it up to
+   * the correct shape without disconnecting and starting over. Writes the
+   * header only when the sheet is currently empty; always a safe click
+   * otherwise. Omit for a data source with nothing to set up beyond the
+   * header itself (none currently - both Pulls and Orders & Sales pass
+   * this). */
+  onSetup?: () => Promise<SheetSyncResult>;
+  /** Shown next to the "Update sheet" button, same one-per-data-source
+   * rationale as `syncDescription`/`pushDescription`. Required whenever
+   * `onSetup` is set. */
+  setupDescription?: string;
   /** "Create a new sheet for me", e.g. api.createPullsSheet /
    * api.createOrdersSheet. 2.0.8: generalized to a prop alongside onSync,
    * but kept independent of it - not every data source necessarily gets an
@@ -910,9 +931,9 @@ function SheetsConnectionCard({
   const [sheetTab, setSheetTab] = useState("");
   const [createEmail, setCreateEmail] = useState("");
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "test" | "sync" | "sync2" | "push" | "push2" | "create" | "disconnect" | null>(
-    null,
-  );
+  const [busy, setBusy] = useState<
+    "save" | "test" | "sync" | "sync2" | "push" | "push2" | "setup" | "create" | "disconnect" | null
+  >(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<SheetSyncResult | null>(null);
   // 2.0.10: result of `secondarySync`, kept fully separate from `syncResult`
@@ -924,6 +945,9 @@ function SheetsConnectionCard({
   // above, now for the push direction.
   const [pushResult, setPushResult] = useState<SheetSyncResult | null>(null);
   const [secondaryPushResult, setSecondaryPushResult] = useState<SheetSyncResult | null>(null);
+  // 2.0.20: same "own slot per action" reasoning as pushResult above, now for
+  // the "Update sheet" button.
+  const [setupResult, setSetupResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   // 2.0.14: "Sheet/tab name" used to be free-text only, and marko's own
   // reports (twice) showed that typing the exact tab name by hand - even
@@ -1150,6 +1174,23 @@ function SheetsConnectionCard({
     }
   };
 
+  // 2.0.20 - see `onSetup` prop's own comment.
+  const doSetup = async () => {
+    if (!onSetup) return;
+    setBusy("setup");
+    setSetupResult(null);
+    try {
+      const result = await onSetup();
+      setSetupResult(result);
+      toast.success(result.created > 0 ? "Sheet header written - it's now set up correctly" : "Sheet already set up correctly");
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const doDisconnect = async () => {
     setBusy("disconnect");
     try {
@@ -1160,6 +1201,7 @@ function SheetsConnectionCard({
       setSecondarySyncResult(null);
       setPushResult(null);
       setSecondaryPushResult(null);
+      setSetupResult(null);
       setCreatedUrl(null);
       toast.success("Sheet disconnected");
       reload();
@@ -1213,6 +1255,11 @@ function SheetsConnectionCard({
           {secondaryPush && (
             <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
               <b>{secondaryPush.label}:</b> {secondaryPush.description}
+            </p>
+          )}
+          {onSetup && (
+            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
+              <b>Update sheet:</b> {setupDescription}
             </p>
           )}
 
@@ -1328,6 +1375,12 @@ function SheetsConnectionCard({
                     {busy === "push2" ? "Pushing..." : secondaryPush.label}
                   </Button>
                 )}
+                {onSetup && (
+                  <Button variant="secondary" disabled={busy === "setup"} onClick={doSetup}>
+                    {busy === "setup" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "setup" ? "Updating..." : "Update sheet"}
+                  </Button>
+                )}
                 <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
                   Disconnect
                 </Button>
@@ -1417,6 +1470,29 @@ function SheetsConnectionCard({
             <div className="mt-3">
               <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{secondaryPush?.label} result</p>
               <SyncResultView result={secondaryPushResult} />
+            </div>
+          )}
+
+          {setupResult && (
+            <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800 mt-3">
+              <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">Update sheet result</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                {setupResult.created > 0
+                  ? "Header row was missing, so it was just written - the sheet is now set up correctly."
+                  : "The header row was already there - nothing needed to change."}
+              </p>
+              {setupResult.errors.length > 0 && (
+                <div className="mt-2 max-h-40 overflow-y-auto">
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                    {setupResult.errors.length} thing{setupResult.errors.length === 1 ? "" : "s"} didn&apos;t go through:
+                  </p>
+                  {setupResult.errors.map((e, i) => (
+                    <p key={i} className="mt-0.5 text-xs text-red-600 dark:text-red-400">
+                      {e.message}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
