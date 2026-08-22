@@ -434,7 +434,7 @@ export default function Settings() {
                   onPush={api.pushPulls}
                   pushDescription={`"Push to sheet" is the other direction: brand-new pulls you added in the app become new rows, and changes to an already-synced pull are written back cell by cell - but only when the sheet itself hasn't changed that row since the last sync (if it has, the row is reported so you can "Sync now" first, then push again).`}
                   onSetup={api.setupPullsSheet}
-                  setupDescription={`For a sheet you connected above that's still completely blank: writes the correct header row for you, exactly as "Create a new sheet for me" below would - use this instead when you already have the specific sheet/tab you want to keep using, just empty.`}
+                  setupDescription={`For a sheet you connected above that's still completely blank: writes the correct header row for you, exactly as "Create a new sheet for me" below would - use this instead when you already have the specific sheet/tab you want to keep using, just empty. Also (re-)applies the Platform/Transfer dropdowns below right away, same as Sync now/Push to sheet already do.`}
                   onCreate={api.createPullsSheet}
                 />
                 {/* 2.0.8: one row = one order (marko's own choice) - creates the

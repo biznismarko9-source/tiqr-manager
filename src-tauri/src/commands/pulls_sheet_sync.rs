@@ -1003,6 +1003,16 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         }
     }
 
+    refresh_pulls_sheet_structure_soft_fail(
+        conn,
+        token,
+        &connection.spreadsheet_id,
+        &connection.sheet_tab,
+        &headers,
+        data_rows.len(),
+        &mut result,
+    );
+
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_synced_key("pulls"), &result.synced_at)?;
     Ok(result)
@@ -1075,6 +1085,21 @@ fn push_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
             });
         }
     }
+
+    // Pre-append `data_rows` (not re-fetched after the writes above) - same
+    // choice as orders_sheet_sync::push_orders_impl/push_sales_impl, and for
+    // the same reason: DROPDOWN_ROW_BUFFER already covers far more rows than
+    // any real sheet has, so a row just appended in this very call already
+    // has a working dropdown without needing its own re-fetch first.
+    refresh_pulls_sheet_structure_soft_fail(
+        conn,
+        token,
+        &connection.spreadsheet_id,
+        &connection.sheet_tab,
+        &headers,
+        data_rows.len(),
+        &mut result,
+    );
 
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_pushed_key("pulls"), &result.synced_at)?;
@@ -1218,6 +1243,136 @@ pub fn create_pulls_sheet(state: State<AppState>, email: String, currency: Strin
 }
 
 // ---------------------------------------------------------------------------
+// Sheet structure (Platform + Transfer dropdowns), 2.0.21 - mirrors
+// commands::orders_sheet_sync's own "Sheet structure" section (2.0.19) for
+// this sheet's two columns that call for one, marko's own request: "Platform
+// tu daj na výber možnosti a spoj to s dashboardom, ked do dashboradu pridas
+// nove policko tak po update sa to opravi aj v sheete ... Transfer tu davame
+// 2 moznosti bud ano/nie". Every other column he listed (pull/Event name/
+// event date/Ks/More info/Section/Row/Seats/Price) he explicitly said to
+// leave exactly as it is - no dropdown, no formula, untouched. Applied
+// across the WHOLE sheet, same "všetky riadky" choice marko already made for
+// Orders & Sales (see that module's doc comment) - every time
+// sync_pulls/push_pulls/setup_pulls_sheet runs, no separate button to
+// remember. Unlike Orders & Sales, this never rewrites any cell's actual
+// VALUE (no Revenue/Profit-style formula here - Pulls has no computed column
+// of its own), so unlike 2.0.19 there is no first-run "this will overwrite
+// existing values" risk at all: Data validation only restricts what a click
+// on an empty dropdown arrow offers, it never touches what a cell already
+// contains.
+// ---------------------------------------------------------------------------
+
+/// Fixed - "Transfer" is a closed yes/no choice (marko's own spec), not
+/// grown from anything. Deliberately the exact same two strings the push
+/// direction already writes into this column (see `apply_pull_push` below:
+/// `if pull.transfer_done { "Yes" } else { "No" }`), so anything this
+/// dropdown offers is always a value `parse_transfer_done` above already
+/// understands too.
+const TRANSFER_OPTIONS: &[&str] = &["Yes", "No"];
+
+/// Same reasoning/value as orders_sheet_sync::DROPDOWN_ROW_BUFFER - far
+/// beyond however much data is in the sheet right now, so a newly-added row
+/// has a working dropdown immediately, without needing a re-run just to get
+/// one.
+const DROPDOWN_ROW_BUFFER: i64 = 500;
+
+/// `Pull.platform_id`'s own name pool, filtered to platforms that can
+/// actually be a PURCHASE platform (`kind IN ('purchase', 'both')`) - the
+/// exact same filter the Pulls "Add pull" form's own Platform picker already
+/// uses (Pulls.tsx: `platforms.filter((p) => p.kind === "purchase" || p.kind
+/// === "both")`), and the same `kind` `resolve_or_create_platform` above
+/// already writes when a sheet row's platform name is brand new. Mirrors
+/// orders_sheet_sync::sale_platform_names exactly, just the purchase side of
+/// the same `platforms` table - growable the same way: whatever platform
+/// exists in the app right now becomes this dropdown's option list on the
+/// next sync/push/update, nothing to separately maintain.
+fn purchase_platform_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT name FROM platforms WHERE kind IN ('purchase', 'both') AND is_demo = 0 ORDER BY name COLLATE NOCASE")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+struct DropdownSpec {
+    col_index: usize,
+    values: Vec<String>,
+}
+
+/// Pure core: given the sheet's actual headers (tolerant of reordering/extra
+/// columns, same `find_col`/`build_header_map` every other function in this
+/// module already uses), works out exactly which dropdown columns exist and
+/// what their option lists should be right now. No network calls - see
+/// `ensure_pulls_sheet_structure` for the network shell that sends this as
+/// real Sheets API requests. A dropdown column not present in `headers` at
+/// all is simply skipped, same tolerance as everywhere else in this module;
+/// Platform is additionally skipped when there are currently zero purchase
+/// platforms to offer - nothing meaningful to restrict the column to yet.
+fn plan_pulls_sheet_structure_updates(conn: &Connection, headers: &[String]) -> AppResult<Vec<DropdownSpec>> {
+    let map = build_header_map(headers);
+    let mut dropdowns: Vec<DropdownSpec> = vec![];
+
+    if let Some(c) = find_col(&map, &["platform"]) {
+        let values = purchase_platform_names(conn)?;
+        if !values.is_empty() {
+            dropdowns.push(DropdownSpec { col_index: c, values });
+        }
+    }
+    if let Some(c) = find_col(&map, &["transfer"]) {
+        dropdowns.push(DropdownSpec { col_index: c, values: TRANSFER_OPTIONS.iter().map(|s| s.to_string()).collect() });
+    }
+
+    Ok(dropdowns)
+}
+
+/// The network shell for `plan_pulls_sheet_structure_updates` above - sends
+/// its plan as real `batchUpdate` (Data validation) calls, same pattern as
+/// orders_sheet_sync::ensure_orders_sheet_structure just without a
+/// formula-writing half (nothing here needs one).
+fn ensure_pulls_sheet_structure(
+    conn: &Connection,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_tab: &str,
+    headers: &[String],
+    data_row_count: usize,
+) -> AppResult<()> {
+    let dropdowns = plan_pulls_sheet_structure_updates(conn, headers)?;
+    if dropdowns.is_empty() {
+        return Ok(());
+    }
+    let sheet_id = google_sheets::get_sheet_numeric_id(token, spreadsheet_id, sheet_tab)?;
+    let end_row = (data_row_count as i64).max(DROPDOWN_ROW_BUFFER) + 1;
+    let requests: Vec<serde_json::Value> = dropdowns
+        .iter()
+        .map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values))
+        .collect();
+    google_sheets::batch_update(token, spreadsheet_id, requests)
+}
+
+/// Runs `ensure_pulls_sheet_structure` and folds any error it returns into
+/// `result` as a soft warning instead of propagating it - same convention as
+/// orders_sheet_sync::refresh_sheet_structure_soft_fail, shared by every call
+/// site below so a structure-refresh problem is reported the exact same way
+/// everywhere and never blocks/discards the real sync/push/setup work it
+/// rode along with.
+fn refresh_pulls_sheet_structure_soft_fail(
+    conn: &Connection,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_tab: &str,
+    headers: &[String],
+    data_row_count: usize,
+    result: &mut SheetSyncResult,
+) {
+    if let Err(e) = ensure_pulls_sheet_structure(conn, token, spreadsheet_id, sheet_tab, headers, data_row_count) {
+        result.errors.push(SheetSyncIssue {
+            row_number: 0,
+            message: format!("the sheet's Platform/Transfer dropdowns could not be refreshed this time: {e}"),
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // "Update sheet" (2.0.20) - marko hit a real "missing field `sheetId`" error
 // (fixed in google_sheets.rs - see that module's SpreadsheetMetadata doc
 // comment) while connecting a sheet by pasting its URL, and asked in the same
@@ -1256,14 +1411,27 @@ fn setup_pulls_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         synced_at: String::new(),
     };
 
-    if value_range.values.is_empty() {
+    let headers: Vec<String> = if value_range.values.is_empty() {
         let header_row: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
         let header_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
-        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[header_row])?;
+        google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[header_row.clone()])?;
         result.created = 1;
+        header_row
     } else {
         result.unchanged = 1;
-    }
+        value_range.values[0].clone()
+    };
+    let data_row_count = value_range.values.len().saturating_sub(1);
+
+    refresh_pulls_sheet_structure_soft_fail(
+        conn,
+        token,
+        &connection.spreadsheet_id,
+        &connection.sheet_tab,
+        &headers,
+        data_row_count,
+        &mut result,
+    );
 
     result.synced_at = now_iso(conn)?;
     Ok(result)
@@ -2004,5 +2172,71 @@ mod tests {
             err.to_string().contains("isn't available in this build"),
             "a real connection must reach the credential step (not panic/short-circuit some other way) and then stop cleanly before any network call in a test build: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sheet structure (Platform + Transfer dropdowns), 2.0.21 - mirrors
+    // orders_sheet_sync's own "Sheet structure" test section (2.0.19).
+    // `full_headers()` above already has both "Platform" (index 4) and
+    // "Transfer" (index 10), so it's reused as-is rather than a second
+    // near-identical fixture.
+    // -----------------------------------------------------------------------
+
+    fn dropdown_values<'a>(dropdowns: &'a [DropdownSpec], headers: &[String], header_name: &str) -> Option<&'a Vec<String>> {
+        let col = headers.iter().position(|h| h.eq_ignore_ascii_case(header_name))?;
+        dropdowns.iter().find(|d| d.col_index == col).map(|d| &d.values)
+    }
+
+    #[test]
+    fn plan_pulls_sheet_structure_updates_transfer_options_are_exactly_yes_no() {
+        let conn = test_conn();
+        let headers = full_headers();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        assert_eq!(dropdown_values(&dropdowns, &headers, "Transfer"), Some(&vec!["Yes".to_string(), "No".to_string()]));
+    }
+
+    #[test]
+    fn plan_pulls_sheet_structure_updates_platform_options_are_platforms_tagged_purchase_or_both_only() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('TicketMaster', 'purchase')", []).unwrap();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('Resell4U', 'both')", []).unwrap();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('SaleOnlyCo', 'sale')", []).unwrap();
+
+        let headers = full_headers();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        let values = dropdown_values(&dropdowns, &headers, "Platform").unwrap();
+        assert_eq!(values, &vec!["Resell4U".to_string(), "TicketMaster".to_string()], "sale-only platform must be excluded");
+    }
+
+    #[test]
+    fn plan_pulls_sheet_structure_updates_skips_the_platform_dropdown_when_there_are_no_purchase_platforms_yet() {
+        let conn = test_conn();
+        let headers = full_headers();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        assert!(dropdown_values(&dropdowns, &headers, "Platform").is_none());
+    }
+
+    #[test]
+    fn plan_pulls_sheet_structure_updates_skips_a_dropdown_column_the_sheet_does_not_have() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('TicketMaster', 'purchase')", []).unwrap();
+        // Only "Transfer" exists - no Platform column anywhere in this sheet.
+        let headers: Vec<String> = vec!["Transfer".to_string()];
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        assert_eq!(dropdowns.len(), 1);
+        assert_eq!(dropdowns[0].col_index, 0);
+    }
+
+    #[test]
+    fn plan_pulls_sheet_structure_updates_leaves_every_other_column_alone() {
+        // marko's own request listed exactly these two columns for a
+        // dropdown - everything else (pull/Event name/event date/Ks/More
+        // info/Section/Row/Seats/Price/the unnamed blank column/date) must
+        // never appear here, no matter what full_headers() contains.
+        let conn = test_conn();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('TicketMaster', 'purchase')", []).unwrap();
+        let headers = full_headers();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        assert_eq!(dropdowns.len(), 2, "exactly Platform and Transfer, nothing else");
     }
 }
