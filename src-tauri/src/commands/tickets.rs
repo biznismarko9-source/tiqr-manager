@@ -457,6 +457,63 @@ pub fn bulk_update_ticket_status(state: State<AppState>, input: BulkTicketStatus
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// The 5 options the app's own "New order" form (Orders.tsx) has always
+/// offered for Ticket Type, now also the seed for the Orders & Sales sheet's
+/// own Ticket Type dropdown (commands::orders_sheet_sync) - see
+/// `known_ticket_type_names`'s own doc comment for why these always come
+/// first, and never disappear even if nothing currently uses them.
+pub(crate) const TICKET_TYPE_SEED: &[&str] = &["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"];
+
+/// Every ticket type marko can currently pick, in the app or in the sheet:
+/// `TICKET_TYPE_SEED` above, followed by any other value already sitting on
+/// a real ticket that isn't one of those 5 (alphabetically, deduped
+/// case-insensitively so e.g. a sheet row typed "e-ticket" doesn't produce a
+/// second entry next to the seeded "E-ticket").
+///
+/// 2.0.19 (marko's own request): there is deliberately no separate lookup
+/// table for this, unlike Platforms/Suppliers - `Ticket.ticket_type` stays
+/// the plain free-text column it always was (Order sync/push already read
+/// and write it exactly as before, completely unchanged). Whoever types a
+/// brand-new value - marko in the app's "Other..." field, or directly into
+/// a sheet cell that Order sync then reads - it lands on a real ticket
+/// immediately, which is all this query needs to pick it up as a known
+/// option for next time. "Known" here always means "used somewhere right
+/// now, or one of the 5 defaults" - there is no way for a value to become
+/// unknown again short of every ticket that ever used it being deleted.
+pub(crate) fn known_ticket_type_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut names: Vec<String> = vec![];
+    for seed in TICKET_TYPE_SEED {
+        if seen.insert(seed.to_lowercase()) {
+            names.push(seed.to_string());
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT ticket_type FROM tickets
+         WHERE ticket_type IS NOT NULL AND TRIM(ticket_type) != '' AND is_demo = 0
+         ORDER BY ticket_type COLLATE NOCASE",
+    )?;
+    let extra: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    for name in extra {
+        if seen.insert(name.to_lowercase()) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Powers the "New order" form's Ticket Type field (Orders.tsx) - was a
+/// hardcoded array of the 5 `TICKET_TYPE_SEED` values before 2.0.19, now a
+/// live, growable list via `known_ticket_type_names` above. The "Other..."
+/// free-text toggle next to it is unchanged: typing a new value there still
+/// just becomes that order's (and its tickets') `ticket_type` directly, and
+/// is picked up as a known option from then on with no extra step.
+#[tauri::command]
+pub fn list_ticket_types(state: State<AppState>) -> AppResult<Vec<String>> {
+    let conn = state.db.lock().unwrap();
+    known_ticket_type_names(&conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +546,77 @@ mod tests {
         let order_id = insert_order_with_tickets(conn, &input, false).unwrap();
         conn.query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0))
             .unwrap()
+    }
+
+    /// Same shape as `seed_one_ticket`, but lets a `known_ticket_type_names`
+    /// test control the one thing that function actually looks at.
+    fn seed_ticket_with_type(conn: &Connection, ticket_type: Option<&str>, is_demo: bool) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: ticket_type.map(|s| s.to_string()),
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        let order_id = insert_order_with_tickets(conn, &input, is_demo).unwrap();
+        conn.query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn known_ticket_type_names_starts_with_the_five_seed_defaults_on_an_empty_database() {
+        let conn = test_conn();
+        assert_eq!(
+            known_ticket_type_names(&conn).unwrap(),
+            vec!["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"]
+        );
+    }
+
+    #[test]
+    fn known_ticket_type_names_includes_an_extra_value_actually_used_on_a_ticket() {
+        let conn = test_conn();
+        seed_ticket_with_type(&conn, Some("Season pass"), false);
+        let names = known_ticket_type_names(&conn).unwrap();
+        assert_eq!(names.len(), 6, "5 seed defaults + the 1 real extra value: {names:?}");
+        assert_eq!(names.last(), Some(&"Season pass".to_string()));
+    }
+
+    #[test]
+    fn known_ticket_type_names_never_lists_the_same_value_twice_regardless_of_case() {
+        let conn = test_conn();
+        // Sheet-typed lowercase "e-ticket" must not sit next to the seeded
+        // "E-ticket" as if it were a genuinely different option.
+        seed_ticket_with_type(&conn, Some("e-ticket"), false);
+        let names = known_ticket_type_names(&conn).unwrap();
+        assert_eq!(names, vec!["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"]);
+    }
+
+    #[test]
+    fn known_ticket_type_names_ignores_demo_tickets() {
+        let conn = test_conn();
+        seed_ticket_with_type(&conn, Some("Demo-only type"), true);
+        let names = known_ticket_type_names(&conn).unwrap();
+        assert!(!names.contains(&"Demo-only type".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn known_ticket_type_names_ignores_blank_and_null_ticket_type() {
+        let conn = test_conn();
+        seed_ticket_with_type(&conn, None, false);
+        seed_ticket_with_type(&conn, Some("   "), false);
+        let names = known_ticket_type_names(&conn).unwrap();
+        assert_eq!(names, vec!["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"]);
     }
 
     /// BUG #1 fix, ticket-view half: once a ticket can carry both a

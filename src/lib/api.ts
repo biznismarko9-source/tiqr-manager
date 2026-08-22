@@ -79,6 +79,11 @@ export const api = {
   /** 1.8.3: set one field to one value across many tickets at once, in a single all-or-nothing transaction. */
   bulkUpdateTickets: (input: BulkTicketUpdateInput) => invoke<Ticket[]>("bulk_update_tickets", { input }),
   bulkUpdateTicketStatus: (input: BulkTicketStatusInput) => invoke<Ticket[]>("bulk_update_ticket_status", { input }),
+  /** 2.0.19: every ticket type marko can currently pick - the 5 built-in
+   * defaults, plus any other value already used on a real ticket (typed via
+   * "Other..." in the app, or synced in from a sheet cell). Powers the "New
+   * order" form's Ticket Type field - was a hardcoded array before 2.0.19. */
+  listTicketTypes: () => invoke<string[]>("list_ticket_types"),
 
   // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
   // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.

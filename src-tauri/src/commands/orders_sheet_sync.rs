@@ -67,7 +67,7 @@
 //! |---|---|
 //! | `Site Listed` | `Sale.platform_id` (resolve-or-create by name - see `resolve_or_create_sale_platform`, deliberately NOT `csv_import::resolve_or_create_platform`: a brand-new platform here is created with `kind='sale'`, and an existing `kind='purchase'` platform found by the same name is promoted to `'both'`, so it actually shows up in the Sales screen's own platform picker, which filters to `kind IN ('sale','both')`) |
 //! | `Payout Per Ticket` | `Sale.sale_price_cents` - same value on every line of the batch (same "one row = N tickets" convention as Section/Row/Ticket Type above). Presence of this column is what tells this sync a row is actually ready to be recorded as sold at all - see `apply_sales_rows` |
-//! | `Revenue`, `Profit` | not read at all (marko's own choice) - the app always computes both itself from `Sale.sale_price_cents` and the ticket's own purchase cost (see finance.rs), never stores them, so there is nothing here to cross-check against without risking exactly the kind of drift finance.rs's own module doc comment says never to allow |
+//! | `Revenue`, `Profit` | never READ (marko's own choice, unchanged) - the app always computes both itself from `Sale.sale_price_cents` and the ticket's own purchase cost (see finance.rs) for its own Dashboard, never from these cells. 2.0.19: now WRITTEN, but only ever as live Sheets formulas (`=Payout*Tickets`, `=Revenue-TotalPurchasePrice`) that Sheets itself evaluates - never a number the app computes - see "Sheet structure" below |
 //! | `Status` | `Ticket.resale_status` (new free-text field, 2.0.10 - migrations/010) - stamped on every ticket of the order, same convention as Section/Row. Deliberately separate from `Ticket.status`, which this sync never touches directly - creating the sale already flips that to `'sold'` |
 //! | `Delivery status` | `Ticket.delivery_status` (new free-text field, 2.0.10 - migrations/010), same stamp-on-every-ticket convention |
 //! | `Payout status` | `Sale.payment_status` - blank means `pending` (same default `create_sales_batch_impl` itself uses); `pending`/`paid` map directly; anything else (including `refunded` - a sale can't be created as already refunded, same rule `validate_new_payment_status` already enforces) is a row error |
@@ -616,6 +616,8 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         }
     }
 
+    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
+
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_synced_key("orders"), &result.synced_at)?;
     Ok(result)
@@ -864,6 +866,16 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
             });
         }
     }
+
+    // Pre-append snapshot - any row(s) `append_rows` above just added land
+    // one row past whatever this covers, so they get their own Revenue/
+    // Profit formula/dropdowns on the NEXT sync/push instead of this one
+    // (all four commands in this module refresh the structure, so that is
+    // never more than one click away) rather than a second full-sheet
+    // re-fetch on every single push just to cover this run's own appends a
+    // few seconds sooner.
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
 
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
@@ -1217,6 +1229,8 @@ fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
 
     let mut result = apply_sales_rows(conn, &headers, data_rows, marker_col_index)?;
 
+    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
+
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_synced_key("orders"), &result.synced_at)?;
     Ok(result)
@@ -1534,6 +1548,8 @@ fn push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         }
     }
 
+    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
+
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
     Ok(result)
@@ -1566,11 +1582,12 @@ pub fn push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
 /// mapping (first batch)" table above), followed by the columns
 /// `apply_sales_rows` understands (Sales sync's own batch - `Site Listed`
 /// through `how much pull`, see the "Column mapping (second batch)" table
-/// above), including `Revenue`/`Profit` - neither sync ever reads those two
-/// (see that same table), they're written here purely as marko's own
-/// on-sheet reference, since the app always computes both figures itself
-/// (finance.rs) rather than trusting a stored number that could drift out of
-/// sync with what the app actually shows. Deliberately excludes `TIQR ID` -
+/// above), including `Revenue`/`Profit` as plain header text - a brand-new
+/// sheet has no data rows yet, so there is nothing to put a formula into
+/// here; `ensure_orders_sheet_structure` (2.0.19, see "Sheet structure"
+/// below) fills in the live formulas the very first time a real data row
+/// exists under these headers, exactly as it does for any other sheet.
+/// Deliberately excludes `TIQR ID` -
 /// sync appends that itself the first time it's missing, see
 /// `resolve_marker_column` - same reasoning as `PULLS_SHEET_HEADERS`. Only
 /// the first 13 entries are asserted equal to this module's own
@@ -1646,6 +1663,234 @@ fn create_orders_sheet_impl(conn: &Connection, email: &str, currency: &str) -> A
 pub fn create_orders_sheet(state: State<AppState>, email: String, currency: String) -> AppResult<CreatedSheetResult> {
     let conn = state.db.lock().unwrap();
     create_orders_sheet_impl(&conn, &email, &currency)
+}
+
+// ---------------------------------------------------------------------------
+// Sheet structure (dropdowns + Revenue/Profit formulas), 2.0.19 - marko's own
+// request ("tabuľka sa musí automaticky aktualizovať presne tak, ako má
+// byť"). Keeps 6 columns restricted to a real dropdown (Ticket Type/Site
+// Listed/Status/Delivery status/Payout status/pull) and Revenue/Profit as
+// live formulas, across the WHOLE sheet - not just rows the app created or
+// has ever synced (marko confirmed via AskUserQuestion: "všetky riadky"/all
+// rows, over "len riadky, čo appka pozná"). `ensure_orders_sheet_structure`
+// is called at the end of every one of this module's four commands
+// (sync_orders/sync_sales/push_orders/push_sales) so the sheet stays
+// correctly set up no matter which button marko happens to click - there is
+// no separate "fix my sheet" button to remember to run.
+//
+// Split into a pure planning function (`plan_sheet_structure_updates` - unit
+// tested below, no network) and a network shell
+// (`ensure_orders_sheet_structure`) that turns the plan into real
+// `batchUpdate`/`update_values_as_formulas` calls - the same "impl function +
+// thin network shell" split this whole module already uses everywhere else.
+// ---------------------------------------------------------------------------
+
+/// Fixed dropdown options - unlike Ticket Type/Site Listed below, these three
+/// are never extended by anything the app or the sheet discovers; marko gave
+/// an exact, closed list for each, so there is nothing to grow.
+const STATUS_OPTIONS: &[&str] = &["Listed", "Unlisted", "Sold"];
+const DELIVERY_STATUS_OPTIONS: &[&str] = &["Delivered", "Not delivered"];
+const PAYOUT_STATUS_OPTIONS: &[&str] = &["Pending", "Paid"];
+const PULL_OPTIONS: &[&str] = &["Yes", "No"];
+
+/// How many data rows (below the header) the dropdown validations cover, at
+/// minimum - deliberately far beyond however much data is in the sheet right
+/// now, so marko (or a future sync) can add a new row and immediately have a
+/// working dropdown on it, without needing to remember to re-run anything
+/// just to get one. Formulas are NOT covered by this constant - see
+/// `plan_sheet_structure_updates`'s own doc comment for why those only ever
+/// cover rows that actually have data.
+const DROPDOWN_ROW_BUFFER: i64 = 500;
+
+/// `Sale.platform_id`'s own name pool, filtered to platforms that can
+/// actually be a SALE platform (`kind IN ('sale','both')`) - the exact same
+/// filter the Sales screen's own platform picker already uses, and the same
+/// `kind` column `resolve_or_create_sale_platform` above already maintains.
+/// Feeds Site Listed's dropdown only - `platform` (the PURCHASE-side column)
+/// is deliberately untouched by this whole section, marko was explicit that
+/// part of the sheet is already good as it is.
+fn sale_platform_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT name FROM platforms WHERE kind IN ('sale', 'both') AND is_demo = 0 ORDER BY name COLLATE NOCASE")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+struct DropdownSpec {
+    col_index: usize,
+    values: Vec<String>,
+}
+
+struct FormulaSpec {
+    col_index: usize,
+    /// One formula string per data row, e.g. `"=O2*I2"` for row 2 - already
+    /// resolved to this sheet's own real column letters, ready to send to
+    /// `google_sheets::update_values_as_formulas` exactly as-is.
+    formulas: Vec<String>,
+}
+
+/// Pure core: given the sheet's actual headers (tolerant of reordering/
+/// extra columns, same `find_col`/`build_header_map` matching every other
+/// function in this module already uses) and how many data rows it
+/// currently has, works out exactly which dropdown columns exist and what
+/// their option lists should be right now, plus the Revenue/Profit formulas
+/// (when their required source columns are present). No network calls - see
+/// `ensure_orders_sheet_structure` for the network shell that sends this as
+/// real Sheets API requests.
+///
+/// A dropdown column that isn't in `headers` at all is simply skipped - the
+/// same "an unknown/absent column is not an error" tolerance this module
+/// already applies everywhere else. Site Listed is additionally skipped
+/// when there are currently zero sale platforms to offer - nothing
+/// meaningful to restrict the column to yet.
+///
+/// Revenue needs `Payout Per Ticket` + `Number of Tickets` + its own column;
+/// Profit additionally needs `Total Purchase Price`. Either formula is
+/// skipped independently of the other if any of ITS OWN required columns is
+/// missing - same optional-column tolerance as everywhere else. Formulas
+/// only ever cover `data_row_count` rows - unlike the dropdown buffer above,
+/// writing a formula into a truly empty future row would show a stray "0"
+/// for a nonexistent order, so a short/empty sheet simply gets fewer (or
+/// zero) formula rows for now, picked up automatically once real data
+/// reaches them on a later sync/push.
+fn plan_sheet_structure_updates(
+    conn: &Connection,
+    headers: &[String],
+    data_row_count: usize,
+) -> AppResult<(Vec<DropdownSpec>, Option<FormulaSpec>, Option<FormulaSpec>)> {
+    let map = build_header_map(headers);
+
+    let mut dropdowns: Vec<DropdownSpec> = vec![];
+
+    if let Some(c) = find_col(&map, &["ticket type"]) {
+        let values = crate::commands::tickets::known_ticket_type_names(conn)?;
+        if !values.is_empty() {
+            dropdowns.push(DropdownSpec { col_index: c, values });
+        }
+    }
+    if let Some(c) = find_col(&map, &["site listed", "site", "listing site"]) {
+        let values = sale_platform_names(conn)?;
+        if !values.is_empty() {
+            dropdowns.push(DropdownSpec { col_index: c, values });
+        }
+    }
+    if let Some(c) = find_col(&map, &["status"]) {
+        dropdowns.push(DropdownSpec { col_index: c, values: STATUS_OPTIONS.iter().map(|s| s.to_string()).collect() });
+    }
+    if let Some(c) = find_col(&map, &["delivery status", "delivery"]) {
+        dropdowns.push(DropdownSpec { col_index: c, values: DELIVERY_STATUS_OPTIONS.iter().map(|s| s.to_string()).collect() });
+    }
+    if let Some(c) = find_col(&map, &["payout status"]) {
+        dropdowns.push(DropdownSpec { col_index: c, values: PAYOUT_STATUS_OPTIONS.iter().map(|s| s.to_string()).collect() });
+    }
+    if let Some(c) = find_col(&map, &["pull"]) {
+        dropdowns.push(DropdownSpec { col_index: c, values: PULL_OPTIONS.iter().map(|s| s.to_string()).collect() });
+    }
+
+    let payout_col = find_col(&map, &["payout per ticket", "payout"]);
+    let qty_col = find_col(&map, &["number of tickets", "quantity", "qty"]);
+    let total_col = find_col(&map, &["total purchase price"]);
+    let revenue_col = find_col(&map, &["revenue"]);
+    let profit_col = find_col(&map, &["profit"]);
+
+    let revenue = match (payout_col, qty_col, revenue_col) {
+        (Some(payout_col), Some(qty_col), Some(revenue_col)) => {
+            let payout_letter = column_index_to_a1(payout_col);
+            let qty_letter = column_index_to_a1(qty_col);
+            let formulas = (0..data_row_count)
+                .map(|i| {
+                    let row = i + 2;
+                    format!("={payout_letter}{row}*{qty_letter}{row}")
+                })
+                .collect();
+            Some(FormulaSpec { col_index: revenue_col, formulas })
+        }
+        _ => None,
+    };
+
+    let profit = match (&revenue, total_col, profit_col) {
+        (Some(rev), Some(total_col), Some(profit_col)) => {
+            let revenue_letter = column_index_to_a1(rev.col_index);
+            let total_letter = column_index_to_a1(total_col);
+            let formulas = (0..data_row_count)
+                .map(|i| {
+                    let row = i + 2;
+                    format!("={revenue_letter}{row}-{total_letter}{row}")
+                })
+                .collect();
+            Some(FormulaSpec { col_index: profit_col, formulas })
+        }
+        _ => None,
+    };
+
+    Ok((dropdowns, revenue, profit))
+}
+
+/// The network shell for `plan_sheet_structure_updates` above - sends its
+/// plan as real `batchUpdate` (dropdowns) and `update_values_as_formulas`
+/// (Revenue/Profit) calls. Called at the end of `sync_orders_impl`/
+/// `sync_sales_impl`/`push_orders_impl`/`push_sales_impl` - see this
+/// section's own doc comment for why all four call it.
+///
+/// Deliberately never fails the calling command outright - a problem here
+/// (e.g. the tab's numeric ID couldn't be resolved, or Sheets rejected the
+/// batchUpdate) is reported as a soft warning on the result the caller
+/// already has, never as a reason to discard whatever real sync/push work
+/// that command just did. See each call site.
+fn ensure_orders_sheet_structure(
+    conn: &Connection,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_tab: &str,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+) -> AppResult<()> {
+    let (dropdowns, revenue, profit) = plan_sheet_structure_updates(conn, headers, data_rows.len())?;
+
+    if !dropdowns.is_empty() {
+        let sheet_id = google_sheets::get_sheet_numeric_id(token, spreadsheet_id, sheet_tab)?;
+        let end_row = (data_rows.len() as i64).max(DROPDOWN_ROW_BUFFER) + 1;
+        let requests: Vec<serde_json::Value> = dropdowns
+            .iter()
+            .map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values))
+            .collect();
+        google_sheets::batch_update(token, spreadsheet_id, requests)?;
+    }
+
+    for spec in [revenue, profit].into_iter().flatten() {
+        if spec.formulas.is_empty() {
+            continue;
+        }
+        let letter = column_index_to_a1(spec.col_index);
+        let range = google_sheets::a1_range(sheet_tab, &format!("{letter}2:{letter}{}", 1 + spec.formulas.len()));
+        let values: Vec<Vec<String>> = spec.formulas.iter().map(|f| vec![f.clone()]).collect();
+        google_sheets::update_values_as_formulas(token, spreadsheet_id, &range, &values)?;
+    }
+
+    Ok(())
+}
+
+/// Runs `ensure_orders_sheet_structure` and folds any error it returns into
+/// `result` as a soft warning instead of propagating it - shared by all four
+/// call sites below so a structure-refresh problem is reported the exact
+/// same way everywhere. Never called when the caller has nothing to work
+/// with (e.g. a header-row-only sheet is still handled - `data_rows` is
+/// simply empty and formulas end up empty too, not skipped here).
+fn refresh_sheet_structure_soft_fail(
+    conn: &Connection,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_tab: &str,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+    result: &mut SheetSyncResult,
+) {
+    if let Err(e) = ensure_orders_sheet_structure(conn, token, spreadsheet_id, sheet_tab, headers, data_rows) {
+        result.errors.push(SheetSyncIssue {
+            row_number: 0,
+            message: format!("the sheet's dropdowns/Revenue/Profit formulas could not be refreshed this time: {e}"),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2892,5 +3137,218 @@ mod tests {
         let headers: Vec<String> = vec!["TIQR ID".to_string(), "Site Listed".to_string()];
         let err = apply_sales_push(&conn, &headers, &[], 0).unwrap_err();
         assert!(err.to_string().contains("Payout Per Ticket"), "{err}");
+    }
+
+    // -----------------------------------------------------------------
+    // Sheet structure (dropdowns + Revenue/Profit formulas), 2.0.19
+    // -----------------------------------------------------------------
+
+    /// Every column `plan_sheet_structure_updates` looks for, in one sheet -
+    /// its own fixture rather than `full_headers()`/`sales_headers()`
+    /// (neither has Total Purchase Price/Number of Tickets alongside
+    /// Revenue/Profit at once). Order deliberately does NOT match
+    /// `ORDERS_SHEET_HEADERS` - these tests exist specifically to prove
+    /// real-column-position tolerance, same as every other `find_col`-based
+    /// function in this module.
+    fn structure_headers() -> Vec<String> {
+        vec![
+            "Ticket Type",
+            "Site Listed",
+            "Total Purchase Price",
+            "Number of Tickets",
+            "Payout Per Ticket",
+            "Revenue",
+            "Profit",
+            "Status",
+            "Delivery status",
+            "Payout status",
+            "pull",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    fn dropdown_values<'a>(dropdowns: &'a [DropdownSpec], headers: &[String], header_name: &str) -> Option<&'a Vec<String>> {
+        let col = headers.iter().position(|h| h.eq_ignore_ascii_case(header_name))?;
+        dropdowns.iter().find(|d| d.col_index == col).map(|d| &d.values)
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_status_options_are_exactly_listed_unlisted_sold() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(
+            dropdown_values(&dropdowns, &headers, "Status"),
+            Some(&vec!["Listed".to_string(), "Unlisted".to_string(), "Sold".to_string()])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_delivery_status_options_are_exactly_delivered_not_delivered() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(
+            dropdown_values(&dropdowns, &headers, "Delivery status"),
+            Some(&vec!["Delivered".to_string(), "Not delivered".to_string()])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_payout_status_options_are_exactly_pending_paid() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(dropdown_values(&dropdowns, &headers, "Payout status"), Some(&vec!["Pending".to_string(), "Paid".to_string()]));
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_pull_options_are_exactly_yes_no() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(dropdown_values(&dropdowns, &headers, "pull"), Some(&vec!["Yes".to_string(), "No".to_string()]));
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_ticket_type_options_start_with_the_five_seed_defaults() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(
+            dropdown_values(&dropdowns, &headers, "Ticket Type"),
+            Some(&vec![
+                "E-ticket".to_string(),
+                "PDF".to_string(),
+                "Mobile transfer".to_string(),
+                "Physical".to_string(),
+                "Will call".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_ticket_type_options_include_a_value_only_used_on_a_real_ticket() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: Some("Season pass".to_string()),
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        let values = dropdown_values(&dropdowns, &headers, "Ticket Type").unwrap();
+        assert!(values.contains(&"Season pass".to_string()), "{values:?}");
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_site_listed_options_are_platforms_tagged_sale_or_both_only() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('Viagogo', 'sale')", []).unwrap();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('Seatiks', 'both')", []).unwrap();
+        conn.execute("INSERT INTO platforms(name, kind) VALUES ('PurchaseOnlyCo', 'purchase')", []).unwrap();
+
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        let values = dropdown_values(&dropdowns, &headers, "Site Listed").unwrap();
+        assert_eq!(values, &vec!["Seatiks".to_string(), "Viagogo".to_string()], "purchase-only platform must be excluded");
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_skips_the_site_listed_dropdown_when_there_are_no_sale_platforms_yet() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert!(dropdown_values(&dropdowns, &headers, "Site Listed").is_none());
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_skips_a_dropdown_column_the_sheet_does_not_have() {
+        let conn = test_conn();
+        // Only "Status" exists - no Delivery status/Payout status/pull/
+        // Ticket Type/Site Listed anywhere in this sheet.
+        let headers: Vec<String> = vec!["Status".to_string()];
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        assert_eq!(dropdowns.len(), 1);
+        assert_eq!(dropdowns[0].col_index, 0);
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_revenue_formula_multiplies_payout_by_number_of_tickets_at_their_real_columns() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (_, revenue, _) = plan_sheet_structure_updates(&conn, &headers, 2).unwrap();
+        let revenue = revenue.unwrap();
+        assert_eq!(revenue.col_index, 5, "\"Revenue\" is column F (index 5) in structure_headers()");
+        assert_eq!(revenue.formulas, vec!["=E2*D2".to_string(), "=E3*D3".to_string()], "Payout Per Ticket=E, Number of Tickets=D");
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_profit_formula_subtracts_total_purchase_price_from_revenue() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (_, _, profit) = plan_sheet_structure_updates(&conn, &headers, 2).unwrap();
+        let profit = profit.unwrap();
+        assert_eq!(profit.col_index, 6, "\"Profit\" is column G (index 6) in structure_headers()");
+        assert_eq!(profit.formulas, vec!["=F2-C2".to_string(), "=F3-C3".to_string()], "Revenue=F, Total Purchase Price=C");
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_skips_revenue_and_profit_when_a_required_source_column_is_missing() {
+        let conn = test_conn();
+        // No "Number of Tickets", no "Total Purchase Price" anywhere.
+        let headers: Vec<String> = vec!["Payout Per Ticket".to_string(), "Revenue".to_string(), "Profit".to_string()];
+        let (_, revenue, profit) = plan_sheet_structure_updates(&conn, &headers, 3).unwrap();
+        assert!(revenue.is_none());
+        assert!(profit.is_none());
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_skips_profit_but_keeps_revenue_when_only_profits_own_columns_are_missing() {
+        let conn = test_conn();
+        // Has everything Revenue needs, but no "Total Purchase Price" and no
+        // "Profit" column at all - Revenue must still go ahead on its own.
+        let headers: Vec<String> = vec!["Payout Per Ticket".to_string(), "Number of Tickets".to_string(), "Revenue".to_string()];
+        let (_, revenue, profit) = plan_sheet_structure_updates(&conn, &headers, 3).unwrap();
+        assert!(revenue.is_some());
+        assert!(profit.is_none());
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_writes_one_formula_per_data_row_matching_the_row_count() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (_, revenue, profit) = plan_sheet_structure_updates(&conn, &headers, 7).unwrap();
+        assert_eq!(revenue.unwrap().formulas.len(), 7);
+        assert_eq!(profit.unwrap().formulas.len(), 7);
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_with_zero_data_rows_produces_no_formulas() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (_, revenue, profit) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        // Still Some (both required-column sets are present) - just an empty
+        // formula list, exactly matching there being 0 real data rows yet.
+        assert_eq!(revenue.unwrap().formulas.len(), 0);
+        assert_eq!(profit.unwrap().formulas.len(), 0);
     }
 }

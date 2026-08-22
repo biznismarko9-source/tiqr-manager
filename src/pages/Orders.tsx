@@ -31,6 +31,14 @@ const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK
 // it's now a one-time choice made here at order creation, copied onto every
 // generated ticket (see OrderInput.ticketType / insert_order_with_tickets),
 // same as Section/Row already are.
+//
+// 2.0.19: this is now only the FALLBACK shown until `api.listTicketTypes()`
+// resolves (and the safety net if that call ever fails) - the real,
+// growable list comes from the backend (`known_ticket_type_names` in
+// commands/tickets.rs), seeded with exactly these same 5 values, so a value
+// typed via "Other..." here (or found in a synced sheet cell) shows up as a
+// real option next time, everywhere this list is used - both here and in
+// the Orders & Sales sheet's own Ticket Type dropdown.
 const TICKET_TYPES = ["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"];
 
 // 1.8.3 (section 8): remembers the last-used search for this app session
@@ -313,6 +321,8 @@ function OrderFormModal({
   const toast = useToast();
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  // 2.0.19: real, growable list - see TICKET_TYPES's own comment above.
+  const [ticketTypeOptions, setTicketTypeOptions] = useState<string[]>(TICKET_TYPES);
 
   const [eventId, setEventId] = useState<number | "">("");
   const [platformId, setPlatformId] = useState<number | null>(null);
@@ -337,6 +347,7 @@ function OrderFormModal({
     if (!open) return;
     api.listEvents().then(setEvents).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
     setEventId(presetEventId ?? "");
     setPlatformId(null);
     setPurchaseDate(todayIso());
@@ -498,15 +509,16 @@ function OrderFormModal({
                 <option value="">Not specified</option>
                 {/* Same "keep a custom value visible" fallback as Currency below -
                     without this, toggling back from "Other..." after typing a
-                    value not in the preset list would show a blank-looking
-                    select even though `ticketType` state is still correct. */}
-                {(ticketType && !TICKET_TYPES.includes(ticketType) ? [ticketType, ...TICKET_TYPES] : TICKET_TYPES).map(
-                  (t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ),
-                )}
+                    value not in the list would show a blank-looking select
+                    even though `ticketType` state is still correct. */}
+                {(ticketType && !ticketTypeOptions.includes(ticketType)
+                  ? [ticketType, ...ticketTypeOptions]
+                  : ticketTypeOptions
+                ).map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
               </Select>
             )}
           </div>

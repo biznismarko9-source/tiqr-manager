@@ -344,6 +344,14 @@ export function TicketsView({
   );
 }
 
+// 2.0.19 (marko's own request): Resale status/Delivery status were plain
+// free-text fields until now - fixed, closed lists ("na výber tieto
+// možnosti", not growable like Ticket Type/Site Listed), matching exactly
+// the Orders & Sales sheet's own Status/Delivery status dropdowns
+// (commands/orders_sheet_sync.rs's STATUS_OPTIONS/DELIVERY_STATUS_OPTIONS).
+const RESALE_STATUS_OPTIONS = ["Listed", "Unlisted", "Sold"];
+const DELIVERY_STATUS_OPTIONS = ["Delivered", "Not delivered"];
+
 export function TicketEditModal({
   open,
   ticket,
@@ -451,11 +459,33 @@ export function TicketEditModal({
             </Select>
           )}
         </Field>
-        <Field label="Resale status" hint="Your own free-text tracking, e.g. from a Sales sync - separate from Status above.">
-          <Input value={resaleStatus} onChange={(e) => setResaleStatus(e.target.value)} />
+        <Field label="Resale status" hint="From a Sales sync, or set by hand - separate from Status above.">
+          <Select value={resaleStatus} onChange={(e) => setResaleStatus(e.target.value)}>
+            <option value="">Not specified</option>
+            {/* A value from before 2.0.19 (free text) or synced from an
+                unexpected sheet cell stays visible instead of looking
+                blank/cleared - same fallback pattern Orders.tsx's Ticket
+                type field already uses. */}
+            {resaleStatus && !RESALE_STATUS_OPTIONS.includes(resaleStatus) && <option value={resaleStatus}>{resaleStatus}</option>}
+            {RESALE_STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Field label="Delivery status">
-          <Input value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} />
+          <Select value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)}>
+            <option value="">Not specified</option>
+            {deliveryStatus && !DELIVERY_STATUS_OPTIONS.includes(deliveryStatus) && (
+              <option value={deliveryStatus}>{deliveryStatus}</option>
+            )}
+            {DELIVERY_STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
         </Field>
         <div className="col-span-2">
           <Field label="Notes">

@@ -280,6 +280,33 @@ pub fn update_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
     parse_json_response::<serde_json::Value>(resp).map(|_| ())
 }
 
+/// Same as `update_values`, but with `valueInputOption=USER_ENTERED` - the
+/// one deliberate exception to this module's "RAW only, Sheets never
+/// reinterprets what the app sends" rule (see `update_values`'s own doc
+/// comment). `USER_ENTERED` is what makes a string like `"=O2*I2"` become a
+/// real, live formula instead of literal text - exactly as if marko had
+/// typed it into that cell himself.
+///
+/// 2.0.19: used for exactly one thing - commands::orders_sheet_sync's
+/// Revenue/Profit columns. Marko confirmed via AskUserQuestion these must be
+/// live Sheets formulas (recalculating instantly even when he hand-edits
+/// another cell in that row, without waiting for the next sync/push) rather
+/// than a number the app computes and pushes - see that module's own doc
+/// comment for the full reasoning. Never used for anything else: every other
+/// cell this app writes must stay exactly the literal text handed to it.
+pub fn update_values_as_formulas(token: &str, spreadsheet_id: &str, range: &str, values: &[Vec<String>]) -> AppResult<()> {
+    let client = reqwest::blocking::Client::new();
+    let url = format!("{}?valueInputOption=USER_ENTERED", sheets_values_url(spreadsheet_id, range));
+    let body = ValueRange { range: None, values: values.to_vec() };
+    let resp = client
+        .put(&url)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    parse_json_response::<serde_json::Value>(resp).map(|_| ())
+}
+
 /// Appends `values` as new rows immediately after the existing table in
 /// `range` (e.g. `"Pulls!A1"` - Sheets finds the real end of the table
 /// itself via `insertDataOption=INSERT_ROWS`), rather than overwriting
@@ -306,10 +333,11 @@ pub fn append_values(token: &str, spreadsheet_id: &str, range: &str, values: &[V
 }
 
 /// The (partial) shape of the Sheets API's `spreadsheets.get` response this
-/// app reads for `get_spreadsheet_sheet_titles` below - `fields=` on that
-/// call already asks Google to omit everything else (every sheet's full
-/// grid contents/formatting), so there is little left for `serde` to ignore
-/// here, unlike the other response shapes in this module.
+/// app reads for `get_spreadsheet_sheet_titles`/`get_sheet_numeric_id` below
+/// - `fields=` on that call already asks Google to omit everything else
+/// (every sheet's full grid contents/formatting), so there is little left
+/// for `serde` to ignore here, unlike the other response shapes in this
+/// module.
 #[derive(Debug, Deserialize)]
 struct SpreadsheetMetadata {
     sheets: Vec<SheetMetadataEntry>,
@@ -323,6 +351,11 @@ struct SheetMetadataEntry {
 #[derive(Debug, Deserialize)]
 struct SheetMetadataProperties {
     title: String,
+    // 2.0.19: added alongside `title` (was title-only) - see
+    // `get_sheet_numeric_id`'s own doc comment for why this is now needed
+    // too, and why it is a completely different thing from the tab's name.
+    #[serde(rename = "sheetId")]
+    sheet_id: i64,
 }
 
 /// Returns the exact title of every tab in spreadsheet `spreadsheet_id`, in
@@ -349,6 +382,91 @@ pub fn get_spreadsheet_sheet_titles(token: &str, spreadsheet_id: &str) -> AppRes
         .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
     let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
     Ok(parsed.sheets.into_iter().map(|s| s.properties.title).collect())
+}
+
+/// Returns the internal numeric grid ID Google assigns to the tab named
+/// `sheet_tab` - NOT the same thing as the tab's name/title, and required by
+/// every `batchUpdate` request (`set_data_validation_request` below, and any
+/// future formatting/structural request) since that whole endpoint addresses
+/// sheets by this ID, never by name, unlike every other endpoint in this
+/// module.
+///
+/// 2.0.19: added for commands::orders_sheet_sync's dropdown-setup step. Errs
+/// clearly (rather than silently picking the first tab) if `sheet_tab` isn't
+/// found - the same "never guess" rule as everywhere else in this module.
+pub fn get_sheet_numeric_id(token: &str, spreadsheet_id: &str, sheet_tab: &str) -> AppResult<i64> {
+    let client = reqwest::blocking::Client::new();
+    let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
+    let url =
+        format!("https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title,sheets.properties.sheetId");
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    let parsed: SpreadsheetMetadata = parse_json_response(resp)?;
+    parsed
+        .sheets
+        .into_iter()
+        .find(|s| s.properties.title == sheet_tab)
+        .map(|s| s.properties.sheet_id)
+        .ok_or_else(|| AppError::Validation(format!("Tab \"{sheet_tab}\" was not found in this spreadsheet.")))
+}
+
+/// Sends a `spreadsheets.batchUpdate` request - the Sheets API's mechanism
+/// for structural/formatting changes (data validation rules, cell
+/// formatting, etc.) that the plain `values.*` endpoints above can't express
+/// at all. `requests` is the API's own array of one-request-per-change
+/// objects (see `set_data_validation_request` below for the only shape this
+/// app currently builds) sent through untouched - Google applies every
+/// request in the array atomically, all or nothing.
+///
+/// 2.0.19: added for commands::orders_sheet_sync's dropdown-setup step.
+pub fn batch_update(token: &str, spreadsheet_id: &str, requests: Vec<serde_json::Value>) -> AppResult<()> {
+    let client = reqwest::blocking::Client::new();
+    let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
+    let url = format!("https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}:batchUpdate");
+    let body = serde_json::json!({ "requests": requests });
+    let resp = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .map_err(|e| AppError::External(format!("could not reach Google Sheets: {e}")))?;
+    parse_json_response::<serde_json::Value>(resp).map(|_| ())
+}
+
+/// Builds one `setDataValidation` request restricting `sheet_id`'s column
+/// `col_index` (0-based) to a dropdown of exactly `values`, across rows
+/// `start_row..end_row` (both 0-based, `end_row` exclusive - i.e. the same
+/// convention Google's own API uses, NOT the 1-based row numbers everywhere
+/// else in this app).
+///
+/// `strict: false` ("Show a warning" in the Sheets UI, not "Reject input")
+/// is deliberate: marko explicitly wants a value he or the sheet itself adds
+/// that isn't in `values` YET to still be accepted, never blocked - see
+/// commands::orders_sheet_sync's module doc comment for why growing the
+/// list, not enforcing it, is the whole point of this feature.
+pub fn set_data_validation_request(sheet_id: i64, start_row: i64, end_row: i64, col_index: i64, values: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "setDataValidation": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": start_row,
+                "endRowIndex": end_row,
+                "startColumnIndex": col_index,
+                "endColumnIndex": col_index + 1
+            },
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": values.iter().map(|v| serde_json::json!({ "userEnteredValue": v })).collect::<Vec<_>>()
+                },
+                "showCustomUi": true,
+                "strict": false
+            }
+        }
+    })
 }
 
 /// The (partial) shape of the Sheets API's `spreadsheets.create` response
@@ -708,18 +826,85 @@ mod tests {
 
     #[test]
     fn spreadsheet_metadata_deserializes_the_real_shape_spreadsheets_get_returns() {
-        // The exact shape `?fields=sheets.properties.title` produces - a
-        // real spreadsheet has 1+ sheets, each carrying (among many other
-        // fields this app never asks for) its own tab title.
+        // The exact shape `?fields=sheets.properties.title,sheets.properties.
+        // sheetId` produces - a real spreadsheet has 1+ sheets, each carrying
+        // (among many other fields this app never asks for) its own tab
+        // title and its own numeric grid ID.
         let json = r#"{
             "sheets": [
-                { "properties": { "title": "Objednávky" } },
-                { "properties": { "title": "Predaje 2026" } }
+                { "properties": { "title": "Objednávky", "sheetId": 0 } },
+                { "properties": { "title": "Predaje 2026", "sheetId": 1234567890 } }
             ]
         }"#;
         let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse a real spreadsheets.get response");
-        let titles: Vec<String> = parsed.sheets.into_iter().map(|s| s.properties.title).collect();
+        let titles: Vec<String> = parsed.sheets.iter().map(|s| s.properties.title.clone()).collect();
         assert_eq!(titles, vec!["Objednávky".to_string(), "Predaje 2026".to_string()]);
+        let ids: Vec<i64> = parsed.sheets.iter().map(|s| s.properties.sheet_id).collect();
+        assert_eq!(ids, vec![0, 1234567890]);
+    }
+
+    #[test]
+    fn get_sheet_numeric_id_finds_the_matching_tab_by_title_not_position() {
+        // Same real-shape JSON as the test above, parsed the same way
+        // `get_sheet_numeric_id` itself does - the tab it wants is second in
+        // the list, so this also guards against accidentally returning
+        // "just the first sheet" instead of actually matching the title.
+        let json = r#"{
+            "sheets": [
+                { "properties": { "title": "Objednávky", "sheetId": 0 } },
+                { "properties": { "title": "Predaje 2026", "sheetId": 987654321 } }
+            ]
+        }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).unwrap();
+        let found = parsed.sheets.into_iter().find(|s| s.properties.title == "Predaje 2026").map(|s| s.properties.sheet_id);
+        assert_eq!(found, Some(987654321));
+    }
+
+    #[test]
+    fn set_data_validation_request_builds_the_exact_shape_google_documents() {
+        let req = set_data_validation_request(555, 1, 501, 13, &["Listed".to_string(), "Unlisted".to_string(), "Sold".to_string()]);
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": 555,
+                        "startRowIndex": 1,
+                        "endRowIndex": 501,
+                        "startColumnIndex": 13,
+                        "endColumnIndex": 14
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                { "userEnteredValue": "Listed" },
+                                { "userEnteredValue": "Unlisted" },
+                                { "userEnteredValue": "Sold" }
+                            ]
+                        },
+                        "showCustomUi": true,
+                        "strict": false
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn set_data_validation_request_end_column_index_is_exactly_one_past_the_start() {
+        let req = set_data_validation_request(1, 1, 10, 4, &["Yes".to_string(), "No".to_string()]);
+        assert_eq!(req["setDataValidation"]["range"]["startColumnIndex"], 4);
+        assert_eq!(req["setDataValidation"]["range"]["endColumnIndex"], 5);
+    }
+
+    #[test]
+    fn set_data_validation_request_is_never_strict_so_a_new_value_is_never_blocked() {
+        // marko explicitly wants a value added in the sheet or the app to
+        // keep working even before this rule has been refreshed to include
+        // it - "strict" (Sheets' "Reject input") would defeat that.
+        let req = set_data_validation_request(1, 1, 10, 0, &["A".to_string()]);
+        assert_eq!(req["setDataValidation"]["rule"]["strict"], false);
     }
 
     #[test]
