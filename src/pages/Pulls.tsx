@@ -15,6 +15,7 @@ import {
   centsToDecimalString,
   decimalStringToCents,
   formatDate,
+  formatDateCompact,
   formatMoney,
   formatSeatLocation,
   summarizeBulkDeleteSkips,
@@ -357,26 +358,47 @@ function GivenPulls() {
         // columns' own widths add up to more than the container, the Event
         // column gets squeezed toward 0 instead of the table actually
         // growing past 100% and letting overflow-x-auto scroll (Event
-        // content was rendering blank, not just tight). Sum of this table's
-        // fixed columns is 1130px (80+92+120+200+240+32+120+72+130+44); the
-        // explicit min-w below is that plus a ~190px floor for Event, so
+        // content was rendering blank, not just tight). The explicit min-w
+        // below is the fixed columns' own sum plus a floor for Event, so
         // Event can shrink but never below something an event name can
         // still read in - past that, the table grows wider and scrolls
         // instead, same as Seats/More info already rely on.
+        // 2.0.30: marko didn't want horizontal scroll AT ALL for the normal
+        // case (2.0.29 fixed the clipping but needed a scrollbar to do it)
+        // - so this table got a second pass reclaiming width instead of
+        // just adding it: Date switched to the same compact format Sales'
+        // table already uses (formatDateCompact - "13 Aug 26" instead of
+        // "Aug 13, 2026", still the FULL date, just shorter, with the full
+        // form still available on hover) instead of a wider column, and
+        // Pull/For/More info/Fee/Warning were each measured (via a preview
+        // harness reading actual rendered column widths, not guessed) and
+        // trimmed to what their real content needs, with real margin to
+        // spare - not just barely fitting. Platform stayed at its 2.0.29
+        // width - marko's own real data ("fnac spetacles") needs every bit
+        // of it, more than the "Ticketmaster" example this was first sized
+        // against. Seats also stayed as-is: it's the one column still
+        // occasionally clipping (only for longer multi-digit seat numbers -
+        // marko's own example fits fine) - it gave up a little more room
+        // here too (185px -> 172px) to get a plain 1366px laptop window
+        // scroll-free as well, not just marko's own wider one; it wasn't
+        // part of what was reported and already had a title tooltip as a
+        // fallback. The sidebar (Layout.tsx) also got narrower this
+        // version, at marko's own suggestion, freeing more width on every
+        // page.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1320px] table-fixed border-collapse">
+          <table className="w-full min-w-[1120px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
-              <col className="w-[80px]" />
-              <col className="w-[92px]" />
+              <col className="w-[68px]" />
+              <col className="w-[72px]" />
               <col />
-              <col className="w-[120px]" />
-              <col className="w-[200px]" />
-              <col className="w-[240px]" />
+              <col className="w-[88px]" />
+              <col className="w-[172px]" />
+              <col className="w-[178px]" />
               <col className="w-8" />
               <col className="w-[120px]" />
-              <col className="w-[72px]" />
-              <col className="w-[130px]" />
+              <col className="w-[60px]" />
+              <col className="w-[114px]" />
               <col className="w-11" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -448,8 +470,8 @@ function GivenPulls() {
                     <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
                       {p.eventName}
                     </td>
-                    <td className="td-c truncate align-top whitespace-nowrap">
-                      {p.eventDate ? formatDate(p.eventDate) : "-"}
+                    <td className="td-c truncate align-top whitespace-nowrap" title={p.eventDate ? formatDate(p.eventDate) : undefined}>
+                      {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
                     </td>
                     <td
                       className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
@@ -955,14 +977,19 @@ function ReceivedPulls() {
         // still giving it the same explicit min-w as a floor, on the same
         // "these two tables mirror each other" reasoning, so it can't
         // regress into that bug later if a column here grows too.
+        // 2.0.30: this tab was never the reported problem (it already fit
+        // without scrolling), so only Date moved to the same compact
+        // formatDateCompact GivenPulls now uses (120px -> 90px, still the
+        // full date, shorter text) for consistency between the two tabs -
+        // every other column here is untouched.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1080px] table-fixed border-collapse">
+          <table className="w-full min-w-[1000px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[92px]" />
               <col className="w-[150px]" />
               <col />
-              <col className="w-[120px]" />
+              <col className="w-[90px]" />
               <col className="w-8" />
               <col className="w-[92px]" />
               <col className="w-[170px]" />
@@ -1028,8 +1055,8 @@ function ReceivedPulls() {
                   <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
                     {p.eventName}
                   </td>
-                  <td className="td-c truncate align-top whitespace-nowrap">
-                    {p.eventDate ? formatDate(p.eventDate) : "-"}
+                  <td className="td-c truncate align-top whitespace-nowrap" title={p.eventDate ? formatDate(p.eventDate) : undefined}>
+                    {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
                   </td>
                   <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
                   <td className="td-c text-right align-top tabular-nums">{formatMoney(p.amountCents, p.currency)}</td>

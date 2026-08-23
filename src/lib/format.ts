@@ -97,7 +97,8 @@ export function titleCase(s: string | null | undefined): string {
  * ambiguous DD/MM vs MM/DD, and the 2-digit year is kept (not dropped) since
  * this app tracks sales across multiple years and two same-day-different-year
  * sales must still look different in a list. Prefer `formatDate` everywhere
- * space isn't tight - this exists only for the Sales table's Date column. */
+ * space isn't tight. 2.0.30: also used by Pulls' Date column (both tabs) for
+ * the same reason - no longer Sales-only, but still not the default. */
 export function formatDateCompact(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);

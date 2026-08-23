@@ -43,7 +43,10 @@ export default function Layout() {
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      {/* 2.0.30: w-56 (224px) -> w-48 (192px) - marko asked to make the
+          sidebar narrower to give wide tables (Pulls) more room; nav labels
+          and the logo lockup still have comfortable margin at this width. */}
+      <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center gap-2 px-4 py-4">
           <img src={logo} alt="TIQR Manager" className="h-8 w-8 rounded-lg shadow-sm" />
           <div>
