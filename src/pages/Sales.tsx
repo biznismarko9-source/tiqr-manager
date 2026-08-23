@@ -620,25 +620,39 @@ export default function Sales() {
         // column pinned to a pixel width EXCEPT Event, which is left
         // unspecified so it alone absorbs any leftover width. This is a
         // mathematical guarantee against horizontal overflow (not a visual
-        // guess): the 10 fixed columns below sum to 728px, and even this
-        // app's smallest possible window (1080px min-width, minus the 224px
-        // sidebar and 48px of content padding) leaves 808px to work with -
-        // an 80px floor for Event at the narrowest possible window, growing
-        // from there as the window widens. `overflow-x-auto` stays on the
-        // wrapper only as a defensive fallback; it should never actually
-        // trigger. See REDESIGN-1.8.2-REPORT.md section 2 for the full
-        // column-width table. `.th-c`/`.td-c` (index.css) are new classes
-        // scoped to this table and Sale Detail's table only - `.th`/`.td`
-        // (used by Tickets/Orders/Events/Inventory) are untouched. (1.9.1:
-        // the leading checkbox column was removed along with row selection -
-        // the checkbox-select-and-export-CSV feature that used to live on
-        // this page moved to Settings -> Data's Export CSV picker instead,
-        // see ExportPickerModal.tsx.)
+        // guess): the 10 fixed columns below sum to 758px (was 728px before
+        // 2.0.33, see below), and even this app's smallest possible window
+        // (1080px min-width, minus the 224px sidebar and 48px of content
+        // padding) leaves 808px to work with - a 50px floor for Event at the
+        // narrowest possible window (was 80px), growing from there as the
+        // window widens. `overflow-x-auto` stays on the wrapper only as a
+        // defensive fallback; it should never actually trigger. See
+        // REDESIGN-1.8.2-REPORT.md section 2 for the original column-width
+        // table (Sale's width there is superseded, see 2.0.33 below).
+        // `.th-c`/`.td-c` (index.css) are new classes scoped to this table
+        // and Sale Detail's table only - `.th`/`.td` (used by Tickets/
+        // Orders/Events/Inventory) are untouched. (1.9.1: the leading
+        // checkbox column was removed along with row selection - the
+        // checkbox-select-and-export-CSV feature that used to live on this
+        // page moved to Settings -> Data's Export CSV picker instead, see
+        // ExportPickerModal.tsx.) (2.0.33: Sale 90px -> 120px - marko
+        // pointed out the code, e.g. "SAL-000001" (a fixed 10-char format),
+        // was actually truncating to "SAL-0001..." at 90px: only ~74px was
+        // left for text after the cell's own padding, too tight for a
+        // string with no real reason to ellipsize in the normal case. 120px
+        // gives it real margin; `truncate` stays on the Link as the same
+        // kind of defensive fallback `overflow-x-auto` already is above -
+        // not expected to actually trigger before the sale counter itself
+        // grows past 6 digits. Knock-on effect, disclosed rather than
+        // silent: Event's floor at the narrowest window drops 80px->50px -
+        // still non-breaking (Event already truncates with a title tooltip,
+        // and overflow-x-auto is still the last-resort fallback) but flag
+        // it if that's ever actually felt in practice.)
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
-              <col className="w-[90px]" />
+              <col className="w-[120px]" />
               <col />
               <col className="w-[70px]" />
               <col className="w-[76px]" />
