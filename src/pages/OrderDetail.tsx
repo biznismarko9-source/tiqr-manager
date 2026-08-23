@@ -374,14 +374,19 @@ export default function OrderDetail() {
         // format.ts, same treatment Sale Detail got in 1.8.2) - the 3
         // underlying fields are untouched, only how they display here
         // changed.
+        // 2.0.36: this table's header labels always fit (Seat's generous
+        // 65% left plenty of room), but real money DATA in Cost/Listing
+        // price didn't - same real-data overflow + missing-floor fix as
+        // Sales.tsx, see that file's colgroup comment for the full
+        // rationale. Seat keeps a large share either way.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1400px] table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />
               <col className="w-[8.571%]" />
-              <col className="w-[65%]" />
-              <col className="w-[5.143%]" />
-              <col className="w-[6.571%]" />
+              <col className="w-[61.286%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[7.714%]" />
               <col className="w-[6.857%]" />
               <col className="w-[7.857%]" />
             </colgroup>

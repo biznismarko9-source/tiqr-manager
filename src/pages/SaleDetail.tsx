@@ -315,17 +315,22 @@ export default function SaleDetail() {
         // untouched. 1.8.3 added the leading checkbox column (bulk
         // actions) - always shown here, not selectionMode-gated like
         // Sales.tsx's own.
+        // 2.0.36: Sale price/Fees/Cost/Profit widened (and min-w-[1400px]
+        // added below) - same real-money-data overflow + missing-floor fix
+        // as Sales.tsx, see that file's colgroup comment for the full
+        // rationale (measured with Intl.NumberFormat under en-US/sk-SK/
+        // de-DE, not just the English header text).
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1400px] table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />
               <col className="w-[8.571%]" />
               <col className="w-[8.571%]" />
-              <col className="w-[47.143%]" />
-              <col className="w-[5.714%]" />
-              <col className="w-[4.286%]" />
-              <col className="w-[5.143%]" />
-              <col className="w-[5.143%]" />
+              <col className="w-[36.286%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[8%]" />
               <col className="w-[6.857%]" />
               <col className="w-[8.571%]" />
             </colgroup>

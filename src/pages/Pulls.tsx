@@ -385,8 +385,20 @@ function GivenPulls() {
         // fallback. The sidebar (Layout.tsx) also got narrower this
         // version, at marko's own suggestion, freeing more width on every
         // page.
+        // 2.0.36: Ks/Fee/Done all widened - same fixed-px-table treatment as
+        // Events.tsx, see that file's colgroup comment for the full
+        // rationale (header labels AND real formatted data both checked).
+        // Platform is untouched: it's `truncate` with a title tooltip
+        // already (same accepted degradation as Event/Seats/More info/For),
+        // so a too-long platform name was never the invisible/wrapping
+        // header problem marko reported - only Ks/Done's own short header
+        // text and Fee's real money data were actually broken. min-w bumped
+        // 1120px -> 1220px (+100px, matching the +94px these columns
+        // actually grew by, rounded up) so Event keeps roughly the same
+        // floor-width headroom it had before, instead of quietly losing 94px
+        // of it at the narrow end where overflow-x-auto kicks in.
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1120px] table-fixed border-collapse">
+          <table className="w-full min-w-[1220px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[68px]" />
@@ -395,11 +407,11 @@ function GivenPulls() {
               <col className="w-[88px]" />
               <col className="w-[172px]" />
               <col className="w-[178px]" />
-              <col className="w-8" />
+              <col className="w-[58px]" />
               <col className="w-[120px]" />
-              <col className="w-[60px]" />
+              <col className="w-[108px]" />
               <col className="w-[114px]" />
-              <col className="w-11" />
+              <col className="w-[64px]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -982,16 +994,21 @@ function ReceivedPulls() {
         // formatDateCompact GivenPulls now uses (120px -> 90px, still the
         // full date, shorter text) for consistency between the two tabs -
         // every other column here is untouched.
+        // 2.0.36: Ks/Fee widened - same fixed-px-table treatment as
+        // Events.tsx/the Given table above, see Events.tsx's colgroup
+        // comment for the full rationale. min-w bumped 1000px -> 1050px
+        // (+50px, matching the +42px these columns actually grew by,
+        // rounded up) to preserve Event's floor-width headroom.
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1000px] table-fixed border-collapse">
+          <table className="w-full min-w-[1050px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[92px]" />
               <col className="w-[150px]" />
               <col />
               <col className="w-[90px]" />
-              <col className="w-8" />
-              <col className="w-[92px]" />
+              <col className="w-[58px]" />
+              <col className="w-[108px]" />
               <col className="w-[170px]" />
               <col className="w-[220px]" />
             </colgroup>

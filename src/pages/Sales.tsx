@@ -648,20 +648,39 @@ export default function Sales() {
         // untouched. Checkbox column (1.9.1 removed it by default,
         // selectionMode brings it back for bulk delete) stays a small
         // fixed w-8, outside the percentage budget, same as it always was.
+        //
+        // 2.0.36: marko reported several header labels not fully visible
+        // (Platform, Margin/ROI) and, on closer inspection with real
+        // formatted data (not just header text), several DATA cells were
+        // actually worse - Revenue/Fees/Cost/Profit are real money amounts
+        // and were overflowing their columns even though the short English
+        // header text alone happened to fit. Measured with
+        // Intl.NumberFormat under en-US/sk-SK/de-DE (marko's own Windows
+        // locale is almost certainly Slovak - "99 999,99 $"-shaped output
+        // is meaningfully wider than plain "$99,999.99"). min-w-[1400px]
+        // below is new too: without it, percentages only guarantee their
+        // *ratios*, not a floor - on any window narrower than the 1400px
+        // design reference every column (including these newly widened
+        // ones) would shrink proportionally and could overflow all over
+        // again. This intentionally does NOT bring back a max-w cap on the
+        // wrapper - unlike the old fixed-px+one-absorbing-column layout
+        // 2.0.32 had to cap, a pure-percentage table has no single column
+        // that runs away on a wide window (every column grows together), so
+        // there's nothing to cap here, only a floor to add.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1400px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[8.571%]" />
-              <col className="w-[44.714%]" />
-              <col className="w-[5%]" />
+              <col className="w-[30.143%]" />
+              <col className="w-[7.143%]" />
               <col className="w-[6.571%]" />
-              <col className="w-[2.857%]" />
-              <col className="w-[6%]" />
-              <col className="w-[4.571%]" />
-              <col className="w-[5.143%]" />
-              <col className="w-[5.143%]" />
-              <col className="w-[4.857%]" />
+              <col className="w-[4.143%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[7.714%]" />
+              <col className="w-[8%]" />
+              <col className="w-[5.714%]" />
               <col className="w-[6.571%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">

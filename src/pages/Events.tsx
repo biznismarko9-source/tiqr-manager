@@ -257,20 +257,36 @@ export default function Events() {
         // an 808px floor). Row click-to-navigate (BUG #7) is untouched.
         // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
         // identical change for the full rationale.
+        //
+        // 2.0.36: Date/Status/Tickets/Available/Cost/Revenue/Profit/Margin/
+        // ROI all widened. This is a fixed-px table (unlike Sales.tsx's
+        // percentage one) with Event as the one unset/absorbing column, so
+        // these are constant regardless of window width - the old widths
+        // were too tight even for their own English header text (Tickets,
+        // Available, Margin), and separately too tight for the real money/
+        // percent/date DATA these columns render, which the original
+        // header-only pass never checked: Cost/Revenue/Profit are amounts
+        // formatted with Intl.NumberFormat, meaningfully wider under
+        // marko's own (almost certainly Slovak) Windows locale than plain
+        // "$99,999.99" would suggest, and Date's month name is similarly
+        // wider in sk-SK than the "Sep 23, 2026"-shaped en-US text. Event
+        // still keeps a large share of the row either way (it's `truncate`
+        // with a title tooltip, same graceful-degradation pattern used for
+        // every other absorbing text column in this app).
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col />
+              <col className="w-[128px]" />
+              <col className="w-[104px]" />
+              <col className="w-[80px]" />
+              <col className="w-[100px]" />
+              <col className="w-[108px]" />
+              <col className="w-[108px]" />
+              <col className="w-[112px]" />
               <col className="w-[84px]" />
               <col className="w-[84px]" />
-              <col className="w-14" />
-              <col className="w-[70px]" />
-              <col className="w-20" />
-              <col className="w-20" />
-              <col className="w-20" />
-              <col className="w-14" />
-              <col className="w-14" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>

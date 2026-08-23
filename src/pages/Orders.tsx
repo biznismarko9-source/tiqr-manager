@@ -317,18 +317,26 @@ export default function Orders() {
         // the 2.0.33 report's FOUND BUT NOT TOUCHED section and folded in
         // now rather than left for a separate round (Tickets.tsx has the
         // identical column/bug - see that file's own comment).
+        // 2.0.36: Date/Qty/Sold/Total cost widened (and min-w-[1400px]
+        // added below) - same real-data overflow + missing-floor fix as
+        // Sales.tsx, see that file's colgroup comment for the full
+        // rationale. Date specifically: formatDate's month name is a fixed
+        // 3-letter abbreviation in en-US ("Sep") but noticeably wider in
+        // sk-SK ("23. sept. 2026"-shaped) - marko's own Windows locale is
+        // almost certainly Slovak. Sold shows "{soldCount}/{quantity}", not
+        // a single number, so it needed more than a plain 4-digit count.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1400px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[8.571%]" />
-              <col className="w-[44.143%]" />
-              <col className="w-[6%]" />
+              <col className="w-[36.286%]" />
+              <col className="w-[9.143%]" />
               <col className="w-[9.286%]" />
               <col className="w-[11.429%]" />
-              <col className="w-[3.429%]" />
-              <col className="w-[4.571%]" />
-              <col className="w-[6.286%]" />
+              <col className="w-[4.143%]" />
+              <col className="w-[7.143%]" />
+              <col className="w-[7.714%]" />
               <col className="w-[6.286%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">

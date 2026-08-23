@@ -290,17 +290,26 @@ export function TicketsView({
         // model are otherwise fully untouched - see the 1.9.4 report.
         // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
         // identical change for the full rationale.
+        // 2.0.36: Purchase date/Total/Available/Sold/Total cost/Status all
+        // widened - same fixed-px-table treatment as Events.tsx, see that
+        // file's colgroup comment for the full rationale (header labels AND
+        // real formatted data both checked, across en-US/sk-SK/de-DE).
+        // Order's own truncation (a separate, pre-existing, already
+        // "found but not touched" issue from 2.0.33/2.0.34) is untouched -
+        // it self-truncates with a title tooltip already, same accepted
+        // pattern as Event, not the invisible/wrapping header problem
+        // marko reported this round.
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />
               <col />
-              <col className="w-[88px]" />
-              <col className="w-12" />
-              <col className="w-[70px]" />
-              <col className="w-12" />
-              <col className="w-[88px]" />
-              <col className="w-[88px]" />
+              <col className="w-[128px]" />
+              <col className="w-[68px]" />
+              <col className="w-[100px]" />
+              <col className="w-[60px]" />
+              <col className="w-[108px]" />
+              <col className="w-[100px]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
