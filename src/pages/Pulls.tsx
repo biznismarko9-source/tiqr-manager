@@ -345,20 +345,38 @@ function GivenPulls() {
         // marked done. Row click opens the edit modal (no separate Detail
         // page exists for Pull, unlike Order/Sale) - guarded so a click on
         // the checkbox doesn't also open it.
+        // 2.0.29: Date/Platform/Warning were still clipping ("23. 10. 2...",
+        // "Ticketma...", a cramped "43d overdue") at their old 84/84/76px -
+        // same "seeing it all matters more" call as above, so all three grew
+        // (120/120/130px) instead of switching Date to the abbreviated
+        // formatDateCompact used only in Sales - this table already accepted
+        // needing horizontal scroll on narrower windows, so a little wider
+        // still just moves that same breakpoint up a bit further.
+        // Found while verifying that fix: `w-full` alone on a table-fixed
+        // table with an `auto` (Event) column has no floor - once the fixed
+        // columns' own widths add up to more than the container, the Event
+        // column gets squeezed toward 0 instead of the table actually
+        // growing past 100% and letting overflow-x-auto scroll (Event
+        // content was rendering blank, not just tight). Sum of this table's
+        // fixed columns is 1130px (80+92+120+200+240+32+120+72+130+44); the
+        // explicit min-w below is that plus a ~190px floor for Event, so
+        // Event can shrink but never below something an event name can
+        // still read in - past that, the table grows wider and scrolls
+        // instead, same as Seats/More info already rely on.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1320px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[80px]" />
               <col className="w-[92px]" />
               <col />
-              <col className="w-[84px]" />
+              <col className="w-[120px]" />
               <col className="w-[200px]" />
               <col className="w-[240px]" />
               <col className="w-8" />
-              <col className="w-[84px]" />
+              <col className="w-[120px]" />
               <col className="w-[72px]" />
-              <col className="w-[76px]" />
+              <col className="w-[130px]" />
               <col className="w-11" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -928,14 +946,23 @@ function ReceivedPulls() {
         // (react-router <Link>, not just a <button>/<input>) so the row-click
         // guard here also checks for "a", unlike GivenPulls' table which has
         // no links inside its rows.
+        // 2.0.29: Date widened 84px -> 120px, same clipping fix and same
+        // reasoning as GivenPulls' table above (this tab has no
+        // Platform/Warning columns, so Date was the only one affected here).
+        // This table's fixed-column sum (876px: 92+150+120+32+92+170+220)
+        // stays well under a normal window width even after that, so it
+        // wasn't hitting the same Event-squeezed-to-0 bug GivenPulls had -
+        // still giving it the same explicit min-w as a floor, on the same
+        // "these two tables mirror each other" reasoning, so it can't
+        // regress into that bug later if a column here grows too.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full table-fixed border-collapse">
+          <table className="w-full min-w-[1080px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
               <col className="w-[92px]" />
               <col className="w-[150px]" />
               <col />
-              <col className="w-[84px]" />
+              <col className="w-[120px]" />
               <col className="w-8" />
               <col className="w-[92px]" />
               <col className="w-[170px]" />
