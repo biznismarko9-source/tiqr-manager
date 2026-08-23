@@ -385,7 +385,7 @@ function GivenPulls() {
         // fallback. The sidebar (Layout.tsx) also got narrower this
         // version, at marko's own suggestion, freeing more width on every
         // page.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[1120px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
@@ -982,7 +982,7 @@ function ReceivedPulls() {
         // formatDateCompact GivenPulls now uses (120px -> 90px, still the
         // full date, shorter text) for consistency between the two tabs -
         // every other column here is untouched.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[1000px] table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}

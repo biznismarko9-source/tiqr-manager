@@ -366,7 +366,9 @@ export default function OrderDetail() {
         // got in 1.8.2) - the 3 underlying fields are untouched, only how
         // they display here changed. Also added the leading checkbox column
         // (bulk actions, see TicketStatusBar above).
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale.
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />

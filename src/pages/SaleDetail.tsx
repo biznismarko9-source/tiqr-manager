@@ -303,7 +303,11 @@ export default function SaleDetail() {
         // only how they display here changed. `.th-c`/`.td-c` are the same
         // compact classes Sales.tsx uses - `.th`/`.td` elsewhere are
         // untouched. 1.8.3 added the leading checkbox column (bulk actions).
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale (marko: table stretching
+        // edge-to-edge on a wide window read as wasted space once 2.0.31 let
+        // the page itself fill the window).
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />

@@ -499,7 +499,27 @@ export default function Sales() {
         </div>
       )}
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+      {/* 2.0.32: max-w-[1400px] on this row and the table wrapper below -
+          marko pointed out that once 2.0.31 let the page fill a wide/
+          maximized window, this summary+sort row and the table itself
+          stretched with them, and a table-fixed table only has ONE column
+          (Event) able to absorb that extra width - on his monitor it grew
+          hundreds of pixels wider than "Spain vs England" needs, reading as
+          wasted space rather than a filled page. Capping just these two
+          (not the page, not the header, not the filter row above - none of
+          which have this "one element unboundedly absorbs the leftover
+          width" failure mode) keeps 2.0.31's actual fix intact - the page
+          shell, header and filters still fill the real window width, zero
+          dead margin - while the data table itself stays a sane, readable
+          width instead of thinning its one real column out into mostly
+          blank space. 1400px matches the exact width every table in this family
+          already rendered at under the OLD page-wide cap (max-w-[1400px] on
+          Layout.tsx's content div, removed in 2.0.31) - proven acceptable
+          over a dozen versions, just now scoped to the table instead of the
+          whole page. Verified empirically (Playwright + a byte-for-byte
+          copy of this table's own markup/colgroup, screenshotted at 1280/
+          1920/2200px) before applying - see the 2.0.32 report. */}
+      <div className="mb-3 flex max-w-[1400px] flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm">
           {totals && groups ? (
             <>
@@ -614,7 +634,7 @@ export default function Sales() {
         // the checkbox-select-and-export-CSV feature that used to live on
         // this page moved to Settings -> Data's Export CSV picker instead,
         // see ExportPickerModal.tsx.)
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}

@@ -152,7 +152,7 @@ export default function EventDetail() {
       ) : orders.length === 0 ? (
         <EmptyState title="No orders for this event yet" />
       ) : (
-        <div className="mb-8 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="mb-8 max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -192,7 +192,12 @@ export default function EventDetail() {
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets for this event yet" />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale (this table uses plain
+        // auto table-layout rather than table-fixed, but a w-full table
+        // still stretches every column proportionally on a wide window,
+        // same fix applies).
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>

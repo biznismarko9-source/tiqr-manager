@@ -302,7 +302,9 @@ export default function Orders() {
         // asked for than the original floor was sized for. In normal usage
         // (wider than the absolute minimum) this isn't noticeable; it only
         // matters at the smallest supported window.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale.
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}

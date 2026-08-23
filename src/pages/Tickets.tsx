@@ -144,7 +144,13 @@ export function TicketsView({
     <div>
       <PageHeader title={title} subtitle={subtitle} />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      {/* 2.0.32: max-w-[1400px] added, matching the table below it - without
+          it, the "N orders · N tickets · N still sellable" summary caption
+          (ml-auto below) got pushed all the way to the real window's right
+          edge on a wide/maximized window, ending up well to the right of the
+          now-capped table underneath instead of sitting above it. See
+          Sales.tsx's comment for the full rationale on the table cap itself. */}
+      <div className="mb-4 flex max-w-[1400px] flex-wrap items-end gap-3">
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
@@ -282,7 +288,9 @@ export function TicketsView({
         // by name from its own "supplier" column - see csv_import.rs), and
         // CSV export still includes it. supplier_id itself and the data
         // model are otherwise fully untouched - see the 1.9.4 report.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale.
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-[92px]" />

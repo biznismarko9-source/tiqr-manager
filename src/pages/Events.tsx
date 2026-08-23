@@ -211,7 +211,9 @@ export default function Events() {
         // min-w-[900px]+overflow-x-auto pattern, which could actually
         // overflow on this app's smallest supported window (900px needed vs.
         // an 808px floor). Row click-to-navigate (BUG #7) is untouched.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
+        // identical change for the full rationale.
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
