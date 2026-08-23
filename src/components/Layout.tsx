@@ -78,7 +78,16 @@ export default function Layout() {
         </div>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1400px] px-6 py-6">
+        {/* 2.0.31: this div used to cap out at max-w-[1400px] and center
+            itself (mx-auto) - invisible on a normal-size window, but on a
+            maximized/wide window it left real, visible empty space on both
+            sides of the page content instead of filling it (marko's report,
+            comparing a maximized vs. a smaller window side by side). Content
+            now always fills the actual available width - no more max-w cap.
+            Pages with their own grids (Dashboard's stat cards, Pulls'
+            table) just get proportionally more breathing room on a wide
+            monitor, nothing breaks by growing. */}
+        <div className="px-6 py-6">
           <Outlet />
         </div>
       </main>
