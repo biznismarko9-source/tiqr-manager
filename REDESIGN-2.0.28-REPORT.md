@@ -61,3 +61,7 @@ Naviac som si všetko aj vizuálne overil cez dočasný Playwright preview harne
 2. V Orders alebo Events skús do výberu zahrnúť aj niečo, čo má predané lístky / históriu predaja (resp. naviazané objednávky) - over si, že sa to preskočí a appka ti napíše prečo, namiesto toho aby to celé zlyhalo.
 3. Klikni "Delete", niečo vyber, ale namiesto potvrdenia klikni "Cancel" - over, že sa nič nezmazalo. Klikni "Delete" znova - over, že checkboxy sú znova prázdne, appka si nepamätá predchádzajúci výber.
 4. Ak ti nevyhovuje, že sa nebezpečná položka len preskočí namiesto toho, aby zablokovala celý výber (vysvetlené vyššie) - napíš mi, viem to prerobiť na "všetko alebo nič".
+
+## Dodatok (23.8.2026) — oprava balenia ZIP-u
+
+Prvý ZIP, čo som k tejto verzii poslal, mal chybu **v balení, nie vo funkcii vyššie**: chýbali mu dva súbory (`tsconfig.node.json`, `vite.config.ts`), ktoré `tsc` potrebuje na build. Preto GitHub Actions build v CI zlyhal hneď na začiatku a nevznikol žiadny inštalátor. Popísané v `PROTECTED-AREAS-NOTES.md`. Opravený ZIP (rovnaká verzia 2.0.28, keďže tá prvá sa nikdy naozaj nevydala) som tentokrát overil aj tak, že som ho vybalil úplne samostatne mimo môjho pracovného priečinka a spustil build len z toho - presne to, čo predtým chýbalo v mojom postupe. Samotná funkcia hromadného mazania (celý zvyšok tohto reportu) touto chybou nebola nijak dotknutá.
