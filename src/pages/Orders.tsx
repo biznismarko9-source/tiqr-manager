@@ -23,6 +23,7 @@ import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 import type { OrderRecord } from "../lib/types";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
@@ -93,6 +94,7 @@ function parseSeats(raw: string): string[] {
 
 export default function Orders() {
   const toast = useToast();
+  const isNarrow = useNarrowTables();
   const location = useLocation();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
@@ -317,32 +319,48 @@ export default function Orders() {
         // the 2.0.33 report's FOUND BUT NOT TOUCHED section and folded in
         // now rather than left for a separate round (Tickets.tsx has the
         // identical column/bug - see that file's own comment).
-        // 2.0.36: Date/Qty/Sold/Total cost widened (and min-w-[1400px]
-        // added below) - same real-data overflow + missing-floor fix as
-        // Sales.tsx, see that file's colgroup comment for the full
-        // rationale. Date specifically: formatDate's month name is a fixed
-        // 3-letter abbreviation in en-US ("Sep") but noticeably wider in
-        // sk-SK ("23. sept. 2026"-shaped) - marko's own Windows locale is
-        // almost certainly Slovak. Sold shows "{soldCount}/{quantity}", not
-        // a single number, so it needed more than a plain 4-digit count.
+        // 2.0.37: same shift as Sales.tsx made - min-w-[1400px] plus a
+        // single percentage set couldn't stop a horizontal scrollbar below
+        // 1400px wide (only stop columns shrinking below their floor), and
+        // marko reported exactly that scrollbar on this table. Now two full
+        // percentage sets switched by the same shared useNarrowTables()
+        // breakpoint as every other table: Notes and Platform hide below
+        // 1690px (never Order/Event/Date/the money columns), everything
+        // else grows a little and switches to the smaller
+        // .th-c-narrow/.td-c-narrow. See Sales.tsx's own colgroup comment
+        // and PROTECTED-AREAS-NOTES.md (2.0.37 section) for the full
+        // reasoning and verification.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1400px] table-fixed border-collapse">
-            <colgroup>
-              {selectionMode && <col className="w-8" />}
-              <col className="w-[8.571%]" />
-              <col className="w-[36.286%]" />
-              <col className="w-[9.143%]" />
-              <col className="w-[9.286%]" />
-              <col className="w-[11.429%]" />
-              <col className="w-[4.143%]" />
-              <col className="w-[7.143%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[6.286%]" />
-            </colgroup>
+          <table className="w-full table-fixed border-collapse">
+            {isNarrow ? (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[6.38%]" />
+                <col className="w-[51.326%]" />
+                <col className="w-[10.858%]" />
+                <col className="w-[4.391%]" />
+                <col className="w-[8.257%]" />
+                <col className="w-[10.546%]" />
+                <col className="w-[8.242%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[4.438%]" />
+                <col className="w-[54.242%]" />
+                <col className="w-[8.216%]" />
+                <col className="w-[4.33%]" />
+                <col className="w-[6.274%]" />
+                <col className="w-[3.562%]" />
+                <col className="w-[6.344%]" />
+                <col className="w-[7.007%]" />
+                <col className="w-[5.587%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 {selectionMode && (
-                  <th className="th-c">
+                  <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASS}
@@ -352,15 +370,15 @@ export default function Orders() {
                     />
                   </th>
                 )}
-                <th className="th-c">Order</th>
-                <th className="th-c">Event</th>
-                <th className="th-c">Date</th>
-                <th className="th-c">Notes</th>
-                <th className="th-c">Platform</th>
-                <th className="th-c text-right">Qty</th>
-                <th className="th-c text-right">Sold</th>
-                <th className="th-c text-right">Total cost</th>
-                <th className="th-c">Payment</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                {!isNarrow && <th className="th-c">Notes</th>}
+                {!isNarrow && <th className="th-c">Platform</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Qty</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total cost</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payment</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -381,7 +399,7 @@ export default function Orders() {
                   }}
                 >
                   {selectionMode && (
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -391,7 +409,7 @@ export default function Orders() {
                       />
                     </td>
                   )}
-                  <td className="td-c truncate" title={o.code}>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.code}>
                     <Link
                       to={`/orders/${o.id}`}
                       state={{ from: location.pathname }}
@@ -400,7 +418,7 @@ export default function Orders() {
                       {o.code}
                     </Link>
                   </td>
-                  <td className="td-c" title={o.eventName}>
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"} title={o.eventName}>
                     {/* 1.9.1: plain text, not a <Link> to Event Detail -
                         marko asked to remove every "this reference jumps me
                         to a different section" link across Orders/Tickets/
@@ -424,17 +442,21 @@ export default function Orders() {
                       )}
                     </div>
                   </td>
-                  <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
-                  <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.notes ?? undefined}>
-                    {o.notes || "-"}
-                  </td>
-                  <td className="td-c truncate" title={o.platformName ?? undefined}>{o.platformName ?? "-"}</td>
-                  <td className="td-c text-right tabular-nums">{o.quantity}</td>
-                  <td className="td-c text-right tabular-nums">
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDate(o.purchaseDate)}</td>
+                  {!isNarrow && (
+                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.notes ?? undefined}>
+                      {o.notes || "-"}
+                    </td>
+                  )}
+                  {!isNarrow && (
+                    <td className="td-c truncate" title={o.platformName ?? undefined}>{o.platformName ?? "-"}</td>
+                  )}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.quantity}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>
                     {o.soldCount}/{o.quantity}
                   </td>
-                  <td className="td-c text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
-                  <td className="td-c">
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(o.totalCostCents, o.currency)}</td>
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={o.paymentStatus}>{o.paymentStatus}</Badge>
                   </td>
                 </tr>

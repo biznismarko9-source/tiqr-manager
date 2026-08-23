@@ -40,6 +40,22 @@
   .td-c {
     @apply px-2 py-2 text-sm text-slate-700 dark:text-slate-300;
   }
+  /* 2.0.37: narrow-window counterpart of .th-c/.td-c - used (instead of,
+     never together with) th-c/td-c on every list table once the window
+     drops below the shared useNarrowTables() breakpoint. Smaller font +
+     tighter padding is what buys back the horizontal room needed to drop
+     a couple of secondary columns and still never need a horizontal
+     scrollbar, all the way down to the app's enforced minimum window
+     width. Sizes were verified against real formatted data (money/dates/
+     percents across en-US/sk-SK/de-DE), not just the header labels - see
+     PROTECTED-AREAS-NOTES.md before changing px-1/text-[11px] here, both
+     modes were measured against these exact values. */
+  .th-c-narrow {
+    @apply px-1 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+  }
+  .td-c-narrow {
+    @apply px-1 py-1.5 text-[11px] text-slate-700 dark:text-slate-300;
+  }
   .card {
     @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
   }

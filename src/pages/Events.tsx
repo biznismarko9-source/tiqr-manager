@@ -23,6 +23,7 @@ import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 
 const EMPTY_INPUT: EventInput = {
   name: "",
@@ -51,6 +52,7 @@ export default function Events() {
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
+  const isNarrow = useNarrowTables();
   const [events, setEvents] = useState<EventWithStats[] | null>(null);
   const [categories, setCategories] = useState<EventCategory[]>([]);
   const [search, setSearch] = useState("");
@@ -258,40 +260,54 @@ export default function Events() {
         // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
         // identical change for the full rationale.
         //
-        // 2.0.36: Date/Status/Tickets/Available/Cost/Revenue/Profit/Margin/
-        // ROI all widened. This is a fixed-px table (unlike Sales.tsx's
-        // percentage one) with Event as the one unset/absorbing column, so
-        // these are constant regardless of window width - the old widths
-        // were too tight even for their own English header text (Tickets,
-        // Available, Margin), and separately too tight for the real money/
-        // percent/date DATA these columns render, which the original
-        // header-only pass never checked: Cost/Revenue/Profit are amounts
-        // formatted with Intl.NumberFormat, meaningfully wider under
-        // marko's own (almost certainly Slovak) Windows locale than plain
-        // "$99,999.99" would suggest, and Date's month name is similarly
-        // wider in sk-SK than the "Sep 23, 2026"-shaped en-US text. Event
-        // still keeps a large share of the row either way (it's `truncate`
-        // with a title tooltip, same graceful-degradation pattern used for
-        // every other absorbing text column in this app).
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.37: switched from a fixed-px colgroup (one absorbing Event
+        // column, constant widths for everything else regardless of window
+        // size) to the same pure-percentage, two-mode model Sales.tsx uses -
+        // max-w-[1400px] on the wrapper is gone for the same reason it left
+        // Sales.tsx in 2.0.35: a pure-percentage table has no single column
+        // that runs away on a wide window (every column grows together), so
+        // there's nothing left to cap. Below the shared useNarrowTables()
+        // breakpoint (1690px window, same for every table in the app so
+        // they all resize together), Margin and ROI hide (Profit - the
+        // bottom-line number - stays) and everything else grows a little
+        // and switches to the smaller .th-c-narrow/.td-c-narrow. Verified
+        // (Playwright, real Intl.NumberFormat data across en-US/sk-SK/
+        // de-DE, not just header text) to fit without scrolling or wrapping
+        // all the way down to 1080px, this app's enforced minimum window
+        // width - see PROTECTED-AREAS-NOTES.md, 2.0.37 section.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
-            <colgroup>
-              {selectionMode && <col className="w-8" />}
-              <col />
-              <col className="w-[128px]" />
-              <col className="w-[104px]" />
-              <col className="w-[80px]" />
-              <col className="w-[100px]" />
-              <col className="w-[108px]" />
-              <col className="w-[108px]" />
-              <col className="w-[112px]" />
-              <col className="w-[84px]" />
-              <col className="w-[84px]" />
-            </colgroup>
+            {isNarrow ? (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[35.295%]" />
+                <col className="w-[10.858%]" />
+                <col className="w-[9.269%]" />
+                <col className="w-[7.447%]" />
+                <col className="w-[9.397%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[9.568%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[42.234%]" />
+                <col className="w-[8.216%]" />
+                <col className="w-[6.721%]" />
+                <col className="w-[5.096%]" />
+                <col className="w-[6.299%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[7.288%]" />
+                <col className="w-[5.134%]" />
+                <col className="w-[5.134%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 {selectionMode && (
-                  <th className="th-c">
+                  <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASS}
@@ -301,16 +317,16 @@ export default function Events() {
                     />
                   </th>
                 )}
-                <th className="th-c">Event</th>
-                <th className="th-c">Date</th>
-                <th className="th-c">Status</th>
-                <th className="th-c text-right">Tickets</th>
-                <th className="th-c text-right">Available</th>
-                <th className="th-c text-right">Cost</th>
-                <th className="th-c text-right">Revenue</th>
-                <th className="th-c text-right">Profit</th>
-                <th className="th-c text-right">Margin</th>
-                <th className="th-c text-right">ROI</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Tickets</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
+                {!isNarrow && <th className="th-c text-right">Margin</th>}
+                {!isNarrow && <th className="th-c text-right">ROI</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -339,7 +355,7 @@ export default function Events() {
                   }}
                 >
                   {selectionMode && (
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -349,7 +365,7 @@ export default function Events() {
                       />
                     </td>
                   )}
-                  <td className="td-c">
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <div className="flex items-center gap-1.5">
                       <Link
                         to={`/events/${ev.id}`}
@@ -373,21 +389,25 @@ export default function Events() {
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>
-                  <td className="td-c whitespace-nowrap">{formatDate(ev.eventDate)}</td>
-                  <td className="td-c">
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDate(ev.eventDate)}</td>
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
-                  <td className="td-c text-right tabular-nums">{ev.stats.purchasedTickets}</td>
-                  <td className="td-c text-right tabular-nums">{ev.stats.availableTickets}</td>
-                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
-                  <td className="td-c text-right tabular-nums">{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.availableTickets}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td
-                    className={`td-c text-right tabular-nums font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                    className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
                     {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
                   </td>
-                  <td className="td-c text-right tabular-nums">{formatPercentOrMixed(ev.stats.margin, ev.stats.currency)}</td>
-                  <td className="td-c text-right tabular-nums">{formatPercentOrMixed(ev.stats.roi, ev.stats.currency)}</td>
+                  {!isNarrow && (
+                    <td className="td-c text-right tabular-nums whitespace-nowrap">{formatPercentOrMixed(ev.stats.margin, ev.stats.currency)}</td>
+                  )}
+                  {!isNarrow && (
+                    <td className="td-c text-right tabular-nums whitespace-nowrap">{formatPercentOrMixed(ev.stats.roi, ev.stats.currency)}</td>
+                  )}
                 </tr>
               ))}
             </tbody>

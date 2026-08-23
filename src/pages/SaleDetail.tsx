@@ -21,6 +21,7 @@ import {
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 
 /** Returns a value only when every line shares it, else null ("Mixed" in the UI). */
 function uniform<T>(lines: Sale[], pick: (s: Sale) => T): T | null {
@@ -34,6 +35,7 @@ export default function SaleDetail() {
   const saleId = Number(id);
   const navigate = useNavigate();
   const toast = useToast();
+  const isNarrow = useNarrowTables();
 
   const [lines, setLines] = useState<Sale[] | null>(null);
   const [editTarget, setEditTarget] = useState<Sale | null>(null);
@@ -315,28 +317,48 @@ export default function SaleDetail() {
         // untouched. 1.8.3 added the leading checkbox column (bulk
         // actions) - always shown here, not selectionMode-gated like
         // Sales.tsx's own.
-        // 2.0.36: Sale price/Fees/Cost/Profit widened (and min-w-[1400px]
-        // added below) - same real-money-data overflow + missing-floor fix
-        // as Sales.tsx, see that file's colgroup comment for the full
-        // rationale (measured with Intl.NumberFormat under en-US/sk-SK/
-        // de-DE, not just the English header text).
+        // 2.0.37: same shift as Sales.tsx made - min-w-[1400px] plus a
+        // single percentage set couldn't stop a horizontal scrollbar below
+        // 1400px wide, only stop columns shrinking below their floor. Now
+        // two full percentage sets switched by the same shared
+        // useNarrowTables() breakpoint as every other table in the app:
+        // Fees hides below 1690px (still on the Sale price/Cost/Profit
+        // trio, and on Sales.tsx's own row for this sale - never the
+        // Ticket/Seat/prices that matter most), everything else grows a
+        // little and switches to the smaller .th-c-narrow/.td-c-narrow.
+        // See Sales.tsx's own colgroup comment and PROTECTED-AREAS-NOTES.md
+        // (2.0.37 section) for the full reasoning and verification.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1400px] table-fixed border-collapse">
-            <colgroup>
-              <col className="w-8" />
-              <col className="w-[8.571%]" />
-              <col className="w-[8.571%]" />
-              <col className="w-[36.286%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[8%]" />
-              <col className="w-[6.857%]" />
-              <col className="w-[8.571%]" />
-            </colgroup>
+          <table className="w-full table-fixed border-collapse">
+            {isNarrow ? (
+              <colgroup>
+                <col className="w-8" />
+                <col className="w-[6.449%]" />
+                <col className="w-[6.38%]" />
+                <col className="w-[36.358%]" />
+                <col className="w-[9.972%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[9.568%]" />
+                <col className="w-[8.35%]" />
+                <col className="w-[13.84%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                <col className="w-8" />
+                <col className="w-[4.48%]" />
+                <col className="w-[4.438%]" />
+                <col className="w-[48.996%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[7.288%]" />
+                <col className="w-[6.154%]" />
+                <col className="w-[7.827%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th-c">
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                   <input
                     type="checkbox"
                     className={CHECKBOX_CLASS}
@@ -345,15 +367,15 @@ export default function SaleDetail() {
                     aria-label="Select all tickets in this sale"
                   />
                 </th>
-                <th className="th-c">Ticket</th>
-                <th className="th-c">Order</th>
-                <th className="th-c">Seat</th>
-                <th className="th-c text-right">Sale price</th>
-                <th className="th-c text-right">Fees</th>
-                <th className="th-c text-right">Cost</th>
-                <th className="th-c text-right">Profit</th>
-                <th className="th-c">Status</th>
-                <th className="th-c" />
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Ticket</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seat</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sale price</th>
+                {!isNarrow && <th className="th-c text-right">Fees</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"} />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -365,7 +387,7 @@ export default function SaleDetail() {
                     key={s.id}
                     className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(s.ticketId) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
                   >
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       {selectable && (
                         <input
                           type="checkbox"
@@ -381,24 +403,26 @@ export default function SaleDetail() {
                         - removed per marko's request to stop every "this
                         reference jumps me to a different section" link in
                         Orders/Tickets/Sales. Both are now plain text. */}
-                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={s.ticketCode}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={s.ticketCode}>
                       {s.ticketCode}
                     </td>
-                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={s.orderCode}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={s.orderCode}>
                       {s.orderCode}
                     </td>
-                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={seatLabel}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={seatLabel}>
                       {seatLabel}
                     </td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(s.salePriceCents, s.currency)}</td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(s.sellingFeesCents, s.currency)}</td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(s.costCents, s.currency)}</td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(s.salePriceCents, s.currency)}</td>
+                    {!isNarrow && (
+                      <td className="td-c text-right tabular-nums whitespace-nowrap">{formatMoney(s.sellingFeesCents, s.currency)}</td>
+                    )}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(s.costCents, s.currency)}</td>
                     <td
-                      className={`td-c text-right tabular-nums font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                      className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                     >
                       {formatMoney(s.profitCents, s.currency)}
                     </td>
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
                       {s.paymentStatus === "refunded" && s.refundedAt && (
                         <p
@@ -410,7 +434,7 @@ export default function SaleDetail() {
                         </p>
                       )}
                     </td>
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
                         {s.paymentStatus !== "refunded" && (
                           <>

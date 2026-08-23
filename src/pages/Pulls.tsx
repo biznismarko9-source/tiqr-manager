@@ -40,6 +40,7 @@ import {
 import { LookupSelect } from "../components/LookupSelect";
 import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconTrash, IconUsers } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
@@ -54,6 +55,21 @@ const LIST_CAP = 5000;
 // category keeps its own remembered search, since they're two unrelated lists.
 let lastPullsSearch: string | null = null;
 let lastPullsReceivedSearch: string | null = null;
+// 2.0.37: same session-only convention, now for the new Sort control on
+// each tab (marko asked for the same Sort control Sales/Orders/Events
+// already have, added everywhere it was still missing - Tickets/Inventory,
+// and both of these tabs). Sorted client-side, same reasoning as Orders.tsx's
+// own sortedOrders: listPulls/listPullsReceived already return the full
+// matching result set in one response (up to LIST_CAP), so sorting what's
+// already in memory is exactly as complete as a backend sort would be. Two
+// separate variables, matching lastPullsSearch/lastPullsReceivedSearch above -
+// Given and Received are unrelated lists with their own sort preference.
+let lastPullsSortBy: string = "";
+let lastPullsReceivedSortBy: string = "";
+const PULL_SORT_LABELS: Record<string, string> = {
+  "": "Newest first",
+  oldest: "Oldest first",
+};
 
 // 1.9.8: how many days before the event the "transfer this!" warning starts
 // showing (and keeps showing every day, escalating once the event date
@@ -155,9 +171,11 @@ function FormGroup({ title, children }: { title?: string; children: ReactNode })
 
 function GivenPulls() {
   const toast = useToast();
+  const isNarrow = useNarrowTables();
   const [pulls, setPulls] = useState<Pull[] | null>(null);
   const [search, setSearch] = useState(lastPullsSearch ?? "");
   const [statusFilter, setStatusFilter] = useState<TransferFilter>("all");
+  const [sortBy, setSortBy] = useState(lastPullsSortBy);
   // undefined = modal closed, null = create mode, a Pull = edit mode.
   const [modalPull, setModalPull] = useState<Pull | null | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<Pull | null>(null);
@@ -174,6 +192,10 @@ function GivenPulls() {
     lastPullsSearch = search;
   }, [search]);
 
+  useEffect(() => {
+    lastPullsSortBy = sortBy;
+  }, [sortBy]);
+
   const load = (q?: string, filter?: TransferFilter) => {
     const f = filter ?? statusFilter;
     api
@@ -181,6 +203,13 @@ function GivenPulls() {
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.0.37: same client-side sort convention as Orders.tsx's own
+  // sortedOrders - `pulls` itself stays exactly as the backend returned it
+  // so every other reference above (allSelected, the LIST_CAP banner) keeps
+  // working regardless of display order; only the table's own render
+  // switches to this derived, optionally-reversed copy.
+  const sortedPulls: Pull[] = pulls === null ? [] : sortBy === "oldest" ? [...pulls].reverse() : pulls;
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -277,6 +306,15 @@ function GivenPulls() {
               <option value="done">Transferred</option>
             </Select>
           </div>
+          <div className="w-44">
+            <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort pulls">
+              {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
+                <option key={value || "newest"} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
@@ -322,101 +360,66 @@ function GivenPulls() {
         />
       ) : (
         // Same table-fixed + colgroup convention as Orders.tsx/Sales.tsx.
-        // 1.9.8 first put seat location and More info inside the Event cell
-        // - marko said no, he wants them as their own columns instead (they
-        // were getting lost stacked under the event name), so Event went
-        // back to just name + date, and Seats/More info are now two
-        // dedicated columns of their own. 1.9.10: marko wanted the exact
-        // same treatment applied to Date - it was still stacked under the
-        // event name in the Event cell, so it's now its own column too;
-        // Event is just the name now. Seats/More info also got noticeably
-        // wider this round (200px/240px, up from 92px/136px) so a full
-        // "Sec 102 · Row 5 · Seat 12"-style location or a typical email in
-        // More info shows completely instead of truncating - marko was
-        // explicit that seeing it all matters more here than fitting the
-        // narrowest supported window without a scrollbar, so unlike every
-        // other table in the app, this one can now need horizontal scroll
-        // (already handled below via overflow-x-auto) below roughly
-        // 1100px, not just below the usual 808px floor. Seats shows via
-        // the same formatSeatLocation helper Sale Detail uses (falls back
-        // to "General admission" when Section/Row/Seat are all blank). The
-        // old manual "Deadline" column is still gone - replaced by a
-        // warning that appears automatically starting WARNING_WINDOW_DAYS
-        // before the event date and disappears the moment transfer is
-        // marked done. Row click opens the edit modal (no separate Detail
-        // page exists for Pull, unlike Order/Sale) - guarded so a click on
-        // the checkbox doesn't also open it.
-        // 2.0.29: Date/Platform/Warning were still clipping ("23. 10. 2...",
-        // "Ticketma...", a cramped "43d overdue") at their old 84/84/76px -
-        // same "seeing it all matters more" call as above, so all three grew
-        // (120/120/130px) instead of switching Date to the abbreviated
-        // formatDateCompact used only in Sales - this table already accepted
-        // needing horizontal scroll on narrower windows, so a little wider
-        // still just moves that same breakpoint up a bit further.
-        // Found while verifying that fix: `w-full` alone on a table-fixed
-        // table with an `auto` (Event) column has no floor - once the fixed
-        // columns' own widths add up to more than the container, the Event
-        // column gets squeezed toward 0 instead of the table actually
-        // growing past 100% and letting overflow-x-auto scroll (Event
-        // content was rendering blank, not just tight). The explicit min-w
-        // below is the fixed columns' own sum plus a floor for Event, so
-        // Event can shrink but never below something an event name can
-        // still read in - past that, the table grows wider and scrolls
-        // instead, same as Seats/More info already rely on.
-        // 2.0.30: marko didn't want horizontal scroll AT ALL for the normal
-        // case (2.0.29 fixed the clipping but needed a scrollbar to do it)
-        // - so this table got a second pass reclaiming width instead of
-        // just adding it: Date switched to the same compact format Sales'
-        // table already uses (formatDateCompact - "13 Aug 26" instead of
-        // "Aug 13, 2026", still the FULL date, just shorter, with the full
-        // form still available on hover) instead of a wider column, and
-        // Pull/For/More info/Fee/Warning were each measured (via a preview
-        // harness reading actual rendered column widths, not guessed) and
-        // trimmed to what their real content needs, with real margin to
-        // spare - not just barely fitting. Platform stayed at its 2.0.29
-        // width - marko's own real data ("fnac spetacles") needs every bit
-        // of it, more than the "Ticketmaster" example this was first sized
-        // against. Seats also stayed as-is: it's the one column still
-        // occasionally clipping (only for longer multi-digit seat numbers -
-        // marko's own example fits fine) - it gave up a little more room
-        // here too (185px -> 172px) to get a plain 1366px laptop window
-        // scroll-free as well, not just marko's own wider one; it wasn't
-        // part of what was reported and already had a title tooltip as a
-        // fallback. The sidebar (Layout.tsx) also got narrower this
-        // version, at marko's own suggestion, freeing more width on every
-        // page.
-        // 2.0.36: Ks/Fee/Done all widened - same fixed-px-table treatment as
-        // Events.tsx, see that file's colgroup comment for the full
-        // rationale (header labels AND real formatted data both checked).
-        // Platform is untouched: it's `truncate` with a title tooltip
-        // already (same accepted degradation as Event/Seats/More info/For),
-        // so a too-long platform name was never the invisible/wrapping
-        // header problem marko reported - only Ks/Done's own short header
-        // text and Fee's real money data were actually broken. min-w bumped
-        // 1120px -> 1220px (+100px, matching the +94px these columns
-        // actually grew by, rounded up) so Event keeps roughly the same
-        // floor-width headroom it had before, instead of quietly losing 94px
-        // of it at the narrow end where overflow-x-auto kicks in.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1220px] table-fixed border-collapse">
-            <colgroup>
-              {selectionMode && <col className="w-8" />}
-              <col className="w-[68px]" />
-              <col className="w-[72px]" />
-              <col />
-              <col className="w-[88px]" />
-              <col className="w-[172px]" />
-              <col className="w-[178px]" />
-              <col className="w-[58px]" />
-              <col className="w-[120px]" />
-              <col className="w-[108px]" />
-              <col className="w-[114px]" />
-              <col className="w-[64px]" />
-            </colgroup>
+        // Seats shows via the same formatSeatLocation helper Sale Detail
+        // uses (falls back to "General admission" when Section/Row/Seat are
+        // all blank). The "Deadline" column is a warning that appears
+        // automatically starting WARNING_WINDOW_DAYS before the event date
+        // and disappears the moment transfer is marked done. Row click
+        // opens the edit modal (no separate Detail page exists for Pull,
+        // unlike Order/Sale) - guarded so a click on the checkbox doesn't
+        // also open it. Date uses formatDateCompact ("13 Aug 26") - the
+        // full date is still one hover away via the title tooltip.
+        //
+        // 2.0.37: this used to be the one table in the app that accepted
+        // needing horizontal scroll below ~1100px (marko's own explicit
+        // tradeoff at the time, since Seats/More info needed to show in
+        // full) - both the wrapper's max-w-[1400px] and the table's own
+        // min-w-[1220px] are gone now, replaced with the same pure-
+        // percentage, two-mode model every other table in the app uses:
+        // below the shared useNarrowTables() breakpoint (1690px window),
+        // Warning and Platform hide (Seats/More info/the money and pull-
+        // code columns that matter most stay) and everything else grows a
+        // little and switches to the smaller .th-c-narrow/.td-c-narrow.
+        // Verified (Playwright, real Intl.NumberFormat/date data across
+        // en-US/sk-SK/de-DE, not just header text) to fit without scrolling
+        // or wrapping all the way down to 1080px, this app's enforced
+        // minimum window width - see Sales.tsx's own colgroup comment and
+        // PROTECTED-AREAS-NOTES.md (2.0.37 section) for the full reasoning.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full table-fixed border-collapse">
+            {isNarrow ? (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[4.894%]" />
+                <col className="w-[4.168%]" />
+                <col className="w-[48.595%]" />
+                <col className="w-[7.772%]" />
+                <col className="w-[5.843%]" />
+                <col className="w-[9.85%]" />
+                <col className="w-[4.391%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[5.404%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[3.521%]" />
+                <col className="w-[3.073%]" />
+                <col className="w-[50.341%]" />
+                <col className="w-[5.995%]" />
+                <col className="w-[4.106%]" />
+                <col className="w-[6.578%]" />
+                <col className="w-[3.562%]" />
+                <col className="w-[6.274%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[5.775%]" />
+                <col className="w-[3.836%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 {selectionMode && (
-                  <th className="th-c">
+                  <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASS}
@@ -426,21 +429,21 @@ function GivenPulls() {
                     />
                   </th>
                 )}
-                <th className="th-c">Pull</th>
-                <th className="th-c">For</th>
-                <th className="th-c">Event</th>
-                <th className="th-c">Date</th>
-                <th className="th-c">Seats</th>
-                <th className="th-c">More info</th>
-                <th className="th-c text-right">Ks</th>
-                <th className="th-c">Platform</th>
-                <th className="th-c text-right">Fee</th>
-                <th className="th-c">Warning</th>
-                <th className="th-c text-center">Done</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Pull</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>For</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
+                {!isNarrow && <th className="th-c">Platform</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
+                {!isNarrow && <th className="th-c">Warning</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Done</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {pulls.map((p) => {
+              {sortedPulls.map((p) => {
                 const daysLeft = p.eventDate ? daysUntil(p.eventDate) : null;
                 const seatLocation = formatSeatLocation(p.section, p.rowLabel, p.seat);
                 const showWarning = !p.transferDone && daysLeft !== null && daysLeft <= WARNING_WINDOW_DAYS;
@@ -460,7 +463,7 @@ function GivenPulls() {
                     }}
                   >
                     {selectionMode && (
-                      <td className="td-c align-top">
+                      <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                         <input
                           type="checkbox"
                           className={CHECKBOX_CLASS}
@@ -471,50 +474,54 @@ function GivenPulls() {
                       </td>
                     )}
                     <td
-                      className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
+                      className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`}
                       title={`Added ${formatDate(p.createdAt)}`}
                     >
                       {p.code}
                     </td>
-                    <td className="td-c truncate align-top" title={p.buyerName}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.buyerName}>
                       {p.buyerName}
                     </td>
-                    <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.eventName}>
                       {p.eventName}
                     </td>
-                    <td className="td-c truncate align-top whitespace-nowrap" title={p.eventDate ? formatDate(p.eventDate) : undefined}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate whitespace-nowrap`} title={p.eventDate ? formatDate(p.eventDate) : undefined}>
                       {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
                     </td>
                     <td
-                      className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                      className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-xs text-slate-500 dark:text-slate-400`}
                       title={seatLocation}
                     >
                       {seatLocation}
                     </td>
                     <td
-                      className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                      className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-xs text-slate-500 dark:text-slate-400`}
                       title={p.moreInfo ?? undefined}
                     >
                       {p.moreInfo || "-"}
                     </td>
-                    <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
-                    <td className="td-c truncate align-top" title={p.platformName ?? undefined}>
-                      {p.platformName ?? "-"}
-                    </td>
-                    <td className="td-c text-right align-top tabular-nums">{formatMoney(p.priceCents, p.currency)}</td>
-                    <td className="td-c align-top">
-                      {showWarning && (
-                        <span
-                          className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium ${
-                            warningTone === "red" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
-                          }`}
-                        >
-                          <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                          {warningText}
-                        </span>
-                      )}
-                    </td>
-                    <td className="td-c text-center align-top">
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{p.quantity}</td>
+                    {!isNarrow && (
+                      <td className="td-c truncate" title={p.platformName ?? undefined}>
+                        {p.platformName ?? "-"}
+                      </td>
+                    )}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(p.priceCents, p.currency)}</td>
+                    {!isNarrow && (
+                      <td className="td-c">
+                        {showWarning && (
+                          <span
+                            className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium ${
+                              warningTone === "red" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
+                            }`}
+                          >
+                            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                            {warningText}
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -829,8 +836,10 @@ function PullFormModal({
 
 function ReceivedPulls() {
   const toast = useToast();
+  const isNarrow = useNarrowTables();
   const [pulls, setPulls] = useState<PullReceived[] | null>(null);
   const [search, setSearch] = useState(lastPullsReceivedSearch ?? "");
+  const [sortBy, setSortBy] = useState(lastPullsReceivedSortBy);
   // undefined = modal closed, null = create mode, a PullReceived = edit mode.
   const [modalPull, setModalPull] = useState<PullReceived | null | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<PullReceived | null>(null);
@@ -847,12 +856,24 @@ function ReceivedPulls() {
     lastPullsReceivedSearch = search;
   }, [search]);
 
+  useEffect(() => {
+    lastPullsReceivedSortBy = sortBy;
+  }, [sortBy]);
+
   const load = (q?: string) => {
     api
       .listPullsReceived({ search: q || undefined })
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.0.37: same client-side sort convention as Orders.tsx's own
+  // sortedOrders / GivenPulls' own sortedPulls above - `pulls` itself stays
+  // exactly as the backend returned it so every other reference above
+  // (allSelected, the LIST_CAP banner) keeps working regardless of display
+  // order; only the table's own render switches to this derived,
+  // optionally-reversed copy.
+  const sortedPulls: PullReceived[] = pulls === null ? [] : sortBy === "oldest" ? [...pulls].reverse() : pulls;
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -923,14 +944,25 @@ function ReceivedPulls() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="relative max-w-xs flex-1">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-          <Input
-            placeholder="Search received pulls..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative max-w-xs flex-1">
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <Input
+              placeholder="Search received pulls..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <div className="w-44">
+            <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort received pulls">
+              {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
+                <option key={value || "newest"} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
@@ -979,43 +1011,50 @@ function ReceivedPulls() {
         // GivenPulls' own table above. The Order cell contains a real link
         // (react-router <Link>, not just a <button>/<input>) so the row-click
         // guard here also checks for "a", unlike GivenPulls' table which has
-        // no links inside its rows.
-        // 2.0.29: Date widened 84px -> 120px, same clipping fix and same
-        // reasoning as GivenPulls' table above (this tab has no
-        // Platform/Warning columns, so Date was the only one affected here).
-        // This table's fixed-column sum (876px: 92+150+120+32+92+170+220)
-        // stays well under a normal window width even after that, so it
-        // wasn't hitting the same Event-squeezed-to-0 bug GivenPulls had -
-        // still giving it the same explicit min-w as a floor, on the same
-        // "these two tables mirror each other" reasoning, so it can't
-        // regress into that bug later if a column here grows too.
-        // 2.0.30: this tab was never the reported problem (it already fit
-        // without scrolling), so only Date moved to the same compact
-        // formatDateCompact GivenPulls now uses (120px -> 90px, still the
-        // full date, shorter text) for consistency between the two tabs -
-        // every other column here is untouched.
-        // 2.0.36: Ks/Fee widened - same fixed-px-table treatment as
-        // Events.tsx/the Given table above, see Events.tsx's colgroup
-        // comment for the full rationale. min-w bumped 1000px -> 1050px
-        // (+50px, matching the +42px these columns actually grew by,
-        // rounded up) to preserve Event's floor-width headroom.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1050px] table-fixed border-collapse">
-            <colgroup>
-              {selectionMode && <col className="w-8" />}
-              <col className="w-[92px]" />
-              <col className="w-[150px]" />
-              <col />
-              <col className="w-[90px]" />
-              <col className="w-[58px]" />
-              <col className="w-[108px]" />
-              <col className="w-[170px]" />
-              <col className="w-[220px]" />
-            </colgroup>
+        // no links inside its rows. Date uses formatDateCompact, same as
+        // GivenPulls' own Date column.
+        //
+        // 2.0.37: same shift as GivenPulls' own table made just above - both
+        // the wrapper's max-w-[1400px] and the table's own min-w-[1050px]
+        // are gone, replaced with the same pure-percentage, two-mode model
+        // every table in the app now uses. Below the shared
+        // useNarrowTables() breakpoint (1690px window), Order hides (still
+        // visible from the Orders page itself, and from GivenPulls' own
+        // table when the same pull was made there - never Pull/From/Event/
+        // Fee) and everything else grows a little and switches to the
+        // smaller .th-c-narrow/.td-c-narrow. See Sales.tsx's own colgroup
+        // comment and PROTECTED-AREAS-NOTES.md (2.0.37 section) for the
+        // full reasoning and verification.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full table-fixed border-collapse">
+            {isNarrow ? (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[4.894%]" />
+                <col className="w-[5.536%]" />
+                <col className="w-[58.474%]" />
+                <col className="w-[7.772%]" />
+                <col className="w-[4.391%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[9.85%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                {selectionMode && <col className="w-8" />}
+                <col className="w-[3.521%]" />
+                <col className="w-[3.916%]" />
+                <col className="w-[65.051%]" />
+                <col className="w-[5.995%]" />
+                <col className="w-[3.562%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[4.438%]" />
+                <col className="w-[6.578%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 {selectionMode && (
-                  <th className="th-c">
+                  <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASS}
@@ -1025,18 +1064,18 @@ function ReceivedPulls() {
                     />
                   </th>
                 )}
-                <th className="th-c">Pull</th>
-                <th className="th-c">From</th>
-                <th className="th-c">Event</th>
-                <th className="th-c">Date</th>
-                <th className="th-c text-right">Ks</th>
-                <th className="th-c text-right">Fee</th>
-                <th className="th-c">Order</th>
-                <th className="th-c">More info</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Pull</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>From</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
+                {!isNarrow && <th className="th-c">Order</th>}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {pulls.map((p) => (
+              {sortedPulls.map((p) => (
                 <tr
                   key={p.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
@@ -1050,7 +1089,7 @@ function ReceivedPulls() {
                   }}
                 >
                   {selectionMode && (
-                    <td className="td-c align-top">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -1061,40 +1100,42 @@ function ReceivedPulls() {
                     </td>
                   )}
                   <td
-                    className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
+                    className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`}
                     title={`Added ${formatDate(p.createdAt)}`}
                   >
                     {p.code}
                   </td>
-                  <td className="td-c truncate align-top" title={p.pullerName}>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.pullerName}>
                     {p.pullerName}
                   </td>
-                  <td className="td-c truncate align-top font-medium text-slate-800 dark:text-slate-200" title={p.eventName}>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.eventName}>
                     {p.eventName}
                   </td>
-                  <td className="td-c truncate align-top whitespace-nowrap" title={p.eventDate ? formatDate(p.eventDate) : undefined}>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate whitespace-nowrap`} title={p.eventDate ? formatDate(p.eventDate) : undefined}>
                     {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
                   </td>
-                  <td className="td-c text-right align-top tabular-nums">{p.quantity}</td>
-                  <td className="td-c text-right align-top tabular-nums">{formatMoney(p.amountCents, p.currency)}</td>
-                  <td className="td-c align-top">
-                    {p.orderId && p.orderCode ? (
-                      <div className="flex items-center gap-1.5">
-                        <Link
-                          to={`/orders/${p.orderId}`}
-                          className="truncate font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                          title={`Open order ${p.orderCode}`}
-                        >
-                          {p.orderCode}
-                        </Link>
-                        {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
-                      </div>
-                    ) : (
-                      <span className="text-slate-400 dark:text-slate-500">Standalone</span>
-                    )}
-                  </td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{p.quantity}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(p.amountCents, p.currency)}</td>
+                  {!isNarrow && (
+                    <td className="td-c">
+                      {p.orderId && p.orderCode ? (
+                        <div className="flex items-center gap-1.5">
+                          <Link
+                            to={`/orders/${p.orderId}`}
+                            className="truncate font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                            title={`Open order ${p.orderCode}`}
+                          >
+                            {p.orderCode}
+                          </Link>
+                          {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">Standalone</span>
+                      )}
+                    </td>
+                  )}
                   <td
-                    className="td-c truncate align-top text-xs text-slate-500 dark:text-slate-400"
+                    className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-xs text-slate-500 dark:text-slate-400`}
                     title={p.moreInfo ?? undefined}
                   >
                     {p.moreInfo || "-"}

@@ -18,6 +18,7 @@ import {
 } from "../components/ui";
 import { IconBoxes, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 
 export default function Tickets() {
   return (
@@ -58,8 +59,25 @@ interface TicketsFilterState {
   section: string;
   dateFrom: string;
   dateTo: string;
+  sortBy: string;
 }
 const lastTicketsFilters = new Map<string, TicketsFilterState>();
+
+// 2.0.37: marko asked for the same Sort control Sales/Orders/Events already
+// have, added here too (and to both of Pulls.tsx's tabs) - same "Newest/
+// Oldest first" convention, sorted client-side by purchase date for exactly
+// the same reason Orders.tsx's own version is client-side (listOrders
+// already returns the full matching result set in one response, up to
+// LIST_CAP, so sorting what's already in memory is exactly as complete as a
+// backend sort would be). Keyed into the existing per-pathname
+// lastTicketsFilters map (not a bare module variable like Orders.tsx's
+// simpler lastOrdersSortBy) so Tickets and Inventory - two different pages
+// sharing this one component - keep their own separate sort preference,
+// same as every other filter on this page already does.
+const TICKET_SORT_LABELS: Record<string, string> = {
+  "": "Newest first",
+  oldest: "Oldest first",
+};
 
 /** Shared list view, reused (pre-filtered) by the Inventory page. Groups
  * tickets by their order - one row per order, not per ticket - so the list
@@ -85,6 +103,7 @@ export function TicketsView({
   allowCrossLinks?: boolean;
 }) {
   const toast = useToast();
+  const isNarrow = useNarrowTables();
   const location = useLocation();
   const [params] = useSearchParams();
   const cached = lastTicketsFilters.get(location.pathname);
@@ -98,6 +117,7 @@ export function TicketsView({
   const [section, setSection] = useState(cached?.section ?? "");
   const [dateFrom, setDateFrom] = useState(cached?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(cached?.dateTo ?? "");
+  const [sortBy, setSortBy] = useState(cached?.sortBy ?? "");
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
@@ -109,8 +129,8 @@ export function TicketsView({
   // Detail's now context-aware Back link - finds the same search/filters
   // instead of a blank slate.
   useEffect(() => {
-    lastTicketsFilters.set(location.pathname, { search, status, eventId, platformId, section, dateFrom, dateTo });
-  }, [location.pathname, search, status, eventId, platformId, section, dateFrom, dateTo]);
+    lastTicketsFilters.set(location.pathname, { search, status, eventId, platformId, section, dateFrom, dateTo, sortBy });
+  }, [location.pathname, search, status, eventId, platformId, section, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
@@ -140,17 +160,30 @@ export function TicketsView({
     return { orderCount: orders.length, totalTickets, availableTickets };
   }, [orders]);
 
+  // 2.0.37: same client-side sort convention as Orders.tsx's own
+  // sortedOrders - `orders` itself stays exactly as the backend returned it
+  // (purchase_date DESC) so summary/the >= 5000 banner/every other
+  // reference above keeps working regardless of display order; only the
+  // table's own render switches to this derived, optionally-reversed copy.
+  const sortedOrders = useMemo(() => {
+    if (!orders) return [];
+    if (sortBy === "oldest") return [...orders].reverse();
+    return orders;
+  }, [orders, sortBy]);
+
   return (
     <div>
       <PageHeader title={title} subtitle={subtitle} />
 
-      {/* 2.0.32: max-w-[1400px] added, matching the table below it - without
-          it, the "N orders · N tickets · N still sellable" summary caption
-          (ml-auto below) got pushed all the way to the real window's right
-          edge on a wide/maximized window, ending up well to the right of the
-          now-capped table underneath instead of sitting above it. See
-          Sales.tsx's comment for the full rationale on the table cap itself. */}
-      <div className="mb-4 flex max-w-[1400px] flex-wrap items-end gap-3">
+      {/* 2.0.32: max-w-[1400px] added, matching the table below it, so the
+          "N orders · N tickets · N still sellable" summary caption (ml-auto
+          below) sat above the table instead of floating off to the real
+          window's right edge. 2.0.37: removed again - the table below is
+          now a pure-percentage, always-fills-the-window layout (same
+          reasoning as Sales.tsx's 2.0.35 change), so there's no longer a
+          narrower table edge for this row to match; both now fill the real
+          window width together, same as Sales/Orders/Events already do. */}
+      <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
@@ -220,6 +253,16 @@ export function TicketsView({
           <span className="label">To</span>
           <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </div>
+        <div className="w-44">
+          <span className="label">Sort</span>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort orders">
+            {Object.entries(TICKET_SORT_LABELS).map(([value, label]) => (
+              <option key={value || "newest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
         {summary && (
           <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
             {summary.orderCount} orders &middot; {summary.totalTickets} tickets &middot; {summary.availableTickets} still
@@ -288,52 +331,68 @@ export function TicketsView({
         // by name from its own "supplier" column - see csv_import.rs), and
         // CSV export still includes it. supplier_id itself and the data
         // model are otherwise fully untouched - see the 1.9.4 report.
-        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
-        // identical change for the full rationale.
-        // 2.0.36: Purchase date/Total/Available/Sold/Total cost/Status all
-        // widened - same fixed-px-table treatment as Events.tsx, see that
-        // file's colgroup comment for the full rationale (header labels AND
-        // real formatted data both checked, across en-US/sk-SK/de-DE).
-        // Order's own truncation (a separate, pre-existing, already
-        // "found but not touched" issue from 2.0.33/2.0.34) is untouched -
-        // it self-truncates with a title tooltip already, same accepted
-        // pattern as Event, not the invisible/wrapping header problem
-        // marko reported this round.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.37: switched from a fixed-px colgroup (one absorbing Event
+        // column, constant widths regardless of window size) to the same
+        // pure-percentage, two-mode model Sales.tsx/Events.tsx use -
+        // max-w-[1400px] is gone from this wrapper for the same reason it
+        // left theirs: a pure-percentage table has no single column that
+        // runs away on a wide window, so there's nothing left to cap. Below
+        // the shared useNarrowTables() breakpoint (1690px window, same for
+        // every table in the app), Purchase date hides (Order's own
+        // truncating title-tooltip pattern, pre-existing since 2.0.33/
+        // 2.0.34, is untouched) and everything else grows a little and
+        // switches to the smaller .th-c-narrow/.td-c-narrow. Verified
+        // (Playwright, real Intl.NumberFormat/date data across en-US/
+        // sk-SK/de-DE, not just header text) to fit without scrolling or
+        // wrapping all the way down to 1080px, this app's enforced minimum
+        // window width - see PROTECTED-AREAS-NOTES.md, 2.0.37 section.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
-            <colgroup>
-              <col className="w-[92px]" />
-              <col />
-              <col className="w-[128px]" />
-              <col className="w-[68px]" />
-              <col className="w-[100px]" />
-              <col className="w-[60px]" />
-              <col className="w-[108px]" />
-              <col className="w-[100px]" />
-            </colgroup>
+            {isNarrow ? (
+              <colgroup>
+                <col className="w-[6.38%]" />
+                <col className="w-[54.04%]" />
+                <col className="w-[5.904%]" />
+                <col className="w-[9.397%]" />
+                <col className="w-[5.186%]" />
+                <col className="w-[10.546%]" />
+                <col className="w-[8.547%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                <col className="w-[4.438%]" />
+                <col className="w-[59.062%]" />
+                <col className="w-[9.073%]" />
+                <col className="w-[4.144%]" />
+                <col className="w-[6.299%]" />
+                <col className="w-[3.701%]" />
+                <col className="w-[7.007%]" />
+                <col className="w-[6.276%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th-c">Order</th>
-                <th className="th-c">Event</th>
-                <th className="th-c">Purchase date</th>
-                <th className="th-c text-right">Total</th>
-                <th className="th-c text-right">Available</th>
-                <th className="th-c text-right">Sold</th>
-                <th className="th-c text-right">Total cost</th>
-                <th className="th-c">Status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
+                {!isNarrow && <th className="th-c">Purchase date</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total cost</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {orders.map((o) => {
+              {sortedOrders.map((o) => {
                 const inv = inventoryStatus(o);
                 return (
                   <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={o.code}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={o.code}>
                       <Link to={`/orders/${o.id}`} className="hover:underline">
                         {o.code}
                       </Link>
                     </td>
-                    <td className="td-c truncate" title={o.eventName}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.eventName}>
                       {allowCrossLinks ? (
                         <Link to={`/events/${o.eventId}`} className="hover:underline">
                           {o.eventName}
@@ -342,12 +401,12 @@ export function TicketsView({
                         o.eventName
                       )}
                     </td>
-                    <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
-                    <td className="td-c text-right tabular-nums">{o.quantity}</td>
-                    <td className="td-c text-right tabular-nums">{o.availableCount + o.listedCount}</td>
-                    <td className="td-c text-right tabular-nums">{o.soldCount}</td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
-                    <td className="td-c">
+                    {!isNarrow && <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.quantity}</td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.availableCount + o.listedCount}</td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.soldCount}</td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(o.totalCostCents, o.currency)}</td>
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={inv.key}>{inv.label}</Badge>
                     </td>
                   </tr>

@@ -29,6 +29,7 @@ import {
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useNarrowTables } from "../lib/useNarrowTables";
 import { TicketEditModal } from "./Tickets";
 import { PullReceivedFormModal } from "./Pulls";
 
@@ -38,6 +39,7 @@ export default function OrderDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
+  const isNarrow = useNarrowTables();
 
   // 1.8.3 (section 8): if the user arrived from Orders - which passes
   // state={{ from: location.pathname }} on its link into Order Detail (see
@@ -374,25 +376,41 @@ export default function OrderDetail() {
         // format.ts, same treatment Sale Detail got in 1.8.2) - the 3
         // underlying fields are untouched, only how they display here
         // changed.
-        // 2.0.36: this table's header labels always fit (Seat's generous
-        // 65% left plenty of room), but real money DATA in Cost/Listing
-        // price didn't - same real-data overflow + missing-floor fix as
-        // Sales.tsx, see that file's colgroup comment for the full
-        // rationale. Seat keeps a large share either way.
+        // 2.0.37: same shift as Sales.tsx made - min-w-[1400px] plus a
+        // single percentage set couldn't stop a horizontal scrollbar below
+        // 1400px wide, only stop columns shrinking below their floor. Now
+        // two full percentage sets switched by the same shared
+        // useNarrowTables() breakpoint as every other table: Listing price
+        // hides below 1690px (still on Cost/Status, and the ticket's own
+        // page - never Ticket/Seat/Cost), everything else grows a little
+        // and switches to the smaller .th-c-narrow/.td-c-narrow. See
+        // Sales.tsx's own colgroup comment and PROTECTED-AREAS-NOTES.md
+        // (2.0.37 section) for the full reasoning and verification.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[1400px] table-fixed border-collapse">
-            <colgroup>
-              <col className="w-8" />
-              <col className="w-[8.571%]" />
-              <col className="w-[61.286%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[7.714%]" />
-              <col className="w-[6.857%]" />
-              <col className="w-[7.857%]" />
-            </colgroup>
+          <table className="w-full table-fixed border-collapse">
+            {isNarrow ? (
+              <colgroup>
+                <col className="w-8" />
+                <col className="w-[6.449%]" />
+                <col className="w-[71.134%]" />
+                <col className="w-[9.083%]" />
+                <col className="w-[8.547%]" />
+                <col className="w-[4.787%]" />
+              </colgroup>
+            ) : (
+              <colgroup>
+                <col className="w-8" />
+                <col className="w-[4.48%]" />
+                <col className="w-[71.536%]" />
+                <col className="w-[6.939%]" />
+                <col className="w-[8.062%]" />
+                <col className="w-[6.276%]" />
+                <col className="w-[2.707%]" />
+              </colgroup>
+            )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
-                <th className="th-c">
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                   <input
                     type="checkbox"
                     className={CHECKBOX_CLASS}
@@ -401,12 +419,12 @@ export default function OrderDetail() {
                     aria-label="Select all tickets in this order"
                   />
                 </th>
-                <th className="th-c">Ticket</th>
-                <th className="th-c">Seat</th>
-                <th className="th-c text-right">Cost</th>
-                <th className="th-c text-right">Listing price</th>
-                <th className="th-c">Status</th>
-                <th className="th-c" />
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Ticket</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seat</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
+                {!isNarrow && <th className="th-c text-right">Listing price</th>}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"} />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -417,7 +435,7 @@ export default function OrderDetail() {
                     key={t.id}
                     className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(t.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
                   >
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASS}
@@ -426,20 +444,22 @@ export default function OrderDetail() {
                         aria-label={`Select ticket ${t.code}`}
                       />
                     </td>
-                    <td className="td-c truncate font-medium text-slate-900 dark:text-slate-100" title={t.code}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={t.code}>
                       {t.code}
                     </td>
-                    <td className="td-c truncate text-slate-500 dark:text-slate-400" title={seatLabel}>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={seatLabel}>
                       {seatLabel}
                     </td>
-                    <td className="td-c text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
-                    <td className="td-c text-right tabular-nums">
-                      {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
-                    </td>
-                    <td className="td-c">
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(t.totalCostCents, t.currency)}</td>
+                    {!isNarrow && (
+                      <td className="td-c text-right tabular-nums whitespace-nowrap">
+                        {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
+                      </td>
+                    )}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={t.status}>{t.status}</Badge>
                     </td>
-                    <td className="td-c">
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
                         {/* 1.9.1: this used to have a "View sale" link into
                             /sales (added in 1.6.0 for a sold ticket, since
