@@ -292,34 +292,42 @@ export default function SaleDetail() {
       {lines.length === 0 ? (
         <EmptyState title="No tickets found for this sale" />
       ) : (
-        // 1.8.2: same table-layout:fixed + <colgroup> technique as the Sales
-        // list (see Sales.tsx for the full rationale) - Seat is left
-        // unspecified to absorb whatever width the fixed columns don't use.
-        // Even at this app's smallest possible window (808px of content, see
-        // Sales.tsx's comment for the math) that still leaves a comfortable
-        // floor for Seat, growing from there. Section/Row/Seat are merged
-        // into one Seat column via formatSeatLocation (lib/format.ts) - the
-        // 3 underlying fields (s.section/s.rowLabel/s.seat) are untouched,
-        // only how they display here changed. `.th-c`/`.td-c` are the same
+        // 2.0.35: same proportional-percentage model as Sales.tsx now uses
+        // (see that file's colgroup comment for the full history and the
+        // honest narrow-window tradeoff it explains - applies here
+        // identically). Two changes bundled in together since this file's
+        // exact columns were already being touched for the % conversion:
+        // Ticket and Order both went 84px -> 120px (basis for their new
+        // percentages) - same truncating-10-char-code bug as Sale's own
+        // 2.0.33 fix ("TIX-000001"/"ORD-000001" didn't fit in 84px either),
+        // flagged since 2.0.33's report and now folded in rather than left
+        // for a separate round. Seat's share grew from "whatever's left"
+        // to an explicit 47.143% (660px at the 1400px reference) - marko's
+        // own answer (chat) to widening it: it was already this table's
+        // flexible column so it usually had real room already, but never a
+        // guaranteed one, and "Sec 104 · Row A · Seat 12"-length strings
+        // deserve one now, same reasoning as Event getting the largest
+        // single share in Sales.tsx. Section/Row/Seat are merged into one
+        // Seat column via formatSeatLocation (lib/format.ts) - the 3
+        // underlying fields (s.section/s.rowLabel/s.seat) are untouched,
+        // only how they display here did. `.th-c`/`.td-c` are the same
         // compact classes Sales.tsx uses - `.th`/`.td` elsewhere are
-        // untouched. 1.8.3 added the leading checkbox column (bulk actions).
-        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
-        // identical change for the full rationale (marko: table stretching
-        // edge-to-edge on a wide window read as wasted space once 2.0.31 let
-        // the page itself fill the window).
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // untouched. 1.8.3 added the leading checkbox column (bulk
+        // actions) - always shown here, not selectionMode-gated like
+        // Sales.tsx's own.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />
-              <col className="w-[84px]" />
-              <col className="w-[84px]" />
-              <col />
-              <col className="w-20" />
-              <col className="w-[60px]" />
-              <col className="w-[72px]" />
-              <col className="w-[72px]" />
-              <col className="w-24" />
-              <col className="w-[120px]" />
+              <col className="w-[8.571%]" />
+              <col className="w-[8.571%]" />
+              <col className="w-[47.143%]" />
+              <col className="w-[5.714%]" />
+              <col className="w-[4.286%]" />
+              <col className="w-[5.143%]" />
+              <col className="w-[5.143%]" />
+              <col className="w-[6.857%]" />
+              <col className="w-[8.571%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>

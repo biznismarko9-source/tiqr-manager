@@ -357,27 +357,33 @@ export default function OrderDetail() {
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets found for this order" />
       ) : (
-        // 1.8.3 table-UX audit: brought onto the same table-layout:fixed +
-        // <colgroup> technique as Sales/Sale Detail (see Sales.tsx for the
-        // full rationale) instead of the old min-w-[900px]+overflow-x-auto
-        // pattern, which could scroll horizontally on this app's smallest
-        // supported window. Section/Row/Seat are merged into one Seat column
-        // via formatSeatLocation (lib/format.ts, same treatment Sale Detail
-        // got in 1.8.2) - the 3 underlying fields are untouched, only how
-        // they display here changed. Also added the leading checkbox column
-        // (bulk actions, see TicketStatusBar above).
-        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
-        // identical change for the full rationale.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.35: same proportional-percentage model Sales.tsx now uses -
+        // see that file's colgroup comment for the full history and the
+        // honest narrow-window tradeoff. Two changes bundled in with the
+        // conversion since these exact columns were already being touched:
+        // Ticket went 84px -> 120px (basis for its new percentage) - same
+        // truncating-10-char-code bug as Sale's own 2.0.33 fix
+        // ("TIX-000001" didn't fit in 84px either), flagged since the
+        // 2.0.33 report's FOUND BUT NOT TOUCHED section. Seat's share grew
+        // from "whatever's left" to an explicit 65% (910px at the 1400px
+        // reference, generous since this table has fewer competing fixed
+        // columns than Sale Detail's own version of this) - marko's own
+        // answer (chat) to widening it: same reasoning as Sale Detail's
+        // identical change, see that file's comment. Section/Row/Seat
+        // merge into one Seat column via formatSeatLocation (lib/
+        // format.ts, same treatment Sale Detail got in 1.8.2) - the 3
+        // underlying fields are untouched, only how they display here
+        // changed.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               <col className="w-8" />
-              <col className="w-[84px]" />
-              <col />
-              <col className="w-[72px]" />
-              <col className="w-[92px]" />
-              <col className="w-24" />
-              <col className="w-[110px]" />
+              <col className="w-[8.571%]" />
+              <col className="w-[65%]" />
+              <col className="w-[5.143%]" />
+              <col className="w-[6.571%]" />
+              <col className="w-[6.857%]" />
+              <col className="w-[7.857%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>

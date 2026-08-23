@@ -499,27 +499,16 @@ export default function Sales() {
         </div>
       )}
 
-      {/* 2.0.32: max-w-[1400px] on this row and the table wrapper below -
-          marko pointed out that once 2.0.31 let the page fill a wide/
-          maximized window, this summary+sort row and the table itself
-          stretched with them, and a table-fixed table only has ONE column
-          (Event) able to absorb that extra width - on his monitor it grew
-          hundreds of pixels wider than "Spain vs England" needs, reading as
-          wasted space rather than a filled page. Capping just these two
-          (not the page, not the header, not the filter row above - none of
-          which have this "one element unboundedly absorbs the leftover
-          width" failure mode) keeps 2.0.31's actual fix intact - the page
-          shell, header and filters still fill the real window width, zero
-          dead margin - while the data table itself stays a sane, readable
-          width instead of thinning its one real column out into mostly
-          blank space. 1400px matches the exact width every table in this family
-          already rendered at under the OLD page-wide cap (max-w-[1400px] on
-          Layout.tsx's content div, removed in 2.0.31) - proven acceptable
-          over a dozen versions, just now scoped to the table instead of the
-          whole page. Verified empirically (Playwright + a byte-for-byte
-          copy of this table's own markup/colgroup, screenshotted at 1280/
-          1920/2200px) before applying - see the 2.0.32 report. */}
-      <div className="mb-3 flex max-w-[1400px] flex-wrap items-center justify-between gap-3">
+      {/* 2.0.32 capped this row (and the table below) at max-w-[1400px] so
+          the summary/sort row stayed aligned with the table it describes,
+          rather than the page's full width - see that report for why.
+          2.0.35 removes the cap from both: the table itself now grows
+          proportionally with the window instead of stopping at 1400px
+          (see the colgroup comment below), so keeping this row hard-capped
+          while the table grows past it would misalign them again, just in
+          the opposite direction. No `max-w` here anymore for the same
+          reason there's none on the table wrapper - see that comment. */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm">
           {totals && groups ? (
             <>
@@ -616,53 +605,64 @@ export default function Sales() {
         // which lists every ticket inside that one sale. The data was
         // already grouped this way (SaleGroup/batch_id, see sales.rs) - only
         // the layout changed here, no field or number is new.
-        // 1.8.2: table-layout:fixed + an explicit <colgroup> with every
-        // column pinned to a pixel width EXCEPT Event, which is left
-        // unspecified so it alone absorbs any leftover width. This is a
-        // mathematical guarantee against horizontal overflow (not a visual
-        // guess): the 10 fixed columns below sum to 758px (was 728px before
-        // 2.0.33, see below), and even this app's smallest possible window
-        // (1080px min-width, minus the 224px sidebar and 48px of content
-        // padding) leaves 808px to work with - a 50px floor for Event at the
-        // narrowest possible window (was 80px), growing from there as the
-        // window widens. `overflow-x-auto` stays on the wrapper only as a
-        // defensive fallback; it should never actually trigger. See
-        // REDESIGN-1.8.2-REPORT.md section 2 for the original column-width
-        // table (Sale's width there is superseded, see 2.0.33 below).
-        // `.th-c`/`.td-c` (index.css) are new classes scoped to this table
-        // and Sale Detail's table only - `.th`/`.td` (used by Tickets/
-        // Orders/Events/Inventory) are untouched. (1.9.1: the leading
-        // checkbox column was removed along with row selection - the
-        // checkbox-select-and-export-CSV feature that used to live on this
-        // page moved to Settings -> Data's Export CSV picker instead, see
-        // ExportPickerModal.tsx.) (2.0.33: Sale 90px -> 120px - marko
-        // pointed out the code, e.g. "SAL-000001" (a fixed 10-char format),
-        // was actually truncating to "SAL-0001..." at 90px: only ~74px was
-        // left for text after the cell's own padding, too tight for a
-        // string with no real reason to ellipsize in the normal case. 120px
-        // gives it real margin; `truncate` stays on the Link as the same
-        // kind of defensive fallback `overflow-x-auto` already is above -
-        // not expected to actually trigger before the sale counter itself
-        // grows past 6 digits. Knock-on effect, disclosed rather than
-        // silent: Event's floor at the narrowest window drops 80px->50px -
-        // still non-breaking (Event already truncates with a title tooltip,
-        // and overflow-x-auto is still the last-resort fallback) but flag
-        // it if that's ever actually felt in practice.)
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.35: table-layout:fixed with every column pinned to a
+        // PERCENTAGE of the table's own width (not a fixed px, and not one
+        // single column absorbing 100% of any leftover space either - see
+        // the history below for both of those older approaches). marko
+        // wanted the table itself to keep growing with the window/
+        // fullscreen (like the header/filters already do since 2.0.31),
+        // but without recreating 2.0.32's original complaint - one column
+        // (Event) stretching hundreds of px wider than its content needs
+        // while looking like empty space. Splitting the growth across
+        // every column proportionally solves both at once: every
+        // percentage below is exactly that column's old fixed px value /
+        // 1400 (the old cap, and the exact configuration already proven to
+        // look right over a dozen versions - see
+        // REDESIGN-2.0.32-REPORT.md) - so at 1400px+ this renders
+        // pixel-identical to 2.0.34, and above that it keeps scaling
+        // instead of stopping dead at a hard cap. `max-w-[1400px]` is gone
+        // from this wrapper and the summary/sort row above for the same
+        // reason - both now fill the real window width, no cap left
+        // anywhere in this family of pages.
+        //
+        // Honest tradeoff, not hidden: below 1400px (down to this app's
+        // smallest supported window, 1080px - see REDESIGN-1.8.2-REPORT.md
+        // section 2 for the exact original math), the columns that used to
+        // have a genuine guaranteed floor (everything except Event, which
+        // was always "whatever's left over", never a real floor) are now
+        // proportionally SMALLER than that old floor - specifically Sale
+        // and Date, the two columns 2.0.33/2.0.34 widened to stop them
+        // truncating. Event itself is NOT worse off here - at 808px it now
+        // gets ~361px (44.714% of 808), a real improvement over its old
+        // 34px leftover-scraps floor. `truncate` + a title tooltip on Sale
+        // and Date (and `overflow-x-auto` on this wrapper) are the same
+        // defensive fallbacks this codebase already relies on elsewhere
+        // for exactly this kind of narrow-window edge case (see
+        // Orders.tsx's own documented version of the same tradeoff) -
+        // marko chose this approach (see chat, 2.0.35) knowing that
+        // tradeoff, over reverting 2.0.32 entirely or leaving the hard cap
+        // in place.
+        //
+        // `.th-c`/`.td-c` (index.css) scoped to this table and Sale
+        // Detail's only - `.th`/`.td` (Tickets/Orders/Events/Inventory)
+        // untouched. Checkbox column (1.9.1 removed it by default,
+        // selectionMode brings it back for bulk delete) stays a small
+        // fixed w-8, outside the percentage budget, same as it always was.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
-              <col className="w-[120px]" />
-              <col />
-              <col className="w-[70px]" />
-              <col className="w-[76px]" />
-              <col className="w-10" />
-              <col className="w-[84px]" />
-              <col className="w-16" />
-              <col className="w-[72px]" />
-              <col className="w-[72px]" />
-              <col className="w-[68px]" />
-              <col className="w-[92px]" />
+              <col className="w-[8.571%]" />
+              <col className="w-[44.714%]" />
+              <col className="w-[5%]" />
+              <col className="w-[6.571%]" />
+              <col className="w-[2.857%]" />
+              <col className="w-[6%]" />
+              <col className="w-[4.571%]" />
+              <col className="w-[5.143%]" />
+              <col className="w-[5.143%]" />
+              <col className="w-[4.857%]" />
+              <col className="w-[6.571%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>

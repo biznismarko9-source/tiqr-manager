@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
@@ -36,6 +36,17 @@ const EMPTY_INPUT: EventInput = {
   notes: "",
 };
 
+// 2.0.34: "" reproduces exactly what list_events already always returned
+// (event_date DESC, id DESC, nulls last - see events.rs) unchanged, so the
+// default view is provably identical to today's. "soonest" is the new,
+// opt-in direction - named for what it actually does (event_date ascending)
+// rather than reusing "Newest/Oldest" from Sales/Orders, which doesn't map
+// cleanly onto a scheduled date that's usually in the future, not the past.
+const EVENT_SORT_LABELS: Record<string, string> = {
+  "": "Furthest first",
+  soonest: "Soonest first",
+};
+
 export default function Events() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -46,6 +57,12 @@ export default function Events() {
   // 2.0.27: event category filter (marko's request - filter Events/Orders/
   // Sales by category, same as every other list-page dropdown filter here).
   const [categoryId, setCategoryId] = useState<number | "">("");
+  // 2.0.34: marko asked for a way to sort Events/Orders/Sales by date "so
+  // nothing gets lost". No session-memory var for this (unlike Orders.tsx's
+  // lastOrdersSortBy) - this file doesn't remember search/categoryId across
+  // visits either, so a new sort control shouldn't be the one filter here
+  // that suddenly persists.
+  const [sortBy, setSortBy] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<EventWithStats | null>(null);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -80,6 +97,23 @@ export default function Events() {
   const toggleSelectAll = () => {
     setSelected(allSelected ? new Set() : new Set((events ?? []).map((ev) => ev.id)));
   };
+
+  // 2.0.34: events without an event_date (status can be "upcoming" with no
+  // date set yet, e.g. TBD) can't be placed on a "soonest/furthest" axis at
+  // all - list_events already always puts them last (the `(e.event_date IS
+  // NULL)` clause), so this keeps that same rule for the new sort direction
+  // too rather than letting them jump to the top when reversed. "" is left
+  // as a straight pass-through of `events` - it already IS event_date DESC,
+  // id DESC from the backend, so there's nothing to recompute for it, and
+  // zero risk of this new code changing what marko sees today by default.
+  const sortedEvents = useMemo(() => {
+    if (!events) return [];
+    if (sortBy !== "soonest") return events;
+    const withDate = events.filter((ev) => ev.eventDate !== null);
+    const withoutDate = events.filter((ev) => ev.eventDate === null);
+    withDate.sort((a, b) => (a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id);
+    return [...withDate, ...withoutDate];
+  }, [events, sortBy]);
 
   const exitSelectionMode = () => {
     setSelectionMode(false);
@@ -180,6 +214,16 @@ export default function Events() {
             ))}
           </Select>
         </div>
+        <div className="w-44">
+          <span className="label">Sort</span>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort events">
+            {Object.entries(EVENT_SORT_LABELS).map(([value, label]) => (
+              <option key={value || "furthest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
 
       {selectionMode && (
@@ -254,7 +298,7 @@ export default function Events() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {events.map((ev) => (
+              {sortedEvents.map((ev) => (
                 <tr
                   key={ev.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"

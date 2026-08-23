@@ -53,6 +53,22 @@ let lastOrdersSearch: string | null = null;
 // 2.0.27: same session-only "remember the last filter" convention, now for
 // the category filter added alongside search.
 let lastOrdersCategoryId: number | "" = "";
+// 2.0.34: same convention again, for the new Sort control below - marko
+// asked for a way to sort Orders/Events/Sales by date "so nothing gets
+// lost". Sales already had this (SORT_LABELS in Sales.tsx); Orders didn't
+// have any user-facing sort at all before this - the list was always
+// exactly `ORDER BY o.purchase_date DESC` from orders.rs::list_orders_impl,
+// with no way to flip it. Sorted client-side rather than adding a backend
+// sort_by param: list_orders_impl already returns every matching order up
+// to LIST_CAP (5,000, see the banner above) in one response, so the full
+// result set is already in memory - sorting it here is exactly as complete
+// as a server-side sort would be, without touching orders.rs at all.
+let lastOrdersSortBy: string = "";
+
+const ORDER_SORT_LABELS: Record<string, string> = {
+  "": "Newest first",
+  oldest: "Oldest first",
+};
 
 /** Turns the free-form "Seats" input into one label per ticket.
  * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
@@ -86,6 +102,7 @@ export default function Orders() {
   // category). Deliberately just this one new filter - not also an Event
   // filter, which nobody asked for here.
   const [categoryId, setCategoryId] = useState<number | "">(lastOrdersCategoryId);
+  const [sortBy, setSortBy] = useState(lastOrdersSortBy);
   const [modalOpen, setModalOpen] = useState(false);
   const [presetEventId, setPresetEventId] = useState<number | undefined>(undefined);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -103,6 +120,10 @@ export default function Orders() {
   useEffect(() => {
     lastOrdersCategoryId = categoryId;
   }, [categoryId]);
+
+  useEffect(() => {
+    lastOrdersSortBy = sortBy;
+  }, [sortBy]);
 
   useEffect(() => {
     api.listEventCategories().then(setCategories).catch(() => {});
@@ -125,6 +146,19 @@ export default function Orders() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, categoryId]);
+
+  // 2.0.34: `orders` itself is left exactly as the backend returned it
+  // (purchase_date DESC) - sorting happens only here, on a derived copy, so
+  // every other reference to `orders` above (allSelected, the >= 5000
+  // banner, the empty-state checks) keeps working on the real fetched list
+  // regardless of display order. "" (Newest first) is a no-op slice/copy,
+  // not a re-sort - it's already in that exact order from the backend, so
+  // there's no risk of a stable-sort quirk changing same-day ordering.
+  const sortedOrders = useMemo(() => {
+    if (!orders) return [];
+    if (sortBy === "oldest") return [...orders].reverse();
+    return orders;
+  }, [orders, sortBy]);
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -228,6 +262,16 @@ export default function Orders() {
             ))}
           </Select>
         </div>
+        <div className="w-44">
+          <span className="label">Sort</span>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort orders">
+            {Object.entries(ORDER_SORT_LABELS).map(([value, label]) => (
+              <option key={value || "newest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
 
       {selectionMode && (
@@ -261,62 +305,31 @@ export default function Orders() {
           }
         />
       ) : (
-        // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
-        // Sales.tsx for the full rationale) instead of the old
-        // min-w-[950px]+overflow-x-auto pattern. Also added whole-row
-        // click-to-navigate to Order Detail, mirroring Events.tsx's own BUG
-        // #7 fix - a click that lands on the Order code link still goes to
-        // that link instead (closest("a") defers to whichever link was
-        // actually clicked). `state={{ from: location.pathname }}` lets
-        // Order Detail's Back link return to this exact page (section 8).
-        // 1.9.1: the Event column used to be a <Link> to Event Detail - marko
-        // asked to remove every "this reference jumps me to a different
-        // section" link across Orders/Tickets/Sales (he never wants an
-        // incidental click to auto-navigate him away), so it's now plain
-        // text. The Order code link/row-click above is unaffected - opening
-        // this exact order's own detail page isn't "being thrown elsewhere".
-        // 1.9.2 (section 2): removed the Supplier column entirely from this
-        // list (Supplier stays fully intact in the data model, CSV import/
-        // export, and Edit Order on Order Detail - this is a list-view-only
-        // simplification, no DB/migration change). Fixed columns summed to
-        // 556px right after that (was 648px before removing Supplier's own
-        // 92px).
-        // 1.9.4: marko pointed out Platform names were getting truncated
-        // ("Fnac Spect...") with room to spare elsewhere, so Platform grew
-        // 92px -> 160px. Fixed columns summed to 624px then, Event's floor
-        // 184px.
-        // 1.9.10: marko added a Notes column (between Date and Platform,
-        // truncate + title tooltip like every other text column here - he
-        // didn't ask for full-text visibility the way he did for Pulls'
-        // Seats/More info, so this follows the normal pattern instead of
-        // that one). Fixed columns now sum to 754px (92 Order + 84 Date +
-        // 130 Notes + 160 Platform + 48 Qty + 64 Sold + 88 Total cost + 88
-        // Payment), leaving Event (still the one unspecified <col>) only a
-        // 54px floor at this app's absolute 808px worst-case window width -
-        // genuinely too tight to show much of an event name. Rather than
-        // shrink Notes or Platform back down to force-fit the old 808px
-        // floor, this table now accepts needing horizontal scroll (already
-        // handled by the existing overflow-x-auto below) somewhat below
-        // where it used to - the same tradeoff already made for Pulls this
-        // round for the same underlying reason: more columns/more width
-        // asked for than the original floor was sized for. In normal usage
-        // (wider than the absolute minimum) this isn't noticeable; it only
-        // matters at the smallest supported window.
-        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
-        // identical change for the full rationale.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.0.35: same proportional-percentage model Sales.tsx now uses -
+        // see that file's colgroup comment for the full history and the
+        // honest narrow-window tradeoff (applies here identically: Event
+        // is better off at every width than it used to be, the fixed-
+        // content columns are the ones trading some of their old
+        // guaranteed floor for the table growing with the window). Order
+        // also went 92px -> 120px (basis for its new percentage) in the
+        // same pass - the same truncating-10-char-code bug as Sale's own
+        // 2.0.33 fix ("ORD-000001" didn't fit in 92px either), flagged in
+        // the 2.0.33 report's FOUND BUT NOT TOUCHED section and folded in
+        // now rather than left for a separate round (Tickets.tsx has the
+        // identical column/bug - see that file's own comment).
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
               {selectionMode && <col className="w-8" />}
-              <col className="w-[92px]" />
-              <col />
-              <col className="w-[84px]" />
-              <col className="w-[130px]" />
-              <col className="w-[160px]" />
-              <col className="w-12" />
-              <col className="w-[64px]" />
-              <col className="w-[88px]" />
-              <col className="w-[88px]" />
+              <col className="w-[8.571%]" />
+              <col className="w-[44.143%]" />
+              <col className="w-[6%]" />
+              <col className="w-[9.286%]" />
+              <col className="w-[11.429%]" />
+              <col className="w-[3.429%]" />
+              <col className="w-[4.571%]" />
+              <col className="w-[6.286%]" />
+              <col className="w-[6.286%]" />
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -343,7 +356,7 @@ export default function Orders() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {orders.map((o) => (
+              {sortedOrders.map((o) => (
                 <tr
                   key={o.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
@@ -380,6 +393,12 @@ export default function Orders() {
                     </Link>
                   </td>
                   <td className="td-c" title={o.eventName}>
+                    {/* 1.9.1: plain text, not a <Link> to Event Detail -
+                        marko asked to remove every "this reference jumps me
+                        to a different section" link across Orders/Tickets/
+                        Sales. The Order code Link/row-click above is
+                        unaffected - opening this exact order's own detail
+                        page isn't "being thrown elsewhere". */}
                     {/* 2.0.27: category badge sits inline with the event
                         name - this is already this table's tightest column
                         at the smallest supported window (see the 1.9.10
