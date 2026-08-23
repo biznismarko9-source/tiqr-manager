@@ -125,3 +125,22 @@ export function formatSeatLocation(
   ].filter((p): p is string => p !== null);
   return parts.length > 0 ? parts.join(" · ") : "General admission";
 }
+
+/** 2.0.28: turns a `BulkDeleteResult.skipped` array into one short line for
+ * a toast, e.g. "2x This order has sold tickets and cannot be deleted. 1x
+ * This order has sales history (including refunds) and cannot be deleted."
+ * Groups by the exact reason text rather than listing every id individually
+ * - a bulk delete that skips several orders for the SAME reason (the common
+ * case) would otherwise repeat that sentence once per id, which reads as
+ * noise rather than information. Shared by every list page with the new
+ * "Delete" selection mode (Pulls both tabs/Orders/Events/Sales) so they all
+ * summarize skips identically. */
+export function summarizeBulkDeleteSkips(skipped: { id: number; reason: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const s of skipped) {
+    counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([reason, n]) => `${n}x ${reason}`)
+    .join(" ");
+}

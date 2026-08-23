@@ -12,7 +12,7 @@
 use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{Pull, PullEditInput, PullInput};
+use crate::models::{BulkDeleteResult, BulkDeleteSkip, Pull, PullEditInput, PullInput};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::State;
 
@@ -286,6 +286,43 @@ pub fn delete_pull(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     conn.execute("DELETE FROM pulls WHERE id = ?1", [id])?;
     Ok(())
+}
+
+/// 2.0.28: bulk delete for the new "Delete" selection mode on the Pulls
+/// (Given) list. A pull has no child rows and `delete_pull` above has no
+/// precondition at all, so there's no real business rule to enforce per id -
+/// the only way one can be "skipped" is if it's already gone (e.g. the
+/// frontend's list was stale). See `models::BulkDeleteResult` for why this
+/// still isn't the codebase's usual all-or-nothing bulk-write pattern: every
+/// id that DOES exist is deleted, in one transaction, and any id that
+/// doesn't is reported back rather than silently ignored or aborting the
+/// whole selection.
+pub(crate) fn bulk_delete_pulls_impl(conn: &mut Connection, ids: &[i64]) -> AppResult<BulkDeleteResult> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one pull to delete".into()));
+    }
+    let tx = conn.transaction()?;
+    let mut deleted_ids = Vec::new();
+    let mut skipped = Vec::new();
+    for &id in ids {
+        let changed = tx.execute("DELETE FROM pulls WHERE id = ?1", [id])?;
+        if changed > 0 {
+            deleted_ids.push(id);
+        } else {
+            skipped.push(BulkDeleteSkip {
+                id,
+                reason: "Not found - already deleted?".into(),
+            });
+        }
+    }
+    tx.commit()?;
+    Ok(BulkDeleteResult { deleted_ids, skipped })
+}
+
+#[tauri::command]
+pub fn bulk_delete_pulls(state: State<AppState>, ids: Vec<i64>) -> AppResult<BulkDeleteResult> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_delete_pulls_impl(&mut conn, &ids)
 }
 
 #[cfg(test)]
@@ -658,5 +695,42 @@ mod tests {
         let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
         conn.execute("DELETE FROM pulls WHERE id = ?1", [p.id]).unwrap();
         assert!(fetch_one(&conn, p.id).is_err());
+    }
+
+    // ---- bulk delete (2.0.28) ---------------------------------------------
+
+    #[test]
+    fn bulk_delete_pulls_removes_every_selected_id() {
+        let mut conn = test_conn();
+        let a = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let b = create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
+        let c = create_pull_impl(&conn, &base_input("Peter"), false).unwrap();
+
+        let result = bulk_delete_pulls_impl(&mut conn, &[a.id, b.id]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![a.id, b.id]);
+        assert!(result.skipped.is_empty());
+        assert!(fetch_one(&conn, a.id).is_err());
+        assert!(fetch_one(&conn, b.id).is_err());
+        assert!(fetch_one(&conn, c.id).is_ok(), "an unselected pull must survive");
+    }
+
+    #[test]
+    fn bulk_delete_pulls_reports_a_missing_id_as_skipped_not_as_a_failure() {
+        let mut conn = test_conn();
+        let a = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+
+        let result = bulk_delete_pulls_impl(&mut conn, &[a.id, 999_999]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![a.id]);
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].id, 999_999);
+    }
+
+    #[test]
+    fn bulk_delete_pulls_rejects_an_empty_selection() {
+        let mut conn = test_conn();
+        let err = bulk_delete_pulls_impl(&mut conn, &[]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
     }
 }

@@ -3,6 +3,7 @@ pub mod backup;
 pub mod csv_export;
 pub mod csv_import;
 pub mod dashboard;
+pub mod event_categories;
 pub mod events;
 pub mod google_auth;
 pub mod lookups;

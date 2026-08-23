@@ -66,7 +66,7 @@ export interface ExportPickerConfig<T> {
 export const eventsExportConfig: ExportPickerConfig<EventWithStats> = {
   title: "Export events",
   searchPlaceholder: "Search events...",
-  fetchItems: (search) => api.listEvents(search || undefined),
+  fetchItems: (search) => api.listEvents({ search: search || undefined }),
   getId: (e) => e.id,
   renderItem: (e) => ({
     primary: e.name,

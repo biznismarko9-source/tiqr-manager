@@ -27,7 +27,7 @@
 use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{PullReceived, PullReceivedEditInput, PullReceivedInput};
+use crate::models::{BulkDeleteResult, BulkDeleteSkip, PullReceived, PullReceivedEditInput, PullReceivedInput};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::State;
 
@@ -223,6 +223,41 @@ pub fn delete_pull_received(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     conn.execute("DELETE FROM pulls_received WHERE id = ?1", [id])?;
     Ok(())
+}
+
+/// 2.0.28: bulk delete for the new "Delete" selection mode on the Pulls
+/// (Received) list - same reasoning as `pulls::bulk_delete_pulls_impl`
+/// (no sibling module to share code with directly since the two tables are
+/// unrelated, but the shape and logic are deliberately identical). Deleting a
+/// received pull never touches its linked order (`order_id` is
+/// `ON DELETE SET NULL`, not a blocker in either direction), so - like Given
+/// pulls - the only way an id can be skipped is if it no longer exists.
+pub(crate) fn bulk_delete_pulls_received_impl(conn: &mut Connection, ids: &[i64]) -> AppResult<BulkDeleteResult> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one received pull to delete".into()));
+    }
+    let tx = conn.transaction()?;
+    let mut deleted_ids = Vec::new();
+    let mut skipped = Vec::new();
+    for &id in ids {
+        let changed = tx.execute("DELETE FROM pulls_received WHERE id = ?1", [id])?;
+        if changed > 0 {
+            deleted_ids.push(id);
+        } else {
+            skipped.push(BulkDeleteSkip {
+                id,
+                reason: "Not found - already deleted?".into(),
+            });
+        }
+    }
+    tx.commit()?;
+    Ok(BulkDeleteResult { deleted_ids, skipped })
+}
+
+#[tauri::command]
+pub fn bulk_delete_pulls_received(state: State<AppState>, ids: Vec<i64>) -> AppResult<BulkDeleteResult> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_delete_pulls_received_impl(&mut conn, &ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -580,6 +615,43 @@ mod tests {
         let p = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
         conn.execute("DELETE FROM pulls_received WHERE id = ?1", [p.id]).unwrap();
         assert!(fetch_one(&conn, p.id).is_err());
+    }
+
+    // ---- bulk delete (2.0.28) ---------------------------------------------
+
+    #[test]
+    fn bulk_delete_pulls_received_removes_every_selected_id() {
+        let mut conn = test_conn();
+        let a = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
+        let b = create_pull_received_impl(&conn, &base_input("Anna"), false).unwrap();
+        let c = create_pull_received_impl(&conn, &base_input("Tomas"), false).unwrap();
+
+        let result = bulk_delete_pulls_received_impl(&mut conn, &[a.id, b.id]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![a.id, b.id]);
+        assert!(result.skipped.is_empty());
+        assert!(fetch_one(&conn, a.id).is_err());
+        assert!(fetch_one(&conn, b.id).is_err());
+        assert!(fetch_one(&conn, c.id).is_ok(), "an unselected received pull must survive");
+    }
+
+    #[test]
+    fn bulk_delete_pulls_received_reports_a_missing_id_as_skipped_not_as_a_failure() {
+        let mut conn = test_conn();
+        let a = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
+
+        let result = bulk_delete_pulls_received_impl(&mut conn, &[a.id, 999_999]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![a.id]);
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].id, 999_999);
+    }
+
+    #[test]
+    fn bulk_delete_pulls_received_rejects_an_empty_selection() {
+        let mut conn = test_conn();
+        let err = bulk_delete_pulls_received_impl(&mut conn, &[]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
     }
 
     // ---- link_pull_received_to_order (Order Detail, 2.0.24) -------------------

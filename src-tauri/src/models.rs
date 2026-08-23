@@ -21,6 +21,33 @@ pub struct Supplier {
     pub created_at: String,
 }
 
+/// 2.0.28: shared result shape for every `bulk_delete_*` command (pulls,
+/// pulls received, orders, events, sale groups - see each command's own doc
+/// comment for why deletion specifically does NOT follow this codebase's
+/// usual "validate every id first, then write all, any single failure means
+/// nothing happens" bulk-write convention (`bulk_update_tickets_impl` et al).
+/// Deletion safety is a genuine per-row business rule (sold tickets, sale
+/// history, an event's linked orders), not a referential-integrity
+/// precondition on the whole batch - so each selected id is judged on its
+/// own merits: everything safe to delete is removed together in ONE
+/// transaction (still fully atomic - a crash mid-way can never leave a
+/// partial delete on disk), and anything that isn't is reported back with a
+/// plain-English reason instead of silently vanishing from the selection or
+/// blocking the rows that WERE safe.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkDeleteResult {
+    pub deleted_ids: Vec<i64>,
+    pub skipped: Vec<BulkDeleteSkip>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkDeleteSkip {
+    pub id: i64,
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -31,7 +58,23 @@ pub struct Event {
     pub city: Option<String>,
     pub country: Option<String>,
     pub event_date: Option<String>,
+    /// 2.0.27: legacy free-text mirror of `category_id`'s name - see
+    /// migrations/012_event_categories.sql's doc comment for why this stays
+    /// around and stays written (never DROP a shipped column; csv_export.rs's
+    /// Events export still reads this directly).
     pub category: Option<String>,
+    /// 2.0.27: the real lookup FK - see `EventCategory`. `None` means no
+    /// category, same as `category` being `None` did before this version.
+    pub category_id: Option<i64>,
+    /// 2.0.27: the resolved category's `color_slot`, joined in alongside
+    /// `category_id` (see commands::events::STATS_SQL/PLAIN_SELECT_SQL) so
+    /// the Events list can render EventCategoryBadge.tsx without a second
+    /// round trip - same convention as Order.category_color_slot/
+    /// SaleGroup.category_color_slot. `category` above already mirrors the
+    /// category's NAME, so only color_slot is needed here (unlike Order/
+    /// SaleGroup, which have no such text mirror and so need category_name
+    /// too).
+    pub category_color_slot: Option<i64>,
     pub status: String,
     pub notes: Option<String>,
     pub is_demo: bool,
@@ -48,9 +91,37 @@ pub struct EventInput {
     pub city: Option<String>,
     pub country: Option<String>,
     pub event_date: Option<String>,
+    /// 2.0.27: no longer settable directly - `commands::events` derives this
+    /// from `category_id` (looking up the category's own name) so the two
+    /// never drift apart. Kept on the struct (rather than removed) only
+    /// because it's `#[derive(Deserialize)]` and dropping it would be a
+    /// breaking wire-format change for no benefit; any value sent here is
+    /// ignored. See `EventCategory`. `#[allow(dead_code)]` because nothing
+    /// ever reads it back out on purpose - see above.
+    #[allow(dead_code)]
     pub category: Option<String>,
+    pub category_id: Option<i64>,
     pub status: Option<String>,
     pub notes: Option<String>,
+}
+
+/// 2.0.27: a managed event category (Settings -> Lookups, "like Platforms" -
+/// marko's own words) - replaces the old hardcoded CATEGORY_OPTIONS array in
+/// Events.tsx. See migrations/012_event_categories.sql for the full
+/// rationale, in particular why `color_slot` is a plain integer (an index
+/// into a fixed palette the frontend owns) rather than a hex string.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventCategory {
+    pub id: i64,
+    pub name: String,
+    /// Index into the frontend's fixed categorical palette (EventCategoryBadge.tsx),
+    /// assigned once at creation and never recomputed - see the migration's
+    /// doc comment for why. Not bounded here; the frontend wraps it (`% palette.length`)
+    /// so it never fails to render even past the palette's own length.
+    pub color_slot: i64,
+    pub is_demo: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -68,6 +139,13 @@ pub struct Order {
     pub code: String,
     pub event_id: i64,
     pub event_name: String,
+    /// 2.0.27: the order's event's category, resolved here (same convention
+    /// as `event_name`/`platform_name`) so the Orders list can filter/badge
+    /// without a second round trip. `None` on both when the event has no
+    /// category set.
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub category_color_slot: Option<i64>,
     pub supplier_id: Option<i64>,
     pub supplier_name: Option<String>,
     pub platform_id: Option<i64>,
@@ -301,6 +379,14 @@ pub struct SaleGroup {
     /// restricted to one event) and the UI should show "Mixed events".
     pub event_id: Option<i64>,
     pub event_name: Option<String>,
+    /// 2.0.27: the shared event's category - same "Some only when every
+    /// line's event agrees" rule as `event_id`/`event_name` right above
+    /// (derived from the very same single-event check), since a category is
+    /// itself just an attribute of that one event. All three are `None`
+    /// together whenever `event_id` is `None`.
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub category_color_slot: Option<i64>,
     pub sale_date: String,
     pub platform_id: Option<i64>,
     pub platform_name: Option<String>,

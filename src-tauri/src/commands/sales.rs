@@ -2,8 +2,11 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
-use crate::models::{BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup, SaleInput};
-use rusqlite::{params, Connection, Row};
+use crate::models::{
+    BulkDeleteResult, BulkDeleteSkip, BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup,
+    SaleInput,
+};
+use rusqlite::{params, Connection, Row, Transaction};
 use std::collections::HashSet;
 use tauri::State;
 
@@ -101,6 +104,9 @@ fn map_sale_group(row: &Row) -> rusqlite::Result<SaleGroup> {
         ticket_count: row.get("ticket_count")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        category_id: row.get("category_id")?,
+        category_name: row.get("category_name")?,
+        category_color_slot: row.get("category_color_slot")?,
         sale_date: row.get("sale_date")?,
         platform_id: row.get("platform_id")?,
         platform_name: row.get("platform_name")?,
@@ -203,6 +209,13 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       COUNT(*) as ticket_count,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(t.event_id) END as event_id,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.name) END as event_name,
+      -- 2.0.27: a category is itself just an attribute of the group's shared
+      -- event, so it uses the exact same only-when-every-lines-event-agrees
+      -- guard as event_id/event_name right above, not a separate
+      -- COUNT(DISTINCT ...) of its own.
+      CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.category_id) END as category_id,
+      CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(ec.name) END as category_name,
+      CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(ec.color_slot) END as category_color_slot,
       MAX(s.sale_date) as sale_date,
       MAX(s.platform_id) as platform_id,
       MAX(p.name) as platform_name,
@@ -231,6 +244,7 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
     FROM sales s
     JOIN tickets t ON t.id = s.ticket_id
     JOIN events e ON e.id = t.event_id
+    LEFT JOIN event_categories ec ON ec.id = e.category_id
     LEFT JOIN platforms p ON p.id = s.platform_id
 ";
 
@@ -268,6 +282,10 @@ fn list_sale_groups_impl(
     // but nothing here can run it this round - see the 1.8.0 report).
     currency: Option<String>,
     sort_by: Option<String>,
+    // 2.0.27: same append-only convention as currency/sort_by right above -
+    // every pre-2.0.27 call site (tests included) just gains one trailing
+    // `None`.
+    category_id: Option<i64>,
 ) -> AppResult<Vec<SaleGroup>> {
     let mut inner_sql = String::from(
         "SELECT DISTINCT COALESCE(s3.batch_id, 'single:' || s3.id) FROM sales s3
@@ -287,6 +305,14 @@ fn list_sale_groups_impl(
     if let Some(pid) = platform_id {
         inner_sql.push_str(" AND s3.platform_id = ?");
         inner_params.push(Box::new(pid));
+        has_line_filter = true;
+    }
+    // 2.0.27: same semi-join pattern as every other line-level filter here -
+    // "does this group contain at least one line whose event has this
+    // category". e3 (events) is already joined in this inner query.
+    if let Some(cid) = category_id {
+        inner_sql.push_str(" AND e3.category_id = ?");
+        inner_params.push(Box::new(cid));
         has_line_filter = true;
     }
     if let Some(ps) = payment_status.as_deref() {
@@ -404,6 +430,7 @@ pub fn list_sale_groups(
     refund_status: Option<String>,
     currency: Option<String>,
     sort_by: Option<String>,
+    category_id: Option<i64>,
 ) -> AppResult<Vec<SaleGroup>> {
     let conn = state.db.lock().unwrap();
     list_sale_groups_impl(
@@ -417,6 +444,7 @@ pub fn list_sale_groups(
         refund_status,
         currency,
         sort_by,
+        category_id,
     )
 }
 
@@ -1005,9 +1033,15 @@ pub fn delete_sale(state: State<AppState>, id: i64) -> AppResult<()> {
 /// reasoning - it applies per-ticket, not per-group). Doing the whole group
 /// in one transaction means a mid-way failure can never leave half a sale
 /// deleted and half still on record.
-fn delete_sale_group_impl(conn: &mut Connection, id: i64) -> AppResult<usize> {
-    let tx = conn.transaction()?;
-
+/// Core per-group delete logic, operating directly on the given transaction
+/// with no transaction boundary of its own. Split out of
+/// `delete_sale_group_impl` in 2.0.28 so `bulk_delete_sale_groups_impl` can
+/// delete N selected groups inside ONE shared transaction - exactly as
+/// atomic as deleting them one at a time would have been, just reported back
+/// as a single summary instead of N separate round trips.
+/// `delete_sale_group_impl` below wraps one call to this in its own
+/// transaction, unchanged in behavior from before this split.
+fn delete_sale_group_rows(tx: &Transaction, id: i64) -> AppResult<usize> {
     let batch_id: Option<String> = tx
         .query_row("SELECT batch_id FROM sales WHERE id = ?1", [id], |r| {
             r.get(0)
@@ -1040,6 +1074,12 @@ fn delete_sale_group_impl(conn: &mut Connection, id: i64) -> AppResult<usize> {
         }
     }
 
+    Ok(count)
+}
+
+fn delete_sale_group_impl(conn: &mut Connection, id: i64) -> AppResult<usize> {
+    let tx = conn.transaction()?;
+    let count = delete_sale_group_rows(&tx, id)?;
     tx.commit()?;
     Ok(count)
 }
@@ -1051,6 +1091,46 @@ fn delete_sale_group_impl(conn: &mut Connection, id: i64) -> AppResult<usize> {
 pub fn delete_sale_group(state: State<AppState>, id: i64) -> AppResult<usize> {
     let mut conn = state.db.lock().unwrap();
     delete_sale_group_impl(&mut conn, id)
+}
+
+/// 2.0.28: bulk delete for the new "Delete" selection mode on the Sales
+/// list (one row there = one sale group/batch, same as `list_sale_groups`
+/// already shows - selected ids are group anchor ids, exactly what the list
+/// already uses to link to Sale Detail). Unlike orders/events, a sale group
+/// has NO precondition blocking its deletion at all -
+/// `delete_sale_group_impl` above already allows removing an active
+/// (non-refunded) sale just as freely as a refunded one (marko explicitly
+/// asked for that relaxation, 2026-08 - see `delete_sale_impl`'s own doc
+/// comment for the full history), so the only way a selected id can be
+/// skipped here is if it no longer resolves to any sale at all. Every
+/// selected group is deleted inside ONE shared transaction via
+/// `delete_sale_group_rows`, exactly as atomic as doing them one at a time
+/// would have been.
+pub(crate) fn bulk_delete_sale_groups_impl(conn: &mut Connection, ids: &[i64]) -> AppResult<BulkDeleteResult> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one sale to delete".into()));
+    }
+    let tx = conn.transaction()?;
+    let mut deleted_ids = Vec::new();
+    let mut skipped = Vec::new();
+    for &id in ids {
+        match delete_sale_group_rows(&tx, id) {
+            Ok(_) => deleted_ids.push(id),
+            Err(AppError::NotFound(_)) => skipped.push(BulkDeleteSkip {
+                id,
+                reason: "Not found - already deleted?".into(),
+            }),
+            Err(e) => return Err(e),
+        }
+    }
+    tx.commit()?;
+    Ok(BulkDeleteResult { deleted_ids, skipped })
+}
+
+#[tauri::command]
+pub fn bulk_delete_sale_groups(state: State<AppState>, ids: Vec<i64>) -> AppResult<BulkDeleteResult> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_delete_sale_groups_impl(&mut conn, &ids)
 }
 
 #[cfg(test)]
@@ -1465,6 +1545,73 @@ mod tests {
         assert_eq!(active_still_present, 1, "the newer active sale must be untouched");
     }
 
+    // ---- bulk delete (2.0.28) ----------------------------------------------
+
+    #[test]
+    fn bulk_delete_sale_groups_removes_every_selected_group_including_active_ones() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        // sale_input() defaults to payment_status "paid" (not refunded) - this
+        // also doubles as proof bulk delete never blocks on an active sale,
+        // same as delete_sale_group_impl already doesn't.
+        let sale_a = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+        let sale_b = create_sale_impl(&mut conn, &sale_input(tickets[1], 1200)).unwrap();
+        let sale_c = create_sale_impl(&mut conn, &sale_input(tickets[2], 1400)).unwrap();
+
+        let result = bulk_delete_sale_groups_impl(&mut conn, &[sale_a, sale_b]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![sale_a, sale_b]);
+        assert!(result.skipped.is_empty());
+        assert_eq!(ticket_status(&conn, tickets[0]), "available");
+        assert_eq!(ticket_status(&conn, tickets[1]), "available");
+        assert_eq!(ticket_status(&conn, tickets[2]), "sold", "the unselected sale_c must be untouched");
+        let sale_c_still_there: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sales WHERE id = ?1", [sale_c], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sale_c_still_there, 1);
+    }
+
+    #[test]
+    fn bulk_delete_sale_groups_deletes_a_whole_batch_via_one_selected_id() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        let batch_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        assert_eq!(batch_ids.len(), 3);
+
+        // Only the batch's own id is in the selection - the other 2 lines
+        // must still be resolved and deleted as part of the same group,
+        // exactly like delete_sale_group_impl already does for a single id.
+        let result = bulk_delete_sale_groups_impl(&mut conn, &[batch_ids[1]]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![batch_ids[1]]);
+        assert!(result.skipped.is_empty());
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0, "every line in the batch must be gone, not just the selected id");
+        for t in &tickets {
+            assert_eq!(ticket_status(&conn, *t), "available");
+        }
+    }
+
+    #[test]
+    fn bulk_delete_sale_groups_reports_a_missing_id_as_skipped_not_as_a_failure() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+
+        let result = bulk_delete_sale_groups_impl(&mut conn, &[sale_id, 999_999]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![sale_id]);
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].id, 999_999);
+    }
+
+    #[test]
+    fn bulk_delete_sale_groups_rejects_an_empty_selection() {
+        let mut conn = test_conn();
+        let err = bulk_delete_sale_groups_impl(&mut conn, &[]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
     #[test]
     fn non_refunded_sale_can_still_be_deleted_to_undo_a_mistake() {
         let mut conn = test_conn();
@@ -1510,7 +1657,7 @@ mod tests {
     }
 
     fn all_groups(conn: &Connection) -> Vec<SaleGroup> {
-        list_sale_groups_impl(conn, None, None, None, None, None, None, None, None, None).unwrap()
+        list_sale_groups_impl(conn, None, None, None, None, None, None, None, None, None, None).unwrap()
     }
 
     #[test]
@@ -1629,7 +1776,7 @@ mod tests {
 
         let event_id = groups[0].event_id.unwrap();
         let filtered =
-            list_sale_groups_impl(&conn, None, Some(event_id), None, None, None, None, None, None, None).unwrap();
+            list_sale_groups_impl(&conn, None, Some(event_id), None, None, None, None, None, None, None, None).unwrap();
         assert_eq!(filtered.len(), 2, "both sales are for the same event and must both match");
     }
 
@@ -1685,7 +1832,7 @@ mod tests {
 
         for eid in [event_a, event_b] {
             let filtered =
-                list_sale_groups_impl(&conn, None, Some(eid), None, None, None, None, None, None, None).unwrap();
+                list_sale_groups_impl(&conn, None, Some(eid), None, None, None, None, None, None, None, None).unwrap();
             assert_eq!(filtered.len(), 1, "the group must still match when filtered by either event");
             assert_eq!(
                 filtered[0].ticket_count, 2,
@@ -1705,13 +1852,13 @@ mod tests {
         refund_sale_impl(&mut conn, ids[0], None).unwrap();
 
         let has_refund =
-            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("has_refund".into()), None, None)
+            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("has_refund".into()), None, None, None)
                 .unwrap();
         assert_eq!(has_refund.len(), 1);
         assert_eq!(has_refund[0].refunded_count, 1);
 
         let no_refund =
-            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("no_refund".into()), None, None)
+            list_sale_groups_impl(&conn, None, None, None, None, None, None, Some("no_refund".into()), None, None, None)
                 .unwrap();
         assert_eq!(no_refund.len(), 1);
         assert_eq!(no_refund[0].refunded_count, 0);
@@ -2196,14 +2343,14 @@ mod tests {
 
         let found = list_sale_groups_impl(
             &conn, Some(order_code.clone()), None, None, None, None, None, None, None, None,
-        )
+        None)
         .unwrap();
         assert_eq!(found.len(), 1, "searching the order code must find the sale made from that order");
         assert_eq!(found[0].id, sale_id);
 
         let miss = list_sale_groups_impl(
             &conn, Some("ORD-999999".into()), None, None, None, None, None, None, None, None,
-        )
+        None)
         .unwrap();
         assert_eq!(miss.len(), 0, "an unrelated order code must not match");
     }
@@ -2223,21 +2370,21 @@ mod tests {
 
         let eur_only = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, Some("EUR".into()), None,
-        )
+        None)
         .unwrap();
         assert_eq!(eur_only.len(), 1);
         assert_eq!(eur_only[0].currency.as_deref(), Some("EUR"));
 
         let usd_only = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, Some("USD".into()), None,
-        )
+        None)
         .unwrap();
         assert_eq!(usd_only.len(), 1);
         assert_eq!(usd_only[0].currency.as_deref(), Some("USD"));
 
         let gbp_none = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, Some("GBP".into()), None,
-        )
+        None)
         .unwrap();
         assert_eq!(gbp_none.len(), 0, "a currency with no sales must match nothing");
     }
@@ -2273,19 +2420,19 @@ mod tests {
         refund_sale_impl(&mut conn, refunded_id, None).unwrap();
 
         let paid_only =
-            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None)
+            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(paid_only.len(), 1);
         assert_eq!(paid_only[0].payment_status.as_deref(), Some("paid"));
 
         let pending_only =
-            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None)
+            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(pending_only.len(), 1);
         assert_eq!(pending_only[0].payment_status.as_deref(), Some("pending"));
 
         let refunded_only =
-            list_sale_groups_impl(&conn, None, None, None, Some("refunded".into()), None, None, None, None, None)
+            list_sale_groups_impl(&conn, None, None, None, Some("refunded".into()), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(refunded_only.len(), 1);
         assert_eq!(refunded_only[0].payment_status.as_deref(), Some("refunded"));
@@ -2328,12 +2475,12 @@ mod tests {
         );
 
         let paid_only =
-            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None)
+            list_sale_groups_impl(&conn, None, None, None, Some("paid".into()), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(paid_only.len(), 1, "the group has a paid line, so it must match the 'paid' filter");
 
         let pending_only =
-            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None)
+            list_sale_groups_impl(&conn, None, None, None, Some("pending".into()), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(pending_only.len(), 1, "the same group also has a pending line, so it matches 'pending' too");
     }
@@ -2358,25 +2505,25 @@ mod tests {
 
         let revenue_desc = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("revenue_desc".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(revenue_desc.iter().map(|g| g.revenue_cents).collect::<Vec<_>>(), vec![3000, 2000, 1000]);
 
         let revenue_asc = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("revenue_asc".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(revenue_asc.iter().map(|g| g.revenue_cents).collect::<Vec<_>>(), vec![1000, 2000, 3000]);
 
         let profit_desc = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("profit_desc".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(profit_desc.iter().map(|g| g.profit_cents).collect::<Vec<_>>(), vec![2000, 1000, 0]);
 
         let profit_asc = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("profit_asc".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(profit_asc.iter().map(|g| g.profit_cents).collect::<Vec<_>>(), vec![0, 1000, 2000]);
     }
@@ -2404,14 +2551,14 @@ mod tests {
 
         let by_tickets = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("tickets_desc".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(by_tickets[0].ticket_count, 3, "the 3-ticket batch must sort first");
         assert_eq!(by_tickets[1].ticket_count, 1);
 
         let oldest_first = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, None, None, Some("oldest".into()),
-        )
+        None)
         .unwrap();
         assert_eq!(oldest_first[0].sale_date, "2026-01-01", "the earlier sale must come first when sorted oldest");
     }
@@ -2435,7 +2582,7 @@ mod tests {
 
         let partial = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, Some("partial_refund".into()), None, None,
-        )
+        None)
         .unwrap();
         assert_eq!(partial.len(), 1);
         assert_eq!(partial[0].refunded_count, 1);
@@ -2443,7 +2590,7 @@ mod tests {
 
         let full = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, Some("full_refund".into()), None, None,
-        )
+        None)
         .unwrap();
         assert_eq!(full.len(), 1);
         assert_eq!(full[0].refunded_count, 2);
@@ -2451,7 +2598,7 @@ mod tests {
 
         let none = list_sale_groups_impl(
             &conn, None, None, None, None, None, None, Some("no_refund".into()), None, None,
-        )
+        None)
         .unwrap();
         assert_eq!(none.len(), 1);
         assert_eq!(none[0].refunded_count, 0);

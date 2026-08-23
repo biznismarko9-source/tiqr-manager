@@ -66,6 +66,51 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 export const CHECKBOX_CLASS =
   "h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-200 dark:border-slate-600 dark:bg-slate-800 dark:focus:ring-brand-900";
 
+/** 2.0.28: the "Delete" bulk-selection toolbar shared by the Pulls (both
+ * tabs)/Orders/Events/Sales list pages - marko's own request. Unlike the
+ * always-visible checkbox column above (Sale Detail/Order Detail's older
+ * per-ticket bulk-action pattern), these 4 lists stay completely clean by
+ * default: a single "Delete" toggle button on the page itself puts it into
+ * selection mode, which is the only time a checkbox column and this bar
+ * exist at all. Confirming (or cancelling) always leaves selection mode
+ * again, so the checkboxes disappear until "Delete" is clicked once more.
+ * Deliberately dumb/presentational, visually modeled on `SalePaymentStatusBar`
+ * (SaleDetail.tsx) - each page owns its own `selectionMode`/`selected` state
+ * and just passes the current count in here. */
+export function BulkDeleteBar({
+  count,
+  itemLabel,
+  onConfirm,
+  onCancel,
+  busy = false,
+}: {
+  count: number;
+  /** Singular noun for one item, e.g. "order" - pluralized here as needed. */
+  itemLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="mb-4 flex items-center gap-3 rounded-lg bg-red-50 dark:bg-red-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-red-200 dark:ring-red-500/30">
+      <span className="font-medium text-red-800 dark:text-red-300">
+        {count === 0 ? `Select ${itemLabel}s to delete` : `Selected: ${count} ${itemLabel}${count === 1 ? "" : "s"}`}
+      </span>
+      <Button variant="danger" onClick={onConfirm} disabled={busy || count === 0}>
+        Delete selected
+      </Button>
+      <button
+        type="button"
+        className="ml-auto text-xs font-medium text-red-700 dark:text-red-400 hover:underline disabled:opacity-50"
+        onClick={onCancel}
+        disabled={busy}
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 export function Field({
   label,
   required,

@@ -7,6 +7,7 @@ import {
   type AppInfo,
   type CreatedSheetResult,
   type CsvPreview,
+  type EventCategory,
   type GoogleSignInStatus,
   type Platform,
   type SheetsConnectionStatus,
@@ -36,6 +37,7 @@ import {
   ExportPickerModal,
   type ExportPickerConfig,
 } from "../components/ExportPickerModal";
+import { EventCategorySwatch } from "../components/EventCategoryBadge";
 import {
   IconArrowLeft,
   IconDatabase,
@@ -80,11 +82,14 @@ export default function Settings() {
   const toast = useToast();
   const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  // 2.0.27: managed event categories (marko's request - "like Platforms").
+  const [categories, setCategories] = useState<EventCategory[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
+  const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<EventCategory | null>(null);
   const [deletingLookup, setDeletingLookup] = useState(false);
   // 1.9.1: which entity's export picker is open, if any - see
   // ExportPickerModal.tsx. Replaces the old "click = instant whole-file
@@ -107,6 +112,7 @@ export default function Settings() {
 
   const reload = () => {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
+    api.listEventCategories().then(setCategories).catch((e) => toast.error(errMsg(e)));
     api.getAppInfo().then(setAppInfo).catch(() => {});
   };
 
@@ -131,6 +137,17 @@ export default function Settings() {
   const changePlatformKind = async (p: Platform, kind: "purchase" | "sale" | "both") => {
     try {
       await api.updatePlatformKind(p.id, kind);
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  // 2.0.27: one list, not two (categories have no Purchase/Selling "kind"
+  // split the way platforms do) - see EventCategoryList below.
+  const addCategory = async (name: string) => {
+    try {
+      await api.createEventCategory(name);
       reload();
     } catch (e) {
       toast.error(errMsg(e));
@@ -331,6 +348,23 @@ export default function Settings() {
                   onDelete={setConfirmDeletePlatform}
                   onChangeKind={changePlatformKind}
                 />
+              </div>
+
+              {/* 2.0.27: marko's request - filter and color-code Events/
+                  Orders/Sales by category (football, concert, etc.). One
+                  list, not a Purchase/Selling pair - a category has no
+                  "kind" split. Each category's color is assigned
+                  automatically the first time it's added (see
+                  EventCategoryBadge.tsx) - nothing to pick here. */}
+              <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-800">
+                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Event categories</h3>
+                <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+                  Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales.
+                  Not hardcoded — add as many as you like, each gets its own color automatically.
+                </p>
+                <div className="sm:max-w-sm">
+                  <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
+                </div>
               </div>
             </Card>
           )}
@@ -580,6 +614,34 @@ export default function Settings() {
         }}
       />
 
+      <ConfirmDialog
+        open={!!confirmDeleteCategory}
+        title="Remove this category?"
+        message={
+          <>
+            Removes <b>{confirmDeleteCategory?.name}</b> from the category list. Any events tagged with it lose the
+            category label - their orders, tickets, sales and money figures are completely unaffected.
+          </>
+        }
+        confirmLabel="Remove category"
+        danger
+        busy={deletingLookup}
+        onCancel={() => setConfirmDeleteCategory(null)}
+        onConfirm={async () => {
+          if (!confirmDeleteCategory) return;
+          setDeletingLookup(true);
+          try {
+            await api.deleteEventCategory(confirmDeleteCategory.id);
+            setConfirmDeleteCategory(null);
+            reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeletingLookup(false);
+          }
+        }}
+      />
+
     </div>
   );
 }
@@ -648,6 +710,62 @@ function PlatformList({
                 <IconTrash className="h-4 w-4" />
               </button>
             </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** 2.0.27: Settings -> Lookups' Event Categories list - one list (unlike
+ * PlatformList above, a category has no Purchase/Selling "kind" split).
+ * Shows each category's already-assigned color as a small swatch next to
+ * its name (a full EventCategoryBadge here would just repeat the name
+ * that's already the row's own text, e.g. "Concert [Concert]") - see
+ * EventCategorySwatch (EventCategoryBadge.tsx). */
+function EventCategoryList({
+  categories,
+  onAdd,
+  onDelete,
+}: {
+  categories: EventCategory[];
+  onAdd: (name: string) => void;
+  onDelete: (category: EventCategory) => void;
+}) {
+  const [value, setValue] = useState("");
+
+  const add = () => {
+    if (!value.trim()) return;
+    onAdd(value.trim());
+    setValue("");
+  };
+
+  return (
+    <div>
+      <div className="mb-2 flex gap-2">
+        <Input
+          placeholder="e.g. Football"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <Button onClick={add}>Add</Button>
+      </div>
+      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+        {categories.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
+        {categories.map((c) => (
+          <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+            <span className="flex min-w-0 items-center gap-2">
+              <EventCategorySwatch colorSlot={c.colorSlot} />
+              <span className="truncate">{c.name}</span>
+            </span>
+            <button
+              className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
+              title="Remove"
+              onClick={() => onDelete(c)}
+            >
+              <IconTrash className="h-4 w-4" />
+            </button>
           </li>
         ))}
       </ul>
@@ -1235,33 +1353,22 @@ function SheetsConnectionCard({
         <p className="text-xs text-slate-400 dark:text-slate-500">Google Sheets sync isn&apos;t available in this build.</p>
       ) : (
         <>
+          {/* 2.0.26: was up to 5 stacked paragraphs here (main + one per
+              action) - marko's own report ("zminimalizovať túto časť...
+              menej textu"). Nothing was deleted: every action's detailed
+              explanation (syncDescription/pushDescription/secondarySync.
+              description/secondaryPush.description/setupDescription) still
+              exists, word for word - it just moved onto that action's own
+              button as a native `title` tooltip (see the button row below)
+              instead of being force-displayed at all times. One short line
+              stays here since it's an instruction for the fields right
+              below, not a per-action explanation. */}
           <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.{" "}
-            {onSync
-              ? syncDescription
-              : `Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
+            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.
+            {!onSync &&
+              ` Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
             {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
           </p>
-          {secondarySync && (
-            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
-              <b>{secondarySync.label}:</b> {secondarySync.description}
-            </p>
-          )}
-          {onPush && (
-            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
-              <b>{pushLabel ?? "Push to sheet"}:</b> {pushDescription}
-            </p>
-          )}
-          {secondaryPush && (
-            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
-              <b>{secondaryPush.label}:</b> {secondaryPush.description}
-            </p>
-          )}
-          {onSetup && (
-            <p className="mb-4 -mt-2 text-xs text-slate-400 dark:text-slate-500">
-              <b>Update sheet:</b> {setupDescription}
-            </p>
-          )}
 
           <div className="grid grid-cols-1 gap-3">
             <Field label="Spreadsheet URL or ID">
@@ -1336,55 +1443,90 @@ function SheetsConnectionCard({
             </Field>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              variant="primary"
-              disabled={busy === "save" || !spreadsheetInput.trim() || !sheetTab.trim()}
-              onClick={doConnect}
-            >
-              {busy === "save" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
-              {connected ? "Save" : "Connect"}
-            </Button>
-            {connected && (
-              <>
-                <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
-                  {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
-                  Test connection
-                </Button>
-                {onSync && (
-                  <Button variant="secondary" disabled={busy === "sync"} onClick={doSync}>
-                    {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "sync" ? "Syncing..." : (syncLabel ?? "Sync now")}
+          {/* 2.0.26: marko's own report - buttons used to be one long
+              flex-wrap row that wrapped wherever width happened to run out,
+              mixing connection/sync/push together with no visual order. Now
+              3 short rows, grouped by what the button actually DOES (same
+              grouping he described): connect/verify/disconnect the sheet
+              itself, then read the sheet INTO the app, then send the app's
+              own data OUT to the sheet - each row only renders if this data
+              source actually has a button for that group (e.g. a
+              connection-only future data source with no onSync/onPush would
+              show just the first row). Every action's detailed explanation
+              lives in its own `title` (hover) now - see the comment above
+              this component's description paragraph. */}
+          <div className="mt-3 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="primary"
+                disabled={busy === "save" || !spreadsheetInput.trim() || !sheetTab.trim()}
+                onClick={doConnect}
+              >
+                {busy === "save" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
+                {connected ? "Save" : "Connect"}
+              </Button>
+              {connected && (
+                <>
+                  <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
+                    {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
+                    Test connection
                   </Button>
-                )}
+                  {onSetup && (
+                    <Button variant="secondary" disabled={busy === "setup"} onClick={doSetup} title={setupDescription}>
+                      {busy === "setup" ? <Spinner className="h-4 w-4" /> : null}
+                      {busy === "setup" ? "Updating..." : "Update sheet"}
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    className="ml-auto"
+                    disabled={busy === "disconnect"}
+                    onClick={() => setConfirmDisconnect(true)}
+                  >
+                    Disconnect
+                  </Button>
+                </>
+              )}
+            </div>
+
+            {connected && onSync && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" disabled={busy === "sync"} onClick={doSync} title={syncDescription}>
+                  {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
+                  {busy === "sync" ? "Syncing..." : (syncLabel ?? "Sync now")}
+                </Button>
                 {secondarySync && (
-                  <Button variant="secondary" disabled={busy === "sync2"} onClick={doSecondarySync}>
+                  <Button
+                    variant="secondary"
+                    disabled={busy === "sync2"}
+                    onClick={doSecondarySync}
+                    title={secondarySync.description}
+                  >
                     {busy === "sync2" ? <Spinner className="h-4 w-4" /> : null}
                     {busy === "sync2" ? "Syncing..." : secondarySync.label}
                   </Button>
                 )}
-                {onPush && (
-                  <Button variant="secondary" disabled={busy === "push"} onClick={doPush}>
-                    {busy === "push" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "push" ? "Pushing..." : (pushLabel ?? "Push to sheet")}
-                  </Button>
-                )}
+              </div>
+            )}
+
+            {connected && onPush && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" disabled={busy === "push"} onClick={doPush} title={pushDescription}>
+                  {busy === "push" ? <Spinner className="h-4 w-4" /> : null}
+                  {busy === "push" ? "Pushing..." : (pushLabel ?? "Push to sheet")}
+                </Button>
                 {secondaryPush && (
-                  <Button variant="secondary" disabled={busy === "push2"} onClick={doSecondaryPush}>
+                  <Button
+                    variant="secondary"
+                    disabled={busy === "push2"}
+                    onClick={doSecondaryPush}
+                    title={secondaryPush.description}
+                  >
                     {busy === "push2" ? <Spinner className="h-4 w-4" /> : null}
                     {busy === "push2" ? "Pushing..." : secondaryPush.label}
                   </Button>
                 )}
-                {onSetup && (
-                  <Button variant="secondary" disabled={busy === "setup"} onClick={doSetup}>
-                    {busy === "setup" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "setup" ? "Updating..." : "Update sheet"}
-                  </Button>
-                )}
-                <Button variant="ghost" disabled={busy === "disconnect"} onClick={() => setConfirmDisconnect(true)}>
-                  Disconnect
-                </Button>
-              </>
+              </div>
             )}
           </div>
 

@@ -28,7 +28,15 @@ export interface EventRecord {
   city: string | null;
   country: string | null;
   eventDate: string | null;
+  /** 2.0.27: legacy free-text mirror of categoryId's own name - kept in sync
+   * by the backend (see commands::events::resolve_category_name), still used
+   * directly by CSV export. Prefer categoryId for anything new. */
   category: string | null;
+  categoryId: number | null;
+  /** 2.0.27: the resolved category's colorSlot, joined in server-side so
+   * EventCategoryBadge.tsx can render without a second fetch - see Event's
+   * matching doc comment (models.rs). Null exactly when categoryId is null. */
+  categoryColorSlot: number | null;
   status: EventStatus;
   notes: string | null;
   isDemo: boolean;
@@ -47,9 +55,32 @@ export interface EventInput {
   city?: string | null;
   country?: string | null;
   eventDate?: string | null;
-  category?: string | null;
+  categoryId?: number | null;
   status?: EventStatus | null;
   notes?: string | null;
+}
+
+/** 2.0.27: a managed event category (Settings -> Lookups, "like Platforms").
+ * See EventCategoryBadge.tsx for how `colorSlot` becomes an actual color. */
+export interface EventCategory {
+  id: number;
+  name: string;
+  colorSlot: number;
+  isDemo: boolean;
+  createdAt: string;
+}
+
+/** 2.0.28: shared result shape for every `bulkDelete*` call (pulls, pulls
+ * received, orders, events, sale groups) - mirrors the backend's
+ * `BulkDeleteResult`/`BulkDeleteSkip` (models.rs). Deletion is judged per
+ * item, not all-or-nothing: `deletedIds` is everything that was actually
+ * removed, `skipped` is everything that wasn't, each with a plain-English
+ * reason (e.g. "This order has sold tickets and cannot be deleted.") to show
+ * the user, not just log silently. See BulkDeleteBar (components/ui.tsx) for
+ * the shared selection-mode toolbar this pairs with. */
+export interface BulkDeleteResult {
+  deletedIds: number[];
+  skipped: { id: number; reason: string }[];
 }
 
 export interface OrderRecord {
@@ -57,6 +88,13 @@ export interface OrderRecord {
   code: string;
   eventId: number;
   eventName: string;
+  /** 2.0.27: the event's category, denormalized here the same way eventName
+   * already is - lets the Orders list filter/badge by category without a
+   * second round trip. All three are null together when the event has no
+   * category set. */
+  categoryId: number | null;
+  categoryName: string | null;
+  categoryColorSlot: number | null;
   supplierId: number | null;
   supplierName: string | null;
   platformId: number | null;
@@ -245,6 +283,12 @@ export interface SaleGroup {
   /** Null means the group's tickets span more than one event ("Mixed events"). */
   eventId: number | null;
   eventName: string | null;
+  /** 2.0.27: the group's shared event category - same "Some only when every
+   * line's event agrees" rule as eventId/eventName above (null on a "Mixed
+   * events" group, and also null when the one shared event has no category). */
+  categoryId: number | null;
+  categoryName: string | null;
+  categoryColorSlot: number | null;
   saleDate: string;
   platformId: number | null;
   platformName: string | null;

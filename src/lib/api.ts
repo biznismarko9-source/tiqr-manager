@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BulkDeleteResult,
   BulkSalePaymentStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
@@ -8,6 +9,7 @@ import type {
   CsvImportResult,
   CsvPreview,
   DashboardData,
+  EventCategory,
   EventInput,
   EventRecord,
   EventWithStats,
@@ -41,11 +43,14 @@ import type {
 
 export const api = {
   // Events
-  listEvents: (search?: string) => invoke<EventWithStats[]>("list_events", { search }),
+  listEvents: (params: { search?: string; categoryId?: number } = {}) =>
+    invoke<EventWithStats[]>("list_events", params),
   getEvent: (id: number) => invoke<EventWithStats>("get_event", { id }),
   createEvent: (input: EventInput) => invoke<EventRecord>("create_event", { input }),
   updateEvent: (id: number, input: EventInput) => invoke<EventRecord>("update_event", { id, input }),
   deleteEvent: (id: number) => invoke<void>("delete_event", { id }),
+  /** 2.0.28: bulk delete for the Events list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
+  bulkDeleteEvents: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_events", { ids }),
 
   // Orders
   listOrders: (params: {
@@ -58,12 +63,16 @@ export const api = {
     section?: string;
     dateFrom?: string;
     dateTo?: string;
+    /** 2.0.27 */
+    categoryId?: number;
   } = {}) => invoke<OrderRecord[]>("list_orders", params),
   getOrder: (id: number) => invoke<OrderRecord>("get_order", { id }),
   getOrderSalesSummary: (id: number) => invoke<OrderSalesSummary>("get_order_sales_summary", { id }),
   createOrder: (input: OrderInput) => invoke<OrderRecord>("create_order", { input }),
   updateOrder: (id: number, input: OrderEditInput) => invoke<OrderRecord>("update_order", { id, input }),
   deleteOrder: (id: number) => invoke<void>("delete_order", { id }),
+  /** 2.0.28: bulk delete for the Orders list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
+  bulkDeleteOrders: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_orders", { ids }),
 
   // Tickets
   listTickets: (params: {
@@ -92,6 +101,8 @@ export const api = {
   createPull: (input: PullInput) => invoke<Pull>("create_pull", { input }),
   updatePull: (id: number, input: PullEditInput) => invoke<Pull>("update_pull", { id, input }),
   deletePull: (id: number) => invoke<void>("delete_pull", { id }),
+  /** 2.0.28: bulk delete for the Pulls (Given) list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
+  bulkDeletePulls: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_pulls", { ids }),
   /** Dedicated quick-action for the Pulls list's inline "Done" checkbox - see set_pull_transfer_done_impl (pulls.rs). */
   setPullTransferDone: (id: number, done: boolean) => invoke<Pull>("set_pull_transfer_done", { id, done }),
 
@@ -104,6 +115,8 @@ export const api = {
   createPullReceived: (input: PullReceivedInput) => invoke<PullReceived>("create_pull_received", { input }),
   updatePullReceived: (id: number, input: PullReceivedEditInput) => invoke<PullReceived>("update_pull_received", { id, input }),
   deletePullReceived: (id: number) => invoke<void>("delete_pull_received", { id }),
+  /** 2.0.28: bulk delete for the Pulls (Received) list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
+  bulkDeletePullsReceived: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_pulls_received", { ids }),
   /** 2.0.24: Order Detail's own lean "Add pull info" action - event name/
    * date/quantity/currency are all derived server-side from the order
    * itself, never sent from here. See commands::pulls_received's module doc
@@ -135,6 +148,8 @@ export const api = {
     currency?: string;
     /** 1.8.0: "oldest" | "revenue_desc" | "revenue_asc" | "profit_desc" | "profit_asc" | "tickets_desc" - omit/undefined for the default (newest first). */
     sortBy?: string;
+    /** 2.0.27 */
+    categoryId?: number;
   }) => invoke<SaleGroup[]>("list_sale_groups", params),
   /** 1.8.0: distinct currencies actually present in sales data, for the Sales screen's Currency filter. */
   listSaleCurrencies: () => invoke<string[]>("list_sale_currencies"),
@@ -149,6 +164,8 @@ export const api = {
   refundSale: (id: number, reason?: string | null) => invoke<Sale>("refund_sale", { id, reason: reason || null }),
   deleteSale: (id: number) => invoke<void>("delete_sale", { id }),
   deleteSaleGroup: (id: number) => invoke<number>("delete_sale_group", { id }),
+  /** 2.0.28: bulk delete for the Sales list's "Delete" selection mode (one selected id = one sale group/batch, same as list_sale_groups already returns) - see BulkDeleteResult's doc comment (types.ts). */
+  bulkDeleteSaleGroups: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_sale_groups", { ids }),
 
   // Lookups
   listPlatforms: () => invoke<Platform[]>("list_platforms"),
@@ -159,6 +176,11 @@ export const api = {
   listSuppliers: () => invoke<Supplier[]>("list_suppliers"),
   createSupplier: (name: string, contact?: string) => invoke<Supplier>("create_supplier", { name, contact }),
   deleteSupplier: (id: number) => invoke<void>("delete_supplier", { id }),
+  /** 2.0.27: managed event categories (Settings -> Lookups, "like Platforms") -
+   * see EventCategory's doc comment (types.ts). */
+  listEventCategories: () => invoke<EventCategory[]>("list_event_categories"),
+  createEventCategory: (name: string) => invoke<EventCategory>("create_event_category", { name }),
+  deleteEventCategory: (id: number) => invoke<void>("delete_event_category", { id }),
 
   // Dashboard
   getDashboard: (params: {

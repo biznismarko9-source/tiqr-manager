@@ -1,11 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
-import { formatDate, formatDateCompact, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, titleCase, todayIso } from "../lib/format";
+import type { EventCategory, EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
+import {
+  formatDate,
+  formatDateCompact,
+  formatMoney,
+  formatMoneyOrMixed,
+  formatPercentOrMixed,
+  summarizeBulkDeleteSkips,
+  titleCase,
+  todayIso,
+} from "../lib/format";
 import {
   Badge,
   Button,
+  BulkDeleteBar,
+  CHECKBOX_CLASS,
+  ConfirmDialog,
   EmptyState,
   Field,
   Input,
@@ -16,8 +28,9 @@ import {
   Select,
   Textarea,
 } from "../components/ui";
+import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconX } from "../components/icons";
+import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 // 1.8.0: preferred/well-known currency codes for the Sales screen's Currency
@@ -54,6 +67,8 @@ const SORT_LABELS: Record<string, string> = {
 interface SalesFilterState {
   search: string;
   eventId: number | "";
+  /** 2.0.27 */
+  categoryId: number | "";
   platformId: number | "";
   paymentStatus: string;
   currency: string;
@@ -103,9 +118,13 @@ export default function Sales() {
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [currencies, setCurrencies] = useState<string[]>([]);
+  const [categories, setCategories] = useState<EventCategory[]>([]);
 
   const [search, setSearch] = useState(lastFilters?.search ?? "");
   const [eventId, setEventId] = useState<number | "">(lastFilters?.eventId ?? "");
+  // 2.0.27: category filter (marko's request - filter Events/Orders/Sales by
+  // category), sitting next to the existing Event filter.
+  const [categoryId, setCategoryId] = useState<number | "">(lastFilters?.categoryId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(lastFilters?.platformId ?? "");
   const [paymentStatus, setPaymentStatus] = useState(lastFilters?.paymentStatus ?? "");
   const [currency, setCurrency] = useState(lastFilters?.currency ?? "");
@@ -116,11 +135,19 @@ export default function Sales() {
   const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
 
   const [modalOpen, setModalOpen] = useState(false);
+  // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
+  // column sitting there all the time; the "Delete" toggle button below
+  // reveals it, and it disappears again the moment you confirm or cancel.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
     api.listSaleCurrencies().then(setCurrencies).catch(() => {});
+    api.listEventCategories().then(setCategories).catch(() => {});
   }, []);
 
   // 1.8.3 (section 11): lets the Dashboard's "New Sale" Quick Action open
@@ -146,14 +173,15 @@ export default function Sales() {
   // file) so returning from Sale Detail finds the Sales screen exactly as it
   // was left - without touching Sale Detail's own navigation at all.
   useEffect(() => {
-    lastFilters = { search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy };
-  }, [search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
+    lastFilters = { search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy };
+  }, [search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
       .listSaleGroups({
         search: search || undefined,
         eventId: eventId || undefined,
+        categoryId: categoryId || undefined,
         platformId: platformId || undefined,
         paymentStatus: paymentStatus || undefined,
         currency: currency || undefined,
@@ -166,11 +194,50 @@ export default function Sales() {
       .catch((e) => toast.error(errMsg(e)));
   };
 
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = groups !== null && groups.length > 0 && groups.every((g) => selected.has(g.id));
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set((groups ?? []).map((g) => g.id)));
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const confirmDeleteSelected = async () => {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeleteSaleGroups(Array.from(selected));
+      if (result.deletedIds.length > 0) {
+        toast.success(`${result.deletedIds.length} sale${result.deletedIds.length === 1 ? "" : "s"} deleted`);
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+      setConfirmBulkDelete(false);
+      exitSelectionMode();
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   useEffect(() => {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
+  }, [search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
 
   const totals = useMemo(() => {
     if (!groups) return null;
@@ -238,6 +305,10 @@ export default function Sales() {
       const ev = events.find((e) => e.id === eventId);
       chips.push({ key: "event", label: `Event: ${ev?.name ?? eventId}`, onRemove: () => setEventId("") });
     }
+    if (categoryId) {
+      const c = categories.find((cat) => cat.id === categoryId);
+      chips.push({ key: "category", label: `Category: ${c?.name ?? categoryId}`, onRemove: () => setCategoryId("") });
+    }
     if (platformId) {
       const p = platforms.find((pl) => pl.id === platformId);
       chips.push({ key: "platform", label: `Platform: ${p?.name ?? platformId}`, onRemove: () => setPlatformId("") });
@@ -258,13 +329,14 @@ export default function Sales() {
     if (dateFrom) chips.push({ key: "from", label: `From: ${dateFrom}`, onRemove: () => setDateFrom("") });
     if (dateTo) chips.push({ key: "to", label: `To: ${dateTo}`, onRemove: () => setDateTo("") });
     return chips;
-  }, [eventId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, events, platforms]);
+  }, [eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, events, platforms, categories]);
 
   const hasActiveFilters = activeFilters.length > 0 || !!search;
 
   const clearAllFilters = () => {
     setSearch("");
     setEventId("");
+    setCategoryId("");
     setPlatformId("");
     setPaymentStatus("");
     setCurrency("");
@@ -279,9 +351,16 @@ export default function Sales() {
         title="Sales"
         subtitle="Every sale you've recorded, with profit calculated automatically."
         actions={
-          <Button variant="primary" onClick={() => setModalOpen(true)}>
-            <IconPlus className="h-4 w-4" /> New Sale
-          </Button>
+          <div className="flex items-center gap-2">
+            {!selectionMode && groups && groups.length > 0 && (
+              <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+                <IconTrash className="h-4 w-4" /> Delete
+              </Button>
+            )}
+            <Button variant="primary" onClick={() => setModalOpen(true)}>
+              <IconPlus className="h-4 w-4" /> New Sale
+            </Button>
+          </div>
         }
       />
 
@@ -305,6 +384,17 @@ export default function Sales() {
             {events.map((ev) => (
               <option key={ev.id} value={ev.id}>
                 {ev.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="w-44">
+          <span className="label">Category</span>
+          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
               </option>
             ))}
           </Select>
@@ -463,6 +553,16 @@ export default function Sales() {
         </div>
       )}
 
+      {selectionMode && (
+        <BulkDeleteBar
+          count={selected.size}
+          itemLabel="sale"
+          busy={bulkDeleting}
+          onConfirm={() => setConfirmBulkDelete(true)}
+          onCancel={exitSelectionMode}
+        />
+      )}
+
       {groups === null ? (
         <LoadingBlock />
       ) : groups.length === 0 ? (
@@ -517,6 +617,7 @@ export default function Sales() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              {selectionMode && <col className="w-8" />}
               <col className="w-[90px]" />
               <col />
               <col className="w-[70px]" />
@@ -531,6 +632,17 @@ export default function Sales() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                {selectionMode && (
+                  <th className="th-c">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all sales"
+                    />
+                  </th>
+                )}
                 <th className="th-c">Sale</th>
                 <th className="th-c">Event</th>
                 <th className="th-c">Platform</th>
@@ -549,7 +661,32 @@ export default function Sales() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {groups.map((g) => (
-                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr
+                  key={g.id}
+                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selectionMode ? "cursor-pointer" : ""}`}
+                  onClick={(e) => {
+                    // 2.0.28: unlike Events/Orders, this row never navigated
+                    // on click before (only the Sale code cell's own <Link>
+                    // below did) - so there's no existing behavior to guard
+                    // against here, just toggle selection while in
+                    // selectionMode, deferring to the Link/checkbox
+                    // otherwise.
+                    if (!selectionMode) return;
+                    if ((e.target as HTMLElement).closest("a, input")) return;
+                    toggleOne(g.id);
+                  }}
+                >
+                  {selectionMode && (
+                    <td className="td-c">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={selected.has(g.id)}
+                        onChange={() => toggleOne(g.id)}
+                        aria-label={`Select ${g.code}`}
+                      />
+                    </td>
+                  )}
                   <td className="td-c">
                     <Link
                       to={`/sales/${g.id}`}
@@ -565,9 +702,16 @@ export default function Sales() {
                       in Orders/Tickets/Sales. The Sale code link above stays
                       (opening this exact sale's own detail page isn't a
                       foreign jump). */}
-                  <td className="td-c truncate" title={g.eventId && g.eventName ? g.eventName : undefined}>
+                  <td className="td-c" title={g.eventId && g.eventName ? g.eventName : undefined}>
                     {g.eventId && g.eventName ? (
-                      g.eventName
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{g.eventName}</span>
+                        {g.categoryName && g.categoryColorSlot !== null && (
+                          <span className="shrink-0">
+                            <EventCategoryBadge name={g.categoryName} colorSlot={g.categoryColorSlot} />
+                          </span>
+                        )}
+                      </div>
                     ) : (
                       <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
                     )}
@@ -622,6 +766,17 @@ export default function Sales() {
           setModalOpen(false);
           load();
         }}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} selected sale${selected.size === 1 ? "" : "s"}?`}
+        message="Tickets that are actively sold return to Available; any refunded lines are removed as history with no trace left. This cannot be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={bulkDeleting}
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={confirmDeleteSelected}
       />
     </div>
   );

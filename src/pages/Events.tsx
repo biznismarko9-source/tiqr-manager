@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDate, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
+import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
+import { formatDate, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
 import {
   Badge,
   Button,
+  BulkDeleteBar,
+  CHECKBOX_CLASS,
+  ConfirmDialog,
   EmptyState,
   Field,
   Input,
@@ -16,7 +19,9 @@ import {
   Select,
   Textarea,
 } from "../components/ui";
-import { IconCalendarDays, IconPlus, IconSearch } from "../components/icons";
+import { EventCategoryBadge } from "../components/EventCategoryBadge";
+import { LookupSelect } from "../components/LookupSelect";
+import { IconCalendarDays, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 const EMPTY_INPUT: EventInput = {
@@ -26,28 +31,79 @@ const EMPTY_INPUT: EventInput = {
   city: "",
   country: "",
   eventDate: "",
-  category: "",
+  categoryId: null,
   status: "upcoming",
   notes: "",
 };
-
-const CATEGORY_OPTIONS = ["Concert", "Sports", "Theatre / Musical", "Festival", "Comedy", "Motorsport"];
-const OTHER_CATEGORY = "__other__";
 
 export default function Events() {
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
   const [events, setEvents] = useState<EventWithStats[] | null>(null);
+  const [categories, setCategories] = useState<EventCategory[]>([]);
   const [search, setSearch] = useState("");
+  // 2.0.27: event category filter (marko's request - filter Events/Orders/
+  // Sales by category, same as every other list-page dropdown filter here).
+  const [categoryId, setCategoryId] = useState<number | "">("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<EventWithStats | null>(null);
+  // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
+  // column sitting there all the time; the "Delete" toggle button below
+  // reveals it, and it disappears again the moment you confirm or cancel.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  const load = (q?: string) => {
+  useEffect(() => {
+    api.listEventCategories().then(setCategories).catch(() => {});
+  }, []);
+
+  const load = () => {
     api
-      .listEvents(q || undefined)
+      .listEvents({ search: search || undefined, categoryId: categoryId || undefined })
       .then(setEvents)
       .catch((e) => toast.error(errMsg(e)));
+  };
+
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = events !== null && events.length > 0 && events.every((ev) => selected.has(ev.id));
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set((events ?? []).map((ev) => ev.id)));
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const confirmDeleteSelected = async () => {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeleteEvents(Array.from(selected));
+      if (result.deletedIds.length > 0) {
+        toast.success(`${result.deletedIds.length} event${result.deletedIds.length === 1 ? "" : "s"} deleted`);
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+      setConfirmBulkDelete(false);
+      exitSelectionMode();
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   useEffect(() => {
@@ -70,10 +126,10 @@ export default function Events() {
   }, [location.state]);
 
   useEffect(() => {
-    const t = setTimeout(() => load(search), 250);
+    const t = setTimeout(load, 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, categoryId]);
 
   return (
     <div>
@@ -81,29 +137,60 @@ export default function Events() {
         title="Events"
         subtitle="Every event you buy or sell tickets for."
         actions={
-          <Button
-            variant="primary"
-            onClick={() => {
-              setEditing(null);
-              setModalOpen(true);
-            }}
-          >
-            <IconPlus className="h-4 w-4" /> New Event
-          </Button>
+          <div className="flex items-center gap-2">
+            {!selectionMode && events && events.length > 0 && (
+              <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+                <IconTrash className="h-4 w-4" /> Delete
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              onClick={() => {
+                setEditing(null);
+                setModalOpen(true);
+              }}
+            >
+              <IconPlus className="h-4 w-4" /> New Event
+            </Button>
+          </div>
         }
       />
 
-      <div className="mb-4 max-w-xs">
-        <div className="relative">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-          <Input
-            placeholder="Search events..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+      <div className="mb-2 flex flex-wrap items-end gap-3">
+        <div className="w-64">
+          <span className="label">Search</span>
+          <div className="relative">
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <Input
+              placeholder="Search events..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+        </div>
+        <div className="w-52">
+          <span className="label">Category</span>
+          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
         </div>
       </div>
+
+      {selectionMode && (
+        <BulkDeleteBar
+          count={selected.size}
+          itemLabel="event"
+          busy={bulkDeleting}
+          onConfirm={() => setConfirmBulkDelete(true)}
+          onCancel={exitSelectionMode}
+        />
+      )}
 
       {events === null ? (
         <LoadingBlock />
@@ -127,6 +214,7 @@ export default function Events() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              {selectionMode && <col className="w-8" />}
               <col />
               <col className="w-[84px]" />
               <col className="w-[84px]" />
@@ -140,6 +228,17 @@ export default function Events() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                {selectionMode && (
+                  <th className="th-c">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all events"
+                    />
+                  </th>
+                )}
                 <th className="th-c">Event</th>
                 <th className="th-c">Date</th>
                 <th className="th-c">Status</th>
@@ -165,15 +264,49 @@ export default function Events() {
                     // ELSE in the row" as a convenience, so a click that
                     // lands on the Link is never navigated a second time -
                     // it defers entirely to the Link instead of also firing
-                    // its own navigation for the same click.
-                    if ((e.target as HTMLElement).closest("a")) return;
+                    // its own navigation for the same click. 2.0.28: also
+                    // excludes the new checkbox (its own onChange handles
+                    // it), and while selectionMode is on, a row click
+                    // toggles selection instead of navigating away.
+                    if ((e.target as HTMLElement).closest("a, input")) return;
+                    if (selectionMode) {
+                      toggleOne(ev.id);
+                      return;
+                    }
                     navigate(`/events/${ev.id}`);
                   }}
                 >
-                  <td className="td-c truncate">
-                    <Link to={`/events/${ev.id}`} title={ev.name} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
-                      {ev.name}
-                    </Link>
+                  {selectionMode && (
+                    <td className="td-c">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={selected.has(ev.id)}
+                        onChange={() => toggleOne(ev.id)}
+                        aria-label={`Select ${ev.name}`}
+                      />
+                    </td>
+                  )}
+                  <td className="td-c">
+                    <div className="flex items-center gap-1.5">
+                      <Link
+                        to={`/events/${ev.id}`}
+                        title={ev.name}
+                        className="truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      >
+                        {ev.name}
+                      </Link>
+                      {/* 2.0.27: category color-coding, staying "in theme" -
+                          same pill idiom as every status Badge on this page,
+                          just keyed by a fixed per-category palette instead
+                          of a status string. Only shown once category is
+                          actually set - most events won't have one at first. */}
+                      {ev.category && ev.categoryColorSlot !== null && (
+                        <span className="shrink-0">
+                          <EventCategoryBadge name={ev.category} colorSlot={ev.categoryColorSlot} />
+                        </span>
+                      )}
+                    </div>
                     <p className="truncate text-xs text-slate-400 dark:text-slate-500">
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
@@ -206,8 +339,19 @@ export default function Events() {
         onClose={() => setModalOpen(false)}
         onSaved={() => {
           setModalOpen(false);
-          load(search);
+          load();
         }}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} selected event${selected.size === 1 ? "" : "s"}?`}
+        message="Events with any orders or tickets linked to them will be skipped automatically. This cannot be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={bulkDeleting}
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={confirmDeleteSelected}
       />
     </div>
   );
@@ -226,13 +370,17 @@ export function EventFormModal({
 }) {
   const toast = useToast();
   const [form, setForm] = useState<EventInput>(EMPTY_INPUT);
+  // 2.0.27: fetched fresh every time the modal opens, same "own independent
+  // fetch, not shared with the list page's filter dropdown" convention as
+  // Orders/Sales' own LookupSelect-backed pickers (e.g. OrderFormModal's own
+  // api.listPlatforms() call, separate from Orders.tsx's page-level one).
+  const [categories, setCategories] = useState<EventCategory[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [categoryIsOther, setCategoryIsOther] = useState(false);
 
   useEffect(() => {
     if (open) {
-      const category = initial?.category ?? "";
+      api.listEventCategories().then(setCategories).catch(() => {});
       setForm(
         initial
           ? {
@@ -242,13 +390,12 @@ export function EventFormModal({
               city: initial.city ?? "",
               country: initial.country ?? "",
               eventDate: initial.eventDate ?? "",
-              category,
+              categoryId: initial.categoryId,
               status: initial.status,
               notes: initial.notes ?? "",
             }
           : EMPTY_INPUT,
       );
-      setCategoryIsOther(!!category && !CATEGORY_OPTIONS.includes(category));
       setError(null);
     }
   }, [open, initial]);
@@ -293,48 +440,18 @@ export function EventFormModal({
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus />
           </Field>
         </div>
-        <Field label="Category">
-          {categoryIsOther ? (
-            <div className="flex gap-2">
-              <Input
-                autoFocus
-                placeholder="Custom category"
-                value={form.category ?? ""}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  setCategoryIsOther(false);
-                  setForm({ ...form, category: "" });
-                }}
-              >
-                List
-              </Button>
-            </div>
-          ) : (
-            <Select
-              value={form.category ?? ""}
-              onChange={(e) => {
-                if (e.target.value === OTHER_CATEGORY) {
-                  setCategoryIsOther(true);
-                  setForm({ ...form, category: "" });
-                } else {
-                  setForm({ ...form, category: e.target.value });
-                }
-              }}
-            >
-              <option value="">Select a category...</option>
-              {CATEGORY_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-              <option value={OTHER_CATEGORY}>Other...</option>
-            </Select>
-          )}
-        </Field>
+        <LookupSelect
+          label="Category"
+          options={categories}
+          value={form.categoryId ?? null}
+          onChange={(id) => setForm({ ...form, categoryId: id })}
+          onCreate={async (name) => {
+            const c = await api.createEventCategory(name);
+            setCategories((prev) => [...prev, c]);
+            return c;
+          }}
+          placeholder="No category"
+        />
         <Field label="Country">
           <Input value={form.country ?? ""} onChange={(e) => setForm({ ...form, country: e.target.value })} />
         </Field>

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
-import { decimalStringToCents, formatDate, formatMoney, todayIso } from "../lib/format";
+import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
+import { decimalStringToCents, formatDate, formatMoney, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
+  BulkDeleteBar,
   CHECKBOX_CLASS,
+  ConfirmDialog,
   EmptyState,
   Field,
   Input,
@@ -17,8 +19,9 @@ import {
   Select,
   Textarea,
 } from "../components/ui";
+import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconPackage, IconPlus, IconSearch } from "../components/icons";
+import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import type { OrderRecord } from "../lib/types";
 
@@ -47,6 +50,9 @@ const TICKET_TYPES = ["E-ticket", "PDF", "Mobile transfer", "Physical", "Will ca
 // `lastTicketsFilters`, so returning here (in particular via Order Detail's
 // context-aware Back link) finds the same search instead of starting blank.
 let lastOrdersSearch: string | null = null;
+// 2.0.27: same session-only "remember the last filter" convention, now for
+// the category filter added alongside search.
+let lastOrdersCategoryId: number | "" = "";
 
 /** Turns the free-form "Seats" input into one label per ticket.
  * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
@@ -74,17 +80,37 @@ export default function Orders() {
   const location = useLocation();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
+  const [categories, setCategories] = useState<EventCategory[]>([]);
   const [search, setSearch] = useState(lastOrdersSearch ?? "");
+  // 2.0.27: category filter (marko's request - filter Events/Orders/Sales by
+  // category). Deliberately just this one new filter - not also an Event
+  // filter, which nobody asked for here.
+  const [categoryId, setCategoryId] = useState<number | "">(lastOrdersCategoryId);
   const [modalOpen, setModalOpen] = useState(false);
   const [presetEventId, setPresetEventId] = useState<number | undefined>(undefined);
+  // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
+  // column sitting there all the time; the "Delete" toggle button below
+  // reveals it, and it disappears again the moment you confirm or cancel.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     lastOrdersSearch = search;
   }, [search]);
 
-  const load = (q?: string) => {
+  useEffect(() => {
+    lastOrdersCategoryId = categoryId;
+  }, [categoryId]);
+
+  useEffect(() => {
+    api.listEventCategories().then(setCategories).catch(() => {});
+  }, []);
+
+  const load = () => {
     api
-      .listOrders({ search: q || undefined })
+      .listOrders({ search: search || undefined, categoryId: categoryId || undefined })
       .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };
@@ -95,10 +121,49 @@ export default function Orders() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => load(search), 250);
+    const t = setTimeout(load, 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, categoryId]);
+
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = orders !== null && orders.length > 0 && orders.every((o) => selected.has(o.id));
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set((orders ?? []).map((o) => o.id)));
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const confirmDeleteSelected = async () => {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeleteOrders(Array.from(selected));
+      if (result.deletedIds.length > 0) {
+        toast.success(`${result.deletedIds.length} order${result.deletedIds.length === 1 ? "" : "s"} deleted`);
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+      setConfirmBulkDelete(false);
+      exitSelectionMode();
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
 
   useEffect(() => {
     // 1.8.3 (section 11): `openCreate` (no event preset) additionally lets
@@ -120,29 +185,60 @@ export default function Orders() {
         title="Orders"
         subtitle="Ticket purchases. Each order automatically generates one ticket per unit."
         actions={
-          <Button
-            variant="primary"
-            onClick={() => {
-              setPresetEventId(undefined);
-              setModalOpen(true);
-            }}
-          >
-            <IconPlus className="h-4 w-4" /> New Order
-          </Button>
+          <div className="flex items-center gap-2">
+            {!selectionMode && orders && orders.length > 0 && (
+              <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+                <IconTrash className="h-4 w-4" /> Delete
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              onClick={() => {
+                setPresetEventId(undefined);
+                setModalOpen(true);
+              }}
+            >
+              <IconPlus className="h-4 w-4" /> New Order
+            </Button>
+          </div>
         }
       />
 
-      <div className="mb-4 max-w-xs">
-        <div className="relative">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-          <Input
-            placeholder="Search orders..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="w-64">
+          <span className="label">Search</span>
+          <div className="relative">
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <Input
+              placeholder="Search orders..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+        </div>
+        <div className="w-52">
+          <span className="label">Category</span>
+          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
         </div>
       </div>
+
+      {selectionMode && (
+        <BulkDeleteBar
+          count={selected.size}
+          itemLabel="order"
+          busy={bulkDeleting}
+          onConfirm={() => setConfirmBulkDelete(true)}
+          onCancel={exitSelectionMode}
+        />
+      )}
 
       {orders && orders.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
@@ -209,6 +305,7 @@ export default function Orders() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              {selectionMode && <col className="w-8" />}
               <col className="w-[92px]" />
               <col />
               <col className="w-[84px]" />
@@ -221,6 +318,17 @@ export default function Orders() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                {selectionMode && (
+                  <th className="th-c">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all orders"
+                    />
+                  </th>
+                )}
                 <th className="th-c">Order</th>
                 <th className="th-c">Event</th>
                 <th className="th-c">Date</th>
@@ -238,10 +346,28 @@ export default function Orders() {
                   key={o.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
                   onClick={(e) => {
-                    if ((e.target as HTMLElement).closest("a")) return;
+                    // 2.0.28: excludes the new checkbox too (its own onChange
+                    // handles it), and while selectionMode is on, a row click
+                    // toggles selection instead of navigating away.
+                    if ((e.target as HTMLElement).closest("a, input")) return;
+                    if (selectionMode) {
+                      toggleOne(o.id);
+                      return;
+                    }
                     navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
                   }}
                 >
+                  {selectionMode && (
+                    <td className="td-c">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={selected.has(o.id)}
+                        onChange={() => toggleOne(o.id)}
+                        aria-label={`Select order ${o.code}`}
+                      />
+                    </td>
+                  )}
                   <td className="td-c truncate" title={o.code}>
                     <Link
                       to={`/orders/${o.id}`}
@@ -251,8 +377,23 @@ export default function Orders() {
                       {o.code}
                     </Link>
                   </td>
-                  <td className="td-c truncate" title={o.eventName}>
-                    {o.eventName}
+                  <td className="td-c" title={o.eventName}>
+                    {/* 2.0.27: category badge sits inline with the event
+                        name - this is already this table's tightest column
+                        at the smallest supported window (see the 1.9.10
+                        comment above), so the badge is shrink-0 and the name
+                        gives way via truncate rather than the other way
+                        round; falls back to this table's existing
+                        overflow-x-auto scroll at the extreme minimum, same
+                        as that comment already documents for Event alone. */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate">{o.eventName}</span>
+                      {o.categoryName && o.categoryColorSlot !== null && (
+                        <span className="shrink-0">
+                          <EventCategoryBadge name={o.categoryName} colorSlot={o.categoryColorSlot} />
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>
                   <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.notes ?? undefined}>
@@ -280,9 +421,20 @@ export default function Orders() {
         onClose={() => setModalOpen(false)}
         onCreated={(order) => {
           setModalOpen(false);
-          load(search);
+          load();
           navigate(`/orders/${order.id}`, { state: { from: location.pathname } });
         }}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} selected order${selected.size === 1 ? "" : "s"}?`}
+        message="Orders with sold tickets or any sales history (including refunds) will be skipped automatically. This cannot be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={bulkDeleting}
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={confirmDeleteSelected}
       />
     </div>
   );

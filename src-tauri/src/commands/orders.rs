@@ -2,7 +2,7 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance::{self, allocate_cents};
-use crate::models::{Order, OrderEditInput, OrderInput, OrderSalesSummary};
+use crate::models::{BulkDeleteResult, BulkDeleteSkip, Order, OrderEditInput, OrderInput, OrderSalesSummary};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
@@ -13,6 +13,7 @@ const LIST_CAP: i64 = 5000;
 const BASE_SQL: &str = "
     SELECT
       o.id, o.code, o.event_id, e.name as event_name,
+      e.category_id, ec.name as category_name, ec.color_slot as category_color_slot,
       o.supplier_id, sup.name as supplier_name,
       o.platform_id, p.name as platform_name,
       o.purchase_date, o.quantity, o.unit_price_cents, o.fees_cents, o.other_costs_cents,
@@ -24,6 +25,7 @@ const BASE_SQL: &str = "
       COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled_count
     FROM orders o
     JOIN events e ON e.id = o.event_id
+    LEFT JOIN event_categories ec ON ec.id = e.category_id
     LEFT JOIN suppliers sup ON sup.id = o.supplier_id
     LEFT JOIN platforms p ON p.id = o.platform_id
     LEFT JOIN tickets t ON t.order_id = o.id
@@ -35,6 +37,9 @@ fn map_order(row: &Row) -> rusqlite::Result<Order> {
         code: row.get("code")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        category_id: row.get("category_id")?,
+        category_name: row.get("category_name")?,
+        category_color_slot: row.get("category_color_slot")?,
         supplier_id: row.get("supplier_id")?,
         supplier_name: row.get("supplier_name")?,
         platform_id: row.get("platform_id")?,
@@ -91,6 +96,10 @@ fn list_orders_impl(
     section: Option<String>,
     date_from: Option<String>,
     date_to: Option<String>,
+    // 2.0.27: appended at the end rather than inserted between existing
+    // params, same "every pre-existing call site just gains one trailing
+    // None" convention sales.rs's list_sale_groups_impl already documents.
+    category_id: Option<i64>,
 ) -> AppResult<Vec<Order>> {
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
@@ -110,6 +119,10 @@ fn list_orders_impl(
     if let Some(pid) = platform_id {
         sql.push_str(" AND o.platform_id = ?");
         params_vec.push(Box::new(pid));
+    }
+    if let Some(cid) = category_id {
+        sql.push_str(" AND e.category_id = ?");
+        params_vec.push(Box::new(cid));
     }
     if let Some(from) = date_from.as_deref() {
         if !from.is_empty() {
@@ -190,11 +203,12 @@ pub fn list_orders(
     section: Option<String>,
     date_from: Option<String>,
     date_to: Option<String>,
+    category_id: Option<i64>,
 ) -> AppResult<Vec<Order>> {
     let conn = state.db.lock().unwrap();
     list_orders_impl(
         &conn, search, event_id, order_id, supplier_id, platform_id, status, section, date_from,
-        date_to,
+        date_to, category_id,
     )
 }
 
@@ -408,16 +422,24 @@ pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> A
     Ok(order)
 }
 
-fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
+/// Returns `Some(reason)` if order `id` cannot be safely deleted (it has
+/// sold tickets, or any sales history at all - including a refunded one),
+/// `None` if it's safe. Split out of `delete_order_impl` in 2.0.28 so
+/// `bulk_delete_orders_impl` enforces EXACTLY the same rule, word-for-word,
+/// as deleting one order at a time from Order Detail always has - the two
+/// paths can never drift on what "safe to delete" means. Deliberately
+/// doesn't check whether the order itself exists: the two callers want
+/// different behavior for a missing id (single delete errors immediately;
+/// bulk delete records it as one skip among possibly many and keeps going),
+/// so that check stays with each caller.
+fn order_delete_blocker(conn: &Connection, id: i64) -> AppResult<Option<String>> {
     let sold_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tickets WHERE order_id = ?1 AND status = 'sold'",
         [id],
         |r| r.get(0),
     )?;
     if sold_count > 0 {
-        return Err(AppError::Validation(
-            "This order has sold tickets and cannot be deleted.".into(),
-        ));
+        return Ok(Some("This order has sold tickets and cannot be deleted.".into()));
     }
     // A refunded sale is no longer "sold" (the ticket already returned to
     // available), but any sales row still on record - including a refunded
@@ -434,9 +456,16 @@ fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
         |r| r.get(0),
     )?;
     if sale_history_count > 0 {
-        return Err(AppError::Validation(
+        return Ok(Some(
             "This order has sales history (including refunds) and cannot be deleted.".into(),
         ));
+    }
+    Ok(None)
+}
+
+fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
+    if let Some(reason) = order_delete_blocker(conn, id)? {
+        return Err(AppError::Validation(reason));
     }
     let changed = conn.execute("DELETE FROM orders WHERE id = ?1", [id])?;
     if changed == 0 {
@@ -449,6 +478,46 @@ fn delete_order_impl(conn: &Connection, id: i64) -> AppResult<()> {
 pub fn delete_order(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     delete_order_impl(&conn, id)
+}
+
+/// 2.0.28: bulk delete for the new "Delete" selection mode on the Orders
+/// list. See `models::BulkDeleteResult`'s doc comment for why this uses a
+/// per-id skip-with-reason model instead of the codebase's usual
+/// all-or-nothing bulk-write pattern: everything that passes
+/// `order_delete_blocker` is removed together in one transaction, and
+/// anything that doesn't is reported back with the exact same message
+/// `delete_order`/Order Detail already show for that same order, one at a
+/// time.
+pub(crate) fn bulk_delete_orders_impl(conn: &mut Connection, ids: &[i64]) -> AppResult<BulkDeleteResult> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one order to delete".into()));
+    }
+    let tx = conn.transaction()?;
+    let mut deleted_ids = Vec::new();
+    let mut skipped = Vec::new();
+    for &id in ids {
+        if let Some(reason) = order_delete_blocker(&tx, id)? {
+            skipped.push(BulkDeleteSkip { id, reason });
+            continue;
+        }
+        let changed = tx.execute("DELETE FROM orders WHERE id = ?1", [id])?;
+        if changed > 0 {
+            deleted_ids.push(id);
+        } else {
+            skipped.push(BulkDeleteSkip {
+                id,
+                reason: "Not found - already deleted?".into(),
+            });
+        }
+    }
+    tx.commit()?;
+    Ok(BulkDeleteResult { deleted_ids, skipped })
+}
+
+#[tauri::command]
+pub fn bulk_delete_orders(state: State<AppState>, ids: Vec<i64>) -> AppResult<BulkDeleteResult> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_delete_orders_impl(&mut conn, &ids)
 }
 
 #[cfg(test)]
@@ -620,6 +689,71 @@ mod tests {
         assert_eq!(still_there, 0);
     }
 
+    // ---- bulk delete (2.0.28) ---------------------------------------------
+
+    #[test]
+    fn bulk_delete_orders_removes_every_selected_safe_order() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_a = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let order_b = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let order_c = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+
+        let result = bulk_delete_orders_impl(&mut conn, &[order_a, order_b]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![order_a, order_b]);
+        assert!(result.skipped.is_empty());
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 1, "only the unselected order_c should be left");
+        let c_still_there: i64 = conn
+            .query_row("SELECT COUNT(*) FROM orders WHERE id = ?1", [order_c], |r| r.get(0))
+            .unwrap();
+        assert_eq!(c_still_there, 1);
+    }
+
+    #[test]
+    fn bulk_delete_orders_skips_one_with_sale_history_but_still_deletes_the_rest() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+
+        // A safe order - never sold.
+        let safe_order = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+
+        // An order blocked by sale history, same setup as
+        // delete_blocked_by_sale_history_even_after_refund above.
+        let blocked_order = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let ticket_id: i64 = conn
+            .query_row("SELECT id FROM tickets WHERE order_id = ?1", [blocked_order], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, payment_status)
+             VALUES ('SAL-000001', ?1, '2026-02-01', 1500, 'refunded')",
+            [ticket_id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='available' WHERE id=?1", [ticket_id])
+            .unwrap();
+
+        let result = bulk_delete_orders_impl(&mut conn, &[safe_order, blocked_order]).unwrap();
+
+        assert_eq!(result.deleted_ids, vec![safe_order], "the safe order must still go through");
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].id, blocked_order);
+        assert!(result.skipped[0].reason.contains("sales history"));
+
+        let blocked_still_there: i64 = conn
+            .query_row("SELECT COUNT(*) FROM orders WHERE id = ?1", [blocked_order], |r| r.get(0))
+            .unwrap();
+        assert_eq!(blocked_still_there, 1, "the blocked order must survive, not be partially touched");
+    }
+
+    #[test]
+    fn bulk_delete_orders_rejects_an_empty_selection() {
+        let mut conn = test_conn();
+        let err = bulk_delete_orders_impl(&mut conn, &[]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
     // ---- Order-grouped Tickets view: counts, filters, sales summary ------
 
     fn ticket_ids(conn: &Connection, order_id: i64) -> Vec<i64> {
@@ -750,6 +884,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(sold_orders.len(), 1, "only order1 has a sold ticket");
@@ -778,7 +913,7 @@ mod tests {
         insert_order_with_tickets(&conn, &b, false).unwrap();
 
         let by_section = list_orders_impl(
-            &conn, None, None, None, None, None, None, Some("VIP".to_string()), None, None,
+            &conn, None, None, None, None, None, None, Some("VIP".to_string()), None, None, None,
         )
         .unwrap();
         assert_eq!(by_section.len(), 1);
@@ -795,6 +930,7 @@ mod tests {
             None,
             Some("2026-01-01".to_string()),
             Some("2026-02-01".to_string()),
+            None,
         )
         .unwrap();
         assert_eq!(by_date.len(), 1);
@@ -845,7 +981,7 @@ mod tests {
         let target_code = ticket_code(&conn, tickets[1]);
 
         let results =
-            list_orders_impl(&conn, Some(target_code.clone()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some(target_code.clone()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(results.len(), 1, "exact ticket code must find its order: {target_code}");
@@ -867,7 +1003,7 @@ mod tests {
         assert_ne!(partial, full_code, "sanity: must be a genuine substring, not the whole code");
 
         let results =
-            list_orders_impl(&conn, Some(partial.to_string()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some(partial.to_string()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(results.len(), 1, "partial ticket code {partial:?} must still find the order");
@@ -908,25 +1044,25 @@ mod tests {
         let order_code = fetch_one(&conn, order_by_event).unwrap().code;
 
         let by_order_code =
-            list_orders_impl(&conn, Some(order_code.clone()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some(order_code.clone()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(by_order_code.len(), 1);
         assert_eq!(by_order_code[0].id, order_by_event);
 
         let by_event_name =
-            list_orders_impl(&conn, Some("Coldplay".to_string()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some("Coldplay".to_string()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(by_event_name.len(), 1);
         assert_eq!(by_event_name[0].id, order_by_event);
 
         let by_supplier =
-            list_orders_impl(&conn, Some("Acme".to_string()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some("Acme".to_string()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(by_supplier.len(), 1);
         assert_eq!(by_supplier[0].id, order_by_supplier);
 
         let by_platform =
-            list_orders_impl(&conn, Some("Viagogo".to_string()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some("Viagogo".to_string()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(by_platform.len(), 1);
         assert_eq!(by_platform[0].id, order_by_platform);
@@ -939,7 +1075,7 @@ mod tests {
         insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
 
         let results =
-            list_orders_impl(&conn, Some("TKT-999999".to_string()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some("TKT-999999".to_string()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
 
         assert!(results.is_empty(), "a ticket code that doesn't exist must find nothing");
@@ -961,7 +1097,7 @@ mod tests {
         let searched_code = ticket_code(&conn, tickets[3]); // still 'available'
 
         let results =
-            list_orders_impl(&conn, Some(searched_code.clone()), None, None, None, None, None, None, None, None)
+            list_orders_impl(&conn, Some(searched_code.clone()), None, None, None, None, None, None, None, None, None)
                 .unwrap();
 
         // Multiple tickets belong to the same order - searching by one of

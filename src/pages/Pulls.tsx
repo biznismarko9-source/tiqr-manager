@@ -17,11 +17,13 @@ import {
   formatDate,
   formatMoney,
   formatSeatLocation,
+  summarizeBulkDeleteSkips,
   todayIso,
 } from "../lib/format";
 import {
   Badge,
   Button,
+  BulkDeleteBar,
   CHECKBOX_CLASS,
   ConfirmDialog,
   EmptyState,
@@ -35,7 +37,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconUsers } from "../components/icons";
+import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconTrash, IconUsers } from "../components/icons";
 import { useToast } from "../lib/toast";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
@@ -159,6 +161,13 @@ function GivenPulls() {
   const [modalPull, setModalPull] = useState<Pull | null | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<Pull | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
+  // column sitting there all the time; the "Delete" toggle button below
+  // reveals it, and it disappears again the moment you confirm or cancel.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     lastPullsSearch = search;
@@ -170,6 +179,45 @@ function GivenPulls() {
       .listPulls({ search: q || undefined, transferDone: f === "all" ? undefined : f === "done" })
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
+  };
+
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = pulls !== null && pulls.length > 0 && pulls.every((p) => selected.has(p.id));
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set((pulls ?? []).map((p) => p.id)));
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const confirmDeleteSelected = async () => {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeletePulls(Array.from(selected));
+      if (result.deletedIds.length > 0) {
+        toast.success(`${result.deletedIds.length} pull${result.deletedIds.length === 1 ? "" : "s"} deleted`);
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+      setConfirmBulkDelete(false);
+      exitSelectionMode();
+      load(search);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   useEffect(() => {
@@ -229,10 +277,27 @@ function GivenPulls() {
             </Select>
           </div>
         </div>
-        <Button variant="primary" onClick={() => setModalPull(null)}>
-          <IconPlus className="h-4 w-4" /> New Pull
-        </Button>
+        <div className="flex items-center gap-2">
+          {!selectionMode && pulls && pulls.length > 0 && (
+            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+              <IconTrash className="h-4 w-4" /> Delete
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setModalPull(null)}>
+            <IconPlus className="h-4 w-4" /> New Pull
+          </Button>
+        </div>
       </div>
+
+      {selectionMode && (
+        <BulkDeleteBar
+          count={selected.size}
+          itemLabel="pull"
+          busy={bulkDeleting}
+          onConfirm={() => setConfirmBulkDelete(true)}
+          onCancel={exitSelectionMode}
+        />
+      )}
 
       {pulls && pulls.length >= LIST_CAP && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
@@ -283,6 +348,7 @@ function GivenPulls() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              {selectionMode && <col className="w-8" />}
               <col className="w-[80px]" />
               <col className="w-[92px]" />
               <col />
@@ -297,6 +363,17 @@ function GivenPulls() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                {selectionMode && (
+                  <th className="th-c">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all pulls"
+                    />
+                  </th>
+                )}
                 <th className="th-c">Pull</th>
                 <th className="th-c">For</th>
                 <th className="th-c">Event</th>
@@ -323,9 +400,24 @@ function GivenPulls() {
                     className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
                     onClick={(e) => {
                       if ((e.target as HTMLElement).closest("input, button")) return;
+                      if (selectionMode) {
+                        toggleOne(p.id);
+                        return;
+                      }
                       setModalPull(p);
                     }}
                   >
+                    {selectionMode && (
+                      <td className="td-c align-top">
+                        <input
+                          type="checkbox"
+                          className={CHECKBOX_CLASS}
+                          checked={selected.has(p.id)}
+                          onChange={() => toggleOne(p.id)}
+                          aria-label={`Select pull ${p.code}`}
+                        />
+                      </td>
+                    )}
                     <td
                       className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
                       title={`Added ${formatDate(p.createdAt)}`}
@@ -412,6 +504,17 @@ function GivenPulls() {
         busy={deleting}
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} selected pull${selected.size === 1 ? "" : "s"}?`}
+        message="This removes the selected pulls permanently. This can't be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={bulkDeleting}
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={confirmDeleteSelected}
       />
     </>
   );
@@ -680,6 +783,13 @@ function ReceivedPulls() {
   const [modalPull, setModalPull] = useState<PullReceived | null | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<PullReceived | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
+  // column sitting there all the time; the "Delete" toggle button below
+  // reveals it, and it disappears again the moment you confirm or cancel.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     lastPullsReceivedSearch = search;
@@ -690,6 +800,45 @@ function ReceivedPulls() {
       .listPullsReceived({ search: q || undefined })
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
+  };
+
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = pulls !== null && pulls.length > 0 && pulls.every((p) => selected.has(p.id));
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set((pulls ?? []).map((p) => p.id)));
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const confirmDeleteSelected = async () => {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeletePullsReceived(Array.from(selected));
+      if (result.deletedIds.length > 0) {
+        toast.success(`${result.deletedIds.length} pull${result.deletedIds.length === 1 ? "" : "s"} deleted`);
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+      setConfirmBulkDelete(false);
+      exitSelectionMode();
+      load(search);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   useEffect(() => {
@@ -731,10 +880,27 @@ function ReceivedPulls() {
             className="pl-9"
           />
         </div>
-        <Button variant="primary" onClick={() => setModalPull(null)}>
-          <IconPlus className="h-4 w-4" /> New received pull
-        </Button>
+        <div className="flex items-center gap-2">
+          {!selectionMode && pulls && pulls.length > 0 && (
+            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+              <IconTrash className="h-4 w-4" /> Delete
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setModalPull(null)}>
+            <IconPlus className="h-4 w-4" /> New received pull
+          </Button>
+        </div>
       </div>
+
+      {selectionMode && (
+        <BulkDeleteBar
+          count={selected.size}
+          itemLabel="received pull"
+          busy={bulkDeleting}
+          onConfirm={() => setConfirmBulkDelete(true)}
+          onCancel={exitSelectionMode}
+        />
+      )}
 
       {pulls && pulls.length >= LIST_CAP && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
@@ -765,6 +931,7 @@ function ReceivedPulls() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             <colgroup>
+              {selectionMode && <col className="w-8" />}
               <col className="w-[92px]" />
               <col className="w-[150px]" />
               <col />
@@ -776,6 +943,17 @@ function ReceivedPulls() {
             </colgroup>
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                {selectionMode && (
+                  <th className="th-c">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all received pulls"
+                    />
+                  </th>
+                )}
                 <th className="th-c">Pull</th>
                 <th className="th-c">From</th>
                 <th className="th-c">Event</th>
@@ -793,9 +971,24 @@ function ReceivedPulls() {
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
                   onClick={(e) => {
                     if ((e.target as HTMLElement).closest("input, button, a")) return;
+                    if (selectionMode) {
+                      toggleOne(p.id);
+                      return;
+                    }
                     setModalPull(p);
                   }}
                 >
+                  {selectionMode && (
+                    <td className="td-c align-top">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={selected.has(p.id)}
+                        onChange={() => toggleOne(p.id)}
+                        aria-label={`Select pull ${p.code}`}
+                      />
+                    </td>
+                  )}
                   <td
                     className="td-c truncate align-top font-medium text-slate-900 dark:text-slate-100"
                     title={`Added ${formatDate(p.createdAt)}`}
@@ -867,6 +1060,17 @@ function ReceivedPulls() {
         busy={deleting}
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={`Delete ${selected.size} selected received pull${selected.size === 1 ? "" : "s"}?`}
+        message="This removes the selected received pulls permanently (any linked orders themselves are not affected). This can't be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={bulkDeleting}
+        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={confirmDeleteSelected}
       />
     </>
   );
