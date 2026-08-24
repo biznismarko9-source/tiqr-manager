@@ -644,6 +644,46 @@ pub fn delete_conditional_format_rule_request(sheet_id: i64, index: i64) -> serd
     })
 }
 
+/// Builds one `repeatCell` request bolding the text of a vertical range,
+/// with an optional flat background color - 2.0.40, for the small
+/// summary "widgets" this app writes to the side of a sheet
+/// (commands::pulls_sheet_sync's Total price, commands::orders_sheet_sync's
+/// Summary block). Unlike `add_conditional_format_color_request` above,
+/// this is a plain, unconditional cell format (not a rule keyed on the
+/// cell's text) - the right tool here since every cell in these ranges
+/// should always look this way, not only when it happens to equal some
+/// specific value.
+///
+/// Deliberately does NOT also set a currency number format: that would need
+/// this app to know the connected spreadsheet's own locale (which decides
+/// whether "1234.5" reads as "1 234,50 €" or "1,234.50 €" once a currency
+/// pattern is applied), which nothing here currently tracks - only the
+/// connection's 3-letter currency CODE (EUR/USD/GBP) is known, not its
+/// locale. Guessing wrong would make the sheet look broken rather than
+/// simply plain, so this intentionally leaves these cells as plain numbers
+/// for now (still fully correct as formulas - see REDESIGN-2.0.40-REPORT.md
+/// for the plain "how to apply Sheets' own currency formatting yourself in
+/// 10 seconds" note to marko).
+pub fn bold_header_request(sheet_id: i64, start_row: i64, end_row: i64, col_index: i64, background: Option<(f64, f64, f64)>) -> serde_json::Value {
+    let mut format = serde_json::json!({ "textFormat": { "bold": true } });
+    if let Some((red, green, blue)) = background {
+        format["backgroundColor"] = serde_json::json!({ "red": red, "green": green, "blue": blue });
+    }
+    serde_json::json!({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": start_row,
+                "endRowIndex": end_row,
+                "startColumnIndex": col_index,
+                "endColumnIndex": col_index + 1
+            },
+            "cell": { "userEnteredFormat": format },
+            "fields": "userEnteredFormat(textFormat,backgroundColor)"
+        }
+    })
+}
+
 /// The (partial) shape of the Sheets API's `spreadsheets.create` response
 /// this app actually reads. Sheets returns a great deal more (every sheet's
 /// full grid properties, default formatting, ...) - `serde` silently ignores

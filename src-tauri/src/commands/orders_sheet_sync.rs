@@ -1940,11 +1940,126 @@ fn plan_sheet_color_updates(headers: &[String]) -> Vec<ColorSpec> {
     specs
 }
 
-/// The network shell for `plan_sheet_structure_updates` above - sends its
-/// plan as real `batchUpdate` (dropdowns) and `update_values_as_formulas`
-/// (Revenue/Profit) calls. Called at the end of `sync_orders_impl`/
-/// `sync_sales_impl`/`push_orders_impl`/`push_sales_impl` - see this
-/// section's own doc comment for why all four call it.
+/// 2.0.40: background for the Summary/Summary-Paid/Summary-Unpaid header
+/// cells only - same flat, unconditional header style (and same shade) as
+/// pulls_sheet_sync::TOTAL_PRICE_HEADER_BACKGROUND, kept as this module's own
+/// copy rather than a shared constant, same file-local duplication
+/// convention this module already follows for column_index_to_a1/now_iso/
+/// DROPDOWN_ROW_BUFFER. Deliberately distinct from COLOR_GREEN/COLOR_ORANGE/
+/// COLOR_BROWN above - those are conditional-format cell colors keyed on a
+/// row's own data value, this is an unconditional label style.
+const SUMMARY_HEADER_BACKGROUND: (f64, f64, f64) = (0.85, 0.88, 0.95);
+
+/// One column's worth of a `plan_orders_summary_updates` write - either RAW
+/// text (a label) or USER_ENTERED (a formula), never mixed within one
+/// column. `values[0]` is always row 1.
+struct SheetColumnWrite {
+    col_index: usize,
+    values: Vec<String>,
+}
+
+/// The full plan `plan_orders_summary_updates` below produces - two lists of
+/// column writes, kept separate because RAW and USER_ENTERED are two
+/// different Sheets API calls (`google_sheets::update_values` vs.
+/// `update_values_as_formulas`) with two different `valueInputOption`s, and
+/// this module never mixes the two within one call - see google_sheets.rs's
+/// own doc comment on why that split exists at all.
+struct OrdersSummarySpec {
+    text_columns: Vec<SheetColumnWrite>,
+    formula_columns: Vec<SheetColumnWrite>,
+}
+
+/// 2.0.40: marko's own request - a small automatically-calculated summary
+/// table (Total Cost/Revenue/Profit, plus a Paid/Unpaid revenue split),
+/// placed to the right of the sheet's own data columns rather than mixed
+/// into them: "nedavaj to hned za how much pull ale nechaj 2 volne stlpce a
+/// do 3. zacni" (don't put it right after `how much pull`, leave 2 free
+/// columns, start at the 3rd) - so `start_col` is always `how_much_pull_col
+/// + 3`, recomputed fresh from the sheet's real current headers every time,
+/// never a hardcoded letter (same convention as every other column lookup
+/// in this module - marko's own draft used fixed letters H/P/Q/T, which
+/// happen to match `ORDERS_SHEET_HEADERS`'s canonical order exactly, but a
+/// dynamic lookup is what actually keeps this correct if his real sheet ever
+/// differs from that canonical order).
+///
+/// Layout (6 columns wide, `start_col` = leftmost):
+/// | col+0 | col+1 | col+2 | col+3 | col+4 | col+5 |
+/// |---|---|---|---|---|---|
+/// | Summary | (total cost) | Summary-Paid | (total paid) | Summary-Unpaid | (total unpaid) |
+/// | Total Cost | =SUM(total purchase price) | Total Paid | =SUMIF(...,"Paid",...) | Total Unpaid | =SUM(revenue)-SUMIF(...,"Paid",...) |
+/// | Total Revenue | =SUM(revenue) | | | | |
+/// | Total Profit | =SUM(profit) | | | | |
+///
+/// All 5 source columns (`how much pull` for placement, `Total Purchase
+/// Price`/`Revenue`/`Profit`/`Payout status` for the actual math) must be
+/// present or the WHOLE block is skipped (`None`) - deliberately
+/// all-or-nothing, unlike the finer-grained per-formula tolerance
+/// `plan_sheet_structure_updates` above uses for Revenue/Profit. Those are
+/// two independent standalone columns elsewhere in the sheet; this is one
+/// small coherent visual table, and a partially-rendered version of it (a
+/// "Total Profit" label with no formula next to it, or a table missing one
+/// of its own rows) would look broken rather than simply absent. marko's
+/// own real sheet has all 5 (his own draft formulas used exactly these), so
+/// this is not expected to bite in practice.
+///
+/// **The "Unpaid" formula is deliberately NOT `SUMIF(status, "Unpaid",
+/// revenue)`, unlike marko's own first draft.** `Payout status` only ever
+/// actually contains `pending` (including blank) or `paid` - see the parser
+/// above (`let payment_status = match ... "pending"/"paid"/"refunded" ...`)
+/// and `PAYOUT_STATUS_OPTIONS`'s own dropdown ("Pending"/"Paid"). Literal
+/// text "Unpaid" never appears in that column, so a literal `SUMIF` match
+/// against it would always compute zero - not what marko is actually after.
+/// "Total Unpaid" is instead `total revenue - whatever is marked Paid`,
+/// which correctly means "everything not yet paid" regardless of whether a
+/// not-yet-paid row is blank or literally "Pending".
+fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> {
+    let map = build_header_map(headers);
+    let how_much_pull_col = find_col(&map, &["how much pull"])?;
+    let total_col = find_col(&map, &["total purchase price"])?;
+    let revenue_col = find_col(&map, &["revenue"])?;
+    let profit_col = find_col(&map, &["profit"])?;
+    let payout_status_col = find_col(&map, &["payout status"])?;
+
+    let total_letter = column_index_to_a1(total_col);
+    let revenue_letter = column_index_to_a1(revenue_col);
+    let profit_letter = column_index_to_a1(profit_col);
+    let payout_status_letter = column_index_to_a1(payout_status_col);
+
+    let start_col = how_much_pull_col + 3;
+
+    let cost_formula = format!("=SUM({total_letter}:{total_letter})");
+    let revenue_formula = format!("=SUM({revenue_letter}:{revenue_letter})");
+    let profit_formula = format!("=SUM({profit_letter}:{profit_letter})");
+    let paid_formula =
+        format!("=SUMIF({payout_status_letter}:{payout_status_letter},\"Paid\",{revenue_letter}:{revenue_letter})");
+    let unpaid_formula = format!(
+        "=SUM({revenue_letter}:{revenue_letter})-SUMIF({payout_status_letter}:{payout_status_letter},\"Paid\",{revenue_letter}:{revenue_letter})"
+    );
+
+    Some(OrdersSummarySpec {
+        text_columns: vec![
+            SheetColumnWrite {
+                col_index: start_col,
+                values: vec!["Summary".to_string(), "Total Cost".to_string(), "Total Revenue".to_string(), "Total Profit".to_string()],
+            },
+            SheetColumnWrite { col_index: start_col + 2, values: vec!["Summary-Paid".to_string(), "Total Paid".to_string()] },
+            SheetColumnWrite { col_index: start_col + 4, values: vec!["Summary-Unpaid".to_string(), "Total Unpaid".to_string()] },
+        ],
+        formula_columns: vec![
+            SheetColumnWrite { col_index: start_col + 1, values: vec![String::new(), cost_formula, revenue_formula, profit_formula] },
+            SheetColumnWrite { col_index: start_col + 3, values: vec![String::new(), paid_formula] },
+            SheetColumnWrite { col_index: start_col + 5, values: vec![String::new(), unpaid_formula] },
+        ],
+    })
+}
+
+/// The network shell for `plan_sheet_structure_updates`/
+/// `plan_orders_summary_updates` above - sends their plan as real
+/// `batchUpdate` (dropdowns), `update_values_as_formulas` (Revenue/Profit,
+/// summary formulas) and `update_values` (summary labels) calls. Called at
+/// the end of `sync_orders_impl`/`sync_sales_impl`/`push_orders_impl`/
+/// `push_sales_impl` - see this section's own doc comment for why all four
+/// call it.
 ///
 /// Deliberately never fails the calling command outright - a problem here
 /// (e.g. the tab's numeric ID couldn't be resolved, or Sheets rejected the
@@ -1961,9 +2076,10 @@ fn ensure_orders_sheet_structure(
 ) -> AppResult<()> {
     let (dropdowns, revenue, profit) = plan_sheet_structure_updates(conn, headers, data_rows.len())?;
     let colors = plan_sheet_color_updates(headers);
+    let summary = plan_orders_summary_updates(headers);
 
-    if !dropdowns.is_empty() || !colors.is_empty() {
-        // One shared metadata fetch for both - `get_sheet_structure_metadata`
+    if !dropdowns.is_empty() || !colors.is_empty() || summary.is_some() {
+        // One shared metadata fetch for all three - `get_sheet_structure_metadata`
         // folds in the same numeric sheetId `get_sheet_numeric_id` alone
         // would return, so there is never a reason to call both.
         let metadata = google_sheets::get_sheet_structure_metadata(token, spreadsheet_id, sheet_tab)?;
@@ -2001,6 +2117,16 @@ fn ensure_orders_sheet_structure(
             dropdowns.iter().map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values)),
         );
 
+        if let Some(spec) = &summary {
+            // Bold+background on row 1 of each of the block's 3 label
+            // columns only (Summary/Summary-Paid/Summary-Unpaid) - never the
+            // formula columns next to them, same "style the label, not the
+            // number" choice pulls_sheet_sync makes for Total price (€).
+            for col in &spec.text_columns {
+                requests.push(google_sheets::bold_header_request(sheet_id, 0, 1, col.col_index as i64, Some(SUMMARY_HEADER_BACKGROUND)));
+            }
+        }
+
         if !requests.is_empty() {
             google_sheets::batch_update(token, spreadsheet_id, requests)?;
         }
@@ -2014,6 +2140,21 @@ fn ensure_orders_sheet_structure(
         let range = google_sheets::a1_range(sheet_tab, &format!("{letter}2:{letter}{}", 1 + spec.formulas.len()));
         let values: Vec<Vec<String>> = spec.formulas.iter().map(|f| vec![f.clone()]).collect();
         google_sheets::update_values_as_formulas(token, spreadsheet_id, &range, &values)?;
+    }
+
+    if let Some(summary) = summary {
+        for col in &summary.text_columns {
+            let letter = column_index_to_a1(col.col_index);
+            let range = google_sheets::a1_range(sheet_tab, &format!("{letter}1:{letter}{}", col.values.len()));
+            let values: Vec<Vec<String>> = col.values.iter().map(|v| vec![v.clone()]).collect();
+            google_sheets::update_values(token, spreadsheet_id, &range, &values)?;
+        }
+        for col in &summary.formula_columns {
+            let letter = column_index_to_a1(col.col_index);
+            let range = google_sheets::a1_range(sheet_tab, &format!("{letter}1:{letter}{}", col.values.len()));
+            let values: Vec<Vec<String>> = col.values.iter().map(|v| vec![v.clone()]).collect();
+            google_sheets::update_values_as_formulas(token, spreadsheet_id, &range, &values)?;
+        }
     }
 
     Ok(())
@@ -3658,6 +3799,106 @@ mod tests {
         // formula list, exactly matching there being 0 real data rows yet.
         assert_eq!(revenue.unwrap().formulas.len(), 0);
         assert_eq!(profit.unwrap().formulas.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Summary block (2.0.40) - marko's own request for an automatically-
+    // calculated Total Cost/Revenue/Profit + Paid/Unpaid breakdown, placed 2
+    // free columns past "how much pull".
+    // -----------------------------------------------------------------------
+
+    /// Every column `plan_orders_summary_updates` looks for, deliberately
+    /// scrambled relative to `ORDERS_SHEET_HEADERS` - same "prove this is a
+    /// real name lookup, not a hardcoded letter" philosophy as
+    /// `structure_headers()` above.
+    fn summary_headers() -> Vec<String> {
+        vec!["Ticket Type", "Payout status", "Site Listed", "Revenue", "Profit", "Total Purchase Price", "how much pull", "Status"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn text_col<'a>(spec: &'a OrdersSummarySpec, col_index: usize) -> Option<&'a Vec<String>> {
+        spec.text_columns.iter().find(|c| c.col_index == col_index).map(|c| &c.values)
+    }
+
+    fn formula_col<'a>(spec: &'a OrdersSummarySpec, col_index: usize) -> Option<&'a Vec<String>> {
+        spec.formula_columns.iter().find(|c| c.col_index == col_index).map(|c| &c.values)
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_starts_3_columns_past_how_much_pull_leaving_2_free() {
+        // "how much pull" is index 6 in summary_headers() -> start_col = 9.
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        assert!(text_col(&spec, 9).is_some(), "Summary label column must be at how_much_pull_col + 3");
+        assert!(text_col(&spec, 7).is_none(), "column 7 (how_much_pull + 1) must be left free");
+        assert!(text_col(&spec, 8).is_none(), "column 8 (how_much_pull + 2) must be left free");
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_summary_block_has_the_right_labels_and_real_column_formulas() {
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        assert_eq!(text_col(&spec, 9), Some(&vec!["Summary".to_string(), "Total Cost".to_string(), "Total Revenue".to_string(), "Total Profit".to_string()]));
+        // Total Purchase Price=F, Revenue=D, Profit=E in summary_headers().
+        assert_eq!(
+            formula_col(&spec, 10),
+            Some(&vec![String::new(), "=SUM(F:F)".to_string(), "=SUM(D:D)".to_string(), "=SUM(E:E)".to_string()])
+        );
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_paid_sums_revenue_where_payout_status_is_paid() {
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        assert_eq!(text_col(&spec, 11), Some(&vec!["Summary-Paid".to_string(), "Total Paid".to_string()]));
+        // Payout status=B, Revenue=D.
+        assert_eq!(formula_col(&spec, 12), Some(&vec![String::new(), "=SUMIF(B:B,\"Paid\",D:D)".to_string()]));
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_unpaid_is_total_revenue_minus_paid_never_a_literal_unpaid_match() {
+        // The one deliberate correction vs. marko's own first draft - see
+        // plan_orders_summary_updates's own doc comment for why a literal
+        // SUMIF(status,"Unpaid",...) would always be zero.
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        assert_eq!(text_col(&spec, 13), Some(&vec!["Summary-Unpaid".to_string(), "Total Unpaid".to_string()]));
+        let unpaid = formula_col(&spec, 14).unwrap();
+        assert_eq!(unpaid[1], "=SUM(D:D)-SUMIF(B:B,\"Paid\",D:D)");
+        assert!(!unpaid[1].to_lowercase().contains("\"unpaid\""), "must never literally match the text Unpaid");
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_against_the_real_canonical_header_order_matches_markos_own_draft_letters() {
+        // marko's own draft formulas used fixed letters H/P/Q/T - this proves
+        // those exactly match ORDERS_SHEET_HEADERS's real canonical order
+        // (Total Purchase Price=H, Revenue=P, Profit=Q, Payout status=T),
+        // and that the block lands at AB (how much pull=Y, index 24, +3=27).
+        let headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let spec = plan_orders_summary_updates(&headers).unwrap();
+        assert_eq!(column_index_to_a1(27), "AB");
+        assert!(text_col(&spec, 27).is_some(), "block must start at column AB (index 27)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[1], "=SUM(H:H)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[2], "=SUM(P:P)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[3], "=SUM(Q:Q)");
+        assert_eq!(formula_col(&spec, 30).unwrap()[1], "=SUMIF(T:T,\"Paid\",P:P)");
+        assert_eq!(formula_col(&spec, 32).unwrap()[1], "=SUM(P:P)-SUMIF(T:T,\"Paid\",P:P)");
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_is_none_when_how_much_pull_is_missing() {
+        let headers = row(&["Total Purchase Price", "Revenue", "Profit", "Payout status"]);
+        assert!(plan_orders_summary_updates(&headers).is_none(), "no anchor column means no defined placement");
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_is_all_or_nothing_when_any_one_math_column_is_missing() {
+        // Deliberately all-or-nothing (unlike plan_sheet_structure_updates's
+        // per-formula tolerance) - see this function's own doc comment for
+        // why a partially-rendered summary table is worse than none at all.
+        let missing_profit = row(&["how much pull", "Total Purchase Price", "Revenue", "Payout status"]);
+        assert!(plan_orders_summary_updates(&missing_profit).is_none());
+
+        let missing_payout_status = row(&["how much pull", "Total Purchase Price", "Revenue", "Profit"]);
+        assert!(plan_orders_summary_updates(&missing_payout_status).is_none());
     }
 
     // -----------------------------------------------------------------------

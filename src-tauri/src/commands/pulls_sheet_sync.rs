@@ -70,6 +70,11 @@ use tauri::State;
 /// dedicated, app-owned column rather than reusing an existing one.
 const MARKER_HEADER: &str = "TIQR ID";
 
+/// 2.0.40: marko's own request - a running total of every `Price` value on
+/// the sheet, placed immediately after `MARKER_HEADER` - see
+/// `plan_pulls_total_price_update` further down.
+const TOTAL_PRICE_HEADER: &str = "Total price (€)";
+
 const REQUIRED_HEADERS: &[(&str, &[&str])] = &[
     ("\"pull\" (buyer)", &["pull"]),
     ("\"Event name\"", &["event name", "event"]),
@@ -1281,6 +1286,12 @@ const TRANSFER_OPTIONS: &[&str] = &["Yes", "No"];
 const COLOR_GREEN: (f64, f64, f64) = (0.71, 0.88, 0.80);
 const COLOR_BLUE: (f64, f64, f64) = (0.79, 0.86, 0.97);
 
+/// 2.0.40: background for the "Total price (€)" header cell only - a
+/// distinct shade from COLOR_BLUE above (that one means "Transfer = No" and
+/// is only ever applied conditionally; this is a flat, unconditional header
+/// style, a different kind of thing even though both happen to be blue-ish).
+const TOTAL_PRICE_HEADER_BACKGROUND: (f64, f64, f64) = (0.85, 0.88, 0.95);
+
 /// Same reasoning/value as orders_sheet_sync::DROPDOWN_ROW_BUFFER - far
 /// beyond however much data is in the sheet right now, so a newly-added row
 /// has a working dropdown immediately, without needing a re-run just to get
@@ -1361,11 +1372,47 @@ fn plan_pulls_sheet_color_updates(headers: &[String]) -> Vec<ColorSpec> {
     specs
 }
 
+/// Marko's own request (2.0.40): "aby som si vedel presne kuknut podla
+/// vypoctu Total price (€)" - a running total of every `Price` value on the
+/// sheet, placed immediately after the `TIQR ID` marker column (wherever
+/// that really is - `resolve_marker_column` again, the exact same dynamic
+/// lookup used to actually place/find the marker itself, never a hardcoded
+/// letter). Row 1 gets the literal header text, row 2 gets exactly one
+/// `=SUM(...)` formula - marko was explicit only one row is filled here, not
+/// one formula per data row like orders_sheet_sync's Revenue/Profit.
+struct TotalPriceSpec {
+    col_index: usize,
+    /// A whole-column range (e.g. `"=SUM(K:K)"`), not bounded to today's row
+    /// count like Revenue/Profit's per-row formulas - marko's own correction
+    /// of his first draft ("nie len na 1000 riadkov ale na vsetky", not just
+    /// 1000 rows but all of them). Safe: SUM already ignores the header text
+    /// sitting in the Price column's own row 1.
+    formula: String,
+}
+
+/// Pure core, sibling of `plan_pulls_sheet_structure_updates`/
+/// `plan_pulls_sheet_color_updates` above. `None` when the sheet has no
+/// `Price` column at all - same optional-column tolerance as everywhere else
+/// in this module. Re-resolving the marker column here (rather than
+/// threading a separate parameter through from `sync_pulls_impl`/
+/// `push_pulls_impl`/`setup_pulls_sheet_impl`) is safe and gives the
+/// identical answer those callers already used to actually place the
+/// marker: `headers` itself never changes between "decide where TIQR ID
+/// goes" and "call this" in any of the three, so `resolve_marker_column`
+/// necessarily recomputes the same position - see its own doc comment.
+fn plan_pulls_total_price_update(headers: &[String]) -> Option<TotalPriceSpec> {
+    let map = build_header_map(headers);
+    let price_col = find_col(&map, &["price"])?;
+    let price_letter = column_index_to_a1(price_col);
+    let (marker_col, _) = resolve_marker_column(headers);
+    Some(TotalPriceSpec { col_index: marker_col + 1, formula: format!("=SUM({price_letter}:{price_letter})") })
+}
+
 /// The network shell for `plan_pulls_sheet_structure_updates`/
-/// `plan_pulls_sheet_color_updates` above - sends their plan as real
-/// `batchUpdate` (Data validation + conditional formatting) calls, same
-/// pattern as orders_sheet_sync::ensure_orders_sheet_structure just without a
-/// formula-writing half (nothing here needs one).
+/// `plan_pulls_sheet_color_updates`/`plan_pulls_total_price_update` above -
+/// sends their plan as real `batchUpdate` (data validation + conditional
+/// formatting) and `update_values`/`update_values_as_formulas` (Total price)
+/// calls, same pattern as orders_sheet_sync::ensure_orders_sheet_structure.
 fn ensure_pulls_sheet_structure(
     conn: &Connection,
     token: &str,
@@ -1376,44 +1423,57 @@ fn ensure_pulls_sheet_structure(
 ) -> AppResult<()> {
     let dropdowns = plan_pulls_sheet_structure_updates(conn, headers)?;
     let colors = plan_pulls_sheet_color_updates(headers);
-    if dropdowns.is_empty() && colors.is_empty() {
-        return Ok(());
-    }
+    let total_price = plan_pulls_total_price_update(headers);
 
-    // One shared metadata fetch for both - see
-    // orders_sheet_sync::ensure_orders_sheet_structure's own comment on the
-    // same call for why this replaces a separate get_sheet_numeric_id call.
-    let metadata = google_sheets::get_sheet_structure_metadata(token, spreadsheet_id, sheet_tab)?;
-    let sheet_id = metadata.sheet_id;
-    let end_row = (data_row_count as i64).max(DROPDOWN_ROW_BUFFER) + 1;
-    let mut requests: Vec<serde_json::Value> = vec![];
+    if !dropdowns.is_empty() || !colors.is_empty() || total_price.is_some() {
+        // One shared metadata fetch for all three - see
+        // orders_sheet_sync::ensure_orders_sheet_structure's own comment on the
+        // same call for why this replaces a separate get_sheet_numeric_id call.
+        let metadata = google_sheets::get_sheet_structure_metadata(token, spreadsheet_id, sheet_tab)?;
+        let sheet_id = metadata.sheet_id;
+        let end_row = (data_row_count as i64).max(DROPDOWN_ROW_BUFFER) + 1;
+        let mut requests: Vec<serde_json::Value> = vec![];
 
-    if !colors.is_empty() {
-        let managed_columns: Vec<i64> = colors.iter().map(|c| c.col_index as i64).collect();
-        let to_delete = google_sheets::conditional_format_indices_to_replace(&metadata.conditional_format_columns, &managed_columns);
-        for index in to_delete {
-            requests.push(google_sheets::delete_conditional_format_rule_request(sheet_id, index));
-        }
-        for spec in &colors {
-            for (value, color) in &spec.colors {
-                requests.push(google_sheets::add_conditional_format_color_request(
-                    sheet_id,
-                    1,
-                    end_row,
-                    spec.col_index as i64,
-                    value,
-                    *color,
-                ));
+        if !colors.is_empty() {
+            let managed_columns: Vec<i64> = colors.iter().map(|c| c.col_index as i64).collect();
+            let to_delete = google_sheets::conditional_format_indices_to_replace(&metadata.conditional_format_columns, &managed_columns);
+            for index in to_delete {
+                requests.push(google_sheets::delete_conditional_format_rule_request(sheet_id, index));
+            }
+            for spec in &colors {
+                for (value, color) in &spec.colors {
+                    requests.push(google_sheets::add_conditional_format_color_request(
+                        sheet_id,
+                        1,
+                        end_row,
+                        spec.col_index as i64,
+                        value,
+                        *color,
+                    ));
+                }
             }
         }
+
+        requests.extend(dropdowns.iter().map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values)));
+
+        if let Some(spec) = &total_price {
+            requests.push(google_sheets::bold_header_request(sheet_id, 0, 1, spec.col_index as i64, Some(TOTAL_PRICE_HEADER_BACKGROUND)));
+        }
+
+        if !requests.is_empty() {
+            google_sheets::batch_update(token, spreadsheet_id, requests)?;
+        }
     }
 
-    requests.extend(dropdowns.iter().map(|d| google_sheets::set_data_validation_request(sheet_id, 1, end_row, d.col_index as i64, &d.values)));
-
-    if requests.is_empty() {
-        return Ok(());
+    if let Some(spec) = total_price {
+        let letter = column_index_to_a1(spec.col_index);
+        let header_range = google_sheets::a1_range(sheet_tab, &format!("{letter}1"));
+        google_sheets::update_values(token, spreadsheet_id, &header_range, &[vec![TOTAL_PRICE_HEADER.to_string()]])?;
+        let formula_range = google_sheets::a1_range(sheet_tab, &format!("{letter}2"));
+        google_sheets::update_values_as_formulas(token, spreadsheet_id, &formula_range, &[vec![spec.formula.clone()]])?;
     }
-    google_sheets::batch_update(token, spreadsheet_id, requests)
+
+    Ok(())
 }
 
 /// Runs `ensure_pulls_sheet_structure` and folds any error it returns into
@@ -1588,6 +1648,61 @@ mod tests {
         let (idx, exists) = resolve_marker_column(&headers);
         assert_eq!(idx, 13);
         assert!(exists);
+    }
+
+    // ---- Total price (2.0.40) --------------------------------------------
+
+    #[test]
+    fn plan_pulls_total_price_update_places_it_one_past_the_marker_column_at_the_real_price_letter() {
+        // full_headers(): "Price" is index 11 (column L); the marker doesn't
+        // exist yet, so resolve_marker_column puts it at index 13 (column N)
+        // - Total price must land one past THAT, at index 14 (column O).
+        let spec = plan_pulls_total_price_update(&full_headers()).unwrap();
+        assert_eq!(spec.col_index, 14, "one past the marker column, not one past Price itself");
+        assert_eq!(spec.formula, "=SUM(L:L)");
+    }
+
+    #[test]
+    fn plan_pulls_total_price_update_lands_at_the_same_spot_whether_or_not_tiqr_id_already_exists() {
+        // headers_with_marker() is full_headers() with TIQR ID appended at
+        // the exact position resolve_marker_column would have picked anyway
+        // - see MARKER_COL's own comment. The two must agree exactly: this
+        // is what makes it safe for ensure_pulls_sheet_structure to re-derive
+        // the marker position here instead of threading it through as a
+        // separate parameter from sync_pulls_impl/push_pulls_impl.
+        let without_marker = plan_pulls_total_price_update(&full_headers()).unwrap();
+        let with_marker = plan_pulls_total_price_update(&headers_with_marker()).unwrap();
+        assert_eq!(without_marker.col_index, with_marker.col_index);
+        assert_eq!(without_marker.formula, with_marker.formula);
+    }
+
+    #[test]
+    fn plan_pulls_total_price_update_finds_price_by_name_regardless_of_column_order() {
+        // Reordered relative to full_headers() - Price moved to index 0 -
+        // proves this is a real header-name lookup, not a hardcoded letter.
+        let headers = row(&["Price", "pull", "Event name"]);
+        let spec = plan_pulls_total_price_update(&headers).unwrap();
+        assert_eq!(spec.formula, "=SUM(A:A)");
+        // 3 headers (indices 0-2) -> marker resolves to index 3 -> Total
+        // price lands one past that, at index 4.
+        assert_eq!(spec.col_index, 4, "one past the marker, which itself resolves to one past these 3 headers");
+    }
+
+    #[test]
+    fn plan_pulls_total_price_update_skips_when_there_is_no_price_column_at_all() {
+        let headers = row(&["pull", "Event name", "Ks"]);
+        assert!(plan_pulls_total_price_update(&headers).is_none());
+    }
+
+    #[test]
+    fn plan_pulls_total_price_update_is_a_whole_column_reference_not_bounded_to_any_fixed_row_count() {
+        // marko's own correction of his first draft ("nie len na 1000
+        // riadkov ale na vsetky" - not just 1000 rows but all of them) - the
+        // formula must be a plain whole-column range, never a bounded
+        // "K2:K1000"-style range that would silently stop counting.
+        let spec = plan_pulls_total_price_update(&full_headers()).unwrap();
+        assert_eq!(spec.formula, "=SUM(L:L)");
+        assert!(!spec.formula.contains('2'), "must not be row-bounded like K2:K1000");
     }
 
     #[test]
