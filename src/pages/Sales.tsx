@@ -4,10 +4,11 @@ import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import {
   formatDate,
-  formatDateCompact,
+  formatDateNumeric,
   formatMoney,
   formatMoneyOrMixed,
   formatPercentOrMixed,
+  formatSeatsSummary,
   summarizeBulkDeleteSkips,
   titleCase,
   todayIso,
@@ -682,30 +683,31 @@ export default function Sales() {
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[4.886%]" />
-                <col className="w-[37.51%]" />
-                <col className="w-[9.357%]" />
-                <col className="w-[7.772%]" />
-                <col className="w-[4.391%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.568%]" />
-                <col className="w-[8.35%]" />
+                <col className="w-[10%]" />
+                <col className="w-[21.098%]" />
+                <col className="w-[15.366%]" />
+                <col className="w-[8.659%]" />
+                <col className="w-[4.39%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10.488%]" />
+                <col className="w-[10%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[3.516%]" />
-                <col className="w-[39.35%]" />
-                <col className="w-[6.274%]" />
-                <col className="w-[5.995%]" />
-                <col className="w-[3.562%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[7.288%]" />
-                <col className="w-[7.044%]" />
-                <col className="w-[6.154%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[15.629%]" />
+                <col className="w-[11.74%]" />
+                <col className="w-[6.86%]" />
+                <col className="w-[9.194%]" />
+                <col className="w-[3.678%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[8.133%]" />
+                <col className="w-[7.284%]" />
+                <col className="w-[6.365%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -725,6 +727,7 @@ export default function Sales() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Platform</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                {!isNarrow && <th className="th-c">Seats</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`} title="Tickets">Tix</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
                 {!isNarrow && <th className="th-c text-right">Fees</th>}
@@ -799,9 +802,14 @@ export default function Sales() {
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={g.platformName ?? undefined}>
                     {g.platformName ?? "-"}
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate whitespace-nowrap`} title={formatDate(g.saleDate)}>
-                    {formatDateCompact(g.saleDate)}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                    {formatDateNumeric(g.saleDate)}
                   </td>
+                  {!isNarrow && (
+                    <td className="td-c truncate" title={formatSeatsSummary(g.seats)}>
+                      {formatSeatsSummary(g.seats)}
+                    </td>
+                  )}
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{g.ticketCount}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
                   {!isNarrow && (

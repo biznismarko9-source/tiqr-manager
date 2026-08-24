@@ -9,9 +9,12 @@ import { useEffect, useState } from "react";
  * horizontal scrolling, all the way down to the app's enforced 1080px
  * minimum window width. Verified (Playwright, real locale-formatted data
  * across en-US/sk-SK/de-DE) against the app's true content-width floor -
- * see the 2.0.37 section of PROTECTED-AREAS-NOTES.md before changing this
- * number, both modes were sized against it specifically. */
-const NARROW_BREAKPOINT_PX = 1690;
+ * see the 2.0.38 section of PROTECTED-AREAS-NOTES.md before changing this
+ * number, both modes were sized against it specifically. 2.0.38: recomputed
+ * (was 1690) after fixing under-measured code/date/secondary columns and
+ * adding the new Seats column - the true shared content-width floor moved,
+ * so this threshold moved with it. */
+const NARROW_BREAKPOINT_PX = 1649;
 
 /** Reactive "is the window narrow enough that tables must switch to compact
  * mode" flag, shared by every list/detail table in the app so they all

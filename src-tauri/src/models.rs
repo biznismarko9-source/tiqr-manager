@@ -132,6 +132,146 @@ pub struct EventWithStats {
     pub stats: FinanceSummary,
 }
 
+/// 2.0.38: one ticket's seat location, as shown on the Orders/Tickets/Sales
+/// list screens' new "Seats" column (`Order.seats`/`SaleGroup.seats` below).
+/// Deliberately the same three nullable fields `Sale`/`Ticket` already carry
+/// inline (section/row_label/seat) - kept as a real struct here instead,
+/// since this is the first place the app needs a whole LIST of them per row.
+/// Formatting this into a compact display string (grouping same section/row,
+/// collapsing contiguous seat numbers into a range) happens entirely on the
+/// frontend (`formatSeatsSummary` in format.ts) - this struct only carries
+/// the raw per-ticket data, unmodified, same "aggregation in SQL, formatting
+/// in the UI" split every other field on these two screens already follows.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatEntry {
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub seat: Option<String>,
+}
+
+impl SeatEntry {
+    /// Parses the `GROUP_CONCAT(... , char(30))` aggregate produced by
+    /// orders.rs's `BASE_SQL` / sales.rs's `GROUP_BASE_SELECT`. Each ticket is
+    /// encoded as `section\x1Frow_label\x1Fseat` (0x1F, the ASCII "unit
+    /// separator" - never typed by a real user), records joined by 0x1E (the
+    /// "record separator"). Deliberately NOT done with SQL's own
+    /// `GROUP_CONCAT(DISTINCT ...)`: SQLite rejects a custom separator
+    /// combined with DISTINCT ("DISTINCT aggregates must have exactly one
+    /// argument", confirmed empirically before writing this), and a plain
+    /// comma-joined DISTINCT would be ambiguous against real section/seat
+    /// values that might themselves contain a comma. Deduplicating here in
+    /// Rust instead sidesteps both problems.
+    ///
+    /// `None` (the column is NULL - no joined ticket rows at all) and `Some("")`
+    /// both yield an empty Vec. A record whose three fields are all empty
+    /// (a ticket with no section/row/seat at all) still yields one
+    /// `SeatEntry { None, None, None }` - correctly distinct from "no
+    /// tickets" - the frontend renders that as "General admission", same
+    /// convention `formatSeatLocation` already uses for an individual ticket.
+    pub fn parse_aggregate(raw: Option<&str>) -> Vec<SeatEntry> {
+        const FIELD_SEP: char = '\u{1f}';
+        const RECORD_SEP: char = '\u{1e}';
+        // Safety cap, same reasoning as this app's other LIST_CAP constants -
+        // protects response size against a pathological (thousands-of-tickets)
+        // order/sale group; no realistic one gets remotely close.
+        const MAX_ENTRIES: usize = 500;
+
+        let Some(raw) = raw else { return Vec::new() };
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for record in raw.split(RECORD_SEP) {
+            let mut parts = record.split(FIELD_SEP);
+            let non_empty = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+            let entry = SeatEntry {
+                section: non_empty(parts.next().unwrap_or("")),
+                row_label: non_empty(parts.next().unwrap_or("")),
+                seat: non_empty(parts.next().unwrap_or("")),
+            };
+            if seen.insert(entry.clone()) {
+                out.push(entry);
+                if out.len() >= MAX_ENTRIES {
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod seat_entry_tests {
+    use super::SeatEntry;
+
+    #[test]
+    fn none_input_is_no_seats_at_all() {
+        assert_eq!(SeatEntry::parse_aggregate(None), Vec::new());
+    }
+
+    #[test]
+    fn empty_string_is_also_no_seats() {
+        assert_eq!(SeatEntry::parse_aggregate(Some("")), Vec::new());
+    }
+
+    #[test]
+    fn one_fully_blank_record_is_one_general_admission_entry_not_zero() {
+        let raw = "\u{1f}\u{1f}";
+        assert_eq!(
+            SeatEntry::parse_aggregate(Some(raw)),
+            vec![SeatEntry { section: None, row_label: None, seat: None }]
+        );
+    }
+
+    #[test]
+    fn parses_a_normal_multi_ticket_order() {
+        let raw = "204\u{1f}AA\u{1f}128\u{1e}204\u{1f}AA\u{1f}129\u{1e}204\u{1f}AA\u{1f}130";
+        assert_eq!(
+            SeatEntry::parse_aggregate(Some(raw)),
+            vec![
+                SeatEntry { section: Some("204".into()), row_label: Some("AA".into()), seat: Some("128".into()) },
+                SeatEntry { section: Some("204".into()), row_label: Some("AA".into()), seat: Some("129".into()) },
+                SeatEntry { section: Some("204".into()), row_label: Some("AA".into()), seat: Some("130".into()) },
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_records_collapse_to_one_preserving_first_seen_order() {
+        let raw = "204\u{1f}AA\u{1f}128\u{1e}210\u{1f}BB\u{1f}5\u{1e}204\u{1f}AA\u{1f}128";
+        assert_eq!(
+            SeatEntry::parse_aggregate(Some(raw)),
+            vec![
+                SeatEntry { section: Some("204".into()), row_label: Some("AA".into()), seat: Some("128".into()) },
+                SeatEntry { section: Some("210".into()), row_label: Some("BB".into()), seat: Some("5".into()) },
+            ]
+        );
+    }
+
+    #[test]
+    fn general_admission_ticket_mixed_in_with_seated_ones_keeps_both_kinds() {
+        let raw = "\u{1f}\u{1f}\u{1e}204\u{1f}AA\u{1f}128";
+        assert_eq!(
+            SeatEntry::parse_aggregate(Some(raw)),
+            vec![
+                SeatEntry { section: None, row_label: None, seat: None },
+                SeatEntry { section: Some("204".into()), row_label: Some("AA".into()), seat: Some("128".into()) },
+            ]
+        );
+    }
+
+    #[test]
+    fn caps_at_500_unique_entries_instead_of_growing_unbounded() {
+        let raw = (0..600)
+            .map(|i| format!("204\u{1f}AA\u{1f}{i}"))
+            .collect::<Vec<_>>()
+            .join("\u{1e}");
+        assert_eq!(SeatEntry::parse_aggregate(Some(&raw)).len(), 500);
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
@@ -166,6 +306,12 @@ pub struct Order {
     pub available_count: i64,
     pub listed_count: i64,
     pub cancelled_count: i64,
+    /// 2.0.38: every ticket in this order's own seat location (deduplicated,
+    /// order not significant - the frontend sorts/groups for display). NOT
+    /// filtered by ticket status - matches `sold_count`/`available_count`/etc.
+    /// above, which are the order's true complete counts; a cancelled
+    /// ticket's seat is still part of "what this order covers."
+    pub seats: Vec<SeatEntry>,
 }
 
 /// Sales-side rollup for one order, computed only from that order's tickets
@@ -408,6 +554,13 @@ pub struct SaleGroup {
     pub payment_status: Option<String>,
     pub refunded_count: i64,
     pub is_demo: bool,
+    /// 2.0.38: the seat location of every ticket THIS SALE GROUP actually
+    /// sold (deduplicated). Unlike `Order.seats` above, this is naturally
+    /// already scoped to just this group's own lines (the same `JOIN tickets
+    /// t ON t.id = s.ticket_id` every other field here is computed from) -
+    /// not filtered by refund status, matching `ticket_count` right above
+    /// (a refunded line is still one of the tickets this sale covers).
+    pub seats: Vec<SeatEntry>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

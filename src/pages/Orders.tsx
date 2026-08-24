@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
-import { decimalStringToCents, formatDate, formatMoney, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
+import { decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -330,31 +330,44 @@ export default function Orders() {
         // .th-c-narrow/.td-c-narrow. See Sales.tsx's own colgroup comment
         // and PROTECTED-AREAS-NOTES.md (2.0.37 section) for the full
         // reasoning and verification.
+        // 2.0.38: the 2.0.37 percentages above were STILL wrong for Order's
+        // own code column - allocated against the header text ("Order" = 5
+        // chars) rather than real codes, the exact same class of bug as the
+        // 2.0.33 note above, just reintroduced - see PROTECTED-AREAS-NOTES.md
+        // (2.0.38 section). Recomputed against real measured content this
+        // time, added the new Seats column (marko's request - shows every
+        // seat across the whole order, hides below the breakpoint like
+        // Notes/Platform), and switched Date to formatDateNumeric
+        // ("11.09.2026", full 4-digit year - marko's explicit format
+        // request) in place of the old locale-dependent formatDate call.
+        // Shared breakpoint moved to 1649px (was 1690px) - see
+        // useNarrowTables.ts.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[6.38%]" />
-                <col className="w-[51.326%]" />
-                <col className="w-[10.858%]" />
-                <col className="w-[4.391%]" />
-                <col className="w-[8.257%]" />
-                <col className="w-[10.546%]" />
-                <col className="w-[8.242%]" />
+                <col className="w-[10.488%]" />
+                <col className="w-[48.659%]" />
+                <col className="w-[8.659%]" />
+                <col className="w-[4.39%]" />
+                <col className="w-[8.293%]" />
+                <col className="w-[11.22%]" />
+                <col className="w-[8.293%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[4.438%]" />
-                <col className="w-[54.242%]" />
-                <col className="w-[8.216%]" />
-                <col className="w-[4.33%]" />
-                <col className="w-[6.274%]" />
-                <col className="w-[3.562%]" />
-                <col className="w-[6.344%]" />
-                <col className="w-[7.007%]" />
-                <col className="w-[5.587%]" />
+                <col className="w-[8.133%]" />
+                <col className="w-[23.338%]" />
+                <col className="w-[6.86%]" />
+                <col className="w-[9.194%]" />
+                <col className="w-[16.124%]" />
+                <col className="w-[11.74%]" />
+                <col className="w-[3.678%]" />
+                <col className="w-[6.506%]" />
+                <col className="w-[8.699%]" />
+                <col className="w-[5.728%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -373,6 +386,7 @@ export default function Orders() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                {!isNarrow && <th className="th-c">Seats</th>}
                 {!isNarrow && <th className="th-c">Notes</th>}
                 {!isNarrow && <th className="th-c">Platform</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Qty</th>
@@ -442,7 +456,12 @@ export default function Orders() {
                       )}
                     </div>
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDate(o.purchaseDate)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(o.purchaseDate)}</td>
+                  {!isNarrow && (
+                    <td className="td-c truncate" title={formatSeatsSummary(o.seats)}>
+                      {formatSeatsSummary(o.seats)}
+                    </td>
+                  )}
                   {!isNarrow && (
                     <td className="td-c truncate text-slate-500 dark:text-slate-400" title={o.notes ?? undefined}>
                       {o.notes || "-"}

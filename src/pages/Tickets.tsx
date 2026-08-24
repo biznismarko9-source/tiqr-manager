@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
-import { formatDate, formatMoney } from "../lib/format";
+import { formatDateNumeric, formatMoney, formatSeatsSummary } from "../lib/format";
 import {
   Badge,
   Button,
@@ -346,28 +346,39 @@ export function TicketsView({
         // sk-SK/de-DE, not just header text) to fit without scrolling or
         // wrapping all the way down to 1080px, this app's enforced minimum
         // window width - see PROTECTED-AREAS-NOTES.md, 2.0.37 section.
+        // 2.0.38: Order's own code column was STILL under-measured (sized
+        // against the header, not real "ORD-1234567"-shaped codes - see
+        // PROTECTED-AREAS-NOTES.md's 2.0.38 section for the full root
+        // cause, shared with Orders.tsx/Sales.tsx). Recomputed every
+        // column against real rendered content, added the new Seats column
+        // (marko's request - every seat across the whole order, hides below
+        // the breakpoint alongside Purchase date), and switched Purchase
+        // date to formatDateNumeric ("11.09.2026") in place of the old
+        // locale-dependent formatDate call. Shared breakpoint moved to
+        // 1649px (was 1690px) - see useNarrowTables.ts.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
-                <col className="w-[6.38%]" />
-                <col className="w-[54.04%]" />
-                <col className="w-[5.904%]" />
-                <col className="w-[9.397%]" />
-                <col className="w-[5.186%]" />
-                <col className="w-[10.546%]" />
-                <col className="w-[8.547%]" />
+                <col className="w-[10.488%]" />
+                <col className="w-[47.439%]" />
+                <col className="w-[5.976%]" />
+                <col className="w-[9.512%]" />
+                <col className="w-[5.244%]" />
+                <col className="w-[11.22%]" />
+                <col className="w-[10.122%]" />
               </colgroup>
             ) : (
               <colgroup>
-                <col className="w-[4.438%]" />
-                <col className="w-[59.062%]" />
-                <col className="w-[9.073%]" />
-                <col className="w-[4.144%]" />
-                <col className="w-[6.299%]" />
-                <col className="w-[3.701%]" />
-                <col className="w-[7.007%]" />
-                <col className="w-[6.276%]" />
+                <col className="w-[8.133%]" />
+                <col className="w-[43.564%]" />
+                <col className="w-[9.335%]" />
+                <col className="w-[9.194%]" />
+                <col className="w-[4.314%]" />
+                <col className="w-[6.506%]" />
+                <col className="w-[3.819%]" />
+                <col className="w-[8.699%]" />
+                <col className="w-[6.436%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -375,6 +386,7 @@ export function TicketsView({
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 {!isNarrow && <th className="th-c">Purchase date</th>}
+                {!isNarrow && <th className="th-c">Seats</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>
@@ -401,7 +413,12 @@ export function TicketsView({
                         o.eventName
                       )}
                     </td>
-                    {!isNarrow && <td className="td-c whitespace-nowrap">{formatDate(o.purchaseDate)}</td>}
+                    {!isNarrow && <td className="td-c whitespace-nowrap">{formatDateNumeric(o.purchaseDate)}</td>}
+                    {!isNarrow && (
+                      <td className="td-c truncate" title={formatSeatsSummary(o.seats)}>
+                        {formatSeatsSummary(o.seats)}
+                      </td>
+                    )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.quantity}</td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.availableCount + o.listedCount}</td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.soldCount}</td>

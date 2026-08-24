@@ -328,32 +328,43 @@ export default function SaleDetail() {
         // little and switches to the smaller .th-c-narrow/.td-c-narrow.
         // See Sales.tsx's own colgroup comment and PROTECTED-AREAS-NOTES.md
         // (2.0.37 section) for the full reasoning and verification.
+        // 2.0.38: Ticket and Order's own code columns were STILL
+        // under-measured (same root cause as every other table this
+        // version - see PROTECTED-AREAS-NOTES.md's 2.0.38 section).
+        // Recomputed every column against real rendered content this time,
+        // which also caught a genuine gap in the 2.0.37 pass: the trailing
+        // actions column (Edit/Refund/delete-icon buttons) never had a real
+        // measured width at all - its old 7.827%/13.84% were unmeasured
+        // guesses, not derived from anything. Now measured the same way as
+        // everything else (worst case: an unrefunded line's Edit + Refund
+        // text buttons + trash icon, all inline). Shared breakpoint moved to
+        // 1649px (was 1690px) - see useNarrowTables.ts.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 <col className="w-8" />
-                <col className="w-[6.449%]" />
-                <col className="w-[6.38%]" />
-                <col className="w-[36.358%]" />
-                <col className="w-[9.972%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.568%]" />
-                <col className="w-[8.35%]" />
-                <col className="w-[13.84%]" />
+                <col className="w-[9.756%]" />
+                <col className="w-[10.488%]" />
+                <col className="w-[27.317%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10.488%]" />
+                <col className="w-[10%]" />
+                <col className="w-[11.951%]" />
               </colgroup>
             ) : (
               <colgroup>
                 <col className="w-8" />
-                <col className="w-[4.48%]" />
-                <col className="w-[4.438%]" />
-                <col className="w-[48.996%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[7.288%]" />
-                <col className="w-[6.154%]" />
-                <col className="w-[7.827%]" />
+                <col className="w-[7.638%]" />
+                <col className="w-[8.133%]" />
+                <col className="w-[39.463%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[8.133%]" />
+                <col className="w-[6.365%]" />
+                <col className="w-[6.931%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">

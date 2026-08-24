@@ -386,26 +386,34 @@ export default function OrderDetail() {
         // and switches to the smaller .th-c-narrow/.td-c-narrow. See
         // Sales.tsx's own colgroup comment and PROTECTED-AREAS-NOTES.md
         // (2.0.37 section) for the full reasoning and verification.
+        // 2.0.38: Ticket's own code column was STILL under-measured (same
+        // root cause as every other table this version - see PROTECTED-
+        // AREAS-NOTES.md's 2.0.38 section). Recomputed every column against
+        // real rendered content, which also caught the same gap as Sale
+        // Detail's own file: the trailing actions column (just an Edit
+        // button here) never had a real measured width - its old
+        // 2.707%/4.787% were unmeasured guesses. Shared breakpoint moved to
+        // 1649px (was 1690px) - see useNarrowTables.ts.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 <col className="w-8" />
-                <col className="w-[6.449%]" />
-                <col className="w-[71.134%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[8.547%]" />
-                <col className="w-[4.787%]" />
+                <col className="w-[9.756%]" />
+                <col className="w-[67.195%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10.122%]" />
+                <col className="w-[2.927%]" />
               </colgroup>
             ) : (
               <colgroup>
                 <col className="w-8" />
-                <col className="w-[4.48%]" />
-                <col className="w-[71.536%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[8.062%]" />
-                <col className="w-[6.276%]" />
-                <col className="w-[2.707%]" />
+                <col className="w-[7.638%]" />
+                <col className="w-[68.175%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[8.274%]" />
+                <col className="w-[6.436%]" />
+                <col className="w-[1.697%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">

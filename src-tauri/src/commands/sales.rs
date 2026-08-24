@@ -4,7 +4,7 @@ use crate::error::{AppError, AppResult};
 use crate::finance;
 use crate::models::{
     BulkDeleteResult, BulkDeleteSkip, BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup,
-    SaleInput,
+    SaleInput, SeatEntry,
 };
 use rusqlite::{params, Connection, Row, Transaction};
 use std::collections::HashSet;
@@ -120,6 +120,7 @@ fn map_sale_group(row: &Row) -> rusqlite::Result<SaleGroup> {
         payment_status: row.get("payment_status")?,
         refunded_count: row.get("refunded_count")?,
         is_demo: row.get("is_demo")?,
+        seats: SeatEntry::parse_aggregate(row.get::<_, Option<String>>("seats_raw")?.as_deref()),
     })
 }
 
@@ -240,7 +241,18 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) END), 0) as cost_cents,
       CASE WHEN COUNT(DISTINCT s.payment_status) = 1 THEN MAX(s.payment_status) END as payment_status,
       SUM(CASE WHEN s.payment_status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
-      MAX(s.is_demo) as is_demo
+      MAX(s.is_demo) as is_demo,
+      -- 2.0.38: raw per-ticket seat data for the new Seats column - same
+      -- encoding/parsing as orders.rs's own identical addition, see
+      -- SeatEntry::parse_aggregate's doc comment (models.rs). Reuses the SAME
+      -- `t` join every other field above already uses - no new JOIN needed.
+      -- Deliberately NOT filtered by refund status, matching ticket_count
+      -- above (a refunded line is still one of this group's tickets) - see
+      -- SaleGroup.seats' own doc comment (models.rs).
+      GROUP_CONCAT(
+        COALESCE(t.section,'') || char(31) || COALESCE(t.row_label,'') || char(31) || COALESCE(t.seat,''),
+        char(30)
+      ) as seats_raw
     FROM sales s
     JOIN tickets t ON t.id = s.ticket_id
     JOIN events e ON e.id = t.event_id
@@ -1207,6 +1219,77 @@ mod tests {
             buyer_reference: None,
             notes: None,
         }
+    }
+
+    /// Like `seed_tickets`, but lets the caller set section/row_label/seats
+    /// so 2.0.38's new `SaleGroup.seats` field has something real to check -
+    /// `seed_tickets` itself always leaves every ticket's seat fields NULL.
+    fn seed_tickets_with_seats(conn: &mut Connection, seats: &[&str], section: &str, row_label: &str) -> Vec<i64> {
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: seats.len() as i64,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: Some(section.to_string()),
+            row_label: Some(row_label.to_string()),
+            seats: Some(seats.iter().map(|s| s.to_string()).collect()),
+        };
+        let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id").unwrap();
+        stmt.query_map([order_id], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    // 2.0.38: exercises the REAL SQL (GROUP_CONCAT + char(30)/char(31), added
+    // to GROUP_BASE_SELECT for the new SaleGroup.seats field) against a real
+    // connection - see orders.rs's identical-purpose test for why this can't
+    // be caught by SeatEntry::parse_aggregate's own pure-Rust unit tests
+    // alone. HashSet comparison is deliberately order-independent, same
+    // reasoning as that test.
+    #[test]
+    fn a_batch_sale_reports_the_seats_of_exactly_the_tickets_it_sold() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets_with_seats(&mut conn, &["11", "12", "13"], "A", "1");
+        let input = SaleBatchInput {
+            lines: tickets
+                .iter()
+                .map(|&tid| crate::models::SaleBatchLineInput { ticket_id: tid, sale_price_cents: 2000, selling_fees_cents: 0 })
+                .collect(),
+            platform_id: None,
+            sale_date: "2026-03-01".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sales_batch_impl(&mut conn, &input).unwrap();
+
+        let groups =
+            list_sale_groups_impl(&conn, None, None, None, None, None, None, None, None, None, None).unwrap();
+        assert_eq!(groups.len(), 1, "all 3 lines were submitted together - one group");
+        assert_eq!(groups[0].ticket_count, 3);
+
+        let got: std::collections::HashSet<_> = groups[0].seats.iter().cloned().collect();
+        let expected: std::collections::HashSet<_> = ["11", "12", "13"]
+            .into_iter()
+            .map(|seat| crate::models::SeatEntry {
+                section: Some("A".to_string()),
+                row_label: Some("1".to_string()),
+                seat: Some(seat.to_string()),
+            })
+            .collect();
+        assert_eq!(got, expected);
     }
 
     #[test]

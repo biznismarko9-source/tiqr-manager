@@ -83,6 +83,17 @@ export interface BulkDeleteResult {
   skipped: { id: number; reason: string }[];
 }
 
+/** 2.0.38: one ticket's seat location, as returned in the new `seats` list on
+ * OrderRecord/SaleGroup below (mirrors the backend's `SeatEntry`, models.rs).
+ * Formatting a whole list of these into the compact "Seats" column string
+ * (grouping same section/row, collapsing contiguous seat numbers into a
+ * range) is `formatSeatsSummary` in format.ts. */
+export interface SeatEntry {
+  section: string | null;
+  rowLabel: string | null;
+  seat: string | null;
+}
+
 export interface OrderRecord {
   id: number;
   code: string;
@@ -115,6 +126,10 @@ export interface OrderRecord {
   availableCount: number;
   listedCount: number;
   cancelledCount: number;
+  /** 2.0.38: every ticket in this order's own seat location (not filtered by
+   * ticket status - includes cancelled tickets' seats too, same "true
+   * complete count" convention soldCount/availableCount/etc. above follow). */
+  seats: SeatEntry[];
 }
 
 /** Sales-side rollup for one order (Order Detail's "ORDER SUMMARY"), loaded
@@ -306,6 +321,10 @@ export interface SaleGroup {
   paymentStatus: SalePaymentStatus | null;
   refundedCount: number;
   isDemo: boolean;
+  /** 2.0.38: the seat location of every ticket THIS SALE GROUP actually sold
+   * (not filtered by refund status - a refunded line is still one of the
+   * tickets this group covers, same convention ticketCount above follows). */
+  seats: SeatEntry[];
 }
 
 export interface SaleInput {

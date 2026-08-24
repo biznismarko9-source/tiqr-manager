@@ -2,6 +2,8 @@
 // end-to-end; these helpers only exist at the UI boundary for display and
 // for turning user keystrokes into cents before they ever reach the backend.
 
+import type { SeatEntry } from "./types";
+
 export function centsToDecimalString(cents: number): string {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.round(Math.abs(cents));
@@ -92,21 +94,25 @@ export function titleCase(s: string | null | undefined): string {
   return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");
 }
 
-/** 1.8.2: a shorter date for narrow table columns (Sales list) - e.g. "15 Aug
- * 26". Month is a short NAME (never a bare number) so it never reads as
- * ambiguous DD/MM vs MM/DD, and the 2-digit year is kept (not dropped) since
- * this app tracks sales across multiple years and two same-day-different-year
- * sales must still look different in a list. Prefer `formatDate` everywhere
- * space isn't tight. 2.0.30: also used by Pulls' Date column (both tabs) for
- * the same reason - no longer Sales-only, but still not the default. */
-export function formatDateCompact(iso: string | null | undefined): string {
+/** 2.0.38: marko's explicitly requested date shape for every list-table Date
+ * column - full 4-digit year, zero-padded, dot-separated, e.g. "11.09.2026"
+ * (day.month.year - standard Slovak/European convention, matching exactly
+ * what he typed when asking for this). Deliberately NOT locale-dependent
+ * (unlike formatDate's toLocaleDateString call) - he gave an exact literal
+ * format, so this always produces that one shape regardless of the OS
+ * locale, rather than only happening to match it. Used everywhere a table
+ * shows its own dedicated Date column - see PROTECTED-AREAS-NOTES.md's
+ * 2.0.38 section for the full list. Replaces the old formatDateCompact
+ * helper (deleted this version, was down to zero remaining call sites once
+ * every one of those columns switched here) - its abbreviated "11 sep 26"
+ * shape is exactly what marko asked to stop seeing, so there was no reason
+ * to keep it around for a future column to accidentally pick back up. */
+export function formatDateNumeric(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const day = d.getDate();
-  const month = d.toLocaleDateString(undefined, { month: "short" });
-  const year = String(d.getFullYear()).slice(-2);
-  return `${day} ${month} ${year}`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
 }
 
 /** 1.8.2: combines a ticket's section/row/seat into one compact string for
@@ -125,6 +131,71 @@ export function formatSeatLocation(
     seat ? `Seat ${seat}` : null,
   ].filter((p): p is string => p !== null);
   return parts.length > 0 ? parts.join(" · ") : "General admission";
+}
+
+/** Collapses a group's seat labels into one compact string: consecutive pure
+ * numbers become a range ("128-131"), everything else is naturally sorted
+ * and comma-joined ("A1, A2, A10" - not the plain-string-sort "A1, A10, A2").
+ * Empty input -> "". Helper for `formatSeatsSummary` below, not exported -
+ * nothing else needs "just the seat numbers, compacted" on its own. */
+function compactSeatList(seatLabels: string[]): string {
+  if (seatLabels.length === 0) return "";
+  const numeric: number[] = [];
+  const other: string[] = [];
+  for (const s of seatLabels) {
+    if (/^\d+$/.test(s)) numeric.push(parseInt(s, 10));
+    else other.push(s);
+  }
+  numeric.sort((a, b) => a - b);
+  other.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const ranges: string[] = [];
+  let i = 0;
+  while (i < numeric.length) {
+    let j = i;
+    while (j + 1 < numeric.length && numeric[j + 1] === numeric[j] + 1) j++;
+    ranges.push(i === j ? `${numeric[i]}` : `${numeric[i]}-${numeric[j]}`);
+    i = j + 1;
+  }
+  return [...ranges, ...other].join(", ");
+}
+
+/** 2.0.38: turns a full `SeatEntry[]` (OrderRecord.seats/SaleGroup.seats)
+ * into one compact display string for the new "Seats" column on
+ * Orders/Tickets/Sales - e.g. "204/AA 128-131", marko's own example when
+ * asked how a multi-ticket row (one order/sale can cover several different
+ * seats at once) should summarize them. Groups by section+row first (tickets
+ * bought/sold together are almost always the same section/row - see
+ * compactSeatList above for how the seat numbers within a group get
+ * shortened), falls back to "General admission" for a group with no
+ * section/row/seat at all, and comma-joins multiple truly distinct groups
+ * with "; " so a rare mixed-section order doesn't read as one run-on list.
+ * Always returns the FULL string, uncut - same convention as every other
+ * formatter here; truncation/tooltip is a display concern handled where this
+ * is rendered (the usual `truncate` class + `title={...}` pattern). */
+export function formatSeatsSummary(seats: SeatEntry[]): string {
+  if (seats.length === 0) return "-";
+
+  const groups = new Map<string, { section: string | null; rowLabel: string | null; seatNums: string[] }>();
+  for (const s of seats) {
+    const key = `${s.section ?? ""} ${s.rowLabel ?? ""}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { section: s.section, rowLabel: s.rowLabel, seatNums: [] };
+      groups.set(key, g);
+    }
+    if (s.seat) g.seatNums.push(s.seat);
+  }
+
+  const parts = Array.from(groups.values()).map((g) => {
+    const seatPart = compactSeatList(g.seatNums);
+    if (g.section && g.rowLabel) return seatPart ? `${g.section}/${g.rowLabel} ${seatPart}` : `${g.section}/${g.rowLabel}`;
+    if (g.section) return seatPart ? `Sec ${g.section} ${seatPart}` : `Sec ${g.section}`;
+    if (g.rowLabel) return seatPart ? `Row ${g.rowLabel} ${seatPart}` : `Row ${g.rowLabel}`;
+    return seatPart ? `Seat ${seatPart}` : "General admission";
+  });
+
+  return parts.join("; ");
 }
 
 /** 2.0.28: turns a `BulkDeleteResult.skipped` array into one short line for

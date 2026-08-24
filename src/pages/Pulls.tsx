@@ -15,9 +15,9 @@ import {
   centsToDecimalString,
   decimalStringToCents,
   formatDate,
-  formatDateCompact,
+  formatDateNumeric,
   formatMoney,
-  formatSeatLocation,
+  formatSeatsSummary,
   summarizeBulkDeleteSkips,
   todayIso,
 } from "../lib/format";
@@ -360,15 +360,27 @@ function GivenPulls() {
         />
       ) : (
         // Same table-fixed + colgroup convention as Orders.tsx/Sales.tsx.
-        // Seats shows via the same formatSeatLocation helper Sale Detail
-        // uses (falls back to "General admission" when Section/Row/Seat are
-        // all blank). The "Deadline" column is a warning that appears
+        // Seats shows via formatSeatsSummary - a Pull is always exactly one
+        // section/row/seat triple (never a list, see Pull's own DB columns),
+        // so it's wrapped as a one-element array and formatted with the same
+        // compact "204/AA 128" shorthand as the new Orders/Tickets/Sales
+        // Seats column (falls back to "General admission" when Section/Row/
+        // Seat are all blank) - 2.0.38: replaces the older, more verbose
+        // formatSeatLocation ("Sec 204 · Row AA · Seat 128") this cell used
+        // to call, both for consistency with the new column elsewhere and
+        // because the shorter form is a big part of what makes this table's
+        // narrow mode fit at all (see PROTECTED-AREAS-NOTES.md's 2.0.38
+        // section). The "Deadline" column is a warning that appears
         // automatically starting WARNING_WINDOW_DAYS before the event date
         // and disappears the moment transfer is marked done. Row click
         // opens the edit modal (no separate Detail page exists for Pull,
         // unlike Order/Sale) - guarded so a click on the checkbox doesn't
-        // also open it. Date uses formatDateCompact ("13 Aug 26") - the
-        // full date is still one hover away via the title tooltip.
+        // also open it. 2.0.38: Date uses formatDateNumeric ("11.09.2026")
+        // instead of the old abbreviated formatDateCompact ("13 Aug 26") -
+        // marko explicitly asked for the full 4-digit year everywhere - and
+        // drops the old title tooltip (it existed only to spell out what the
+        // abbreviated form hid; formatDateNumeric is already the full,
+        // unambiguous date, so there's nothing left for a hover to add).
         //
         // 2.0.37: this used to be the one table in the app that accepted
         // needing horizontal scroll below ~1100px (marko's own explicit
@@ -376,44 +388,46 @@ function GivenPulls() {
         // full) - both the wrapper's max-w-[1400px] and the table's own
         // min-w-[1220px] are gone now, replaced with the same pure-
         // percentage, two-mode model every other table in the app uses:
-        // below the shared useNarrowTables() breakpoint (1690px window),
-        // Warning and Platform hide (Seats/More info/the money and pull-
-        // code columns that matter most stay) and everything else grows a
-        // little and switches to the smaller .th-c-narrow/.td-c-narrow.
-        // Verified (Playwright, real Intl.NumberFormat/date data across
+        // below the shared useNarrowTables() breakpoint (1649px window as
+        // of 2.0.38, was 1690px), Warning and Platform hide (Seats/More
+        // info/the money and pull-code columns that matter most stay) and
+        // everything else grows a little and switches to the smaller
+        // .th-c-narrow/.td-c-narrow. Verified (Playwright, real cell DOM
+        // measured against actual rendered content - real code samples from
+        // src-tauri/src/codes.rs, real Intl.NumberFormat/date data across
         // en-US/sk-SK/de-DE, not just header text) to fit without scrolling
         // or wrapping all the way down to 1080px, this app's enforced
         // minimum window width - see Sales.tsx's own colgroup comment and
-        // PROTECTED-AREAS-NOTES.md (2.0.37 section) for the full reasoning.
+        // PROTECTED-AREAS-NOTES.md (2.0.38 section) for the full reasoning.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[4.894%]" />
-                <col className="w-[4.168%]" />
-                <col className="w-[48.595%]" />
-                <col className="w-[7.772%]" />
-                <col className="w-[5.843%]" />
-                <col className="w-[9.85%]" />
-                <col className="w-[4.391%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[5.404%]" />
+                <col className="w-[10.732%]" />
+                <col className="w-[9.146%]" />
+                <col className="w-[24.634%]" />
+                <col className="w-[8.659%]" />
+                <col className="w-[9.634%]" />
+                <col className="w-[17.317%]" />
+                <col className="w-[4.39%]" />
+                <col className="w-[10%]" />
+                <col className="w-[5.488%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[3.521%]" />
-                <col className="w-[3.073%]" />
-                <col className="w-[50.341%]" />
-                <col className="w-[5.995%]" />
-                <col className="w-[4.106%]" />
-                <col className="w-[6.578%]" />
-                <col className="w-[3.562%]" />
-                <col className="w-[6.274%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[5.775%]" />
-                <col className="w-[3.836%]" />
+                <col className="w-[8.375%]" />
+                <col className="w-[10.22%]" />
+                <col className="w-[18.027%]" />
+                <col className="w-[6.884%]" />
+                <col className="w-[6.175%]" />
+                <col className="w-[14.123%]" />
+                <col className="w-[3.691%]" />
+                <col className="w-[11.781%]" />
+                <col className="w-[7.807%]" />
+                <col className="w-[8.943%]" />
+                <col className="w-[3.974%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -445,7 +459,7 @@ function GivenPulls() {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {sortedPulls.map((p) => {
                 const daysLeft = p.eventDate ? daysUntil(p.eventDate) : null;
-                const seatLocation = formatSeatLocation(p.section, p.rowLabel, p.seat);
+                const seatsSummary = formatSeatsSummary([{ section: p.section, rowLabel: p.rowLabel, seat: p.seat }]);
                 const showWarning = !p.transferDone && daysLeft !== null && daysLeft <= WARNING_WINDOW_DAYS;
                 const warningText = daysLeft !== null ? warningLabel(daysLeft) : "";
                 const warningTone = daysLeft !== null && daysLeft <= 0 ? "red" : "amber";
@@ -485,14 +499,14 @@ function GivenPulls() {
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.eventName}>
                       {p.eventName}
                     </td>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate whitespace-nowrap`} title={p.eventDate ? formatDate(p.eventDate) : undefined}>
-                      {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                      {formatDateNumeric(p.eventDate)}
                     </td>
                     <td
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-xs text-slate-500 dark:text-slate-400`}
-                      title={seatLocation}
+                      title={seatsSummary}
                     >
-                      {seatLocation}
+                      {seatsSummary}
                     </td>
                     <td
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-xs text-slate-500 dark:text-slate-400`}
@@ -1011,44 +1025,45 @@ function ReceivedPulls() {
         // GivenPulls' own table above. The Order cell contains a real link
         // (react-router <Link>, not just a <button>/<input>) so the row-click
         // guard here also checks for "a", unlike GivenPulls' table which has
-        // no links inside its rows. Date uses formatDateCompact, same as
-        // GivenPulls' own Date column.
+        // no links inside its rows. 2.0.38: Date uses formatDateNumeric
+        // ("11.09.2026"), same as GivenPulls' own Date column - see that
+        // table's comment above for why the old title tooltip is gone too.
         //
         // 2.0.37: same shift as GivenPulls' own table made just above - both
         // the wrapper's max-w-[1400px] and the table's own min-w-[1050px]
         // are gone, replaced with the same pure-percentage, two-mode model
         // every table in the app now uses. Below the shared
-        // useNarrowTables() breakpoint (1690px window), Order hides (still
-        // visible from the Orders page itself, and from GivenPulls' own
-        // table when the same pull was made there - never Pull/From/Event/
-        // Fee) and everything else grows a little and switches to the
-        // smaller .th-c-narrow/.td-c-narrow. See Sales.tsx's own colgroup
-        // comment and PROTECTED-AREAS-NOTES.md (2.0.37 section) for the
-        // full reasoning and verification.
+        // useNarrowTables() breakpoint (1649px window as of 2.0.38, was
+        // 1690px), Order hides (still visible from the Orders page itself,
+        // and from GivenPulls' own table when the same pull was made there -
+        // never Pull/From/Event/Fee) and everything else grows a little and
+        // switches to the smaller .th-c-narrow/.td-c-narrow. See Sales.tsx's
+        // own colgroup comment and PROTECTED-AREAS-NOTES.md (2.0.38 section)
+        // for the full reasoning and verification.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[4.894%]" />
-                <col className="w-[5.536%]" />
-                <col className="w-[58.474%]" />
-                <col className="w-[7.772%]" />
-                <col className="w-[4.391%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.85%]" />
+                <col className="w-[11.707%]" />
+                <col className="w-[9.146%]" />
+                <col className="w-[38.78%]" />
+                <col className="w-[8.659%]" />
+                <col className="w-[4.39%]" />
+                <col className="w-[10%]" />
+                <col className="w-[17.317%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[3.521%]" />
-                <col className="w-[3.916%]" />
-                <col className="w-[65.051%]" />
-                <col className="w-[5.995%]" />
-                <col className="w-[3.562%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[4.438%]" />
-                <col className="w-[6.578%]" />
+                <col className="w-[9.084%]" />
+                <col className="w-[10.22%]" />
+                <col className="w-[40.028%]" />
+                <col className="w-[6.884%]" />
+                <col className="w-[3.691%]" />
+                <col className="w-[7.807%]" />
+                <col className="w-[8.162%]" />
+                <col className="w-[14.123%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -1111,8 +1126,8 @@ function ReceivedPulls() {
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.eventName}>
                     {p.eventName}
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate whitespace-nowrap`} title={p.eventDate ? formatDate(p.eventDate) : undefined}>
-                    {p.eventDate ? formatDateCompact(p.eventDate) : "-"}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                    {formatDateNumeric(p.eventDate)}
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{p.quantity}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(p.amountCents, p.currency)}</td>

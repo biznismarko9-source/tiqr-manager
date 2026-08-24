@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDate, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
+import { formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
 import {
   Badge,
   Button,
@@ -275,33 +275,42 @@ export default function Events() {
         // de-DE, not just header text) to fit without scrolling or wrapping
         // all the way down to 1080px, this app's enforced minimum window
         // width - see PROTECTED-AREAS-NOTES.md, 2.0.37 section.
+        // 2.0.38: percentages recomputed alongside every other table's
+        // (Events has no code/ID column, so it wasn't hit by the
+        // under-measurement bug the others had - see PROTECTED-AREAS-
+        // NOTES.md's 2.0.38 section - but its money columns were re-verified
+        // with the same rigor anyway, and Date switched to formatDateNumeric
+        // ("11.09.2026", full 4-digit year) in place of the old locale-
+        // dependent formatDate call, per marko's explicit format request.
+        // Shared breakpoint moved to 1649px (was 1690px) - see
+        // useNarrowTables.ts.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[35.295%]" />
-                <col className="w-[10.858%]" />
-                <col className="w-[9.269%]" />
-                <col className="w-[7.447%]" />
-                <col className="w-[9.397%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.083%]" />
-                <col className="w-[9.568%]" />
+                <col className="w-[30%]" />
+                <col className="w-[8.659%]" />
+                <col className="w-[10.122%]" />
+                <col className="w-[7.561%]" />
+                <col className="w-[9.512%]" />
+                <col className="w-[11.22%]" />
+                <col className="w-[11.22%]" />
+                <col className="w-[11.707%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[42.234%]" />
-                <col className="w-[8.216%]" />
-                <col className="w-[6.721%]" />
-                <col className="w-[5.096%]" />
-                <col className="w-[6.299%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[6.939%]" />
-                <col className="w-[7.288%]" />
-                <col className="w-[5.134%]" />
-                <col className="w-[5.134%]" />
+                <col className="w-[37.341%]" />
+                <col className="w-[6.86%]" />
+                <col className="w-[6.436%]" />
+                <col className="w-[5.233%]" />
+                <col className="w-[6.506%]" />
+                <col className="w-[8.699%]" />
+                <col className="w-[8.699%]" />
+                <col className="w-[9.052%]" />
+                <col className="w-[5.587%]" />
+                <col className="w-[5.587%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -389,7 +398,7 @@ export default function Events() {
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDate(ev.eventDate)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(ev.eventDate)}</td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>

@@ -2,7 +2,7 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance::{self, allocate_cents};
-use crate::models::{BulkDeleteResult, BulkDeleteSkip, Order, OrderEditInput, OrderInput, OrderSalesSummary};
+use crate::models::{BulkDeleteResult, BulkDeleteSkip, Order, OrderEditInput, OrderInput, OrderSalesSummary, SeatEntry};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
@@ -22,7 +22,16 @@ const BASE_SQL: &str = "
       COUNT(CASE WHEN t.status='sold' THEN 1 END) as sold_count,
       COUNT(CASE WHEN t.status='available' THEN 1 END) as available_count,
       COUNT(CASE WHEN t.status='listed' THEN 1 END) as listed_count,
-      COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled_count
+      COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled_count,
+      -- 2.0.38: raw per-ticket seat data for the new Seats column - see
+      -- SeatEntry::parse_aggregate's own doc comment (models.rs) for exactly
+      -- how this string is encoded/decoded and why (not a plain DISTINCT
+      -- GROUP_CONCAT). Reuses the SAME `t` join every count above already
+      -- uses - no new JOIN needed.
+      GROUP_CONCAT(
+        COALESCE(t.section,'') || char(31) || COALESCE(t.row_label,'') || char(31) || COALESCE(t.seat,''),
+        char(30)
+      ) as seats_raw
     FROM orders o
     JOIN events e ON e.id = o.event_id
     LEFT JOIN event_categories ec ON ec.id = e.category_id
@@ -60,6 +69,7 @@ fn map_order(row: &Row) -> rusqlite::Result<Order> {
         available_count: row.get("available_count")?,
         listed_count: row.get("listed_count")?,
         cancelled_count: row.get("cancelled_count")?,
+        seats: SeatEntry::parse_aggregate(row.get::<_, Option<String>>("seats_raw")?.as_deref()),
     })
 }
 
@@ -611,6 +621,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ticket_count, 3);
+    }
+
+    // 2.0.38: exercises the REAL SQL (GROUP_CONCAT + char(30)/char(31), added
+    // to BASE_SQL for the new Order.seats field) against a real connection -
+    // not just SeatEntry::parse_aggregate's own pure-Rust unit tests
+    // (models.rs), which can't catch a SQL syntax/runtime mistake since the
+    // query is just a string literal as far as the Rust compiler is
+    // concerned. Compares as a HashSet (order-independent) deliberately -
+    // GROUP_CONCAT's row order is not something this app relies on or should
+    // couple a test to; the frontend does its own sorting for display.
+    #[test]
+    fn fetch_one_returns_every_tickets_seat_via_the_real_group_concat_aggregate() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 4);
+        input.seats = Some(vec!["11".into(), "12".into(), "13".into(), "14".into()]);
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let order = fetch_one(&conn, order_id).unwrap();
+
+        let got: std::collections::HashSet<_> = order.seats.into_iter().collect();
+        let expected: std::collections::HashSet<_> = ["11", "12", "13", "14"]
+            .into_iter()
+            .map(|seat| crate::models::SeatEntry {
+                section: Some("A".to_string()),
+                row_label: Some("12".to_string()),
+                seat: Some(seat.to_string()),
+            })
+            .collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn fetch_one_seats_is_general_admission_shaped_when_the_order_has_no_seat_fields() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 2);
+        input.section = None;
+        input.row_label = None;
+        // seats already None from base_input.
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let order = fetch_one(&conn, order_id).unwrap();
+
+        assert_eq!(
+            order.seats,
+            vec![crate::models::SeatEntry { section: None, row_label: None, seat: None }],
+            "2 tickets with identical (all-None) seat info collapse to exactly one General-admission-shaped entry"
+        );
     }
 
     #[test]
