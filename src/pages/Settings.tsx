@@ -51,6 +51,7 @@ import {
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
+import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useTheme, type ThemeMode } from "../lib/theme";
 
 const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
@@ -524,23 +525,12 @@ export default function Settings() {
               </p>
 
               {installing ? (
-                <div>
-                  <p className="mb-2 text-sm text-slate-600 dark:text-slate-400">
-                    Installing {available?.version}
-                    {installProgress?.total ? ` - ${Math.round((installProgress.downloaded / installProgress.total) * 100)}%` : "..."}
-                  </p>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                    <div
-                      className="h-full rounded-full bg-brand-600 transition-all"
-                      style={{
-                        width: installProgress?.total
-                          ? `${Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100))}%`
-                          : "30%",
-                      }}
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">The app will relaunch automatically once this finishes.</p>
-                </div>
+                // 2.0.39: full-screen branded takeover (marko asked for a
+                // real "screen" here, not just this card's own progress bar)
+                // - see UpdateOverlay.tsx. Still driven by the exact same
+                // `installing`/`available`/`installProgress` state as before,
+                // untouched - only the presentation moved out of this card.
+                <UpdateOverlay version={available?.version} progress={installProgress} />
               ) : available ? (
                 <div>
                   <p className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-200">Version {available.version} is available</p>
