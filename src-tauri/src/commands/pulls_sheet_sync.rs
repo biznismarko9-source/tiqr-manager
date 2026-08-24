@@ -1413,6 +1413,25 @@ fn plan_pulls_total_price_update(headers: &[String]) -> Option<TotalPriceSpec> {
 /// sends their plan as real `batchUpdate` (data validation + conditional
 /// formatting) and `update_values`/`update_values_as_formulas` (Total price)
 /// calls, same pattern as orders_sheet_sync::ensure_orders_sheet_structure.
+/// The single widest column any of `dropdowns`/`colors`/`total_price` is
+/// about to reference - `None` when none of the three have anything to
+/// write at all. Pure (no network, no `conn`) specifically so it can be
+/// tested directly, unlike `ensure_pulls_sheet_structure` itself below - see
+/// orders_sheet_sync::widest_referenced_column's own doc comment for why
+/// this number matters at all (same fix, file-local duplicate, same
+/// convention this module already follows for column_index_to_a1/now_iso/
+/// DROPDOWN_ROW_BUFFER).
+fn widest_referenced_column(dropdowns: &[DropdownSpec], colors: &[ColorSpec], total_price: &Option<TotalPriceSpec>) -> Option<usize> {
+    [
+        dropdowns.iter().map(|d| d.col_index).max(),
+        colors.iter().map(|c| c.col_index).max(),
+        total_price.as_ref().map(|s| s.col_index),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
 fn ensure_pulls_sheet_structure(
     conn: &Connection,
     token: &str,
@@ -1433,6 +1452,26 @@ fn ensure_pulls_sheet_structure(
         let sheet_id = metadata.sheet_id;
         let end_row = (data_row_count as i64).max(DROPDOWN_ROW_BUFFER) + 1;
         let mut requests: Vec<serde_json::Value> = vec![];
+
+        // 2.0.41: grow the sheet's own grid FIRST, in this same batchUpdate
+        // call, if anything below is about to reference a row/column past
+        // its CURRENT size - see google_sheets::grow_grid_request_if_needed
+        // and orders_sheet_sync::ensure_orders_sheet_structure's own comment
+        // on the same call for the real incident this fixes (a Summary block
+        // header cell there landed past a real sheet's default 26-column
+        // grid, and batch_update's all-or-nothing behavior took the ENTIRE
+        // refresh down with it). Pulls isn't currently exposed to this in
+        // practice - TIQR ID + Total price stay well under column Z on a
+        // normal sheet - but the same defensive fix belongs here too, both
+        // for consistency and against a future PULLS_SHEET_HEADERS growing
+        // wide enough to matter.
+        if let Some(widest) = widest_referenced_column(&dropdowns, &colors, &total_price) {
+            if let Some(grow) =
+                google_sheets::grow_grid_request_if_needed(sheet_id, metadata.row_count, metadata.column_count, end_row, widest as i64 + 1)
+            {
+                requests.push(grow);
+            }
+        }
 
         if !colors.is_empty() {
             let managed_columns: Vec<i64> = colors.iter().map(|c| c.col_index as i64).collect();
@@ -1703,6 +1742,53 @@ mod tests {
         let spec = plan_pulls_total_price_update(&full_headers()).unwrap();
         assert_eq!(spec.formula, "=SUM(L:L)");
         assert!(!spec.formula.contains('2'), "must not be row-bounded like K2:K1000");
+    }
+
+    // -----------------------------------------------------------------------
+    // widest_referenced_column (2.0.41) - same fix as orders_sheet_sync's own
+    // (see that module's widest_referenced_column tests for the real
+    // incident this addresses) - Pulls isn't currently exposed to it in
+    // practice, but the same defensive grid-growth belongs here too.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn widest_referenced_column_is_none_when_nothing_needs_writing() {
+        assert_eq!(widest_referenced_column(&[], &[], &None), None);
+    }
+
+    #[test]
+    fn widest_referenced_column_without_a_total_price_column_still_considers_dropdowns_and_colors() {
+        // No Price column at all - total_price is None - but Platform/
+        // Transfer are still there, so dropdowns/colors alone must still
+        // produce a real answer. Protects the pre-2.0.40 code path.
+        let conn = test_conn();
+        let headers: Vec<String> =
+            vec!["pull", "Event name", "event date", "Ks", "Platform", "More info", "Section", "Row", "Seats", "Transfer"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        let colors = plan_pulls_sheet_color_updates(&headers);
+        let total_price = plan_pulls_total_price_update(&headers);
+        assert!(total_price.is_none(), "no Price column - total price must not apply here");
+        assert!(widest_referenced_column(&dropdowns, &colors, &total_price).is_some());
+    }
+
+    #[test]
+    fn widest_referenced_column_against_the_real_canonical_header_order_is_wherever_total_price_lands() {
+        // The actual production header order (PULLS_SHEET_HEADERS, no TIQR
+        // ID present yet) - Platform/Transfer (the only dropdown/color
+        // columns Pulls has) sit at indices 4/9, both well under where Total
+        // price ends up, so Total price's own placement is what determines
+        // the answer here.
+        let conn = test_conn();
+        let headers: Vec<String> = PULLS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let dropdowns = plan_pulls_sheet_structure_updates(&conn, &headers).unwrap();
+        let colors = plan_pulls_sheet_color_updates(&headers);
+        let total_price = plan_pulls_total_price_update(&headers);
+        let widest = widest_referenced_column(&dropdowns, &colors, &total_price);
+        assert_eq!(widest, Some(total_price.unwrap().col_index));
+        assert_eq!(column_index_to_a1(widest.unwrap()), "M");
     }
 
     #[test]

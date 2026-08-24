@@ -2066,6 +2066,27 @@ fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> 
 /// batchUpdate) is reported as a soft warning on the result the caller
 /// already has, never as a reason to discard whatever real sync/push work
 /// that command just did. See each call site.
+/// The single widest column any of `dropdowns`/`colors`/`summary` is about
+/// to reference - `None` when none of the three have anything to write at
+/// all. Pure (no network, no `conn`) specifically so it can be tested
+/// directly, unlike `ensure_orders_sheet_structure` itself below - see that
+/// function's own comment on `grow_grid_request_if_needed` for why this
+/// number matters. `summary`'s FORMULA columns are included here even though
+/// only its TEXT columns ever get a `bold_header_request` (repeatCell) -
+/// those formula columns are written separately via `values.*`, which likely
+/// grows the grid on its own, but including them here up front makes the
+/// whole block correct regardless of whether that is actually true.
+fn widest_referenced_column(dropdowns: &[DropdownSpec], colors: &[ColorSpec], summary: &Option<OrdersSummarySpec>) -> Option<usize> {
+    [
+        dropdowns.iter().map(|d| d.col_index).max(),
+        colors.iter().map(|c| c.col_index).max(),
+        summary.as_ref().and_then(|s| s.text_columns.iter().chain(s.formula_columns.iter()).map(|c| c.col_index).max()),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
 fn ensure_orders_sheet_structure(
     conn: &Connection,
     token: &str,
@@ -2086,6 +2107,21 @@ fn ensure_orders_sheet_structure(
         let sheet_id = metadata.sheet_id;
         let end_row = (data_rows.len() as i64).max(DROPDOWN_ROW_BUFFER) + 1;
         let mut requests: Vec<serde_json::Value> = vec![];
+
+        // 2.0.41: grow the sheet's own grid FIRST, in this same batchUpdate
+        // call, if anything below is about to reference a row/column past
+        // its CURRENT size - see grow_grid_request_if_needed's own doc
+        // comment for the real incident this fixes (the Summary block's
+        // header cell at column AB against a real sheet's default 26-column
+        // grid took down the ENTIRE refresh, dropdowns/colors included, not
+        // just the new Summary styling - batch_update is all-or-nothing).
+        if let Some(widest) = widest_referenced_column(&dropdowns, &colors, &summary) {
+            if let Some(grow) =
+                google_sheets::grow_grid_request_if_needed(sheet_id, metadata.row_count, metadata.column_count, end_row, widest as i64 + 1)
+            {
+                requests.push(grow);
+            }
+        }
 
         if !colors.is_empty() {
             // Delete THIS refresh's own previously-added color rules before
@@ -3899,6 +3935,70 @@ mod tests {
 
         let missing_payout_status = row(&["how much pull", "Total Purchase Price", "Revenue", "Profit"]);
         assert!(plan_orders_summary_updates(&missing_payout_status).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // widest_referenced_column (2.0.41) - real incident: the Summary block's
+    // own header cell landed at column AB (28th column) against a real
+    // sheet's default 26-column grid, and batch_update's all-or-nothing
+    // behavior took the ENTIRE refresh down with it, not just the new
+    // styling. These tests lock in the exact number ensure_orders_sheet_
+    // structure now uses to grow the grid before that can happen again.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn widest_referenced_column_is_none_when_nothing_needs_writing() {
+        assert_eq!(widest_referenced_column(&[], &[], &None), None);
+    }
+
+    #[test]
+    fn widest_referenced_column_considers_summarys_formula_columns_not_just_its_text_columns() {
+        // Summary's own widest cell is a FORMULA column (Summary-Unpaid's
+        // formula, one column right of its "Summary-Unpaid" label) - if this
+        // only looked at text_columns, it would under-count by one and the
+        // grid would be grown one column too few, right back to the same
+        // crash for exactly that one cell.
+        let headers = row(&["how much pull", "Total Purchase Price", "Revenue", "Profit", "Payout status"]);
+        let summary = plan_orders_summary_updates(&headers);
+        assert!(summary.is_some());
+        let widest = widest_referenced_column(&[], &[], &summary).unwrap();
+        let widest_of_formula_columns = summary.unwrap().formula_columns.iter().map(|c| c.col_index).max().unwrap();
+        assert_eq!(widest, widest_of_formula_columns);
+    }
+
+    #[test]
+    fn widest_referenced_column_without_a_summary_block_still_considers_dropdowns_and_colors() {
+        // No "how much pull" at all - summary is None - but Status/Payout
+        // status are still there, so dropdowns/colors alone must still
+        // produce a real answer, not None. Protects the pre-2.0.40 code path
+        // (this function existing at all must never make that case worse).
+        let conn = test_conn();
+        let headers = row(&["Status", "Payout status", "Delivery status"]);
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        let colors = plan_sheet_color_updates(&headers);
+        let summary = plan_orders_summary_updates(&headers);
+        assert!(summary.is_none(), "no how much pull column - summary must not apply here");
+        assert!(widest_referenced_column(&dropdowns, &colors, &summary).is_some());
+    }
+
+    #[test]
+    fn widest_referenced_column_against_the_real_canonical_header_order_is_the_summary_blocks_own_far_column() {
+        // The actual regression, reproduced end to end against
+        // ORDERS_SHEET_HEADERS (Total Purchase Price=H/Revenue=P/Profit=Q/
+        // Payout status=T/how much pull=Y, same real order marko's own real
+        // sheet has) - every dropdown/color column in this canonical order
+        // is well under column Z (index 25), so the Summary block itself
+        // (ending at AG, index 32 - see plan_orders_summary_updates_against_
+        // the_real_canonical_header_order_matches_markos_own_draft_letters
+        // above) is what actually determines the answer here, exactly as it
+        // did on marko's real sheet.
+        let conn = test_conn();
+        let headers: Vec<String> = ORDERS_SHEET_HEADERS.iter().map(|s| s.to_string()).collect();
+        let (dropdowns, _, _) = plan_sheet_structure_updates(&conn, &headers, 0).unwrap();
+        let colors = plan_sheet_color_updates(&headers);
+        let summary = plan_orders_summary_updates(&headers);
+        assert_eq!(widest_referenced_column(&dropdowns, &colors, &summary), Some(32));
+        assert_eq!(column_index_to_a1(32), "AG");
     }
 
     // -----------------------------------------------------------------------

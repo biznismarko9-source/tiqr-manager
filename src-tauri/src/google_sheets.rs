@@ -403,6 +403,24 @@ struct SheetMetadataProperties {
     // conditional-format info from, and removed the narrower function.)
     #[serde(rename = "sheetId")]
     sheet_id: Option<i64>,
+    // 2.0.41: added alongside `sheet_id` above, same reasoning - only
+    // `get_sheet_structure_metadata`'s own `fields=` query actually asks for
+    // `gridProperties`, so this must tolerate a response that never carries
+    // it at all (get_spreadsheet_sheet_titles's own query never will).
+    #[serde(default, rename = "gridProperties")]
+    grid_properties: Option<GridPropertiesEntry>,
+}
+
+/// A sheet's own actual grid size, as opposed to how much of it has real
+/// content - both `Option` because Google omits `gridProperties` entirely
+/// from a response whose `fields=` query didn't ask for it (never sends it
+/// as `null`), same convention as every other field in this struct.
+#[derive(Debug, Deserialize)]
+struct GridPropertiesEntry {
+    #[serde(rename = "rowCount")]
+    row_count: Option<i64>,
+    #[serde(rename = "columnCount")]
+    column_count: Option<i64>,
 }
 
 /// Returns the exact title of every tab in spreadsheet `spreadsheet_id`, in
@@ -516,13 +534,20 @@ pub fn set_data_validation_request(sheet_id: i64, start_row: i64, end_row: i64, 
 pub struct SheetStructureMetadata {
     pub sheet_id: i64,
     pub conditional_format_columns: Vec<Option<i64>>,
+    // 2.0.41: the sheet's own CURRENT grid size - see
+    // `grow_grid_request_if_needed` below for why a caller needs this at
+    // all. `Option` for the same "this response might not carry it" reason
+    // `sheet_id` above is - in practice always `Some` for THIS function's own
+    // `fields=` query below (which always asks for both), but never assumed.
+    pub row_count: Option<i64>,
+    pub column_count: Option<i64>,
 }
 
 pub fn get_sheet_structure_metadata(token: &str, spreadsheet_id: &str, sheet_tab: &str) -> AppResult<SheetStructureMetadata> {
     let client = reqwest::blocking::Client::new();
     let encoded_id = utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC);
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title,sheets.properties.sheetId,sheets.conditionalFormats.ranges.startColumnIndex,sheets.conditionalFormats.ranges.endColumnIndex"
+        "https://sheets.googleapis.com/v4/spreadsheets/{encoded_id}?fields=sheets.properties.title,sheets.properties.sheetId,sheets.properties.gridProperties.rowCount,sheets.properties.gridProperties.columnCount,sheets.conditionalFormats.ranges.startColumnIndex,sheets.conditionalFormats.ranges.endColumnIndex"
     );
     let resp = client
         .get(&url)
@@ -538,8 +563,10 @@ pub fn get_sheet_structure_metadata(token: &str, spreadsheet_id: &str, sheet_tab
     let sheet_id = entry.properties.sheet_id.ok_or_else(|| {
         AppError::External(format!("Google Sheets did not return an internal ID for tab \"{sheet_tab}\"."))
     })?;
+    let row_count = entry.properties.grid_properties.as_ref().and_then(|g| g.row_count);
+    let column_count = entry.properties.grid_properties.as_ref().and_then(|g| g.column_count);
     let conditional_format_columns = entry.conditional_formats.iter().map(|f| single_column_index(&f.ranges)).collect();
-    Ok(SheetStructureMetadata { sheet_id, conditional_format_columns })
+    Ok(SheetStructureMetadata { sheet_id, conditional_format_columns, row_count, column_count })
 }
 
 /// Pure core of `get_sheet_structure_metadata`'s conditional-format reading:
@@ -682,6 +709,60 @@ pub fn bold_header_request(sheet_id: i64, start_row: i64, end_row: i64, col_inde
             "fields": "userEnteredFormat(textFormat,backgroundColor)"
         }
     })
+}
+
+/// Builds an `updateSheetProperties` request that grows `sheet_id`'s own
+/// grid to at least `needed_rows` rows / `needed_columns` columns - `None`
+/// when the known CURRENT size (`current_rows`/`current_columns`, straight
+/// from `SheetStructureMetadata`) already covers what's needed, so this
+/// never fires a no-op request. Also `None` when either current size isn't
+/// known at all - a missing `gridProperties` in the metadata response means
+/// "don't touch it", never "assume it's small enough to need growing"; same
+/// fail-safe, never-guess principle every other `Option` field this module
+/// reads back from a `fields=`-restricted response already follows. Only
+/// ever GROWS a dimension that's currently too small for what the caller is
+/// about to reference in the same batchUpdate call - a sheet marko made
+/// larger himself is always left exactly as he sized it.
+///
+/// 2.0.41: added after `batch_update`'s own atomic all-or-nothing behavior
+/// (see that function's own doc comment) took down an ENTIRE Orders & Sales
+/// structure refresh - not just the new Summary block, but the pre-existing
+/// dropdowns and Status/Payout-status color-coding too - the first time
+/// `ensure_orders_sheet_structure` sent a `bold_header_request` for the
+/// Summary block's header cell at column AB (28th column) against marko's
+/// real sheet, which - like most real Google Sheets - still had Google's own
+/// default 26-column (A-Z) grid, never having had a reason to grow past it
+/// before. Google's `repeatCell`/other structural requests are validated
+/// against the sheet's CURRENT declared size and rejected outright
+/// (`400 INVALID_ARGUMENT`, "exceeds grid limits") if a range falls outside
+/// it - unlike the plain `values.*` endpoints, which grow the grid
+/// automatically as needed. The fix: call this FIRST, and if it returns
+/// `Some`, put that request at the FRONT of the same `requests` array a
+/// caller is about to hand to `batch_update` - Sheets applies every request
+/// in one `batchUpdate` call in array order, so the grid is already the
+/// right size by the time any later request in that same call references a
+/// cell inside it.
+pub fn grow_grid_request_if_needed(
+    sheet_id: i64,
+    current_rows: Option<i64>,
+    current_columns: Option<i64>,
+    needed_rows: i64,
+    needed_columns: i64,
+) -> Option<serde_json::Value> {
+    let new_rows = current_rows?.max(needed_rows);
+    let new_columns = current_columns?.max(needed_columns);
+    if new_rows == current_rows? && new_columns == current_columns? {
+        return None;
+    }
+    Some(serde_json::json!({
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": sheet_id,
+                "gridProperties": { "rowCount": new_rows, "columnCount": new_columns }
+            },
+            "fields": "gridProperties.rowCount,gridProperties.columnCount"
+        }
+    }))
 }
 
 /// The (partial) shape of the Sheets API's `spreadsheets.create` response
@@ -1127,6 +1208,117 @@ mod tests {
         let json = r#"{ "sheets": [ { "properties": { "title": "Pulls" } } ] }"#;
         let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse with no conditionalFormats key at all");
         assert!(parsed.sheets[0].conditional_formats.is_empty());
+    }
+
+    #[test]
+    fn spreadsheet_metadata_parses_a_real_grid_properties_shape() {
+        // The exact shape `?fields=...sheets.properties.gridProperties.
+        // rowCount,sheets.properties.gridProperties.columnCount` produces on
+        // a perfectly ordinary real sheet that has never been resized past
+        // Google's own default (1000 data rows + 1 header = 1001, 26
+        // columns A-Z) - this is the shape that, before 2.0.41, this app had
+        // no way to read at all.
+        let json = r#"{
+            "sheets": [
+                { "properties": { "title": "Orders", "sheetId": 0, "gridProperties": { "rowCount": 1001, "columnCount": 26 } } }
+            ]
+        }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse a real gridProperties shape");
+        let props = &parsed.sheets[0].properties;
+        assert_eq!(props.grid_properties.as_ref().and_then(|g| g.row_count), Some(1001));
+        assert_eq!(props.grid_properties.as_ref().and_then(|g| g.column_count), Some(26));
+    }
+
+    #[test]
+    fn spreadsheet_metadata_defaults_grid_properties_to_none_when_the_field_is_entirely_absent() {
+        // get_spreadsheet_sheet_titles's own query never asks for
+        // gridProperties at all - same "Option, tolerate absence, never
+        // guess" convention sheet_id/conditional_formats already need.
+        let json = r#"{ "sheets": [ { "properties": { "title": "Pulls" } } ] }"#;
+        let parsed: SpreadsheetMetadata = serde_json::from_str(json).expect("must parse with no gridProperties key at all");
+        assert!(parsed.sheets[0].properties.grid_properties.is_none());
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_is_none_when_the_current_grid_already_covers_what_is_needed() {
+        assert_eq!(grow_grid_request_if_needed(0, Some(1001), Some(26), 500, 25), None);
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_is_none_exactly_at_the_boundary_needed_equal_to_current() {
+        // needed_columns == current_columns must count as "fits" - matches
+        // the Sheets API's own exclusive-endColumnIndex convention
+        // (bold_header_request's `endColumnIndex: col_index + 1`, i.e. a
+        // 26-column grid already fully covers column index 25 / column Z).
+        assert_eq!(grow_grid_request_if_needed(0, Some(1001), Some(26), 1001, 26), None);
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_grows_only_columns_when_only_columns_are_too_small() {
+        // The real incident: a Summary block header cell at column index 27
+        // (AB, the 28th column) against a real sheet's default 26-column
+        // grid - needed_columns = 28.
+        let req = grow_grid_request_if_needed(555, Some(1001), Some(26), 500, 28).expect("columns are too small, must grow");
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "updateSheetProperties": {
+                    "properties": { "sheetId": 555, "gridProperties": { "rowCount": 1001, "columnCount": 28 } },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_grows_only_rows_when_only_rows_are_too_small() {
+        // A sheet with far more real data than Google's own default 1000
+        // rows - dropdowns/colors need to reach further down than the grid
+        // currently goes, columns are untouched.
+        let req = grow_grid_request_if_needed(555, Some(1001), Some(26), 1502, 20).expect("rows are too small, must grow");
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "updateSheetProperties": {
+                    "properties": { "sheetId": 555, "gridProperties": { "rowCount": 1502, "columnCount": 26 } },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_grows_both_dimensions_at_once_when_both_are_too_small() {
+        let req = grow_grid_request_if_needed(1, Some(100), Some(10), 200, 30).expect("both too small, must grow both");
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "updateSheetProperties": {
+                    "properties": { "sheetId": 1, "gridProperties": { "rowCount": 200, "columnCount": 30 } },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_never_shrinks_a_dimension_marko_made_larger_himself() {
+        // His own real sheet already has 2000 rows (he added them by hand) -
+        // a refresh that only actually needs 501 must never shrink it back.
+        assert_eq!(grow_grid_request_if_needed(1, Some(2000), Some(26), 501, 25), None);
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_is_none_when_current_row_count_is_unknown() {
+        // Fail-safe: never guess a resize when the CURRENT size can't be
+        // read back at all - same principle as every other Option field in
+        // this module.
+        assert_eq!(grow_grid_request_if_needed(1, None, Some(26), 500, 28), None);
+    }
+
+    #[test]
+    fn grow_grid_request_if_needed_is_none_when_current_column_count_is_unknown() {
+        assert_eq!(grow_grid_request_if_needed(1, Some(1001), None, 500, 28), None);
     }
 
     #[test]
