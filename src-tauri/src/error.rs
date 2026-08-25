@@ -14,11 +14,14 @@ pub enum AppError {
     Io(String),
     #[error("{0}")]
     Other(String),
-    /// A call to an external service (currently only Google Sheets) failed
-    /// or was rejected - network error, Google returned a non-2xx status,
-    /// or the app has no service account credentials embedded in this build.
-    /// Kept distinct from `Other` so the frontend can, if useful, show sync
-    /// failures differently from ordinary validation/db errors.
+    /// A call to an external service failed or was rejected - a network
+    /// error, the service returned a non-2xx status, or (Google Sheets
+    /// specifically) the app has no service account credentials embedded in
+    /// this build. Used by Google Sheets/OAuth/Firebase (google_sheets.rs,
+    /// google_oauth.rs) and, since 2.0.50, the live currency-conversion rate
+    /// lookup (fx.rs). Kept distinct from `Other` so the frontend can, if
+    /// useful, show this class of failure differently from ordinary
+    /// validation/db errors.
     #[error("{0}")]
     External(String),
 }

@@ -247,37 +247,6 @@ export function Badge({ tone, children }: { tone: string; children: ReactNode })
 // Stat card (used on Dashboard + Event detail)
 // ---------------------------------------------------------------------------
 
-/** Tiny inline "how did we get here" line under a StatCard's value (2.0.47,
- * DIR-001 - see REDESIGN-2.0.47-REPORT.md). Deliberately its own minimal
- * component, not a reuse of MetricChart.tsx: a sparkline has none of that
- * component's needs (no axes/gridlines/hover/ResizeObserver-driven
- * responsive width - it's a small fixed size) - but it's built with the
- * exact same hand-rolled, dependency-free SVG technique ("Option A" - no
- * charting library), and reuses the same brand-500 accent line color
- * MetricChart.tsx already draws its own line in. Renders nothing for fewer
- * than 2 points (StatCard already guards this too, but this stays safe to
- * call directly either way - a single point can't draw a line). */
-function Sparkline({ values }: { values: number[] }) {
-  if (values.length < 2) return null;
-  const w = 72;
-  const h = 28;
-  const max = Math.max(...values);
-  const min = Math.min(...values);
-  const range = max - min || 1; // guards the "every point identical" case
-  const stepX = w / (values.length - 1);
-  const pts = values.map((v, i) => ({ x: i * stepX, y: h - ((v - min) / range) * h }));
-  const line = pts.map((p) => `${p.x},${p.y.toFixed(1)}`).join(" ");
-  const area = `0,${h} ${line} ${w},${h}`;
-  const last = pts[pts.length - 1];
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="mt-1.5 overflow-visible" aria-hidden="true">
-      <polygon points={area} className="fill-brand-500/10" />
-      <polyline points={line} fill="none" className="stroke-brand-500" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={last.x} cy={last.y} r={2} className="fill-brand-500" />
-    </svg>
-  );
-}
-
 export function StatCard({
   label,
   value,
@@ -285,7 +254,6 @@ export function StatCard({
   tone = "default",
   trend,
   trendColored = true,
-  sparkline,
 }: {
   label: string;
   value: string;
@@ -303,10 +271,6 @@ export function StatCard({
    * convention this card's own `tone` prop already uses for realized
    * profit/loss. Ignored when `trend` is absent. */
   trendColored?: boolean;
-  /** Optional small line under the value (2.0.47, DIR-001) - plain numbers,
-   * oldest first (e.g. one field of the Dashboard's own revenueTimeSeries).
-   * Omitted or fewer than 2 points renders nothing. */
-  sparkline?: number[];
 }) {
   const valueTone =
     tone === "positive"
@@ -331,7 +295,6 @@ export function StatCard({
           {trend.label} <span className="font-normal text-slate-400 dark:text-slate-500">vs. previous period</span>
         </p>
       )}
-      {sparkline && sparkline.length >= 2 && <Sparkline values={sparkline} />}
       {sub && <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
     </Card>
   );

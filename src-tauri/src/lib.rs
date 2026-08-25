@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod finance;
+mod fx;
 mod google_oauth;
 mod google_sheets;
 mod models;
@@ -132,6 +133,7 @@ pub fn run() {
             commands::firebase_google_auth::firebase_google_sign_in_available,
             commands::firebase_google_auth::start_firebase_google_sign_in,
             commands::firebase_google_auth::cancel_firebase_google_sign_in,
+            commands::currency::convert_currency,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

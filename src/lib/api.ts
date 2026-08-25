@@ -8,6 +8,7 @@ import type {
   CreatedSheetResult,
   CsvImportResult,
   CsvPreview,
+  CurrencyConversion,
   DashboardData,
   EventCategory,
   EventInput,
@@ -330,6 +331,15 @@ export const api = {
   firebaseGoogleSignInAvailable: () => invoke<boolean>("firebase_google_sign_in_available"),
   startFirebaseGoogleSignIn: () => invoke<FirebaseGoogleSignInResult>("start_firebase_google_sign_in"),
   cancelFirebaseGoogleSignIn: () => invoke<void>("cancel_firebase_google_sign_in"),
+  // Currency conversion
+  /** 2.0.50: "Convert to EUR" on the New Order form - fetches one live rate
+   * (Frankfurter, ECB reference rates) and converts every amount in
+   * `amountsCents` by it in a single round trip. See
+   * commands/currency.rs::convert_currency / fx.rs for the actual call -
+   * cannot be exercised against the real network from this dev sandbox,
+   * only on a real machine. */
+  convertCurrency: (fromCurrency: string, toCurrency: string, amountsCents: number[]) =>
+    invoke<CurrencyConversion>("convert_currency", { fromCurrency, toCurrency, amountsCents }),
 };
 
 export function errMsg(e: unknown): string {

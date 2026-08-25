@@ -811,3 +811,16 @@ export interface SheetSyncResult {
   corrected: SheetSyncIssue[];
   syncedAt: string;
 }
+
+/** Result of converting a list of cents amounts from one currency to
+ * another at today's live rate - see commands::currency::convert_currency
+ * (Rust) / fx.rs for the actual Frankfurter API call this comes from.
+ * 2.0.50: powers the "Convert to EUR" action on the New Order form.
+ * `convertedCents` lines up with the `amountsCents` list sent to
+ * `api.convertCurrency` by position (same length, same order) - callers
+ * match results back to fields by index, not by name. */
+export interface CurrencyConversion {
+  rate: number;
+  rateDate: string;
+  convertedCents: number[];
+}

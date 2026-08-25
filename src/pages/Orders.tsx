@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
-import { decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
+import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -565,6 +565,22 @@ function OrderFormModal({
   const [pullFee, setPullFee] = useState("0");
   const [currency, setCurrency] = useState("EUR");
   const [customCurrency, setCustomCurrency] = useState(false);
+  // 2.0.50: "Convert to EUR" button next to the Currency field - own loading
+  // flag (not reusing `saving`, which is for the final Create submit) so the
+  // button can show "Converting..." and disable itself without touching any
+  // other part of the form.
+  const [convertingCurrency, setConvertingCurrency] = useState(false);
+  // 2.0.50, review fix: this modal never actually unmounts when it's closed
+  // (only the inner <Modal> stops rendering - see its own component), so
+  // this component's state, including anything an in-flight
+  // api.convertCurrency call is about to write into, survives a close and a
+  // later reopen for a DIFFERENT order. Bumped in the reset effect below on
+  // every open; convertToEur captures the value at the moment it starts and
+  // refuses to apply a result/error/loading-state change if the token has
+  // since moved on - otherwise a slow conversion request abandoned by
+  // closing the modal could land later and silently overwrite whatever the
+  // next order's form now contains.
+  const conversionToken = useRef(0);
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
   const [ticketType, setTicketType] = useState("");
   const [customTicketType, setCustomTicketType] = useState(false);
@@ -577,6 +593,13 @@ function OrderFormModal({
 
   useEffect(() => {
     if (!open) return;
+    // 2.0.50, review fix: invalidates any convertToEur call still in flight
+    // from a previous time this same modal instance was open (it doesn't
+    // unmount on close, so a slow request could otherwise resolve after
+    // this reset and clobber the fresh fields below with stale numbers from
+    // a different order) - see conversionToken's own comment above.
+    conversionToken.current += 1;
+    setConvertingCurrency(false);
     api.listEvents().then(setEvents).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
     api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
@@ -637,6 +660,73 @@ function OrderFormModal({
       totalCents: purchaseCents + feesCents + otherCents + pullFeeCents,
     };
   }, [qNum, unitPrice, unitFees, otherCosts, pulled, pullFee]);
+
+  /** 2.0.50, marko's own request/example: "mam 20gbp, podla aktualneho
+   * kurzu je teraz 23,38 eur tak musi to automaticky vediet a urobit" - a
+   * foreign-currency purchase converted to EUR at today's real rate in a
+   * couple of clicks, rather than looking the rate up and doing the math
+   * by hand. Converts every price field this form has - always Pull fee
+   * too, regardless of whether "This order was pulled by someone else" is
+   * currently checked (review fix: converting it is harmless while it's
+   * still the default "0", and skipping it only when unchecked left a real
+   * gap - check it, convert, uncheck, re-check later and the field would
+   * silently still hold its old un-converted number under a now-EUR
+   * label) - with ONE shared rate/round trip, then switches the field
+   * values AND the currency to EUR together - so the form is left in a
+   * fully consistent EUR state, never a mix of an EUR currency label with
+   * amounts that are still secretly GBP/USD numbers.
+   * Deliberately only touches this form's own local state before Create is
+   * pressed - never an existing order (see fx.rs's own doc comment for why
+   * this feature is scoped to order-creation time, not editing afterward). */
+  const convertToEur = async () => {
+    if (currency === "EUR" || convertingCurrency) return;
+    setError(null);
+
+    const fields: Array<[string, (v: string) => void, string]> = [
+      [unitPrice, setUnitPrice, "Unit purchase price"],
+      [unitFees, setUnitFees, "Unit purchase fees"],
+      [otherCosts, setOtherCosts, "Other costs"],
+      [pullFee, setPullFee, "Pull fee"],
+    ];
+    // Review fix: validate BEFORE calling out, exactly like submit() does
+    // for these same fields further down. decimalStringToCents returns null
+    // for genuinely invalid text (not just empty, which is 0) - silently
+    // falling back to 0 here would overwrite whatever marko actually typed
+    // with "0.00", and submit()'s own check couldn't catch it afterward
+    // since 0 is a perfectly valid amount as far as it's concerned.
+    const parsedAmounts = fields.map(([value]) => decimalStringToCents(value));
+    const invalidIndex = parsedAmounts.findIndex((cents) => cents === null);
+    if (invalidIndex !== -1) {
+      setError(`${fields[invalidIndex][2]} is not a valid amount - fix it before converting to EUR`);
+      return;
+    }
+
+    // Captured AFTER validation (an invalid field must never even show the
+    // "Converting..." state) - see conversionToken's own comment for why
+    // this guards every state change below.
+    const myToken = conversionToken.current;
+    setConvertingCurrency(true);
+    try {
+      const amountsCents = parsedAmounts as number[];
+      const result = await api.convertCurrency(currency, "EUR", amountsCents);
+      if (conversionToken.current !== myToken) return; // stale - this modal moved on to something else while the request was in flight
+      if (result.convertedCents.length !== fields.length) {
+        throw new Error("Currency conversion returned an unexpected number of amounts");
+      }
+      fields.forEach(([, setValue], i) => setValue(centsToDecimalString(result.convertedCents[i])));
+      const fromCurrency = currency;
+      setCurrency("EUR");
+      setCustomCurrency(false);
+      toast.success(
+        `Converted at today's rate: 1 ${fromCurrency} = ${result.rate.toFixed(4)} EUR (rate as of ${formatDateNumeric(result.rateDate)})`,
+      );
+    } catch (e) {
+      if (conversionToken.current !== myToken) return; // a stale request's error no longer matters either
+      toast.error(errMsg(e));
+    } finally {
+      if (conversionToken.current === myToken) setConvertingCurrency(false);
+    }
+  };
 
   const submit = async () => {
     setError(null);
@@ -851,7 +941,17 @@ function OrderFormModal({
           </div>
 
           <Field label={`Unit purchase price (${currency})`} required>
-            <Input inputMode="decimal" placeholder="0.00" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} />
+            <Input
+              inputMode="decimal"
+              placeholder="0.00"
+              value={unitPrice}
+              onChange={(e) => setUnitPrice(e.target.value)}
+              // 2.0.50, review fix: without this, editing a field while a
+              // conversion request is in flight gets silently thrown away
+              // the moment that request lands and overwrites every field
+              // with its own (now stale) converted numbers.
+              disabled={convertingCurrency}
+            />
           </Field>
           <div>
             {/* 1.7.3: this used to be an <input list="currency-list"> +
@@ -863,13 +963,34 @@ function OrderFormModal({
                 "+ New") still allows typing any currency code freely. */}
             <div className="flex items-center justify-between">
               <span className="label mb-1">Currency</span>
-              <button
-                type="button"
-                className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                onClick={() => setCustomCurrency((c) => !c)}
-              >
-                {customCurrency ? "Choose from list" : "Other..."}
-              </button>
+              <div className="flex items-center gap-3">
+                {/* 2.0.50: only relevant once there's actually a foreign
+                    currency to convert away from - hidden entirely for the
+                    default EUR case rather than showing a button that would
+                    just error out or no-op. */}
+                {currency !== "EUR" && (
+                  <button
+                    type="button"
+                    className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline disabled:opacity-50 disabled:no-underline"
+                    onClick={convertToEur}
+                    disabled={convertingCurrency}
+                  >
+                    {convertingCurrency ? "Converting..." : "Convert to EUR"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="mb-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline disabled:opacity-50 disabled:no-underline"
+                  onClick={() => setCustomCurrency((c) => !c)}
+                  // 2.0.50, review fix: switching currency mid-flight would
+                  // make a landing conversion result apply to the WRONG
+                  // "from" currency (it was fetched for whatever currency
+                  // was selected when Convert was clicked).
+                  disabled={convertingCurrency}
+                >
+                  {customCurrency ? "Choose from list" : "Other..."}
+                </button>
+              </div>
             </div>
             {customCurrency ? (
               <Input
@@ -877,9 +998,10 @@ function OrderFormModal({
                 placeholder="e.g. AED"
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                disabled={convertingCurrency}
               />
             ) : (
-              <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              <Select value={currency} onChange={(e) => setCurrency(e.target.value)} disabled={convertingCurrency}>
                 {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -890,10 +1012,10 @@ function OrderFormModal({
           </div>
 
           <Field label={`Unit purchase fees (${currency})`}>
-            <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} />
+            <Input inputMode="decimal" value={unitFees} onChange={(e) => setUnitFees(e.target.value)} disabled={convertingCurrency} />
           </Field>
           <Field label="Other costs (total)" hint="Split evenly across all tickets">
-            <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} />
+            <Input inputMode="decimal" value={otherCosts} onChange={(e) => setOtherCosts(e.target.value)} disabled={convertingCurrency} />
           </Field>
 
           {/* 2.0.25: marko's own request - record a pull right when creating
@@ -920,7 +1042,13 @@ function OrderFormModal({
                 <Input autoFocus value={pullerName} onChange={(e) => setPullerName(e.target.value)} />
               </Field>
               <Field label={`Pull fee (${currency})`} hint="What you paid them - added to the total purchase price below">
-                <Input inputMode="decimal" placeholder="0.00" value={pullFee} onChange={(e) => setPullFee(e.target.value)} />
+                <Input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={pullFee}
+                  onChange={(e) => setPullFee(e.target.value)}
+                  disabled={convertingCurrency}
+                />
               </Field>
             </>
           )}

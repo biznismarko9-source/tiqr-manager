@@ -2,6 +2,7 @@ pub mod app_info;
 pub mod backup;
 pub mod csv_export;
 pub mod csv_import;
+pub mod currency;
 pub mod dashboard;
 pub mod event_categories;
 pub mod events;

@@ -313,7 +313,6 @@ export default function Dashboard() {
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
                       trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
-                      sparkline={data.revenueTimeSeries.map((p) => p.revenueCents)}
                     />
                     <StatCard
                       label="Purchase cost"
@@ -326,7 +325,6 @@ export default function Dashboard() {
                       value={formatMoney(data.period.profitCents, data.primaryCurrency)}
                       tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
                       trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
-                      sparkline={data.revenueTimeSeries.map((p) => p.profitCents)}
                     />
                     <StatCard
                       label="Margin"
@@ -343,7 +341,6 @@ export default function Dashboard() {
                       value={String(data.period.soldTickets)}
                       sub={`${data.period.purchasedTickets} purchased in period`}
                       trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
-                      sparkline={data.revenueTimeSeries.map((p) => p.soldTickets)}
                     />
                   </div>
                   {/* Big number + line always come straight from data.period /
