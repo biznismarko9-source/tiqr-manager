@@ -430,8 +430,14 @@ export interface UpcomingEventAlert {
 export interface DashboardAlerts {
   /** Orders with payment_status 'unpaid' or 'partial' (purchase side - money owed to a supplier). */
   unpaidOrdersCount: number;
-  /** Available/listed tickets with no listing price set. */
+  /** Available/listed tickets with no listing price set. Ticket-scoped -
+   * feeds the Overview "Potential Profit" sentence. For the Activity tab's
+   * own alert card, see missingListingPriceOrdersCount below. */
   missingListingPriceCount: number;
+  /** 2.0.48: same unpriced tickets as missingListingPriceCount, but counting
+   * each order once no matter how many of its tickets are unpriced - what
+   * the Activity tab's "Missing listing price" card actually shows. */
+  missingListingPriceOrdersCount: number;
   /** Total 'upcoming' events within the alert window that still have available/listed inventory. */
   upcomingEventsCount: number;
   /** The soonest of the above, capped (same convention as Recent Events/Orders/Sales). */

@@ -689,7 +689,18 @@ pub struct DashboardAlerts {
     pub unpaid_orders_count: i64,
     /// Tickets currently `available` or `listed` with no `listing_price_cents`
     /// set - inventory that cannot yet generate a sale because it has no price.
+    /// Ticket-scoped on purpose: feeds the Overview "Potential Profit"
+    /// sentence, which is genuinely about how many individual tickets are
+    /// dragging that estimate down. For the Activity tab's own "Missing
+    /// listing price" card, see `missing_listing_price_orders_count` below.
     pub missing_listing_price_count: i64,
+    /// 2.0.48: the same unpriced available/listed tickets as
+    /// `missing_listing_price_count` above, but counting each ORDER once no
+    /// matter how many of its tickets are missing a price - marko reads the
+    /// Activity alert in terms of "how many orders do I need to go price",
+    /// not a raw ticket tally that can look scarier than the real workload
+    /// (one 8-ticket order with no price is one thing to go fix, not 8).
+    pub missing_listing_price_orders_count: i64,
     /// Total count of `status='upcoming'` events, with an `event_date`
     /// within the next `UPCOMING_EVENT_WINDOW_DAYS` (see dashboard.rs), that
     /// still have available/listed ticket inventory.

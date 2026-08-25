@@ -149,9 +149,6 @@ export default function Layout() {
               className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${profileOpen ? "" : "rotate-180"}`}
             />
           </button>
-          <div className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">
-            Local-first &middot; your data stays on this device
-          </div>
         </div>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">

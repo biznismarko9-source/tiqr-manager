@@ -504,14 +504,57 @@ pub(crate) fn get_dashboard_impl(
         [],
         |r| r.get(0),
     )?;
+    // 2.0.48: marko's report - the Activity tab's "Missing listing price"
+    // card reads confusingly ticket-by-ticket (showed "27") when he thinks
+    // in orders - one order can hold many tickets, so one half-priced order
+    // shouldn't look like a pile of 27 unrelated problems. Deliberately a
+    // SEPARATE field from `missing_listing_price_count` above rather than
+    // changing what that one counts: that field stays ticket-scoped because
+    // the Overview "Potential Profit" sentence (Dashboard.tsx, and the
+    // identical wording on Event Detail) is genuinely about how many
+    // individual tickets are dragging the estimate down, which IS a
+    // per-ticket fact and must not change. This new field is order-scoped,
+    // for the Activity alert card specifically - counts an order once no
+    // matter how many of its still-unsold tickets are missing a price.
+    let missing_listing_price_orders_count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT order_id) FROM tickets
+         WHERE status IN ('available','listed') AND listing_price_cents IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
     // 1.8.3 (section 13, Payments visibility): sales side of "money not yet
     // settled" - the counterpart to unpaid_orders_count above. Scoped to
     // primary_currency like every other money total on this dashboard (see
     // pending_sales_currency doc comment on DashboardAlerts for why that's
     // safe even though this query itself doesn't touch tickets.currency).
+    //
+    // 2.0.48: COUNT used to be a plain COUNT(*) against the `sales` table,
+    // which stores one row PER TICKET - a multi-ticket "New sale" batch
+    // shares one batch_id across several rows (see sales.rs's GROUP_KEY_EXPR
+    // doc comment), so a single 4-ticket pending sale used to count as 4.
+    // That's exactly marko's report: "shows 12, I only made 3 sales". Now
+    // counts distinct sale GROUPS with the same GROUP_KEY_EXPR the Sales
+    // screen itself already groups by. The SUM stays a plain per-row sum on
+    // purpose - the total money outstanding is correct regardless of how
+    // many tickets any one sale bundled together.
+    //
+    // Second pair of eyes caught one honest caveat worth stating rather than
+    // overclaiming: this query is scoped to `primary_currency`, same as
+    // every other money total on this dashboard (pre-existing behavior,
+    // unchanged by this fix) - but `create_sales_batch_impl` never enforces
+    // one currency across a batch's lines, so a (very unusual) batch mixing
+    // two currencies could have some of its lines counted here and others
+    // not, while the Sales screen's own grouped view has no such currency
+    // filter and would still show it as one row. Not something marko
+    // reported and not fixed here - flagging it precisely so nobody
+    // mistakes this dashboard number for a byte-for-byte match of "rows on
+    // the Sales screen" in that specific edge case.
     let (pending_sales_count, pending_sales_amount_cents): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(sale_price_cents),0)
-         FROM sales WHERE payment_status = 'pending' AND currency = ?1",
+        &format!(
+            "SELECT COUNT(DISTINCT {key}), COALESCE(SUM(s.sale_price_cents),0)
+             FROM sales s WHERE s.payment_status = 'pending' AND s.currency = ?1",
+            key = sales_cmd::GROUP_KEY_EXPR
+        ),
         [&primary_currency],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -555,6 +598,7 @@ pub(crate) fn get_dashboard_impl(
     let alerts = DashboardAlerts {
         unpaid_orders_count,
         missing_listing_price_count,
+        missing_listing_price_orders_count,
         upcoming_events_count,
         upcoming_events,
         pending_sales_count,
@@ -651,6 +695,38 @@ mod tests {
         listing_price_cents: Option<i64>,
     ) -> i64 {
         let order_id = seed_order_only(conn, &format!("t{code_suffix}"), event_id, "paid");
+        conn.execute(
+            "INSERT INTO tickets (code, event_id, order_id, purchase_cost_cents, listing_price_cents, currency, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                format!("TKT-{code_suffix}"),
+                event_id,
+                order_id,
+                purchase_cost_cents,
+                listing_price_cents,
+                currency,
+                status,
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Same as `seed_ticket` but attaches to an EXISTING order instead of
+    /// creating a brand new one each call - needed to build the "several
+    /// unpriced tickets on one order" shape that
+    /// `missing_listing_price_orders_count` (2.0.48) exists to test.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_ticket_for_order(
+        conn: &Connection,
+        code_suffix: &str,
+        event_id: i64,
+        order_id: i64,
+        status: &str,
+        currency: &str,
+        purchase_cost_cents: i64,
+        listing_price_cents: Option<i64>,
+    ) -> i64 {
         conn.execute(
             "INSERT INTO tickets (code, event_id, order_id, purchase_cost_cents, listing_price_cents, currency, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -797,6 +873,56 @@ mod tests {
         assert_eq!(data.alerts.missing_listing_price_count, 2);
     }
 
+    /// 2.0.48: marko's report - the Activity tab showed "27" against
+    /// `missing_listing_price_count`, which is a raw per-ticket tally, when
+    /// he thinks in orders (one order with several unpriced tickets should
+    /// look like one thing to fix, not a pile of unrelated ones). This test
+    /// is the one place that actually proves the two fields diverge: 3 raw
+    /// unpriced tickets, spread across only 2 orders.
+    #[test]
+    fn missing_listing_price_orders_count_counts_each_order_once_no_matter_how_many_tickets() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let order_a = seed_order_only(&conn, "a", event_id, "paid");
+        seed_ticket_for_order(&conn, "a1", event_id, order_a, "available", "EUR", 1000, None);
+        seed_ticket_for_order(&conn, "a2", event_id, order_a, "listed", "EUR", 1000, None);
+        // A second order with its own single unpriced ticket.
+        seed_ticket(&conn, "b1", event_id, "available", "EUR", 1000, None);
+        // A priced ticket, on a third order - must not count toward either field.
+        seed_ticket(&conn, "c1", event_id, "available", "EUR", 1000, Some(1200));
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(
+            data.alerts.missing_listing_price_count, 3,
+            "still 3 raw unpriced tickets - the existing ticket-scoped field must not change"
+        );
+        assert_eq!(
+            data.alerts.missing_listing_price_orders_count, 2,
+            "order A's two unpriced tickets count once, plus order B's one unpriced ticket = 2 orders"
+        );
+    }
+
+    /// Second pair of eyes flagged this as an untested combination: does the
+    /// order-level count correctly ignore a same-order ticket that fails the
+    /// status filter, rather than letting it drag the whole order in? A sold
+    /// ticket with no listing price (normal - it doesn't need one any more)
+    /// sharing an order with an ordinary priced available ticket must
+    /// contribute 0 to both fields, not 1.
+    #[test]
+    fn missing_listing_price_orders_count_ignores_an_order_whose_only_unpriced_ticket_is_not_available_or_listed() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let order_a = seed_order_only(&conn, "a", event_id, "paid");
+        seed_ticket_for_order(&conn, "a1", event_id, order_a, "sold", "EUR", 1000, None);
+        seed_ticket_for_order(&conn, "a2", event_id, order_a, "available", "EUR", 1000, Some(1500));
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(data.alerts.missing_listing_price_count, 0);
+        assert_eq!(data.alerts.missing_listing_price_orders_count, 0);
+    }
+
     // ---- Attention: pending sales (1.8.3 section 13) -----------------------
 
     /// Same as `seed_sale` but with an explicit payment_status - used only by
@@ -842,6 +968,64 @@ mod tests {
         assert_eq!(data.alerts.pending_sales_count, 2);
         assert_eq!(data.alerts.pending_sales_amount_cents, 5000, "2000 + 3000 pending, the paid one excluded");
         assert_eq!(data.alerts.pending_sales_currency, Some("EUR".to_string()));
+    }
+
+    /// 2.0.48: marko's report - "shows 12, I only made 3 sales". Cause: this
+    /// query used to be `COUNT(*) FROM sales`, and `sales` stores one row
+    /// PER TICKET - a multi-ticket "New sale" batch shares one batch_id
+    /// across several rows (sales.rs's GROUP_KEY_EXPR). This test builds
+    /// exactly that shape: one 3-ticket pending batch (1 real sale, 3 rows)
+    /// plus one ordinary single-ticket pending sale (1 real sale, 1 row) -
+    /// four rows in `sales`, two real sales.
+    #[test]
+    fn pending_sales_count_counts_sale_groups_not_raw_per_ticket_rows() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        let t4 = seed_ticket(&conn, "4", event_id, "available", "EUR", 1000, None);
+        crate::commands::sales::create_sales_batch_impl(
+            &mut conn,
+            &crate::models::SaleBatchInput {
+                lines: vec![
+                    crate::models::SaleBatchLineInput {
+                        ticket_id: t1,
+                        sale_price_cents: 2000,
+                        selling_fees_cents: 0,
+                    },
+                    crate::models::SaleBatchLineInput {
+                        ticket_id: t2,
+                        sale_price_cents: 2000,
+                        selling_fees_cents: 0,
+                    },
+                    crate::models::SaleBatchLineInput {
+                        ticket_id: t3,
+                        sale_price_cents: 2000,
+                        selling_fees_cents: 0,
+                    },
+                ],
+                platform_id: None,
+                sale_date: "2026-03-01".to_string(),
+                payment_status: Some("pending".to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+        seed_sale_with_status(&mut conn, t4, "2026-03-02", 1500, "pending");
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert_eq!(
+            data.alerts.pending_sales_count, 2,
+            "one 3-ticket batch (1 group) + one single sale (1 group) = 2, not 4 raw rows"
+        );
+        assert_eq!(
+            data.alerts.pending_sales_amount_cents,
+            2000 * 3 + 1500,
+            "the money total still sums every row - grouping only changes the COUNT, never the SUM"
+        );
     }
 
     #[test]

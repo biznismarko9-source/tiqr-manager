@@ -40,6 +40,7 @@ import {
 import { EventCategorySwatch } from "../components/EventCategoryBadge";
 import {
   IconArrowLeft,
+  IconChevronDown,
   IconDatabase,
   IconDownload,
   IconLink,
@@ -284,19 +285,33 @@ export default function Settings() {
           <PageHeader title="Settings" subtitle="Lookups, data, appearance and software." />
           {/* 1.8.2: Settings Home - every category visible at once, no
               scrolling needed to find one (see REDESIGN-1.8.2-REPORT.md
-              section 4). `lg:` is effectively always active on this app's
-              1080px-minimum window (see Sales.tsx's layout comment), so this
-              reads as one row of 4 on every real window size. */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              section 4).
+              2.0.48: was a 4-column grid (row-major reading order: Lookups,
+              Data, Integrations, Appearance, then Software, Account on a
+              second row) - marko found that hard to read as a sequence, so
+              this is now one column, top to bottom. SECTIONS' order itself
+              is unchanged - it already read Lookups -> Data -> Integrations
+              -> Appearance -> Software -> Account (roughly: set up your
+              reference data, bring in/manage your data, connect optional
+              external tools, personal preference, maintenance, account/
+              sign-in), the grid layout was the only thing making that read
+              as scattered instead of sequential. Capped at max-w-2xl - a
+              list of rows reads better narrower than the old grid did, and
+              it keeps every row's text at a comfortable line length on a
+              wide window. */}
+          <div className="flex flex-col gap-2 lg:max-w-2xl">
             {SECTIONS.map((s) => (
               <Link
                 key={s.key}
                 to={`/settings/${s.key}`}
-                className="card block p-5 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                className="card flex items-center gap-4 p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
               >
-                <s.icon className="h-6 w-6 text-brand-600 dark:text-brand-400" />
-                <h3 className="mt-3 text-sm font-semibold text-slate-800 dark:text-slate-200">{s.title}</h3>
-                <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{s.description}</p>
+                <s.icon className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{s.title}</h3>
+                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{s.description}</p>
+                </span>
+                <IconChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-slate-300 dark:text-slate-600" />
               </Link>
             ))}
           </div>
@@ -572,12 +587,19 @@ export default function Settings() {
             </Card>
           )}
 
-          {/* 2.0.44 (Phase 1): placeholder auth (lib/auth.tsx) - not real
-              Firebase yet, see that file's own doc comment. */}
+          {/* Real Firebase auth as of 2.0.45 (email/password) and 2.0.46
+              (Google) - see lib/auth.tsx's own doc comment. (This comment
+              used to say "placeholder auth, not real Firebase yet" - that
+              was true back in 2.0.44 Phase 1 and went stale; caught while
+              touching this section for 2.0.48.) */}
           {section === "account" && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Your profile</h3>
-              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">Basic info shown around the app.</p>
+              {/* 2.0.48: this caption used to sit under the sidebar profile
+                  widget (Layout.tsx) instead - marko wanted it off the
+                  sidebar (shown on every page, all the time) and moved to
+                  the one place someone would actually go looking for it. */}
+              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">Local-first &middot; your data stays on this device</p>
               <div className="space-y-3">
                 <Field label="Name">
                   <Input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Your name" />

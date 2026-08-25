@@ -749,8 +749,8 @@ function AttentionSection({ data }: { data: DashboardData }) {
           />
           <AlertCard
             label="Missing listing price"
-            count={alerts.missingListingPriceCount}
-            description="Available/listed tickets with no listing price set"
+            count={alerts.missingListingPriceOrdersCount}
+            description="Orders with a ticket that has no listing price set"
             linkTo="/inventory"
             linkLabel="View inventory"
           />
