@@ -1187,6 +1187,144 @@ pub fn push_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Currency-conversion push (2.0.53) - a narrow, deliberate EXCEPTION to the
+// "Order push above is append-only, an already-linked order is never
+// revisited, full stop" rule documented at the top of that section. marko
+// pointed out that after using Order Detail's/the Dashboard's "Convert to
+// EUR" (2.0.50/2.0.51) on an order that came from a sheet, his actual Google
+// Sheet kept showing the old currency and old amounts forever after -
+// exactly what the append-only rule guarantees, since nothing ever writes
+// back to an already-linked row otherwise.
+//
+// This does NOT reopen general updates to a linked order (still no path to
+// edit quantity/platform/date/... back to the sheet, and still no cell-by-
+// cell conflict detection - both would still risk the exact-cent cost
+// allocation problem the append-only rule protects against). It writes
+// EXACTLY the 3 cells a currency conversion itself just changed locally -
+// Currency, Price Per Ticket, Total Purchase Price - and only ever runs as
+// a direct follow-up to that same conversion succeeding, never as its own
+// button or on any regular sync. An order with no sheet link at all (most
+// orders - manually entered, CSV-imported, or Sheets never connected) is
+// simply not touched, silently - there is nowhere to push to.
+// ---------------------------------------------------------------------------
+
+/// Pure/testable half: given already-fetched sheet headers+rows and the
+/// marker for one order, works out which (column index, new value) cells
+/// need writing for its Currency/Price Per Ticket/Total Purchase Price -
+/// or `None` if the marker can't be found in the sheet at all (the row was
+/// deleted or moved since this order was last linked - reported to the
+/// user as an error by the caller below, never guessed at).
+fn currency_push_cells(
+    headers: &[String],
+    data_rows: &[Vec<String>],
+    marker: &str,
+    new_currency: &str,
+    new_unit_price_cents: i64,
+    new_total_cost_cents: i64,
+) -> Option<(i64, Vec<(usize, String)>)> {
+    let (marker_col_index, marker_exists) = resolve_marker_column(headers);
+    if !marker_exists {
+        return None;
+    }
+    let row_idx = data_rows
+        .iter()
+        .position(|raw_row| cell(raw_row, Some(marker_col_index)).as_deref() == Some(marker))?;
+    let row_number = (row_idx + 2) as i64; // header is sheet row 1, same convention as everywhere else in this module
+
+    let map = build_header_map(headers);
+    let mut cells: Vec<(usize, String)> = vec![];
+    if let Some(c) = find_col(&map, &["currency"]) {
+        cells.push((c, new_currency.to_string()));
+    }
+    if let Some(c) = find_col(&map, &["price per ticket", "unit price", "price"]) {
+        cells.push((c, format_cents(new_unit_price_cents)));
+    }
+    if let Some(c) = find_col(&map, &["total purchase price", "total price"]) {
+        cells.push((c, format_cents(new_total_cost_cents)));
+    }
+    Some((row_number, cells))
+}
+
+/// Best-effort follow-up to a currency conversion that has ALREADY
+/// committed locally by the time this runs - never called from inside that
+/// same transaction, since this makes real network calls and a DB
+/// transaction should never sit open across one of those. Re-reads the
+/// order's own (now-converted) currency/unit_price_cents/total_cost_cents
+/// fresh from the database rather than taking them as parameters, so this
+/// can never drift from what was actually saved.
+///
+/// Returns `(linked_to_sheet, sheet_push_error)` - see
+/// `OrderCurrencyConversion`'s own doc comment on those two fields for what
+/// each value means to the caller/frontend. Every failure path here returns
+/// `Ok`-shaped data (never propagates an `Err` up) precisely because a
+/// failed push must never look like a failed conversion - the conversion
+/// itself is already safely committed before this function is ever called.
+pub(crate) fn push_order_currency_to_sheet(conn: &Connection, order_id: i64) -> (bool, Option<String>) {
+    let marker: Option<String> = match conn
+        .query_row(
+            "SELECT sheet_marker FROM sheet_sync_links WHERE data_source = 'orders' AND local_id = ?1",
+            [order_id],
+            |r| r.get(0),
+        )
+        .optional()
+    {
+        Ok(m) => m,
+        Err(_) => None, // best-effort lookup for a best-effort feature - treated the same as "not linked" rather than surfaced
+    };
+    let Some(marker) = marker else {
+        return (false, None);
+    };
+
+    let order_row: rusqlite::Result<(String, i64, i64)> = conn.query_row(
+        "SELECT currency, unit_price_cents, total_cost_cents FROM orders WHERE id = ?1",
+        [order_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    );
+    let (new_currency, new_unit_price_cents, new_total_cost_cents) = match order_row {
+        Ok(v) => v,
+        Err(e) => return (true, Some(format!("could not re-read the converted order: {e}"))),
+    };
+
+    let connection = match load_connection(conn, "orders") {
+        Ok(Some(c)) => c,
+        Ok(None) => return (true, Some("no spreadsheet is connected for Orders anymore".to_string())),
+        Err(e) => return (true, Some(e.to_string())),
+    };
+    let credential = match crate::commands::google_auth::resolve_google_credential(conn, false) {
+        Ok(c) => c,
+        Err(e) => return (true, Some(e.to_string())),
+    };
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
+    let value_range = match google_sheets::get_values(token, &connection.spreadsheet_id, &range) {
+        Ok(v) => v,
+        Err(e) => return (true, Some(e.to_string())),
+    };
+    if value_range.values.is_empty() {
+        return (true, Some("the connected sheet has no header row".to_string()));
+    }
+    let headers = &value_range.values[0];
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    let Some((row_number, cells)) =
+        currency_push_cells(headers, data_rows, &marker, &new_currency, new_unit_price_cents, new_total_cost_cents)
+    else {
+        return (true, Some(format!("could not find row \"{marker}\" in the connected sheet anymore")));
+    };
+
+    let mut last_error: Option<String> = None;
+    for (col, value) in cells {
+        let col_letter = column_index_to_a1(col);
+        let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{row_number}"));
+        if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+            last_error = Some(e.to_string());
+        }
+    }
+    (true, last_error)
+}
+
+// ---------------------------------------------------------------------------
 // Sales sync (2.0.10) - second batch of the SAME sheet rows, same
 // connection. See this module's own doc comment ("Column mapping (second
 // batch - Sales sync, 2.0.10)") for the full column mapping and design
@@ -4718,5 +4856,102 @@ mod tests {
             err.to_string().contains("isn't available in this build"),
             "a real connection must reach the credential step (not panic/short-circuit some other way) and then stop cleanly before any network call in a test build: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // currency_push_cells / push_order_currency_to_sheet (2.0.53) - see the
+    // section's own doc comment above push_order_currency_to_sheet for the
+    // full "why" (marko: a converted order's sheet row never got updated).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn currency_push_cells_finds_the_right_row_by_marker_and_builds_all_three_cells() {
+        let headers = headers_with_marker();
+        let data_rows = vec![sample_row("ORD-000001"), sample_row("ORD-000002")];
+        let (row_number, cells) = currency_push_cells(&headers, &data_rows, "ORD-000002", "EUR", 5000, 10000).unwrap();
+        assert_eq!(row_number, 3, "header is row 1, ORD-000001 is row 2, ORD-000002 is row 3");
+        // currency=10, "Price Per Ticket"=9, "Total Purchase Price"=7 in full_headers()
+        assert!(cells.contains(&(10, "EUR".to_string())), "{cells:?}");
+        assert!(cells.contains(&(9, "50.00".to_string())), "{cells:?}");
+        assert!(cells.contains(&(7, "100.00".to_string())), "{cells:?}");
+        assert_eq!(cells.len(), 3);
+    }
+
+    #[test]
+    fn currency_push_cells_returns_none_when_the_marker_is_not_in_any_row() {
+        let headers = headers_with_marker();
+        let data_rows = vec![sample_row("ORD-000001")];
+        assert!(currency_push_cells(&headers, &data_rows, "ORD-999999", "EUR", 5000, 10000).is_none());
+    }
+
+    #[test]
+    fn currency_push_cells_returns_none_when_the_sheet_has_no_marker_column_at_all() {
+        let headers = full_headers(); // no TIQR ID column appended
+        let data_rows = vec![sample_row("")];
+        assert!(currency_push_cells(&headers, &data_rows, "ORD-000001", "EUR", 5000, 10000).is_none());
+    }
+
+    #[test]
+    fn currency_push_cells_still_writes_the_columns_that_do_exist_when_one_is_missing() {
+        // A sheet without its own "currency" column at all (unlikely for a
+        // real connected sheet - check_required_headers doesn't require it
+        // either way - but this must degrade to "write what we can", never
+        // panic on a missing find_col result).
+        let mut headers = full_headers();
+        headers.retain(|h| h.to_lowercase() != "currency");
+        headers.push(MARKER_HEADER.to_string());
+        let mut r = row(&[
+            "Coldplay Arena Show", "15/09/2026", "ticketmaster", "410", "25", "11,12", "TM-88213", "100.00", "2",
+            "50.00", "buyer@example.com", "e-ticket",
+        ]);
+        r.push("ORD-000001".to_string());
+        let (_, cells) = currency_push_cells(&headers, &[r], "ORD-000001", "EUR", 5000, 10000).unwrap();
+        assert_eq!(cells.len(), 2, "currency column is gone - only unit price + total price cells: {cells:?}");
+    }
+
+    #[test]
+    fn push_order_currency_to_sheet_is_a_silent_no_op_for_an_order_never_linked_to_any_sheet() {
+        let conn = test_conn();
+        // No sheet_sync_links row at all for order id 999 - and no orders
+        // table row either, since the whole point is this returns before
+        // ever needing one to exist.
+        let (linked, err) = push_order_currency_to_sheet(&conn, 999);
+        assert!(!linked);
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn push_order_currency_to_sheet_fails_cleanly_when_linked_but_nothing_is_connected() {
+        let conn = test_conn();
+        apply_order_rows(&conn, &full_headers(), &[sample_row("")], "EUR", MARKER_COL).unwrap();
+        let order_id: i64 = conn.query_row("SELECT id FROM orders LIMIT 1", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('orders', ?1, 'ORD-000001', '{}', '2026-01-01T00:00:00.000Z')",
+            [order_id],
+        )
+        .unwrap();
+        let (linked, err) = push_order_currency_to_sheet(&conn, order_id);
+        assert!(linked, "this order IS linked, so it must attempt the push, not silently skip");
+        let msg = err.expect("no Sheets connection is configured in this test - must report an error, not silently succeed");
+        assert!(msg.contains("no spreadsheet is connected"), "{msg}");
+    }
+
+    #[test]
+    fn push_order_currency_to_sheet_fails_cleanly_when_linked_and_connected_but_no_credential_is_embedded() {
+        let conn = test_conn();
+        apply_order_rows(&conn, &full_headers(), &[sample_row("")], "EUR", MARKER_COL).unwrap();
+        let order_id: i64 = conn.query_row("SELECT id FROM orders LIMIT 1", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('orders', ?1, 'ORD-000001', '{}', '2026-01-01T00:00:00.000Z')",
+            [order_id],
+        )
+        .unwrap();
+        set_sheets_connection_impl(&conn, "orders", "1AbC-XyZ_9900", "Orders", "EUR").unwrap();
+        let (linked, err) = push_order_currency_to_sheet(&conn, order_id);
+        assert!(linked);
+        let msg = err.expect("a real connection but no embedded credential in this test build must still report an error");
+        assert!(msg.contains("isn't available in this build"), "{msg}");
     }
 }

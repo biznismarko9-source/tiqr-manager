@@ -655,6 +655,13 @@ pub(crate) fn convert_order_currency_impl(
         rate_date: rate_date.to_string(),
         tickets_converted: ticket_rows.len() as i64,
         sales_converted,
+        // 2.0.53: filled in by the caller after this transaction commits -
+        // pushing to a sheet is a network call and must never happen while
+        // a DB transaction (this function's own `conn` here is a
+        // Transaction, borrowed as &Connection) is still open. See
+        // orders_sheet_sync::push_order_currency_to_sheet's own doc comment.
+        linked_to_sheet: false,
+        sheet_push_error: None,
     })
 }
 
@@ -677,6 +684,11 @@ pub(crate) fn convert_order_currency_command_impl(
     let tx = conn.transaction()?;
     let conversion = convert_order_currency_impl(&tx, id, "EUR", quote.rate, &quote.date)?;
     tx.commit()?;
+    // 2.0.53: only after the transaction above has actually committed - see
+    // push_order_currency_to_sheet's own doc comment for why a network call
+    // must never happen while that transaction is still open.
+    let (linked_to_sheet, sheet_push_error) = crate::commands::orders_sheet_sync::push_order_currency_to_sheet(conn, id);
+    let conversion = OrderCurrencyConversion { linked_to_sheet, sheet_push_error, ..conversion };
     let order = fetch_one(conn, id)?;
     Ok(OrderCurrencyConversionResult { order, conversion })
 }
@@ -715,7 +727,11 @@ pub(crate) fn apply_bulk_currency_conversion(
             match convert_order_currency_impl(&tx, order_id, "EUR", quote.rate, &quote.date) {
                 Ok(summary) => {
                     tx.commit()?;
-                    converted.push(summary);
+                    // 2.0.53: same rule as the single-order path - only
+                    // after commit, never inside the transaction above.
+                    let (linked_to_sheet, sheet_push_error) =
+                        crate::commands::orders_sheet_sync::push_order_currency_to_sheet(conn, order_id);
+                    converted.push(OrderCurrencyConversion { linked_to_sheet, sheet_push_error, ..summary });
                 }
                 // tx is dropped here without commit - an automatic rollback
                 // scoped to just this one order, never the ones before or after it.

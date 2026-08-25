@@ -670,7 +670,18 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
       const result = await api.convertCurrenciesToEur(pending.currencies ?? undefined);
       setPending(null);
       if (result.converted.length > 0) {
-        toast.success(`${result.converted.length} order${result.converted.length === 1 ? "" : "s"} converted to EUR`);
+        // 2.0.53: most orders were never linked to a sheet at all - only
+        // mention Sheets when at least one converted order actually was.
+        const linked = result.converted.filter((c) => c.linkedToSheet);
+        const pushFailures = linked.filter((c) => c.sheetPushError);
+        let message = `${result.converted.length} order${result.converted.length === 1 ? "" : "s"} converted to EUR`;
+        if (linked.length > 0) {
+          message +=
+            pushFailures.length > 0
+              ? ` - ${linked.length - pushFailures.length}/${linked.length} linked Sheet row(s) updated, ${pushFailures.length} couldn't be reached`
+              : ` (${linked.length} linked Sheet row${linked.length === 1 ? "" : "s"} updated too)`;
+        }
+        toast.success(message);
         onConverted();
       }
       if (result.skipped.length > 0) {

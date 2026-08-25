@@ -384,6 +384,23 @@ pub struct OrderCurrencyConversion {
     pub rate_date: String,
     pub tickets_converted: i64,
     pub sales_converted: i64,
+    /// 2.0.53: was this order ever linked to a Google Sheet at all (via
+    /// Order sync or Order push)? `false` for the common case - manually
+    /// entered or CSV-imported orders, or a sheet connection that was never
+    /// set up - and `sheet_push_error` is then always `None` too, since
+    /// there was never anywhere to push to. `true` means this conversion
+    /// also attempted to update that sheet row's Currency/Price Per Ticket/
+    /// Total Purchase Price cells - see `sheet_push_error` for whether that
+    /// attempt actually succeeded.
+    pub linked_to_sheet: bool,
+    /// `None` when `linked_to_sheet` is `false` (nothing was attempted), or
+    /// when it's `true` and the push succeeded. `Some(message)` means the
+    /// local conversion above still fully happened and is already saved -
+    /// only the follow-up push to the actual Google Sheet failed (network,
+    /// permissions, the row having since moved or been deleted, etc.) and
+    /// the sheet itself is now out of sync with the app until this is
+    /// retried or fixed by hand.
+    pub sheet_push_error: Option<String>,
 }
 
 /// What the single-order `convert_order_currency` command returns - the

@@ -855,6 +855,17 @@ export interface OrderCurrencyConversion {
   rateDate: string;
   ticketsConverted: number;
   salesConverted: number;
+  /** 2.0.53: true when this order was ever linked to a Google Sheet (Order
+   * sync or Order push) - false for the common case (manually entered,
+   * CSV-imported, or Sheets never connected), in which case sheetPushError
+   * is always null too, since nothing was attempted. */
+  linkedToSheet: boolean;
+  /** null when linkedToSheet is false, or when it's true and the push to
+   * the sheet succeeded. A message means the conversion above is still
+   * fully saved - only the follow-up update to the actual Google Sheet row
+   * failed, so the sheet itself is out of sync with the app until this is
+   * retried or fixed by hand there. */
+  sheetPushError: string | null;
 }
 
 /** What `api.convertOrderCurrency` returns - the summary above, plus the

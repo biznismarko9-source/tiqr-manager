@@ -576,11 +576,17 @@ export default function OrderDetail() {
           try {
             const result = await api.convertOrderCurrency(orderId);
             setConvertOpen(false);
-            const { rate, rateDate, ticketsConverted, salesConverted } = result.conversion;
+            const { rate, rateDate, ticketsConverted, salesConverted, linkedToSheet, sheetPushError } = result.conversion;
             const salesPart = salesConverted > 0 ? ` and ${salesConverted} sale${salesConverted === 1 ? "" : "s"}` : "";
-            toast.success(
-              `Converted to EUR at ${rate.toFixed(4)} (${formatDateNumeric(rateDate)}) - ${ticketsConverted} ticket${ticketsConverted === 1 ? "" : "s"}${salesPart} updated.`
-            );
+            let message = `Converted to EUR at ${rate.toFixed(4)} (${formatDateNumeric(rateDate)}) - ${ticketsConverted} ticket${ticketsConverted === 1 ? "" : "s"}${salesPart} updated.`;
+            // 2.0.53: linkedToSheet is false for most orders (never synced) -
+            // nothing to add then, same message as before this version.
+            if (linkedToSheet) {
+              message += sheetPushError
+                ? ` Your Google Sheet couldn't be updated to match: ${sheetPushError}.`
+                : " Your Google Sheet was updated to match.";
+            }
+            toast.success(message);
             load();
           } catch (e) {
             toast.error(errMsg(e));

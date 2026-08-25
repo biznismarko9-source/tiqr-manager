@@ -16,6 +16,24 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 2.0.52: MUST be the first plugin registered (the plugin's own
+        // documented requirement) - see the Cargo.toml comment on this same
+        // dependency for why single-instance matters for this app
+        // specifically (concurrent SQLite writers, not just a UI nuisance).
+        // This callback runs in the ALREADY-RUNNING instance whenever a
+        // second launch is attempted; that second process exits right after
+        // calling it, before it ever reaches the .setup() below - so
+        // db::open_connection only ever runs in the one surviving process.
+        // argv/cwd from the second attempt are ignored (`_argv`/`_cwd`) -
+        // this app has no CLI arguments or file-association behavior that
+        // would need them, it only needs to bring the real window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
