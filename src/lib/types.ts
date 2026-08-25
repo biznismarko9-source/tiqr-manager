@@ -522,7 +522,10 @@ export interface DashboardData {
   periodFrom: string;
   periodTo: string;
   recentOrders: OrderRecord[];
-  recentSales: Sale[];
+  /** 2.0.54: SaleGroup (one row per sale action - a single ticket, or a
+   * multi-ticket batch), not Sale (one row per ticket) - a 4-ticket batch
+   * used to show as 4 identical entries here. */
+  recentSales: SaleGroup[];
   recentEvents: EventWithStats[];
   /** The single currency every total on this dashboard is computed in. */
   primaryCurrency: string;

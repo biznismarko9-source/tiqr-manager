@@ -910,7 +910,10 @@ pub struct DashboardData {
     pub period_from: String,
     pub period_to: String,
     pub recent_orders: Vec<Order>,
-    pub recent_sales: Vec<Sale>,
+    /// 2.0.54: SaleGroup (one row per sale action - a single ticket, or a
+    /// multi-ticket batch), not Sale (one row per ticket) - see
+    /// sales::fetch_recent_groups's own doc comment for why this changed.
+    pub recent_sales: Vec<SaleGroup>,
     pub recent_events: Vec<EventWithStats>,
     /// The currency all dashboard totals below are computed in. Always a
     /// concrete code (defaults to EUR) - never a blended sum of currencies.

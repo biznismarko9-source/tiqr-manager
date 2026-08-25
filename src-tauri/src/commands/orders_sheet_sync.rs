@@ -1171,6 +1171,25 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     // re-fetch on every single push just to cover this run's own appends a
     // few seconds sooner.
     let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    // 2.0.54: catch up any order whose currency drifted from the sheet -
+    // see reconcile_order_currencies' own doc comment for why this exists.
+    let currency_writes = reconcile_order_currencies(conn, &headers, data_rows);
+    for (row_number, cells) in currency_writes {
+        let mut row_ok = true;
+        for (col, value) in cells {
+            let col_letter = column_index_to_a1(col);
+            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{row_number}"));
+            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                row_ok = false;
+                result.errors.push(SheetSyncIssue { row_number, message: format!("currency catch-up failed: {e}") });
+            }
+        }
+        if row_ok {
+            result.updated += 1;
+        }
+    }
+
     refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
 
     result.synced_at = now_iso(conn)?;
@@ -1245,10 +1264,62 @@ fn currency_push_cells(
     Some((row_number, cells))
 }
 
-/// Best-effort follow-up to a currency conversion that has ALREADY
-/// committed locally by the time this runs - never called from inside that
-/// same transaction, since this makes real network calls and a DB
-/// transaction should never sit open across one of those. Re-reads the
+/// Checks EVERY linked order's Currency/Price Per Ticket/Total Purchase
+/// Price against already-fetched sheet data and returns only the writes
+/// that are actually needed - a cell that already matches the order's
+/// current local value is left alone, never rewritten just because it was
+/// checked (same "never touch what's already right" spirit as
+/// apply_sales_push's own blank-cells-only rule above). Takes headers/
+/// data_rows the caller already fetched for its own purposes rather than
+/// re-fetching the whole sheet once per linked order, which would be both
+/// slow and wasteful for anyone with more than a handful of them.
+///
+/// 2.0.54: marko reported push_order_currency_to_sheet's own immediately-
+/// after-conversion push (2.0.53) didn't visibly work for him. This is the
+/// fallback he asked for: "Push Orders"/"Push Sales" (the existing manual
+/// sync buttons, wired in below) now also catch up any currency mismatch
+/// they find on a normal run, regardless of why the automatic push may
+/// have missed it for a given order.
+fn reconcile_order_currencies(conn: &Connection, headers: &[String], data_rows: &[Vec<String>]) -> Vec<(i64, Vec<(usize, String)>)> {
+    let links: Vec<(i64, String)> = {
+        let stmt = conn.prepare(
+            "SELECT l.local_id, l.sheet_marker FROM sheet_sync_links l
+             JOIN orders o ON o.id = l.local_id
+             WHERE l.data_source = 'orders' AND o.is_demo = 0
+             ORDER BY l.local_id",
+        );
+        match stmt {
+            Ok(mut s) => match s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+                Ok(rows) => rows.collect::<Result<Vec<_>, _>>().unwrap_or_default(),
+                Err(_) => vec![],
+            },
+            Err(_) => vec![],
+        }
+    };
+
+    let mut writes = vec![];
+    for (order_id, marker) in links {
+        let order_row: rusqlite::Result<(String, i64, i64)> = conn.query_row(
+            "SELECT currency, unit_price_cents, total_cost_cents FROM orders WHERE id = ?1",
+            [order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        );
+        let Ok((currency, unit_price_cents, total_cost_cents)) = order_row else { continue };
+        let Some((row_number, cells)) = currency_push_cells(headers, data_rows, &marker, &currency, unit_price_cents, total_cost_cents)
+        else {
+            continue;
+        };
+        let raw_row = &data_rows[(row_number - 2) as usize];
+        let stale: Vec<(usize, String)> =
+            cells.into_iter().filter(|(col, value)| cell(raw_row, Some(*col)).as_deref() != Some(value.as_str())).collect();
+        if !stale.is_empty() {
+            writes.push((row_number, stale));
+        }
+    }
+    writes
+}
+
+
 /// order's own (now-converted) currency/unit_price_cents/total_cost_cents
 /// fresh from the database rather than taking them as parameters, so this
 /// can never drift from what was actually saved.
@@ -2026,6 +2097,25 @@ fn push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
                     message: format!("saved locally, but could not write this change back to the sheet: {e}"),
                 });
             }
+        }
+    }
+
+    // 2.0.54: same currency catch-up as push_orders_impl - see
+    // reconcile_order_currencies' own doc comment for why. marko asked for
+    // this on both buttons, not just Push Orders.
+    let currency_writes = reconcile_order_currencies(conn, &headers, data_rows);
+    for (row_number, cells) in currency_writes {
+        let mut row_ok = true;
+        for (col, value) in cells {
+            let col_letter = column_index_to_a1(col);
+            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{row_number}"));
+            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                row_ok = false;
+                result.errors.push(SheetSyncIssue { row_number, message: format!("currency catch-up failed: {e}") });
+            }
+        }
+        if row_ok {
+            result.updated += 1;
         }
     }
 
@@ -4923,14 +5013,12 @@ mod tests {
     #[test]
     fn push_order_currency_to_sheet_fails_cleanly_when_linked_but_nothing_is_connected() {
         let conn = test_conn();
+        // apply_order_rows already links a newly-created order (inserts its
+        // own sheet_sync_links row, marker = the order's generated code) -
+        // no need to insert a second one here, and doing so would collide
+        // with sheet_sync_links' own (data_source, local_id) primary key.
         apply_order_rows(&conn, &full_headers(), &[sample_row("")], "EUR", MARKER_COL).unwrap();
         let order_id: i64 = conn.query_row("SELECT id FROM orders LIMIT 1", [], |r| r.get(0)).unwrap();
-        conn.execute(
-            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
-             VALUES ('orders', ?1, 'ORD-000001', '{}', '2026-01-01T00:00:00.000Z')",
-            [order_id],
-        )
-        .unwrap();
         let (linked, err) = push_order_currency_to_sheet(&conn, order_id);
         assert!(linked, "this order IS linked, so it must attempt the push, not silently skip");
         let msg = err.expect("no Sheets connection is configured in this test - must report an error, not silently succeed");
@@ -4942,16 +5030,54 @@ mod tests {
         let conn = test_conn();
         apply_order_rows(&conn, &full_headers(), &[sample_row("")], "EUR", MARKER_COL).unwrap();
         let order_id: i64 = conn.query_row("SELECT id FROM orders LIMIT 1", [], |r| r.get(0)).unwrap();
-        conn.execute(
-            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
-             VALUES ('orders', ?1, 'ORD-000001', '{}', '2026-01-01T00:00:00.000Z')",
-            [order_id],
-        )
-        .unwrap();
         set_sheets_connection_impl(&conn, "orders", "1AbC-XyZ_9900", "Orders", "EUR").unwrap();
         let (linked, err) = push_order_currency_to_sheet(&conn, order_id);
         assert!(linked);
         let msg = err.expect("a real connection but no embedded credential in this test build must still report an error");
         assert!(msg.contains("isn't available in this build"), "{msg}");
+    }
+
+    #[test]
+    fn reconcile_order_currencies_writes_only_the_order_whose_sheet_cell_is_actually_stale() {
+        let conn = test_conn();
+        let (_, writes) = apply_order_rows(&conn, &full_headers(), &[sample_row(""), sample_row("")], "EUR", MARKER_COL).unwrap();
+        assert_eq!(writes.markers.len(), 2);
+        let marker_1 = &writes.markers[0].1; // this run's own actual generated codes -
+        let marker_2 = &writes.markers[1].1; // never assumed as literal "ORD-000001"/"-2"
+
+        let order_ids: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT id FROM orders ORDER BY id").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(order_ids.len(), 2);
+
+        // Both orders converted to GBP locally (skipping the real conversion
+        // path here on purpose - this test is only about the reconcile
+        // function's own comparison logic, not convert_order_currency_impl,
+        // which already has its own dedicated tests elsewhere).
+        for &id in &order_ids {
+            conn.execute("UPDATE orders SET currency = 'GBP' WHERE id = ?1", [id]).unwrap();
+        }
+
+        let headers = headers_with_marker();
+        let data_rows = vec![
+            sample_row(marker_1), // sheet still says EUR/50.00/100.00 here - stale
+            {
+                // This order's sheet row already says GBP with the exact
+                // numbers the order was just set to above - already correct.
+                let mut r = row(&[
+                    "Coldplay Arena Show", "15/09/2026", "ticketmaster", "410", "25", "11,12", "TM-88213", "100.00",
+                    "2", "50.00", "GBP", "buyer@example.com", "e-ticket",
+                ]);
+                r.push(marker_2.clone());
+                r
+            },
+        ];
+
+        let writes = reconcile_order_currencies(&conn, &headers, &data_rows);
+        assert_eq!(writes.len(), 1, "only the first order's row is actually stale: {writes:?}");
+        let (row_number, cells) = &writes[0];
+        assert_eq!(*row_number, 2, "the first order's row is the first data row - sheet row 2");
+        assert!(cells.iter().any(|(_, v)| v == "GBP"));
     }
 }

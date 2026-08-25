@@ -659,7 +659,7 @@ pub(crate) fn get_dashboard_impl(
     };
 
     let recent_orders = orders_cmd::fetch_recent(conn, 5)?;
-    let recent_sales = sales_cmd::fetch_recent(conn, 5)?;
+    let recent_sales = sales_cmd::fetch_recent_groups(conn, 5)?;
     let recent_events = events_cmd::fetch_recent(conn, 5)?;
 
     Ok(DashboardData {

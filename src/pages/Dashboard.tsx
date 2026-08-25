@@ -598,25 +598,41 @@ export default function Dashboard() {
                       {data.recentSales.map((s) => (
                         <li key={s.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{s.eventName}</p>
+                            <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+                              {s.eventName ?? <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>}
+                            </p>
                             <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(s.saleDate)}</p>
                           </div>
+                          {/* 2.0.54: one row per sale ACTION now (a single
+                              ticket, or a whole multi-ticket batch) - a
+                              4-ticket batch used to show as 4 identical
+                              entries here, one per ticket. paymentStatus is
+                              only "refunded" when EVERY line in the group
+                              is (same convention as the main Sales list) -
+                              a partial refund instead shows the batch's
+                              real remaining revenue plus the same "X/Y
+                              refunded" note Sales.tsx already uses. */}
                           {s.paymentStatus === "refunded" ? (
-                            // BUG #3: a refunded sale must never look like a normal
-                            // completed one. Recent activity intentionally still
-                            // includes it (same "history is never hidden" rule as
-                            // Sales/Sale Detail), just clearly marked - same Badge
-                            // tone="refunded" already used on the Sales screen.
                             <div className="flex shrink-0 flex-col items-end gap-0.5">
                               <Badge tone="refunded">Refunded</Badge>
                               <p className="text-xs tabular-nums text-slate-400 line-through dark:text-slate-500">
-                                {formatMoney(s.salePriceCents, s.currency)}
+                                {formatMoneyOrMixed(s.revenueCents, s.currency)}
                               </p>
                             </div>
                           ) : (
-                            <p className="shrink-0 text-sm tabular-nums text-emerald-600 dark:text-emerald-400">
-                              {formatMoney(s.salePriceCents, s.currency)}
-                            </p>
+                            <div className="flex shrink-0 flex-col items-end gap-0.5">
+                              <p className="text-sm tabular-nums text-emerald-600 dark:text-emerald-400">
+                                {formatMoneyOrMixed(s.revenueCents, s.currency)}
+                              </p>
+                              {s.refundedCount > 0 && (
+                                <p
+                                  className="text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                                  title={`${s.refundedCount} of ${s.ticketCount} refunded`}
+                                >
+                                  {s.refundedCount}/{s.ticketCount} refunded
+                                </p>
+                              )}
+                            </div>
                           )}
                         </li>
                       ))}

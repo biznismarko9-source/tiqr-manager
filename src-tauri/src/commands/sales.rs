@@ -131,6 +131,24 @@ pub(crate) fn fetch_recent(conn: &Connection, limit: i64) -> AppResult<Vec<Sale>
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Same grouping the main Sales list already uses (GROUP_BASE_SELECT/
+/// GROUP_KEY_EXPR/map_sale_group) - one row per sale ACTION (a single
+/// ticket, or a multi-ticket batch), never one row per ticket - for the
+/// Dashboard's "Recent Sales" card. Before 2.0.54 that card called
+/// `fetch_recent` above directly, so one 4-ticket batch sale showed as 4
+/// identical entries there - marko caught this on a real screenshot (4x
+/// the same event/date/price, which really was one sale of 4 tickets).
+/// Ordered by MAX(s.created_at) - a real batch's lines all share the exact
+/// same created_at from create_sales_batch_impl anyway, so this is really
+/// just "this group's own timestamp" rather than picking one line over
+/// another.
+pub(crate) fn fetch_recent_groups(conn: &Connection, limit: i64) -> AppResult<Vec<SaleGroup>> {
+    let sql = format!("{GROUP_BASE_SELECT} GROUP BY {GROUP_KEY_EXPR} ORDER BY MAX(s.created_at) DESC LIMIT ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([limit], map_sale_group)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 fn fetch_one(conn: &Connection, id: i64) -> AppResult<Sale> {
     let sql = format!("{BASE_SQL} WHERE s.id = ?1");
     conn.query_row(&sql, [id], map_sale)
@@ -2324,6 +2342,57 @@ mod tests {
             .expect("the normal active sale must also appear, unaffected");
         assert_eq!(active.payment_status, "paid");
         assert!(active.refunded_at.is_none());
+    }
+
+    #[test]
+    fn fetch_recent_groups_collapses_a_multi_ticket_batch_into_one_row() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 4);
+        let input = SaleBatchInput {
+            lines: tickets
+                .iter()
+                .map(|&tid| crate::models::SaleBatchLineInput { ticket_id: tid, sale_price_cents: 11000, selling_fees_cents: 0 })
+                .collect(),
+            platform_id: None,
+            sale_date: "2026-08-13".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sales_batch_impl(&mut conn, &input).unwrap();
+
+        let recent = fetch_recent_groups(&conn, 5).unwrap();
+        assert_eq!(recent.len(), 1, "4 tickets sold together in one batch must be exactly one Recent Sales row, not 4");
+        assert_eq!(recent[0].ticket_count, 4);
+        assert_eq!(recent[0].revenue_cents, 44000, "the whole batch's total, not one ticket's own price");
+    }
+
+    #[test]
+    fn fetch_recent_groups_respects_the_limit_by_group_not_by_underlying_ticket_row() {
+        let mut conn = test_conn();
+        // One 3-ticket batch, then 2 separate single-ticket sales - 3 real
+        // sale actions total, so a limit of 2 must return exactly 2 groups
+        // even though the batch alone already has 3 underlying `sales` rows.
+        let batch_tickets = seed_tickets(&mut conn, 3);
+        let input = SaleBatchInput {
+            lines: batch_tickets
+                .iter()
+                .map(|&tid| crate::models::SaleBatchLineInput { ticket_id: tid, sale_price_cents: 1000, selling_fees_cents: 0 })
+                .collect(),
+            platform_id: None,
+            sale_date: "2026-08-01".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sales_batch_impl(&mut conn, &input).unwrap();
+
+        let singles = seed_tickets(&mut conn, 2);
+        create_sale_impl(&mut conn, &sale_input(singles[0], 2000)).unwrap();
+        create_sale_impl(&mut conn, &sale_input(singles[1], 2500)).unwrap();
+
+        let recent = fetch_recent_groups(&conn, 2).unwrap();
+        assert_eq!(recent.len(), 2, "3 real sale actions exist, but the limit is 2 groups");
     }
 
     /// BUG #4 (original audit): a SaleGroup's id is always the batch's
