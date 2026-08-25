@@ -734,6 +734,18 @@ export interface GoogleSignInStatus {
   signedInEmail?: string | null;
 }
 
+/** 2.0.46: what `startFirebaseGoogleSignIn` hands back - the "Continue with
+ * Google" APP sign-in button on the Welcome screen, a completely separate
+ * flow from GoogleSignInStatus above (which is only about Sheets access -
+ * see commands/firebase_google_auth.rs's module doc comment). Just enough
+ * to finish the Firebase side of the sign-in (`lib/auth.tsx`'s
+ * `loginWithGoogle`: `GoogleAuthProvider.credential(idToken)` +
+ * `signInWithCredential`) - nothing about this flow is persisted anywhere
+ * in this app's own database. */
+export interface FirebaseGoogleSignInResult {
+  idToken: string;
+}
+
 /** Result of "Create a new sheet for me" (2.0.4) - the auto-create-and-share
  * alternative to pasting an existing sheet's URL, no Google sign-in window.
  * `connection` is already persisted by the time this returns. `spreadsheetUrl`

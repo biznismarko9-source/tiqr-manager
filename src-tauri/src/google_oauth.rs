@@ -9,6 +9,24 @@
 //! and pushing sheet data happens as *them* - genuinely separate identities,
 //! not one shared key.
 //!
+//! ## 2.0.46: also reused for "Continue with Google" app sign-in
+//!
+//! The generic parts of this file (PKCE, the loopback listener, building the
+//! authorization URL) are shared with a SECOND, unrelated flow:
+//! commands::firebase_google_auth, the "Continue with Google" button on the
+//! Welcome screen (see lib/auth.tsx). That flow signs a person into the app
+//! ITSELF (Firebase Authentication - who is using this copy of the app),
+//! completely separate from this module's original purpose (Google identity
+//! acting on Sheets calls). Different Google Cloud project (marko's Firebase
+//! project, not the one this module's own OAuth client lives in), different
+//! scope (`FIREBASE_SIGN_IN_SCOPE`, identity only - no Sheets/Drive access),
+//! different embedded client (`embedded_firebase_oauth_client`), different
+//! Tauri commands, and no database persistence here at all - Firebase's own
+//! JS SDK owns that flow's session once it has the ID token this module
+//! hands back. `run_sign_in`/`build_authorization_url` take `scope` as a
+//! plain parameter specifically so both flows share one well-tested
+//! implementation instead of two near-identical copies.
+//!
 //! ## The flow (RFC 8252 "OAuth 2.0 for Native Apps", PKCE / RFC 7636)
 //!
 //! 1. Generate a random `code_verifier` and its SHA-256 `code_challenge`
@@ -81,6 +99,13 @@ const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
 /// google_sheets::SHEETS_AND_DRIVE_SCOPE.
 pub const OAUTH_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets openid email";
 
+/// 2.0.46: scope for the SEPARATE "Continue with Google" app sign-in button
+/// (commands::firebase_google_auth) - identity only, no Sheets/Drive access
+/// at all. `profile` (not requested by OAUTH_SCOPE above) is what lets
+/// Firebase fill in a real display name automatically once this app hands
+/// it the resulting ID token - see lib/auth.tsx's `toAuthUser`.
+pub const FIREBASE_SIGN_IN_SCOPE: &str = "openid email profile";
+
 /// How long `run_sign_in` waits for the person to finish in their browser
 /// before giving up - generous on purpose (they might be typing a password,
 /// picking an account, or reading the consent screen), but bounded so a
@@ -111,6 +136,27 @@ pub fn embedded_oauth_client() -> Option<OAuthClient> {
         return None;
     }
     let secret = EMBEDDED_OAUTH_CLIENT_SECRET.trim();
+    Some(OAuthClient {
+        client_id: client_id.to_string(),
+        client_secret: if secret.is_empty() { None } else { Some(secret.to_string()) },
+    })
+}
+
+const EMBEDDED_FIREBASE_OAUTH_CLIENT_ID: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/firebase_google_oauth_client_id.txt"));
+const EMBEDDED_FIREBASE_OAUTH_CLIENT_SECRET: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/firebase_google_oauth_client_secret.txt"));
+
+/// 2.0.46: same "not configured in this build" convention as
+/// `embedded_oauth_client` above, for the separate OAuth client the
+/// "Continue with Google" app sign-in button uses - see this module's own
+/// doc comment for why these are two distinct clients, not one reused.
+pub fn embedded_firebase_oauth_client() -> Option<OAuthClient> {
+    let client_id = EMBEDDED_FIREBASE_OAUTH_CLIENT_ID.trim();
+    if client_id.is_empty() {
+        return None;
+    }
+    let secret = EMBEDDED_FIREBASE_OAUTH_CLIENT_SECRET.trim();
     Some(OAuthClient {
         client_id: client_id.to_string(),
         client_secret: if secret.is_empty() { None } else { Some(secret.to_string()) },
@@ -157,12 +203,12 @@ pub fn generate_state() -> String {
     random_url_safe_token(16)
 }
 
-fn build_authorization_url(client: &OAuthClient, redirect_uri: &str, pkce: &PkcePair, state: &str) -> String {
+fn build_authorization_url(client: &OAuthClient, redirect_uri: &str, scope: &str, pkce: &PkcePair, state: &str) -> String {
     let params: &[(&str, &str)] = &[
         ("client_id", &client.client_id),
         ("redirect_uri", redirect_uri),
         ("response_type", "code"),
-        ("scope", OAUTH_SCOPE),
+        ("scope", scope),
         ("code_challenge", &pkce.challenge),
         ("code_challenge_method", "S256"),
         ("state", state),
@@ -305,6 +351,15 @@ struct TokenResponse {
     #[serde(default)]
     refresh_token: Option<String>,
     expires_in: i64,
+    /// Present whenever `openid` is in the requested scope (both
+    /// OAUTH_SCOPE and FIREBASE_SIGN_IN_SCOPE include it) - a signed JWT
+    /// asserting who signed in, which is exactly what
+    /// commands::firebase_google_auth needs to hand Firebase
+    /// (GoogleAuthProvider.credential(idToken) + signInWithCredential).
+    /// `#[serde(default)]` defensively, same reasoning as refresh_token
+    /// above, even though it is expected every time this scope is used.
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +433,31 @@ fn fetch_email(access_token: &str) -> AppResult<String> {
 pub struct SignedInAccount {
     pub email: String,
     pub refresh_token: String,
+    /// 2.0.46: only actually read by commands::firebase_google_auth (the
+    /// Sheets sign-in path, commands::google_auth, has no use for it and
+    /// simply ignores it) - see this module's own doc comment for why one
+    /// shared `run_sign_in` serves both flows rather than two copies.
+    pub id_token: String,
+}
+
+/// The pure, offline part of turning a raw token-endpoint response into
+/// what this app actually needs - split out from `run_sign_in` specifically
+/// so it can be unit-tested without a real network round trip (see this
+/// module's doc comment, "What can and can't be verified in this sandbox").
+/// Both `refresh_token` and `id_token` are contractually present whenever
+/// `openid` is in the requested scope and `access_type=offline` was sent
+/// (see `build_authorization_url`) - Google not honoring that is treated as
+/// an external failure, not a `None`/silent skip, so a caller never
+/// half-completes a sign-in with a `SignedInAccount` missing a field it
+/// actually needs.
+fn signed_in_account_from_tokens(tokens: TokenResponse, email: String) -> AppResult<SignedInAccount> {
+    let refresh_token = tokens.refresh_token.ok_or_else(|| {
+        AppError::External("Google did not return a long-lived sign-in - please try signing in again.".to_string())
+    })?;
+    let id_token = tokens
+        .id_token
+        .ok_or_else(|| AppError::External("Google did not return a sign-in token - please try signing in again.".to_string()))?;
+    Ok(SignedInAccount { email, refresh_token, id_token })
 }
 
 /// Runs one full "Sign in with Google" round trip end to end: opens the
@@ -387,17 +467,22 @@ pub struct SignedInAccount {
 /// in this app is a plain synchronous function (see db.rs's AppState doc
 /// comment), no async runtime needed here either. `cancel` is a fresh flag
 /// the caller creates for this one attempt (see
-/// commands::google_auth::start_google_sign_in) - flipping it to `true`
-/// from elsewhere unblocks `accept_one_redirect` below promptly instead of
-/// leaving this waiting out the full timeout.
-pub fn run_sign_in(client: &OAuthClient, app: &tauri::AppHandle, cancel: &AtomicBool) -> AppResult<SignedInAccount> {
+/// commands::google_auth::start_google_sign_in, or
+/// commands::firebase_google_auth::start_firebase_google_sign_in for the
+/// other caller - see this module's own doc comment for why there are two)
+/// - flipping it to `true` from elsewhere unblocks `accept_one_redirect`
+/// below promptly instead of leaving this waiting out the full timeout.
+/// `scope` is the one thing that actually differs between those two
+/// callers (`OAUTH_SCOPE` vs `FIREBASE_SIGN_IN_SCOPE`) - `client` differs
+/// too, but is already a parameter for other reasons.
+pub fn run_sign_in(client: &OAuthClient, scope: &str, app: &tauri::AppHandle, cancel: &AtomicBool) -> AppResult<SignedInAccount> {
     use tauri_plugin_opener::OpenerExt;
 
     let listener = bind_loopback_listener()?;
     let uri = redirect_uri_for(&listener)?;
     let pkce = generate_pkce_pair();
     let state = generate_state();
-    let auth_url = build_authorization_url(client, &uri, &pkce, &state);
+    let auth_url = build_authorization_url(client, &uri, scope, &pkce, &state);
 
     app.opener()
         .open_url(auth_url, None::<&str>)
@@ -418,12 +503,9 @@ pub fn run_sign_in(client: &OAuthClient, app: &tauri::AppHandle, cancel: &Atomic
     }
 
     let tokens = exchange_code_for_tokens(client, &code, &pkce.verifier, &uri)?;
-    let refresh_token = tokens.refresh_token.ok_or_else(|| {
-        AppError::External("Google did not return a long-lived sign-in - please try signing in again.".to_string())
-    })?;
     let email = fetch_email(&tokens.access_token)?;
 
-    Ok(SignedInAccount { email, refresh_token })
+    signed_in_account_from_tokens(tokens, email)
 }
 
 #[cfg(test)]
@@ -482,7 +564,7 @@ mod tests {
     fn authorization_url_carries_every_required_param_and_the_exact_redirect_uri() {
         let client = test_client();
         let pkce = generate_pkce_pair();
-        let url = build_authorization_url(&client, "http://127.0.0.1:54321", &pkce, "the-state-value");
+        let url = build_authorization_url(&client, "http://127.0.0.1:54321", OAUTH_SCOPE, &pkce, "the-state-value");
 
         assert!(url.starts_with(AUTH_ENDPOINT));
         // NON_ALPHANUMERIC (same choice google_sheets.rs already makes for
@@ -494,6 +576,7 @@ mod tests {
         assert_eq!(decoded_query_param(&url, "client_id"), client.client_id);
         assert_eq!(decoded_query_param(&url, "state"), "the-state-value");
         assert_eq!(decoded_query_param(&url, "code_challenge"), pkce.challenge);
+        assert_eq!(decoded_query_param(&url, "scope"), OAUTH_SCOPE);
         assert!(url.contains("response_type=code"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("access_type=offline"));
@@ -502,6 +585,65 @@ mod tests {
         // the whole request if this does not byte-for-byte match what is
         // sent to the token endpoint later.
         assert_eq!(decoded_query_param(&url, "redirect_uri"), "http://127.0.0.1:54321");
+    }
+
+    #[test]
+    fn authorization_url_uses_whichever_scope_the_caller_passes_in() {
+        // 2.0.46: proves `scope` is actually threaded through, not just
+        // accepted and ignored - the two real callers pass different scopes
+        // (OAUTH_SCOPE for Sheets sign-in, FIREBASE_SIGN_IN_SCOPE for the
+        // "Continue with Google" app sign-in button) and must never cross.
+        let client = test_client();
+        let pkce = generate_pkce_pair();
+        let url = build_authorization_url(&client, "http://127.0.0.1:54321", FIREBASE_SIGN_IN_SCOPE, &pkce, "s");
+        assert_eq!(decoded_query_param(&url, "scope"), FIREBASE_SIGN_IN_SCOPE);
+        assert_ne!(FIREBASE_SIGN_IN_SCOPE, OAUTH_SCOPE, "the two scopes must actually differ for this test to mean anything");
+    }
+
+    #[test]
+    fn embedded_firebase_oauth_client_is_none_on_a_plain_local_build() {
+        // Same reasoning as embedded_oauth_client_is_none_on_a_plain_local_build
+        // above - this test suite never has FIREBASE_GOOGLE_OAUTH_CLIENT_ID set.
+        assert!(
+            embedded_firebase_oauth_client().is_none(),
+            "a local cargo test/build must never have a real Firebase OAuth client embedded"
+        );
+    }
+
+    fn token_response(access_token: &str, refresh_token: Option<&str>, id_token: Option<&str>) -> TokenResponse {
+        TokenResponse {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.map(str::to_string),
+            expires_in: 3600,
+            id_token: id_token.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn signed_in_account_from_tokens_succeeds_when_both_refresh_and_id_tokens_are_present() {
+        let tokens = token_response("access", Some("refresh"), Some("id"));
+        let account = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap();
+        assert_eq!(account.email, "marko@example.com");
+        assert_eq!(account.refresh_token, "refresh");
+        assert_eq!(account.id_token, "id");
+    }
+
+    #[test]
+    fn signed_in_account_from_tokens_fails_cleanly_when_google_omits_the_refresh_token() {
+        let tokens = token_response("access", None, Some("id"));
+        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap_err();
+        assert!(err.to_string().contains("long-lived sign-in"));
+    }
+
+    #[test]
+    fn signed_in_account_from_tokens_fails_cleanly_when_google_omits_the_id_token() {
+        // 2.0.46: the case commands::firebase_google_auth actually depends
+        // on - without this, `run_sign_in` would happily return a
+        // SignedInAccount whose id_token is empty, and the Google sign-in
+        // button would silently hand Firebase a token that always fails.
+        let tokens = token_response("access", Some("refresh"), None);
+        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap_err();
+        assert!(err.to_string().contains("sign-in token"));
     }
 
     /// Test-only helper: pulls one query parameter's value back out of a

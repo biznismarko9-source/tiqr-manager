@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { Button, Card, Field, Input } from "../components/ui";
+import { Button, Card, Field, Input, Spinner } from "../components/ui";
 import { IconGoogle } from "../components/icons";
+import { api, errMsg } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 import { useToast } from "../lib/toast";
@@ -9,16 +10,17 @@ import logo from "../assets/logo.png";
 
 type Mode = "login" | "register";
 
-// 2.0.44 (Phase 1): the app's very first screen when nobody is signed in
-// yet - see App.tsx's RequireAuth wrapper, which sends any not-signed-in
-// visit here regardless of which page it was actually headed to. Backed by
-// the placeholder AuthProvider (lib/auth.tsx) for now, not real Firebase -
-// marko asked to see and click through the actual screens before that gets
-// wired in (see REDESIGN-2.0.44-REPORT.md). None of the app's own data
-// (orders/tickets/sales/...) is touched by any of this - only what's shown
-// before you reach it.
+// 2.0.44: the app's very first screen when nobody is signed in yet - see
+// App.tsx's RequireAuth wrapper, which sends any not-signed-in visit here
+// regardless of which page it was actually headed to. 2.0.44 shipped this
+// screen backed by a disposable placeholder auth so marko could review the
+// UX before any real backend work began; 2.0.45 wired up real Firebase
+// email/password, and 2.0.46 wired up real "Continue with Google" too (see
+// lib/auth.tsx for both). None of the app's own data (orders/tickets/
+// sales/...) is touched by any of this - only what's shown before you
+// reach it.
 export default function Welcome() {
-  const { user, loading, login, register } = useAuth();
+  const { user, loading, login, register, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [mode, setMode] = useState<Mode>("login");
@@ -27,6 +29,21 @@ export default function Welcome() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  // 2.0.46: defaults to false (not null) on purpose - starting "enabled"
+  // and flipping to disabled a moment later would be a worse flash than
+  // starting disabled and flipping to enabled once this quick, local-only
+  // check actually resolves (see commands/firebase_google_auth.rs's own
+  // doc comment - no network call, just reading whether this build has an
+  // OAuth client embedded).
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .firebaseGoogleSignInAvailable()
+      .then(setGoogleAvailable)
+      .catch(() => setGoogleAvailable(false));
+  }, []);
 
   // Still restoring a persisted Firebase session - see lib/auth.tsx's own
   // doc comment. Render nothing rather than flashing this form first.
@@ -60,6 +77,40 @@ export default function Welcome() {
       toast.error(firebaseAuthErrorMessage(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleGoogle() {
+    setGoogleBusy(true);
+    try {
+      await loginWithGoogle();
+      navigate("/");
+    } catch (err) {
+      // Two genuinely different error shapes can reach here (see
+      // loginWithGoogle's own doc comment): a Rust/Tauri error from opening
+      // the browser and waiting on it (no `.code`, already a plain
+      // human-readable string - errMsg handles that), or a real Firebase
+      // auth error once a credential was actually attempted (has a
+      // `.code`, mapped by firebaseAuthErrorMessage same as login/register
+      // above). Checking for `.code` first routes each to the formatter
+      // that actually understands it, instead of losing the specific
+      // Rust-side message behind a generic fallback.
+      const hasFirebaseCode = typeof err === "object" && err !== null && "code" in err;
+      toast.error(hasFirebaseCode ? firebaseAuthErrorMessage(err) : errMsg(err));
+    } finally {
+      setGoogleBusy(false);
+    }
+  }
+
+  // 2.0.12's fix for the Sheets "Sign in with Google" card applies here too
+  // (see Settings.tsx's GoogleSignInCard) - without a way to interrupt it,
+  // closing the browser tab mid-flow would leave this button stuck reading
+  // "Waiting for you to finish in your browser..." for up to 5 minutes.
+  async function handleCancelGoogle() {
+    try {
+      await api.cancelFirebaseGoogleSignIn();
+    } catch (err) {
+      toast.error(errMsg(err));
     }
   }
 
@@ -144,14 +195,31 @@ export default function Welcome() {
             <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
           </div>
 
-          {/* 2.0.45: Google sign-in isn't wired up yet (see lib/auth.tsx's
-              doc comment) - shown but disabled, rather than silently faking
-              a login the way 2.0.44's placeholder did, so it's honest about
-              what actually works right now. */}
-          <Button variant="secondary" className="w-full cursor-not-allowed justify-center opacity-60" disabled title="Coming soon">
-            <IconGoogle className="h-4 w-4" /> Continue with Google
-            <span className="ml-1 text-[10px] font-normal text-slate-400 dark:text-slate-500">(coming soon)</span>
+          {/* 2.0.46: real now - see lib/auth.tsx's loginWithGoogle. Disabled
+              only when this particular build has no Firebase OAuth client
+              embedded (googleAvailable, checked on mount above) - same
+              "never silently fake it" honesty as the Sheets sign-in card in
+              Settings, just without a persistent signed-in state to show
+              alongside it here. */}
+          <Button
+            variant="secondary"
+            className={`w-full justify-center ${googleAvailable ? "" : "cursor-not-allowed opacity-60"}`}
+            disabled={!googleAvailable || googleBusy}
+            onClick={handleGoogle}
+            title={googleAvailable ? undefined : "Google sign-in isn't available in this build."}
+          >
+            {googleBusy ? <Spinner className="h-4 w-4" /> : <IconGoogle className="h-4 w-4" />}
+            {googleBusy ? "Waiting for you to finish in your browser..." : "Continue with Google"}
           </Button>
+          {googleBusy && (
+            <button
+              type="button"
+              onClick={handleCancelGoogle}
+              className="mt-2 w-full text-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+            >
+              Cancel
+            </button>
+          )}
         </Card>
 
         <p className="mt-4 text-center text-[11px] text-slate-400 dark:text-slate-500">

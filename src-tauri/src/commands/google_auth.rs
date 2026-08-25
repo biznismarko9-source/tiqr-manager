@@ -106,7 +106,7 @@ pub async fn start_google_sign_in(state: State<'_, AppState>, app: tauri::AppHan
     let cancel_for_task = cancel_flag.clone();
     let app_for_task = app.clone();
     let result: AppResult<google_oauth::SignedInAccount> = tauri::async_runtime::spawn_blocking(move || {
-        google_oauth::run_sign_in(&client, &app_for_task, &cancel_for_task)
+        google_oauth::run_sign_in(&client, google_oauth::OAUTH_SCOPE, &app_for_task, &cancel_for_task)
     })
     .await
     .map_err(|e| AppError::External(format!("the sign-in task did not complete cleanly: {e}")))?;
@@ -127,7 +127,14 @@ pub async fn start_google_sign_in(state: State<'_, AppState>, app: tauri::AppHan
 /// actually in flight - a stray double-click, or the sign-in attempt already
 /// finished on its own a moment earlier (see `start_google_sign_in`'s doc
 /// comment for when the slot is `None` vs `Some`).
-fn cancel_google_sign_in_impl(cancel_flag_slot: &Mutex<Option<Arc<AtomicBool>>>) {
+///
+/// `pub(crate)`, not private (2.0.46): this logic is generic over any
+/// cancel-flag slot - nothing Sheets-specific about it - so
+/// commands::firebase_google_auth::cancel_firebase_google_sign_in reuses it
+/// directly against its own, separate flag instead of duplicating it. The
+/// two flows still keep separate `AppState` slots (see db.rs) so cancelling
+/// one can never reach into the other's in-flight attempt.
+pub(crate) fn cancel_google_sign_in_impl(cancel_flag_slot: &Mutex<Option<Arc<AtomicBool>>>) {
     if let Some(flag) = cancel_flag_slot.lock().unwrap().as_ref() {
         flag.store(true, Ordering::Relaxed);
     }

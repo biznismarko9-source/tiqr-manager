@@ -18,6 +18,13 @@ pub struct AppState {
     /// plain `Mutex`, not part of the `db` one above - cancelling must never
     /// have to wait on whatever the database happens to be doing.
     pub oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    /// 2.0.46: the same idea as `oauth_cancel_flag` above, but for the
+    /// SEPARATE "Continue with Google" app sign-in button
+    /// (commands::firebase_google_auth) - a genuinely different in-flight
+    /// attempt from the Sheets one above, so it gets its own slot rather
+    /// than sharing: cancelling one must never accidentally interrupt the
+    /// other if both somehow ended up in flight at once.
+    pub firebase_oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[

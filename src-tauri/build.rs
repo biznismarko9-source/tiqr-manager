@@ -51,5 +51,23 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_SECRET");
 
+    // 2.0.46: same embed-at-build-time mechanism again, for the SEPARATE
+    // OAuth client the "Continue with Google" APP sign-in button uses
+    // (google_oauth::embedded_firebase_oauth_client) - a different Google
+    // Cloud project (marko's Firebase project, tiqr-manager-b890a) and a
+    // narrower scope (openid email profile - identity only, no Sheets/Drive
+    // access) than GOOGLE_OAUTH_CLIENT_ID/SECRET above, which must keep
+    // working independently for the existing Sheets sign-in. See
+    // google_oauth.rs's module doc comment for why these are two clients,
+    // not one reused.
+    let firebase_oauth_client_id = env::var("FIREBASE_GOOGLE_OAUTH_CLIENT_ID").unwrap_or_default();
+    let firebase_oauth_client_secret = env::var("FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET").unwrap_or_default();
+    fs::write(Path::new(&out_dir).join("firebase_google_oauth_client_id.txt"), firebase_oauth_client_id)
+        .expect("failed to write the embedded Firebase Google OAuth client ID file");
+    fs::write(Path::new(&out_dir).join("firebase_google_oauth_client_secret.txt"), firebase_oauth_client_secret)
+        .expect("failed to write the embedded Firebase Google OAuth client secret file");
+    println!("cargo:rerun-if-env-changed=FIREBASE_GOOGLE_OAUTH_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET");
+
     tauri_build::build()
 }

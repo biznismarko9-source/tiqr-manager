@@ -1,29 +1,35 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   createUserWithEmailAndPassword,
+  GoogleAuthProvider,
   onAuthStateChanged,
+  signInWithCredential,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
   type User,
 } from "firebase/auth";
 import { auth } from "./firebase";
+import { api } from "./api";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
 // placeholder (that version's own doc comment explained why a placeholder
 // shipped first). See firebase.ts for the project config + why it's safe to
 // ship in source.
 //
-// Google sign-in is STILL NOT wired up - `loginWithGoogle` below is a stub
-// that always rejects. Real Google sign-in inside this desktop app's webview
-// needs its own OAuth engineering (almost certainly reusing google_oauth.rs's
-// loopback-listener/PKCE pattern, already proven for the Sheets "Sign in
-// with Google" flow, rather than Firebase's usual browser-popup flow, which
-// this app's own history already found doesn't fit a Tauri webview) plus one
-// more value from marko - see PROTECTED-AREAS-NOTES.md's 2.0.45 section.
-// Welcome.tsx keeps that button visibly disabled ("Coming soon") rather than
-// ever calling this, so the stub below only exists as a defensive fallback,
-// not a real code path today.
+// 2.0.46: Google sign-in is real too now. Firebase's usual browser-popup
+// flow (`signInWithPopup`) doesn't fit a Tauri webview - this app's own
+// history already found that out building the Sheets "Sign in with Google"
+// feature (see google_oauth.rs's module doc comment) - so `loginWithGoogle`
+// below reuses that exact proven shape instead: a Rust command
+// (`api.startFirebaseGoogleSignIn`) opens the person's own system browser,
+// runs a loopback-listener/PKCE OAuth dance against a SEPARATE OAuth client
+// (google_oauth::embedded_firebase_oauth_client - a different Google Cloud
+// project and a narrower identity-only scope than the Sheets one), and
+// hands back a Google ID token. That ID token is what actually completes
+// the Firebase side of the sign-in here (`GoogleAuthProvider.credential` +
+// `signInWithCredential`) - Firebase never sees a password, a popup, or
+// anything running inside this app's own window.
 
 export interface AuthUser {
   name: string;
@@ -89,7 +95,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginWithGoogle = useCallback(async (): Promise<void> => {
-    throw new Error("Google sign-in isn't wired up yet.");
+    // Errors from this first step are Rust/Tauri errors (e.g. "Google
+    // sign-in was cancelled.") - plain, already human-readable strings with
+    // no Firebase `.code`, deliberately left to propagate as-is rather than
+    // wrapped. Welcome.tsx's catch block checks for `.code` to decide which
+    // formatter (firebaseAuthErrorMessage vs errMsg) a given error needs.
+    const { idToken } = await api.startFirebaseGoogleSignIn();
+    const credential = GoogleAuthProvider.credential(idToken);
+    const cred = await signInWithCredential(auth, credential);
+    // Belt-and-suspenders, same reasoning as register() above: Firebase
+    // normally fires onAuthStateChanged on its own right after this
+    // resolves, but setting eagerly here means the UI never has to wait on
+    // that round trip to show the right name.
+    setUser(toAuthUser(cred.user));
   }, []);
 
   const logout = useCallback(async () => {

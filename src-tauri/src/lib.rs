@@ -29,6 +29,7 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 oauth_cancel_flag: Mutex::new(None),
+                firebase_oauth_cancel_flag: Mutex::new(None),
             });
             Ok(())
         })
@@ -128,6 +129,9 @@ pub fn run() {
             commands::google_auth::start_google_sign_in,
             commands::google_auth::cancel_google_sign_in,
             commands::google_auth::google_sign_out,
+            commands::firebase_google_auth::firebase_google_sign_in_available,
+            commands::firebase_google_auth::start_firebase_google_sign_in,
+            commands::firebase_google_auth::cancel_firebase_google_sign_in,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

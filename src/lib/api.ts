@@ -13,6 +13,7 @@ import type {
   EventInput,
   EventRecord,
   EventWithStats,
+  FirebaseGoogleSignInResult,
   GoogleSignInStatus,
   OrderEditInput,
   OrderInput,
@@ -318,6 +319,17 @@ export const api = {
    * this sets. */
   cancelGoogleSignIn: () => invoke<void>("cancel_google_sign_in"),
   googleSignOut: () => invoke<void>("google_sign_out"),
+  /** 2.0.46: "Continue with Google" on the Welcome screen - signing into the
+   * APP itself (Firebase Authentication), a completely separate flow from
+   * the Sheets-access one just above despite the similar shape. See
+   * commands/firebase_google_auth.rs's module doc comment.
+   * `startFirebaseGoogleSignIn` opens the system browser and blocks (up to
+   * 5 minutes) until the person finishes there, it times out, or
+   * `cancelFirebaseGoogleSignIn` interrupts it - same UX as
+   * `cancelGoogleSignIn` above, own separate in-flight attempt. */
+  firebaseGoogleSignInAvailable: () => invoke<boolean>("firebase_google_sign_in_available"),
+  startFirebaseGoogleSignIn: () => invoke<FirebaseGoogleSignInResult>("start_firebase_google_sign_in"),
+  cancelFirebaseGoogleSignIn: () => invoke<void>("cancel_firebase_google_sign_in"),
 };
 
 export function errMsg(e: unknown): string {

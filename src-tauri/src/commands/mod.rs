@@ -5,6 +5,7 @@ pub mod csv_import;
 pub mod dashboard;
 pub mod event_categories;
 pub mod events;
+pub mod firebase_google_auth;
 pub mod google_auth;
 pub mod lookups;
 pub mod orders;
