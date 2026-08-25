@@ -46,6 +46,7 @@
 //! | `Number of Tickets` | `Order.quantity` |
 //! | `Price Per Ticket` | `Order.unit_price_cents` - more than 2 decimal places (marko's own automated order sources sometimes produce this dividing a total across tickets) is rounded rather than rejected, see `reconcile_order_pricing` |
 //! | `currency` | `Order.currency` - a row's own value if present and one of EUR/USD/GBP, otherwise the connection's configured currency (unlike Pulls, whose sheet has no currency column at all) |
+//! | *(no sheet column)* | `Order.payment_status` - stamped `"paid"` unconditionally on every order this sync creates (2.0.43 - see note below the table) |
 //! | `Email (used)` | copied as-is into `Order.notes` (raw value, no label prefix - see 2.0.12) - no dedicated field for this exists anywhere in the schema |
 //! | `Ticket Type` | `Order.ticket_type` (existing field, copied onto every generated ticket - unchanged behaviour) |
 //! | `TIQR ID` (appended by the app itself the first time it's missing) | the sync marker - never typed by hand |
@@ -60,6 +61,19 @@
 //! one-off file gets reviewed by hand first) - a sync is meant to be re-run
 //! against a sheet marko is actively filling in, so requiring every event to
 //! be pre-created by hand in the app first would defeat the point.
+//!
+//! **2.0.43: every order this sync creates is stamped `Order.payment_status
+//! = "paid"` outright, never left to `insert_order_with_tickets`'s own
+//! `"unpaid"` fallback for a `None` value.** marko's own report: the
+//! Dashboard was counting freshly-synced orders as unpaid (its "unpaid
+//! orders" figure is a plain `payment_status IN ('unpaid','partial')` count
+//! - see dashboard.rs), which he did not want - an order already sitting in
+//! his connected sheet is, to him, already a real, confirmed purchase.
+//! Unlike CSV import (csv_import.rs), which supports an OPTIONAL
+//! payment_status column a row may set, this sync's first batch has no such
+//! column, and marko asked for this unconditionally rather than a new
+//! column he'd have to remember to fill in - so there is nothing here to
+//! read, only a fixed value to stamp.
 //!
 //! ## Column mapping (second batch - Sales sync, 2.0.10)
 //!
@@ -751,7 +765,18 @@ fn apply_order_rows(
             fees_cents: 0,
             other_costs_cents: 0,
             currency,
-            payment_status: None,
+            // 2.0.43: stamped "paid" unconditionally, never left to
+            // `insert_order_with_tickets`'s own "unpaid" default - marko's
+            // own explicit instruction. An order already sitting in his
+            // connected sheet is, to him, already a real confirmed
+            // purchase; this first batch has no payment-status column of
+            // its own for Order sync to read instead (see the module doc
+            // comment's "Column mapping" table), and CSV import's own
+            // OPTIONAL payment_status column (csv_import.rs) was
+            // deliberately not mirrored here - he asked for this
+            // unconditionally, not gated behind a new column he'd have to
+            // remember to fill in.
+            payment_status: Some("paid".to_string()),
             // 2.0.12: the raw cell value, unlabeled - marko's own report:
             // this used to prepend "Email used: " (see the module doc
             // comment's "Column mapping" table), which was never what he
@@ -2094,6 +2119,28 @@ struct FormulaSpec {
 /// for a nonexistent order, so a short/empty sheet simply gets fewer (or
 /// zero) formula rows for now, picked up automatically once real data
 /// reaches them on a later sync/push.
+///
+/// **2.0.43: Profit is additionally gated on `Status = "Sold"` when a
+/// Status column exists in the sheet.** marko's own report: for a ticket
+/// that has not sold yet, `Payout Per Ticket` is blank (0 in Sheets
+/// arithmetic), so Revenue is legitimately 0 - but Profit
+/// (`Revenue - Total Purchase Price`) still worked out to a large,
+/// misleading NEGATIVE number, looking exactly like a loss on every ticket
+/// still sitting unsold. The gate is written as
+/// `(Status="Sold")*(Revenue-Total)` - a plain boolean-multiply expression,
+/// deliberately NOT `IF(...)`: `IF` is itself a multi-argument function
+/// call and would reintroduce the exact same comma-vs-semicolon locale trap
+/// `plan_orders_summary_updates` was already rewritten off `SUMIF` for in
+/// 2.0.42 (see that function's own doc comment). This stays locale-safe by
+/// construction - only `=`/`*`/`-`, parens, and a quoted literal, never a
+/// function-argument separator. A sheet with no Status column at all falls
+/// back to the unconditional formula this function always produced before
+/// 2.0.43 - same optional-column tolerance as everywhere else here.
+/// `Total Profit` in the Summary block (`plan_orders_summary_updates`,
+/// `=SUM(profit:profit)`) needed no direct change: `SUM` already silently
+/// adds whatever real number ends up in each row - 0 for a not-yet-sold
+/// ticket, the real profit for a sold one - so fixing this one formula
+/// fixes that total automatically.
 fn plan_sheet_structure_updates(
     conn: &Connection,
     headers: &[String],
@@ -2133,6 +2180,7 @@ fn plan_sheet_structure_updates(
     let total_col = find_col(&map, &["total purchase price"]);
     let revenue_col = find_col(&map, &["revenue"]);
     let profit_col = find_col(&map, &["profit"]);
+    let status_col = find_col(&map, &["status"]);
 
     let revenue = match (payout_col, qty_col, revenue_col) {
         (Some(payout_col), Some(qty_col), Some(revenue_col)) => {
@@ -2153,10 +2201,16 @@ fn plan_sheet_structure_updates(
         (Some(rev), Some(total_col), Some(profit_col)) => {
             let revenue_letter = column_index_to_a1(rev.col_index);
             let total_letter = column_index_to_a1(total_col);
+            let status_letter = status_col.map(column_index_to_a1);
             let formulas = (0..data_row_count)
                 .map(|i| {
                     let row = i + 2;
-                    format!("={revenue_letter}{row}-{total_letter}{row}")
+                    match &status_letter {
+                        Some(status_letter) => {
+                            format!("=({status_letter}{row}=\"Sold\")*({revenue_letter}{row}-{total_letter}{row})")
+                        }
+                        None => format!("={revenue_letter}{row}-{total_letter}{row}"),
+                    }
                 })
                 .collect();
             Some(FormulaSpec { col_index: profit_col, formulas })
@@ -2773,6 +2827,22 @@ mod tests {
         assert_eq!(section.as_deref(), Some("410"));
         assert_eq!(row_label.as_deref(), Some("25"));
         assert_eq!(ticket_type.as_deref(), Some("e-ticket"));
+    }
+
+    #[test]
+    fn an_order_created_via_sync_is_stamped_payment_status_paid() {
+        let conn = test_conn();
+        apply_order_rows(&conn, &full_headers(), &[sample_row("")], "EUR", MARKER_COL).unwrap();
+        let payment_status: String =
+            conn.query_row("SELECT payment_status FROM orders WHERE id = 1", [], |r| r.get(0)).unwrap();
+        // 2.0.43: marko's own explicit instruction - an order already
+        // sitting in his connected sheet is, to him, already a real
+        // confirmed purchase, so it must never land in the Dashboard's
+        // unpaid-orders count just because this sync has no payment-status
+        // column of its own to read. Previously defaulted to "unpaid" (see
+        // insert_order_with_tickets's own fallback for a None
+        // OrderInput.payment_status).
+        assert_eq!(payment_status, "paid");
     }
 
     #[test]
@@ -4279,13 +4349,51 @@ mod tests {
     }
 
     #[test]
-    fn plan_sheet_structure_updates_profit_formula_subtracts_total_purchase_price_from_revenue() {
+    fn plan_sheet_structure_updates_profit_formula_subtracts_total_purchase_price_from_revenue_when_sold() {
         let conn = test_conn();
         let headers = structure_headers();
         let (_, _, profit) = plan_sheet_structure_updates(&conn, &headers, 2).unwrap();
         let profit = profit.unwrap();
         assert_eq!(profit.col_index, 6, "\"Profit\" is column G (index 6) in structure_headers()");
-        assert_eq!(profit.formulas, vec!["=F2-C2".to_string(), "=F3-C3".to_string()], "Revenue=F, Total Purchase Price=C");
+        assert_eq!(
+            profit.formulas,
+            vec!["=(H2=\"Sold\")*(F2-C2)".to_string(), "=(H3=\"Sold\")*(F3-C3)".to_string()],
+            "Revenue=F, Total Purchase Price=C, Status=H - profit only counts once Status is Sold"
+        );
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_profit_formula_falls_back_to_ungated_when_the_sheet_has_no_status_column() {
+        let conn = test_conn();
+        // Same required columns Profit needs, minus "Status" entirely - same
+        // optional-column tolerance as every other column in this function:
+        // Profit must still work, just without the Sold-gating multiplier
+        // since there is no cell left to gate on.
+        let headers: Vec<String> = vec![
+            "Total Purchase Price".to_string(),
+            "Number of Tickets".to_string(),
+            "Payout Per Ticket".to_string(),
+            "Revenue".to_string(),
+            "Profit".to_string(),
+        ];
+        let (_, _, profit) = plan_sheet_structure_updates(&conn, &headers, 1).unwrap();
+        let profit = profit.unwrap();
+        assert_eq!(profit.col_index, 4, "\"Profit\" is column E (index 4) in this header order");
+        assert_eq!(profit.formulas, vec!["=D2-A2".to_string()], "Revenue=D, Total Purchase Price=A - no Status column to gate on");
+    }
+
+    #[test]
+    fn plan_sheet_structure_updates_profit_formula_never_uses_a_locale_sensitive_function_argument_separator() {
+        let conn = test_conn();
+        let headers = structure_headers();
+        let (_, _, profit) = plan_sheet_structure_updates(&conn, &headers, 1).unwrap();
+        let formula = profit.unwrap().formulas[0].clone();
+        // 2.0.43: the Sold-gate must stay a plain boolean-multiply
+        // expression, never IF(...) - IF is itself a multi-argument
+        // function call and would reintroduce the exact comma-vs-semicolon
+        // locale trap SUMIF was rewritten off of in 2.0.42.
+        assert!(!formula.contains(','), "must not use a comma anywhere - {formula}");
+        assert!(!formula.to_uppercase().contains("IF("), "must not use IF() - {formula}");
     }
 
     #[test]
