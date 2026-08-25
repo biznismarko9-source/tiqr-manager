@@ -165,3 +165,30 @@ export const IconLink = (p: SVGProps<SVGSVGElement>) => (
     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
   </Svg>
 );
+// 2.0.44: account/profile - sidebar profile widget + Settings -> Account.
+export const IconUser = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </Svg>
+);
+// 2.0.44: profile dropdown / Account settings "Log out".
+export const IconLogOut = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="m16 17 5-5-5-5" />
+    <path d="M21 12H9" />
+  </Svg>
+);
+// 2.0.44: "Continue with Google" button on Welcome.tsx - the standard 4-
+// color Google "G" mark, deliberately NOT run through the shared stroke-
+// based <Svg> wrapper above (this one is filled and multi-color, every
+// other icon in this file is a single currentColor stroke).
+export const IconGoogle = (p: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" {...p}>
+    <path fill="#4285F4" d="M23.52 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.47a5.54 5.54 0 0 1-2.4 3.63v3h3.88c2.27-2.09 3.57-5.17 3.57-8.82Z" />
+    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.94-2.9l-3.88-3a7.4 7.4 0 0 1-11-3.9H.97v3.09A12 12 0 0 0 12 24Z" />
+    <path fill="#FBBC05" d="M5.06 14.2a7.2 7.2 0 0 1 0-4.6V6.51H.97a12 12 0 0 0 0 10.78l4.1-3.09Z" />
+    <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.6 4.59 1.79l3.44-3.44C17.94 1.19 15.24 0 12 0A12 12 0 0 0 .97 6.51l4.1 3.09A7.16 7.16 0 0 1 12 4.77Z" />
+  </svg>
+);

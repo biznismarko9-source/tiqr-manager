@@ -43,16 +43,20 @@ import {
   IconDatabase,
   IconDownload,
   IconLink,
+  IconLogOut,
   IconPlus,
   IconSun,
   IconTag,
   IconTrash,
   IconUpload,
+  IconUser,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useTheme, type ThemeMode } from "../lib/theme";
+import { useAuth } from "../lib/auth";
+import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 
 const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: "light", label: "Light" },
@@ -76,11 +80,26 @@ const SECTIONS = [
   { key: "integrations", title: "Integrations", description: "Connect Pulls, Orders and Tickets to a Google Sheet.", icon: IconLink },
   { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
+  // 2.0.44: your name/email/sign-in + Log out - see the profile widget at
+  // the bottom of the sidebar (Layout.tsx), whose "Account settings" item
+  // links straight to /settings/account.
+  { key: "account", title: "Account", description: "Your name, email and sign-in.", icon: IconUser },
 ];
 
 export default function Settings() {
   const { section } = useParams();
   const toast = useToast();
+  const { user, updateName, logout } = useAuth();
+  // 2.0.44: local draft of the name field on the Account section - synced
+  // from `user` whenever it changes rather than only read once on mount,
+  // since Settings.tsx's route ("settings" vs "settings/:section") can
+  // re-render this same component instance without necessarily remounting it.
+  const [accountName, setAccountName] = useState(user?.name ?? "");
+  useEffect(() => {
+    setAccountName(user?.name ?? "");
+  }, [user?.name]);
+  const [savingName, setSavingName] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   // 2.0.27: managed event categories (marko's request - "like Platforms").
@@ -550,6 +569,61 @@ export default function Settings() {
               )}
               {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
               {appInfo && <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">TIQR Manager v{appInfo.version}</p>}
+            </Card>
+          )}
+
+          {/* 2.0.44 (Phase 1): placeholder auth (lib/auth.tsx) - not real
+              Firebase yet, see that file's own doc comment. */}
+          {section === "account" && (
+            <Card className="p-5 lg:max-w-xl">
+              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Your profile</h3>
+              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">Basic info shown around the app.</p>
+              <div className="space-y-3">
+                <Field label="Name">
+                  <Input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Your name" />
+                </Field>
+                <Field
+                  label="Email"
+                  hint={user?.provider === "google" ? "Signed in with Google" : "Signed in with email and password"}
+                >
+                  <Input value={user?.email ?? ""} disabled />
+                </Field>
+                <Button
+                  variant="primary"
+                  disabled={!accountName.trim() || accountName.trim() === user?.name || savingName}
+                  onClick={async () => {
+                    setSavingName(true);
+                    try {
+                      await updateName(accountName.trim());
+                      toast.success("Profile updated.");
+                    } catch (err) {
+                      toast.error(firebaseAuthErrorMessage(err));
+                    } finally {
+                      setSavingName(false);
+                    }
+                  }}
+                >
+                  {savingName ? <Spinner className="h-4 w-4" /> : "Save"}
+                </Button>
+              </div>
+
+              <div className="mt-6 border-t border-slate-100 pt-4 dark:border-slate-800">
+                <Button
+                  variant="danger"
+                  disabled={loggingOut}
+                  onClick={async () => {
+                    setLoggingOut(true);
+                    try {
+                      await logout();
+                    } catch {
+                      toast.error("Couldn't log out - try again.");
+                      setLoggingOut(false);
+                    }
+                  }}
+                >
+                  {loggingOut ? <Spinner className="h-4 w-4" /> : <IconLogOut className="h-4 w-4" />} Log out
+                </Button>
+              </div>
             </Card>
           )}
         </>

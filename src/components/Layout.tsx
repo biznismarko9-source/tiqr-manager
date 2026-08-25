@@ -1,9 +1,11 @@
-import { useEffect } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import {
   IconBoxes,
   IconCalendarDays,
+  IconChevronUp,
   IconGauge,
+  IconLogOut,
   IconPackage,
   IconReceipt,
   IconSettings,
@@ -12,7 +14,20 @@ import {
 } from "./icons";
 import { checkForUpdate } from "../lib/updater";
 import { useToast } from "../lib/toast";
+import { useAuth } from "../lib/auth";
 import logo from "../assets/logo.png";
+
+// 2.0.44: initials shown in the profile widget's avatar circle - up to 2,
+// from up to 2 words of the name, uppercased. "T" for an empty/whitespace
+// name rather than crashing on `[0]` of an empty array.
+function initialsFor(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join("");
+}
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: IconGauge, end: true },
@@ -27,6 +42,21 @@ const NAV = [
 
 export default function Layout() {
   const toast = useToast();
+  const { user, logout } = useAuth();
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  // 2.0.44: click-outside-to-close for the profile dropdown - it's a small
+  // anchored menu, not a full-screen Modal (which already has its own
+  // backdrop for this), so it needs its own listener.
+  useEffect(() => {
+    if (!profileOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [profileOpen]);
 
   useEffect(() => {
     // Quiet, one-time check on launch. Never blocks the UI and never
@@ -73,8 +103,55 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-slate-100 px-4 py-3 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">
-          Local-first &middot; your data stays on this device
+        {/* 2.0.44: profile widget - marko's own screenshot pointed at this
+            exact spot (previously just the tagline below on its own). The
+            dropdown opens UPWARD (bottom-full) since this sits at the very
+            bottom of the sidebar - opening down would run off the window. */}
+        <div ref={profileRef} className="relative border-t border-slate-100 dark:border-slate-800">
+          {profileOpen && (
+            <div className="absolute inset-x-2 bottom-full mb-1 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
+              <Link
+                to="/settings/account"
+                onClick={() => setProfileOpen(false)}
+                className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <IconSettings className="h-3.5 w-3.5" /> Account settings
+              </Link>
+              <button
+                type="button"
+                onClick={async () => {
+                  setProfileOpen(false);
+                  try {
+                    await logout();
+                  } catch {
+                    toast.error("Couldn't log out - try again.");
+                  }
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
+              >
+                <IconLogOut className="h-3.5 w-3.5" /> Log out
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setProfileOpen((o) => !o)}
+            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/20 dark:text-brand-400">
+              {initialsFor(user?.name ?? "?")}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-slate-700 dark:text-slate-300">{user?.name ?? "Account"}</span>
+              <span className="block truncate text-[11px] text-slate-400 dark:text-slate-500">{user?.email ?? ""}</span>
+            </span>
+            <IconChevronUp
+              className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${profileOpen ? "" : "rotate-180"}`}
+            />
+          </button>
+          <div className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">
+            Local-first &middot; your data stays on this device
+          </div>
         </div>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
