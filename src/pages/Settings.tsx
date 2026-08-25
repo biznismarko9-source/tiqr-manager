@@ -931,6 +931,18 @@ function SyncResultView({ result }: { result: SheetSyncResult }) {
           ))}
         </div>
       )}
+      {result.corrected.length > 0 && (
+        <div className="mt-2 max-h-40 overflow-y-auto">
+          <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+            {result.corrected.length} row{result.corrected.length === 1 ? "" : "s"} auto-corrected - no action needed:
+          </p>
+          {result.corrected.map((c, i) => (
+            <p key={i} className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-400">
+              Row {c.rowNumber}: {c.message}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

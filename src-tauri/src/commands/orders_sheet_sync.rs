@@ -42,9 +42,9 @@
 //! | `Row` | `Ticket.row_label` (same convention) |
 //! | `Seats` | comma-separated, one label per ticket - must match `Number of Tickets` exactly if present, or be left blank entirely (identical rule to CSV import's own `seats` column) |
 //! | `Order ID` | `Order.external_reference` - marko's own reference, set via a follow-up UPDATE once the order exists (see migrations/009's doc comment for why not `OrderInput` itself) |
-//! | `Total Purchase Price` | not stored anywhere - cross-checked against `Number of Tickets x Price Per Ticket` when present, and the row is rejected on a mismatch rather than silently trusting one number over the other |
+//! | `Total Purchase Price` | not stored anywhere - reconciled against `Number of Tickets x Price Per Ticket` when present (see `reconcile_order_pricing`, 2.0.42): an exact match or a small, honestly rounding-explainable gap is accepted (and the sheet's own cell corrected to match, transparently, never silently); anything bigger still gets the row rejected rather than silently trusting one number over the other |
 //! | `Number of Tickets` | `Order.quantity` |
-//! | `Price Per Ticket` | `Order.unit_price_cents` |
+//! | `Price Per Ticket` | `Order.unit_price_cents` - more than 2 decimal places (marko's own automated order sources sometimes produce this dividing a total across tickets) is rounded rather than rejected, see `reconcile_order_pricing` |
 //! | `currency` | `Order.currency` - a row's own value if present and one of EUR/USD/GBP, otherwise the connection's configured currency (unlike Pulls, whose sheet has no currency column at all) |
 //! | `Email (used)` | copied as-is into `Order.notes` (raw value, no label prefix - see 2.0.12) - no dedicated field for this exists anywhere in the schema |
 //! | `Ticket Type` | `Order.ticket_type` (existing field, copied onto every generated ticket - unchanged behaviour) |
@@ -115,7 +115,7 @@ use crate::google_sheets;
 use crate::models::{
     CreatedSheetResult, OrderInput, PullReceivedInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult,
 };
-use crate::money::{format_cents, parse_decimal_to_cents};
+use crate::money::{format_cents, parse_decimal_to_cents, round_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use tauri::State;
@@ -306,27 +306,251 @@ fn resolve_or_create_event(conn: &Connection, name: &str, event_date: &str) -> A
 }
 
 // ---------------------------------------------------------------------------
+// 2.0.42: automatic reconciliation of automated-order pricing. marko's own
+// words (a real sync result screenshot, 4 rows skipped): "niekedy sa stane
+// v google sheets lebo tie orders su zautomatizovane ze ta cena nesedi uplne
+// do centu, nechcem, aby ukazalo error, ze to musis opravit, ale chcem, aby
+// to apka sama opravila a posunula to do dashboardu a taktiez updatla v
+// google sheets, jasne nemoze tam napisat hlupost, musi to davat zmysel" -
+// sometimes in Google Sheets, because the orders are automated, the price
+// doesn't match exactly to the cent; he doesn't want an error he has to fix
+// by hand, he wants the app to fix it itself and push it to the dashboard
+// AND update Google Sheets - but of course it can't write nonsense there, it
+// has to make sense. His own screenshot showed two distinct shapes of this:
+// a 'Total Purchase Price' a couple of cents off Number of Tickets x Price
+// Per Ticket, and a 'Price Per Ticket' with more than 2 decimal places
+// (his automation dividing a whole total across tickets without rounding).
+//
+// The functions below implement "make sense" as an actual, checkable rule
+// rather than a vibe: a gap is only ever auto-corrected when it's SMALL
+// ENOUGH to be honestly explained by rounding one value to the nearest cent
+// - see `rounding_tolerance_cents`'s own doc comment for the exact bound and
+// why it's mathematically, not arbitrarily, chosen. Anything bigger still
+// hard-errors exactly like before this version - never silently "corrected"
+// into a number that doesn't actually add up.
+// ---------------------------------------------------------------------------
+
+/// The largest gap, in cents, between a whole 'Total Purchase Price' and
+/// 'Number of Tickets' x 'Price Per Ticket' that can honestly be explained
+/// by rounding a single per-ticket price to the nearest cent, for an order
+/// of `quantity` tickets.
+///
+/// Rounding one value (a price per ticket derived as total/quantity) to the
+/// nearest cent moves it by at most half a cent either way. Multiplied back
+/// out across `quantity` tickets, the total gap this can honestly produce is
+/// at most `quantity` half-cents - i.e. `quantity as f64 / 2.0`, rounded up
+/// to the next whole cent since cents themselves are always whole. A gap
+/// bigger than this is not explainable by rounding alone - it's a real
+/// mismatch (a typo, a missed fee, ...) - and 2.0.42 deliberately leaves
+/// that as a hard error, same as every version before it: marko's own
+/// explicit requirement ("nemoze tam napisat hlupost, musi to davat zmysel" -
+/// it can't write nonsense there, it has to make sense) is a real constraint
+/// this code enforces, not just a design note.
+fn rounding_tolerance_cents(quantity: i64) -> i64 {
+    (quantity + 1) / 2
+}
+
+/// `total_cents / quantity`, rounded to the nearest whole cent (round-half-
+/// up), computed entirely in integer arithmetic - no float anywhere near
+/// money, per this app's own money.rs house rule. `(2*total + quantity) /
+/// (2*quantity)` is the standard integer trick for "round a/b to the
+/// nearest integer": scaling both sides by 2 turns the usual "add half the
+/// divisor before truncating" into whole numbers, avoiding a fractional
+/// `quantity/2` when `quantity` is odd. `quantity` is always >= 1 by the
+/// time this is called (parsed and validated earlier in `apply_order_rows`).
+fn derive_unit_price_from_total(total_cents: i64, quantity: i64) -> i64 {
+    (2 * total_cents + quantity) / (2 * quantity)
+}
+
+/// What `reconcile_order_pricing` decided for one row's 'Price Per Ticket'
+/// (always present - it's a required column) and 'Total Purchase Price'
+/// (only when that optional column has a value on this row).
+#[derive(Debug)]
+struct PricingOutcome {
+    /// The value to actually use for `OrderInput.unit_price_cents` - either
+    /// exactly what was typed, or a sensible reconciled value.
+    unit_price_cents: i64,
+    /// `Some(new text)` only when the sheet's own 'Price Per Ticket' cell
+    /// should be overwritten with this - i.e. it was imprecise or wrong
+    /// enough to need correcting, but not so far off that this function
+    /// refused to guess (see `rounding_tolerance_cents`).
+    corrected_unit_price_text: Option<String>,
+    /// `Some(new text)` only when the sheet's own 'Total Purchase Price'
+    /// cell should be overwritten with this - same rule as above, for the
+    /// other of the two cells this function can correct.
+    corrected_total_price_text: Option<String>,
+    /// A human-readable one-line explanation of what was auto-corrected and
+    /// why, for `SheetSyncResult.corrected` - `Some` exactly when at least
+    /// one of the two `corrected_*_text` fields above is `Some`.
+    note: Option<String>,
+}
+
+/// Reconciles one order row's 'Price Per Ticket' against its (optional)
+/// 'Total Purchase Price' - see this section's own doc comment above for
+/// marko's real request and why this exists at all. Returns `Err` with the
+/// exact same wording as pre-2.0.42 whenever nothing here can be sensibly
+/// reconciled (the gap is too large to be rounding, or the text isn't a
+/// number at all) - `apply_order_rows` skips the row exactly like before in
+/// that case, so this never changes what the strict, "make sense" path
+/// looks like from the outside, only what's NOW accepted as sensible.
+///
+/// `total_raw` is `None` when the row simply has nothing in the 'Total
+/// Purchase Price' column (it's optional - see this module's own doc
+/// comment table) - there's nothing to reconcile against in that case, and
+/// an over-precise 'Price Per Ticket' is just rounded on its own.
+fn reconcile_order_pricing(unit_price_raw: &str, total_raw: Option<&str>, quantity: i64) -> Result<PricingOutcome, String> {
+    // 'Total Purchase Price' is always parsed strictly (2.0.42 never relaxes
+    // this - marko's own report was specifically about 'Price Per Ticket'
+    // having too much precision, never about a malformed Total) - a
+    // genuinely malformed Total is still a hard error, exactly as before.
+    let total_cents: Option<i64> = match total_raw {
+        Some(raw) => Some(parse_decimal_to_cents(raw).map_err(|e| format!("'Total Purchase Price': {e}"))?),
+        None => None,
+    };
+    let tolerance = rounding_tolerance_cents(quantity);
+
+    match parse_decimal_to_cents(unit_price_raw) {
+        Ok(v) if v < 0 => Err("'Price Per Ticket' cannot be negative".to_string()),
+        Ok(unit_price_cents) => {
+            // Typed cleanly (2 or fewer decimals) - only 'Total Purchase
+            // Price' (if present) might still need reconciling against it.
+            let Some(total_cents) = total_cents else {
+                return Ok(PricingOutcome { unit_price_cents, corrected_unit_price_text: None, corrected_total_price_text: None, note: None });
+            };
+            let expected = unit_price_cents * quantity;
+            let gap = (total_cents - expected).abs();
+            if gap == 0 {
+                Ok(PricingOutcome { unit_price_cents, corrected_unit_price_text: None, corrected_total_price_text: None, note: None })
+            } else if gap <= tolerance {
+                let note = format!(
+                    "'Total Purchase Price' ({}) was {} off Number of Tickets x Price Per Ticket ({}) - close enough to be automation rounding, so it was corrected to match on the sheet",
+                    format_cents(total_cents),
+                    format_cents(gap),
+                    format_cents(expected)
+                );
+                Ok(PricingOutcome {
+                    unit_price_cents,
+                    corrected_unit_price_text: None,
+                    corrected_total_price_text: Some(format_cents(expected)),
+                    note: Some(note),
+                })
+            } else {
+                Err(format!(
+                    "'Total Purchase Price' ({}) does not match Number of Tickets x Price Per Ticket ({}) - check these values",
+                    format_cents(total_cents),
+                    format_cents(expected)
+                ))
+            }
+        }
+        Err(strict_err) => {
+            // Didn't parse as a plain 2-decimal amount - the one shape
+            // 2.0.42 now makes sense of automatically is exactly what an
+            // automated Total/Quantity division produces: more than 2
+            // decimal places, otherwise a perfectly normal positive number.
+            // round_decimal_to_cents rejects anything that ISN'T that (plain
+            // garbage text), in which case the ORIGINAL strict error is the
+            // more accurate one to report, not "not a valid amount".
+            let rounded = round_decimal_to_cents(unit_price_raw).map_err(|_| format!("'Price Per Ticket': {strict_err}"))?;
+            if rounded < 0 {
+                return Err("'Price Per Ticket' cannot be negative".to_string());
+            }
+            match total_cents {
+                Some(total_cents) => {
+                    // 'Total Purchase Price' is present and clean - trust it
+                    // over 'Price Per Ticket's own over-precise text (a
+                    // whole amount someone actually paid is more meaningful
+                    // than a computed-looking fraction), and derive a clean
+                    // per-ticket price from it instead.
+                    let derived = derive_unit_price_from_total(total_cents, quantity);
+                    let expected = derived * quantity;
+                    let gap = (total_cents - expected).abs();
+                    // Mathematically this can never exceed `tolerance` (see
+                    // derive_unit_price_from_total/rounding_tolerance_cents'
+                    // own doc comments) - checked anyway rather than assumed,
+                    // same never-trust-an-invariant-you-don't-also-check
+                    // spirit as every other money path in this app.
+                    if gap > tolerance {
+                        return Err(format!(
+                            "'Price Per Ticket' ({unit_price_raw}) has more than 2 decimal places and 'Total Purchase Price' ({}) doesn't sensibly divide across {quantity} ticket(s) either - check these values",
+                            format_cents(total_cents)
+                        ));
+                    }
+                    let note = format!(
+                        "'Price Per Ticket' ({unit_price_raw}) had more than 2 decimal places - corrected to {} ('Total Purchase Price' {} / {quantity} ticket(s), rounded to the nearest cent)",
+                        format_cents(derived),
+                        format_cents(total_cents)
+                    );
+                    Ok(PricingOutcome {
+                        unit_price_cents: derived,
+                        corrected_unit_price_text: Some(format_cents(derived)),
+                        corrected_total_price_text: None,
+                        note: Some(note),
+                    })
+                }
+                None => {
+                    // No 'Total Purchase Price' to sensibly derive from -
+                    // best effort: round 'Price Per Ticket's own over-precise
+                    // value to the nearest cent, same convention money.rs
+                    // uses everywhere else.
+                    let note =
+                        format!("'Price Per Ticket' ({unit_price_raw}) had more than 2 decimal places - rounded to {}", format_cents(rounded));
+                    Ok(PricingOutcome {
+                        unit_price_cents: rounded,
+                        corrected_unit_price_text: Some(format_cents(rounded)),
+                        corrected_total_price_text: None,
+                        note: Some(note),
+                    })
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The core - no network call anywhere in this function, which is what makes
 // it directly unit-testable with a plain in-memory `test_conn()`. The
 // network-calling `sync_orders_impl` below fetches the rows via
 // `google_sheets::get_values`, then calls this.
 // ---------------------------------------------------------------------------
 
+/// Every actual Google Sheets cell write `apply_order_rows` asks its caller
+/// to make on its behalf - this function itself never talks to Google (see
+/// its own doc comment). Bundled into one struct, rather than a bigger tuple,
+/// specifically so most of this module's existing tests (which only care
+/// about `SheetSyncResult`, not what got written back to the sheet) keep
+/// destructuring `apply_order_rows`'s result as a plain 2-tuple unchanged -
+/// only the handful that actually inspect `.markers` needed updating for
+/// 2.0.42's new `price_corrections` field.
+#[derive(Debug, Default)]
+struct RowWriteBacks {
+    /// (0-based data row index, "TIQR ID" marker value to write) - created
+    /// for every row this call turned into a real order, same as every
+    /// version before 2.0.42.
+    markers: Vec<(usize, String)>,
+    /// (0-based data row index, 0-based column index, new cell text) - one
+    /// entry per sheet cell `reconcile_order_pricing` decided to correct on
+    /// an otherwise-successful row (2.0.42) - see that function's own doc
+    /// comment. Never populated for a row that ends up in `errors` instead;
+    /// correcting a cell on a row that wasn't actually saved would be
+    /// exactly the "writing nonsense" marko explicitly didn't want.
+    price_corrections: Vec<(usize, usize, String)>,
+}
+
 /// Applies already-fetched sheet rows, creating a new Order (with its
 /// Tickets) for every row that doesn't yet carry a "TIQR ID" marker. A row
 /// that already carries one is left alone entirely - v1 is creation-only
 /// (see this module's doc comment), so nothing on that row is even parsed,
 /// and no platform/event is auto-created on its behalf. Returns the
-/// user-facing result summary plus the list of (0-based data row index,
-/// marker value to write) pairs the caller still needs to write back to the
-/// actual sheet - this function itself never talks to Google.
+/// user-facing result summary plus every sheet cell write the caller still
+/// needs to make on the actual sheet - this function itself never talks to
+/// Google.
 fn apply_order_rows(
     conn: &Connection,
     headers: &[String],
     data_rows: &[Vec<String>],
     connection_currency: &str,
     marker_col_index: usize,
-) -> AppResult<(SheetSyncResult, Vec<(usize, String)>)> {
+) -> AppResult<(SheetSyncResult, RowWriteBacks)> {
     let map = build_header_map(headers);
     check_required_headers(&map)?;
 
@@ -350,9 +574,10 @@ fn apply_order_rows(
         unchanged: 0,
         conflicts: vec![],
         errors: vec![],
+        corrected: vec![],
         synced_at: String::new(),
     };
-    let mut marker_writes = vec![];
+    let mut writes = RowWriteBacks::default();
 
     for (i, raw_row) in data_rows.iter().enumerate() {
         let row_number = (i + 2) as i64; // header is sheet row 1
@@ -409,43 +634,56 @@ fn apply_order_rows(
             }
         };
 
-        let unit_price_cents: Option<i64> = match unit_price_raw.as_deref().map(parse_decimal_to_cents) {
-            Some(Ok(v)) if v >= 0 => Some(v),
-            Some(Ok(_)) => {
-                row_errors.push("'Price Per Ticket' cannot be negative".to_string());
-                None
-            }
-            Some(Err(e)) => {
-                row_errors.push(format!("'Price Per Ticket': {e}"));
-                None
-            }
-            None => {
+        // 2.0.42: 'Price Per Ticket' and (optional) 'Total Purchase Price'
+        // are reconciled together rather than validated independently - see
+        // this section's own "automatic reconciliation" doc comment above
+        // `rounding_tolerance_cents` for marko's real request and the exact
+        // rule this now applies. A small, honestly-explainable gap between
+        // the two (or a 'Price Per Ticket' with more than 2 decimals) is
+        // corrected automatically and reported via `correction_note`/the two
+        // `*_correction_text` variables below; anything bigger still hard-
+        // errors into `row_errors`, exactly like every version before this.
+        let total_price_raw = cell(raw_row, total_price_col);
+        let mut correction_note: Option<String> = None;
+        let mut unit_price_correction_text: Option<String> = None;
+        let mut total_price_correction_text: Option<String> = None;
+
+        let unit_price_cents: Option<i64> = match (unit_price_raw.as_deref(), quantity) {
+            (None, _) => {
                 row_errors.push("missing 'Price Per Ticket' value".to_string());
                 None
             }
-        };
-
-        // Total Purchase Price is optional, but when present it must agree
-        // with Number of Tickets x Price Per Ticket exactly - marko fills in
-        // both independently, so a mismatch is almost always a typo in one
-        // of the three, and this app's own "never guess, stop and report"
-        // rule for money (see money.rs's module doc comment) says to surface
-        // it rather than silently trusting one number over the other.
-        if let (Some(total_raw), Some(q), Some(unit)) = (cell(raw_row, total_price_col), quantity, unit_price_cents) {
-            match parse_decimal_to_cents(&total_raw) {
-                Ok(total_cents) => {
-                    let expected = unit * q;
-                    if total_cents != expected {
-                        row_errors.push(format!(
-                            "'Total Purchase Price' ({}) does not match Number of Tickets x Price Per Ticket ({}) - check these values",
-                            format_cents(total_cents),
-                            format_cents(expected)
-                        ));
+            (Some(raw), None) => {
+                // Quantity itself is already invalid/missing (reported
+                // above) - nothing sensible to reconcile without it, so this
+                // falls back to a plain strict parse (still needed so an
+                // obviously-broken 'Price Per Ticket' is reported too, not
+                // masked by the quantity error alone).
+                match parse_decimal_to_cents(raw) {
+                    Ok(v) if v >= 0 => Some(v),
+                    Ok(_) => {
+                        row_errors.push("'Price Per Ticket' cannot be negative".to_string());
+                        None
+                    }
+                    Err(e) => {
+                        row_errors.push(format!("'Price Per Ticket': {e}"));
+                        None
                     }
                 }
-                Err(e) => row_errors.push(format!("'Total Purchase Price': {e}")),
             }
-        }
+            (Some(raw), Some(q)) => match reconcile_order_pricing(raw, total_price_raw.as_deref(), q) {
+                Ok(outcome) => {
+                    correction_note = outcome.note;
+                    unit_price_correction_text = outcome.corrected_unit_price_text;
+                    total_price_correction_text = outcome.corrected_total_price_text;
+                    Some(outcome.unit_price_cents)
+                }
+                Err(e) => {
+                    row_errors.push(e);
+                    None
+                }
+            },
+        };
 
         let currency = match cell(raw_row, currency_col) {
             Some(c) => {
@@ -563,7 +801,20 @@ fn apply_order_rows(
                     params![order_id, code, now],
                 )?;
                 result.created += 1;
-                marker_writes.push((i, code));
+                writes.markers.push((i, code));
+                // 2.0.42: only reported/written back now that the row is
+                // confirmed saved - see RowWriteBacks.price_corrections' own
+                // doc comment for why a row that instead ended up in
+                // `result.errors` must never reach here.
+                if let Some(note) = correction_note {
+                    result.corrected.push(SheetSyncIssue { row_number, message: note });
+                }
+                if let (Some(text), Some(col)) = (unit_price_correction_text, unit_price_col) {
+                    writes.price_corrections.push((i, col, text));
+                }
+                if let (Some(text), Some(col)) = (total_price_correction_text, total_price_col) {
+                    writes.price_corrections.push((i, col, text));
+                }
             }
             Err(e) => {
                 result.errors.push(SheetSyncIssue { row_number, message: e.to_string() });
@@ -571,7 +822,7 @@ fn apply_order_rows(
         }
     }
 
-    Ok((result, marker_writes))
+    Ok((result, writes))
 }
 
 // ---------------------------------------------------------------------------
@@ -607,15 +858,31 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
-    let (mut result, marker_writes) = apply_order_rows(conn, &headers, data_rows, &connection.currency, marker_col_index)?;
+    let (mut result, writes) = apply_order_rows(conn, &headers, data_rows, &connection.currency, marker_col_index)?;
 
-    for (row_idx, marker_value) in marker_writes {
+    for (row_idx, marker_value) in writes.markers {
         let sheet_row_number = (row_idx + 2) as i64;
         let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{letter}{sheet_row_number}"));
         if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![marker_value]]) {
             result.errors.push(SheetSyncIssue {
                 row_number: sheet_row_number,
                 message: format!("saved in the app, but could not write its ID back to the sheet: {e}"),
+            });
+        }
+    }
+
+    // 2.0.42: writes back whatever `reconcile_order_pricing` decided to
+    // auto-correct (see apply_order_rows/RowWriteBacks) - plain text, same
+    // as the marker write-back just above, never a formula (these cells are
+    // marko's own typed data, not computed ones).
+    for (row_idx, col_index, new_value) in writes.price_corrections {
+        let sheet_row_number = (row_idx + 2) as i64;
+        let corrected_letter = column_index_to_a1(col_index);
+        let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{corrected_letter}{sheet_row_number}"));
+        if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![new_value]]) {
+            result.errors.push(SheetSyncIssue {
+                row_number: sheet_row_number,
+                message: format!("saved in the app with a corrected price, but the sheet's own cell could not be updated: {e}"),
             });
         }
     }
@@ -778,7 +1045,7 @@ fn apply_order_push(
     check_required_headers(&map)?;
 
     let mut result =
-        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], corrected: vec![], synced_at: String::new() };
     let mut append_rows = vec![];
 
     let orders: Vec<OrderForPush> = {
@@ -960,7 +1227,7 @@ fn apply_sales_rows(
     let how_much_pull_col = find_col(&map, &["how much pull"]);
 
     let mut result =
-        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], corrected: vec![], synced_at: String::new() };
 
     for (i, raw_row) in data_rows.iter().enumerate() {
         let row_number = (i + 2) as i64;
@@ -1486,7 +1753,7 @@ fn apply_sales_push(
     }
 
     let mut result =
-        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], synced_at: String::new() };
+        SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], corrected: vec![], synced_at: String::new() };
     let mut writes: Vec<(i64, Vec<(usize, String)>)> = vec![];
 
     let links: Vec<(i64, String)> = {
@@ -1764,6 +2031,18 @@ const COLOR_BROWN: (f64, f64, f64) = (0.82, 0.70, 0.55);
 /// cover rows that actually have data.
 const DROPDOWN_ROW_BUFFER: i64 = 500;
 
+/// 2.0.42: the row bound used by the Summary block's Total Paid/Total Unpaid
+/// formulas (`plan_orders_summary_updates`), which need SUMPRODUCT rather
+/// than a true whole-column reference like `C:C` - see that function's own
+/// doc comment for why. Unlike SUM/SUMIF (which skip past empty trailing
+/// cells cheaply), SUMPRODUCT is a real array function that materializes
+/// its whole argument, so a genuine whole-column SUMPRODUCT can be
+/// meaningfully slower on a large sheet. 100,000 rows is nowhere close to
+/// anything marko's real sheet will ever hold (its default grid is ~1,000
+/// rows - see `grow_grid_request_if_needed`'s own history) while still
+/// being effectively "cover everything he could ever type here".
+const SUMPRODUCT_ROW_BOUND: i64 = 100_000;
+
 /// `Sale.platform_id`'s own name pool, filtered to platforms that can
 /// actually be a SALE platform (`kind IN ('sale','both')`) - the exact same
 /// filter the Sales screen's own platform picker already uses, and the same
@@ -1986,7 +2265,7 @@ struct OrdersSummarySpec {
 /// | col+0 | col+1 | col+2 | col+3 | col+4 | col+5 |
 /// |---|---|---|---|---|---|
 /// | Summary | (total cost) | Summary-Paid | (total paid) | Summary-Unpaid | (total unpaid) |
-/// | Total Cost | =SUM(total purchase price) | Total Paid | =SUMIF(...,"Paid",...) | Total Unpaid | =SUM(revenue)-SUMIF(...,"Paid",...) |
+/// | Total Cost | =SUM(total purchase price) | Total Paid | =SUMPRODUCT((status="Paid")*revenue) | Total Unpaid | =SUM(revenue)-SUMPRODUCT((status="Paid")*revenue) |
 /// | Total Revenue | =SUM(revenue) | | | | |
 /// | Total Profit | =SUM(profit) | | | | |
 ///
@@ -2012,6 +2291,30 @@ struct OrdersSummarySpec {
 /// "Total Unpaid" is instead `total revenue - whatever is marked Paid`,
 /// which correctly means "everything not yet paid" regardless of whether a
 /// not-yet-paid row is blank or literally "Pending".
+///
+/// **2.0.42: "Total Paid"/"Total Unpaid" use `SUMPRODUCT`, not `SUMIF`,
+/// deliberately.** The original `SUMIF(status:status,"Paid",revenue:revenue)`
+/// produced `#ERROR!` on marko's real sheet - Google Sheets' function
+/// argument separator is tied to the spreadsheet's own locale: comma-decimal
+/// locales (Slovak among them - his own screenshots show "3488,06") require
+/// `;` between a function's arguments instead of `,`, since `,` is already
+/// the decimal point there. This app has no reliable way to know a
+/// connected spreadsheet's locale (only its 3-letter currency CODE, which is
+/// a completely different setting - see `bold_header_request`'s own doc
+/// comment for the currency-formatting side of this same lesson), so rather
+/// than guess at `,` vs `;`, this is written as `SUMPRODUCT((status_range=
+/// "Paid")*revenue_range)` - ONE array-expression argument, built with `*`
+/// and `=` (plain operators, never locale-sensitive), so there is no
+/// function-argument separator anywhere in it to get wrong, for any locale.
+/// Ranges are bounded to `SUMPRODUCT_ROW_BOUND` rows rather than a true
+/// whole-column reference like the other 3 (SUM-based, still whole-column
+/// and untouched by this fix) formulas above - see that constant's own
+/// comment for why. Deliberately starts at row 2 (never row 1): unlike
+/// `SUM`/`SUMIF`, which silently ignore non-numeric cells, `SUMPRODUCT`
+/// multiplies its arrays elementwise BEFORE summing, and the header row's
+/// own text (e.g. "Revenue") in a numeric range makes the whole calculation
+/// error out - even on the elements where the paired condition is FALSE,
+/// since both arrays are evaluated in full rather than short-circuited.
 fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> {
     let map = build_header_map(headers);
     let how_much_pull_col = find_col(&map, &["how much pull"])?;
@@ -2026,15 +2329,16 @@ fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> 
     let payout_status_letter = column_index_to_a1(payout_status_col);
 
     let start_col = how_much_pull_col + 3;
+    let bound = SUMPRODUCT_ROW_BOUND;
 
     let cost_formula = format!("=SUM({total_letter}:{total_letter})");
     let revenue_formula = format!("=SUM({revenue_letter}:{revenue_letter})");
     let profit_formula = format!("=SUM({profit_letter}:{profit_letter})");
-    let paid_formula =
-        format!("=SUMIF({payout_status_letter}:{payout_status_letter},\"Paid\",{revenue_letter}:{revenue_letter})");
-    let unpaid_formula = format!(
-        "=SUM({revenue_letter}:{revenue_letter})-SUMIF({payout_status_letter}:{payout_status_letter},\"Paid\",{revenue_letter}:{revenue_letter})"
+    let paid_sumproduct = format!(
+        "SUMPRODUCT(({payout_status_letter}2:{payout_status_letter}{bound}=\"Paid\")*{revenue_letter}2:{revenue_letter}{bound})"
     );
+    let paid_formula = format!("={paid_sumproduct}");
+    let unpaid_formula = format!("=SUM({revenue_letter}:{revenue_letter})-{paid_sumproduct}");
 
     Some(OrdersSummarySpec {
         text_columns: vec![
@@ -2071,11 +2375,14 @@ fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> 
 /// all. Pure (no network, no `conn`) specifically so it can be tested
 /// directly, unlike `ensure_orders_sheet_structure` itself below - see that
 /// function's own comment on `grow_grid_request_if_needed` for why this
-/// number matters. `summary`'s FORMULA columns are included here even though
-/// only its TEXT columns ever get a `bold_header_request` (repeatCell) -
-/// those formula columns are written separately via `values.*`, which likely
-/// grows the grid on its own, but including them here up front makes the
-/// whole block correct regardless of whether that is actually true.
+/// number matters. `summary`'s FORMULA columns are included here alongside
+/// its TEXT columns - originally (2.0.41) only the text columns got a real
+/// `repeatCell` request (`bold_header_request`) here, with formula columns
+/// written separately via `values.*` (which grows the grid on its own), so
+/// including them was a "make this correct regardless" precaution rather
+/// than a known-necessary one. 2.0.42 removed that ambiguity: formula
+/// columns now also get their own `repeatCell` request here (`currency_
+/// number_format_request`), so this is load-bearing, not just defensive.
 fn widest_referenced_column(dropdowns: &[DropdownSpec], colors: &[ColorSpec], summary: &Option<OrdersSummarySpec>) -> Option<usize> {
     [
         dropdowns.iter().map(|d| d.col_index).max(),
@@ -2155,11 +2462,22 @@ fn ensure_orders_sheet_structure(
 
         if let Some(spec) = &summary {
             // Bold+background on row 1 of each of the block's 3 label
-            // columns only (Summary/Summary-Paid/Summary-Unpaid) - never the
-            // formula columns next to them, same "style the label, not the
-            // number" choice pulls_sheet_sync makes for Total price (€).
+            // columns only (Summary/Summary-Paid/Summary-Unpaid) - the
+            // formula columns next to them get their own, different
+            // treatment right below (EUR currency formatting on the actual
+            // number cells, never bold/background - same "style the label,
+            // the number looks like money" split pulls_sheet_sync now makes
+            // for Total price (€), see that module's own call site).
             for col in &spec.text_columns {
                 requests.push(google_sheets::bold_header_request(sheet_id, 0, 1, col.col_index as i64, Some(SUMMARY_HEADER_BACKGROUND)));
+            }
+            // 2.0.42: row 0 of every formula column is always the blank
+            // placeholder next to the label row (see plan_orders_summary_
+            // updates's own layout table) - `col.values.len()` is exactly
+            // how many rows this column actually writes, so starting at 1
+            // covers every real number cell and nothing past it.
+            for col in &spec.formula_columns {
+                requests.push(google_sheets::currency_number_format_request(sheet_id, 1, col.values.len() as i64, col.col_index as i64));
             }
         }
 
@@ -2252,6 +2570,7 @@ fn setup_orders_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         unchanged: 0,
         conflicts: vec![],
         errors: vec![],
+        corrected: vec![],
         synced_at: String::new(),
     };
 
@@ -2412,9 +2731,10 @@ mod tests {
         assert_eq!(result.created, 1);
         assert_eq!(result.updated, 0);
         assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].0, 0);
-        assert!(writes[0].1.starts_with("ORD-"));
+        assert_eq!(writes.markers.len(), 1);
+        assert_eq!(writes.markers[0].0, 0);
+        assert!(writes.markers[0].1.starts_with("ORD-"));
+        assert!(writes.price_corrections.is_empty(), "a clean row must never trigger a price correction");
 
         let order_count: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
         assert_eq!(order_count, 1);
@@ -2508,6 +2828,178 @@ mod tests {
         assert_eq!(result.errors.len(), 0);
     }
 
+    // ---- 2.0.42: automatic reconciliation of automated-order pricing ------
+    // marko's own real request (a sync result screenshot, 4 skipped rows):
+    // small Total Purchase Price gaps and over-precise Price Per Ticket
+    // values must be auto-corrected, never treated as an error he has to
+    // fix by hand - but a gap too big to be honest rounding must still be
+    // rejected ("nemoze tam napisat hlupost, musi to davat zmysel"). See
+    // rounding_tolerance_cents/reconcile_order_pricing's own doc comments.
+
+    #[test]
+    fn rounding_tolerance_cents_is_half_the_quantity_rounded_up() {
+        assert_eq!(rounding_tolerance_cents(1), 1);
+        assert_eq!(rounding_tolerance_cents(2), 1);
+        assert_eq!(rounding_tolerance_cents(3), 2);
+        assert_eq!(rounding_tolerance_cents(4), 2);
+        assert_eq!(rounding_tolerance_cents(5), 3);
+        assert_eq!(rounding_tolerance_cents(10), 5);
+    }
+
+    #[test]
+    fn derive_unit_price_from_total_matches_markos_own_real_example() {
+        // 386.73 / 4 tickets - the exact numbers from marko's own screenshot
+        // (a Price Per Ticket cell rejected for 4 decimal places, 96.6825).
+        assert_eq!(derive_unit_price_from_total(38673, 4), 9668);
+    }
+
+    #[test]
+    fn derive_unit_price_from_total_rounds_half_up_and_handles_exact_division() {
+        assert_eq!(derive_unit_price_from_total(12500, 2), 6250, "exact division needs no rounding");
+        assert_eq!(derive_unit_price_from_total(101, 2), 51, "50.5 cents exactly - a real tie, rounds up per round-half-up");
+        assert_eq!(derive_unit_price_from_total(10000, 3), 3333, "33.333... rounds down");
+        assert_eq!(derive_unit_price_from_total(20000, 3), 6667, "66.667 rounds up");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_leaves_an_exact_match_untouched() {
+        let outcome = reconcile_order_pricing("50.00", Some("100.00"), 2).unwrap();
+        assert_eq!(outcome.unit_price_cents, 5000);
+        assert!(outcome.corrected_unit_price_text.is_none());
+        assert!(outcome.corrected_total_price_text.is_none());
+        assert!(outcome.note.is_none());
+    }
+
+    #[test]
+    fn reconcile_order_pricing_is_fine_with_no_total_purchase_price_at_all() {
+        let outcome = reconcile_order_pricing("50.00", None, 2).unwrap();
+        assert_eq!(outcome.unit_price_cents, 5000);
+        assert!(outcome.note.is_none());
+    }
+
+    #[test]
+    fn reconcile_order_pricing_corrects_a_total_purchase_price_gap_exactly_at_the_tolerance_boundary() {
+        // quantity 2 -> tolerance 1 cent - a 1-cent gap must be corrected.
+        let outcome = reconcile_order_pricing("50.00", Some("100.01"), 2).unwrap();
+        assert_eq!(outcome.unit_price_cents, 5000, "Price Per Ticket itself is untouched - it was the clean value");
+        assert!(outcome.corrected_unit_price_text.is_none());
+        assert_eq!(outcome.corrected_total_price_text, Some("100.00".to_string()));
+        assert!(outcome.note.unwrap().contains("Total Purchase Price"));
+    }
+
+    #[test]
+    fn reconcile_order_pricing_rejects_a_total_purchase_price_gap_one_cent_past_the_tolerance_boundary() {
+        // Same setup as the boundary-accepted test above, but 2 cents off
+        // instead of 1 - tolerance for quantity 2 is exactly 1 cent.
+        let err = reconcile_order_pricing("50.00", Some("100.02"), 2).unwrap_err();
+        assert!(err.contains("Total Purchase Price"), "{err}");
+        assert!(err.contains("does not match"), "{err}");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_corrects_markos_own_real_small_gap_example() {
+        // marko's own screenshot: Total Purchase Price 337.10 vs a computed
+        // 337.12 - a 2-cent gap, exactly this app's own tolerance for a
+        // 4-ticket order ((4+1)/2 = 2).
+        let outcome = reconcile_order_pricing("84.28", Some("337.10"), 4).unwrap();
+        assert_eq!(outcome.unit_price_cents, 8428);
+        assert_eq!(outcome.corrected_total_price_text, Some("337.12".to_string()));
+    }
+
+    #[test]
+    fn reconcile_order_pricing_still_rejects_markos_own_real_large_gap_example() {
+        // marko's own screenshot: Total Purchase Price 401.99 vs a computed
+        // 399.00 - a ~299-cent gap, nowhere close to being explainable by
+        // rounding. Must still hard-error exactly like every version before
+        // 2.0.42 - this is the "musi davat zmysel" guarantee as an actual
+        // test, not just a design note.
+        let err = reconcile_order_pricing("399.00", Some("401.99"), 1).unwrap_err();
+        assert!(err.contains("Total Purchase Price"), "{err}");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_derives_an_over_precise_price_per_ticket_from_total_purchase_price() {
+        // marko's own screenshot: Price Per Ticket "96.6825" (4 decimals,
+        // his automation's Total/Quantity division not landing on a cent).
+        let outcome = reconcile_order_pricing("96.6825", Some("386.73"), 4).unwrap();
+        assert_eq!(outcome.unit_price_cents, 9668);
+        assert_eq!(outcome.corrected_unit_price_text, Some("96.68".to_string()));
+        assert!(outcome.corrected_total_price_text.is_none(), "Total Purchase Price was already clean - must be left alone");
+        let note = outcome.note.unwrap();
+        assert!(note.contains("Price Per Ticket"), "{note}");
+        assert!(note.contains("more than 2 decimal"), "{note}");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_rounds_an_over_precise_price_per_ticket_with_no_total_purchase_price_to_derive_from() {
+        let outcome = reconcile_order_pricing("96.6825", None, 4).unwrap();
+        assert_eq!(outcome.unit_price_cents, 9668);
+        assert_eq!(outcome.corrected_unit_price_text, Some("96.68".to_string()));
+        assert!(outcome.note.unwrap().contains("rounded to"));
+    }
+
+    #[test]
+    fn reconcile_order_pricing_still_rejects_a_negative_price_per_ticket() {
+        assert_eq!(reconcile_order_pricing("-5.00", None, 1).unwrap_err(), "'Price Per Ticket' cannot be negative");
+        assert_eq!(reconcile_order_pricing("-5.00", Some("10.00"), 2).unwrap_err(), "'Price Per Ticket' cannot be negative");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_still_rejects_genuinely_invalid_price_per_ticket_text() {
+        let err = reconcile_order_pricing("abc", None, 1).unwrap_err();
+        assert!(err.contains("Price Per Ticket"), "{err}");
+    }
+
+    #[test]
+    fn reconcile_order_pricing_still_rejects_a_malformed_total_purchase_price() {
+        let err = reconcile_order_pricing("50.00", Some("abc"), 2).unwrap_err();
+        assert!(err.contains("Total Purchase Price"), "{err}");
+    }
+
+    #[test]
+    fn a_small_total_purchase_price_gap_creates_the_order_and_is_reported_as_corrected_not_an_error() {
+        let conn = test_conn();
+        let mut cells = sample_row("");
+        cells[7] = "100.01".to_string(); // 1 cent off 2 x 50.00 - within tolerance for quantity 2
+        let (result, writes) = apply_order_rows(&conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
+        assert_eq!(result.corrected.len(), 1);
+        assert!(result.corrected[0].message.contains("Total Purchase Price"), "{}", result.corrected[0].message);
+        assert_eq!(writes.price_corrections, vec![(0, 7, "100.00".to_string())], "column 7 is Total Purchase Price in full_headers()");
+    }
+
+    #[test]
+    fn an_over_precise_price_per_ticket_creates_the_order_with_the_derived_price() {
+        let conn = test_conn();
+        let mut cells = sample_row("");
+        cells[5] = "".to_string(); // Seats - blanked, sample_row's default 2 labels won't match 4 tickets
+        cells[8] = "4".to_string(); // Number of Tickets
+        cells[9] = "96.6825".to_string(); // Price Per Ticket
+        cells[7] = "386.73".to_string(); // Total Purchase Price
+        let (result, writes) = apply_order_rows(&conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
+        assert_eq!(result.corrected.len(), 1);
+        assert_eq!(writes.price_corrections, vec![(0, 9, "96.68".to_string())], "column 9 is Price Per Ticket in full_headers()");
+        let unit_price_cents: i64 = conn.query_row("SELECT unit_price_cents FROM orders WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(unit_price_cents, 9668, "the order itself must be saved with the corrected price, not the raw over-precise text");
+    }
+
+    #[test]
+    fn a_too_large_total_purchase_price_gap_still_skips_the_row_and_corrects_nothing() {
+        let conn = test_conn();
+        let mut cells = sample_row("");
+        cells[7] = "100.02".to_string(); // 2 cents off - one past tolerance for quantity 2
+        let (result, writes) = apply_order_rows(&conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.created, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.corrected.is_empty(), "a skipped row must never also be reported as corrected");
+        assert!(writes.price_corrections.is_empty(), "a skipped row must never have anything written back to the sheet");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
     #[test]
     fn blank_currency_cell_falls_back_to_the_connection_currency() {
         let conn = test_conn();
@@ -2594,7 +3086,7 @@ mod tests {
         let (result, writes) = apply_order_rows(&conn, &full_headers(), &[blank], "EUR", MARKER_COL).unwrap();
         assert_eq!(result.created, 0);
         assert_eq!(result.errors.len(), 0);
-        assert!(writes.is_empty());
+        assert!(writes.markers.is_empty());
     }
 
     #[test]
@@ -2622,7 +3114,7 @@ mod tests {
         assert_eq!(result.created, 0);
         assert_eq!(result.unchanged, 1);
         assert_eq!(result.errors.len(), 0);
-        assert!(writes.is_empty());
+        assert!(writes.markers.is_empty());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "a row that already carries a marker must never be created again - v1 is creation-only");
     }
@@ -2810,7 +3302,7 @@ mod tests {
         cells[8] = quantity.to_string();
         cells.push(String::new());
         let (_, writes) = apply_order_rows(conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
-        writes[0].1.clone()
+        writes.markers[0].1.clone()
     }
 
     fn ticket_ids_for_order(conn: &Connection, order_code: &str) -> Vec<i64> {
@@ -3887,19 +4379,43 @@ mod tests {
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
         assert_eq!(text_col(&spec, 11), Some(&vec!["Summary-Paid".to_string(), "Total Paid".to_string()]));
         // Payout status=B, Revenue=D.
-        assert_eq!(formula_col(&spec, 12), Some(&vec![String::new(), "=SUMIF(B:B,\"Paid\",D:D)".to_string()]));
+        assert_eq!(
+            formula_col(&spec, 12),
+            Some(&vec![String::new(), "=SUMPRODUCT((B2:B100000=\"Paid\")*D2:D100000)".to_string()])
+        );
     }
 
     #[test]
     fn plan_orders_summary_updates_unpaid_is_total_revenue_minus_paid_never_a_literal_unpaid_match() {
         // The one deliberate correction vs. marko's own first draft - see
         // plan_orders_summary_updates's own doc comment for why a literal
-        // SUMIF(status,"Unpaid",...) would always be zero.
+        // match against the text "Unpaid" would always be zero.
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
         assert_eq!(text_col(&spec, 13), Some(&vec!["Summary-Unpaid".to_string(), "Total Unpaid".to_string()]));
         let unpaid = formula_col(&spec, 14).unwrap();
-        assert_eq!(unpaid[1], "=SUM(D:D)-SUMIF(B:B,\"Paid\",D:D)");
+        assert_eq!(unpaid[1], "=SUM(D:D)-SUMPRODUCT((B2:B100000=\"Paid\")*D2:D100000)");
         assert!(!unpaid[1].to_lowercase().contains("\"unpaid\""), "must never literally match the text Unpaid");
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_paid_and_unpaid_never_use_a_locale_sensitive_function_argument_separator() {
+        // 2.0.42 regression test for the real bug: SUMIF(a,b,c) broke as
+        // #ERROR! on marko's own comma-decimal-locale sheet, because Google
+        // Sheets parses a USER_ENTERED formula's function-argument separator
+        // per the spreadsheet's own locale (",", but ";" for comma-decimal
+        // locales like Slovak) - see plan_orders_summary_updates's own doc
+        // comment. SUMPRODUCT with a single array-expression argument has no
+        // function-argument separator at all, for any locale - this asserts
+        // that shape directly rather than just the exact formula text above,
+        // so a future edit that reintroduces a multi-argument SUMIF/SUMIFS
+        // here fails this test even if it changes the exact letters/bound.
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        let paid = &formula_col(&spec, 12).unwrap()[1];
+        let unpaid = &formula_col(&spec, 14).unwrap()[1];
+        for formula in [paid, unpaid] {
+            assert!(formula.contains("SUMPRODUCT"), "expected SUMPRODUCT in {formula}");
+            assert!(!formula.contains(",\"Paid\","), "must not contain a comma-separated SUMIF-style argument list: {formula}");
+        }
     }
 
     #[test]
@@ -3915,8 +4431,8 @@ mod tests {
         assert_eq!(formula_col(&spec, 28).unwrap()[1], "=SUM(H:H)");
         assert_eq!(formula_col(&spec, 28).unwrap()[2], "=SUM(P:P)");
         assert_eq!(formula_col(&spec, 28).unwrap()[3], "=SUM(Q:Q)");
-        assert_eq!(formula_col(&spec, 30).unwrap()[1], "=SUMIF(T:T,\"Paid\",P:P)");
-        assert_eq!(formula_col(&spec, 32).unwrap()[1], "=SUM(P:P)-SUMIF(T:T,\"Paid\",P:P)");
+        assert_eq!(formula_col(&spec, 30).unwrap()[1], "=SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
+        assert_eq!(formula_col(&spec, 32).unwrap()[1], "=SUM(P:P)-SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
     }
 
     #[test]

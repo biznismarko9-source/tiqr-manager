@@ -554,6 +554,7 @@ fn apply_pull_rows(
         unchanged: 0,
         conflicts: vec![],
         errors: vec![],
+        corrected: vec![],
         synced_at: String::new(),
     };
     let mut marker_writes = vec![];
@@ -871,6 +872,7 @@ fn apply_pull_push(
         unchanged: 0,
         conflicts: vec![],
         errors: vec![],
+        corrected: vec![],
         synced_at: String::new(),
     };
     let mut writes = vec![];
@@ -1497,6 +1499,17 @@ fn ensure_pulls_sheet_structure(
 
         if let Some(spec) = &total_price {
             requests.push(google_sheets::bold_header_request(sheet_id, 0, 1, spec.col_index as i64, Some(TOTAL_PRICE_HEADER_BACKGROUND)));
+            // 2.0.42: row 1 (sheet row 2) is where the actual SUM formula
+            // value lands - see this function's own write-back below
+            // (`formula_range` = `{letter}2`) - never row 0, which is the
+            // "Total price (€)" text label bold_header_request styles just
+            // above. marko's own request ("daj do eur" - set it to EUR) was
+            // made about commands::orders_sheet_sync's Summary block, but
+            // this cell has the exact same "looks like a bare number, not
+            // money" gap for the exact same reason - see google_sheets::
+            // currency_number_format_request's own doc comment for why this
+            // is now safe to do without knowing this connection's locale.
+            requests.push(google_sheets::currency_number_format_request(sheet_id, 1, 2, spec.col_index as i64));
         }
 
         if !requests.is_empty() {
@@ -1574,6 +1587,7 @@ fn setup_pulls_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         unchanged: 0,
         conflicts: vec![],
         errors: vec![],
+        corrected: vec![],
         synced_at: String::new(),
     };
 

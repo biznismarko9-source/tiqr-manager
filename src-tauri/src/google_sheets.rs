@@ -681,16 +681,14 @@ pub fn delete_conditional_format_rule_request(sheet_id: i64, index: i64) -> serd
 /// should always look this way, not only when it happens to equal some
 /// specific value.
 ///
-/// Deliberately does NOT also set a currency number format: that would need
-/// this app to know the connected spreadsheet's own locale (which decides
-/// whether "1234.5" reads as "1 234,50 €" or "1,234.50 €" once a currency
-/// pattern is applied), which nothing here currently tracks - only the
-/// connection's 3-letter currency CODE (EUR/USD/GBP) is known, not its
-/// locale. Guessing wrong would make the sheet look broken rather than
-/// simply plain, so this intentionally leaves these cells as plain numbers
-/// for now (still fully correct as formulas - see REDESIGN-2.0.40-REPORT.md
-/// for the plain "how to apply Sheets' own currency formatting yourself in
-/// 10 seconds" note to marko).
+/// Deliberately does NOT also set a currency number format - that's
+/// `currency_number_format_request` below, a separate `repeatCell` request,
+/// since it targets a different range within these widgets (the numbers
+/// themselves, not their labels - see each call site). 2.0.40 originally
+/// left currency formatting out entirely here on the theory that a correct
+/// pattern would need knowing the connected spreadsheet's own locale, which
+/// nothing here tracks - that turned out to be overly cautious; see
+/// `currency_number_format_request`'s own doc comment for the correction.
 pub fn bold_header_request(sheet_id: i64, start_row: i64, end_row: i64, col_index: i64, background: Option<(f64, f64, f64)>) -> serde_json::Value {
     let mut format = serde_json::json!({ "textFormat": { "bold": true } });
     if let Some((red, green, blue)) = background {
@@ -707,6 +705,48 @@ pub fn bold_header_request(sheet_id: i64, start_row: i64, end_row: i64, col_inde
             },
             "cell": { "userEnteredFormat": format },
             "fields": "userEnteredFormat(textFormat,backgroundColor)"
+        }
+    })
+}
+
+/// Builds one `repeatCell` request applying plain Euro currency display
+/// formatting to a vertical range - 2.0.42, for the same small summary
+/// "widgets" `bold_header_request` above styles (commands::pulls_sheet_sync's
+/// Total price, commands::orders_sheet_sync's Summary block) - see each call
+/// site for exactly which range within a widget this targets (always the
+/// number cells, never the label cells `bold_header_request` bolds).
+///
+/// `bold_header_request`'s own doc comment used to say a currency format
+/// here wasn't safe without knowing the connected spreadsheet's own locale -
+/// that turned out to be overly cautious. Per Google's own Sheets API
+/// documentation (see "Date and number formats"), a `numberFormat.pattern`
+/// string is a locale-INVARIANT pattern language: `,` always means "group
+/// here" and `.` always means "decimal point here" *in the pattern itself*,
+/// and Sheets renders that same pattern using whatever punctuation the
+/// spreadsheet's own locale actually uses - the exact pattern below reads as
+/// "1 234,50 €" on a Slovak-locale sheet and "1,234.50 €" on a US-locale one,
+/// with zero locale-detection needed on this app's part. The one exception
+/// is LITERAL characters embedded in a pattern (anything that isn't itself
+/// pattern grammar) - those are never translated, which is exactly why the
+/// "€" below always renders as "€": marko asked for EUR specifically ("daj
+/// do eur"), not "whatever currency my connection happens to be", so this is
+/// a fixed literal, not derived from the connection's own currency code.
+pub fn currency_number_format_request(sheet_id: i64, start_row: i64, end_row: i64, col_index: i64) -> serde_json::Value {
+    serde_json::json!({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": start_row,
+                "endRowIndex": end_row,
+                "startColumnIndex": col_index,
+                "endColumnIndex": col_index + 1
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": { "type": "CURRENCY", "pattern": "#,##0.00 €" }
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat"
         }
     })
 }
@@ -1404,6 +1444,94 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn bold_header_request_builds_the_exact_shape_google_documents() {
+        let req = bold_header_request(555, 0, 1, 27, Some((0.85, 0.88, 0.95)));
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": 555,
+                        "startRowIndex": 0,
+                        "endRowIndex": 1,
+                        "startColumnIndex": 27,
+                        "endColumnIndex": 28
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "textFormat": { "bold": true },
+                            "backgroundColor": { "red": 0.85, "green": 0.88, "blue": 0.95 }
+                        }
+                    },
+                    "fields": "userEnteredFormat(textFormat,backgroundColor)"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn bold_header_request_omits_background_color_entirely_when_none_is_given() {
+        let req = bold_header_request(555, 0, 1, 27, None);
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": 555,
+                        "startRowIndex": 0,
+                        "endRowIndex": 1,
+                        "startColumnIndex": 27,
+                        "endColumnIndex": 28
+                    },
+                    "cell": { "userEnteredFormat": { "textFormat": { "bold": true } } },
+                    "fields": "userEnteredFormat(textFormat,backgroundColor)"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn currency_number_format_request_builds_the_exact_shape_google_documents() {
+        let req = currency_number_format_request(555, 1, 4, 28);
+        assert_eq!(
+            req,
+            serde_json::json!({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": 555,
+                        "startRowIndex": 1,
+                        "endRowIndex": 4,
+                        "startColumnIndex": 28,
+                        "endColumnIndex": 29
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": { "type": "CURRENCY", "pattern": "#,##0.00 €" }
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn currency_number_format_request_pattern_uses_only_locale_invariant_grouping_and_decimal_tokens() {
+        // 2.0.42: the whole point of this pattern (see its own doc comment)
+        // is that "," and "." in a numberFormat pattern are pattern-grammar
+        // tokens, not literal punctuation - Sheets renders them per the
+        // spreadsheet's own locale. The only literal character allowed in
+        // this pattern is the currency symbol itself and the space next to
+        // it - if this ever grows a second literal character (e.g. someone
+        // "fixes" it to hardcode a thousands separator), that would silently
+        // reintroduce the exact class of bug this version fixed.
+        let req = currency_number_format_request(1, 0, 1, 0);
+        let pattern = req["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"].as_str().unwrap();
+        assert_eq!(pattern, "#,##0.00 €");
+        assert_eq!(pattern.matches('€').count(), 1);
     }
 
     #[test]

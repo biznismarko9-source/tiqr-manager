@@ -765,5 +765,10 @@ export interface SheetSyncResult {
   unchanged: number;
   conflicts: SheetSyncIssue[];
   errors: SheetSyncIssue[];
+  /** 2.0.42: rows saved successfully after the app auto-corrected a small,
+   * sensible pricing gap (Total Purchase Price vs Number of Tickets x Price
+   * Per Ticket, or an over-precise Price Per Ticket) - never a row that was
+   * skipped. Always empty outside Orders sync. */
+  corrected: SheetSyncIssue[];
   syncedAt: string;
 }

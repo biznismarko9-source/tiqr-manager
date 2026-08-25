@@ -1110,5 +1110,15 @@ pub struct SheetSyncResult {
     pub unchanged: i64,
     pub conflicts: Vec<SheetSyncIssue>,
     pub errors: Vec<SheetSyncIssue>,
+    /// 2.0.42: rows that were NOT skipped and NOT flagged as a conflict -
+    /// they were saved successfully, but only after
+    /// commands::orders_sheet_sync::reconcile_order_pricing corrected a
+    /// small, sensible-to-explain gap in their pricing (see that function's
+    /// own doc comment). Always empty for every sync/push path other than
+    /// Orders sync - kept on this shared struct rather than a second,
+    /// Orders-only result type, same reasoning as this struct's own doc
+    /// comment above for why `SheetSyncIssue`/`SheetSyncResult` are shared
+    /// verbatim in the first place.
+    pub corrected: Vec<SheetSyncIssue>,
     pub synced_at: String,
 }
