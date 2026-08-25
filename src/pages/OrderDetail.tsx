@@ -10,7 +10,7 @@ import type {
   PullReceived,
   Ticket,
 } from "../lib/types";
-import { decimalStringToCents, formatDate, formatMoney, formatSeatLocation } from "../lib/format";
+import { decimalStringToCents, formatDate, formatDateNumeric, formatMoney, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
@@ -76,6 +76,11 @@ export default function OrderDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // 2.0.51: "Convert to EUR" next to the Currency field, for an order
+  // already created in another currency (manually, via CSV, or via Sheets
+  // sync - see api.convertOrderCurrency's own doc comment).
+  const [convertOpen, setConvertOpen] = useState(false);
+  const [converting, setConverting] = useState(false);
   const [editTicket, setEditTicket] = useState<Ticket | null>(null);
   // 1.8.3: bulk ticket actions.
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -239,7 +244,24 @@ export default function OrderDetail() {
         </div>
         <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
-          <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
+          <div className="mt-1 flex items-center gap-2">
+            <p className="text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
+            {/* 2.0.51: marko's own follow-up to 2.0.50 - that version only
+                let a NEW order's currency be converted at creation time; this
+                lets an already-created order (manual, CSV, or Sheets sync)
+                be converted too, for any currency the order might be in, not
+                just GBP. Only shown once there's actually something to
+                convert. */}
+            {order.currency !== "EUR" && (
+              <button
+                type="button"
+                className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                onClick={() => setConvertOpen(true)}
+              >
+                Convert to EUR
+              </button>
+            )}
+          </div>
         </div>
       </Card>
 
@@ -532,6 +554,38 @@ export default function OrderDetail() {
             setConfirmDelete(false);
           } finally {
             setDeleting(false);
+          }
+        }}
+      />
+
+      {/* 2.0.51: see the Currency card's "Convert to EUR" button above. The
+          exact converted amounts aren't known until the live rate is
+          actually fetched (on confirm), so this dialog explains what WILL
+          happen rather than previewing numbers - same reasoning as why
+          2.0.50's New Order version only shows the rate after the click. */}
+      <ConfirmDialog
+        open={convertOpen}
+        title="Convert this order to EUR?"
+        message={`Fetches today's live ${order.currency} → EUR rate and converts this order's amounts, every one of its tickets, and every sale on those tickets (including refunded/historical ones) to EUR, so the numbers stay consistent everywhere. This cannot be undone.`}
+        confirmLabel="Convert to EUR"
+        danger
+        busy={converting}
+        onCancel={() => setConvertOpen(false)}
+        onConfirm={async () => {
+          setConverting(true);
+          try {
+            const result = await api.convertOrderCurrency(orderId);
+            setConvertOpen(false);
+            const { rate, rateDate, ticketsConverted, salesConverted } = result.conversion;
+            const salesPart = salesConverted > 0 ? ` and ${salesConverted} sale${salesConverted === 1 ? "" : "s"}` : "";
+            toast.success(
+              `Converted to EUR at ${rate.toFixed(4)} (${formatDateNumeric(rateDate)}) - ${ticketsConverted} ticket${ticketsConverted === 1 ? "" : "s"}${salesPart} updated.`
+            );
+            load();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setConverting(false);
           }
         }}
       />

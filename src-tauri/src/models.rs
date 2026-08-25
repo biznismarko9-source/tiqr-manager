@@ -365,6 +365,56 @@ pub struct OrderEditInput {
     pub notes: Option<String>,
 }
 
+/// Result of converting one EXISTING order's currency to EUR (2.0.51) - see
+/// `commands::orders::convert_order_currency_impl` for the actual atomic
+/// ticket+sale+order conversion this reports on. Unlike 2.0.50's
+/// `CurrencyConversion` (a stateless "here's what these numbers would become"
+/// preview for the New Order form, nothing saved yet), this always describes
+/// a conversion that has ALREADY been committed to the database by the time
+/// it's returned - `ticketsConverted`/`salesConverted` are real counts of
+/// rows actually rewritten, not an estimate.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderCurrencyConversion {
+    pub order_id: i64,
+    pub order_code: String,
+    pub from_currency: String,
+    pub to_currency: String,
+    pub rate: f64,
+    pub rate_date: String,
+    pub tickets_converted: i64,
+    pub sales_converted: i64,
+}
+
+/// What the single-order `convert_order_currency` command returns - the
+/// summary above, plus the order's own freshly-refetched record, so Order
+/// Detail can update its Currency/cost fields immediately without a second
+/// round trip.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderCurrencyConversionResult {
+    pub order: Order,
+    pub conversion: OrderCurrencyConversion,
+}
+
+/// Result of the bulk "Convert to EUR" action on the Dashboard's
+/// mixed-currency banner (2.0.51) - every order actually converted, plus any
+/// that were skipped and why. Reuses `BulkDeleteSkip`'s existing `{id,
+/// reason}` shape (same convention as every other bulk action in this app)
+/// rather than a new, near-identical type. Conversion judges each order on
+/// its own merits and commits everything safe in its own transaction, same
+/// per-item philosophy as `bulk_delete_orders_impl` - see `BulkDeleteResult`'s
+/// doc comment above for the full reasoning. A skip here should be rare (see
+/// `convert_order_currency_impl`'s own currency-consistency guard and the
+/// per-currency rate-fetch failure path), but the shape stays honest about
+/// partial success rather than silently stopping at the first problem.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkCurrencyConversionResult {
+    pub converted: Vec<OrderCurrencyConversion>,
+    pub skipped: Vec<BulkDeleteSkip>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Ticket {
@@ -811,6 +861,23 @@ pub struct PlatformSales {
     pub profit_cents: i64,
 }
 
+/// One non-EUR currency currently present on at least one order, with how
+/// many orders are in it (2.0.51) - powers the Dashboard mixed-currency
+/// banner's "Convert to EUR" picker (a specific currency, or all at once -
+/// see `commands::orders::convert_currencies_to_eur`). Deliberately
+/// ORDER-scoped, unlike the ticket-scoped `mixed_currencies`/
+/// `primary_currency` below: conversion itself always operates order by
+/// order (see `convert_order_currency_impl`'s doc comment for why), so this
+/// is "how many orders would this button actually touch", not a second,
+/// redundant view of the same ticket-level mix those two fields already
+/// describe.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencyOrderCount {
+    pub currency: String,
+    pub order_count: i64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
@@ -834,6 +901,10 @@ pub struct DashboardData {
     /// True when the database also contains data in other currencies, which
     /// is therefore excluded from the totals above. The UI should warn.
     pub mixed_currencies: bool,
+    /// 2.0.51: every non-EUR currency actually present on an order, with its
+    /// order count - see `CurrencyOrderCount`. Empty whenever every order is
+    /// already EUR (including whenever `mixed_currencies` above is false).
+    pub non_eur_order_currencies: Vec<CurrencyOrderCount>,
     /// Inventory Cost / Listing Value / Potential Profit - see
     /// `InventoryPotential` doc comment. Kept and labelled separately from
     /// `inventory`/`period` (realized) by design.

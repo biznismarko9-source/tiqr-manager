@@ -2,7 +2,11 @@ use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance::{self, allocate_cents};
-use crate::models::{BulkDeleteResult, BulkDeleteSkip, Order, OrderEditInput, OrderInput, OrderSalesSummary, SeatEntry};
+use crate::fx;
+use crate::models::{
+    BulkCurrencyConversionResult, BulkDeleteResult, BulkDeleteSkip, Order, OrderCurrencyConversion,
+    OrderCurrencyConversionResult, OrderEditInput, OrderInput, OrderSalesSummary, SeatEntry,
+};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
@@ -432,6 +436,395 @@ pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> A
     Ok(order)
 }
 
+// ---------------------------------------------------------------------------
+// Convert an EXISTING order's currency to EUR (2.0.51). marko's own request,
+// after 2.0.50's "Convert to EUR" on the New Order form turned out to solve
+// only part of his real problem: it only ever helps while a NEW order is
+// still being typed in, but his actual pain was with orders already sitting
+// in the app (imported from Google Sheets, which has no currency-editing UI
+// at all - see commands::orders_sheet_sync - or simply created earlier in
+// some other currency). See PROTECTED-AREAS-NOTES.md's 2.0.51 section for
+// the full investigation this is built from.
+//
+// The one hard rule this whole feature exists to protect: a ticket's own
+// `currency` and its sale's `currency` have ALWAYS matched by construction
+// (sales.currency is copied from the ticket at sale-creation time -
+// sales.rs's create_sale_impl/create_sales_batch_impl - and nothing before
+// this version has ever been able to change one without the other). Several
+// existing queries lean on that invariant without checking it explicitly -
+// most importantly `fetch_sales_summary` above (Order Detail's Revenue/
+// Profit cards), which sums `sale_price_cents` and `purchase_cost_cents` with
+// NO currency guard of its own. Converting a ticket's currency WITHOUT also
+// converting every sale tied to it, in the very same transaction, would
+// silently start blending two currencies' cents together there. Every
+// function below exists to make that impossible.
+// ---------------------------------------------------------------------------
+
+/// Converts ONE order's currency to `to_currency` (always "EUR" in practice -
+/// see the two callers below), atomically, using an already-fetched
+/// `rate`/`rate_date`. Deliberately never fetches its own rate - the bulk
+/// path (`apply_bulk_currency_conversion`) fetches exactly one rate per
+/// distinct SOURCE currency and reuses it across every order in that
+/// currency, rather than one live HTTP round trip per order.
+///
+/// What actually gets converted, in order:
+/// 1. Every ticket belonging to this order - `purchase_cost_cents`,
+///    `purchase_fees_cents`, `other_costs_cents`, and `listing_price_cents`
+///    when it's set.
+/// 2. EVERY sale ever recorded against any of those tickets - `sale_price_
+///    cents`, `selling_fees_cents` - including refunded/historical ones, not
+///    just each ticket's current active sale. A ticket can carry more than
+///    one sale over its lifetime (migration 004 - a refunded sale plus a
+///    later resale), and every one of them was created with that ticket's
+///    currency at the time (always the same currency, since nothing has ever
+///    been able to change it before now) - converting only the active sale
+///    would leave old refunded rows silently stuck in the previous currency,
+///    inconsistent with the ticket they belong to.
+/// 3. The order's own aggregate fields (`unit_price_cents`/`fees_cents`/
+///    `other_costs_cents`/`total_cost_cents`) - DERIVED from the
+///    just-converted ticket values using the exact same formula
+///    `insert_order_with_tickets` uses to compute them in the first place
+///    (`unit_price_cents * quantity + fees_cents + other_costs_cents`).
+///    `fees_cents`/`other_costs_cents` are summed from the independently-
+///    rounded per-ticket shares; `unit_price_cents` is read directly off one
+///    already-converted ticket row (every ticket's `purchase_cost_cents` is
+///    guaranteed identical to the order's own `unit_price_cents` by the
+///    guard below, so this is a genuine per-ticket value, not a second,
+///    independently-converted copy of the order's old aggregate). None of
+///    the four are ever produced by converting the OLD aggregate fields
+///    directly: `fees_cents`/`other_costs_cents` were originally split
+///    unevenly across tickets by `allocate_cents`, and converting each of
+///    those already-rounded shares independently can land a cent away from
+///    converting the one combined total directly (see this file's tests for
+///    a worked example). Deriving every aggregate from the converted
+///    tickets - never the reverse - is what keeps `total_cost_cents` exactly
+///    equal to `unit_price_cents * quantity + fees_cents + other_costs_cents`
+///    after conversion, the same exact-sum guarantee this app has always had
+///    for a brand new order.
+///
+/// Must run inside a transaction the caller controls - a single commit for
+/// the Order Detail button (`convert_order_currency_command_impl`), one
+/// transaction PER ORDER for the bulk path, so one bad order in a batch can
+/// never leave a DIFFERENT order half-converted.
+///
+/// Refuses (rather than guesses) in three cases, all checked BEFORE any row
+/// is written:
+/// - the order is already in `to_currency`;
+/// - this order's tickets don't all currently share exactly one currency, or
+///   that currency doesn't match the order's own `currency` column;
+/// - this order's tickets don't all currently share exactly one purchase
+///   cost, or that cost doesn't match the order's own `unit_price_cents`
+///   column (see point 3 above - the derivation only makes sense when this
+///   holds).
+/// Both of the last two should be impossible under normal use (currency and
+/// unit price are set once, identically, across an order and every ticket it
+/// generates - `insert_order_with_tickets` above - and `OrderEditInput` has
+/// no field that could change either independently of tickets afterwards),
+/// but Order Detail's Edit Order form has always let `currency` be freely
+/// retyped as plain text WITHOUT cascading to any ticket (a pre-existing,
+/// deliberately-unfixed quirk - see PROTECTED-AREAS-NOTES.md's 2.0.50
+/// section), and a restored or hand-edited backup could in principle violate
+/// either invariant too - so neither is actually enforced anywhere before
+/// this feature. Converting under a silent mismatch would apply the wrong
+/// rate/formula to some tickets and quietly corrupt real financial data;
+/// refusing with a clear error is far safer than guessing which value is the
+/// "real" one.
+pub(crate) fn convert_order_currency_impl(
+    conn: &Connection,
+    order_id: i64,
+    to_currency: &str,
+    rate: f64,
+    rate_date: &str,
+) -> AppResult<OrderCurrencyConversion> {
+    let (order_code, from_currency, quantity, old_unit_price_cents): (String, String, i64, i64) = conn
+        .query_row(
+            "SELECT code, currency, quantity, unit_price_cents FROM orders WHERE id = ?1",
+            [order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|_| AppError::NotFound(format!("Order #{order_id} not found")))?;
+
+    if from_currency == to_currency {
+        return Err(AppError::Validation(format!(
+            "Order {order_code} is already in {to_currency}."
+        )));
+    }
+
+    let ticket_currencies: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT DISTINCT currency FROM tickets WHERE order_id = ?1")?;
+        let rows = stmt.query_map([order_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    if ticket_currencies.len() != 1 || ticket_currencies[0] != from_currency {
+        return Err(AppError::Validation(format!(
+            "Order {order_code}'s tickets don't all match the order's own currency ({from_currency}) - can't safely convert without risking wrong numbers. This needs fixing by hand first."
+        )));
+    }
+
+    let ticket_rows: Vec<(i64, i64, i64, i64, Option<i64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, purchase_cost_cents, purchase_fees_cents, other_costs_cents, listing_price_cents
+             FROM tickets WHERE order_id = ?1",
+        )?;
+        let rows = stmt.query_map([order_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    // Second half of this function's cost-consistency guard (see the doc
+    // comment above) - every ticket's own purchase_cost_cents must equal the
+    // order's own unit_price_cents, so deriving the order's new unit price
+    // from any one (already-converted) ticket row below is provably the same
+    // value converting the order's old aggregate directly would have given -
+    // never a guess. ticket_rows is never empty here: the currency guard
+    // above already refused any order with zero tickets (ticket_currencies
+    // would have length 0, not 1).
+    if ticket_rows.iter().any(|(_, cost, _, _, _)| *cost != old_unit_price_cents) {
+        return Err(AppError::Validation(format!(
+            "Order {order_code}'s tickets don't all share the same purchase cost as the order's own unit price - can't safely convert without risking wrong numbers. This needs fixing by hand first."
+        )));
+    }
+    // Derived from a ticket's own (not-yet-converted) cost, converted the
+    // same way every ticket's cost is converted below - deliberately NOT
+    // `fx::convert_cents(old_unit_price_cents, rate)` (converting the order's
+    // old aggregate directly), even though the guard above guarantees the
+    // two are numerically identical - see point 3 of the doc comment above
+    // for why this distinction matters for `fees_cents`/`other_costs_cents`
+    // and is kept consistent here for `unit_price_cents` too.
+    let new_unit_price_cents = fx::convert_cents(ticket_rows[0].1, rate);
+
+    let mut new_fees_total = 0i64;
+    let mut new_other_total = 0i64;
+    let mut ticket_ids: Vec<i64> = Vec::with_capacity(ticket_rows.len());
+    {
+        let mut ticket_stmt = conn.prepare(
+            "UPDATE tickets SET purchase_cost_cents=?1, purchase_fees_cents=?2, other_costs_cents=?3,
+             listing_price_cents=?4, currency=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id=?6",
+        )?;
+        for (ticket_id, cost, fees, other, listing) in &ticket_rows {
+            let new_cost = fx::convert_cents(*cost, rate);
+            let new_fees = fx::convert_cents(*fees, rate);
+            let new_other = fx::convert_cents(*other, rate);
+            let new_listing = listing.map(|l| fx::convert_cents(l, rate));
+            ticket_stmt.execute(params![new_cost, new_fees, new_other, new_listing, to_currency, ticket_id])?;
+            new_fees_total += new_fees;
+            new_other_total += new_other;
+            ticket_ids.push(*ticket_id);
+        }
+    }
+
+    let mut sales_converted = 0i64;
+    if !ticket_ids.is_empty() {
+        let placeholders = ticket_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sale_rows: Vec<(i64, i64, i64)> = {
+            let sql =
+                format!("SELECT id, sale_price_cents, selling_fees_cents FROM sales WHERE ticket_id IN ({placeholders})");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(ticket_ids.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut sale_stmt = conn.prepare(
+            "UPDATE sales SET sale_price_cents=?1, selling_fees_cents=?2, currency=?3,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4",
+        )?;
+        for (sale_id, price, sfees) in &sale_rows {
+            let new_price = fx::convert_cents(*price, rate);
+            let new_sfees = fx::convert_cents(*sfees, rate);
+            sale_stmt.execute(params![new_price, new_sfees, to_currency, sale_id])?;
+            sales_converted += 1;
+        }
+    }
+
+    let new_total_cost_cents = new_unit_price_cents * quantity + new_fees_total + new_other_total;
+    conn.execute(
+        "UPDATE orders SET unit_price_cents=?1, fees_cents=?2, other_costs_cents=?3, total_cost_cents=?4,
+         currency=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?6",
+        params![new_unit_price_cents, new_fees_total, new_other_total, new_total_cost_cents, to_currency, order_id],
+    )?;
+
+    Ok(OrderCurrencyConversion {
+        order_id,
+        order_code,
+        from_currency,
+        to_currency: to_currency.to_string(),
+        rate,
+        rate_date: rate_date.to_string(),
+        tickets_converted: ticket_rows.len() as i64,
+        sales_converted,
+    })
+}
+
+/// Core logic behind the single-order `convert_order_currency` command -
+/// split out (same pattern as every other command in this file) so it's
+/// directly unit-testable against a plain `&mut Connection`. Fetches ONE live
+/// rate (this order's own currency -> EUR - `fx::fetch_rate` short-circuits
+/// without a network call when they're already equal, which is exactly the
+/// case `convert_order_currency_impl`'s own "already EUR" guard below then
+/// reports clearly), converts inside one transaction, and returns the
+/// order re-read fresh from the database alongside the conversion summary.
+pub(crate) fn convert_order_currency_command_impl(
+    conn: &mut Connection,
+    id: i64,
+) -> AppResult<OrderCurrencyConversionResult> {
+    let from_currency: String = conn
+        .query_row("SELECT currency FROM orders WHERE id = ?1", [id], |r| r.get(0))
+        .map_err(|_| AppError::NotFound(format!("Order #{id} not found")))?;
+    let quote = fx::fetch_rate(&from_currency, "EUR")?;
+    let tx = conn.transaction()?;
+    let conversion = convert_order_currency_impl(&tx, id, "EUR", quote.rate, &quote.date)?;
+    tx.commit()?;
+    let order = fetch_one(conn, id)?;
+    Ok(OrderCurrencyConversionResult { order, conversion })
+}
+
+/// Order Detail's "Convert to EUR" action, next to the Currency field -
+/// visible whenever an order's currency isn't already EUR, regardless of how
+/// that order was created (the New Order form, CSV import, or Google Sheets
+/// sync - see this section's own doc comment above).
+#[tauri::command]
+pub fn convert_order_currency(state: State<AppState>, id: i64) -> AppResult<OrderCurrencyConversionResult> {
+    let mut conn = state.db.lock().unwrap();
+    convert_order_currency_command_impl(&mut conn, id)
+}
+
+/// Core bulk-application logic behind `convert_currencies_to_eur` - given
+/// already-fetched rates (one per distinct source currency, paired with the
+/// order ids to convert in that currency), converts every one of those
+/// orders to EUR, each in its OWN transaction so a problem with one order can
+/// never block or roll back any other - same per-item philosophy
+/// `bulk_delete_orders_impl` already uses for deletion (see
+/// `BulkCurrencyConversionResult`'s doc comment, models.rs). Split out from
+/// the `#[tauri::command]` wrapper specifically so this - the actual
+/// orchestration logic - is testable without a real network call; the
+/// wrapper's own job (fetching each currency's real rate) can't be exercised
+/// in this dev sandbox at all, same documented limitation as every other
+/// live-network path in this app (fx.rs's own doc comment).
+pub(crate) fn apply_bulk_currency_conversion(
+    conn: &mut Connection,
+    order_ids_by_currency: &[(Vec<i64>, fx::RateQuote)],
+) -> AppResult<BulkCurrencyConversionResult> {
+    let mut converted = Vec::new();
+    let mut skipped = Vec::new();
+    for (order_ids, quote) in order_ids_by_currency {
+        for &order_id in order_ids {
+            let tx = conn.transaction()?;
+            match convert_order_currency_impl(&tx, order_id, "EUR", quote.rate, &quote.date) {
+                Ok(summary) => {
+                    tx.commit()?;
+                    converted.push(summary);
+                }
+                // tx is dropped here without commit - an automatic rollback
+                // scoped to just this one order, never the ones before or after it.
+                Err(e) => skipped.push(BulkDeleteSkip { id: order_id, reason: e.to_string() }),
+            }
+        }
+    }
+    Ok(BulkCurrencyConversionResult { converted, skipped })
+}
+
+/// Resolves which currencies the Dashboard banner's bulk "Convert to EUR"
+/// action should target, and which order ids currently sit in each - the
+/// entirely-DB-only half of `convert_currencies_to_eur` below, split out so
+/// THIS part (unlike the live `fx::fetch_rate` call per currency) is directly
+/// unit-testable against a plain `&Connection` - same "impl carries the
+/// testable logic, the command adds the untestable network bit" split as
+/// every other rate-fetching entry point in this file.
+///
+/// `currencies`: the caller's own explicit list (trimmed, uppercased, EUR
+/// filtered out - so accidentally passing "eur" is just a no-op, never an
+/// error), or `None`/empty for marko's own "alebo vsetky", "or all" option -
+/// every non-EUR currency actually present on any order right now.
+///
+/// Either way, every match against `orders.currency` is done case/
+/// whitespace-insensitively (`UPPER(TRIM(currency))`), both for the "which
+/// currencies exist" query and the "which orders are in this currency" one.
+/// This app has never normalized that column's casing at write time - CSV
+/// import stores a cell's raw text verbatim (see csv_import.rs), unlike
+/// Sheets sync, which does normalize - so e.g. a CSV-imported "usd" order is
+/// real, storable data. A caller-supplied "USD" (typed by hand, or read
+/// straight off `non_eur_order_currencies`/dashboard.rs, which itself
+/// reports the raw stored casing) must still find it, not silently match
+/// zero rows. The actual `UPDATE` inside `convert_order_currency_impl`
+/// always writes a clean literal "EUR" regardless, so every order converted
+/// through here ends up normalized going forward even though how it got
+/// FOUND had to tolerate whatever casing it started in. Only orders that
+/// actually have at least one match are included - never an empty entry for
+/// a currency nothing is left in.
+pub(crate) fn resolve_currency_order_ids(
+    conn: &Connection,
+    currencies: &Option<Vec<String>>,
+) -> AppResult<Vec<(String, Vec<i64>)>> {
+    let target_currencies: Vec<String> = match currencies {
+        Some(list) if !list.is_empty() => list
+            .iter()
+            .map(|c| c.trim().to_uppercase())
+            .filter(|c| c != "EUR")
+            .collect(),
+        _ => {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT UPPER(TRIM(currency)) FROM orders WHERE currency != 'EUR' ORDER BY 1")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+    };
+
+    let mut result = Vec::with_capacity(target_currencies.len());
+    for currency in target_currencies {
+        let order_ids: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT id FROM orders WHERE UPPER(TRIM(currency)) = ?1 ORDER BY id")?;
+            let rows = stmt.query_map([&currency], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        if !order_ids.is_empty() {
+            result.push((currency, order_ids));
+        }
+    }
+    Ok(result)
+}
+
+/// The Dashboard mixed-currency banner's bulk "Convert to EUR" action -
+/// converts every order in `currencies` (or every non-EUR order at all when
+/// `currencies` is `None`/empty - marko's own "alebo vsetky", "or all"
+/// option) to EUR. Fetches exactly one live rate per distinct currency
+/// actually present among target orders, never one per order, then applies
+/// them via `apply_bulk_currency_conversion` above.
+#[tauri::command]
+pub fn convert_currencies_to_eur(
+    state: State<AppState>,
+    currencies: Option<Vec<String>>,
+) -> AppResult<BulkCurrencyConversionResult> {
+    let mut conn = state.db.lock().unwrap();
+
+    let currency_order_ids = resolve_currency_order_ids(&conn, &currencies)?;
+
+    let mut order_ids_by_currency: Vec<(Vec<i64>, fx::RateQuote)> = Vec::new();
+    let mut rate_fetch_skips: Vec<BulkDeleteSkip> = Vec::new();
+    for (currency, order_ids) in currency_order_ids {
+        match fx::fetch_rate(&currency, "EUR") {
+            Ok(quote) => order_ids_by_currency.push((order_ids, quote)),
+            Err(e) => {
+                // The rate lookup itself failed - every order in this
+                // currency is skipped for the same reason, not judged
+                // individually (there's nothing order-specific to judge yet).
+                for id in order_ids {
+                    rate_fetch_skips.push(BulkDeleteSkip {
+                        id,
+                        reason: format!("Could not fetch a {currency} -> EUR rate: {e}"),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut result = apply_bulk_currency_conversion(&mut conn, &order_ids_by_currency)?;
+    result.skipped.splice(0..0, rate_fetch_skips);
+    Ok(result)
+}
+
 /// Returns `Some(reason)` if order `id` cannot be safely deleted (it has
 /// sold tickets, or any sales history at all - including a refunded one),
 /// `None` if it's safe. Split out of `delete_order_impl` in 2.0.28 so
@@ -811,6 +1204,451 @@ mod tests {
         let mut conn = test_conn();
         let err = bulk_delete_orders_impl(&mut conn, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // ---- Convert order currency to EUR (2.0.51) ----------------------------
+    // marko's own expanded request: Sheets-imported orders had NO way to
+    // change currency at all, and even manually-created orders could only be
+    // converted at CREATION time (2.0.50), never afterward. These tests cover
+    // `convert_order_currency_impl` (the core per-order conversion, given an
+    // already-fetched rate) and `apply_bulk_currency_conversion` (the
+    // per-order-transaction bulk path) - both fully offline/deterministic,
+    // since neither ever calls `fx::fetch_rate` itself. The two
+    // network-touching entry points (`convert_order_currency_command_impl`,
+    // `convert_currencies_to_eur`) are exercised only for the specific paths
+    // that never actually reach the network (same-currency short-circuit,
+    // not-found) - see fx.rs's own doc comment for why a real rate lookup
+    // can't be exercised in this sandbox.
+
+    #[test]
+    fn convert_order_currency_converts_ticket_and_order_amounts_and_flips_currency() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "GBP".to_string();
+        input.unit_price_cents = 2000;
+        input.fees_cents = 100;
+        input.other_costs_cents = 50;
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_id = ticket_ids(&conn, order_id)[0];
+        conn.execute(
+            "UPDATE tickets SET listing_price_cents=?1 WHERE id=?2",
+            params![3000, ticket_id],
+        )
+        .unwrap();
+
+        // marko's own 2.0.50 report example rate (20 GBP -> 23.38 EUR).
+        let rate = 1.1689_f64;
+        let result = convert_order_currency_impl(&conn, order_id, "EUR", rate, "2026-08-25").unwrap();
+
+        assert_eq!(result.order_id, order_id);
+        assert_eq!(result.from_currency, "GBP");
+        assert_eq!(result.to_currency, "EUR");
+        assert_eq!(result.rate, rate);
+        assert_eq!(result.rate_date, "2026-08-25");
+        assert_eq!(result.tickets_converted, 1);
+        assert_eq!(result.sales_converted, 0, "this ticket has no sales at all");
+
+        let (cost, fees, other, listing, currency): (i64, i64, i64, Option<i64>, String) = conn
+            .query_row(
+                "SELECT purchase_cost_cents, purchase_fees_cents, other_costs_cents, listing_price_cents, currency
+                 FROM tickets WHERE id=?1",
+                [ticket_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(cost, fx::convert_cents(2000, rate));
+        assert_eq!(fees, fx::convert_cents(100, rate));
+        assert_eq!(other, fx::convert_cents(50, rate));
+        assert_eq!(listing, Some(fx::convert_cents(3000, rate)));
+        assert_eq!(currency, "EUR");
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(order.currency, "EUR");
+        assert_eq!(order.unit_price_cents, fx::convert_cents(2000, rate));
+        assert_eq!(order.fees_cents, fx::convert_cents(100, rate));
+        assert_eq!(order.other_costs_cents, fx::convert_cents(50, rate));
+        assert_eq!(
+            order.total_cost_cents,
+            order.unit_price_cents * order.quantity + order.fees_cents + order.other_costs_cents,
+            "the exact-sum invariant (total = unit*qty + fees + other) must survive conversion, \
+             same as it holds for a brand new order"
+        );
+    }
+
+    /// The core proof behind this feature's most important design decision:
+    /// order-level fees/other-costs are DERIVED by summing each already-
+    /// converted ticket's own share, never by converting the old order-level
+    /// total directly - because `allocate_cents` can split a total unevenly
+    /// across tickets, and independently rounding each uneven share can land
+    /// a cent away from rounding the combined total in one shot. This test
+    /// picks a total/rate pair where the two approaches provably disagree, so
+    /// the assertion below is a real proof, not a tautology.
+    #[test]
+    fn order_level_totals_are_derived_from_summed_converted_tickets_not_from_converting_the_old_total_directly() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 3);
+        input.currency = "GBP".to_string();
+        input.unit_price_cents = 1000;
+        input.fees_cents = 150; // allocate_cents(150, 3) = [50, 50, 50] - evenly split on purpose
+        input.other_costs_cents = 0;
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let rate = 0.85_f64;
+        // Sanity-check the premise, verified against the real `convert_cents`
+        // rather than hand-derived (an earlier draft of this test hand-picked
+        // a rate assuming plain decimal rounding and got it wrong - f64
+        // arithmetic doesn't represent every rate exactly). Even though the
+        // 150-cent fee total splits EVENLY across 3 tickets (50 each - no
+        // `allocate_cents` unevenness involved at all), each 50-cent share
+        // lands exactly on a rounding half-way point (50 * 0.85 = 42.5) and
+        // `convert_cents` rounds every one of those three ties UP (away from
+        // zero) to 43 - summing to 129. Converting the combined 150-cent
+        // total directly hits its OWN half-way point once (150 * 0.85 =
+        // 127.5) and rounds up ONCE, to 128. Applying the same "round the
+        // tie up" bump three times instead of once is exactly the kind of
+        // divergence the derive-from-tickets approach exists to avoid. If
+        // this assertion ever stopped holding (e.g. `convert_cents`'s
+        // rounding rule changed), the rest of this test would no longer
+        // actually be proving anything.
+        assert_eq!(fx::convert_cents(150, rate), 128, "direct-total conversion rounds down to 128");
+
+        convert_order_currency_impl(&conn, order_id, "EUR", rate, "2026-08-25").unwrap();
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(
+            order.fees_cents, 129,
+            "must equal the SUM of each independently-converted per-ticket fee (43+43+43=129), not round(150 * 0.85) = 128"
+        );
+
+        let (tickets_cost_sum, tickets_fees_sum, tickets_other_sum): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(purchase_cost_cents), SUM(purchase_fees_cents), SUM(other_costs_cents)
+                 FROM tickets WHERE order_id=?1",
+                [order_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tickets_fees_sum, order.fees_cents, "order.fees_cents must equal the tickets' own sum, always");
+        assert_eq!(order.unit_price_cents * order.quantity, tickets_cost_sum);
+        assert_eq!(order.other_costs_cents, tickets_other_sum);
+        assert_eq!(
+            order.total_cost_cents,
+            tickets_cost_sum + tickets_fees_sum + tickets_other_sum,
+            "order.total_cost_cents must equal the tickets' own combined cost+fees+other, exactly"
+        );
+    }
+
+    #[test]
+    fn convert_order_currency_converts_every_sale_on_a_ticket_including_refunded_history() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "GBP".to_string();
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_id = ticket_ids(&conn, order_id)[0];
+
+        // A refunded sale (history) plus a later active resale on the SAME
+        // ticket - migration 004 allows this (only ACTIVE sales are unique
+        // per ticket). Both share the ticket's GBP currency at the time each
+        // was created, exactly like create_sale_impl would produce.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, selling_fees_cents, currency, payment_status)
+             VALUES ('SAL-000001', ?1, '2026-02-01', 1500, 50, 'GBP', 'refunded')",
+            [ticket_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, selling_fees_cents, currency, payment_status)
+             VALUES ('SAL-000002', ?1, '2026-03-01', 1800, 60, 'GBP', 'paid')",
+            [ticket_id],
+        )
+        .unwrap();
+
+        let rate = 1.2_f64;
+        let result = convert_order_currency_impl(&conn, order_id, "EUR", rate, "2026-08-25").unwrap();
+        assert_eq!(result.sales_converted, 2, "both the refunded AND the active sale must convert");
+
+        let mut stmt = conn
+            .prepare("SELECT sale_price_cents, selling_fees_cents, currency FROM sales WHERE ticket_id=?1 ORDER BY code")
+            .unwrap();
+        let rows: Vec<(i64, i64, String)> = stmt
+            .query_map([ticket_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (fx::convert_cents(1500, rate), fx::convert_cents(50, rate), "EUR".to_string()),
+                (fx::convert_cents(1800, rate), fx::convert_cents(60, rate), "EUR".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn convert_order_currency_leaves_a_ticket_with_no_listing_price_as_none_not_zero() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "USD".to_string();
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_id = ticket_ids(&conn, order_id)[0];
+        // listing_price_cents is NULL by default here - never set.
+
+        convert_order_currency_impl(&conn, order_id, "EUR", 0.92, "2026-08-25").unwrap();
+
+        let listing: Option<i64> = conn
+            .query_row("SELECT listing_price_cents FROM tickets WHERE id=?1", [ticket_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(listing, None, "no listing price before conversion must mean no listing price after, not Some(0)");
+    }
+
+    #[test]
+    fn refuses_to_convert_when_orders_currency_column_does_not_match_its_tickets() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "GBP".to_string();
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let ticket_id = ticket_ids(&conn, order_id)[0];
+        let (cost_before, currency_before): (i64, String) = conn
+            .query_row("SELECT purchase_cost_cents, currency FROM tickets WHERE id=?1", [ticket_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+
+        // Simulates the pre-existing Edit Order free-text Currency field,
+        // which updates ONLY orders.currency and never cascades to tickets -
+        // see convert_order_currency_impl's own doc comment for why this
+        // must be refused rather than guessed at.
+        conn.execute("UPDATE orders SET currency='USD' WHERE id=?1", [order_id]).unwrap();
+
+        let err = convert_order_currency_impl(&conn, order_id, "EUR", 0.92, "2026-08-25").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let (cost_after, currency_after): (i64, String) = conn
+            .query_row("SELECT purchase_cost_cents, currency FROM tickets WHERE id=?1", [ticket_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(cost_after, cost_before, "a refused conversion must leave the ticket completely untouched");
+        assert_eq!(currency_after, currency_before);
+    }
+
+    #[test]
+    fn refuses_to_convert_when_two_tickets_on_the_same_order_disagree_on_currency() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 2);
+        input.currency = "GBP".to_string();
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        conn.execute("UPDATE tickets SET currency='USD' WHERE id=?1", [tickets[1]]).unwrap();
+
+        let err = convert_order_currency_impl(&conn, order_id, "EUR", 0.92, "2026-08-25").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    /// Second pair of eyes flagged that `new_unit_price_cents` used to be
+    /// converted directly from the order's own (pre-conversion) aggregate
+    /// field rather than genuinely derived from a ticket's own row like
+    /// fees/other costs are - harmless only because nothing in the app can
+    /// currently make a ticket's `purchase_cost_cents` disagree with its
+    /// order's `unit_price_cents` (no edit form touches either
+    /// independently), but a restored/hand-edited backup could. This test
+    /// proves the new guard added for that now actually refuses rather than
+    /// silently deriving from the wrong number - same "refused conversions
+    /// leave the database untouched" contract as every other guard here.
+    #[test]
+    fn refuses_to_convert_when_a_tickets_purchase_cost_does_not_match_the_orders_unit_price() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 2);
+        input.currency = "GBP".to_string();
+        input.unit_price_cents = 1000;
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        // Simulates the only way this could happen in practice - a hand-
+        // edited or restored-from-backup database (see this test's own doc
+        // comment above).
+        conn.execute("UPDATE tickets SET purchase_cost_cents=1500 WHERE id=?1", [tickets[1]]).unwrap();
+
+        let err = convert_order_currency_impl(&conn, order_id, "EUR", 1.1, "2026-08-25").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let (t0_cost, t1_cost, order_currency): (i64, i64, String) = conn
+            .query_row(
+                "SELECT
+                    (SELECT purchase_cost_cents FROM tickets WHERE id=?1),
+                    (SELECT purchase_cost_cents FROM tickets WHERE id=?2),
+                    (SELECT currency FROM orders WHERE id=?3)",
+                params![tickets[0], tickets[1], order_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(t0_cost, 1000, "a refused conversion must leave every ticket completely untouched");
+        assert_eq!(t1_cost, 1500);
+        assert_eq!(order_currency, "GBP", "the order itself must stay untouched too");
+    }
+
+    // ---- resolve_currency_order_ids (2.0.51) -------------------------------
+    // The DB-only half of convert_currencies_to_eur's currency resolution -
+    // see that function's own doc comment for why a caller-supplied "USD"
+    // must still find an order whose currency is literally stored as "usd"
+    // (an un-normalized CSV import, most concretely). This is exactly the
+    // bug a second pair of eyes caught: the old inline version of this logic
+    // uppercased the CALLER's input but matched it against the RAW column
+    // with a plain `=`, so a lowercase-stored currency silently matched zero
+    // rows - no error, no skip, just nothing happening.
+
+    #[test]
+    fn resolve_currency_order_ids_matches_a_currency_regardless_of_stored_casing() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "usd".to_string(); // lower-case, exactly like an un-normalized CSV import cell.
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let resolved = resolve_currency_order_ids(&conn, &Some(vec!["USD".to_string()])).unwrap();
+
+        assert_eq!(resolved, vec![("USD".to_string(), vec![order_id])]);
+    }
+
+    #[test]
+    fn resolve_currency_order_ids_all_option_groups_mixed_casing_of_the_same_currency_together() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut lower = base_input(event_id, 1);
+        lower.currency = "usd".to_string();
+        let order_a = insert_order_with_tickets(&conn, &lower, false).unwrap();
+        let mut upper = base_input(event_id, 1);
+        upper.currency = "USD".to_string();
+        let order_b = insert_order_with_tickets(&conn, &upper, false).unwrap();
+        let mut other = base_input(event_id, 1);
+        other.currency = "GBP".to_string();
+        let order_c = insert_order_with_tickets(&conn, &other, false).unwrap();
+
+        let resolved = resolve_currency_order_ids(&conn, &None).unwrap();
+
+        assert_eq!(resolved.len(), 2, "usd/USD must collapse into one normalized USD entry, not two");
+        let usd_entry = resolved.iter().find(|(c, _)| c == "USD").unwrap();
+        let mut usd_ids = usd_entry.1.clone();
+        usd_ids.sort();
+        let mut expected = vec![order_a, order_b];
+        expected.sort();
+        assert_eq!(usd_ids, expected);
+        let gbp_entry = resolved.iter().find(|(c, _)| c == "GBP").unwrap();
+        assert_eq!(gbp_entry.1, vec![order_c]);
+    }
+
+    #[test]
+    fn resolve_currency_order_ids_explicit_list_filters_out_eur_and_omits_currencies_with_no_orders() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "GBP".to_string();
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let resolved = resolve_currency_order_ids(
+            &conn,
+            &Some(vec!["eur".to_string(), "gbp".to_string(), "jpy".to_string()]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved,
+            vec![("GBP".to_string(), vec![order_id])],
+            "EUR is filtered out entirely, and JPY (no matching orders) is simply absent - not an empty entry"
+        );
+    }
+
+    #[test]
+    fn refuses_to_convert_an_order_already_in_the_target_currency() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap(); // EUR by default
+
+        let err = convert_order_currency_impl(&conn, order_id, "EUR", 1.0, "2026-08-25").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn convert_order_currency_impl_errors_not_found_for_a_missing_order() {
+        let conn = test_conn();
+        let err = convert_order_currency_impl(&conn, 999999, "EUR", 1.1, "2026-08-25").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn apply_bulk_currency_conversion_skips_one_bad_order_without_blocking_the_rest() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+
+        let mut gbp_input = base_input(event_id, 1);
+        gbp_input.currency = "GBP".to_string();
+        let order_a = insert_order_with_tickets(&conn, &gbp_input, false).unwrap();
+        let order_bad = insert_order_with_tickets(&conn, &gbp_input, false).unwrap();
+        // Same corruption as the "Edit Order" guard test above - order_bad's
+        // own currency column no longer matches its tickets, so
+        // convert_order_currency_impl must refuse it.
+        conn.execute("UPDATE orders SET currency='USD' WHERE id=?1", [order_bad]).unwrap();
+
+        let mut usd_input = base_input(event_id, 1);
+        usd_input.currency = "USD".to_string();
+        let order_c = insert_order_with_tickets(&conn, &usd_input, false).unwrap();
+
+        let gbp_quote = fx::RateQuote { rate: 1.15, date: "2026-08-25".to_string() };
+        let usd_quote = fx::RateQuote { rate: 0.92, date: "2026-08-25".to_string() };
+
+        let result = apply_bulk_currency_conversion(
+            &mut conn,
+            &[(vec![order_a, order_bad], gbp_quote), (vec![order_c], usd_quote)],
+        )
+        .unwrap();
+
+        assert_eq!(result.converted.len(), 2, "order_a and order_c must both convert despite order_bad failing");
+        let converted_ids: Vec<i64> = result.converted.iter().map(|c| c.order_id).collect();
+        assert!(converted_ids.contains(&order_a));
+        assert!(converted_ids.contains(&order_c));
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].id, order_bad);
+
+        let order_a_currency: String =
+            conn.query_row("SELECT currency FROM orders WHERE id=?1", [order_a], |r| r.get(0)).unwrap();
+        assert_eq!(order_a_currency, "EUR", "order_a shares a bucket with order_bad but must still convert");
+        let order_c_currency: String =
+            conn.query_row("SELECT currency FROM orders WHERE id=?1", [order_c], |r| r.get(0)).unwrap();
+        assert_eq!(order_c_currency, "EUR");
+        let order_bad_currency: String =
+            conn.query_row("SELECT currency FROM orders WHERE id=?1", [order_bad], |r| r.get(0)).unwrap();
+        assert_eq!(order_bad_currency, "USD", "the refused order must be untouched, not partially converted");
+    }
+
+    #[test]
+    fn convert_order_currency_command_impl_errors_not_found_without_any_network_call() {
+        let mut conn = test_conn();
+        let err = convert_order_currency_command_impl(&mut conn, 999999).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    /// `fx::fetch_rate("EUR","EUR")` short-circuits with no network call (see
+    /// fx.rs) - so this whole path, all the way through
+    /// `convert_order_currency_impl`'s own "already in EUR" guard, is
+    /// reachable without a real network request, unlike the general case.
+    #[test]
+    fn convert_order_currency_command_impl_refuses_an_order_already_in_eur_without_any_network_call() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap(); // EUR by default
+
+        let err = convert_order_currency_command_impl(&mut conn, order_id).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let still_eur: String =
+            conn.query_row("SELECT currency FROM orders WHERE id=?1", [order_id], |r| r.get(0)).unwrap();
+        assert_eq!(still_eur, "EUR");
     }
 
     // ---- Order-grouped Tickets view: counts, filters, sales summary ------

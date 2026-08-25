@@ -528,6 +528,11 @@ export interface DashboardData {
   primaryCurrency: string;
   /** True when the database also has data in other currencies, excluded from the totals above. */
   mixedCurrencies: boolean;
+  /** 2.0.51: every non-EUR currency actually present on an order, with its
+   * order count - see CurrencyOrderCount. Empty whenever every order is
+   * already EUR (including whenever mixedCurrencies above is false). Powers
+   * the mixed-currency banner's per-currency/"Convert all" bulk action. */
+  nonEurOrderCurrencies: CurrencyOrderCount[];
   /** Inventory Cost / Listing Value / Potential Profit - see InventoryPotential. */
   inventoryPotential: InventoryPotential;
   /** Attention/alerts - see DashboardAlerts. */
@@ -823,4 +828,48 @@ export interface CurrencyConversion {
   rate: number;
   rateDate: string;
   convertedCents: number[];
+}
+
+/** One non-EUR currency actually present on an order, with how many orders
+ * hold it (2.0.51) - mirrors the backend's `CurrencyOrderCount` (models.rs).
+ * Powers the Dashboard mixed-currency banner's per-currency "Convert to EUR"
+ * buttons. */
+export interface CurrencyOrderCount {
+  currency: string;
+  orderCount: number;
+}
+
+/** Result of converting one EXISTING order's currency to EUR (2.0.51) - see
+ * `api.convertOrderCurrency` / commands::orders::convert_order_currency_impl
+ * (Rust). Unlike `CurrencyConversion` above (2.0.50's stateless "here's what
+ * these numbers would become" preview for the New Order form, nothing saved
+ * yet), this always describes a conversion that has ALREADY been committed
+ * to the database - `ticketsConverted`/`salesConverted` are real counts of
+ * rows actually rewritten, not an estimate. */
+export interface OrderCurrencyConversion {
+  orderId: number;
+  orderCode: string;
+  fromCurrency: string;
+  toCurrency: string;
+  rate: number;
+  rateDate: string;
+  ticketsConverted: number;
+  salesConverted: number;
+}
+
+/** What `api.convertOrderCurrency` returns - the summary above, plus the
+ * order's own freshly-refetched record, so Order Detail can update its
+ * Currency/cost fields immediately without a second round trip. */
+export interface OrderCurrencyConversionResult {
+  order: OrderRecord;
+  conversion: OrderCurrencyConversion;
+}
+
+/** Result of the bulk "Convert to EUR" action on the Dashboard's
+ * mixed-currency banner (2.0.51) - every order actually converted, plus any
+ * that were skipped and why (reuses the same `{id, reason}` shape as
+ * BulkDeleteResult above). */
+export interface BulkCurrencyConversionResult {
+  converted: OrderCurrencyConversion[];
+  skipped: { id: number; reason: string }[];
 }

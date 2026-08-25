@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BulkCurrencyConversionResult,
   BulkDeleteResult,
   BulkSalePaymentStatusInput,
   BulkTicketStatusInput,
@@ -16,6 +17,7 @@ import type {
   EventWithStats,
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
+  OrderCurrencyConversionResult,
   OrderEditInput,
   OrderInput,
   OrderRecord,
@@ -75,6 +77,22 @@ export const api = {
   deleteOrder: (id: number) => invoke<void>("delete_order", { id }),
   /** 2.0.28: bulk delete for the Orders list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
   bulkDeleteOrders: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_orders", { ids }),
+  /** 2.0.51: converts an EXISTING order's currency to EUR - Order Detail's
+   * "Convert to EUR" button next to the Currency field, shown whenever the
+   * order's currency isn't already EUR (any currency, not just GBP - and
+   * works for Sheets-imported orders too, since they're created the same way
+   * as manual ones). Fetches one live rate and rewrites the order, every one
+   * of its tickets, and every sale tied to those tickets (refunded/historical
+   * included) atomically - see commands/orders.rs::convert_order_currency_impl. */
+  convertOrderCurrency: (id: number) => invoke<OrderCurrencyConversionResult>("convert_order_currency", { id }),
+  /** 2.0.51: the Dashboard mixed-currency banner's bulk action - converts
+   * every order in `currencies` to EUR, or every non-EUR order at all when
+   * `currencies` is omitted/empty (marko's own "or all" option). Fetches one
+   * live rate per distinct currency actually being converted, not one per
+   * order, and judges each order on its own merits (one bad order never
+   * blocks the rest) - see commands/orders.rs::convert_currencies_to_eur. */
+  convertCurrenciesToEur: (currencies?: string[]) =>
+    invoke<BulkCurrencyConversionResult>("convert_currencies_to_eur", { currencies: currencies ?? null }),
 
   // Tickets
   listTickets: (params: {

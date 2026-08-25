@@ -48,6 +48,8 @@ pub fn run() {
             commands::orders::update_order,
             commands::orders::delete_order,
             commands::orders::bulk_delete_orders,
+            commands::orders::convert_order_currency,
+            commands::orders::convert_currencies_to_eur,
             commands::tickets::list_tickets,
             commands::tickets::get_ticket,
             commands::tickets::update_ticket,

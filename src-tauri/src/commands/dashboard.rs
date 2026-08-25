@@ -3,8 +3,8 @@ use crate::db::AppState;
 use crate::error::AppResult;
 use crate::finance;
 use crate::models::{
-    CashflowSummary, DashboardAlerts, DashboardData, InventoryPotential, PlatformSales,
-    RevenueTimeSeriesPoint, UpcomingEventAlert,
+    CashflowSummary, CurrencyOrderCount, DashboardAlerts, DashboardData, InventoryPotential,
+    PlatformSales, RevenueTimeSeriesPoint, UpcomingEventAlert,
 };
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
@@ -269,6 +269,31 @@ pub(crate) fn get_dashboard_impl(
         "EUR".to_string()
     } else {
         currencies[0].clone()
+    };
+
+    // 2.0.51: every non-EUR currency actually present on an ORDER (not
+    // ticket - orders is what the new "Convert to EUR" action on the
+    // Dashboard banner and Order Detail actually converts), with how many
+    // orders hold it, so the banner can offer one button per currency plus
+    // an "all" button when there's more than one. Deliberately its own
+    // query rather than reusing `currencies` above - that one is
+    // ticket-scoped (drives primary_currency/mixed_currencies), this one is
+    // order-scoped (drives what's actually convertible). The two normally
+    // agree (ticket currency == its order's currency by construction - see
+    // `insert_order_with_tickets`), but marko's pre-existing Edit Order
+    // currency-relabel-only path means they're not GUARANTEED to, so this
+    // stays independent rather than assumed derivable from `currencies`.
+    let non_eur_order_currencies: Vec<CurrencyOrderCount> = {
+        let mut stmt = conn.prepare(
+            "SELECT currency, COUNT(*) FROM orders WHERE currency != 'EUR' GROUP BY currency ORDER BY currency",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CurrencyOrderCount {
+                currency: r.get(0)?,
+                order_count: r.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
     };
 
     // ---- current inventory snapshot (all time, not period filtered) ----
@@ -648,6 +673,7 @@ pub(crate) fn get_dashboard_impl(
         recent_events,
         primary_currency,
         mixed_currencies,
+        non_eur_order_currencies,
         inventory_potential,
         alerts,
         cashflow,
@@ -815,6 +841,58 @@ mod tests {
             "two currencies among unsold tickets must never be blended into one number"
         );
         assert!(data.mixed_currencies);
+    }
+
+    // ---- non_eur_order_currencies (2.0.51) ---------------------------------
+    // Powers the Dashboard mixed-currency banner's per-currency/"Convert to
+    // EUR" buttons - deliberately ORDER-scoped (see this field's own doc
+    // comment for why it's a separate query from the ticket-scoped
+    // `currencies`/`mixed_currencies` computed just above).
+
+    #[test]
+    fn non_eur_order_currencies_groups_and_counts_non_eur_orders_only() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, currency, payment_status)
+             VALUES ('ORD-g1', ?1, '2026-01-01', 1, 'GBP', 'paid')",
+            params![event_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, currency, payment_status)
+             VALUES ('ORD-g2', ?1, '2026-01-01', 1, 'GBP', 'paid')",
+            params![event_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, currency, payment_status)
+             VALUES ('ORD-u1', ?1, '2026-01-01', 1, 'USD', 'paid')",
+            params![event_id],
+        )
+        .unwrap();
+        seed_order_only(&conn, "e1", event_id, "paid"); // EUR - must never be counted here.
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        let mut got = data.non_eur_order_currencies.clone();
+        got.sort_by(|a, b| a.currency.cmp(&b.currency));
+        assert_eq!(got.len(), 2, "exactly GBP and USD - the EUR order must not appear at all");
+        assert_eq!(got[0].currency, "GBP");
+        assert_eq!(got[0].order_count, 2);
+        assert_eq!(got[1].currency, "USD");
+        assert_eq!(got[1].order_count, 1);
+    }
+
+    #[test]
+    fn non_eur_order_currencies_is_empty_when_every_order_is_eur() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event", "upcoming", None);
+        seed_order_only(&conn, "e1", event_id, "paid");
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+
+        assert!(data.non_eur_order_currencies.is_empty());
     }
 
     #[test]

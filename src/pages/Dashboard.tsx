@@ -2,8 +2,17 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
-import { computeTrend, computeTrendPoints, formatDate, formatMoney, formatMoneyOrMixed, formatPercent, todayIso } from "../lib/format";
-import { Badge, Button, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
+import {
+  computeTrend,
+  computeTrendPoints,
+  formatDate,
+  formatMoney,
+  formatMoneyOrMixed,
+  formatPercent,
+  summarizeBulkDeleteSkips,
+  todayIso,
+} from "../lib/format";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import {
   IconAlertTriangle,
@@ -284,12 +293,7 @@ export default function Dashboard() {
         <>
           {tab === "overview" && (
             <>
-              {data.mixedCurrencies && (
-                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-                  You have data in more than one currency. To avoid adding different currencies together, the totals
-                  below only include <b>{data.primaryCurrency}</b>. Filter by event/platform to see the others.
-                </div>
-              )}
+              <MixedCurrencyBanner data={data} onConverted={load} />
               {customDatesMissing ? (
                 // Custom filter selected but both From/To are empty: previously
                 // this silently fell back to an (effectively) All-time range on
@@ -626,6 +630,105 @@ export default function Dashboard() {
         </>
       )}
     </div>
+  );
+}
+
+/** The Overview tab's mixed-currency warning - unchanged wording from
+ * before 2.0.51, now followed by an optional "Convert to EUR" action row
+ * when there's actually something order-level to convert (data.
+ * nonEurOrderCurrencies - see that field's own doc comment for why it's a
+ * separate, order-scoped list from the ticket-scoped check that decides
+ * data.mixedCurrencies itself). marko's own request: a button per currency
+ * present, plus one "All" button once there's more than one to choose from
+ * ("bude na vyber tie, ktore su v inej menej alebo vsetky"). The exact
+ * converted totals aren't known until the live rate is actually fetched (on
+ * confirm), so the dialog explains what WILL happen rather than previewing
+ * numbers - same reasoning as Order Detail's own version of this dialog. */
+function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onConverted: () => void }) {
+  const toast = useToast();
+  const [pending, setPending] = useState<{ currencies: string[] | null; label: string } | null>(null);
+  const [converting, setConverting] = useState(false);
+
+  const nonEur = data.nonEurOrderCurrencies;
+  // 2.0.51 fix (second pair of eyes caught this): mixedCurrencies (ticket-
+  // scoped, needs 2+ distinct currencies to ever be true) and nonEur (order-
+  // scoped, needs just 1+ non-EUR order) are INDEPENDENT signals. A book of
+  // business that's entirely ONE non-EUR currency - e.g. a whole Google
+  // Sheets connection configured in GBP, arguably marko's most common real
+  // case - has mixedCurrencies=false (nothing is "mixed") but nonEur
+  // non-empty (there genuinely are non-EUR orders to convert). Gating the
+  // whole banner on mixedCurrencies alone made the bulk convert action
+  // unreachable for exactly that case. Show this section whenever EITHER
+  // signal is true; the warning text and the convert row below are each
+  // independently gated on their own actual condition, not on each other.
+  if (!data.mixedCurrencies && nonEur.length === 0) return null;
+
+  const runConversion = async () => {
+    if (!pending) return;
+    setConverting(true);
+    try {
+      const result = await api.convertCurrenciesToEur(pending.currencies ?? undefined);
+      setPending(null);
+      if (result.converted.length > 0) {
+        toast.success(`${result.converted.length} order${result.converted.length === 1 ? "" : "s"} converted to EUR`);
+        onConverted();
+      }
+      if (result.skipped.length > 0) {
+        toast.error(`${result.skipped.length} skipped: ${summarizeBulkDeleteSkips(result.skipped)}`);
+      }
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+        {data.mixedCurrencies && (
+          <p>
+            You have data in more than one currency. To avoid adding different currencies together, the totals
+            below only include <b>{data.primaryCurrency}</b>. Filter by event/platform to see the others.
+          </p>
+        )}
+        {nonEur.length > 0 && (
+          <div className={`flex flex-wrap items-center gap-2 ${data.mixedCurrencies ? "mt-2" : ""}`}>
+            <span className="font-medium">Convert to EUR:</span>
+            {nonEur.map((c) => (
+              <button
+                key={c.currency}
+                type="button"
+                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                onClick={() => setPending({ currencies: [c.currency], label: c.currency })}
+              >
+                {c.currency} ({c.orderCount})
+              </button>
+            ))}
+            {nonEur.length > 1 && (
+              <button
+                type="button"
+                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                onClick={() => setPending({ currencies: null, label: nonEur.map((c) => c.currency).join(", ") })}
+              >
+                All
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={pending !== null}
+        title="Convert to EUR?"
+        message={`Fetches today's live conversion rate(s) to EUR and converts every order currently in ${pending?.label} - plus its tickets and every sale on them, including refunded ones. Orders that can't be safely converted are skipped and reported, never guessed at. This cannot be undone.`}
+        confirmLabel="Convert to EUR"
+        danger
+        busy={converting}
+        onCancel={() => setPending(null)}
+        onConfirm={runConversion}
+      />
+    </>
   );
 }
 
