@@ -63,6 +63,57 @@ export function formatPercentOrMixed(ratio: number | null | undefined, currency:
   return formatPercent(ratio);
 }
 
+/** "vs previous period" delta shown on a Dashboard KPI card (2.0.47,
+ * DIR-001 - see REDESIGN-2.0.47-REPORT.md). `direction` drives the
+ * arrow icon; `label` is already fully formatted, never a raw number the
+ * caller has to format again. */
+export interface TrendInfo {
+  direction: "up" | "down" | "flat";
+  label: string;
+}
+
+/** "vs previous period" delta for a plain magnitude (money cents, ticket
+ * counts) - a generic relative percent change, not metric-specific:
+ * `(current - previous) / |previous| * 100`. `previous` null/undefined
+ * means there's no comparison to make (e.g. period = "All time" - see
+ * `previousPeriod` on DashboardData) - returns null so the caller renders
+ * no trend line rather than a misleading one. `previous === 0` is its own
+ * case (a plain percent change from zero is undefined) - shown as "New",
+ * with direction still following `current`'s own sign (e.g. Profit going
+ * from a break-even 0 to a loss is a "New" DOWN, not an "up" - this must
+ * not default to "up" just because a real percentage can't be computed),
+ * otherwise "No change".
+ *
+ * For a value that's already a ratio (Margin/ROI), use `computeTrendPoints`
+ * instead - a relative percent-of-a-percent change reads as confusingly
+ * large for those (see that function's own doc comment). */
+export function computeTrend(current: number, previous: number | null | undefined): TrendInfo | null {
+  if (previous === null || previous === undefined) return null;
+  if (previous === 0) {
+    if (current === 0) return { direction: "flat", label: "No change" };
+    return { direction: current > 0 ? "up" : "down", label: "New" };
+  }
+  const pct = ((current - previous) / Math.abs(previous)) * 100;
+  if (Math.abs(pct) < 0.05) return { direction: "flat", label: "No change" };
+  return { direction: pct > 0 ? "up" : "down", label: `${Math.abs(pct).toFixed(1)}%` };
+}
+
+/** Same "vs previous period" concept as `computeTrend`, but for a value
+ * that's ALREADY a ratio (Margin/ROI, both 0-1 fractions here) - shows a
+ * percentage-POINT delta (`current - previous`, e.g. "+3.2pp") instead of a
+ * relative percent-of-a-percent change. A margin that moved from 20% to 30%
+ * is "+10.0pp"; `computeTrend` would instead call that "+50.0%", which reads
+ * next to a "30%" value as if margin jumped to ~45-73%. Same null-handling
+ * as `computeTrend`: either side missing (no previous period, or a ratio
+ * that's null because its own period had zero revenue - see safe_ratio in
+ * finance.rs) means no comparison, not a misleading one. */
+export function computeTrendPoints(current: number | null, previous: number | null | undefined): TrendInfo | null {
+  if (current === null || previous === null || previous === undefined) return null;
+  const deltaPoints = (current - previous) * 100;
+  if (Math.abs(deltaPoints) < 0.05) return { direction: "flat", label: "No change" };
+  return { direction: deltaPoints > 0 ? "up" : "down", label: `${Math.abs(deltaPoints).toFixed(1)}pp` };
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);

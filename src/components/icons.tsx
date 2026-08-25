@@ -180,6 +180,26 @@ export const IconLogOut = (p: SVGProps<SVGSVGElement>) => (
     <path d="M21 12H9" />
   </Svg>
 );
+// 2.0.47: Dashboard KPI card "vs previous period" trend (DIR-001).
+export const IconTrendingUp = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M23 6 13.5 15.5 8.5 10.5 1 18" />
+    <path d="M17 6h6v6" />
+  </Svg>
+);
+export const IconTrendingDown = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M23 18 13.5 8.5 8.5 13.5 1 6" />
+    <path d="M17 18h6v-6" />
+  </Svg>
+);
+// 2.0.47: "Sales by platform" widget header (Dashboard Overview).
+export const IconBarChart = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M3 3v18h18" />
+    <path d="M7 16v-4M12 16V8M17 16v-7" />
+  </Svg>
+);
 // 2.0.44: "Continue with Google" button on Welcome.tsx - the standard 4-
 // color Google "G" mark, deliberately NOT run through the shared stroke-
 // based <Svg> wrapper above (this one is filled and multi-color, every

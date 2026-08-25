@@ -778,11 +778,40 @@ pub struct RevenueTimeSeriesPoint {
     pub sold_tickets: i64,
 }
 
+/// One row of the Dashboard's "Sales by platform" widget (2.0.47 - see
+/// REDESIGN-2.0.47-REPORT.md / DIR-001 "signature idea" #02). Same period/
+/// currency/event/platform scope and refund-exclusion rule as `period`
+/// above - deliberately reuses the exact same filters, just grouped by
+/// platform instead of collapsed into one total or broken out by date (see
+/// `RevenueTimeSeriesPoint` right above for the date-bucketed sibling of
+/// this same query shape). Mirrors Eventbrite's "Sales by Source" pattern
+/// found in research: revenue AND ticket count per channel, ordered by
+/// revenue so the platform actually earning the most sorts first.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformSales {
+    pub platform_id: Option<i64>,
+    /// None only when `platform_id` is None (a sale with no platform set on
+    /// it) - the frontend shows "No platform" for that row, the same label
+    /// already used for orders with no platform elsewhere in this app.
+    pub platform_name: Option<String>,
+    pub sold_tickets: i64,
+    pub revenue_cents: i64,
+    pub profit_cents: i64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
     pub inventory: FinanceSummary,
     pub period: FinanceSummary,
+    /// The equal-length window immediately preceding `period_from..
+    /// period_to`, used for the Dashboard KPI cards' "vs previous period"
+    /// trend (2.0.47, DIR-001). None when there's no sensible previous
+    /// period - "All time", or a Custom range with no explicit start - see
+    /// `previous_period_bounds` in dashboard.rs. Never affects `period`
+    /// itself; purely additional, read-only comparison data.
+    pub previous_period: Option<FinanceSummary>,
     pub period_from: String,
     pub period_to: String,
     pub recent_orders: Vec<Order>,
@@ -809,6 +838,9 @@ pub struct DashboardData {
     /// time_series_granularity), so the frontend can label ticks
     /// appropriately without re-deriving the same span logic itself.
     pub time_series_granularity: String,
+    /// "Sales by platform" widget (2.0.47) - see `PlatformSales` doc
+    /// comment. Ordered by `revenue_cents` descending.
+    pub sales_by_platform: Vec<PlatformSales>,
 }
 
 // ---------------------------------------------------------------------------

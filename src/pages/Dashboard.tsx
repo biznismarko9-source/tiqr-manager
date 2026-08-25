@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
+import { computeTrend, computeTrendPoints, formatDate, formatMoney, formatMoneyOrMixed, formatPercent, todayIso } from "../lib/format";
 import { Badge, Button, Card, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import {
   IconAlertTriangle,
+  IconBarChart,
   IconCalendarDays,
   IconDownload,
   IconPackage,
@@ -15,6 +16,36 @@ import {
   IconUpload,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
+
+// 2.0.47 (DIR-001 signature idea #01): the exact same "warning starting N
+// days before, escalating daily, gone once resolved" mechanism Pulls.tsx
+// already established for its own transfer-deadline warning - just applied
+// to the Dashboard's existing "Upcoming events (next 14 days)" alert list
+// instead of a pull's transfer deadline. Deliberately duplicated here
+// rather than extracted into a shared lib/format.ts helper: this round's
+// confirmed scope is Dashboard-only (see REDESIGN-2.0.47-REPORT.md), and
+// Pulls.tsx is working, shipped code this round doesn't otherwise touch -
+// same names/behavior as Pulls.tsx's own daysUntil/warningLabel, so a
+// future round can still unify them into one shared helper with zero
+// behavior change.
+const UPCOMING_WARNING_WINDOW_DAYS = 3;
+
+/** Whole days between today and `dateIso` (positive = in the future,
+ * negative = already passed). Plain calendar-day difference, not
+ * time-of-day-sensitive - matches how `eventDate` is always a plain
+ * "YYYY-MM-DD" string in this app. Byte-for-byte the same as Pulls.tsx's
+ * own daysUntil - see the comment above. */
+function daysUntil(dateIso: string): number {
+  const start = new Date(`${todayIso()}T00:00:00`);
+  const end = new Date(dateIso.length <= 10 ? `${dateIso}T00:00:00` : dateIso);
+  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+}
+
+function warningLabel(daysLeft: number): string {
+  if (daysLeft > 0) return `${daysLeft}d left`;
+  if (daysLeft === 0) return "Today!";
+  return `${Math.abs(daysLeft)}d overdue`;
+}
 
 // Same fixed window the backend uses (dashboard.rs::UPCOMING_EVENT_WINDOW_DAYS)
 // - shown in the section label only, never re-derived/recomputed here.
@@ -278,19 +309,41 @@ export default function Dashboard() {
                       : `${periodBoundLabel(data.periodFrom, "the beginning")} → ${periodBoundLabel(data.periodTo, "today")}`}
                   </p>
                   <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                    <StatCard label="Revenue" value={formatMoney(data.period.revenueCents, data.primaryCurrency)} />
-                    <StatCard label="Purchase cost" value={formatMoney(data.period.totalCostCents, data.primaryCurrency)} />
+                    <StatCard
+                      label="Revenue"
+                      value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
+                      trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
+                      sparkline={data.revenueTimeSeries.map((p) => p.revenueCents)}
+                    />
+                    <StatCard
+                      label="Purchase cost"
+                      value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
+                      trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
+                      trendColored={false}
+                    />
                     <StatCard
                       label="Profit"
                       value={formatMoney(data.period.profitCents, data.primaryCurrency)}
                       tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
+                      trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
+                      sparkline={data.revenueTimeSeries.map((p) => p.profitCents)}
                     />
-                    <StatCard label="Margin" value={formatPercent(data.period.margin)} />
-                    <StatCard label="ROI" value={formatPercent(data.period.roi)} />
+                    <StatCard
+                      label="Margin"
+                      value={formatPercent(data.period.margin)}
+                      trend={computeTrendPoints(data.period.margin, data.previousPeriod?.margin)}
+                    />
+                    <StatCard
+                      label="ROI"
+                      value={formatPercent(data.period.roi)}
+                      trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
+                    />
                     <StatCard
                       label="Tickets sold"
                       value={String(data.period.soldTickets)}
                       sub={`${data.period.purchasedTickets} purchased in period`}
+                      trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
+                      sparkline={data.revenueTimeSeries.map((p) => p.soldTickets)}
                     />
                   </div>
                   {/* Big number + line always come straight from data.period /
@@ -340,6 +393,16 @@ export default function Dashboard() {
                     metric={metric}
                   />
                 </Card>
+                {/* "Sales by platform" (2.0.47, DIR-001 signature idea #02) -
+                    same period/currency scope as the StatCards/chart above
+                    (data.salesByPlatform shares period_summary's exact
+                    scope - see dashboard.rs), so switching the period pills
+                    above updates this too, automatically. Orders/Sales
+                    already store platform_id today; this is the first place
+                    it gets grouped and shown as "which platform actually
+                    earns the most" (Eventbrite's "Sales by Source" - see
+                    REDESIGN-2.0.47-REPORT.md). */}
+                <SalesByPlatformCard data={data} />
                 </>
               )}
               {/* 1.9.6: relocated here from the top of this tab (see the
@@ -573,19 +636,67 @@ function RecentCard({
   title,
   icon,
   children,
+  className = "",
 }: {
   title: string;
   icon: ReactNode;
   children: ReactNode;
+  /** 2.0.47: optional, additive - every pre-2.0.47 call site (Activity tab's
+   * three Recent cards) relies on the grid wrapper around them for spacing
+   * and never passed this, so they render byte-identical to before. Added
+   * so the new standalone "Sales by platform" card (Overview tab) can get
+   * its own margin without a wrapper div just for that. */
+  className?: string;
 }) {
   return (
-    <Card>
+    <Card className={className}>
       <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
         <span className="text-slate-400 dark:text-slate-500">{icon}</span>
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{title}</h3>
       </div>
       {children}
     </Card>
+  );
+}
+
+/** "Sales by platform" (2.0.47, DIR-001 signature idea #02) - see the usage
+ * site's comment in the Overview tab. Bars are relative to this list's own
+ * biggest platform (not some fixed scale) - the point is comparing
+ * platforms against each other, not reading an absolute value off the bar
+ * itself (the revenue figure to its right already gives the exact number). */
+function SalesByPlatformCard({ data }: { data: DashboardData }) {
+  const rows = data.salesByPlatform;
+  const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
+  return (
+    <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="mb-8">
+      {rows.length === 0 ? (
+        <EmptyRow text="No sales in this period yet" />
+      ) : (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {rows.map((r) => (
+            <li key={r.platformId ?? "none"} className="px-4 py-2.5">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+                  {r.platformName ?? "No platform"}
+                </span>
+                <span className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
+                  {formatMoney(r.revenueCents, data.primaryCurrency)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 flex-1 rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className="h-1.5 rounded-full bg-brand-500"
+                    style={{ width: `${Math.max(4, (r.revenueCents / maxRevenue) * 100)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 text-xs tabular-nums text-slate-400 dark:text-slate-500">{r.soldTickets} sold</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </RecentCard>
   );
 }
 
@@ -667,7 +778,20 @@ function AttentionSection({ data }: { data: DashboardData }) {
   );
 }
 
+/** 2.0.47 (DIR-001 signature idea #01): adds an escalating amber/red warning
+ * badge - daysUntil/warningLabel/UPCOMING_WARNING_WINDOW_DAYS at the top of
+ * this file, ported from Pulls.tsx's own transfer-deadline warning - once
+ * an event is within UPCOMING_WARNING_WINDOW_DAYS. Every row in this list
+ * already passed the backend's own 14-day window (see
+ * UPCOMING_EVENT_WINDOW_DAYS in dashboard.rs), so the badge here is purely
+ * a further urgency escalation for the closest few, not a second filter -
+ * rows further than 3 days out keep showing just the plain day count they
+ * always did. The existing "{relevantInventory} left" text is unchanged,
+ * just joined by the new badge above it. */
 function UpcomingEventRow({ event }: { event: UpcomingEventAlert }) {
+  const daysLeft = daysUntil(event.eventDate);
+  const urgent = daysLeft <= UPCOMING_WARNING_WINDOW_DAYS;
+  const critical = daysLeft <= 0;
   return (
     <li>
       <Link
@@ -678,7 +802,19 @@ function UpcomingEventRow({ event }: { event: UpcomingEventAlert }) {
           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{event.name}</p>
           <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(event.eventDate)}</p>
         </div>
-        <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{event.relevantInventory} left</span>
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
+          {urgent && (
+            <span
+              className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium ${
+                critical ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
+              }`}
+            >
+              <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              {warningLabel(daysLeft)}
+            </span>
+          )}
+          <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{event.relevantInventory} left</span>
+        </div>
       </Link>
     </li>
   );

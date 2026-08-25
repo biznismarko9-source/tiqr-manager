@@ -3,8 +3,8 @@ use crate::db::AppState;
 use crate::error::AppResult;
 use crate::finance;
 use crate::models::{
-    CashflowSummary, DashboardAlerts, DashboardData, InventoryPotential, RevenueTimeSeriesPoint,
-    UpcomingEventAlert,
+    CashflowSummary, DashboardAlerts, DashboardData, InventoryPotential, PlatformSales,
+    RevenueTimeSeriesPoint, UpcomingEventAlert,
 };
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
@@ -113,6 +113,113 @@ fn bucket_key_expr(granularity: &str) -> &'static str {
     }
 }
 
+/// The equal-length window immediately preceding `period_from..period_to`
+/// (2.0.47) - used for the Dashboard KPI cards' "vs previous period" trend
+/// (DIR-001). Deliberately the generic "immediately preceding period of the
+/// same length" comparison - the same default GA4/Stripe-style dashboards
+/// fall back to when not explicitly toggled to a calendar-aware "same period
+/// last year" - not a per-period-type special case (which YTD/1Y/5Y would
+/// each need their own rule for). This is simple, consistent, and easy to
+/// explain, with one honestly-documented limitation: for a long or irregular
+/// range (YTD, 5Y) the "previous" window is still a real, equal-length prior
+/// window and still a meaningful trend signal, just not literally "the same
+/// range last year".
+///
+/// Returns None when there is no sensible previous period to compare against
+/// - "All time" (there's no "before all time") or a Custom range with no
+/// explicit start (same `0001-01-01`/`9999-12-31` sentinels `period_bounds`
+/// itself uses for those two cases).
+fn previous_period_bounds(period_from: &str, period_to: &str) -> Option<(String, String)> {
+    if period_from == "0001-01-01" || period_to == "9999-12-31" {
+        return None;
+    }
+    let from = NaiveDate::parse_from_str(period_from, "%Y-%m-%d").ok()?;
+    let to = NaiveDate::parse_from_str(period_to, "%Y-%m-%d").ok()?;
+    let span_days = (to - from).num_days() + 1; // inclusive on both ends
+    let prev_to = from - Duration::days(1);
+    let prev_from = prev_to - Duration::days(span_days - 1);
+    Some((prev_from.to_string(), prev_to.to_string()))
+}
+
+/// Runs the "purchase activity in [from,to]" + "sales activity in [from,to]"
+/// pair of queries `period_summary` has always used, and folds the results
+/// into one `FinanceSummary` via `finance::compute_summary` - byte-identical
+/// shape/scope to what used to be inlined directly in `get_dashboard_impl`.
+/// Pulled out into its own function in 2.0.47 purely so the new "previous
+/// period" comparison (`previous_period_bounds` above) can reuse it verbatim
+/// instead of duplicating ~40 lines of SQL - the current-period call site
+/// keeps computing exactly the same values it always did, just via this
+/// function now instead of inline.
+fn period_activity_summary(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    currency: &str,
+    event_id: Option<i64>,
+    platform_id: Option<i64>,
+) -> AppResult<finance::FinanceSummary> {
+    let mut purchase_sql = String::from(
+        "SELECT COUNT(t.id), COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0)
+         FROM tickets t JOIN orders o ON o.id = t.order_id
+         WHERE o.purchase_date BETWEEN ?1 AND ?2 AND t.currency = ?3",
+    );
+    let mut p_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(from.to_string()),
+        Box::new(to.to_string()),
+        Box::new(currency.to_string()),
+    ];
+    if let Some(eid) = event_id {
+        purchase_sql.push_str(&format!(" AND t.event_id = ?{}", p_params.len() + 1));
+        p_params.push(Box::new(eid));
+    }
+    if let Some(pid) = platform_id {
+        purchase_sql.push_str(&format!(" AND o.platform_id = ?{}", p_params.len() + 1));
+        p_params.push(Box::new(pid));
+    }
+    let p_refs: Vec<&dyn rusqlite::ToSql> = p_params.iter().map(|p| p.as_ref()).collect();
+    let (period_purchased, period_total_cost): (i64, i64) =
+        conn.query_row(&purchase_sql, p_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+
+    // Refunded sales excluded here too, and only the given currency counts.
+    let mut sales_sql = String::from(
+        "SELECT COUNT(*), COALESCE(SUM(s.sale_price_cents),0), COALESCE(SUM(s.selling_fees_cents),0),
+            COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0)
+         FROM sales s JOIN tickets t ON t.id = s.ticket_id
+         WHERE s.sale_date BETWEEN ?1 AND ?2 AND s.currency = ?3 AND s.payment_status != 'refunded'",
+    );
+    let mut s_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(from.to_string()),
+        Box::new(to.to_string()),
+        Box::new(currency.to_string()),
+    ];
+    if let Some(eid) = event_id {
+        sales_sql.push_str(&format!(" AND t.event_id = ?{}", s_params.len() + 1));
+        s_params.push(Box::new(eid));
+    }
+    if let Some(pid) = platform_id {
+        sales_sql.push_str(&format!(" AND s.platform_id = ?{}", s_params.len() + 1));
+        s_params.push(Box::new(pid));
+    }
+    let s_refs: Vec<&dyn rusqlite::ToSql> = s_params.iter().map(|p| p.as_ref()).collect();
+    let (period_sold, period_revenue, period_fees, period_cogs): (i64, i64, i64, i64) =
+        conn.query_row(&sales_sql, s_refs.as_slice(), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+
+    Ok(finance::compute_summary(
+        period_purchased,
+        0,
+        0,
+        period_sold,
+        0,
+        period_total_cost,
+        period_cogs,
+        period_revenue,
+        period_fees,
+        Some(currency.to_string()),
+    ))
+}
+
 #[tauri::command]
 pub fn get_dashboard(
     state: State<AppState>,
@@ -217,68 +324,30 @@ pub(crate) fn get_dashboard_impl(
         Some(primary_currency.clone()),
     );
 
-    // ---- period-filtered purchase activity (by order purchase_date) ----
-    let mut purchase_sql = String::from(
-        "SELECT COUNT(t.id), COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0)
-         FROM tickets t JOIN orders o ON o.id = t.order_id
-         WHERE o.purchase_date BETWEEN ?1 AND ?2 AND t.currency = ?3",
-    );
-    let mut p_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(period_from.clone()),
-        Box::new(period_to.clone()),
-        Box::new(primary_currency.clone()),
-    ];
-    if let Some(eid) = event_id {
-        purchase_sql.push_str(&format!(" AND t.event_id = ?{}", p_params.len() + 1));
-        p_params.push(Box::new(eid));
-    }
-    if let Some(pid) = platform_id {
-        purchase_sql.push_str(&format!(" AND o.platform_id = ?{}", p_params.len() + 1));
-        p_params.push(Box::new(pid));
-    }
-    let p_refs: Vec<&dyn rusqlite::ToSql> = p_params.iter().map(|p| p.as_ref()).collect();
-    let (period_purchased, period_total_cost): (i64, i64) =
-        conn.query_row(&purchase_sql, p_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
-
-    // ---- period-filtered sales activity (by sale_date) ----
-    // Refunded sales excluded here too, and only the primary currency counts.
-    let mut sales_sql = String::from(
-        "SELECT COUNT(*), COALESCE(SUM(s.sale_price_cents),0), COALESCE(SUM(s.selling_fees_cents),0),
-            COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0)
-         FROM sales s JOIN tickets t ON t.id = s.ticket_id
-         WHERE s.sale_date BETWEEN ?1 AND ?2 AND s.currency = ?3 AND s.payment_status != 'refunded'",
-    );
-    let mut s_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(period_from.clone()),
-        Box::new(period_to.clone()),
-        Box::new(primary_currency.clone()),
-    ];
-    if let Some(eid) = event_id {
-        sales_sql.push_str(&format!(" AND t.event_id = ?{}", s_params.len() + 1));
-        s_params.push(Box::new(eid));
-    }
-    if let Some(pid) = platform_id {
-        sales_sql.push_str(&format!(" AND s.platform_id = ?{}", s_params.len() + 1));
-        s_params.push(Box::new(pid));
-    }
-    let s_refs: Vec<&dyn rusqlite::ToSql> = s_params.iter().map(|p| p.as_ref()).collect();
-    let (period_sold, period_revenue, period_fees, period_cogs): (i64, i64, i64, i64) =
-        conn.query_row(&sales_sql, s_refs.as_slice(), |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?;
-
-    let period_summary = finance::compute_summary(
-        period_purchased,
-        0,
-        0,
-        period_sold,
-        0,
-        period_total_cost,
-        period_cogs,
-        period_revenue,
-        period_fees,
-        Some(primary_currency.clone()),
-    );
+    // ---- period-filtered purchase + sales activity (by purchase_date/
+    // sale_date respectively), and its "vs previous period" comparison
+    // (2.0.47, DIR-001) - both computed via the shared
+    // `period_activity_summary` helper right above, so `period_summary`
+    // keeps computing exactly the same numbers it always did.
+    let period_summary = period_activity_summary(
+        conn,
+        &period_from,
+        &period_to,
+        &primary_currency,
+        event_id,
+        platform_id,
+    )?;
+    let previous_period = match previous_period_bounds(&period_from, &period_to) {
+        Some((prev_from, prev_to)) => Some(period_activity_summary(
+            conn,
+            &prev_from,
+            &prev_to,
+            &primary_currency,
+            event_id,
+            platform_id,
+        )?),
+        None => None,
+    };
 
     // ---- Revenue/Profit over time (chart) --------------------------------
     // Same scope as `period_summary` right above (period_from/period_to,
@@ -329,6 +398,58 @@ pub(crate) fn get_dashboard_impl(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(ts_stmt);
+
+    // ---- Sales by platform (2.0.47, DIR-001 signature idea #02) ---------
+    // Same scope as `period_summary`/`revenue_time_series` right above
+    // (period_from/period_to, primary_currency, event_id/platform_id,
+    // refund-excluded) - just grouped by platform instead of collapsed into
+    // one total or broken out by date. LEFT JOIN so a sale with no platform
+    // set still gets its own row (platform_id/platform_name both None -
+    // "No platform" on the frontend) rather than being silently dropped.
+    // Ordered by revenue so the platform actually earning the most sorts
+    // first - the whole point of this widget (see PlatformSales doc
+    // comment).
+    let mut plat_sql = String::from(
+        "SELECT s.platform_id, p.name as platform_name, COUNT(*) as sold_tickets,
+            COALESCE(SUM(s.sale_price_cents),0) as revenue_cents,
+            COALESCE(SUM(s.selling_fees_cents),0) as selling_fees_cents,
+            COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0) as cogs_cents
+         FROM sales s
+         JOIN tickets t ON t.id = s.ticket_id
+         LEFT JOIN platforms p ON p.id = s.platform_id
+         WHERE s.sale_date BETWEEN ?1 AND ?2 AND s.currency = ?3 AND s.payment_status != 'refunded'",
+    );
+    let mut plat_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(period_from.clone()),
+        Box::new(period_to.clone()),
+        Box::new(primary_currency.clone()),
+    ];
+    if let Some(eid) = event_id {
+        plat_sql.push_str(&format!(" AND t.event_id = ?{}", plat_params.len() + 1));
+        plat_params.push(Box::new(eid));
+    }
+    if let Some(pid) = platform_id {
+        plat_sql.push_str(&format!(" AND s.platform_id = ?{}", plat_params.len() + 1));
+        plat_params.push(Box::new(pid));
+    }
+    plat_sql.push_str(" GROUP BY s.platform_id ORDER BY revenue_cents DESC");
+    let plat_refs: Vec<&dyn rusqlite::ToSql> = plat_params.iter().map(|p| p.as_ref()).collect();
+    let mut plat_stmt = conn.prepare(&plat_sql)?;
+    let sales_by_platform = plat_stmt
+        .query_map(plat_refs.as_slice(), |r| {
+            let revenue_cents: i64 = r.get("revenue_cents")?;
+            let selling_fees_cents: i64 = r.get("selling_fees_cents")?;
+            let cogs_cents: i64 = r.get("cogs_cents")?;
+            Ok(PlatformSales {
+                platform_id: r.get("platform_id")?,
+                platform_name: r.get("platform_name")?,
+                sold_tickets: r.get("sold_tickets")?,
+                revenue_cents,
+                profit_cents: finance::profit_cents(revenue_cents, cogs_cents, selling_fees_cents),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(plat_stmt);
 
     // ---- Inventory Cost / Listing Value / Potential Profit --------------
     // Deliberately separate from `inventory`/`period_summary` above (both
@@ -475,6 +596,7 @@ pub(crate) fn get_dashboard_impl(
     Ok(DashboardData {
         inventory,
         period: period_summary,
+        previous_period,
         period_from,
         period_to,
         recent_orders,
@@ -487,6 +609,7 @@ pub(crate) fn get_dashboard_impl(
         cashflow,
         revenue_time_series,
         time_series_granularity: granularity.to_string(),
+        sales_by_platform,
     })
 }
 
@@ -1228,5 +1351,226 @@ mod tests {
         assert_eq!(data.revenue_time_series.len(), 1);
         assert_eq!(data.revenue_time_series[0].revenue_cents, 2000, "event_b's sale must not leak in");
         assert_eq!(data.revenue_time_series[0].revenue_cents, data.period.revenue_cents);
+    }
+
+    // ---- 2.0.47: previous-period comparison (DIR-001 KPI trend) -----------
+
+    #[test]
+    fn previous_period_bounds_is_the_immediately_preceding_equal_length_window() {
+        assert_eq!(
+            previous_period_bounds("2026-03-01", "2026-03-07"),
+            Some(("2026-02-22".to_string(), "2026-02-28".to_string())),
+            "7-day period -> 7-day window ending the day before it starts"
+        );
+        assert_eq!(
+            previous_period_bounds("2026-08-19", "2026-08-19"),
+            Some(("2026-08-18".to_string(), "2026-08-18".to_string())),
+            "a single-day period (Today) compares against yesterday"
+        );
+        assert_eq!(
+            previous_period_bounds("2026-01-01", "2026-01-05"),
+            Some(("2025-12-27".to_string(), "2025-12-31".to_string())),
+            "must cross a year boundary correctly"
+        );
+    }
+
+    #[test]
+    fn previous_period_bounds_returns_none_when_there_is_no_real_start_or_end() {
+        assert_eq!(previous_period_bounds("0001-01-01", "9999-12-31"), None, "All time");
+        assert_eq!(previous_period_bounds("0001-01-01", "2026-08-19"), None, "Custom with an empty From");
+        assert_eq!(previous_period_bounds("2026-01-01", "9999-12-31"), None, "defensive: an unbounded end too");
+    }
+
+    #[test]
+    fn previous_period_is_populated_and_scoped_to_the_immediately_preceding_window() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Trend Event", "upcoming", None);
+        let current_ticket = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let prior_ticket = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        seed_sale(&mut conn, current_ticket, "2026-03-01", 2000); // inside the current period
+        seed_sale(&mut conn, prior_ticket, "2026-02-25", 5000); // inside the immediately preceding period
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.period.revenue_cents, 2000, "only the current-period sale");
+        let previous = data.previous_period.expect("a real custom range must have a previous period");
+        assert_eq!(previous.revenue_cents, 5000, "only the prior-window sale, none of the current period's");
+        assert_eq!(previous.sold_tickets, 1);
+    }
+
+    #[test]
+    fn previous_period_is_none_when_there_is_no_sensible_prior_window() {
+        let conn = test_conn();
+        let data_all = get_dashboard_impl(&conn, Some("all"), None, None, None, None).unwrap();
+        assert!(data_all.previous_period.is_none(), "there is no 'before all time'");
+
+        let data_custom_empty_from =
+            get_dashboard_impl(&conn, Some("custom"), None, Some("2026-08-19".to_string()), None, None).unwrap();
+        assert!(
+            data_custom_empty_from.previous_period.is_none(),
+            "a custom range with no explicit start has no real prior window either"
+        );
+    }
+
+    // ---- 2.0.47: sales by platform (DIR-001 signature idea #02) -----------
+
+    fn seed_platform(conn: &Connection, name: &str) -> i64 {
+        conn.execute("INSERT INTO platforms (name) VALUES (?1)", params![name]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Same as `seed_sale` but with an explicit platform_id - used only by
+    /// the sales-by-platform tests below. Every existing chart test keeps
+    /// using the plain `seed_sale` helper (always platform_id: None),
+    /// deliberately left untouched.
+    fn seed_sale_with_platform(
+        conn: &mut Connection,
+        ticket_id: i64,
+        sale_date: &str,
+        price_cents: i64,
+        platform_id: Option<i64>,
+    ) -> i64 {
+        crate::commands::sales::create_sale_impl(
+            conn,
+            &crate::models::SaleInput {
+                ticket_id,
+                platform_id,
+                sale_date: sale_date.to_string(),
+                sale_price_cents: price_cents,
+                selling_fees_cents: 0,
+                payment_status: Some("paid".to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sales_by_platform_groups_and_orders_by_revenue_descending() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Platform Event", "upcoming", None);
+        let stubhub = seed_platform(&conn, "StubHub");
+        let viagogo = seed_platform(&conn, "Viagogo");
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let t2 = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        let t3 = seed_ticket(&conn, "3", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_platform(&mut conn, t1, "2026-03-01", 2000, Some(stubhub));
+        seed_sale_with_platform(&mut conn, t2, "2026-03-02", 9000, Some(viagogo)); // biggest -> must sort first
+        seed_sale_with_platform(&mut conn, t3, "2026-03-03", 1000, Some(stubhub));
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.sales_by_platform.len(), 2);
+        assert_eq!(data.sales_by_platform[0].platform_name, Some("Viagogo".to_string()));
+        assert_eq!(data.sales_by_platform[0].revenue_cents, 9000);
+        assert_eq!(data.sales_by_platform[0].sold_tickets, 1);
+        assert_eq!(data.sales_by_platform[1].platform_name, Some("StubHub".to_string()));
+        assert_eq!(data.sales_by_platform[1].revenue_cents, 3000, "2000 + 1000, StubHub's two sales combined");
+        assert_eq!(data.sales_by_platform[1].sold_tickets, 2);
+    }
+
+    #[test]
+    fn sales_by_platform_gives_sales_with_no_platform_their_own_row() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "No Platform Event", "upcoming", None);
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_platform(&mut conn, t1, "2026-03-01", 2000, None);
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.sales_by_platform.len(), 1);
+        assert_eq!(data.sales_by_platform[0].platform_id, None);
+        assert_eq!(data.sales_by_platform[0].platform_name, None, "frontend shows this row as \"No platform\"");
+        assert_eq!(data.sales_by_platform[0].revenue_cents, 2000);
+    }
+
+    #[test]
+    fn sales_by_platform_excludes_refunds_same_as_period_total() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Refund Platform Event", "upcoming", None);
+        let platform = seed_platform(&conn, "SeatGeek");
+        let active = seed_ticket(&conn, "1", event_id, "available", "EUR", 1000, None);
+        let refunded = seed_ticket(&conn, "2", event_id, "available", "EUR", 1000, None);
+        seed_sale_with_platform(&mut conn, active, "2026-03-01", 2000, Some(platform));
+        let refunded_sale_id = seed_sale_with_platform(&mut conn, refunded, "2026-03-02", 9000, Some(platform));
+        crate::commands::sales::refund_sale_impl(&mut conn, refunded_sale_id, Some("test refund")).unwrap();
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.sales_by_platform.len(), 1);
+        assert_eq!(data.sales_by_platform[0].revenue_cents, 2000, "the refunded sale must not count");
+        assert_eq!(data.sales_by_platform[0].sold_tickets, 1);
+    }
+
+    #[test]
+    fn sales_by_platform_profit_is_revenue_minus_cogs_minus_fees() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Profit Platform Event", "upcoming", None);
+        let platform = seed_platform(&conn, "TickPick");
+        // purchase_fees_cents/other_costs_cents both default to 0 - see
+        // seed_ticket - so this ticket's full cost is just its 1500.
+        let t1 = seed_ticket(&conn, "1", event_id, "available", "EUR", 1500, None);
+
+        crate::commands::sales::create_sale_impl(
+            &mut conn,
+            &crate::models::SaleInput {
+                ticket_id: t1,
+                platform_id: Some(platform),
+                sale_date: "2026-03-01".to_string(),
+                sale_price_cents: 5000,
+                selling_fees_cents: 400,
+                payment_status: Some("paid".to_string()),
+                buyer_reference: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data.sales_by_platform.len(), 1);
+        assert_eq!(data.sales_by_platform[0].revenue_cents, 5000);
+        assert_eq!(data.sales_by_platform[0].profit_cents, 5000 - 1500 - 400, "revenue - cogs - selling fees");
     }
 }

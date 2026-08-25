@@ -491,9 +491,28 @@ export interface RevenueTimeSeriesPoint {
  * useDashboardTab for the load/persist logic. */
 export type DashboardTab = "overview" | "financials" | "activity";
 
+/** One row of the Dashboard's "Sales by platform" widget (2.0.47, DIR-001 -
+ * see REDESIGN-2.0.47-REPORT.md). Same period/currency/event/platform scope
+ * as `DashboardData.period`, just grouped by platform instead of collapsed
+ * into one total. Mirrors src-tauri/src/models.rs's `PlatformSales`. */
+export interface PlatformSales {
+  platformId: number | null;
+  /** null only when platformId is null (a sale with no platform set) - shown as "No platform". */
+  platformName: string | null;
+  soldTickets: number;
+  revenueCents: number;
+  profitCents: number;
+}
+
 export interface DashboardData {
   inventory: FinanceSummary;
   period: FinanceSummary;
+  /** The equal-length window immediately preceding periodFrom..periodTo,
+   * used for the Dashboard KPI cards' "vs previous period" trend (2.0.47,
+   * DIR-001 - see computeTrend/computeTrendPoints in lib/format.ts). null
+   * when there's no sensible previous period ("All time", or a Custom range
+   * with no explicit start) - see previous_period_bounds in dashboard.rs. */
+  previousPeriod: FinanceSummary | null;
   periodFrom: string;
   periodTo: string;
   recentOrders: OrderRecord[];
@@ -514,6 +533,8 @@ export interface DashboardData {
   revenueTimeSeries: RevenueTimeSeriesPoint[];
   /** "day" | "week" | "month" - the bucket width revenueTimeSeries used. */
   timeSeriesGranularity: string;
+  /** "Sales by platform" widget (2.0.47) - see PlatformSales. Ordered by revenueCents descending. */
+  salesByPlatform: PlatformSales[];
 }
 
 export interface CsvPreviewRow {
