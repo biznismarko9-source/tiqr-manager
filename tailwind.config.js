@@ -5,58 +5,60 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 2.0.56: marko's own "Brown & beige" pick, replacing the generic
-        // blue-accent/white-light/navy-dark look every dashboard starts
-        // with. Both ramps below are full 11-stop Tailwind-shaped scales
-        // (not just the 2 exact colors from the preview document) so every
-        // existing bg-/text-/border-/ring-/divide-/placeholder:-slate-N and
-        // -brand-N class across the whole app picks up the new colors
-        // automatically - nothing else needed to change to re-theme every
-        // page at once.
+        // 2.0.58: reverted 2.0.56's "Brown & beige" back to the original
+        // blue-accent/white-light/navy-dark look - marko tried the brown in
+        // production and didn't like it. Both ramps below are full 11-stop
+        // Tailwind-shaped scales (matching the same shape 2.0.56 used) so
+        // every existing bg-/text-/border-/ring-/divide-/placeholder:-slate-N
+        // and -brand-N class across the whole app picks up the reverted
+        // colors automatically - same one-file mechanism that made 2.0.56
+        // apply everywhere at once now makes reverting it a one-file change
+        // too.
         //
-        // brand: was a blue accent (50 #eef4ff ... 950 #181c4d) - now a
-        // rich brown. 600 (~#7d5726) is the "confirmed" accent from the
-        // preview document's light mode (was closer to #6b4a30 there - a
-        // full graduated ramp needs a slightly different exact value at
-        // each stop than one hand-picked swatch did, same reasoning as the
-        // slate ramp below). 400 is the paler stop dark-mode text/links
-        // already lean on for contrast against a dark page - same role
-        // brand-400 always had, just brown instead of blue now.
+        // brand: back to blue. This app's own history only ever recorded 3
+        // exact stops of the original custom scale (50 #eef4ff, 600
+        // #4a68f7 - the "confirmed" accent quoted in REDESIGN-2.0.56 - and
+        // 950 #181c4d), not the other 8 - a full ramp was never dumped
+        // anywhere before 2.0.56 replaced it. The 8 missing stops here are
+        // reconstructed (HSL-interpolated between those 3 known points, the
+        // same hue/lightness-curve approach 2.0.56 itself used to go from
+        // one hand-picked swatch to a full ramp) rather than restored
+        // byte-for-byte - so 50/600/950 are exactly what this app had
+        // before, and 100-500/700-900 are a close, smooth match rather than
+        // a guaranteed pixel-identical one. Flag it if any shade looks off
+        // and I'll tune that one stop directly.
         brand: {
-          50: "#f9f4ec",
-          100: "#f0e4d0",
-          200: "#e2cba3",
-          300: "#cea86d",
-          400: "#b8863f",
-          500: "#9c6d2e",
-          600: "#7d5726",
-          700: "#644422",
-          800: "#4f371f",
-          900: "#3f2c1c",
-          950: "#251a10",
+          50: "#eef4ff",
+          100: "#d2e0ff",
+          200: "#b6cbfe",
+          300: "#9ab4fd",
+          400: "#7f9cfb",
+          500: "#6483f9",
+          600: "#4a68f7",
+          700: "#213fe9",
+          800: "#1e30b5",
+          900: "#1d277f",
+          950: "#181c4d",
         },
-        // slate: overrides Tailwind's own built-in blue-gray slate (50
-        // #f8fafc ... 950 #020617) with a warm beige-to-brown neutral ramp
-        // instead - this is what actually fixes "light mode white, dark
-        // mode navy", since body/page backgrounds, borders, and most text
-        // throughout the app are all slate-N, not brand-N. 50 (#f2e9d8) and
-        // 950 (#241a10) are the exact page-background colors from the
-        // confirmed preview; 900 (#2f2317) is deliberately LIGHTER than 950
-        // so a dark-mode card (bg-slate-900) still reads as "raised" above
-        // the dark-mode page (bg-slate-950) behind it, same relationship
-        // light mode already has between white cards and the slate-50 page.
+        // slate: back to Tailwind's own built-in blue-gray slate scale -
+        // this app's history confirms both endpoints (50 #f8fafc, 950
+        // #020617) matched Tailwind's stock slate exactly, i.e. 2.0.56's
+        // beige/brown values were the only override that ever existed here.
+        // Restored byte-for-byte from Tailwind's published default palette,
+        // not reconstructed - unlike brand above, there is no uncertainty
+        // in this half of the revert.
         slate: {
-          50: "#f2e9d8",
-          100: "#e9dcc2",
-          200: "#dbc7a0",
-          300: "#c4a877",
-          400: "#a3835a",
-          500: "#836548",
-          600: "#684f39",
-          700: "#503d2d",
-          800: "#3d2f1e",
-          900: "#2f2317",
-          950: "#241a10",
+          50: "#f8fafc",
+          100: "#f1f5f9",
+          200: "#e2e8f0",
+          300: "#cbd5e1",
+          400: "#94a3b8",
+          500: "#64748b",
+          600: "#475569",
+          700: "#334155",
+          800: "#1e293b",
+          900: "#0f172a",
+          950: "#020617",
         },
       },
       fontFamily: {

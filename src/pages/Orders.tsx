@@ -17,14 +17,25 @@ import {
   ModalFooter,
   PageHeader,
   Select,
+  TabSwitcher,
   Textarea,
 } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { OrderRecord } from "../lib/types";
+
+// 2.0.59: "Active" vs "Paid" tabs (marko's request - see
+// REDESIGN-2.0.59-REPORT.md), same shape as Events'. Only Payment status =
+// Paid counts as done - Unpaid and Partial both still need attention, so
+// both stay in "Active" (marko's own explicit choice when asked).
+const ORDER_TABS: { key: "active" | "paid"; label: string }[] = [
+  { key: "active", label: "Active" },
+  { key: "paid", label: "Paid" },
+];
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
@@ -105,6 +116,8 @@ export default function Orders() {
   // filter, which nobody asked for here.
   const [categoryId, setCategoryId] = useState<number | "">(lastOrdersCategoryId);
   const [sortBy, setSortBy] = useState(lastOrdersSortBy);
+  // 2.0.59: see ORDER_TABS above.
+  const [tab, setTab] = useListTab("ordersTab", ["active", "paid"] as const);
   const [modalOpen, setModalOpen] = useState(false);
   const [presetEventId, setPresetEventId] = useState<number | undefined>(undefined);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -162,6 +175,14 @@ export default function Orders() {
     return orders;
   }, [orders, sortBy]);
 
+  // 2.0.59: tab split happens client-side, after sorting, on data the page
+  // already fetched - no new backend query, same "filter what's already in
+  // memory" approach the sort above already uses.
+  const visibleOrders = useMemo(
+    () => sortedOrders.filter((o) => (tab === "paid" ? o.paymentStatus === "paid" : o.paymentStatus !== "paid")),
+    [sortedOrders, tab],
+  );
+
   const toggleOne = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -171,9 +192,12 @@ export default function Orders() {
     });
   };
 
-  const allSelected = orders !== null && orders.length > 0 && orders.every((o) => selected.has(o.id));
+  // 2.0.59: scoped to visibleOrders (the current tab), not every order ever
+  // fetched - "select all" should only ever select what you can actually
+  // see, so it can never bulk-delete something the other tab is hiding.
+  const allSelected = visibleOrders.length > 0 && visibleOrders.every((o) => selected.has(o.id));
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set((orders ?? []).map((o) => o.id)));
+    setSelected(allSelected ? new Set() : new Set(visibleOrders.map((o) => o.id)));
   };
 
   const exitSelectionMode = () => {
@@ -240,6 +264,8 @@ export default function Orders() {
         }
       />
 
+      <TabSwitcher tabs={ORDER_TABS} active={tab} onChange={setTab} />
+
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-64">
           <span className="label">Search</span>
@@ -304,6 +330,17 @@ export default function Orders() {
             <Button variant="primary" onClick={() => setModalOpen(true)}>
               <IconPlus className="h-4 w-4" /> New Order
             </Button>
+          }
+        />
+      ) : visibleOrders.length === 0 ? (
+        // 2.0.59: orders exist, just none in the active tab.
+        <EmptyState
+          icon={<IconPackage className="h-8 w-8" />}
+          title={tab === "active" ? "No active orders" : "No paid orders yet"}
+          description={
+            tab === "active"
+              ? "Every order is fully paid. Switch to the Paid tab to see them."
+              : "Orders move here once their Payment status is Paid."
           }
         />
       ) : (
@@ -396,7 +433,7 @@ export default function Orders() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sortedOrders.map((o) => (
+              {visibleOrders.map((o) => (
                 <tr
                   key={o.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"

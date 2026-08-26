@@ -12,7 +12,6 @@ import {
   formatPercentOrMixed,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  titleCase,
   todayIso,
 } from "../lib/format";
 import {
@@ -29,13 +28,27 @@ import {
   ModalFooter,
   PageHeader,
   Select,
+  TabSwitcher,
   Textarea,
 } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
+
+// 2.0.59: "Pending" vs "Completed" tabs (marko's request - see
+// REDESIGN-2.0.59-REPORT.md). A group's paymentStatus is only Some(...) when
+// EVERY line in it shares one status (see GROUP_BASE_SELECT in sales.rs) -
+// null ("Mixed", e.g. one ticket refunded later than another) stays in
+// Pending rather than Completed, since a group that isn't cleanly resolved
+// one way still deserves a look, same "don't quietly resolve ambiguity"
+// spirit as showing "Mixed" instead of guessing elsewhere in this app.
+const SALES_TABS: { key: "pending" | "completed"; label: string }[] = [
+  { key: "pending", label: "Pending" },
+  { key: "completed", label: "Completed" },
+];
 
 // 1.8.0: preferred/well-known currency codes for the Sales screen's Currency
 // filter (section 4 of the brief) - always offered regardless of whether the
@@ -74,7 +87,6 @@ interface SalesFilterState {
   /** 2.0.27 */
   categoryId: number | "";
   platformId: number | "";
-  paymentStatus: string;
   currency: string;
   refundStatus: string;
   dateFrom: string;
@@ -131,13 +143,14 @@ export default function Sales() {
   // category), sitting next to the existing Event filter.
   const [categoryId, setCategoryId] = useState<number | "">(lastFilters?.categoryId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(lastFilters?.platformId ?? "");
-  const [paymentStatus, setPaymentStatus] = useState(lastFilters?.paymentStatus ?? "");
   const [currency, setCurrency] = useState(lastFilters?.currency ?? "");
   const [refundStatus, setRefundStatus] = useState(lastFilters?.refundStatus ?? "");
   const [dateFrom, setDateFrom] = useState(lastFilters?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(lastFilters?.dateTo ?? "");
   const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "");
   const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
+  // 2.0.59: see SALES_TABS above.
+  const [tab, setTab] = useListTab("salesTab", ["pending", "completed"] as const);
 
   const [modalOpen, setModalOpen] = useState(false);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -178,8 +191,8 @@ export default function Sales() {
   // file) so returning from Sale Detail finds the Sales screen exactly as it
   // was left - without touching Sale Detail's own navigation at all.
   useEffect(() => {
-    lastFilters = { search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy };
-  }, [search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
+    lastFilters = { search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy };
+  }, [search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
@@ -188,7 +201,11 @@ export default function Sales() {
         eventId: eventId || undefined,
         categoryId: categoryId || undefined,
         platformId: platformId || undefined,
-        paymentStatus: paymentStatus || undefined,
+        // 2.0.59: no longer sent - the Payment dropdown this used to come
+        // from is gone, replaced by the Pending/Completed tabs below, which
+        // filter client-side instead (see visibleGroups) so every group's
+        // own paymentStatus - including "Mixed" (null) - can be bucketed by
+        // the same rule the tabs themselves document.
         currency: currency || undefined,
         refundStatus: refundStatus || undefined,
         dateFrom: dateFrom || undefined,
@@ -199,6 +216,16 @@ export default function Sales() {
       .catch((e) => toast.error(errMsg(e)));
   };
 
+  // 2.0.59: tab split happens client-side on data the page already fetched -
+  // see SALES_TABS above for the exact bucketing rule (Mixed stays Pending).
+  const visibleGroups = useMemo(() => {
+    if (!groups) return [];
+    return groups.filter((g) => {
+      const isCompleted = g.paymentStatus === "paid" || g.paymentStatus === "refunded";
+      return tab === "completed" ? isCompleted : !isCompleted;
+    });
+  }, [groups, tab]);
+
   const toggleOne = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -208,9 +235,12 @@ export default function Sales() {
     });
   };
 
-  const allSelected = groups !== null && groups.length > 0 && groups.every((g) => selected.has(g.id));
+  // 2.0.59: scoped to visibleGroups (the current tab), not every group ever
+  // fetched - "select all" should only ever select what you can actually
+  // see, so it can never bulk-delete something the other tab is hiding.
+  const allSelected = visibleGroups.length > 0 && visibleGroups.every((g) => selected.has(g.id));
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set((groups ?? []).map((g) => g.id)));
+    setSelected(allSelected ? new Set() : new Set(visibleGroups.map((g) => g.id)));
   };
 
   const exitSelectionMode = () => {
@@ -242,16 +272,22 @@ export default function Sales() {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, sortBy]);
+  }, [search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy]);
 
+  // 2.0.59: scoped to visibleGroups (the current tab) so this caption always
+  // describes what's actually on screen, same choice as Events/Orders/
+  // Tickets' own new tabs. cashTotals below is deliberately different - see
+  // its own comment.
   const totals = useMemo(() => {
     if (!groups) return null;
     // Every group's own revenue/profit already excludes its refunded lines,
     // so this can sum them directly. Amounts in different currencies can
     // never be added together, so this only sums when every group shares one.
     const summaryCurrency =
-      groups.length > 0 && groups.every((g) => g.currency === groups[0].currency) ? groups[0].currency : null;
-    const sums = groups.reduce(
+      visibleGroups.length > 0 && visibleGroups.every((g) => g.currency === visibleGroups[0].currency)
+        ? visibleGroups[0].currency
+        : null;
+    const sums = visibleGroups.reduce(
       (acc, g) => ({
         revenue: acc.revenue + g.revenueCents,
         profit: acc.profit + g.profitCents,
@@ -261,8 +297,16 @@ export default function Sales() {
       { revenue: 0, profit: 0, tickets: 0, refunded: 0 },
     );
     return { ...sums, currency: summaryCurrency };
-  }, [groups]);
+  }, [groups, visibleGroups]);
 
+  // 2.0.59: deliberately stays on `groups` (every matching sale), not
+  // visibleGroups - Paid/Outstanding is a cash-position summary ("how much
+  // money is owed vs already collected, overall"), not a caption for what
+  // the table below happens to be showing right now. Scoping it to the
+  // Pending tab would make "Outstanding" swing to ~0 the moment you switch
+  // to Completed, which would misreport real outstanding cash rather than
+  // just changing what's on screen.
+  //
   // 1.9.0 (section 3, "Sales - payment summary"): Paid/Outstanding totals,
   // built only from what's already on each SaleGroup row - no new backend
   // query. A group's `paymentStatus` is only Some(...) when EVERY line in it
@@ -318,9 +362,6 @@ export default function Sales() {
       const p = platforms.find((pl) => pl.id === platformId);
       chips.push({ key: "platform", label: `Platform: ${p?.name ?? platformId}`, onRemove: () => setPlatformId("") });
     }
-    if (paymentStatus) {
-      chips.push({ key: "payment", label: `Status: ${titleCase(paymentStatus)}`, onRemove: () => setPaymentStatus("") });
-    }
     if (currency) {
       chips.push({ key: "currency", label: `Currency: ${currency}`, onRemove: () => setCurrency("") });
     }
@@ -334,7 +375,7 @@ export default function Sales() {
     if (dateFrom) chips.push({ key: "from", label: `From: ${dateFrom}`, onRemove: () => setDateFrom("") });
     if (dateTo) chips.push({ key: "to", label: `To: ${dateTo}`, onRemove: () => setDateTo("") });
     return chips;
-  }, [eventId, categoryId, platformId, paymentStatus, currency, refundStatus, dateFrom, dateTo, events, platforms, categories]);
+  }, [eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, events, platforms, categories]);
 
   const hasActiveFilters = activeFilters.length > 0 || !!search;
 
@@ -343,7 +384,6 @@ export default function Sales() {
     setEventId("");
     setCategoryId("");
     setPlatformId("");
-    setPaymentStatus("");
     setCurrency("");
     setRefundStatus("");
     setDateFrom("");
@@ -368,6 +408,8 @@ export default function Sales() {
           </div>
         }
       />
+
+      <TabSwitcher tabs={SALES_TABS} active={tab} onChange={setTab} />
 
       <div className="mb-2 flex flex-wrap items-end gap-3">
         <div className="w-56">
@@ -421,21 +463,6 @@ export default function Sales() {
                   {p.name}
                 </option>
               ))}
-          </Select>
-        </div>
-        <div className="w-36">
-          <span className="label">Payment</span>
-          {/* Only the 3 payment statuses that actually exist on a sale
-              (pending/paid/refunded - see SalePaymentStatus). "Partially
-              Paid" isn't a real per-sale status in this data model - that
-              concept only exists at the ORDER level (OrderPaymentStatus, a
-              different field entirely) - so it's intentionally not offered
-              here rather than inventing a new status. See the 1.8.0 report. */}
-          <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)}>
-            <option value="">All</option>
-            <option value="pending">Pending</option>
-            <option value="paid">Paid</option>
-            <option value="refunded">Refunded</option>
           </Select>
         </div>
         <div className="w-32">
@@ -517,7 +544,16 @@ export default function Sales() {
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm">
           {totals && groups ? (
             <>
-              <SummaryStat label="Results" value={`${groups.length} sale${groups.length === 1 ? "" : "s"}`} />
+              {/* 2.0.59: visibleGroups, not groups - this sits directly beside
+                  Tickets/Revenue/Profit (also from `totals`, also tab-scoped)
+                  and directly above a table listing only visibleGroups, so
+                  it must count the same set they do. groups.length (every
+                  sale matching the filters, both tabs combined) would read
+                  as a mismatch against the very rows underneath it. */}
+              <SummaryStat
+                label="Results"
+                value={`${visibleGroups.length} sale${visibleGroups.length === 1 ? "" : "s"}`}
+              />
               <SummaryStat label="Tickets" value={String(totals.tickets)} />
               <SummaryStat label="Revenue" value={formatMoneyOrMixed(totals.revenue, totals.currency)} />
               <SummaryStat
@@ -562,8 +598,12 @@ export default function Sales() {
 
       {groups && groups.length >= 5000 && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
-          Showing the most recent 5,000 sales that match your filters. Narrow the date range, event, or payment
-          filter to see the rest.
+          {/* 2.0.59: no longer mentions a "payment filter" - the tabs above
+              split what's already fetched, they don't narrow this fetch
+              itself (see visibleGroups), so switching tabs never helps this
+              banner go away. */}
+          Showing the most recent 5,000 sales that match your filters. Narrow the date range or event filter to see
+          the rest.
         </div>
       )}
 
@@ -602,6 +642,18 @@ export default function Sales() {
             }
           />
         )
+      ) : visibleGroups.length === 0 ? (
+        // 2.0.59: sales exist and match every filter above, just none in
+        // the active tab.
+        <EmptyState
+          icon={<IconReceipt className="h-8 w-8" />}
+          title={tab === "pending" ? "Nothing pending" : "Nothing completed yet"}
+          description={
+            tab === "pending"
+              ? "Every matching sale is paid or refunded. Switch to the Completed tab to see them."
+              : "Sales move here once their Payment status is Paid or Refunded."
+          }
+        />
       ) : (
         // One row per sale action (single ticket or multi-ticket batch) -
         // same table style as the Tickets screen's order-grouped list. A
@@ -745,7 +797,7 @@ export default function Sales() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {groups.map((g) => (
+              {visibleGroups.map((g) => (
                 <tr
                   key={g.id}
                   className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selectionMode ? "cursor-pointer" : ""}`}

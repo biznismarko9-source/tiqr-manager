@@ -17,13 +17,25 @@ import {
   ModalFooter,
   PageHeader,
   Select,
+  TabSwitcher,
   Textarea,
 } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
+
+// 2.0.59: "Upcoming" vs "Completed" tabs (marko's request - see
+// REDESIGN-2.0.59-REPORT.md), same shape as the Dashboard's own tabs. A
+// cancelled event is grouped into "Completed" - it isn't upcoming either,
+// and it's just as much "out of the way, no longer needs attention" as a
+// genuinely completed one.
+const EVENT_TABS: { key: "upcoming" | "completed"; label: string }[] = [
+  { key: "upcoming", label: "Upcoming" },
+  { key: "completed", label: "Completed" },
+];
 
 const EMPTY_INPUT: EventInput = {
   name: "",
@@ -65,6 +77,8 @@ export default function Events() {
   // visits either, so a new sort control shouldn't be the one filter here
   // that suddenly persists.
   const [sortBy, setSortBy] = useState("");
+  // 2.0.59: see EVENT_TABS above.
+  const [tab, setTab] = useListTab("eventsTab", ["upcoming", "completed"] as const);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<EventWithStats | null>(null);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -116,6 +130,14 @@ export default function Events() {
     withDate.sort((a, b) => (a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id);
     return [...withDate, ...withoutDate];
   }, [events, sortBy]);
+
+  // 2.0.59: tab split happens client-side, after sorting, on data the page
+  // already fetched - no new backend query, same "filter what's already in
+  // memory" approach the sort above already uses.
+  const visibleEvents = useMemo(
+    () => sortedEvents.filter((ev) => (tab === "upcoming" ? ev.status === "upcoming" : ev.status !== "upcoming")),
+    [sortedEvents, tab],
+  );
 
   const exitSelectionMode = () => {
     setSelectionMode(false);
@@ -192,6 +214,8 @@ export default function Events() {
         }
       />
 
+      <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} />
+
       <div className="mb-2 flex flex-wrap items-end gap-3">
         <div className="w-64">
           <span className="label">Search</span>
@@ -249,6 +273,19 @@ export default function Events() {
             <Button variant="primary" onClick={() => setModalOpen(true)}>
               <IconPlus className="h-4 w-4" /> New Event
             </Button>
+          }
+        />
+      ) : visibleEvents.length === 0 ? (
+        // 2.0.59: events exist, just none in the active tab - a lighter
+        // message than the "create your first event" empty state above,
+        // which would make no sense to repeat when events already exist.
+        <EmptyState
+          icon={<IconCalendarDays className="h-8 w-8" />}
+          title={tab === "upcoming" ? "No upcoming events" : "No completed events yet"}
+          description={
+            tab === "upcoming"
+              ? "Every event is completed or cancelled. Switch to the Completed tab to see them."
+              : "Events move here once their status is Completed or Cancelled."
           }
         />
       ) : (
@@ -339,7 +376,7 @@ export default function Events() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sortedEvents.map((ev) => (
+              {visibleEvents.map((ev) => (
                 <tr
                   key={ev.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"

@@ -398,3 +398,39 @@ export function ConfirmDialog({
     </div>
   );
 }
+
+/** 2.0.59: shared "Active vs Completed" pill switcher for Events/Orders/
+ * Tickets/Sales - same visual pattern (and exact same classNames) as
+ * Dashboard.tsx's own Overview/Financials/Activity tab row, extracted here
+ * so four pages don't each hand-roll their own copy. Dashboard's own tab row
+ * is untouched (it has 3 tabs, not 2, and already shipped/works) - this is
+ * for the new pages only, paired with lib/useListTab.ts for the
+ * load/persist half of the pattern. */
+export function TabSwitcher<T extends string>({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: { key: T; label: string }[];
+  active: T;
+  onChange: (key: T) => void;
+}) {
+  return (
+    <div className="mb-4 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => onChange(t.key)}
+          className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+            active === t.key
+              ? "bg-brand-600 text-white"
+              : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}

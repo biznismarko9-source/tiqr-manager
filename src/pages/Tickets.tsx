@@ -14,11 +14,26 @@ import {
   ModalFooter,
   PageHeader,
   Select,
+  TabSwitcher,
   Textarea,
 } from "../components/ui";
 import { IconBoxes, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
+
+// 2.0.59: "Active" vs "Completed" tabs (marko's request - see
+// REDESIGN-2.0.59-REPORT.md). Reuses inventoryStatus() below - the exact
+// same per-order bucketing already shown as this table's own Status badge -
+// rather than inventing a second notion of "done" for the same data. Only
+// rendered on Tickets itself (guarded by !lockedStatus, same as the old
+// Status filter it replaces) - Inventory is already locked to
+// available/listed tickets only, so it can never have anything "Completed"
+// to move out of the way (see the 2.0.59 report for the full reasoning).
+const TICKETS_TABS: { key: "active" | "completed"; label: string }[] = [
+  { key: "active", label: "Active" },
+  { key: "completed", label: "Completed" },
+];
 
 export default function Tickets() {
   return (
@@ -53,7 +68,6 @@ function inventoryStatus(o: OrderRecord): { key: string; label: string } {
 // which must never leak each other's search/filters into one another.
 interface TicketsFilterState {
   search: string;
-  status: string;
   eventId: number | "";
   platformId: number | "";
   section: string;
@@ -111,13 +125,17 @@ export function TicketsView({
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(params.get("code") ?? cached?.search ?? "");
-  const [status, setStatus] = useState(lockedStatus ?? cached?.status ?? "");
   const [eventId, setEventId] = useState<number | "">(cached?.eventId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(cached?.platformId ?? "");
   const [section, setSection] = useState(cached?.section ?? "");
   const [dateFrom, setDateFrom] = useState(cached?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(cached?.dateTo ?? "");
   const [sortBy, setSortBy] = useState(cached?.sortBy ?? "");
+  // 2.0.59: see TICKETS_TABS above. Called unconditionally (React hooks
+  // can't be conditional), but only ever rendered/applied when !lockedStatus
+  // - Inventory keeps its own fixed lockedStatus untouched, exactly as
+  // before.
+  const [tab, setTab] = useListTab("ticketsTab", ["active", "completed"] as const);
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
@@ -129,8 +147,8 @@ export function TicketsView({
   // Detail's now context-aware Back link - finds the same search/filters
   // instead of a blank slate.
   useEffect(() => {
-    lastTicketsFilters.set(location.pathname, { search, status, eventId, platformId, section, dateFrom, dateTo, sortBy });
-  }, [location.pathname, search, status, eventId, platformId, section, dateFrom, dateTo, sortBy]);
+    lastTicketsFilters.set(location.pathname, { search, eventId, platformId, section, dateFrom, dateTo, sortBy });
+  }, [location.pathname, search, eventId, platformId, section, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
@@ -138,7 +156,13 @@ export function TicketsView({
         search: search || undefined,
         eventId: eventId || undefined,
         platformId: platformId || undefined,
-        status: status || undefined,
+        // 2.0.59: lockedStatus directly - Inventory's own fixed filter,
+        // completely unchanged. The old user-adjustable `status` dropdown
+        // this used to also come from is gone on Tickets itself; the new
+        // Active/Completed tabs below replace it, filtering client-side
+        // instead (see visibleOrders), same as Events/Orders/Sales' own new
+        // tabs.
+        status: lockedStatus || undefined,
         section: section || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
@@ -151,29 +175,47 @@ export function TicketsView({
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, status, eventId, platformId, section, dateFrom, dateTo]);
-
-  const summary = useMemo(() => {
-    if (!orders) return null;
-    const totalTickets = orders.reduce((sum, o) => sum + o.quantity, 0);
-    const availableTickets = orders.reduce((sum, o) => sum + o.availableCount + o.listedCount, 0);
-    return { orderCount: orders.length, totalTickets, availableTickets };
-  }, [orders]);
+  }, [search, eventId, platformId, section, dateFrom, dateTo]);
 
   // 2.0.37: same client-side sort convention as Orders.tsx's own
   // sortedOrders - `orders` itself stays exactly as the backend returned it
-  // (purchase_date DESC) so summary/the >= 5000 banner/every other
-  // reference above keeps working regardless of display order; only the
-  // table's own render switches to this derived, optionally-reversed copy.
+  // (purchase_date DESC) so the >= 5000 banner/every other reference above
+  // keeps working regardless of display order; only the table's own render
+  // switches to this derived, optionally-reversed copy.
   const sortedOrders = useMemo(() => {
     if (!orders) return [];
     if (sortBy === "oldest") return [...orders].reverse();
     return orders;
   }, [orders, sortBy]);
 
+  // 2.0.59: tab split happens client-side, after sorting, on data the page
+  // already fetched - reuses inventoryStatus() above (the exact same
+  // bucketing already shown as this table's own Status badge) rather than a
+  // second notion of "done". lockedStatus (Inventory) skips this entirely -
+  // it shows every order matching its own fixed backend filter, unchanged.
+  const visibleOrders = useMemo(() => {
+    if (lockedStatus) return sortedOrders;
+    return sortedOrders.filter((o) => (inventoryStatus(o).key === "active") === (tab === "active"));
+  }, [sortedOrders, tab, lockedStatus]);
+
+  // 2.0.59: scoped to visibleOrders (the current tab on Tickets; every
+  // fetched order on Inventory, same as before) so the caption always
+  // describes what's actually on screen.
+  const summary = useMemo(() => {
+    if (!orders) return null;
+    const totalTickets = visibleOrders.reduce((sum, o) => sum + o.quantity, 0);
+    const availableTickets = visibleOrders.reduce((sum, o) => sum + o.availableCount + o.listedCount, 0);
+    return { orderCount: visibleOrders.length, totalTickets, availableTickets };
+  }, [orders, visibleOrders]);
+
   return (
     <div>
       <PageHeader title={title} subtitle={subtitle} />
+
+      {/* 2.0.59: replaces the old Status dropdown below (Tickets only -
+          Inventory never showed it either, same !lockedStatus guard). See
+          TICKETS_TABS above. */}
+      {!lockedStatus && <TabSwitcher tabs={TICKETS_TABS} active={tab} onChange={setTab} />}
 
       {/* 2.0.32: max-w-[1400px] added, matching the table below it, so the
           "N orders · N tickets · N still sellable" summary caption (ml-auto
@@ -196,18 +238,6 @@ export function TicketsView({
             />
           </div>
         </div>
-        {!lockedStatus && (
-          <div className="w-40">
-            <span className="label">Status</span>
-            <Select value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">All statuses</option>
-              <option value="available">Available</option>
-              <option value="listed">Listed</option>
-              <option value="sold">Sold</option>
-              <option value="cancelled">Cancelled</option>
-            </Select>
-          </div>
-        )}
         <div className="w-48">
           <span className="label">Event</span>
           <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
@@ -282,6 +312,19 @@ export function TicketsView({
         <LoadingBlock />
       ) : orders.length === 0 ? (
         <EmptyState icon={<IconBoxes className="h-8 w-8" />} title="No orders match these filters" />
+      ) : visibleOrders.length === 0 ? (
+        // 2.0.59: orders match the filters above, just none in the active
+        // tab (Tickets only - lockedStatus/Inventory never hits this, since
+        // visibleOrders equals sortedOrders there).
+        <EmptyState
+          icon={<IconBoxes className="h-8 w-8" />}
+          title={tab === "active" ? "No active stock" : "Nothing completed yet"}
+          description={
+            tab === "active"
+              ? "Every matching order is sold out or cancelled. Switch to the Completed tab to see them."
+              : "Orders move here once every ticket is sold or the order is cancelled."
+          }
+        />
       ) : (
         // 1.8.3 table-UX audit: table-layout:fixed + <colgroup> (see
         // Sales.tsx for the full rationale) instead of the old
@@ -395,7 +438,7 @@ export function TicketsView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sortedOrders.map((o) => {
+              {visibleOrders.map((o) => {
                 const inv = inventoryStatus(o);
                 return (
                   <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
