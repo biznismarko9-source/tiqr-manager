@@ -44,6 +44,26 @@ pub fn format_cents(cents: i64) -> String {
     format!("{sign}{}.{:02}", abs / 100, abs % 100)
 }
 
+/// 2.0.55: same digits as `format_cents`, comma instead of a period - for
+/// the one context where the decimal separator itself matters: text this
+/// app writes INTO a Google Sheet cell via the API (order-push's own new-
+/// row Total Purchase Price/Price Per Ticket, 2.0.42's price-correction
+/// write-backs, 2.0.53's currency-conversion push, sales/pulls push's own
+/// money cells - see orders_sheet_sync.rs/pulls_sheet_sync.rs for the exact
+/// call sites). marko's spreadsheet locale is Slovak/European (comma
+/// decimal separator, same locale that made 2.0.36's table-width work
+/// necessary) - a plain "50.00" written there isn't reliably parsed back as
+/// the number 50 by Sheets, it can land as the literal text "50.00"
+/// sitting next to properly-formatted "50,00" values already in the sheet
+/// (marko caught this on a real screenshot: some rows comma, some period,
+/// in the same column). Every OTHER use of `format_cents` in this app -
+/// the UI, CSV export, in-app messages describing what got corrected - is
+/// unaffected and stays exactly as it was; this is only for values that
+/// are about to be sent to Sheets' own API.
+pub fn format_cents_for_sheet(cents: i64) -> String {
+    format_cents(cents).replace('.', ",")
+}
+
 /// 2.0.42: a lenient sibling of `parse_decimal_to_cents` for the one place
 /// this app now deliberately tolerates more than 2 decimal digits instead of
 /// rejecting them - commands::orders_sheet_sync's reconciliation of
@@ -115,6 +135,17 @@ mod tests {
         assert!(parse_decimal_to_cents("").is_err());
         assert!(parse_decimal_to_cents("abc").is_err());
         assert!(parse_decimal_to_cents("12.345").is_err());
+    }
+
+    #[test]
+    fn format_cents_for_sheet_uses_a_comma_not_a_period() {
+        assert_eq!(format_cents_for_sheet(1234), "12,34");
+        assert_eq!(format_cents_for_sheet(500), "5,00");
+        assert_eq!(format_cents_for_sheet(0), "0,00");
+        assert_eq!(format_cents_for_sheet(-1234), "-12,34");
+        // Same digits as the regular formatter either way - only the
+        // separator differs.
+        assert_eq!(format_cents_for_sheet(1234).replace(',', "."), format_cents(1234));
     }
 
     #[test]

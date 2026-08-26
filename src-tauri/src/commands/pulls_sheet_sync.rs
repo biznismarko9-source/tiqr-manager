@@ -58,7 +58,7 @@ use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
 use crate::models::{CreatedSheetResult, Pull, PullEditInput, PullInput, SheetSyncIssue, SheetSyncResult};
-use crate::money::{format_cents, parse_decimal_to_cents};
+use crate::money::{format_cents_for_sheet, parse_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -792,7 +792,7 @@ fn pull_push_cells(map: &HashMap<String, usize>, pull: &Pull) -> Vec<(usize, Str
         cells.push((c, if pull.transfer_done { "Yes".to_string() } else { "No".to_string() }));
     }
     if let Some(c) = find_col(map, &["price"]) {
-        cells.push((c, format_cents(pull.price_cents)));
+        cells.push((c, format_cents_for_sheet(pull.price_cents)));
     }
     cells
 }
@@ -2160,7 +2160,7 @@ mod tests {
         assert_eq!(as_map.get(&7), Some(&"5".to_string()));
         assert_eq!(as_map.get(&8), Some(&"10-12".to_string()));
         assert_eq!(as_map.get(&10), Some(&"No".to_string()));
-        assert_eq!(as_map.get(&11), Some(&"45.00".to_string()));
+        assert_eq!(as_map.get(&11), Some(&"45,00".to_string()));
         assert!(!as_map.contains_key(&9), "the unnamed blank column is never written");
         assert!(!as_map.contains_key(&12), "'date' is ignored, never written");
         assert!(!as_map.contains_key(&13), "must never write the marker column itself");
@@ -2312,7 +2312,7 @@ mod tests {
             PullPushWrite::Update { sheet_row_number, cells } => {
                 assert_eq!(*sheet_row_number, 2, "row 2 is the first (and only) data row");
                 let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
-                assert_eq!(as_map.get(&11), Some(&"60.00".to_string()));
+                assert_eq!(as_map.get(&11), Some(&"60,00".to_string()));
             }
             _ => panic!("expected an Update write"),
         }

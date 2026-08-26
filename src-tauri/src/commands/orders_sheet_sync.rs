@@ -129,7 +129,7 @@ use crate::google_sheets;
 use crate::models::{
     CreatedSheetResult, OrderInput, PullReceivedInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult,
 };
-use crate::money::{format_cents, parse_decimal_to_cents, round_decimal_to_cents};
+use crate::money::{format_cents, format_cents_for_sheet, parse_decimal_to_cents, round_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use tauri::State;
@@ -445,7 +445,7 @@ fn reconcile_order_pricing(unit_price_raw: &str, total_raw: Option<&str>, quanti
                 Ok(PricingOutcome {
                     unit_price_cents,
                     corrected_unit_price_text: None,
-                    corrected_total_price_text: Some(format_cents(expected)),
+                    corrected_total_price_text: Some(format_cents_for_sheet(expected)),
                     note: Some(note),
                 })
             } else {
@@ -496,7 +496,7 @@ fn reconcile_order_pricing(unit_price_raw: &str, total_raw: Option<&str>, quanti
                     );
                     Ok(PricingOutcome {
                         unit_price_cents: derived,
-                        corrected_unit_price_text: Some(format_cents(derived)),
+                        corrected_unit_price_text: Some(format_cents_for_sheet(derived)),
                         corrected_total_price_text: None,
                         note: Some(note),
                     })
@@ -510,7 +510,7 @@ fn reconcile_order_pricing(unit_price_raw: &str, total_raw: Option<&str>, quanti
                         format!("'Price Per Ticket' ({unit_price_raw}) had more than 2 decimal places - rounded to {}", format_cents(rounded));
                     Ok(PricingOutcome {
                         unit_price_cents: rounded,
-                        corrected_unit_price_text: Some(format_cents(rounded)),
+                        corrected_unit_price_text: Some(format_cents_for_sheet(rounded)),
                         corrected_total_price_text: None,
                         note: Some(note),
                     })
@@ -1027,13 +1027,13 @@ fn build_order_append_row(
         cells.push((c, order.external_reference.clone().unwrap_or_default()));
     }
     if let Some(c) = find_col(map, &["total purchase price", "total price"]) {
-        cells.push((c, format_cents(order.unit_price_cents * order.quantity)));
+        cells.push((c, format_cents_for_sheet(order.unit_price_cents * order.quantity)));
     }
     if let Some(c) = find_col(map, &["number of tickets", "quantity", "qty", "ks"]) {
         cells.push((c, order.quantity.to_string()));
     }
     if let Some(c) = find_col(map, &["price per ticket", "unit price", "price"]) {
-        cells.push((c, format_cents(order.unit_price_cents)));
+        cells.push((c, format_cents_for_sheet(order.unit_price_cents)));
     }
     if let Some(c) = find_col(map, &["currency"]) {
         cells.push((c, order.currency.clone()));
@@ -1256,10 +1256,10 @@ fn currency_push_cells(
         cells.push((c, new_currency.to_string()));
     }
     if let Some(c) = find_col(&map, &["price per ticket", "unit price", "price"]) {
-        cells.push((c, format_cents(new_unit_price_cents)));
+        cells.push((c, format_cents_for_sheet(new_unit_price_cents)));
     }
     if let Some(c) = find_col(&map, &["total purchase price", "total price"]) {
-        cells.push((c, format_cents(new_total_cost_cents)));
+        cells.push((c, format_cents_for_sheet(new_total_cost_cents)));
     }
     Some((row_number, cells))
 }
@@ -2017,7 +2017,7 @@ fn apply_sales_push(
                     cells.push((c, sale.platform_name.clone().unwrap_or_default()));
                 }
                 if let Some(c) = payout_col {
-                    cells.push((c, format_cents(sale.sale_price_cents)));
+                    cells.push((c, format_cents_for_sheet(sale.sale_price_cents)));
                 }
                 if let Some(c) = status_col {
                     cells.push((c, sale.resale_status.clone().unwrap_or_default()));
@@ -2047,7 +2047,7 @@ fn apply_sales_push(
                     cells.push((c, puller_name.clone()));
                 }
                 if let Some(c) = how_much_pull_col {
-                    cells.push((c, format_cents(amount_cents)));
+                    cells.push((c, format_cents_for_sheet(amount_cents)));
                 }
             }
         }
@@ -3181,7 +3181,7 @@ mod tests {
         let outcome = reconcile_order_pricing("50.00", Some("100.01"), 2).unwrap();
         assert_eq!(outcome.unit_price_cents, 5000, "Price Per Ticket itself is untouched - it was the clean value");
         assert!(outcome.corrected_unit_price_text.is_none());
-        assert_eq!(outcome.corrected_total_price_text, Some("100.00".to_string()));
+        assert_eq!(outcome.corrected_total_price_text, Some("100,00".to_string()));
         assert!(outcome.note.unwrap().contains("Total Purchase Price"));
     }
 
@@ -3201,7 +3201,7 @@ mod tests {
         // 4-ticket order ((4+1)/2 = 2).
         let outcome = reconcile_order_pricing("84.28", Some("337.10"), 4).unwrap();
         assert_eq!(outcome.unit_price_cents, 8428);
-        assert_eq!(outcome.corrected_total_price_text, Some("337.12".to_string()));
+        assert_eq!(outcome.corrected_total_price_text, Some("337,12".to_string()));
     }
 
     #[test]
@@ -3221,7 +3221,7 @@ mod tests {
         // his automation's Total/Quantity division not landing on a cent).
         let outcome = reconcile_order_pricing("96.6825", Some("386.73"), 4).unwrap();
         assert_eq!(outcome.unit_price_cents, 9668);
-        assert_eq!(outcome.corrected_unit_price_text, Some("96.68".to_string()));
+        assert_eq!(outcome.corrected_unit_price_text, Some("96,68".to_string()));
         assert!(outcome.corrected_total_price_text.is_none(), "Total Purchase Price was already clean - must be left alone");
         let note = outcome.note.unwrap();
         assert!(note.contains("Price Per Ticket"), "{note}");
@@ -3232,7 +3232,7 @@ mod tests {
     fn reconcile_order_pricing_rounds_an_over_precise_price_per_ticket_with_no_total_purchase_price_to_derive_from() {
         let outcome = reconcile_order_pricing("96.6825", None, 4).unwrap();
         assert_eq!(outcome.unit_price_cents, 9668);
-        assert_eq!(outcome.corrected_unit_price_text, Some("96.68".to_string()));
+        assert_eq!(outcome.corrected_unit_price_text, Some("96,68".to_string()));
         assert!(outcome.note.unwrap().contains("rounded to"));
     }
 
@@ -3264,7 +3264,7 @@ mod tests {
         assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
         assert_eq!(result.corrected.len(), 1);
         assert!(result.corrected[0].message.contains("Total Purchase Price"), "{}", result.corrected[0].message);
-        assert_eq!(writes.price_corrections, vec![(0, 7, "100.00".to_string())], "column 7 is Total Purchase Price in full_headers()");
+        assert_eq!(writes.price_corrections, vec![(0, 7, "100,00".to_string())], "column 7 is Total Purchase Price in full_headers()");
     }
 
     #[test]
@@ -3279,7 +3279,7 @@ mod tests {
         assert_eq!(result.created, 1);
         assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
         assert_eq!(result.corrected.len(), 1);
-        assert_eq!(writes.price_corrections, vec![(0, 9, "96.68".to_string())], "column 9 is Price Per Ticket in full_headers()");
+        assert_eq!(writes.price_corrections, vec![(0, 9, "96,68".to_string())], "column 9 is Price Per Ticket in full_headers()");
         let unit_price_cents: i64 = conn.query_row("SELECT unit_price_cents FROM orders WHERE id = 1", [], |r| r.get(0)).unwrap();
         assert_eq!(unit_price_cents, 9668, "the order itself must be saved with the corrected price, not the raw over-precise text");
     }
@@ -4170,9 +4170,9 @@ mod tests {
         assert_eq!(row[4], "25");
         assert_eq!(row[5], "11, 12");
         assert_eq!(row[6], "TM-88213");
-        assert_eq!(row[7], "100.00", "Total Purchase Price = unit price x quantity");
+        assert_eq!(row[7], "100,00", "Total Purchase Price = unit price x quantity");
         assert_eq!(row[8], "2");
-        assert_eq!(row[9], "50.00");
+        assert_eq!(row[9], "50,00");
         assert_eq!(row[10], "EUR");
         assert_eq!(row[11], "buyer@example.com");
         assert_eq!(row[12], "e-ticket");
@@ -4274,7 +4274,7 @@ mod tests {
         assert_eq!(*row_number, 2);
         let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
         assert_eq!(as_map.get(&1), Some(&"viagogo".to_string()), "Site Listed");
-        assert_eq!(as_map.get(&2), Some(&"45.00".to_string()), "Payout Per Ticket");
+        assert_eq!(as_map.get(&2), Some(&"45,00".to_string()), "Payout Per Ticket");
         assert_eq!(as_map.get(&3), Some(&"Listed".to_string()), "Status");
         assert_eq!(as_map.get(&4), Some(&"Not yet".to_string()), "Delivery status");
         assert_eq!(as_map.get(&5), Some(&"paid".to_string()), "Payout status");
@@ -4360,7 +4360,7 @@ mod tests {
         let as_map: HashMap<usize, String> = writes[0].1.iter().cloned().collect();
         assert_eq!(as_map.get(&8), Some(&"yes".to_string()), "pull");
         assert_eq!(as_map.get(&9), Some(&"Ivan".to_string()), "who pulled");
-        assert_eq!(as_map.get(&10), Some(&"10.00".to_string()), "how much pull");
+        assert_eq!(as_map.get(&10), Some(&"10,00".to_string()), "how much pull");
     }
 
     #[test]
@@ -4962,8 +4962,8 @@ mod tests {
         assert_eq!(row_number, 3, "header is row 1, ORD-000001 is row 2, ORD-000002 is row 3");
         // currency=10, "Price Per Ticket"=9, "Total Purchase Price"=7 in full_headers()
         assert!(cells.contains(&(10, "EUR".to_string())), "{cells:?}");
-        assert!(cells.contains(&(9, "50.00".to_string())), "{cells:?}");
-        assert!(cells.contains(&(7, "100.00".to_string())), "{cells:?}");
+        assert!(cells.contains(&(9, "50,00".to_string())), "{cells:?}");
+        assert!(cells.contains(&(7, "100,00".to_string())), "{cells:?}");
         assert_eq!(cells.len(), 3);
     }
 
@@ -5064,10 +5064,12 @@ mod tests {
             sample_row(marker_1), // sheet still says EUR/50.00/100.00 here - stale
             {
                 // This order's sheet row already says GBP with the exact
-                // numbers the order was just set to above - already correct.
+                // numbers the order was just set to above (comma-decimal,
+                // matching what format_cents_for_sheet actually writes) -
+                // already correct.
                 let mut r = row(&[
-                    "Coldplay Arena Show", "15/09/2026", "ticketmaster", "410", "25", "11,12", "TM-88213", "100.00",
-                    "2", "50.00", "GBP", "buyer@example.com", "e-ticket",
+                    "Coldplay Arena Show", "15/09/2026", "ticketmaster", "410", "25", "11,12", "TM-88213", "100,00",
+                    "2", "50,00", "GBP", "buyer@example.com", "e-ticket",
                 ]);
                 r.push(marker_2.clone());
                 r
