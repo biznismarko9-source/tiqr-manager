@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TIQR Manager - Privacy Policy</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1e293b; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 2em; }
+  code { background: #f1f5f9; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+  ul { padding-left: 1.4em; }
+  .updated { color: #64748b; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>TIQR Manager - Privacy Policy</h1>
+<p class="updated">Last updated: 21 August 2026</p>
+
+<p>
+TIQR Manager is a local-first desktop application for tracking purchased tickets, orders and sales. It has no
+server of its own: everything you enter is stored only in a database file on your own computer. This page explains
+the one exception - the optional Google Sheets integration under Settings &rarr; Integrations - and exactly what it
+does with your Google data.
+</p>
+
+<h2>What the Google Sheets integration is for</h2>
+<p>
+The integration lets you connect one Google Sheet to TIQR Manager's "Pulls" data, so rows you type into that sheet
+can be read into the app, and (for a sheet the app creates for you) written back out. It has two independent ways
+to connect:
+</p>
+<ul>
+  <li>
+    <strong>Sign in with Google.</strong> You sign in with your own Google account through Google's own sign-in
+    page in your browser - TIQR Manager never sees your Google password. The app requests exactly two permissions:
+    read/write access to Google Sheets (<code>https://www.googleapis.com/auth/spreadsheets</code>), and your email
+    address, so the app can show you which account is signed in
+    (<code>openid</code>, <code>email</code>). It does not request access to Drive, Gmail, Calendar, Contacts, or
+    anything else in your Google account.
+  </li>
+  <li>
+    <strong>A shared connection, without signing in.</strong> As an alternative, the app can use one fixed Google
+    "service account" (a machine identity, not a personal Google account) that the app's developer controls. You
+    either share an existing sheet with that account's email address, or let the app create a new sheet and share
+    it with an email address you type in. This path never asks for or sees your Google password either.
+  </li>
+</ul>
+
+<h2>What data is accessed, and what happens to it</h2>
+<p>
+Whichever way you connect, the only Google data TIQR Manager ever reads or writes is the content of the one
+spreadsheet you connected - the rows and columns you can see in that sheet yourself. When you sign in with Google,
+the app also reads the email address of the signed-in account, once, to show "Signed in as ...". Nothing else in
+your Google account is read, and nothing is shared with any third party. All communication happens directly
+between your computer and Google's own servers over an encrypted connection; TIQR Manager has no server in between
+that your data passes through or is copied to.
+</p>
+
+<h2>What is stored, and where</h2>
+<p>
+If you sign in with Google, a long-lived sign-in token and your email address are stored locally, in the same
+database file on your computer where the rest of your TIQR Manager data already lives. They are never uploaded
+anywhere. Clicking "Sign out" in the app deletes them immediately. Which spreadsheet is connected (its ID and tab
+name) is stored the same way, locally, and is deleted immediately when you click "Disconnect".
+</p>
+
+<h2>Revoking access</h2>
+<p>
+Besides signing out inside TIQR Manager, you can revoke its access at any time directly from your Google Account,
+under
+<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Security &rarr; Third-party apps
+&amp; services</a>. Doing so immediately invalidates the sign-in token TIQR Manager was using; the app will simply
+ask you to sign in again the next time you use that connection.
+</p>
+
+<h2>Changes to this policy</h2>
+<p>
+If what the app accesses or how it handles that data ever changes, this page will be updated and the date at the
+top will change accordingly.
+</p>
+
+<h2>Contact</h2>
+<p>
+Questions about this policy or the app can be sent to
+<a href="mailto:slabej.v@gmail.com">slabej.v@gmail.com</a>.
+</p>
+
+</body>
+</html>

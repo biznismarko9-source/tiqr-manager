@@ -11,46 +11,75 @@ S doplňujúcimi otázkami sme si potvrdili: nahradiť pôvodné dropdown filtre
 nejaký bol), na Orders počítať "Paid" len skutočne zaplatené (nie čiastočne), a Inventory nechať úplne
 bez zmeny.
 
-## Dôležitá oprava: publikačný skript ti až doteraz mazal GitHub Actions
+## Dôležitá oprava: publikačný skript ti až doteraz mazal časti repa (opravené poriadne, na dvakrát)
 
 Po nainštalovaní 2.0.59 si napísal, že po spustení 1-CLICK-UPDATE.bat sa na GitHube nič nedeje — okno
-ukázalo "Done" (žiadna chyba), ale v Actions záložke nebol žiadny nový beh. Toto je príčina a je to moja
-chyba, nie tvoja:
+ukázalo "Done", ale v Actions záložke nebol žiadny nový beh. Toto je príčina a je to moja chyba, nie tvoja:
 
 `release.ps1` funguje tak, že tvoj priečinok (obsah zipu, čo ti pošlem) nakopíruje na čerstvý klon repa
 nástrojom, ktorý spraví klon **presne zhodný** s tvojím priečinkom — vrátane toho, že vymaže z klonu
 čokoľvek, čo v tvojom priečinku nie je. To je zámer (má to zabrániť starým zabudnutým súborom v repe), no
 má to jednu podmienku: priečinok, čo ti posielam, musí obsahovať úplne všetko, čo v repe má zostať.
 
-Súbor `.github/workflows/build-windows.yml` — presne ten, čo hovorí GitHubu "keď príde nový tag v2.x.x,
-spusti build" — som **v žiadnom zipe, čo som ti doteraz poslal, nikdy nezabalil**. Výsledok: pri každom
-tvojom spustení release.ps1 sa tento súbor z repa potichu vymazal (presne podľa vyššie popísaného
-mechanizmu), skôr než sa spravil commit a push. Skript sám o tom nič nevedel — nekontroloval, či tento
-súbor existuje, len či sedí verzia — takže nič nenahlásil ako chybu, aj keď v skutočnosti práve nenávratne
-mazal to, čo GitHubu hovorí, kedy má niečo spustiť. Presne to vysvetľuje aj to, že "predtým sa hneď začal
-robiť nový update, teraz nie" — od chvíle, čo sa tento súbor prvýkrát vymazal, už žiadny ďalší tag nemal čo
-spustiť, bez ohľadu na to, ktorú verziu si publikoval.
+### Kolo 1: `.github/workflows/build-windows.yml`
 
-**Opravil som to na dvoch miestach:**
+Presne tento súbor — ten, čo hovorí GitHubu "keď príde nový tag v2.x.x, spusti build" — som v žiadnom zipe,
+čo som ti dovtedy poslal, nikdy nezabalil. Výsledok: pri každom tvojom spustení release.ps1 sa tento súbor z
+repa potichu vymazal, skôr než sa spravil commit a push. Presne to vysvetľuje aj to, že "predtým sa hneď
+začal robiť nový update, teraz nie" — od chvíle, čo sa tento súbor prvýkrát vymazal, už žiadny ďalší tag
+nemal čo spustiť. Poslal som ti opravený zip aj s novou kontrolou v `release.ps1` — a zafungovalo to: build
+sa konečne spustil (prvýkrát po dlhom čase vidno skutočný beh v Actions).
 
-1. Tento nový zip (nižšie) teraz **obsahuje aj `.github/workflows/build-windows.yml`** — takže keď ho
-   rozbalíš a spustíš release.ps1, tento súbor sa konečne vráti aj do tvojho repa na GitHube.
-2. Do `release.ps1` som pridal novú kontrolu (rovnakého typu, ako už existovala pre číslo verzie): skript
-   teraz pred commitom overí, že `.github/workflows/build-windows.yml` v klone naozaj existuje, a ak nie,
-   zastaví sa s jasnou chybou namiesto toho, aby ho ticho zmazal. Keby sa mi to niekedy v budúcnosti znova
-   stalo (zabudol by som ho zabaliť), skript ťa na to teraz sám upozorní, namiesto toho, aby sa to zopakovalo
-   bez povšimnutia.
+### Kolo 2: build zbehol, ale spadol — chýbajúce migrácie databázy
+
+Beh sa spustil, ale krok "Build, sign and publish release" po pár minútach zlyhal s chybou priamo z
+kompilátora (Rust): `couldn't read src\../migrations/008_sheet_sync.sql ... The system cannot find the path
+specified`. Presne ten istý mechanizmus ako v Kole 1, len na inom priečinku: appka si databázové migrácie
+(`src-tauri/migrations/*.sql`, 12 súborov, ktoré appka pri buildovaní priamo zabuduje do seba) číta priamo zo
+súborov na disku — a **ani tento priečinok som v žiadnom zipe nikdy nezabalil**. Rovnaký mechanizmus, rovnaký
+výsledok: tvoj vlastný beh release.ps1 tento priečinok z repa potichu vymazal skôr, než sa spravil commit,
+takže build na GitHube (ktorý si tie súbory priamo vyžaduje na to, aby appka vôbec skompilovala) nemal z
+čoho čítať.
+
+### Skutočná oprava tentoraz: celý spôsob balenia zipu, nie len jeden súbor
+
+Keď sa to isté stalo druhýkrát na inom priečinku, nešiel som opraviť len tento jeden prípad — spravil som
+poriadny audit a zmenil spôsob, akým zip vôbec vzniká:
+
+- **Predtým:** ručne vymenovaný zoznam priečinkov/súborov, čo do zipu patria — presne tento zoznam bol
+  neúplný (dvakrát) a pri každom ďalšom novom súbore/priečinku v projekte (nová migrácia, nový skript, nový
+  dokument) by sa to isté mohlo zopakovať znova, kedykoľvek by som na niečo zabudol.
+- **Teraz:** zip obsahuje **úplne všetko** v projekte, okrem toho, čo appka sama vo svojom `.gitignore`
+  označuje ako "toto nepatrí do repa" (teda presne `node_modules`, `dist`, zostavovacie výstupy Rustu a
+  pár ďalších technických priečinkov — veci, čo sa dajú kedykoľvek znova vygenerovať). Keďže appka si toto
+  pravidlo už sama udržiava (a bude aj naďalej, keby pribudlo niečo nové, čo sa nemá commitovať), tento
+  spôsob sa už sám neminie s budúcimi novými súbormi, ako sa minul ten predošlý ručný zoznam.
+
+Pri tomto audite vyšlo najavo, že **rovnakým spôsobom sa z tvojho repa už dávnejšie potichu strácali aj**
+`.gitignore` samotný, `README.md`, `docs/privacy.html`, oba skripty v `scripts/` a **všetky staršie
+REDESIGN reporty okrem toho najnovšieho** — žiadny z nich nekazil build (nie sú v kóde, čo appka
+kompiluje), ale postupne miznuli z repa presne tou istou cestou. Nový zip ich všetky obsahuje späť.
+
+**Navyše som do `release.ps1` pridal ešte jednu, všeobecnejšiu poistku** (okrem tej, čo už kontroluje
+konkrétne `.github/workflows/build-windows.yml`): skript teraz pred commitom spočíta, koľko súborov by sa z
+repa práve malo zmazať, a ak je ich viac než 5 naraz, **zastaví sa** s presným zoznamom a vypýta si tvoje
+potvrdenie, namiesto toho, aby to ticho spravil. Skutočný úmyselný úklid v tomto projekte doteraz vždy
+zmazal len jeden-dva súbory naraz — o čokoľvek väčšie tak takmer isto ide o priečinok, na ktorý som znova
+zabudol, nie o zámernú zmenu. Keby sa mi teda niečo podobné niekedy v budúcnosti stalo znova (nový typ
+súboru, čo appka pridá a ja zabudnem), skript ťa teraz zastaví sám namiesto toho, aby sa to celé zopakovalo
+bez povšimnutia.
 
 **Čo urob teraz:**
 
-1. Stiahni si nový zip nižšie (obsahuje presne to isté, čo mal pôvodný 2.0.59 zip, plus opravu vyššie).
-2. Rozbaľ ho do **nového prázdneho priečinka** (rovnako, ako pri predošlej oprave — nepridávaj ho do
-   starého priečinka, aby tam neostalo nič staré).
+1. Stiahni si nový zip nižšie (obsahuje presne to isté, čo mal pôvodný 2.0.59 zip, plus obe opravy vyššie —
+   tentoraz naozaj kompletný).
+2. Rozbaľ ho do **nového prázdneho priečinka** (nepridávaj ho do žiadneho zo starších priečinkov, aby tam
+   neostalo nič staré).
 3. Spusti `1-CLICK-UPDATE.bat` z tohto nového priečinka.
 4. Po tom, čo okno ukáže "Done", počkaj pár minút a pozri sa na Actions záložku na GitHube — tentokrát by
-   tam mal pribudnúť nový beh (najprv "in progress", potom zelený alebo červený).
-5. Ak sa aj teraz nič neobjaví, napíš mi presne, čo skript v okne napísal, a čo vidíš v Actions záložke —
-   budeme pokračovať odtiaľ.
+   beh mal aj naozaj doraziť do konca (zelený "release-windows").
+5. Ak by aj teraz niečo zlyhalo, pošli mi presne to isté, čo si poslal teraz (screenshot zoznamu krokov +
+   rozkliknuté "Annotations" alebo červený riadok logu) — budeme pokračovať odtiaľ.
 
 ## Čo je nové
 
@@ -163,11 +192,16 @@ každej stránke aj Dark mód, a práve pri tejto kontrole som našiel a opravil
 
 **Backend:** žiadne zmeny — celá funkcia je len prerozdelenie už stiahnutých dát na obrazovke.
 
-**Publikačný skript (oprava, viď vyššie):**
-- `release.ps1` — nová kontrola, že `.github/workflows/build-windows.yml` po skopírovaní do klonu naozaj
-  existuje, so STOPPED chybou namiesto tichého zmazania, ak nie
-- `.github/workflows/build-windows.yml` — po prvýkrát zaradený do zipu (dovtedy chýbal v úplne každom
-  zipe, čo som ti poslal)
+**Publikačný skript a spôsob balenia (oprava, viď vyššie):**
+- `release.ps1` — dve nové kontroly pred commitom: (1) že `.github/workflows/build-windows.yml` po
+  skopírovaní do klonu naozaj existuje, (2) že sa naraz nechystá zmazať viac než 5 súborov z repa — obe so
+  STOPPED chybou namiesto tichého zmazania
+- `.github/workflows/build-windows.yml`, `src-tauri/migrations/*.sql` (12 súborov), `.gitignore`,
+  `README.md`, `docs/privacy.html`, `scripts/windows-build.ps1`, `scripts/gen_icon.py`, všetky staršie
+  REDESIGN reporty — všetko toto po prvýkrát zaradené do zipu (dovtedy chýbalo v úplne každom zipe, čo som
+  ti poslal, a teda sa to isté potichu strácalo z repa pri každom tvojom update)
+- samotný spôsob, akým zip vzniká, zmenený z ručného zoznamu na "všetko okrem toho, čo appka sama v
+  `.gitignore` označuje ako nepotrebné" (viď vyššie, prečo)
 
 **Verzia (8 miest):** ako vždy, všetkých na `2.0.59` — appka samotná sa touto opravou nijako nemení, len
 sa konečne dostane na GitHub tak, ako mala.
@@ -177,6 +211,7 @@ sa konečne dostane na GitHub tak, ako mala.
 2.0.59 hotové — Events, Orders, Tickets a Sales majú teraz tab-prepínač presne v duchu toho, čo je už na
 Dashboarde, s dohodnutými pravidlami (Cancelled→Completed, len Paid→Paid, Mixed→Pending) a Inventory
 zostáva bez zmeny. Cestou som si sám všimol a opravil jednu nezrovnalosť v súhrnnom riadku na Sales (viď
-vyššie). Dôležitejšie: zistil a opravil som chybu v publikačnom skripte, ktorá až doteraz bránila
-akémukoľvek novému buildu spustiť sa na GitHube (viď sekcia "Dôležitá oprava" úplne hore) — postupuj podľa
+vyššie). Dôležitejšie: zistil a opravil som (na dve kolá) chybu v spôsobe balenia zipu, ktorá až doteraz
+bránila akémukoľvek novému buildu doraziť do konca na GitHube (viď sekcia "Dôležitá oprava" úplne hore) —
+postupuj podľa
 krokov tam, nový zip nižšie už opravu obsahuje.
