@@ -11,6 +11,47 @@ S doplňujúcimi otázkami sme si potvrdili: nahradiť pôvodné dropdown filtre
 nejaký bol), na Orders počítať "Paid" len skutočne zaplatené (nie čiastočne), a Inventory nechať úplne
 bez zmeny.
 
+## Dôležitá oprava: publikačný skript ti až doteraz mazal GitHub Actions
+
+Po nainštalovaní 2.0.59 si napísal, že po spustení 1-CLICK-UPDATE.bat sa na GitHube nič nedeje — okno
+ukázalo "Done" (žiadna chyba), ale v Actions záložke nebol žiadny nový beh. Toto je príčina a je to moja
+chyba, nie tvoja:
+
+`release.ps1` funguje tak, že tvoj priečinok (obsah zipu, čo ti pošlem) nakopíruje na čerstvý klon repa
+nástrojom, ktorý spraví klon **presne zhodný** s tvojím priečinkom — vrátane toho, že vymaže z klonu
+čokoľvek, čo v tvojom priečinku nie je. To je zámer (má to zabrániť starým zabudnutým súborom v repe), no
+má to jednu podmienku: priečinok, čo ti posielam, musí obsahovať úplne všetko, čo v repe má zostať.
+
+Súbor `.github/workflows/build-windows.yml` — presne ten, čo hovorí GitHubu "keď príde nový tag v2.x.x,
+spusti build" — som **v žiadnom zipe, čo som ti doteraz poslal, nikdy nezabalil**. Výsledok: pri každom
+tvojom spustení release.ps1 sa tento súbor z repa potichu vymazal (presne podľa vyššie popísaného
+mechanizmu), skôr než sa spravil commit a push. Skript sám o tom nič nevedel — nekontroloval, či tento
+súbor existuje, len či sedí verzia — takže nič nenahlásil ako chybu, aj keď v skutočnosti práve nenávratne
+mazal to, čo GitHubu hovorí, kedy má niečo spustiť. Presne to vysvetľuje aj to, že "predtým sa hneď začal
+robiť nový update, teraz nie" — od chvíle, čo sa tento súbor prvýkrát vymazal, už žiadny ďalší tag nemal čo
+spustiť, bez ohľadu na to, ktorú verziu si publikoval.
+
+**Opravil som to na dvoch miestach:**
+
+1. Tento nový zip (nižšie) teraz **obsahuje aj `.github/workflows/build-windows.yml`** — takže keď ho
+   rozbalíš a spustíš release.ps1, tento súbor sa konečne vráti aj do tvojho repa na GitHube.
+2. Do `release.ps1` som pridal novú kontrolu (rovnakého typu, ako už existovala pre číslo verzie): skript
+   teraz pred commitom overí, že `.github/workflows/build-windows.yml` v klone naozaj existuje, a ak nie,
+   zastaví sa s jasnou chybou namiesto toho, aby ho ticho zmazal. Keby sa mi to niekedy v budúcnosti znova
+   stalo (zabudol by som ho zabaliť), skript ťa na to teraz sám upozorní, namiesto toho, aby sa to zopakovalo
+   bez povšimnutia.
+
+**Čo urob teraz:**
+
+1. Stiahni si nový zip nižšie (obsahuje presne to isté, čo mal pôvodný 2.0.59 zip, plus opravu vyššie).
+2. Rozbaľ ho do **nového prázdneho priečinka** (rovnako, ako pri predošlej oprave — nepridávaj ho do
+   starého priečinka, aby tam neostalo nič staré).
+3. Spusti `1-CLICK-UPDATE.bat` z tohto nového priečinka.
+4. Po tom, čo okno ukáže "Done", počkaj pár minút a pozri sa na Actions záložku na GitHube — tentokrát by
+   tam mal pribudnúť nový beh (najprv "in progress", potom zelený alebo červený).
+5. Ak sa aj teraz nič neobjaví, napíš mi presne, čo skript v okne napísal, a čo vidíš v Actions záložke —
+   budeme pokračovať odtiaľ.
+
 ## Čo je nové
 
 Presne ako na Dashboarde, teraz aj **Events, Orders, Tickets a Sales** majú nad tabuľkou modrý
@@ -122,11 +163,20 @@ každej stránke aj Dark mód, a práve pri tejto kontrole som našiel a opravil
 
 **Backend:** žiadne zmeny — celá funkcia je len prerozdelenie už stiahnutých dát na obrazovke.
 
-**Verzia (8 miest):** ako vždy, všetkých na `2.0.59`.
+**Publikačný skript (oprava, viď vyššie):**
+- `release.ps1` — nová kontrola, že `.github/workflows/build-windows.yml` po skopírovaní do klonu naozaj
+  existuje, so STOPPED chybou namiesto tichého zmazania, ak nie
+- `.github/workflows/build-windows.yml` — po prvýkrát zaradený do zipu (dovtedy chýbal v úplne každom
+  zipe, čo som ti poslal)
+
+**Verzia (8 miest):** ako vždy, všetkých na `2.0.59` — appka samotná sa touto opravou nijako nemení, len
+sa konečne dostane na GitHub tak, ako mala.
 
 ## STOP
 
 2.0.59 hotové — Events, Orders, Tickets a Sales majú teraz tab-prepínač presne v duchu toho, čo je už na
 Dashboarde, s dohodnutými pravidlami (Cancelled→Completed, len Paid→Paid, Mixed→Pending) a Inventory
 zostáva bez zmeny. Cestou som si sám všimol a opravil jednu nezrovnalosť v súhrnnom riadku na Sales (viď
-vyššie) — appka teda ide von už opravená, nie s tým, čo som pôvodne napísal.
+vyššie). Dôležitejšie: zistil a opravil som chybu v publikačnom skripte, ktorá až doteraz bránila
+akémukoľvek novému buildu spustiť sa na GitHube (viď sekcia "Dôležitá oprava" úplne hore) — postupuj podľa
+krokov tam, nový zip nižšie už opravu obsahuje.
