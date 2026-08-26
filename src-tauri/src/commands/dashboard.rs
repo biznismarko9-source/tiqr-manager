@@ -1088,6 +1088,7 @@ mod tests {
                 payment_status: Some("pending".to_string()),
                 buyer_reference: None,
                 notes: None,
+                currency: None,
             },
         )
         .unwrap();

@@ -82,7 +82,21 @@ export default function SaleDetail() {
     // back to ALL lines only when the whole group is refunded (counted is
     // empty), so a fully-refunded single-currency group still reports its
     // currency instead of going blank.
-    const currency = counted.length > 0 ? uniform(counted, (s) => s.currency) : uniform(lines, (s) => s.currency);
+    // 2.0.57: a line whose OWN sale currency differs from its OWN ticket's
+    // purchase currency (currencyMismatch) must force this whole header to
+    // Mixed too - "every line's sale currency agrees with every other
+    // line's" is no longer sufficient on its own (a batch entirely sold in
+    // USD but bought entirely in EUR would otherwise still look
+    // single-currency here). Mirrors GROUP_BASE_SELECT's identical guard
+    // for the Sales list page's own currency detection (sales.rs).
+    const currency =
+      counted.length > 0
+        ? counted.some((s) => s.currencyMismatch)
+          ? null
+          : uniform(counted, (s) => s.currency)
+        : lines.some((s) => s.currencyMismatch)
+          ? null
+          : uniform(lines, (s) => s.currency);
     const eventId = uniform(lines, (s) => s.eventId);
     const eventName = uniform(lines, (s) => s.eventName);
     const saleDate = uniform(lines, (s) => s.saleDate);
@@ -427,11 +441,31 @@ export default function SaleDetail() {
                     {!isNarrow && (
                       <td className="td-c text-right tabular-nums whitespace-nowrap">{formatMoney(s.sellingFeesCents, s.currency)}</td>
                     )}
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(s.costCents, s.currency)}</td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>
+                      {formatMoneyOrMixed(s.costCents, s.currencyMismatch ? null : s.currency)}
+                    </td>
                     <td
-                      className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${s.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : s.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                      className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${
+                        s.currencyMismatch
+                          ? "text-slate-400 dark:text-slate-500"
+                          : s.profitCents > 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : s.profitCents < 0
+                              ? "text-red-600 dark:text-red-400"
+                              : ""
+                      }`}
+                      // 2.0.57: this line's own sale currency differs from its
+                      // own ticket's purchase currency (New Sale's currency
+                      // picker made this possible) - cost/profit here would
+                      // otherwise silently subtract two different currencies
+                      // (see map_sale's identical guard in sales.rs).
+                      title={
+                        s.currencyMismatch
+                          ? `Bought in a different currency than this sale (${s.currency}) - profit can't be shown as one number`
+                          : undefined
+                      }
                     >
-                      {formatMoney(s.profitCents, s.currency)}
+                      {formatMoneyOrMixed(s.profitCents, s.currencyMismatch ? null : s.currency)}
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>

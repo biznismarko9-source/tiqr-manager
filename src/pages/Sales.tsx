@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import {
+  centsToDecimalString,
+  decimalStringToCents,
   formatDate,
   formatDateNumeric,
   formatMoney,
@@ -905,6 +907,31 @@ function SaleFormModal({
   const [saleDate, setSaleDate] = useState(todayIso());
   const [bulkPrice, setBulkPrice] = useState("");
   const [bulkFees, setBulkFees] = useState("");
+  // 2.0.57: the currency this WHOLE sale is recorded in - independent of
+  // whatever currency the ticket(s) being sold were themselves bought in
+  // (e.g. paid out by a marketplace in EUR even though the ticket cost
+  // USD). One value for the whole batch, same reasoning as Quick-fill
+  // price/fees already applying to every selected ticket at once (one sale
+  // action, one buyer, one payment). Defaulted in `goToDetails` below,
+  // not here - at the moment the modal opens no ticket is selected yet, so
+  // there's nothing to derive a sensible default from.
+  const [saleCurrency, setSaleCurrency] = useState("EUR");
+  const [customSaleCurrency, setCustomSaleCurrency] = useState(false);
+  // "Convert to EUR" button next to it - own loading flag (not `saving`,
+  // which is for the final Record submit) so the button can show
+  // "Converting..." without touching the rest of the form. Mirrors Orders.tsx
+  // OrderFormModal's `convertingCurrency`/`conversionToken` pair exactly,
+  // including the same stale-request guard (this modal doesn't unmount on
+  // close either).
+  const [convertingCurrency, setConvertingCurrency] = useState(false);
+  const conversionToken = useRef(0);
+  // True once marko has deliberately set a sale currency himself (by hand,
+  // or via "Convert to EUR") - once true, goToDetails() must never silently
+  // overwrite that choice again just because he went back to "+ Add more
+  // tickets" and returned (a real papercut this app's own past audits have
+  // repeatedly flagged elsewhere: never discard a deliberate choice under a
+  // recompute). Reset on every fresh modal open.
+  const currencyTouched = useRef(false);
   const [paymentStatus, setPaymentStatus] = useState<SalePaymentStatus>("pending");
   const [buyerReference, setBuyerReference] = useState("");
   const [notes, setNotes] = useState("");
@@ -913,6 +940,8 @@ function SaleFormModal({
 
   useEffect(() => {
     if (!open) return;
+    conversionToken.current += 1;
+    currencyTouched.current = false;
     setStep("pick");
     setSelected([]);
     setLines({});
@@ -924,12 +953,77 @@ function SaleFormModal({
     setSaleDate(todayIso());
     setBulkPrice("");
     setBulkFees("");
+    setSaleCurrency("EUR");
+    setCustomSaleCurrency(false);
+    setConvertingCurrency(false);
     setPaymentStatus("pending");
     setBuyerReference("");
     setNotes("");
     setError(null);
     api.listPlatforms().then(setPlatforms).catch(() => {});
   }, [open]);
+
+  // 2.0.57: called when leaving the "pick" step - defaults the sale currency
+  // to what every selected ticket was itself bought in (reproducing this
+  // app's original behaviour exactly, so an ordinary same-currency sale
+  // needs zero extra clicks), or EUR when the selection already spans more
+  // than one purchase currency (no single obvious default). Always still
+  // freely editable afterward via the picker below.
+  const goToDetails = () => {
+    if (!currencyTouched.current) {
+      const first = selected[0]?.currency;
+      const uniform = first && selected.every((t) => t.currency === first) ? first : "EUR";
+      setSaleCurrency(uniform);
+      setCustomSaleCurrency(!PREFERRED_CURRENCIES.includes(uniform));
+    }
+    setStep("details");
+  };
+
+  /** 2.0.57: same "one shared live rate, then switch the fields AND the
+   * currency to EUR together" pattern as Orders.tsx's own `convertToEur` -
+   * see that function's doc comment for the full reasoning. Converts every
+   * selected ticket's price AND fees in one round trip. */
+  const convertToEur = async () => {
+    if (saleCurrency === "EUR" || convertingCurrency) return;
+    setError(null);
+
+    const fields: Array<[string, (v: string) => void, string]> = [];
+    for (const t of selected) {
+      const line = lines[t.id] ?? { price: "", fees: "0" };
+      fields.push([line.price, (v) => updateLine(t.id, "price", v), `${t.code} sale price`]);
+      fields.push([line.fees || "0", (v) => updateLine(t.id, "fees", v), `${t.code} selling fees`]);
+    }
+    const parsedAmounts = fields.map(([value]) => decimalStringToCents(value));
+    const invalidIndex = parsedAmounts.findIndex((cents) => cents === null);
+    if (invalidIndex !== -1) {
+      setError(`${fields[invalidIndex][2]} is not a valid amount - fix it before converting to EUR`);
+      return;
+    }
+
+    const myToken = conversionToken.current;
+    setConvertingCurrency(true);
+    try {
+      const amountsCents = parsedAmounts as number[];
+      const result = await api.convertCurrency(saleCurrency, "EUR", amountsCents);
+      if (conversionToken.current !== myToken) return;
+      if (result.convertedCents.length !== fields.length) {
+        throw new Error("Currency conversion returned an unexpected number of amounts");
+      }
+      fields.forEach(([, setValue], i) => setValue(centsToDecimalString(result.convertedCents[i])));
+      const fromCurrency = saleCurrency;
+      currencyTouched.current = true;
+      setSaleCurrency("EUR");
+      setCustomSaleCurrency(false);
+      toast.success(
+        `Converted at today's rate: 1 ${fromCurrency} = ${result.rate.toFixed(4)} EUR (rate as of ${formatDateNumeric(result.rateDate)})`,
+      );
+    } catch (e) {
+      if (conversionToken.current !== myToken) return;
+      toast.error(errMsg(e));
+    } finally {
+      if (conversionToken.current === myToken) setConvertingCurrency(false);
+    }
+  };
 
   // Browse orders that still have at least one sellable ticket. `status`
   // does the "has a sellable ticket" filtering server-side (same filter
@@ -1002,8 +1096,18 @@ function SaleFormModal({
   };
 
   const visibleOptions = orderTicketOptions.filter((t) => !selected.some((s) => s.id === t.id));
-  const singleCurrency =
+  // 2.0.57: this is now purely about each ticket's own PURCHASE currency
+  // (cost side) - it no longer doubles as "the currency to show revenue
+  // in", since revenue is always `saleCurrency` now (one value for the
+  // whole batch, picked in the form below).
+  const costCurrencyUniform =
     selected.length > 0 && selected.every((t) => t.currency === selected[0].currency) ? selected[0].currency : null;
+  // Profit only means anything as one number when cost and revenue share a
+  // currency - same "never blend, show Mixed" rule finance.rs already
+  // enforces everywhere else in this app (BUG #6). Before 2.0.57 this was
+  // implied for free (a sale's currency always equalled its own ticket's),
+  // so this check simply didn't exist yet.
+  const profitComputable = costCurrencyUniform !== null && costCurrencyUniform === saleCurrency;
 
   const totals = useMemo(() => {
     let revenue = 0;
@@ -1020,30 +1124,27 @@ function SaleFormModal({
     return { revenue, cost, fees, profit: revenue - cost - fees };
   }, [selected, lines]);
 
-  // Only used when the selection is mixed-currency (1.6.0 audit UX finding:
-  // previously that case showed no profit preview at all, just a one-line
-  // notice). Same lenient, live-preview parsing as `totals` above, just
-  // grouped by currency instead of assuming the whole batch is one.
-  const perCurrencyTotals = useMemo(() => {
-    const byCurrency = new Map<string, { revenue: number; cost: number; fees: number; count: number }>();
+  // Only rendered when `profitComputable` is false - each selected ticket's
+  // own cost, grouped by ITS OWN purchase currency (never blended, same
+  // convention as every other mixed-currency view in this app), so the
+  // "why can't you just show me profit" notice still shows real numbers
+  // instead of nothing.
+  const costByCurrency = useMemo(() => {
+    const byCurrency = new Map<string, { cost: number; count: number }>();
     for (const t of selected) {
-      const line = lines[t.id];
-      const p = parseFloat((line?.price ?? "").trim().replace(",", "."));
-      const f = parseFloat((line?.fees ?? "0").trim().replace(",", ".")) || 0;
-      const entry = byCurrency.get(t.currency) ?? { revenue: 0, cost: 0, fees: 0, count: 0 };
-      if (Number.isFinite(p)) entry.revenue += Math.round(p * 100);
-      entry.fees += Math.round(f * 100);
+      const entry = byCurrency.get(t.currency) ?? { cost: 0, count: 0 };
       entry.cost += t.totalCostCents;
       entry.count += 1;
       byCurrency.set(t.currency, entry);
     }
-    return Array.from(byCurrency.entries()).map(([currency, v]) => ({ currency, ...v, profit: v.revenue - v.cost - v.fees }));
-  }, [selected, lines]);
+    return Array.from(byCurrency.entries()).map(([currency, v]) => ({ currency, ...v }));
+  }, [selected]);
 
   const submit = async () => {
     setError(null);
     if (selected.length === 0) return setError("Select at least one ticket to sell first");
     if (!saleDate) return setError("Sale date is required");
+    if (!saleCurrency.trim()) return setError("Currency is required");
 
     const batchLines: SaleBatchInput["lines"] = [];
     for (const t of selected) {
@@ -1070,6 +1171,7 @@ function SaleFormModal({
       paymentStatus,
       buyerReference: buyerReference || null,
       notes: notes || null,
+      currency: saleCurrency.trim().toUpperCase(),
     };
     setSaving(true);
     try {
@@ -1220,7 +1322,60 @@ function SaleFormModal({
           </div>
 
           <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3">
-            <div className="w-28">
+            {/* 2.0.57: the currency this whole sale is recorded in - one
+                value for every selected ticket, same "applies to all at
+                once" spirit as Quick-fill price/fees right below. Defaulted
+                in goToDetails() when this step was entered; freely editable
+                here afterward. */}
+            <div className="w-24">
+              <span className="label">Sale currency</span>
+              {customSaleCurrency ? (
+                <Input
+                  autoFocus
+                  placeholder="e.g. AED"
+                  value={saleCurrency}
+                  onChange={(e) => {
+                    currencyTouched.current = true;
+                    setSaleCurrency(e.target.value.toUpperCase());
+                  }}
+                  disabled={convertingCurrency}
+                />
+              ) : (
+                <Select
+                  value={saleCurrency}
+                  onChange={(e) => {
+                    currencyTouched.current = true;
+                    setSaleCurrency(e.target.value);
+                  }}
+                  disabled={convertingCurrency}
+                >
+                  {(PREFERRED_CURRENCIES.includes(saleCurrency) ? PREFERRED_CURRENCIES : [saleCurrency, ...PREFERRED_CURRENCIES]).map(
+                    (c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ),
+                  )}
+                </Select>
+              )}
+            </div>
+            <button
+              type="button"
+              className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+              onClick={() => {
+                currencyTouched.current = true;
+                setCustomSaleCurrency((v) => !v);
+              }}
+              disabled={convertingCurrency}
+            >
+              {customSaleCurrency ? "Choose from list" : "Other..."}
+            </button>
+            {saleCurrency !== "EUR" && (
+              <Button type="button" variant="secondary" disabled={convertingCurrency} onClick={convertToEur}>
+                {convertingCurrency ? "Converting..." : "Convert to EUR"}
+              </Button>
+            )}
+            <div className="ml-4 w-28">
               <span className="label">Quick-fill price</span>
               <Input inputMode="decimal" placeholder="0.00" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} />
             </div>
@@ -1258,9 +1413,14 @@ function SaleFormModal({
                       typed, which is exactly when it's most useful to still
                       see what currency these two fields are in). One label
                       covers both - price and fees on one ticket are always
-                      the same currency (copied from the ticket itself). */}
+                      the same currency. 2.0.57: this is now `saleCurrency`
+                      (the picker above), not `t.currency` - price/fees are
+                      entered in the SALE's chosen currency, which is no
+                      longer necessarily the same as this ticket's own
+                      purchase currency (shown instead in the "Cost" line
+                      above, for comparison). */}
                   <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">
-                    {t.currency}
+                    {saleCurrency}
                   </span>
                   <div className="w-24 shrink-0">
                     <Input
@@ -1291,44 +1451,50 @@ function SaleFormModal({
             })}
           </div>
 
-          {singleCurrency ? (
-            <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
+          {/* 2.0.57: revenue is always ONE number now (every line is
+              entered in `saleCurrency`) - only profit can still be "Mixed",
+              when a ticket's own purchase currency differs from that sale
+              currency (never blended into a meaningless cross-currency
+              subtraction - same rule finance.rs enforces everywhere else). */}
+          <div className="mt-4 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-xs text-slate-400 dark:text-slate-500">Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})</p>
-                <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(totals.revenue, singleCurrency)}</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">
+                  Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})
+                </p>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(totals.revenue, saleCurrency)}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-400 dark:text-slate-500">Estimated profit</p>
-                <p className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-                  {formatMoney(totals.profit, singleCurrency)}
+                {profitComputable ? (
+                  <p
+                    className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+                  >
+                    {formatMoney(totals.profit, saleCurrency)}
+                  </p>
+                ) : (
+                  <p className="font-semibold text-slate-400 dark:text-slate-500">Mixed</p>
+                )}
+              </div>
+            </div>
+            {!profitComputable && (
+              <div className="mt-2 border-t border-slate-200 dark:border-slate-700 pt-2">
+                <p className="mb-1.5 text-xs text-slate-400 dark:text-slate-500">
+                  {costCurrencyUniform === null
+                    ? "Selected tickets were bought in different currencies"
+                    : `Selected tickets were bought in ${costCurrencyUniform}`}
+                  , not {saleCurrency} - profit can&apos;t be shown as one number. Cost by purchase currency:
                 </p>
-              </div>
-            </div>
-          ) : (
-            // 1.6.0 audit UX finding: previously this case showed no profit
-            // preview at all, just a one-line notice. A mixed-currency batch
-            // still can't be blended into ONE total (that's a real, correct
-            // rule elsewhere in this app - see finance.rs), but each
-            // individual currency within it is still summable on its own.
-            <div className="mt-4 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
-              <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
-                Selected tickets use different currencies - shown separately, never blended into one total:
-              </p>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {perCurrencyTotals.map((c) => (
-                  <div key={c.currency}>
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
-                      {c.currency} ({c.count} ticket{c.count === 1 ? "" : "s"})
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {costByCurrency.map((c) => (
+                    <p key={c.currency} className="text-xs text-slate-500 dark:text-slate-400">
+                      {c.currency} ({c.count} ticket{c.count === 1 ? "" : "s"}): {formatMoney(c.cost, c.currency)}
                     </p>
-                    <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(c.revenue, c.currency)}</p>
-                    <p className={`text-xs font-medium ${c.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-                      {formatMoney(c.profit, c.currency)} profit
-                    </p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="mt-4 grid grid-cols-2 gap-4">
             <LookupSelect
@@ -1375,7 +1541,7 @@ function SaleFormModal({
           Cancel
         </Button>
         {step === "pick" ? (
-          <Button variant="primary" onClick={() => setStep("details")} disabled={selected.length === 0}>
+          <Button variant="primary" onClick={goToDetails} disabled={selected.length === 0}>
             Continue ({selected.length})
           </Button>
         ) : (

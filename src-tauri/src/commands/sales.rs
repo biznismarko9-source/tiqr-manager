@@ -20,7 +20,7 @@ const BASE_SQL: &str = "
       t.event_id, e.name as event_name,
       t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
-      s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at, s.updated_at,
+      s.currency, t.currency as ticket_currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at, s.updated_at,
       s.refunded_at, s.refund_reason, s.batch_id,
       (t.purchase_cost_cents + t.purchase_fees_cents + t.other_costs_cents) as cost_cents
     FROM sales s
@@ -40,7 +40,27 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
     let sale_price_cents: i64 = row.get("sale_price_cents")?;
     let selling_fees_cents: i64 = row.get("selling_fees_cents")?;
     let cost_cents: i64 = row.get("cost_cents")?;
+    let currency: String = row.get("currency")?;
+    let ticket_currency: String = row.get("ticket_currency")?;
+    // 2.0.57: before this version a sale's own currency always equalled its
+    // ticket's purchase currency by construction (see
+    // create_sales_batch_impl), so cost_cents (in the ticket's currency) and
+    // sale_price_cents (in the sale's currency) were always safely
+    // subtractable. New Sale can now record a line in a DIFFERENT currency
+    // than that ticket was bought in, so profit/margin/ROI for THIS row
+    // must not silently blend two currencies into one number - same "never
+    // blend, show Mixed" rule GROUP_BASE_SELECT's own currency CASE WHEN
+    // enforces at the batch level.
+    let currency_mismatch = currency != ticket_currency;
     let profit = finance::profit_cents(sale_price_cents, cost_cents, selling_fees_cents);
+    let (margin, roi) = if currency_mismatch {
+        (None, None)
+    } else {
+        (
+            finance::safe_ratio(profit, sale_price_cents),
+            finance::safe_ratio(profit, cost_cents),
+        )
+    };
     Ok(Sale {
         id: row.get("id")?,
         code: row.get("code")?,
@@ -58,7 +78,8 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         sale_date: row.get("sale_date")?,
         sale_price_cents,
         selling_fees_cents,
-        currency: row.get("currency")?,
+        currency,
+        currency_mismatch,
         payment_status: row.get("payment_status")?,
         buyer_reference: row.get("buyer_reference")?,
         notes: row.get("notes")?,
@@ -67,8 +88,8 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         updated_at: row.get("updated_at")?,
         cost_cents,
         profit_cents: profit,
-        margin: finance::safe_ratio(profit, sale_price_cents),
-        roi: finance::safe_ratio(profit, cost_cents),
+        margin,
+        roi,
         refunded_at: row.get("refunded_at")?,
         refund_reason: row.get("refund_reason")?,
         batch_id: row.get("batch_id")?,
@@ -247,10 +268,21 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       -- lines only when every line in the group is refunded (COUNT = 0
       -- among non-refunded ones), so a fully-refunded single-currency group
       -- still reports its currency instead of going blank.
+      -- 2.0.57: also requires every counted row's OWN s.currency = t.currency
+      -- - New Sale can now record a line in a currency that differs from
+      -- that same ticket's own purchase currency (see
+      -- SaleBatchInput::currency), so every line merely agreeing with every
+      -- other line is no longer enough on its own: a batch entirely in USD
+      -- whose tickets were all bought in EUR must still show Mixed (cost
+      -- and revenue aren't in one currency), even though COUNT(DISTINCT
+      -- s.currency) = 1. See map_sale's identical per-row guard below for
+      -- the ungrouped equivalent.
       CASE
         WHEN COUNT(DISTINCT CASE WHEN s.payment_status != 'refunded' THEN s.currency END) = 1
+          AND COUNT(CASE WHEN s.payment_status != 'refunded' AND s.currency != t.currency THEN 1 END) = 0
           THEN MAX(CASE WHEN s.payment_status != 'refunded' THEN s.currency END)
         WHEN COUNT(DISTINCT CASE WHEN s.payment_status != 'refunded' THEN s.currency END) = 0
+          AND COUNT(CASE WHEN s.currency != t.currency THEN 1 END) = 0
           THEN CASE WHEN COUNT(DISTINCT s.currency) = 1 THEN MAX(s.currency) END
         ELSE NULL
       END as currency,
@@ -670,6 +702,15 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
             return Err(AppError::Validation("Amounts cannot be negative".into()));
         }
     }
+    // 2.0.57: mirrors OrderInput's own `if input.currency.trim().is_empty()`
+    // guard (orders.rs) - only checked when the caller actually sent an
+    // explicit currency at all; `None` (the pre-2.0.57 "derive per ticket"
+    // path) has nothing to validate here.
+    if let Some(c) = &input.currency {
+        if c.trim().is_empty() {
+            return Err(AppError::Validation("Currency cannot be empty".into()));
+        }
+    }
     validate_new_payment_status(input.payment_status.as_deref())?;
     {
         let mut seen = HashSet::new();
@@ -723,11 +764,18 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
             ));
         }
 
-        let (currency,): (String,) = tx.query_row(
-            "SELECT currency FROM tickets WHERE id = ?1",
-            [line.ticket_id],
-            |r| Ok((r.get(0)?,)),
-        )?;
+        // 2.0.57: an explicit `input.currency` (New Sale's own currency
+        // picker) wins for every line in the batch; omitting it falls back
+        // to the original per-ticket lookup - see `SaleBatchInput::currency`'s
+        // own doc comment for exactly who still relies on that fallback.
+        let currency: String = match &input.currency {
+            Some(c) => c.trim().to_string(),
+            None => tx.query_row(
+                "SELECT currency FROM tickets WHERE id = ?1",
+                [line.ticket_id],
+                |r| r.get(0),
+            )?,
+        };
 
         let insert_result = tx.execute(
             "INSERT INTO sales (code, ticket_id, platform_id, sale_date, sale_price_cents,
@@ -776,6 +824,16 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
 /// selected ticket turns out to be unavailable, nothing in the batch is
 /// saved. This is also the path used for a single-ticket sale (a batch of
 /// one line), so there is only one code path to keep correct.
+///
+/// 2.0.57: `input.currency`, when set, records every line in the batch in
+/// that ONE currency, chosen by marko in the New Sale form - independent of
+/// whatever currency the ticket(s) being sold were themselves bought in
+/// (e.g. a ticket bought in USD but paid out by the marketplace in EUR).
+/// Left `None`, the original behaviour applies: each line silently copies
+/// its own ticket's purchase currency, exactly as before 2.0.57. Deliberately
+/// only settable at the moment a sale is created here, never editable
+/// afterward - the same creation-time-only scope `fx.rs`'s own doc comment
+/// already establishes for order currency.
 #[tauri::command]
 pub fn create_sales_batch(state: State<AppState>, input: SaleBatchInput) -> AppResult<Vec<Sale>> {
     let mut conn = state.db.lock().unwrap();
@@ -1290,6 +1348,7 @@ mod tests {
             payment_status: Some("paid".to_string()),
             buyer_reference: None,
             notes: None,
+            currency: None,
         };
         create_sales_batch_impl(&mut conn, &input).unwrap();
 
@@ -1432,6 +1491,7 @@ mod tests {
                 sale_date: "2026-03-01".to_string(),
                 payment_status: Some("paid".to_string()),
                 buyer_reference: Some("Buyer X".to_string()),
+                currency: None,
                 notes: None,
             };
             let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
@@ -1476,6 +1536,7 @@ mod tests {
             payment_status: None,
             buyer_reference: None,
             notes: None,
+            currency: None,
         };
         assert!(create_sales_batch_impl(&mut conn, &input).is_err());
         let count: i64 = conn
@@ -1505,6 +1566,7 @@ mod tests {
             payment_status: Some("pending".to_string()),
             buyer_reference: None,
             notes: None,
+            currency: None,
         };
         assert!(create_sales_batch_impl(&mut conn, &input).is_err());
 
@@ -1753,6 +1815,7 @@ mod tests {
             sale_date: "2026-03-01".to_string(),
             payment_status: Some(payment_status.to_string()),
             buyer_reference: Some("Buyer X".to_string()),
+            currency: None,
             notes: None,
         }
     }
@@ -1988,10 +2051,13 @@ mod tests {
 
     /// Same idea as `seed_tickets`, but lets the caller pick the ticket's
     /// currency (and reuse one event across calls) - needed only for BUG #6's
-    /// mixed-currency tests below. A sale's own currency is always copied
-    /// from its ticket (see `create_sale_impl`/`create_sales_batch_impl`
-    /// above), so the only way to get a mixed-currency batch is to sell
-    /// tickets that were themselves purchased in different currencies.
+    /// mixed-currency tests below. A sale's own currency is copied from its
+    /// ticket whenever the caller doesn't explicitly override it (see
+    /// `create_sale_impl`/`create_sales_batch_impl` above), so - for every
+    /// test in this file that leaves `SaleBatchInput::currency` as `None`,
+    /// i.e. all of them except 2.0.57's own override tests further below -
+    /// the only way to get a mixed-currency batch is still to sell tickets
+    /// that were themselves purchased in different currencies.
     fn seed_ticket_with_currency(conn: &mut Connection, event_id: i64, currency: &str) -> i64 {
         let input = OrderInput {
             event_id,
@@ -2015,6 +2081,176 @@ mod tests {
             r.get(0)
         })
         .unwrap()
+    }
+
+    // ---- 2.0.57: New Sale's own currency, independent of the ticket's ----
+
+    #[test]
+    fn explicit_batch_currency_overrides_every_tickets_own_purchase_currency() {
+        // marko's request: New Sale can now record a sale in a currency he
+        // picks himself (e.g. a ticket bought in USD but paid out by the
+        // marketplace in EUR) instead of always inheriting the ticket's own
+        // purchase currency - see `SaleBatchInput::currency`'s own doc
+        // comment for the full reasoning.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let mut input = batch_input(&[usd_ticket], 5000, "paid");
+        input.currency = Some("EUR".to_string());
+        let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
+
+        let stored: String = conn
+            .query_row("SELECT currency FROM sales WHERE id = ?1", [ids[0]], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "EUR", "an explicit batch currency must win over the ticket's own USD");
+    }
+
+    #[test]
+    fn explicit_batch_currency_applies_to_every_line_even_when_tickets_differ() {
+        // Two tickets bought in two different currencies, sold together in
+        // ONE sale action, paid out in a third currency the user chose -
+        // every resulting `sales` row must carry that SAME chosen currency,
+        // never fall back to either ticket's own (this is what makes the
+        // batch's own revenue total always a single, real number in the New
+        // Sale preview, regardless of what the tickets themselves cost).
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let eur_ticket = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let input = SaleBatchInput {
+            lines: vec![
+                crate::models::SaleBatchLineInput { ticket_id: eur_ticket, sale_price_cents: 1000, selling_fees_cents: 0 },
+                crate::models::SaleBatchLineInput { ticket_id: usd_ticket, sale_price_cents: 1000, selling_fees_cents: 0 },
+            ],
+            platform_id: None,
+            sale_date: "2026-03-01".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+            currency: Some("GBP".to_string()),
+        };
+        let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
+        for id in ids {
+            let stored: String = conn.query_row("SELECT currency FROM sales WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+            assert_eq!(stored, "GBP", "every line in the batch must share the one chosen sale currency");
+        }
+    }
+
+    #[test]
+    fn omitting_batch_currency_still_falls_back_to_each_tickets_own_currency() {
+        // Regression guard for `orders_sheet_sync::apply_sales_rows` (the
+        // Sales tab of Google Sheets sync has no currency column of its
+        // own) and every pre-2.0.57 test in this file: `currency: None`
+        // must reproduce the exact original behaviour, including staying
+        // correctly mixed across two tickets bought in different currencies.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let eur_ticket = seed_ticket_with_currency(&mut conn, event_id, "EUR");
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let input = SaleBatchInput {
+            lines: vec![
+                crate::models::SaleBatchLineInput { ticket_id: eur_ticket, sale_price_cents: 1000, selling_fees_cents: 0 },
+                crate::models::SaleBatchLineInput { ticket_id: usd_ticket, sale_price_cents: 1000, selling_fees_cents: 0 },
+            ],
+            platform_id: None,
+            sale_date: "2026-03-01".to_string(),
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+            currency: None,
+        };
+        let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
+        let eur_stored: String =
+            conn.query_row("SELECT currency FROM sales WHERE id = ?1", [ids[0]], |r| r.get(0)).unwrap();
+        let usd_stored: String =
+            conn.query_row("SELECT currency FROM sales WHERE id = ?1", [ids[1]], |r| r.get(0)).unwrap();
+        assert_eq!(eur_stored, "EUR");
+        assert_eq!(usd_stored, "USD");
+    }
+
+    #[test]
+    fn blank_explicit_batch_currency_is_rejected() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let mut input = batch_input(&tickets, 1000, "paid");
+        input.currency = Some("   ".to_string());
+        let err = create_sales_batch_impl(&mut conn, &input).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn a_sale_whose_currency_mismatches_its_own_tickets_currency_hides_margin_and_roi() {
+        // The actual correctness gap 2.0.57's currency override opens up:
+        // cost_cents comes from the TICKET (its own purchase currency),
+        // sale_price_cents from the SALE (now possibly a different,
+        // explicitly-chosen currency) - map_sale must never blend the two
+        // into a real-looking margin/ROI percentage. profit_cents/cost_cents
+        // stay real numbers (each meaningful in its own currency on its
+        // own) - `currencyMismatch` is what tells the frontend not to
+        // display them as if they were one number (formatMoneyOrMixed).
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+
+        let mut input = batch_input(&[usd_ticket], 5000, "paid");
+        input.currency = Some("EUR".to_string());
+        let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
+        let sale = fetch_one(&conn, ids[0]).unwrap();
+
+        assert!(sale.currency_mismatch, "USD ticket sold in EUR must be flagged as a currency mismatch");
+        assert_eq!(sale.margin, None, "a cross-currency margin is meaningless, never a real-looking percentage");
+        assert_eq!(sale.roi, None, "a cross-currency ROI is meaningless, never a real-looking percentage");
+        // profit_cents/cost_cents are still populated (not zeroed or
+        // panicking) - it's the caller's job (currencyMismatch) to know not
+        // to trust them as one currency, not this function's job to hide them.
+        assert_eq!(sale.cost_cents, 1000);
+    }
+
+    #[test]
+    fn a_sale_whose_currency_matches_its_own_tickets_currency_computes_margin_and_roi_normally() {
+        // The ordinary, overwhelmingly common case (explicit currency equal
+        // to the ticket's own, or no override at all) must be completely
+        // unaffected by 2.0.57 - same real numbers as always.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1); // EUR, cost 1000 cents
+        let mut input = batch_input(&tickets, 2000, "paid");
+        input.currency = Some("EUR".to_string());
+        let ids = create_sales_batch_impl(&mut conn, &input).unwrap();
+        let sale = fetch_one(&conn, ids[0]).unwrap();
+
+        assert!(!sale.currency_mismatch);
+        assert_eq!(sale.profit_cents, 1000);
+        assert_eq!(sale.margin, Some(0.5));
+    }
+
+    #[test]
+    fn group_currency_is_mixed_when_a_single_lines_sale_currency_differs_from_its_own_tickets_currency() {
+        // GROUP_BASE_SELECT's own equivalent of the map_sale test above:
+        // before 2.0.57 this scenario was simply impossible (a sale's
+        // currency always equalled its ticket's), so "every line's currency
+        // agrees with every other line's" (COUNT(DISTINCT s.currency) = 1)
+        // was previously a sufficient check all on its own for a
+        // single-line group. It no longer is.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let usd_ticket = seed_ticket_with_currency(&mut conn, event_id, "USD");
+        let mut input = batch_input(&[usd_ticket], 5000, "paid");
+        input.currency = Some("EUR".to_string());
+        create_sales_batch_impl(&mut conn, &input).unwrap();
+
+        let groups = fetch_recent_groups(&conn, 5).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].currency, None, "cost (USD) and revenue (EUR) don't share a currency - must be Mixed");
+        assert_eq!(groups[0].margin, None);
+        assert_eq!(groups[0].roi, None);
     }
 
     #[test]
@@ -2358,6 +2594,7 @@ mod tests {
             payment_status: Some("paid".to_string()),
             buyer_reference: None,
             notes: None,
+            currency: None,
         };
         create_sales_batch_impl(&mut conn, &input).unwrap();
 
@@ -2384,6 +2621,7 @@ mod tests {
             payment_status: Some("paid".to_string()),
             buyer_reference: None,
             notes: None,
+            currency: None,
         };
         create_sales_batch_impl(&mut conn, &input).unwrap();
 

@@ -555,6 +555,17 @@ pub struct Sale {
     pub sale_price_cents: i64,
     pub selling_fees_cents: i64,
     pub currency: String,
+    /// 2.0.57: true when this sale's OWN currency differs from its OWN
+    /// ticket's purchase currency (only possible since `SaleBatchInput`
+    /// gained an explicit `currency` override - before that this was always
+    /// false by construction). `cost_cents`/`profit_cents` below are still
+    /// populated as real numbers either way (each is meaningful on its own,
+    /// in its own currency), but `margin`/`roi` are forced to `None` when
+    /// this is true (see `map_sale`) and the frontend shows "Mixed" instead
+    /// of `profit_cents`/`cost_cents` for this row - never blend two
+    /// currencies into one number, the same rule `SaleGroup.currency`
+    /// already enforces at the batch level.
+    pub currency_mismatch: bool,
     pub payment_status: String,
     pub buyer_reference: Option<String>,
     pub notes: Option<String>,
@@ -666,6 +677,22 @@ pub struct SaleBatchInput {
     pub payment_status: Option<String>,
     pub buyer_reference: Option<String>,
     pub notes: Option<String>,
+    /// 2.0.57: explicit sale currency for this whole batch, chosen once in
+    /// the New Sale form - with an optional "Convert to EUR" step using the
+    /// same live-rate helper the New Order form already has (see fx.rs).
+    /// `None` preserves the app's original behaviour of silently copying
+    /// each line's own ticket's purchase currency: kept for
+    /// `orders_sheet_sync::apply_sales_rows` (the Sales tab of Google Sheets
+    /// sync has no currency column of its own, exactly like Pulls - see
+    /// `money::format_cents_for_sheet`'s doc comment) and every pre-2.0.57
+    /// test, none of which send this field at all.
+    /// `Some(code)` applies that ONE currency to every line in the batch -
+    /// the sale currency is a single value for the whole "New sale"
+    /// transaction (one buyer pays once), the same way Quick-fill
+    /// price/fees already apply to every selected ticket at once. See
+    /// `create_sales_batch_impl` for how this interacts with a ticket's own
+    /// (possibly different) purchase currency.
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

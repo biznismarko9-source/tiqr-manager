@@ -1633,6 +1633,11 @@ fn apply_sales_rows(
             payment_status: Some(payment_status),
             buyer_reference: cell(raw_row, paid_by_col),
             notes: None,
+            // 2.0.57: Sheets' Sales tab has no currency column of its own
+            // (see `SaleBatchInput::currency`'s own doc comment) - keep
+            // deriving each line's currency from its own ticket, exactly as
+            // before this field existed.
+            currency: None,
         };
 
         match create_sales_batch_impl(conn, &batch_input) {
@@ -4082,6 +4087,7 @@ mod tests {
                 payment_status: Some("paid".to_string()),
                 buyer_reference: None,
                 notes: None,
+                currency: None,
             },
         )
         .unwrap();

@@ -306,7 +306,8 @@ fn write_sales_csv(
     let sql = format!(
         "SELECT s.code, t.code, e.name, p.name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
                 (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) as cost_cents,
-                s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at
+                s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at,
+                t.currency as ticket_currency
          FROM sales s
          JOIN tickets t ON t.id = s.ticket_id
          JOIN events e ON e.id = t.event_id
@@ -327,7 +328,18 @@ fn write_sales_csv(
         let sale_price: i64 = row.get(5)?;
         let fees: i64 = row.get(6)?;
         let cost: i64 = row.get(7)?;
+        let sale_currency: String = row.get(8)?;
         let payment_status: String = row.get(9)?;
+        let ticket_currency: String = row.get(14)?;
+        // 2.0.57: New Sale can now record a sale in a currency that differs
+        // from its own ticket's purchase currency (see
+        // SaleBatchInput::currency) - `cost` above is always in the
+        // ticket's currency, so subtracting it from `sale_price` (in
+        // `sale_currency`) is only valid when the two agree. Left blank
+        // rather than a silently wrong number when they don't - same
+        // "never blend currencies" rule map_sale/GROUP_BASE_SELECT already
+        // enforce for the in-app views (sales.rs).
+        let currency_mismatch = sale_currency != ticket_currency;
         // 1.6.0 audit H6: every other profit total in this app is
         // "realized-only" - a refunded sale contributes 0, never a negative
         // "we lost the fees" or positive "we still made this" number (see
@@ -338,7 +350,13 @@ fn write_sales_csv(
         // column. sale_price/fees/cost stay as the row's own historical
         // values either way - payment_status already shows "refunded" so
         // it's clear why profit is 0 despite a nonzero sale_price.
-        let profit = if payment_status == "refunded" { 0 } else { sale_price - cost - fees };
+        let profit = if payment_status == "refunded" {
+            Some(0)
+        } else if currency_mismatch {
+            None
+        } else {
+            Some(sale_price - cost - fees)
+        };
         wtr.write_record([
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -348,8 +366,8 @@ fn write_sales_csv(
             format_cents(sale_price),
             format_cents(fees),
             format_cents(cost),
-            format_cents(profit),
-            row.get::<_, String>(8)?,
+            profit.map(format_cents).unwrap_or_default(),
+            sale_currency,
             payment_status.clone(),
             opt(row.get(10)?),
             opt(row.get(11)?),
@@ -537,6 +555,65 @@ mod tests {
     }
 
     #[test]
+    fn a_sale_whose_currency_mismatches_its_own_tickets_currency_exports_a_blank_profit() {
+        // 2.0.57: New Sale can now record a sale in a currency that differs
+        // from its own ticket's purchase currency (SaleBatchInput::currency).
+        // `cost` here is always in the ticket's currency - subtracting it
+        // from a sale_price in a DIFFERENT currency would silently export a
+        // meaningless number, so this row's profit must come out blank
+        // instead (never a real-looking but wrong figure someone might sum
+        // in a spreadsheet) - same "never blend currencies" rule
+        // map_sale/GROUP_BASE_SELECT already enforce for the in-app views.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        let usd_order = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "USD".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        let order_id = insert_order_with_tickets(&mut conn, &usd_order, false).unwrap();
+        let usd_ticket: i64 = conn
+            .query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0))
+            .unwrap();
+
+        create_sales_batch_impl(
+            &mut conn,
+            &SaleBatchInput {
+                lines: vec![SaleBatchLineInput { ticket_id: usd_ticket, sale_price_cents: 5000, selling_fees_cents: 0 }],
+                platform_id: None,
+                sale_date: "2026-02-01".to_string(),
+                payment_status: Some("paid".to_string()),
+                buyer_reference: None,
+                notes: None,
+                currency: Some("EUR".to_string()),
+            },
+        )
+        .unwrap();
+
+        let out = temp_csv_path();
+        export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][5], "50.00", "sale_price still exports normally, in its own (EUR) currency");
+        assert_eq!(rows[0][7], "10.00", "cost still exports normally, in its own (USD) currency");
+        assert_eq!(rows[0][8], "", "profit left blank rather than silently subtracting USD cost from EUR revenue");
+        assert_eq!(rows[0][9], "EUR", "the currency column reflects the sale's OWN currency");
+    }
+
+    #[test]
     fn refunded_sale_exports_zero_profit_instead_of_a_misleading_realized_number() {
         // The exact H6 bug: before this fix, a refunded row still exported
         // sale_price-cost-fees as if it were realized profit, overstating
@@ -602,6 +679,7 @@ mod tests {
             payment_status: Some("paid".to_string()),
             buyer_reference: None,
             notes: None,
+            currency: None,
         }
     }
 

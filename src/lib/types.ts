@@ -268,6 +268,13 @@ export interface Sale {
   salePriceCents: number;
   sellingFeesCents: number;
   currency: string;
+  /** 2.0.57: true when this sale's own currency differs from its own
+   * ticket's purchase currency (only possible once a New Sale explicitly
+   * overrides the currency - see SaleBatchInput.currency). When true,
+   * `margin`/`roi` are already `null`, and `costCents`/`profitCents` should
+   * be shown as "Mixed" (e.g. via formatMoneyOrMixed) rather than a real
+   * number - they'd otherwise silently subtract two different currencies. */
+  currencyMismatch: boolean;
   paymentStatus: SalePaymentStatus;
   buyerReference: string | null;
   notes: string | null;
@@ -351,6 +358,12 @@ export interface SaleBatchInput {
   paymentStatus?: SalePaymentStatus | null;
   buyerReference?: string | null;
   notes?: string | null;
+  /** 2.0.57: the one currency this whole sale is recorded in, picked in the
+   * New Sale form - independent of whatever currency the ticket(s) being
+   * sold were themselves bought in. Backend accepts this as optional
+   * (older/other callers like Sheets sync omit it and keep the original
+   * per-ticket-derived behaviour), but the New Sale UI always sends it. */
+  currency: string;
 }
 
 export interface SaleEditInput {
