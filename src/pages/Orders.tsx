@@ -77,6 +77,13 @@ let lastOrdersSearch: string | null = null;
 // 2.0.27: same session-only "remember the last filter" convention, now for
 // the category filter added alongside search.
 let lastOrdersCategoryId: number | "" = "";
+// 2.0.65: same again, for the new Platform and date-range filters -
+// list_orders_impl has supported platform_id/date_from/date_to for a while
+// (Tickets.tsx already sends all three against this same command), this
+// page just never sent them.
+let lastOrdersPlatformId: number | "" = "";
+let lastOrdersDateFrom = "";
+let lastOrdersDateTo = "";
 // 2.0.34: same convention again, for the new Sort control below - marko
 // asked for a way to sort Orders/Events/Sales by date "so nothing gets
 // lost". Sales already had this (SORT_LABELS in Sales.tsx); Orders didn't
@@ -89,9 +96,12 @@ let lastOrdersCategoryId: number | "" = "";
 // as a server-side sort would be, without touching orders.rs at all.
 let lastOrdersSortBy: string = "";
 
+// 2.0.65: relabeled from "Newest/Oldest first" to "Soonest/Furthest first",
+// default flipped from descending to ascending - same app-wide change as
+// Tickets/Sales/Events/Pulls, see REDESIGN-2.0.65-REPORT.md.
 const ORDER_SORT_LABELS: Record<string, string> = {
-  "": "Newest first",
-  oldest: "Oldest first",
+  "": "Soonest first",
+  furthest: "Furthest first",
 };
 
 /** Turns the free-form "Seats" input into one label per ticket.
@@ -122,11 +132,18 @@ export default function Orders() {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [categories, setCategories] = useState<EventCategory[]>([]);
+  const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(lastOrdersSearch ?? "");
   // 2.0.27: category filter (marko's request - filter Events/Orders/Sales by
   // category). Deliberately just this one new filter - not also an Event
   // filter, which nobody asked for here.
   const [categoryId, setCategoryId] = useState<number | "">(lastOrdersCategoryId);
+  // 2.0.65: Platform + date-range filters, matching Tickets/Sales/Pulls -
+  // list_orders_impl already accepts all three, this page just never sent
+  // them.
+  const [platformId, setPlatformId] = useState<number | "">(lastOrdersPlatformId);
+  const [dateFrom, setDateFrom] = useState(lastOrdersDateFrom);
+  const [dateTo, setDateTo] = useState(lastOrdersDateTo);
   const [sortBy, setSortBy] = useState(lastOrdersSortBy);
   // 2.0.59: see ORDER_TABS above.
   const [tab, setTab] = useListTab("ordersTab", ["active", "paid"] as const);
@@ -149,16 +166,35 @@ export default function Orders() {
   }, [categoryId]);
 
   useEffect(() => {
+    lastOrdersPlatformId = platformId;
+  }, [platformId]);
+
+  useEffect(() => {
+    lastOrdersDateFrom = dateFrom;
+  }, [dateFrom]);
+
+  useEffect(() => {
+    lastOrdersDateTo = dateTo;
+  }, [dateTo]);
+
+  useEffect(() => {
     lastOrdersSortBy = sortBy;
   }, [sortBy]);
 
   useEffect(() => {
     api.listEventCategories().then(setCategories).catch(() => {});
+    api.listPlatforms().then(setPlatforms).catch(() => {});
   }, []);
 
   const load = () => {
     api
-      .listOrders({ search: search || undefined, categoryId: categoryId || undefined })
+      .listOrders({
+        search: search || undefined,
+        categoryId: categoryId || undefined,
+        platformId: platformId || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      })
       .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };
@@ -172,19 +208,22 @@ export default function Orders() {
     const t = setTimeout(load, 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, categoryId]);
+  }, [search, categoryId, platformId, dateFrom, dateTo]);
 
   // 2.0.34: `orders` itself is left exactly as the backend returned it
   // (purchase_date DESC) - sorting happens only here, on a derived copy, so
   // every other reference to `orders` above (allSelected, the >= 5000
   // banner, the empty-state checks) keeps working on the real fetched list
-  // regardless of display order. "" (Newest first) is a no-op slice/copy,
-  // not a re-sort - it's already in that exact order from the backend, so
-  // there's no risk of a stable-sort quirk changing same-day ordering.
+  // regardless of display order. 2.0.65: default flipped to ascending
+  // ("Soonest first") - see ORDER_SORT_LABELS above - so now "furthest" is
+  // the no-op pass-through of the backend's own order, and the default
+  // reverses it. No risk of a stable-sort quirk changing same-day ordering
+  // either way, since neither branch re-sorts - both just choose a
+  // direction over the same backend order.
   const sortedOrders = useMemo(() => {
     if (!orders) return [];
-    if (sortBy === "oldest") return [...orders].reverse();
-    return orders;
+    if (sortBy === "furthest") return orders;
+    return [...orders].reverse();
   }, [orders, sortBy]);
 
   // 2.0.59: tab split happens client-side, after sorting, on data the page
@@ -304,11 +343,35 @@ export default function Orders() {
             ))}
           </Select>
         </div>
+        <div className="w-40">
+          <span className="label">Platform</span>
+          <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All platforms</option>
+            {/* Orders is purchase-side, same purchase/both scoping as every
+                other purchase-side Platform picker in the app (see
+                Tickets.tsx's own comment for the full reasoning). */}
+            {platforms
+              .filter((p) => p.kind === "purchase" || p.kind === "both")
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+          </Select>
+        </div>
+        <div className="w-36">
+          <span className="label">From</span>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">To</span>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
         <div className="w-44">
           <span className="label">Sort</span>
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort orders">
             {Object.entries(ORDER_SORT_LABELS).map(([value, label]) => (
-              <option key={value || "newest"} value={value}>
+              <option key={value || "soonest"} value={value}>
                 {label}
               </option>
             ))}

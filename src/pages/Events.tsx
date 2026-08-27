@@ -55,9 +55,16 @@ const EMPTY_INPUT: EventInput = {
 // opt-in direction - named for what it actually does (event_date ascending)
 // rather than reusing "Newest/Oldest" from Sales/Orders, which doesn't map
 // cleanly onto a scheduled date that's usually in the future, not the past.
+//
+// 2.0.65: this page's own "Soonest/Furthest" naming is now the app-wide
+// standard (Orders/Tickets/Sales/Pulls all adopted it too - see
+// REDESIGN-2.0.65-REPORT.md), and marko confirmed Soonest should be the
+// default everywhere, so the two keys below swap roles: "" is now the
+// ascending (soonest) branch, and "furthest" is the new explicit
+// descending/pass-through value.
 const EVENT_SORT_LABELS: Record<string, string> = {
-  "": "Furthest first",
-  soonest: "Soonest first",
+  "": "Soonest first",
+  furthest: "Furthest first",
 };
 
 export default function Events() {
@@ -71,6 +78,12 @@ export default function Events() {
   // 2.0.27: event category filter (marko's request - filter Events/Orders/
   // Sales by category, same as every other list-page dropdown filter here).
   const [categoryId, setCategoryId] = useState<number | "">("");
+  // 2.0.65: date-range filter, matching Orders/Tickets/Pulls - no session
+  // memory here either, same reasoning as sortBy just below (this file
+  // doesn't persist search/categoryId across visits, so these shouldn't be
+  // the first filters here that suddenly do).
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   // 2.0.34: marko asked for a way to sort Events/Orders/Sales by date "so
   // nothing gets lost". No session-memory var for this (unlike Orders.tsx's
   // lastOrdersSortBy) - this file doesn't remember search/categoryId across
@@ -103,7 +116,12 @@ export default function Events() {
 
   const load = () => {
     api
-      .listEvents({ search: search || undefined, categoryId: categoryId || undefined })
+      .listEvents({
+        search: search || undefined,
+        categoryId: categoryId || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      })
       .then(setEvents)
       .catch((e) => toast.error(errMsg(e)));
   };
@@ -126,13 +144,14 @@ export default function Events() {
   // date set yet, e.g. TBD) can't be placed on a "soonest/furthest" axis at
   // all - list_events already always puts them last (the `(e.event_date IS
   // NULL)` clause), so this keeps that same rule for the new sort direction
-  // too rather than letting them jump to the top when reversed. "" is left
-  // as a straight pass-through of `events` - it already IS event_date DESC,
-  // id DESC from the backend, so there's nothing to recompute for it, and
-  // zero risk of this new code changing what marko sees today by default.
+  // too rather than letting them jump to the top when reversed. 2.0.65:
+  // "furthest" (was "") is now the one left as a straight pass-through of
+  // `events` - it's still exactly event_date DESC, id DESC from the
+  // backend - and the default ("", was "soonest") is now the ascending
+  // branch, per marko's app-wide "soonest is the default everywhere" choice.
   const sortedEvents = useMemo(() => {
     if (!events) return [];
-    if (sortBy !== "soonest") return events;
+    if (sortBy === "furthest") return events;
     const withDate = events.filter((ev) => ev.eventDate !== null);
     const withoutDate = events.filter((ev) => ev.eventDate === null);
     withDate.sort((a, b) => (a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id);
@@ -224,7 +243,7 @@ export default function Events() {
     const t = setTimeout(load, 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, categoryId]);
+  }, [search, categoryId, dateFrom, dateTo]);
 
   return (
     <div>
@@ -282,11 +301,19 @@ export default function Events() {
             ))}
           </Select>
         </div>
+        <div className="w-36">
+          <span className="label">From</span>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">To</span>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
         <div className="w-44">
           <span className="label">Sort</span>
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort events">
             {Object.entries(EVENT_SORT_LABELS).map(([value, label]) => (
-              <option key={value || "furthest"} value={value}>
+              <option key={value || "soonest"} value={value}>
                 {label}
               </option>
             ))}

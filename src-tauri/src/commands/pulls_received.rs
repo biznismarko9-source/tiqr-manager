@@ -76,10 +76,32 @@ pub(crate) fn fetch_one(conn: &Connection, id: i64) -> AppResult<PullReceived> {
 /// Free-text search across every field marko would actually recognize a
 /// received pull by (puller, event, own code, more info, linked order's own
 /// code) - same `LIKE` OR-chain convention as list_pulls_impl's search.
-fn list_pulls_received_impl(conn: &Connection, search: Option<String>) -> AppResult<Vec<PullReceived>> {
+///
+/// `date_from`/`date_to` (2.0.65) mirror list_pulls_impl's own date range -
+/// inclusive, against `event_date`. No `platform_id` filter here: this table
+/// has no platform column of its own (a received pull's platform, if any, is
+/// a property of its linked order, not of the pull itself).
+fn list_pulls_received_impl(
+    conn: &Connection,
+    search: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<PullReceived>> {
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
+    if let Some(from) = date_from.as_deref() {
+        if !from.is_empty() {
+            sql.push_str(" AND pr.event_date >= ?");
+            params_vec.push(Box::new(from.to_string()));
+        }
+    }
+    if let Some(to) = date_to.as_deref() {
+        if !to.is_empty() {
+            sql.push_str(" AND pr.event_date <= ?");
+            params_vec.push(Box::new(to.to_string()));
+        }
+    }
     if let Some(q) = search.as_deref() {
         let q = q.trim();
         if !q.is_empty() {
@@ -102,9 +124,14 @@ fn list_pulls_received_impl(conn: &Connection, search: Option<String>) -> AppRes
 }
 
 #[tauri::command]
-pub fn list_pulls_received(state: State<AppState>, search: Option<String>) -> AppResult<Vec<PullReceived>> {
+pub fn list_pulls_received(
+    state: State<AppState>,
+    search: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<PullReceived>> {
     let conn = state.db.lock().unwrap();
-    list_pulls_received_impl(&conn, search)
+    list_pulls_received_impl(&conn, search, date_from, date_to)
 }
 
 #[tauri::command]
@@ -491,7 +518,7 @@ mod tests {
         let conn = test_conn();
         let a = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
         let b = create_pull_received_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_received_impl(&conn, None).unwrap();
+        let results = list_pulls_received_impl(&conn, None, None, None).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].id, b.id);
         assert_eq!(results[1].id, a.id);
@@ -502,7 +529,7 @@ mod tests {
         let conn = test_conn();
         create_pull_received_impl(&conn, &base_input("Zuzana Kovacova"), false).unwrap();
         create_pull_received_impl(&conn, &base_input("Peter Novak"), false).unwrap();
-        let results = list_pulls_received_impl(&conn, Some("Kovac".to_string())).unwrap();
+        let results = list_pulls_received_impl(&conn, Some("Kovac".to_string()), None, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].puller_name, "Zuzana Kovacova");
     }
@@ -514,7 +541,7 @@ mod tests {
         input.event_name = "Ed Sheeran Tour".to_string();
         create_pull_received_impl(&conn, &input, false).unwrap();
         create_pull_received_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_received_impl(&conn, Some("sheeran".to_string())).unwrap();
+        let results = list_pulls_received_impl(&conn, Some("sheeran".to_string()), None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -526,7 +553,7 @@ mod tests {
         input.order_id = Some(order_id);
         create_pull_received_impl(&conn, &input, false).unwrap();
         create_pull_received_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_received_impl(&conn, Some("ORD-000001".to_string())).unwrap();
+        let results = list_pulls_received_impl(&conn, Some("ORD-000001".to_string()), None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -534,8 +561,55 @@ mod tests {
     fn list_pulls_received_search_by_nonexistent_term_returns_no_results() {
         let conn = test_conn();
         create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
-        let results = list_pulls_received_impl(&conn, Some("nonexistent".to_string())).unwrap();
+        let results = list_pulls_received_impl(&conn, Some("nonexistent".to_string()), None, None).unwrap();
         assert!(results.is_empty());
+    }
+
+    // ---- date-range filter (2.0.65) ----------------------------------------
+
+    #[test]
+    fn list_pulls_received_filters_by_date_from_and_date_to_inclusive() {
+        let conn = test_conn();
+        let mut early = base_input("Jozef");
+        early.event_date = Some("2026-01-01".to_string());
+        let a = create_pull_received_impl(&conn, &early, false).unwrap();
+        let mut mid = base_input("Maria");
+        mid.event_date = Some("2026-06-15".to_string());
+        let b = create_pull_received_impl(&conn, &mid, false).unwrap();
+        let mut late = base_input("Peter");
+        late.event_date = Some("2026-12-31".to_string());
+        let c = create_pull_received_impl(&conn, &late, false).unwrap();
+
+        let from_mid = list_pulls_received_impl(&conn, None, Some("2026-06-15".to_string()), None).unwrap();
+        let mut ids: Vec<i64> = from_mid.iter().map(|p| p.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![b.id, c.id]);
+
+        let up_to_mid = list_pulls_received_impl(&conn, None, None, Some("2026-06-15".to_string())).unwrap();
+        let mut ids: Vec<i64> = up_to_mid.iter().map(|p| p.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![a.id, b.id]);
+    }
+
+    #[test]
+    fn list_pulls_received_date_range_combines_with_search() {
+        let conn = test_conn();
+        let mut matching = base_input("Zuzana Kovacova");
+        matching.event_date = Some("2026-06-15".to_string());
+        let a = create_pull_received_impl(&conn, &matching, false).unwrap();
+        let mut wrong_date = base_input("Zuzana Kovacova Two");
+        wrong_date.event_date = Some("2020-01-01".to_string());
+        create_pull_received_impl(&conn, &wrong_date, false).unwrap();
+
+        let results = list_pulls_received_impl(
+            &conn,
+            Some("Kovac".to_string()),
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, a.id);
     }
 
     // ---- update -----------------------------------------------------------------

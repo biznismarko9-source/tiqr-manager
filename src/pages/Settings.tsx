@@ -39,6 +39,7 @@ import {
 } from "../components/ExportPickerModal";
 import { EventCategorySwatch } from "../components/EventCategoryBadge";
 import {
+  IconAlertTriangle,
   IconArrowLeft,
   IconChevronDown,
   IconDatabase,
@@ -1215,6 +1216,17 @@ function SheetsConnectionCard({
   // rather than one long string.
   const [detectHint, setDetectHint] = useState<string | null>(null);
   const [manualTabEntry, setManualTabEntry] = useState(false);
+  // 2.0.65: marko's own report - too many buttons visible at once, no way to
+  // tell what they do without hovering each one, and the setup instructions/
+  // input fields stayed on screen forever even once already connected and
+  // working. Once connected, the connection itself (URL/tab fields, the
+  // paste/share instructions, Save/Update sheet) collapses into one compact
+  // summary line - `editingConnection` reopens it, e.g. to point this data
+  // source at a different sheet. Not connected yet, there's nothing to
+  // collapse, so the full form always shows regardless of this flag (see
+  // `showConnectionForm` below). Every button this replaces still exists,
+  // unchanged - see REDESIGN-2.0.65-REPORT.md.
+  const [editingConnection, setEditingConnection] = useState(false);
 
   const oauthEmail = googleStatus?.signedInEmail ?? null;
 
@@ -1304,6 +1316,10 @@ function SheetsConnectionCard({
       setTestResult(result);
       if (result.ok) {
         toast.success("Sheet connected");
+        // 2.0.65: collapse back to the compact summary now that the
+        // connection actually works - stay open on a failed test (below) so
+        // marko can see the fields and the error together and fix it.
+        setEditingConnection(false);
       } else {
         toast.error(`Saved, but the connection test failed: ${result.message}`);
       }
@@ -1506,193 +1522,261 @@ function SheetsConnectionCard({
         <p className="text-xs text-slate-400 dark:text-slate-500">Google Sheets sync isn&apos;t available in this build.</p>
       ) : (
         <>
-          {/* 2.0.26: was up to 5 stacked paragraphs here (main + one per
-              action) - marko's own report ("zminimalizovať túto časť...
-              menej textu"). Nothing was deleted: every action's detailed
-              explanation (syncDescription/pushDescription/secondarySync.
-              description/secondaryPush.description/setupDescription) still
-              exists, word for word - it just moved onto that action's own
-              button as a native `title` tooltip (see the button row below)
-              instead of being force-displayed at all times. One short line
-              stays here since it's an instruction for the fields right
-              below, not a per-action explanation. */}
-          <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-            Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.
-            {!onSync &&
-              ` Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
-            {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
-          </p>
+          {/* 2.0.65: once a connection already works, none of this setup
+              chrome (instructions, the URL/tab fields, Save/Update sheet)
+              needs to sit on screen permanently - marko's own report ("vela
+              tlacitok...zbytocne vela textu"). Nothing here was removed, it
+              just collapses into the compact summary bar below once
+              `connected`, and "Change connection" reopens exactly this same
+              block. Not yet connected, there's nothing to collapse, so this
+              always shows. */}
+          {(!connected || editingConnection) && (
+            <>
+              {/* 2.0.26: was up to 5 stacked paragraphs here (main + one per
+                  action) - marko's own report ("zminimalizovať túto časť...
+                  menej textu"). Nothing was deleted: every action's detailed
+                  explanation (syncDescription/pushDescription/secondarySync.
+                  description/secondaryPush.description/setupDescription) still
+                  exists, word for word - it just moved onto that action's own
+                  button as a native `title` tooltip (see the button row below)
+                  instead of being force-displayed at all times. One short line
+                  stays here since it's an instruction for the fields right
+                  below, not a per-action explanation. */}
+              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+                Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.
+                {!onSync &&
+                  ` Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
+                {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
+              </p>
 
-          <div className="grid grid-cols-1 gap-3">
-            <Field label="Spreadsheet URL or ID">
-              <Input
-                placeholder="https://docs.google.com/spreadsheets/d/..."
-                value={spreadsheetInput}
-                onChange={(e) => {
-                  setSpreadsheetInput(e.target.value);
-                  // A different spreadsheet invalidates any previously
-                  // detected tab list - never leave a stale dropdown from
-                  // the sheet that used to be pasted here.
-                  setDetectedTabs(null);
-                  setDetectMessage(null);
-                  setDetectHint(null);
-                }}
-                onBlur={() => detectTabs(spreadsheetInput)}
-              />
-            </Field>
-            <Field
-              label="Sheet/tab name"
-              hint={
-                detectedTabs && detectedTabs.length > 0 && !manualTabEntry
-                  ? "Detected directly from the spreadsheet - pick the tab this data source should use."
-                  : "The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
-              }
-            >
-              {detecting ? (
-                <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-                  <Spinner className="h-4 w-4" /> Detecting tabs...
-                </div>
-              ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
-                <>
-                  <Select value={sheetTab} onChange={(e) => setSheetTab(e.target.value)}>
-                    {detectedTabs.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </Select>
-                  <button
-                    type="button"
-                    className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                    onClick={() => setManualTabEntry(true)}
-                  >
-                    Type it in manually instead
-                  </button>
-                </>
-              ) : (
-                <>
+              <div className="grid grid-cols-1 gap-3">
+                <Field label="Spreadsheet URL or ID">
                   <Input
-                    placeholder={`e.g. ${label}`}
-                    value={sheetTab}
-                    onChange={(e) => setSheetTab(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                    value={spreadsheetInput}
+                    onChange={(e) => {
+                      setSpreadsheetInput(e.target.value);
+                      // A different spreadsheet invalidates any previously
+                      // detected tab list - never leave a stale dropdown from
+                      // the sheet that used to be pasted here.
+                      setDetectedTabs(null);
+                      setDetectMessage(null);
+                      setDetectHint(null);
+                    }}
+                    onBlur={() => detectTabs(spreadsheetInput)}
                   />
-                  {detectMessage && (
-                    <div className="mt-1">
-                      <p className="text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>
-                      {detectHint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{detectHint}</p>}
+                </Field>
+                <Field
+                  label="Sheet/tab name"
+                  hint={
+                    detectedTabs && detectedTabs.length > 0 && !manualTabEntry
+                      ? "Detected directly from the spreadsheet - pick the tab this data source should use."
+                      : "The tab at the bottom of the Google Sheet (Google calls this a 'sheet') - not the spreadsheet file's own name, which can look very similar. Must match exactly, including capitalization and spacing."
+                  }
+                >
+                  {detecting ? (
+                    <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
+                      <Spinner className="h-4 w-4" /> Detecting tabs...
                     </div>
+                  ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
+                    <>
+                      <Select value={sheetTab} onChange={(e) => setSheetTab(e.target.value)}>
+                        {detectedTabs.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </Select>
+                      <button
+                        type="button"
+                        className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        onClick={() => setManualTabEntry(true)}
+                      >
+                        Type it in manually instead
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Input
+                        placeholder={`e.g. ${label}`}
+                        value={sheetTab}
+                        onChange={(e) => setSheetTab(e.target.value)}
+                      />
+                      {detectMessage && (
+                        <div className="mt-1">
+                          <p className="text-xs text-amber-600 dark:text-amber-400">{detectMessage}</p>
+                          {detectHint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{detectHint}</p>}
+                        </div>
+                      )}
+                      {detectedTabs && detectedTabs.length > 0 && (
+                        <button
+                          type="button"
+                          className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                          onClick={() => setManualTabEntry(false)}
+                        >
+                          Pick from detected tabs instead
+                        </button>
+                      )}
+                    </>
                   )}
-                  {detectedTabs && detectedTabs.length > 0 && (
-                    <button
-                      type="button"
-                      className="mt-1 text-xs text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                      onClick={() => setManualTabEntry(false)}
-                    >
-                      Pick from detected tabs instead
-                    </button>
-                  )}
-                </>
-              )}
-            </Field>
-          </div>
+                </Field>
+              </div>
 
-          {/* 2.0.26: marko's own report - buttons used to be one long
-              flex-wrap row that wrapped wherever width happened to run out,
-              mixing connection/sync/push together with no visual order. Now
-              3 short rows, grouped by what the button actually DOES (same
-              grouping he described): connect/verify/disconnect the sheet
-              itself, then read the sheet INTO the app, then send the app's
-              own data OUT to the sheet - each row only renders if this data
-              source actually has a button for that group (e.g. a
-              connection-only future data source with no onSync/onPush would
-              show just the first row). Every action's detailed explanation
-              lives in its own `title` (hover) now - see the comment above
-              this component's description paragraph. */}
-          <div className="mt-3 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="primary"
-                disabled={busy === "save" || !spreadsheetInput.trim() || !sheetTab.trim()}
-                onClick={doConnect}
-              >
-                {busy === "save" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
-                {connected ? "Save" : "Connect"}
-              </Button>
-              {connected && (
-                <>
-                  <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
-                    {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
-                    Test connection
-                  </Button>
-                  {onSetup && (
-                    <Button variant="secondary" disabled={busy === "setup"} onClick={doSetup} title={setupDescription}>
-                      {busy === "setup" ? <Spinner className="h-4 w-4" /> : null}
-                      {busy === "setup" ? "Updating..." : "Update sheet"}
+              {/* 2.0.26: marko's own report - buttons used to be one long
+                  flex-wrap row that wrapped wherever width happened to run out,
+                  mixing connection/sync/push together with no visual order. Now
+                  3 short rows, grouped by what the button actually DOES (same
+                  grouping he described): connect/verify/disconnect the sheet
+                  itself, then read the sheet INTO the app, then send the app's
+                  own data OUT to the sheet - each row only renders if this data
+                  source actually has a button for that group (e.g. a
+                  connection-only future data source with no onSync/onPush would
+                  show just the first row). Every action's detailed explanation
+                  lives in its own `title` (hover) now - see the comment above
+                  this component's description paragraph. */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  variant="primary"
+                  disabled={busy === "save" || !spreadsheetInput.trim() || !sheetTab.trim()}
+                  onClick={doConnect}
+                >
+                  {busy === "save" ? <Spinner className="h-4 w-4" /> : <IconLink className="h-4 w-4" />}
+                  {connected ? "Save" : "Connect"}
+                </Button>
+                {connected && (
+                  <>
+                    <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
+                      {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
+                      Test connection
                     </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    className="ml-auto"
-                    disabled={busy === "disconnect"}
-                    onClick={() => setConfirmDisconnect(true)}
-                  >
-                    Disconnect
-                  </Button>
-                </>
+                    {onSetup && (
+                      <Button variant="secondary" disabled={busy === "setup"} onClick={doSetup} title={setupDescription}>
+                        {busy === "setup" ? <Spinner className="h-4 w-4" /> : null}
+                        {busy === "setup" ? "Updating..." : "Update sheet"}
+                      </Button>
+                    )}
+                    <Button variant="ghost" onClick={() => setEditingConnection(false)}>
+                      Done
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="ml-auto"
+                      disabled={busy === "disconnect"}
+                      onClick={() => setConfirmDisconnect(true)}
+                    >
+                      Disconnect
+                    </Button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* 2.0.65: the compact, default view once a connection already
+              works - one line instead of the whole form above. Every
+              action that isn't Sync/Push (Save, Test, Update sheet,
+              Disconnect) is still one click away via "Change connection",
+              not removed. */}
+          {connected && !editingConnection && (
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">
+                Tab <span className="font-medium text-slate-700 dark:text-slate-200">&quot;{sheetTab}&quot;</span>
+              </p>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button variant="ghost" onClick={() => setEditingConnection(true)}>
+                  Change connection
+                </Button>
+                <Button variant="secondary" disabled={busy === "test"} onClick={doTest}>
+                  {busy === "test" ? <Spinner className="h-4 w-4" /> : null}
+                  Test connection
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {connected && (onSync || onPush) && (
+            <div className="mt-3 space-y-3">
+              {onSync && (
+                <div>
+                  {/* 2.0.65: short captions + a direction icon (unused
+                      elsewhere on this card until now) so marko can tell
+                      what a row does at a glance, not just on hover - his
+                      own report ("aby si vedel naco sluzia..a nemusel to
+                      hladat"). */}
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    <IconDownload className="h-3.5 w-3.5" /> Import from sheet
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" disabled={busy === "sync"} onClick={doSync} title={syncDescription}>
+                      {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
+                      {busy === "sync" ? "Syncing..." : (syncLabel ?? "Sync now")}
+                    </Button>
+                    {secondarySync && (
+                      <Button
+                        variant="secondary"
+                        disabled={busy === "sync2"}
+                        onClick={doSecondarySync}
+                        title={secondarySync.description}
+                      >
+                        {busy === "sync2" ? <Spinner className="h-4 w-4" /> : null}
+                        {busy === "sync2" ? "Syncing..." : secondarySync.label}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {onPush && (
+                <div>
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    <IconUpload className="h-3.5 w-3.5" /> Send to sheet
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" disabled={busy === "push"} onClick={doPush} title={pushDescription}>
+                      {busy === "push" ? <Spinner className="h-4 w-4" /> : null}
+                      {busy === "push" ? "Pushing..." : (pushLabel ?? "Push to sheet")}
+                    </Button>
+                    {secondaryPush && (
+                      <Button
+                        variant="secondary"
+                        disabled={busy === "push2"}
+                        onClick={doSecondaryPush}
+                        title={secondaryPush.description}
+                      >
+                        {busy === "push2" ? <Spinner className="h-4 w-4" /> : null}
+                        {busy === "push2" ? "Pushing..." : secondaryPush.label}
+                      </Button>
+                    )}
+                    {forcePush && (
+                      <Button
+                        variant="ghost"
+                        // 2.0.65: marko's own report asked every button to be
+                        // understandable at a glance - this is the one action
+                        // on the whole card that can overwrite something
+                        // already in the sheet (see `forcePush`'s own prop
+                        // comment), so it gets a visibly different treatment
+                        // from its siblings, not just a hover tooltip. `!`
+                        // (Tailwind's important-modifier) guarantees this
+                        // wins over the ghost variant's own default text
+                        // color regardless of utility class generation order.
+                        className="!text-amber-700 hover:!bg-amber-50 dark:!text-amber-500 dark:hover:!bg-amber-500/10"
+                        disabled={busy === "forcePush"}
+                        onClick={() => setConfirmForcePush(true)}
+                        title={forcePush.description}
+                      >
+                        {busy === "forcePush" ? (
+                          <Spinner className="h-4 w-4" />
+                        ) : (
+                          <IconAlertTriangle className="h-4 w-4" />
+                        )}
+                        {busy === "forcePush" ? "Fixing..." : forcePush.label}
+                      </Button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
-
-            {connected && onSync && (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="secondary" disabled={busy === "sync"} onClick={doSync} title={syncDescription}>
-                  {busy === "sync" ? <Spinner className="h-4 w-4" /> : null}
-                  {busy === "sync" ? "Syncing..." : (syncLabel ?? "Sync now")}
-                </Button>
-                {secondarySync && (
-                  <Button
-                    variant="secondary"
-                    disabled={busy === "sync2"}
-                    onClick={doSecondarySync}
-                    title={secondarySync.description}
-                  >
-                    {busy === "sync2" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "sync2" ? "Syncing..." : secondarySync.label}
-                  </Button>
-                )}
-              </div>
-            )}
-
-            {connected && onPush && (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="secondary" disabled={busy === "push"} onClick={doPush} title={pushDescription}>
-                  {busy === "push" ? <Spinner className="h-4 w-4" /> : null}
-                  {busy === "push" ? "Pushing..." : (pushLabel ?? "Push to sheet")}
-                </Button>
-                {secondaryPush && (
-                  <Button
-                    variant="secondary"
-                    disabled={busy === "push2"}
-                    onClick={doSecondaryPush}
-                    title={secondaryPush.description}
-                  >
-                    {busy === "push2" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "push2" ? "Pushing..." : secondaryPush.label}
-                  </Button>
-                )}
-                {forcePush && (
-                  <Button
-                    variant="secondary"
-                    disabled={busy === "forcePush"}
-                    onClick={() => setConfirmForcePush(true)}
-                    title={forcePush.description}
-                  >
-                    {busy === "forcePush" ? <Spinner className="h-4 w-4" /> : null}
-                    {busy === "forcePush" ? "Fixing..." : forcePush.label}
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
+          )}
 
           {!connected && onCreate && (
             <>
@@ -1820,21 +1904,26 @@ function SheetsConnectionCard({
             </div>
           )}
 
-          {oauthEmail ? (
-            <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
-              Pasting an existing sheet&apos;s URL above needs that sheet to already be yours or shared with{" "}
-              <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> (Editor
-              access) - the same as sharing with any other collaborator in Google Sheets.
-            </p>
-          ) : (
-            status?.serviceAccountEmail && (
+          {/* 2.0.65: same "collapse once connected" treatment as the setup
+              form above - this is instructional text for CONNECTING, not
+              information marko needs staring at a working connection.
+              "Change connection" brings it back, same as the fields. */}
+          {(!connected || editingConnection) &&
+            (oauthEmail ? (
               <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
-                Share the sheet with{" "}
-                <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
-                (Editor access) so the app can read and write it.
+                Pasting an existing sheet&apos;s URL above needs that sheet to already be yours or shared with{" "}
+                <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> (Editor
+                access) - the same as sharing with any other collaborator in Google Sheets.
               </p>
-            )
-          )}
+            ) : (
+              status?.serviceAccountEmail && (
+                <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
+                  Share the sheet with{" "}
+                  <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
+                  (Editor access) so the app can read and write it.
+                </p>
+              )
+            ))}
 
           {status?.lastPushedAt && (
             <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">

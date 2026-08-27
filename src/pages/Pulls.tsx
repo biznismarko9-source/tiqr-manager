@@ -64,11 +64,22 @@ let lastPullsReceivedSearch: string | null = null;
 // already in memory is exactly as complete as a backend sort would be. Two
 // separate variables, matching lastPullsSearch/lastPullsReceivedSearch above -
 // Given and Received are unrelated lists with their own sort preference.
+//
+// 2.0.65: two real fixes, not just a relabel. (1) "Newest/Oldest" renamed to
+// the app-wide "Soonest/Furthest first" standard, default flipped to
+// ascending - same change as Orders/Tickets/Sales/Events. (2) a genuine bug
+// fix: both tabs used to sort by `createdAt` (when the row was typed into
+// the app) while the table's own displayed "Date" column shows `eventDate` -
+// two unrelated fields, so "Newest first" produced an order that didn't
+// match what was on screen at all. Both tabs now sort by `eventDate`
+// itself, client-side, null-safe, mirroring Events.tsx's own sortedEvents
+// exactly (events/pulls with no date at all always sort last, in either
+// direction) - see each tab's own sortedPulls for the actual comparator.
 let lastPullsSortBy: string = "";
 let lastPullsReceivedSortBy: string = "";
 const PULL_SORT_LABELS: Record<string, string> = {
-  "": "Newest first",
-  oldest: "Oldest first",
+  "": "Soonest first",
+  furthest: "Furthest first",
 };
 
 // 1.9.8: how many days before the event the "transfer this!" warning starts
@@ -173,8 +184,14 @@ function GivenPulls() {
   const toast = useToast();
   const isNarrow = useNarrowTables();
   const [pulls, setPulls] = useState<Pull[] | null>(null);
+  const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(lastPullsSearch ?? "");
   const [statusFilter, setStatusFilter] = useState<TransferFilter>("all");
+  // 2.0.65: Platform + date-range filters, matching Orders/Tickets - new
+  // list_pulls_impl params added specifically for this (see pulls.rs).
+  const [platformId, setPlatformId] = useState<number | "">("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [sortBy, setSortBy] = useState(lastPullsSortBy);
   // undefined = modal closed, null = create mode, a Pull = edit mode.
   const [modalPull, setModalPull] = useState<Pull | null | undefined>(undefined);
@@ -196,20 +213,39 @@ function GivenPulls() {
     lastPullsSortBy = sortBy;
   }, [sortBy]);
 
+  useEffect(() => {
+    api.listPlatforms().then(setPlatforms).catch(() => {});
+  }, []);
+
   const load = (q?: string, filter?: TransferFilter) => {
     const f = filter ?? statusFilter;
     api
-      .listPulls({ search: q || undefined, transferDone: f === "all" ? undefined : f === "done" })
+      .listPulls({
+        search: q || undefined,
+        transferDone: f === "all" ? undefined : f === "done",
+        platformId: platformId || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      })
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
 
-  // 2.0.37: same client-side sort convention as Orders.tsx's own
-  // sortedOrders - `pulls` itself stays exactly as the backend returned it
-  // so every other reference above (allSelected, the LIST_CAP banner) keeps
-  // working regardless of display order; only the table's own render
-  // switches to this derived, optionally-reversed copy.
-  const sortedPulls: Pull[] = pulls === null ? [] : sortBy === "oldest" ? [...pulls].reverse() : pulls;
+  // 2.0.65: sorts by `eventDate` (what the table's own "Date" column shows),
+  // not `createdAt` - see PULL_SORT_LABELS' own comment above for why this
+  // is a genuine bug fix, not just a relabel. Both directions are computed
+  // here, client-side - unlike Events.tsx, the backend's own order
+  // (created_at DESC) isn't a usable stand-in for "furthest by event date",
+  // so there's no pass-through branch to reuse here. No-date pulls always
+  // sort last regardless of direction, same rule as Events.tsx.
+  const sortedPulls: Pull[] = (() => {
+    if (pulls === null) return [];
+    const withDate = pulls.filter((p) => p.eventDate !== null);
+    const withoutDate = pulls.filter((p) => p.eventDate === null);
+    const dir = sortBy === "furthest" ? -1 : 1;
+    withDate.sort((a, b) => dir * ((a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id));
+    return [...withDate, ...withoutDate];
+  })();
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -259,7 +295,7 @@ function GivenPulls() {
     const t = setTimeout(() => load(search), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, statusFilter]);
+  }, [search, statusFilter, platformId, dateFrom, dateTo]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -288,9 +324,26 @@ function GivenPulls() {
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative max-w-xs flex-1">
+      {/* 2.0.65: buttons moved to their own row, filters below now follow
+          the same items-end + labeled w-NN convention as Orders/Tickets/
+          Sales/Events - marko asked for filters/sort to look "roughly the
+          same everywhere"; this tab (and Received below) were the one
+          layout left over from before that convention existed. */}
+      <div className="mb-3 flex justify-end gap-2">
+        {!selectionMode && pulls && pulls.length > 0 && (
+          <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+            <IconTrash className="h-4 w-4" /> Delete
+          </Button>
+        )}
+        <Button variant="primary" onClick={() => setModalPull(null)}>
+          <IconPlus className="h-4 w-4" /> New Pull
+        </Button>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="w-52">
+          <span className="label">Search</span>
+          <div className="relative">
             <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
               placeholder="Search pulls..."
@@ -299,32 +352,48 @@ function GivenPulls() {
               className="pl-9"
             />
           </div>
-          <div className="w-48">
-            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
-              <option value="all">All pulls</option>
-              <option value="pending">Not transferred yet</option>
-              <option value="done">Transferred</option>
-            </Select>
-          </div>
-          <div className="w-44">
-            <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort pulls">
-              {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
-                <option key={value || "newest"} value={value}>
-                  {label}
+        </div>
+        <div className="w-44">
+          <span className="label">Status</span>
+          <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
+            <option value="all">All pulls</option>
+            <option value="pending">Not transferred yet</option>
+            <option value="done">Transferred</option>
+          </Select>
+        </div>
+        <div className="w-40">
+          <span className="label">Platform</span>
+          <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All platforms</option>
+            {/* A pull is buying tickets on someone else's behalf, i.e.
+                marko's own purchase side - same purchase/both scoping as
+                every other purchase-side Platform picker in the app. */}
+            {platforms
+              .filter((p) => p.kind === "purchase" || p.kind === "both")
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
                 </option>
               ))}
-            </Select>
-          </div>
+          </Select>
         </div>
-        <div className="flex items-center gap-2">
-          {!selectionMode && pulls && pulls.length > 0 && (
-            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
-              <IconTrash className="h-4 w-4" /> Delete
-            </Button>
-          )}
-          <Button variant="primary" onClick={() => setModalPull(null)}>
-            <IconPlus className="h-4 w-4" /> New Pull
-          </Button>
+        <div className="w-36">
+          <span className="label">From</span>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">To</span>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
+        <div className="w-44">
+          <span className="label">Sort</span>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort pulls">
+            {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
+              <option key={value || "soonest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
         </div>
       </div>
 
@@ -853,6 +922,11 @@ function ReceivedPulls() {
   const isNarrow = useNarrowTables();
   const [pulls, setPulls] = useState<PullReceived[] | null>(null);
   const [search, setSearch] = useState(lastPullsReceivedSearch ?? "");
+  // 2.0.65: date-range filter, matching Given Pulls/Orders/Tickets. No
+  // Platform filter here - pulls_received has no platform column of its own
+  // (see pulls_received.rs's list_pulls_received_impl doc comment).
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [sortBy, setSortBy] = useState(lastPullsReceivedSortBy);
   // undefined = modal closed, null = create mode, a PullReceived = edit mode.
   const [modalPull, setModalPull] = useState<PullReceived | null | undefined>(undefined);
@@ -876,18 +950,23 @@ function ReceivedPulls() {
 
   const load = (q?: string) => {
     api
-      .listPullsReceived({ search: q || undefined })
+      .listPullsReceived({ search: q || undefined, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined })
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
 
-  // 2.0.37: same client-side sort convention as Orders.tsx's own
-  // sortedOrders / GivenPulls' own sortedPulls above - `pulls` itself stays
-  // exactly as the backend returned it so every other reference above
-  // (allSelected, the LIST_CAP banner) keeps working regardless of display
-  // order; only the table's own render switches to this derived,
-  // optionally-reversed copy.
-  const sortedPulls: PullReceived[] = pulls === null ? [] : sortBy === "oldest" ? [...pulls].reverse() : pulls;
+  // 2.0.65: sorts by `eventDate` (what the table's own "Date" column
+  // shows), not `createdAt` - same genuine bug fix as GivenPulls' own
+  // sortedPulls above (see PULL_SORT_LABELS' comment for why), computed the
+  // same null-safe way for both directions.
+  const sortedPulls: PullReceived[] = (() => {
+    if (pulls === null) return [];
+    const withDate = pulls.filter((p) => p.eventDate !== null);
+    const withoutDate = pulls.filter((p) => p.eventDate === null);
+    const dir = sortBy === "furthest" ? -1 : 1;
+    withDate.sort((a, b) => dir * ((a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id));
+    return [...withDate, ...withoutDate];
+  })();
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -937,7 +1016,7 @@ function ReceivedPulls() {
     const t = setTimeout(() => load(search), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, dateFrom, dateTo]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -957,9 +1036,23 @@ function ReceivedPulls() {
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative max-w-xs flex-1">
+      {/* 2.0.65: same buttons-row-then-labeled-filter-row restructuring as
+          GivenPulls above - see that component's own comment. */}
+      <div className="mb-3 flex justify-end gap-2">
+        {!selectionMode && pulls && pulls.length > 0 && (
+          <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+            <IconTrash className="h-4 w-4" /> Delete
+          </Button>
+        )}
+        <Button variant="primary" onClick={() => setModalPull(null)}>
+          <IconPlus className="h-4 w-4" /> New received pull
+        </Button>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="w-52">
+          <span className="label">Search</span>
+          <div className="relative">
             <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
             <Input
               placeholder="Search received pulls..."
@@ -968,25 +1061,24 @@ function ReceivedPulls() {
               className="pl-9"
             />
           </div>
-          <div className="w-44">
-            <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort received pulls">
-              {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
-                <option key={value || "newest"} value={value}>
-                  {label}
-                </option>
-              ))}
-            </Select>
-          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {!selectionMode && pulls && pulls.length > 0 && (
-            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
-              <IconTrash className="h-4 w-4" /> Delete
-            </Button>
-          )}
-          <Button variant="primary" onClick={() => setModalPull(null)}>
-            <IconPlus className="h-4 w-4" /> New received pull
-          </Button>
+        <div className="w-36">
+          <span className="label">From</span>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="w-36">
+          <span className="label">To</span>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
+        <div className="w-44">
+          <span className="label">Sort</span>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort received pulls">
+            {Object.entries(PULL_SORT_LABELS).map(([value, label]) => (
+              <option key={value || "soonest"} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
         </div>
       </div>
 

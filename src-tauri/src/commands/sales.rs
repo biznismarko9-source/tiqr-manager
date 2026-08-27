@@ -461,8 +461,20 @@ fn list_sale_groups_impl(
     // revenue_cents/cost_cents/selling_fees_cents, it's only computed in
     // Rust afterwards, in map_sale_group - see finance::profit_cents), so
     // it's spelled out as the same subtraction inline instead.
+    //
+    // 2.0.65: added "soonest"/"furthest" as explicit new values, additively -
+    // marko asked for Orders/Tickets/Sales/Events/Pulls' date sort to all
+    // become "Soonest/Furthest first" with soonest as the new default (see
+    // REDESIGN-2.0.65-REPORT.md). Sales.tsx now sends one of these two
+    // explicitly instead of ever relying on the unset-default/"oldest" pair
+    // above, which are both left completely untouched - same
+    // "old values keep working" convention this match already holds itself
+    // to for refund_status's own "has_refund". This also sidesteps any risk
+    // to the many older tests in this file that call this function with
+    // sort_by left `None` and implicitly rely on today's default direction.
     let order_clause = match sort_by.as_deref() {
-        Some("oldest") => "sale_date ASC, id ASC",
+        Some("oldest") | Some("soonest") => "sale_date ASC, id ASC",
+        Some("furthest") => "sale_date DESC, id DESC",
         Some("revenue_desc") => "revenue_cents DESC, id DESC",
         Some("revenue_asc") => "revenue_cents ASC, id DESC",
         Some("profit_desc") => "(revenue_cents - cost_cents - selling_fees_cents) DESC, id DESC",
@@ -2951,6 +2963,42 @@ mod tests {
         None)
         .unwrap();
         assert_eq!(oldest_first[0].sale_date, "2026-01-01", "the earlier sale must come first when sorted oldest");
+    }
+
+    /// 2.0.65: "soonest"/"furthest" are new synonyms for "oldest"/the unset
+    /// default respectively (see this function's own doc comment) - same
+    /// data and assertions as `list_sale_groups_sorts_by_ticket_count_and_
+    /// oldest_first` above, just spelled with the new values Sales.tsx now
+    /// actually sends.
+    #[test]
+    fn list_sale_groups_sorts_by_soonest_and_furthest_first() {
+        let mut conn = test_conn();
+        let single = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &{
+            let mut i = sale_input(single[0], 1000);
+            i.sale_date = "2026-01-01".to_string();
+            i
+        })
+        .unwrap();
+        let batch = seed_tickets(&mut conn, 3);
+        create_sales_batch_impl(&mut conn, &{
+            let mut b = batch_input(&batch, 1000, "paid");
+            b.sale_date = "2026-06-01".to_string();
+            b
+        })
+        .unwrap();
+
+        let soonest_first = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("soonest".into()),
+        None)
+        .unwrap();
+        assert_eq!(soonest_first[0].sale_date, "2026-01-01", "soonest must be an ascending synonym for oldest");
+
+        let furthest_first = list_sale_groups_impl(
+            &conn, None, None, None, None, None, None, None, None, Some("furthest".into()),
+        None)
+        .unwrap();
+        assert_eq!(furthest_first[0].sale_date, "2026-06-01", "furthest must be a descending synonym for the unset default");
     }
 
     /// 1.8.0 section 4: refund status must distinguish partially- from

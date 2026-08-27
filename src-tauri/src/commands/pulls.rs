@@ -68,13 +68,43 @@ pub(crate) fn fetch_one(conn: &Connection, id: i64) -> AppResult<Pull> {
 /// pull by (buyer, event, own code, platform, section/row/seat, more info) -
 /// same `LIKE` OR-chain convention as list_orders_impl's search, just
 /// without a semi-join since pulls has no child rows to search through.
-fn list_pulls_impl(conn: &Connection, search: Option<String>, transfer_done: Option<bool>) -> AppResult<Vec<Pull>> {
+///
+/// `platform_id`/`date_from`/`date_to` (2.0.65) mirror list_orders_impl's own
+/// filters exactly - same "plain equality"/"inclusive range on the date
+/// column" shape - except the date range here is against `event_date`
+/// (when the pull happens), not a purchase date, since a pull has no
+/// purchase date of its own.
+#[allow(clippy::too_many_arguments)]
+fn list_pulls_impl(
+    conn: &Connection,
+    search: Option<String>,
+    transfer_done: Option<bool>,
+    platform_id: Option<i64>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<Pull>> {
     let mut sql = format!("{BASE_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
     if let Some(done) = transfer_done {
         sql.push_str(" AND p.transfer_done = ?");
         params_vec.push(Box::new(done as i64));
+    }
+    if let Some(pid) = platform_id {
+        sql.push_str(" AND p.platform_id = ?");
+        params_vec.push(Box::new(pid));
+    }
+    if let Some(from) = date_from.as_deref() {
+        if !from.is_empty() {
+            sql.push_str(" AND p.event_date >= ?");
+            params_vec.push(Box::new(from.to_string()));
+        }
+    }
+    if let Some(to) = date_to.as_deref() {
+        if !to.is_empty() {
+            sql.push_str(" AND p.event_date <= ?");
+            params_vec.push(Box::new(to.to_string()));
+        }
     }
     if let Some(q) = search.as_deref() {
         let q = q.trim();
@@ -98,9 +128,16 @@ fn list_pulls_impl(conn: &Connection, search: Option<String>, transfer_done: Opt
 }
 
 #[tauri::command]
-pub fn list_pulls(state: State<AppState>, search: Option<String>, transfer_done: Option<bool>) -> AppResult<Vec<Pull>> {
+pub fn list_pulls(
+    state: State<AppState>,
+    search: Option<String>,
+    transfer_done: Option<bool>,
+    platform_id: Option<i64>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<Pull>> {
     let conn = state.db.lock().unwrap();
-    list_pulls_impl(&conn, search, transfer_done)
+    list_pulls_impl(&conn, search, transfer_done, platform_id, date_from, date_to)
 }
 
 #[tauri::command]
@@ -470,7 +507,7 @@ mod tests {
         let conn = test_conn();
         let a = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
         let b = create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, None, None).unwrap();
+        let results = list_pulls_impl(&conn, None, None, None, None, None).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].id, b.id);
         assert_eq!(results[1].id, a.id);
@@ -481,7 +518,7 @@ mod tests {
         let conn = test_conn();
         create_pull_impl(&conn, &base_input("Zuzana Kovacova"), false).unwrap();
         create_pull_impl(&conn, &base_input("Peter Novak"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("Kovac".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("Kovac".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].buyer_name, "Zuzana Kovacova");
     }
@@ -493,7 +530,7 @@ mod tests {
         input.event_name = "Ed Sheeran Tour".to_string();
         create_pull_impl(&conn, &input, false).unwrap();
         create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("sheeran".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("sheeran".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -505,7 +542,7 @@ mod tests {
         input.platform_id = Some(platform_id);
         create_pull_impl(&conn, &input, false).unwrap();
         create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("viagogo".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("viagogo".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -516,7 +553,7 @@ mod tests {
         input.section = Some("VIP Floor".to_string());
         create_pull_impl(&conn, &input, false).unwrap();
         create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("vip floor".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("vip floor".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -527,7 +564,7 @@ mod tests {
         input.row_label = Some("Row Z".to_string());
         create_pull_impl(&conn, &input, false).unwrap();
         create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("row z".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("row z".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -538,7 +575,7 @@ mod tests {
         input.seat = Some("Seat 42".to_string());
         create_pull_impl(&conn, &input, false).unwrap();
         create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("seat 42".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("seat 42".to_string()), None, None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -546,7 +583,7 @@ mod tests {
     fn list_pulls_search_by_nonexistent_term_returns_no_results() {
         let conn = test_conn();
         create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
-        let results = list_pulls_impl(&conn, Some("nonexistent".to_string()), None).unwrap();
+        let results = list_pulls_impl(&conn, Some("nonexistent".to_string()), None, None, None, None).unwrap();
         assert!(results.is_empty());
     }
 
@@ -557,13 +594,103 @@ mod tests {
         let _b = create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
         set_pull_transfer_done_impl(&conn, a.id, true).unwrap();
 
-        let done = list_pulls_impl(&conn, None, Some(true)).unwrap();
+        let done = list_pulls_impl(&conn, None, Some(true), None, None, None).unwrap();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].id, a.id);
 
-        let pending = list_pulls_impl(&conn, None, Some(false)).unwrap();
+        let pending = list_pulls_impl(&conn, None, Some(false), None, None, None).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, _b.id);
+    }
+
+    // ---- platform / date-range filters (2.0.65) ----------------------------
+
+    #[test]
+    fn list_pulls_filters_by_platform_id() {
+        let conn = test_conn();
+        let ticketmaster = seed_platform(&conn, "Ticketmaster", "purchase");
+        let viagogo = seed_platform(&conn, "Viagogo", "purchase");
+        let mut on_tm = base_input("Jano");
+        on_tm.platform_id = Some(ticketmaster);
+        let a = create_pull_impl(&conn, &on_tm, false).unwrap();
+        let mut on_vg = base_input("Maria");
+        on_vg.platform_id = Some(viagogo);
+        create_pull_impl(&conn, &on_vg, false).unwrap();
+
+        let results = list_pulls_impl(&conn, None, None, Some(ticketmaster), None, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, a.id);
+    }
+
+    #[test]
+    fn list_pulls_platform_filter_excludes_pulls_with_no_platform_set() {
+        let conn = test_conn();
+        let ticketmaster = seed_platform(&conn, "Ticketmaster", "purchase");
+        create_pull_impl(&conn, &base_input("Jano"), false).unwrap(); // no platform
+        let results = list_pulls_impl(&conn, None, None, Some(ticketmaster), None, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn list_pulls_filters_by_date_from_and_date_to_inclusive() {
+        let conn = test_conn();
+        let mut early = base_input("Jano");
+        early.event_date = Some("2026-01-01".to_string());
+        let a = create_pull_impl(&conn, &early, false).unwrap();
+        let mut mid = base_input("Maria");
+        mid.event_date = Some("2026-06-15".to_string());
+        let b = create_pull_impl(&conn, &mid, false).unwrap();
+        let mut late = base_input("Peter");
+        late.event_date = Some("2026-12-31".to_string());
+        let c = create_pull_impl(&conn, &late, false).unwrap();
+
+        let from_mid = list_pulls_impl(&conn, None, None, None, Some("2026-06-15".to_string()), None).unwrap();
+        let mut ids: Vec<i64> = from_mid.iter().map(|p| p.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![b.id, c.id]);
+
+        let up_to_mid = list_pulls_impl(&conn, None, None, None, None, Some("2026-06-15".to_string())).unwrap();
+        let mut ids: Vec<i64> = up_to_mid.iter().map(|p| p.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![a.id, b.id]);
+
+        let exact_range = list_pulls_impl(
+            &conn,
+            None,
+            None,
+            None,
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+        )
+        .unwrap();
+        assert_eq!(exact_range.len(), 3);
+    }
+
+    #[test]
+    fn list_pulls_date_range_and_platform_filters_combine_with_search() {
+        let conn = test_conn();
+        let ticketmaster = seed_platform(&conn, "Ticketmaster", "purchase");
+        let mut matching = base_input("Zuzana Kovacova");
+        matching.platform_id = Some(ticketmaster);
+        matching.event_date = Some("2026-06-15".to_string());
+        let a = create_pull_impl(&conn, &matching, false).unwrap();
+
+        // Same buyer name substring, but on a different platform - must be excluded.
+        let mut wrong_platform = base_input("Zuzana Kovacova Two");
+        wrong_platform.event_date = Some("2026-06-15".to_string());
+        create_pull_impl(&conn, &wrong_platform, false).unwrap();
+
+        let results = list_pulls_impl(
+            &conn,
+            Some("Kovac".to_string()),
+            None,
+            Some(ticketmaster),
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, a.id);
     }
 
     // ---- update -------------------------------------------------------------

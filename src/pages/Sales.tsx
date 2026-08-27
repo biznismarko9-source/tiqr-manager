@@ -64,9 +64,15 @@ const REFUND_STATUS_LABELS: Record<string, string> = {
   full_refund: "Fully refunded",
 };
 
+// 2.0.65: relabeled from "Newest/Oldest first" to "Soonest/Furthest first",
+// and "soonest" (ascending) is now the default sent on load, in place of the
+// old empty-string-means-descending convention - see this page's own
+// sortBy state default below, and sales.rs's list_sale_groups_impl doc
+// comment for why the backend keeps the old "oldest"/unset-default pair
+// working unchanged alongside these two new named values.
 const SORT_LABELS: Record<string, string> = {
-  "": "Newest first",
-  oldest: "Oldest first",
+  soonest: "Soonest first",
+  furthest: "Furthest first",
   revenue_desc: "Highest revenue",
   revenue_asc: "Lowest revenue",
   profit_desc: "Highest profit",
@@ -147,7 +153,7 @@ export default function Sales() {
   const [refundStatus, setRefundStatus] = useState(lastFilters?.refundStatus ?? "");
   const [dateFrom, setDateFrom] = useState(lastFilters?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(lastFilters?.dateTo ?? "");
-  const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "");
+  const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "soonest");
   const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
   // 2.0.59: see SALES_TABS above.
   const [tab, setTab] = useListTab("salesTab", ["pending", "completed"] as const);
@@ -580,7 +586,7 @@ export default function Sales() {
         <div className="w-48">
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort sales">
             {Object.entries(SORT_LABELS).map(([value, label]) => (
-              <option key={value || "newest"} value={value}>
+              <option key={value} value={value}>
                 {label}
               </option>
             ))}

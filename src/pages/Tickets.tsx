@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
+import type { EventCategory, EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDateNumeric, formatMoney, formatSeatsSummary } from "../lib/format";
 import {
   Badge,
@@ -73,7 +73,9 @@ interface TicketsFilterState {
   search: string;
   eventId: number | "";
   platformId: number | "";
-  section: string;
+  // 2.0.27 equivalent for this page - category filter, added 2.0.65 to
+  // match Orders/Events/Sales, which have all had one since 2.0.27.
+  categoryId: number | "";
   dateFrom: string;
   dateTo: string;
   sortBy: string;
@@ -81,19 +83,22 @@ interface TicketsFilterState {
 const lastTicketsFilters = new Map<string, TicketsFilterState>();
 
 // 2.0.37: marko asked for the same Sort control Sales/Orders/Events already
-// have, added here too (and to both of Pulls.tsx's tabs) - same "Newest/
-// Oldest first" convention, sorted client-side by purchase date for exactly
-// the same reason Orders.tsx's own version is client-side (listOrders
-// already returns the full matching result set in one response, up to
-// LIST_CAP, so sorting what's already in memory is exactly as complete as a
-// backend sort would be). Keyed into the existing per-pathname
-// lastTicketsFilters map (not a bare module variable like Orders.tsx's
-// simpler lastOrdersSortBy) so Tickets and Inventory - two different pages
-// sharing this one component - keep their own separate sort preference,
-// same as every other filter on this page already does.
+// have, added here too (and to both of Pulls.tsx's tabs), sorted client-side
+// by purchase date for exactly the same reason Orders.tsx's own version is
+// client-side (listOrders already returns the full matching result set in
+// one response, up to LIST_CAP, so sorting what's already in memory is
+// exactly as complete as a backend sort would be). Keyed into the existing
+// per-pathname lastTicketsFilters map (not a bare module variable like
+// Orders.tsx's simpler lastOrdersSortBy) so Tickets and Inventory - two
+// different pages sharing this one component - keep their own separate sort
+// preference, same as every other filter on this page already does.
+//
+// 2.0.65: relabeled from "Newest/Oldest first" to "Soonest/Furthest first",
+// and the default flipped from descending to ascending - same app-wide
+// change as Orders/Sales/Events/Pulls, see REDESIGN-2.0.65-REPORT.md.
 const TICKET_SORT_LABELS: Record<string, string> = {
-  "": "Newest first",
-  oldest: "Oldest first",
+  "": "Soonest first",
+  furthest: "Furthest first",
 };
 
 /** Shared list view, reused (pre-filtered) by the Inventory page. Groups
@@ -127,10 +132,15 @@ export function TicketsView({
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  const [categories, setCategories] = useState<EventCategory[]>([]);
   const [search, setSearch] = useState(params.get("code") ?? cached?.search ?? "");
   const [eventId, setEventId] = useState<number | "">(cached?.eventId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(cached?.platformId ?? "");
-  const [section, setSection] = useState(cached?.section ?? "");
+  // 2.0.65: Category filter (matches Orders/Events/Sales). Replaces the old
+  // Section search box, which marko asked to be removed - see this page's
+  // own report for why (freeform section codes made it the least useful
+  // filter here, and the least consistent with every other list page).
+  const [categoryId, setCategoryId] = useState<number | "">(cached?.categoryId ?? "");
   const [dateFrom, setDateFrom] = useState(cached?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(cached?.dateTo ?? "");
   const [sortBy, setSortBy] = useState(cached?.sortBy ?? "");
@@ -143,6 +153,7 @@ export function TicketsView({
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
+    api.listEventCategories().then(setCategories).catch(() => {});
   }, []);
 
   // 1.8.3 (section 8): persist this page's own filters (see
@@ -150,8 +161,8 @@ export function TicketsView({
   // Detail's now context-aware Back link - finds the same search/filters
   // instead of a blank slate.
   useEffect(() => {
-    lastTicketsFilters.set(location.pathname, { search, eventId, platformId, section, dateFrom, dateTo, sortBy });
-  }, [location.pathname, search, eventId, platformId, section, dateFrom, dateTo, sortBy]);
+    lastTicketsFilters.set(location.pathname, { search, eventId, platformId, categoryId, dateFrom, dateTo, sortBy });
+  }, [location.pathname, search, eventId, platformId, categoryId, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
@@ -166,7 +177,7 @@ export function TicketsView({
         // instead (see visibleOrders), same as Events/Orders/Sales' own new
         // tabs.
         status: lockedStatus || undefined,
-        section: section || undefined,
+        categoryId: categoryId || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
       })
@@ -178,17 +189,20 @@ export function TicketsView({
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, platformId, section, dateFrom, dateTo]);
+  }, [search, eventId, platformId, categoryId, dateFrom, dateTo]);
 
   // 2.0.37: same client-side sort convention as Orders.tsx's own
   // sortedOrders - `orders` itself stays exactly as the backend returned it
   // (purchase_date DESC) so the >= 5000 banner/every other reference above
   // keeps working regardless of display order; only the table's own render
-  // switches to this derived, optionally-reversed copy.
+  // switches to this derived, optionally-reversed copy. 2.0.65: default
+  // flipped to ascending ("Soonest first") - see TICKET_SORT_LABELS above -
+  // so now it's "furthest" that's the backend's own order verbatim, and the
+  // default that reverses it.
   const sortedOrders = useMemo(() => {
     if (!orders) return [];
-    if (sortBy === "oldest") return [...orders].reverse();
-    return orders;
+    if (sortBy === "furthest") return orders;
+    return [...orders].reverse();
   }, [orders, sortBy]);
 
   // 2.0.59: tab split happens client-side, after sorting, on data the page
@@ -274,9 +288,16 @@ export function TicketsView({
               ))}
           </Select>
         </div>
-        <div className="w-32">
-          <span className="label">Section</span>
-          <Input placeholder="e.g. 101" value={section} onChange={(e) => setSection(e.target.value)} />
+        <div className="w-40">
+          <span className="label">Category</span>
+          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All categories</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
         </div>
         <div className="w-36">
           <span className="label">From</span>
@@ -290,7 +311,7 @@ export function TicketsView({
           <span className="label">Sort</span>
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort orders">
             {Object.entries(TICKET_SORT_LABELS).map(([value, label]) => (
-              <option key={value || "newest"} value={value}>
+              <option key={value || "soonest"} value={value}>
                 {label}
               </option>
             ))}

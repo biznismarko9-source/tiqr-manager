@@ -106,14 +106,20 @@ pub(crate) fn fetch_recent(conn: &Connection, limit: i64) -> AppResult<Vec<Event
 // 2.0.27: `category_id` appended at the end rather than inserted next to
 // `search` - same "new params always go last" convention sales.rs's
 // list_sale_groups_impl already documents, so no existing call site's
-// argument order shifts.
-#[tauri::command]
-pub fn list_events(
-    state: State<AppState>,
+// argument order shifts. 2.0.65: `date_from`/`date_to` (inclusive, against
+// `event_date`) appended the same way, mirroring list_orders_impl/
+// list_pulls_impl's own date-range filters. Split into `_impl` + thin
+// `#[tauri::command]` wrapper at the same time, matching every other list
+// command in this codebase (see e.g. commands::pulls::list_pulls_impl) -
+// this one had never been split before, so it had no unit test coverage of
+// its own; it now does.
+fn list_events_impl(
+    conn: &Connection,
     search: Option<String>,
     category_id: Option<i64>,
+    date_from: Option<String>,
+    date_to: Option<String>,
 ) -> AppResult<Vec<EventWithStats>> {
-    let conn = state.db.lock().unwrap();
     let mut sql = format!("{STATS_SQL} WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
     if let Some(q) = search.as_deref() {
@@ -130,12 +136,36 @@ pub fn list_events(
         sql.push_str(" AND e.category_id = ?");
         params_vec.push(Box::new(cid));
     }
+    if let Some(from) = date_from.as_deref() {
+        if !from.is_empty() {
+            sql.push_str(" AND e.event_date >= ?");
+            params_vec.push(Box::new(from.to_string()));
+        }
+    }
+    if let Some(to) = date_to.as_deref() {
+        if !to.is_empty() {
+            sql.push_str(" AND e.event_date <= ?");
+            params_vec.push(Box::new(to.to_string()));
+        }
+    }
     sql.push_str(" GROUP BY e.id ORDER BY (e.event_date IS NULL), e.event_date DESC, e.id DESC");
 
     let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), map_event_with_stats)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn list_events(
+    state: State<AppState>,
+    search: Option<String>,
+    category_id: Option<i64>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+) -> AppResult<Vec<EventWithStats>> {
+    let conn = state.db.lock().unwrap();
+    list_events_impl(&conn, search, category_id, date_from, date_to)
 }
 
 #[tauri::command]
@@ -365,13 +395,16 @@ pub fn detect_event_categories(state: State<AppState>) -> AppResult<CategoryDete
 
 #[cfg(test)]
 mod tests {
-    //! events.rs has never had a test module (see PROTECTED-AREAS-NOTES.md -
-    //! it deliberately doesn't follow this codebase's usual "impl fn + thin
-    //! wrapper" testable-command pattern for its older commands, and that's
-    //! left alone here). This module covers ONLY the new 2.0.28 bulk-delete
-    //! logic, which - unlike list_events' filters etc. - is genuine new
-    //! business logic worth a real regression test, same bar the rest of the
-    //! codebase already holds itself to for new behavior.
+    //! events.rs had no test module through 2.0.64 (see PROTECTED-AREAS-
+    //! NOTES.md - it deliberately didn't follow this codebase's usual
+    //! "impl fn + thin wrapper" testable-command pattern for its older
+    //! commands, since those filters were never genuine new business logic
+    //! worth a real regression test on their own). 2.0.65 is the first
+    //! change to touch list_events' own filtering (adding a date_from/
+    //! date_to range) rather than working around it, so - same bar the rest
+    //! of the codebase already holds itself to for new behavior - it's the
+    //! one filter of this function's that now gets the split + tests; the
+    //! older search/category_id filters are deliberately left untouched.
     use super::*;
     use crate::db::test_conn;
 
@@ -429,6 +462,90 @@ mod tests {
         let mut conn = test_conn();
         let err = bulk_delete_events_impl(&mut conn, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // -- list_events_impl date range (2.0.65) --------------------------------
+
+    fn seed_event_on(conn: &Connection, name: &str, event_date: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO events (name, event_date) VALUES (?1, ?2)",
+            params![name, event_date],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn list_events_filters_by_date_from_and_date_to_inclusive() {
+        let conn = test_conn();
+        let early = seed_event_on(&conn, "Early Show", "2026-01-01");
+        let mid = seed_event_on(&conn, "Mid Show", "2026-06-15");
+        let late = seed_event_on(&conn, "Late Show", "2026-12-31");
+
+        let from_mid = list_events_impl(&conn, None, None, Some("2026-06-15".to_string()), None).unwrap();
+        let mut ids: Vec<i64> = from_mid.iter().map(|e| e.event.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![mid, late]);
+
+        let up_to_mid = list_events_impl(&conn, None, None, None, Some("2026-06-15".to_string())).unwrap();
+        let mut ids: Vec<i64> = up_to_mid.iter().map(|e| e.event.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![early, mid]);
+
+        let exact_range = list_events_impl(
+            &conn,
+            None,
+            None,
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+        )
+        .unwrap();
+        assert_eq!(exact_range.len(), 3);
+    }
+
+    #[test]
+    fn list_events_date_range_excludes_events_with_no_date_at_all() {
+        let conn = test_conn();
+        seed_event_named(&conn, "No date at all");
+        let dated = seed_event_on(&conn, "Has a date", "2026-06-15");
+
+        let results = list_events_impl(
+            &conn,
+            None,
+            None,
+            Some("2020-01-01".to_string()),
+            Some("2030-01-01".to_string()),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1, "an event with no event_date can never fall inside a date range");
+        assert_eq!(results[0].event.id, dated);
+    }
+
+    #[test]
+    fn list_events_date_range_combines_with_search_and_category_id() {
+        let conn = test_conn();
+        let category_id: i64 = conn
+            .query_row("SELECT id FROM event_categories WHERE name = 'Concert'", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO events (name, event_date, category_id) VALUES ('Coldplay Arena Show', '2026-06-15', ?1)",
+            [category_id],
+        )
+        .unwrap();
+        let matching_id = conn.last_insert_rowid();
+        // Same search term, right date, wrong category - must be excluded.
+        seed_event_on(&conn, "Coldplay Warmup Show", "2026-06-16");
+
+        let results = list_events_impl(
+            &conn,
+            Some("coldplay".to_string()),
+            Some(category_id),
+            Some("2026-01-01".to_string()),
+            Some("2026-12-31".to_string()),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].event.id, matching_id);
     }
 
     // -- detect_event_categories_impl (2.0.63) ------------------------------

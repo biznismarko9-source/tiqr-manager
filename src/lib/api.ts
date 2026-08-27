@@ -48,7 +48,7 @@ import type {
 
 export const api = {
   // Events
-  listEvents: (params: { search?: string; categoryId?: number } = {}) =>
+  listEvents: (params: { search?: string; categoryId?: number; dateFrom?: string; dateTo?: string } = {}) =>
     invoke<EventWithStats[]>("list_events", params),
   getEvent: (id: number) => invoke<EventWithStats>("get_event", { id }),
   createEvent: (input: EventInput) => invoke<EventRecord>("create_event", { input }),
@@ -122,7 +122,9 @@ export const api = {
 
   // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
   // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.
-  listPulls: (params: { search?: string; transferDone?: boolean } = {}) => invoke<Pull[]>("list_pulls", params),
+  listPulls: (
+    params: { search?: string; transferDone?: boolean; platformId?: number; dateFrom?: string; dateTo?: string } = {},
+  ) => invoke<Pull[]>("list_pulls", params),
   getPull: (id: number) => invoke<Pull>("get_pull", { id }),
   createPull: (input: PullInput) => invoke<Pull>("create_pull", { input }),
   updatePull: (id: number, input: PullEditInput) => invoke<Pull>("update_pull", { id, input }),
@@ -136,7 +138,8 @@ export const api = {
   // other people, instead of pulls he did FOR them. Can be typed manually
   // and/or auto-linked from Orders & Sales sheet sync ("pull" = "yes") - see
   // src-tauri/migrations/011_pulls_received.sql.
-  listPullsReceived: (params: { search?: string } = {}) => invoke<PullReceived[]>("list_pulls_received", params),
+  listPullsReceived: (params: { search?: string; dateFrom?: string; dateTo?: string } = {}) =>
+    invoke<PullReceived[]>("list_pulls_received", params),
   getPullReceived: (id: number) => invoke<PullReceived>("get_pull_received", { id }),
   createPullReceived: (input: PullReceivedInput) => invoke<PullReceived>("create_pull_received", { input }),
   updatePullReceived: (id: number, input: PullReceivedEditInput) => invoke<PullReceived>("update_pull_received", { id, input }),
