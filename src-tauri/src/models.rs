@@ -794,6 +794,57 @@ pub struct BulkSalePaymentStatusInput {
     pub payment_status: String,
 }
 
+/// 2.0.67: input for the new Orders-list bulk 'Mark Delivered/Not delivered'
+/// action - see `commands::orders::bulk_set_orders_delivery_status_impl`'s
+/// doc comment for exactly how `order_ids` resolves down to the tickets this
+/// actually touches (only each order's SOLD tickets). `delivery_status` is
+/// validated the same way the single-ticket editor and
+/// `bulk_update_ticket_delivery_status_impl` already do - only 'Delivered'/
+/// 'Not delivered' ever reach the database through this path.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkOrdersDeliveryStatusInput {
+    pub order_ids: Vec<i64>,
+    pub delivery_status: String,
+}
+
+/// 2.0.67: input for the new Orders-list bulk 'Mark Paid/Pending' action -
+/// see `commands::orders::bulk_set_orders_payment_status_impl`'s doc comment
+/// for exactly how `order_ids` resolves down to the sales this actually
+/// touches (only each order's CURRENT, non-refunded sale per sold ticket).
+/// Same "pending/paid only, never refunded" restriction as
+/// `BulkSalePaymentStatusInput` above - refunding stays its own dedicated,
+/// one-way action.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkOrdersPaymentStatusInput {
+    pub order_ids: Vec<i64>,
+    pub payment_status: String,
+}
+
+/// 2.0.67: input for the new Sales-list bulk 'Mark Delivered/Not delivered'
+/// action - `group_ids` are the same SaleGroup anchor ids
+/// `bulk_delete_sale_groups`/the Sales list's own selection already use (see
+/// `commands::sales::resolve_sale_groups_ticket_ids`'s doc comment for the
+/// batch_id expansion this goes through).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkSaleGroupsDeliveryStatusInput {
+    pub group_ids: Vec<i64>,
+    pub delivery_status: String,
+}
+
+/// 2.0.67: input for the new Sales-list bulk 'Mark Paid/Pending' action -
+/// same `group_ids` selection as `BulkSaleGroupsDeliveryStatusInput` above,
+/// but resolved down to payable (non-refunded) sale ids instead of tickets -
+/// see `commands::sales::resolve_sale_groups_payable_sale_ids`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkSaleGroupsPaymentStatusInput {
+    pub group_ids: Vec<i64>,
+    pub payment_status: String,
+}
+
 /// Dashboard "Inventory & Potential Profit" block - deliberately separate
 /// from `FinanceSummary` (realized numbers). Never mixed into `inventory`
 /// or `period` above, and never labelled "profit" alone - only "Potential

@@ -31,6 +31,7 @@ import {
   TabSwitcher,
   Textarea,
 } from "../components/ui";
+import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
@@ -631,13 +632,42 @@ export default function Sales() {
       )}
 
       {selectionMode && (
-        <BulkDeleteBar
-          count={selected.size}
-          itemLabel="sale"
-          busy={bulkDeleting}
-          onConfirm={() => setConfirmBulkDelete(true)}
-          onCancel={exitSelectionMode}
-        />
+        <>
+          {/* 2.0.67: marko's own request - mark Delivered/Paid on many sales
+           * at once, right from this list, next to the existing bulk-delete
+           * bar below (same selection, same checkboxes). See
+           * BulkCompletionBar's own doc comment for why applying one action
+           * here never clears the selection - marko can mark a batch
+           * Delivered and then, still selected, also mark it Paid. */}
+          <BulkCompletionBar
+            count={selected.size}
+            itemLabel="sale"
+            onSetDelivered={async (delivered) => {
+              const updated = await api.bulkSetSaleGroupsDeliveryStatus({
+                groupIds: Array.from(selected),
+                deliveryStatus: delivered ? "Delivered" : "Not delivered",
+              });
+              load();
+              return updated;
+            }}
+            onSetPaid={async (paid) => {
+              const updated = await api.bulkSetSaleGroupsPaymentStatus({
+                groupIds: Array.from(selected),
+                paymentStatus: paid ? "paid" : "pending",
+              });
+              load();
+              return updated;
+            }}
+            onClear={() => setSelected(new Set())}
+          />
+          <BulkDeleteBar
+            count={selected.size}
+            itemLabel="sale"
+            busy={bulkDeleting}
+            onConfirm={() => setConfirmBulkDelete(true)}
+            onCancel={exitSelectionMode}
+          />
+        </>
       )}
 
       {groups === null ? (

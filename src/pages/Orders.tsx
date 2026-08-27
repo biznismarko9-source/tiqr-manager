@@ -20,6 +20,7 @@ import {
   TabSwitcher,
   Textarea,
 } from "../components/ui";
+import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
@@ -398,13 +399,42 @@ export default function Orders() {
       </div>
 
       {selectionMode && (
-        <BulkDeleteBar
-          count={selected.size}
-          itemLabel="order"
-          busy={bulkDeleting}
-          onConfirm={() => setConfirmBulkDelete(true)}
-          onCancel={exitSelectionMode}
-        />
+        <>
+          {/* 2.0.67: marko's own request - mark Delivered/Paid on many orders
+           * at once, right from this list, next to the existing bulk-delete
+           * bar below (same selection, same checkboxes). See
+           * BulkCompletionBar's own doc comment for why applying one action
+           * here never clears the selection - marko can mark a batch
+           * Delivered and then, still selected, also mark it Paid. */}
+          <BulkCompletionBar
+            count={selected.size}
+            itemLabel="order"
+            onSetDelivered={async (delivered) => {
+              const updated = await api.bulkSetOrdersDeliveryStatus({
+                orderIds: Array.from(selected),
+                deliveryStatus: delivered ? "Delivered" : "Not delivered",
+              });
+              load();
+              return updated;
+            }}
+            onSetPaid={async (paid) => {
+              const updated = await api.bulkSetOrdersPaymentStatus({
+                orderIds: Array.from(selected),
+                paymentStatus: paid ? "paid" : "pending",
+              });
+              load();
+              return updated;
+            }}
+            onClear={() => setSelected(new Set())}
+          />
+          <BulkDeleteBar
+            count={selected.size}
+            itemLabel="order"
+            busy={bulkDeleting}
+            onConfirm={() => setConfirmBulkDelete(true)}
+            onCancel={exitSelectionMode}
+          />
+        </>
       )}
 
       {orders && orders.length >= 5000 && (

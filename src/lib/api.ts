@@ -3,6 +3,10 @@ import type {
   AppInfo,
   BulkCurrencyConversionResult,
   BulkDeleteResult,
+  BulkOrdersDeliveryStatusInput,
+  BulkOrdersPaymentStatusInput,
+  BulkSaleGroupsDeliveryStatusInput,
+  BulkSaleGroupsPaymentStatusInput,
   BulkSalePaymentStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
@@ -83,6 +87,17 @@ export const api = {
   deleteOrder: (id: number) => invoke<void>("delete_order", { id }),
   /** 2.0.28: bulk delete for the Orders list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
   bulkDeleteOrders: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_orders", { ids }),
+  /** 2.0.67: Orders-list bulk "Mark Delivered/Not delivered" - only touches
+   * each selected order's SOLD tickets. Returns how many tickets were
+   * actually changed. See BulkOrdersDeliveryStatusInput's doc comment. */
+  bulkSetOrdersDeliveryStatus: (input: BulkOrdersDeliveryStatusInput) =>
+    invoke<number>("bulk_set_orders_delivery_status", { input }),
+  /** 2.0.67: Orders-list bulk "Mark Paid/Pending" - only touches each
+   * selected order's current (non-refunded) sale per sold ticket. Returns how
+   * many sales were actually changed. See BulkOrdersPaymentStatusInput's doc
+   * comment. */
+  bulkSetOrdersPaymentStatus: (input: BulkOrdersPaymentStatusInput) =>
+    invoke<number>("bulk_set_orders_payment_status", { input }),
   /** 2.0.51: converts an EXISTING order's currency to EUR - Order Detail's
    * "Convert to EUR" button next to the Currency field, shown whenever the
    * order's currency isn't already EUR (any currency, not just GBP - and
@@ -195,6 +210,17 @@ export const api = {
   deleteSaleGroup: (id: number) => invoke<number>("delete_sale_group", { id }),
   /** 2.0.28: bulk delete for the Sales list's "Delete" selection mode (one selected id = one sale group/batch, same as list_sale_groups already returns) - see BulkDeleteResult's doc comment (types.ts). */
   bulkDeleteSaleGroups: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_sale_groups", { ids }),
+  /** 2.0.67: Sales-list bulk "Mark Delivered/Not delivered" - expands each
+   * selected group to every ticket across all its lines (refunded lines
+   * included). Returns how many tickets were actually changed. See
+   * BulkSaleGroupsDeliveryStatusInput's doc comment. */
+  bulkSetSaleGroupsDeliveryStatus: (input: BulkSaleGroupsDeliveryStatusInput) =>
+    invoke<number>("bulk_set_sale_groups_delivery_status", { input }),
+  /** 2.0.67: Sales-list bulk "Mark Paid/Pending" - expands each selected
+   * group to its payable (non-refunded) sale ids. Returns how many sales were
+   * actually changed. See BulkSaleGroupsPaymentStatusInput's doc comment. */
+  bulkSetSaleGroupsPaymentStatus: (input: BulkSaleGroupsPaymentStatusInput) =>
+    invoke<number>("bulk_set_sale_groups_payment_status", { input }),
 
   // Lookups
   listPlatforms: () => invoke<Platform[]>("list_platforms"),

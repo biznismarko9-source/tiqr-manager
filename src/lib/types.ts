@@ -194,6 +194,26 @@ export interface OrderEditInput {
   notes?: string | null;
 }
 
+/** 2.0.67: input for the Orders-list bulk "Mark Delivered/Not delivered"
+ * action - `orderIds` are whole orders (from the list's own selection
+ * checkboxes, the same ones bulk-delete already uses); the backend resolves
+ * each order down to just its SOLD tickets before writing anything. See
+ * `bulk_set_orders_delivery_status_impl` (orders.rs) for the exact contract. */
+export interface BulkOrdersDeliveryStatusInput {
+  orderIds: number[];
+  deliveryStatus: "Delivered" | "Not delivered";
+}
+
+/** 2.0.67: input for the Orders-list bulk "Mark Paid/Pending" action -
+ * `orderIds` are whole orders; the backend resolves each order down to its
+ * current (non-refunded) sale per sold ticket before writing anything, the
+ * same way `bulkUpdateSalePaymentStatus` already restricts to pending/paid
+ * only. See `bulk_set_orders_payment_status_impl` (orders.rs). */
+export interface BulkOrdersPaymentStatusInput {
+  orderIds: number[];
+  paymentStatus: "pending" | "paid";
+}
+
 export interface Ticket {
   id: number;
   code: string;
@@ -427,6 +447,27 @@ export interface SaleEditInput {
  * status_impl` (sales.rs) for the exact contract. */
 export interface BulkSalePaymentStatusInput {
   saleIds: number[];
+  paymentStatus: "pending" | "paid";
+}
+
+/** 2.0.67: input for the Sales-list bulk "Mark Delivered/Not delivered"
+ * action - `groupIds` are the same SaleGroup anchor ids the list's own
+ * selection checkboxes (and bulk-delete) already use. The backend expands
+ * each group to every ticket across all its lines, INCLUDING a refunded
+ * line's ticket (delivery status is a ticket-level fact, independent of
+ * refund). See `bulk_set_sale_groups_delivery_status_impl` (sales.rs). */
+export interface BulkSaleGroupsDeliveryStatusInput {
+  groupIds: number[];
+  deliveryStatus: "Delivered" | "Not delivered";
+}
+
+/** 2.0.67: input for the Sales-list bulk "Mark Paid/Pending" action - same
+ * `groupIds` selection as `BulkSaleGroupsDeliveryStatusInput` above, but the
+ * backend excludes any already-refunded line before writing, so a group with
+ * one refunded line still gets its other lines marked paid. See
+ * `bulk_set_sale_groups_payment_status_impl` (sales.rs). */
+export interface BulkSaleGroupsPaymentStatusInput {
+  groupIds: number[];
   paymentStatus: "pending" | "paid";
 }
 

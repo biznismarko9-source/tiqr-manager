@@ -4,8 +4,9 @@ use crate::error::{AppError, AppResult};
 use crate::finance::{self, allocate_cents};
 use crate::fx;
 use crate::models::{
-    BulkCurrencyConversionResult, BulkDeleteResult, BulkDeleteSkip, Order, OrderCurrencyConversion,
-    OrderCurrencyConversionResult, OrderEditInput, OrderInput, OrderSalesSummary, SeatEntry,
+    BulkCurrencyConversionResult, BulkDeleteResult, BulkDeleteSkip, BulkOrdersDeliveryStatusInput,
+    BulkOrdersPaymentStatusInput, Order, OrderCurrencyConversion, OrderCurrencyConversionResult, OrderEditInput,
+    OrderInput, OrderSalesSummary, SeatEntry,
 };
 use rusqlite::{params, Connection, Row};
 use tauri::State;
@@ -951,6 +952,124 @@ pub fn bulk_delete_orders(state: State<AppState>, ids: Vec<i64>) -> AppResult<Bu
     bulk_delete_orders_impl(&mut conn, &ids)
 }
 
+/// 2.0.67: resolves selected Orders-list order ids down to the ticket ids
+/// eligible for a bulk delivery-status change - only tickets that are
+/// actually `status='sold'` (an order can freely mix sold/available/listed/
+/// cancelled tickets; delivery status only makes sense once a ticket has
+/// actually been sold to someone). Used by the new bulk 'Mark Delivered/Not
+/// delivered' action on the Orders list (see BulkCompletionBar.tsx) so that
+/// selecting orders with some not-yet-sold tickets only ever touches the
+/// sold ones - exactly like `orderCompletionChecks` (Orders.tsx) already
+/// only judges 'Delivered'/'Paid' against sold tickets, never the whole
+/// order.
+pub(crate) fn resolve_orders_sold_ticket_ids(conn: &Connection, order_ids: &[i64]) -> AppResult<Vec<i64>> {
+    if order_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = order_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id FROM tickets WHERE order_id IN ({placeholders}) AND status='sold'");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(order_ids.iter()), |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Same idea as `resolve_orders_sold_ticket_ids` right above, but resolves to
+/// each sold ticket's CURRENT sale id instead - the same `payment_status !=
+/// 'refunded'` join `fetch_sales_summary`/BASE_SQL's own `sa` join already
+/// use (a ticket has at most one non-refunded sale at a time - see migration
+/// 004's partial unique index). A sold ticket whose only sale was later
+/// refunded (see `refund_sale_impl` in sales.rs) contributes no id here at
+/// all, so the bulk 'Mark Paid/Pending' action below can never resurrect a
+/// refunded sale's payment_status just because its ticket happened to be
+/// selected via its order.
+pub(crate) fn resolve_orders_active_sale_ids(conn: &Connection, order_ids: &[i64]) -> AppResult<Vec<i64>> {
+    if order_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = order_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT sa.id FROM sales sa JOIN tickets t ON t.id = sa.ticket_id \
+         WHERE t.order_id IN ({placeholders}) AND sa.payment_status != 'refunded'"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(order_ids.iter()), |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Core logic behind the Orders-list bulk 'Mark Delivered/Not delivered'
+/// action (2.0.67): resolves the selected orders down to their sold tickets
+/// (see `resolve_orders_sold_ticket_ids`) and delegates the actual write to
+/// `tickets::bulk_update_ticket_delivery_status_impl` - the exact same write
+/// path the Sales-list bulk action (`commands::sales::
+/// bulk_set_sale_groups_delivery_status_impl`) also delegates to, so there is
+/// only ever one place that writes `tickets.delivery_status` in bulk.
+/// Selecting orders with zero sold tickets is a harmless no-op (`Ok(0)`), not
+/// an error - marking a whole page of freshly-created, nothing-sold-yet
+/// orders as 'Delivered' should simply do nothing rather than fail the
+/// entire selection.
+pub(crate) fn bulk_set_orders_delivery_status_impl(
+    conn: &mut Connection,
+    order_ids: &[i64],
+    delivery_status: &str,
+) -> AppResult<usize> {
+    let ticket_ids = resolve_orders_sold_ticket_ids(conn, order_ids)?;
+    if ticket_ids.is_empty() {
+        return Ok(0);
+    }
+    let updated =
+        crate::commands::tickets::bulk_update_ticket_delivery_status_impl(conn, &ticket_ids, delivery_status)?;
+    Ok(updated.len())
+}
+
+/// Sets `tickets.delivery_status` for every SOLD ticket across the selected
+/// orders at once - the Orders-list equivalent of Order Detail's own
+/// ticket-status bulk bar, next to the list's existing selection checkboxes
+/// (same ones bulk-delete already uses). Returns how many tickets were
+/// actually changed, so the frontend can show "N tickets marked Delivered"
+/// even though the selection itself was made in terms of whole orders.
+#[tauri::command]
+pub fn bulk_set_orders_delivery_status(
+    state: State<AppState>,
+    input: BulkOrdersDeliveryStatusInput,
+) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_set_orders_delivery_status_impl(&mut conn, &input.order_ids, &input.delivery_status)
+}
+
+/// Core logic behind the Orders-list bulk 'Mark Paid/Pending' action
+/// (2.0.67): resolves the selected orders down to their current
+/// (non-refunded) sale ids (see `resolve_orders_active_sale_ids`) and
+/// delegates to the existing `sales::bulk_update_sale_payment_status_impl` -
+/// the SAME primitive Sale Detail's own bulk Paid/Pending action already
+/// uses, so 'paid' means exactly one thing everywhere in this app. Orders
+/// with nothing currently sold (or whose only sale was refunded) resolve to
+/// zero ids and are a harmless no-op (`Ok(0)`).
+pub(crate) fn bulk_set_orders_payment_status_impl(
+    conn: &mut Connection,
+    order_ids: &[i64],
+    payment_status: &str,
+) -> AppResult<usize> {
+    let sale_ids = resolve_orders_active_sale_ids(conn, order_ids)?;
+    if sale_ids.is_empty() {
+        return Ok(0);
+    }
+    let updated = crate::commands::sales::bulk_update_sale_payment_status_impl(conn, &sale_ids, payment_status)?;
+    Ok(updated.len())
+}
+
+/// Sets `sales.payment_status` (pending/paid only - refunding stays its own
+/// dedicated action, see `BulkOrdersPaymentStatusInput`'s doc comment) for
+/// every currently-sold ticket's sale across the selected orders at once.
+/// Returns how many sales were actually changed.
+#[tauri::command]
+pub fn bulk_set_orders_payment_status(
+    state: State<AppState>,
+    input: BulkOrdersPaymentStatusInput,
+) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_set_orders_payment_status_impl(&mut conn, &input.order_ids, &input.payment_status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1724,6 +1843,30 @@ mod tests {
         .unwrap();
     }
 
+    /// 2.0.67: reads a ticket's own `delivery_status` back - the read-side
+    /// counterpart of `set_delivery_status` above, used by the new bulk
+    /// delivery-status tests below.
+    fn ticket_delivery_status(conn: &Connection, ticket_id: i64) -> Option<String> {
+        conn.query_row(
+            "SELECT delivery_status FROM tickets WHERE id = ?1",
+            [ticket_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// 2.0.67: reads back the `payment_status` of a ticket's own sale row -
+    /// used by the new bulk payment-status tests below. Assumes the ticket
+    /// has exactly one sale row, which is all these tests ever create.
+    fn sale_payment_status_for_ticket(conn: &Connection, ticket_id: i64) -> String {
+        conn.query_row(
+            "SELECT payment_status FROM sales WHERE ticket_id = ?1",
+            [ticket_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn sold_available_listed_cancelled_counts_always_sum_to_quantity() {
         let conn = test_conn();
@@ -1818,6 +1961,105 @@ mod tests {
         assert_eq!(order.available_count, 1);
         assert_eq!(order.delivered_count, 1, "refunded ticket must not count even though delivery_status is still 'Delivered'");
         assert_eq!(order.paid_count, 1, "refunded ticket must not count - its only sale row is now payment_status='refunded'");
+    }
+
+    // 2.0.67: the new Orders-list bulk "Mark Delivered/Paid" action (see
+    // REDESIGN-2.0.67-REPORT.md) - `resolve_orders_sold_ticket_ids`/
+    // `resolve_orders_active_sale_ids` and the two `bulk_set_orders_*_impl`
+    // functions that delegate to them.
+
+    #[test]
+    fn bulk_set_orders_delivery_status_only_touches_sold_tickets_in_the_order() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 3), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        set_status(&conn, tickets[0], "sold");
+        set_status(&conn, tickets[1], "listed");
+        // tickets[2] stays 'available'.
+
+        let updated = bulk_set_orders_delivery_status_impl(&mut conn, &[order_id], "Delivered").unwrap();
+
+        assert_eq!(updated, 1, "only the one sold ticket should be touched");
+        assert_eq!(ticket_delivery_status(&conn, tickets[0]).as_deref(), Some("Delivered"));
+        assert_eq!(ticket_delivery_status(&conn, tickets[1]), None, "listed ticket must be untouched");
+        assert_eq!(ticket_delivery_status(&conn, tickets[2]), None, "available ticket must be untouched");
+    }
+
+    #[test]
+    fn bulk_set_orders_delivery_status_spans_every_selected_order() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_a = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let order_b = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let ticket_a = ticket_ids(&conn, order_a)[0];
+        let ticket_b = ticket_ids(&conn, order_b)[0];
+        set_status(&conn, ticket_a, "sold");
+        set_status(&conn, ticket_b, "sold");
+
+        let updated =
+            bulk_set_orders_delivery_status_impl(&mut conn, &[order_a, order_b], "Delivered").unwrap();
+
+        assert_eq!(updated, 2, "both orders' sold tickets must be updated together");
+        assert_eq!(ticket_delivery_status(&conn, ticket_a).as_deref(), Some("Delivered"));
+        assert_eq!(ticket_delivery_status(&conn, ticket_b).as_deref(), Some("Delivered"));
+    }
+
+    #[test]
+    fn bulk_set_orders_delivery_status_is_a_harmless_no_op_when_nothing_is_sold() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+        // Every ticket stays 'available' - nothing sold yet.
+
+        let updated = bulk_set_orders_delivery_status_impl(&mut conn, &[order_id], "Delivered").unwrap();
+
+        assert_eq!(updated, 0, "no sold tickets means nothing to update, not an error");
+    }
+
+    #[test]
+    fn bulk_set_orders_payment_status_excludes_a_refunded_sale_but_updates_the_rest() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        // t0: sold, still pending - eligible to be marked paid in bulk.
+        set_status(&conn, tickets[0], "sold");
+        insert_sale(&conn, "SAL-300001", tickets[0], 2000, "pending");
+        // t1: sold, but its sale was refunded - must be left completely alone.
+        set_status(&conn, tickets[1], "sold");
+        insert_sale(&conn, "SAL-300002", tickets[1], 2000, "paid");
+        conn.execute("UPDATE sales SET payment_status='refunded' WHERE ticket_id=?1", [tickets[1]])
+            .unwrap();
+
+        let updated = bulk_set_orders_payment_status_impl(&mut conn, &[order_id], "paid").unwrap();
+
+        assert_eq!(updated, 1, "only the one non-refunded sale should be touched");
+        assert_eq!(sale_payment_status_for_ticket(&conn, tickets[0]), "paid");
+        assert_eq!(
+            sale_payment_status_for_ticket(&conn, tickets[1]),
+            "refunded",
+            "a refunded sale must never be resurrected by a bulk action"
+        );
+    }
+
+    #[test]
+    fn bulk_set_orders_payment_status_is_a_harmless_no_op_when_only_refunded_sales_exist() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+        set_status(&conn, tickets[0], "sold");
+        insert_sale(&conn, "SAL-300003", tickets[0], 2000, "paid");
+        conn.execute("UPDATE sales SET payment_status='refunded' WHERE ticket_id=?1", [tickets[0]])
+            .unwrap();
+
+        let updated = bulk_set_orders_payment_status_impl(&mut conn, &[order_id], "paid").unwrap();
+
+        assert_eq!(updated, 0, "the only sale is refunded, so there is nothing left to mark paid");
+        assert_eq!(sale_payment_status_for_ticket(&conn, tickets[0]), "refunded");
     }
 
     #[test]

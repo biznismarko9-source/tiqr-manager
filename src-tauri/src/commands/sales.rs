@@ -3,8 +3,8 @@ use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
 use crate::models::{
-    BulkDeleteResult, BulkDeleteSkip, BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup,
-    SaleInput, SeatEntry,
+    BulkDeleteResult, BulkDeleteSkip, BulkSaleGroupsDeliveryStatusInput, BulkSaleGroupsPaymentStatusInput,
+    BulkSalePaymentStatusInput, Sale, SaleBatchInput, SaleEditInput, SaleGroup, SaleInput, SeatEntry,
 };
 use rusqlite::{params, Connection, Row, Transaction};
 use std::collections::HashSet;
@@ -1253,6 +1253,118 @@ pub(crate) fn bulk_delete_sale_groups_impl(conn: &mut Connection, ids: &[i64]) -
 pub fn bulk_delete_sale_groups(state: State<AppState>, ids: Vec<i64>) -> AppResult<BulkDeleteResult> {
     let mut conn = state.db.lock().unwrap();
     bulk_delete_sale_groups_impl(&mut conn, &ids)
+}
+
+/// 2.0.67: same resolution `resolve_group_sale_ids` already does (each
+/// selected SaleGroup id expands to every line sharing its `batch_id`, or
+/// just itself for a plain single-ticket sale), but returns the underlying
+/// TICKET ids instead of sale ids, and - unlike
+/// `resolve_sale_groups_payable_sale_ids` below - does NOT exclude refunded
+/// lines: `tickets.delivery_status` is a fact about the ticket, independent
+/// of whether its sale was later refunded (same convention
+/// `SaleGroup.delivered_count` already follows - see models.rs's doc
+/// comment). Used by the new Sales-list bulk 'Mark Delivered/Not delivered'
+/// action.
+pub(crate) fn resolve_sale_groups_ticket_ids(conn: &Connection, group_ids: &[i64]) -> AppResult<Vec<i64>> {
+    let sale_ids = resolve_group_sale_ids(conn, group_ids)?;
+    if sale_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = sale_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT DISTINCT ticket_id FROM sales WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(sale_ids.iter()), |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Same resolution as `resolve_group_sale_ids`, but drops any line that's
+/// already `payment_status='refunded'` - mirrors
+/// `bulk_update_sale_payment_status_impl`'s own guard (it rejects the WHOLE
+/// batch if even one refunded id sneaks in) and SaleDetail.tsx's own
+/// `selectableLines` filter. Used by the new Sales-list bulk 'Mark Paid/
+/// Pending' action so a multi-line group that includes one refunded line
+/// doesn't block updating the rest of that same group.
+pub(crate) fn resolve_sale_groups_payable_sale_ids(conn: &Connection, group_ids: &[i64]) -> AppResult<Vec<i64>> {
+    let all_ids = resolve_group_sale_ids(conn, group_ids)?;
+    if all_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = all_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id FROM sales WHERE id IN ({placeholders}) AND payment_status != 'refunded'");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(all_ids.iter()), |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Core logic behind the Sales-list bulk 'Mark Delivered/Not delivered'
+/// action (2.0.67): resolves each selected SaleGroup id down to every ticket
+/// across all its lines (see `resolve_sale_groups_ticket_ids`) and delegates
+/// the actual write to `tickets::bulk_update_ticket_delivery_status_impl` -
+/// the same single write path the Orders-list bulk action
+/// (`commands::orders::bulk_set_orders_delivery_status_impl`) also delegates
+/// to. `Ok(0)` rather than an error when nothing resolves (shouldn't
+/// normally happen - a SaleGroup only exists because it has at least one
+/// ticket).
+pub(crate) fn bulk_set_sale_groups_delivery_status_impl(
+    conn: &mut Connection,
+    group_ids: &[i64],
+    delivery_status: &str,
+) -> AppResult<usize> {
+    let ticket_ids = resolve_sale_groups_ticket_ids(conn, group_ids)?;
+    if ticket_ids.is_empty() {
+        return Ok(0);
+    }
+    let updated =
+        crate::commands::tickets::bulk_update_ticket_delivery_status_impl(conn, &ticket_ids, delivery_status)?;
+    Ok(updated.len())
+}
+
+/// Sets `tickets.delivery_status` for every ticket across the selected
+/// SaleGroups at once - the Sales-list equivalent of the Orders-list action
+/// right above, next to the list's existing selection checkboxes (same ones
+/// bulk-delete already uses). Returns how many tickets were actually
+/// changed.
+#[tauri::command]
+pub fn bulk_set_sale_groups_delivery_status(
+    state: State<AppState>,
+    input: BulkSaleGroupsDeliveryStatusInput,
+) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_set_sale_groups_delivery_status_impl(&mut conn, &input.group_ids, &input.delivery_status)
+}
+
+/// Core logic behind the Sales-list bulk 'Mark Paid/Pending' action
+/// (2.0.67): resolves each selected SaleGroup id down to its payable
+/// (non-refunded) sale ids (see `resolve_sale_groups_payable_sale_ids`) and
+/// delegates to the existing `bulk_update_sale_payment_status_impl` right
+/// above - the exact same primitive Sale Detail's own bulk action already
+/// uses. A group made up entirely of refunded lines resolves to zero payable
+/// ids and is a harmless no-op (`Ok(0)`), not an error, so selecting a mix of
+/// refunded and active groups from the list never blocks the active ones.
+pub(crate) fn bulk_set_sale_groups_payment_status_impl(
+    conn: &mut Connection,
+    group_ids: &[i64],
+    payment_status: &str,
+) -> AppResult<usize> {
+    let sale_ids = resolve_sale_groups_payable_sale_ids(conn, group_ids)?;
+    if sale_ids.is_empty() {
+        return Ok(0);
+    }
+    let updated = bulk_update_sale_payment_status_impl(conn, &sale_ids, payment_status)?;
+    Ok(updated.len())
+}
+
+/// Sets `sales.payment_status` (pending/paid only, same restriction as
+/// `bulk_update_sale_payment_status` above) for every payable sale across the
+/// selected SaleGroups at once. Returns how many sales were actually
+/// changed.
+#[tauri::command]
+pub fn bulk_set_sale_groups_payment_status(
+    state: State<AppState>,
+    input: BulkSaleGroupsPaymentStatusInput,
+) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_set_sale_groups_payment_status_impl(&mut conn, &input.group_ids, &input.payment_status)
 }
 
 #[cfg(test)]
@@ -3162,6 +3274,81 @@ mod tests {
         let mut expected = vec![single_id, batch_ids[0], batch_ids[1], batch_ids[2]];
         expected.sort_unstable();
         assert_eq!(resolved, expected, "every line of every selected group, exactly once each");
+    }
+
+    // 2.0.67: the new Sales-list bulk "Mark Delivered/Paid" action (see
+    // REDESIGN-2.0.67-REPORT.md) - `resolve_sale_groups_ticket_ids`/
+    // `resolve_sale_groups_payable_sale_ids` and the two
+    // `bulk_set_sale_groups_*_impl` functions that delegate to them.
+
+    fn ticket_delivery_status(conn: &Connection, ticket_id: i64) -> Option<String> {
+        conn.query_row("SELECT delivery_status FROM tickets WHERE id = ?1", [ticket_id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn bulk_set_sale_groups_delivery_status_expands_the_whole_batch_from_one_representative_id() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        let sale_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+
+        // Select the batch via just its first line's id.
+        let updated = bulk_set_sale_groups_delivery_status_impl(&mut conn, &[sale_ids[0]], "Delivered").unwrap();
+
+        assert_eq!(updated, 3, "every ticket in the batch must be updated, not just the selected line");
+        for &t in &tickets {
+            assert_eq!(ticket_delivery_status(&conn, t).as_deref(), Some("Delivered"));
+        }
+    }
+
+    #[test]
+    fn bulk_set_sale_groups_delivery_status_still_updates_a_refunded_lines_ticket() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, sale_ids[0], None).unwrap();
+
+        let updated = bulk_set_sale_groups_delivery_status_impl(&mut conn, &[sale_ids[0]], "Delivered").unwrap();
+
+        assert_eq!(updated, 2, "delivery status is a ticket-level fact, independent of refund");
+        assert_eq!(
+            ticket_delivery_status(&conn, tickets[0]).as_deref(),
+            Some("Delivered"),
+            "even the refunded line's own ticket must be updated"
+        );
+        assert_eq!(ticket_delivery_status(&conn, tickets[1]).as_deref(), Some("Delivered"));
+    }
+
+    #[test]
+    fn bulk_set_sale_groups_payment_status_excludes_a_refunded_line_but_updates_the_rest() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "pending")).unwrap();
+        refund_sale_impl(&mut conn, sale_ids[0], None).unwrap();
+
+        let updated = bulk_set_sale_groups_payment_status_impl(&mut conn, &[sale_ids[0]], "paid").unwrap();
+
+        assert_eq!(updated, 1, "only the still-active line should be touched");
+        let refreshed = list_sales_by_group_impl(&conn, sale_ids[0]).unwrap();
+        let refunded_line = refreshed.iter().find(|s| s.id == sale_ids[0]).unwrap();
+        let active_line = refreshed.iter().find(|s| s.id == sale_ids[1]).unwrap();
+        assert_eq!(
+            refunded_line.payment_status, "refunded",
+            "a refunded sale must never be resurrected by a bulk action"
+        );
+        assert_eq!(active_line.payment_status, "paid");
+    }
+
+    #[test]
+    fn bulk_set_sale_groups_payment_status_is_a_harmless_no_op_when_the_whole_group_is_refunded() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+
+        let updated = bulk_set_sale_groups_payment_status_impl(&mut conn, &[sale_id], "paid").unwrap();
+
+        assert_eq!(updated, 0, "the only line is refunded, so there is nothing left to mark paid");
     }
 
     // 1.9.2 (sections 3/4): the new Sale Detail "Mark as Paid"/"Mark as

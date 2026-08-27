@@ -457,6 +457,89 @@ pub fn bulk_update_ticket_status(state: State<AppState>, input: BulkTicketStatus
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// 2.0.67: core logic behind the new bulk "mark as Delivered/Not delivered"
+/// action (see REDESIGN-2.0.67-REPORT.md) - same dedupe/validate-then-write/
+/// all-or-nothing shape as `bulk_update_ticket_status_impl` right above, but
+/// for `tickets.delivery_status` instead of `status`. Unlike that function,
+/// there is NO status-based guard here: `delivery_status` is a free-text
+/// column completely independent of the protected `status` column (see
+/// migration 010's doc comment) - a ticket can have its delivery status set
+/// regardless of whether it's available/listed/sold/cancelled, exactly like
+/// the single-ticket `TicketEditModal` already allows.
+///
+/// Deliberately restricted to exactly the two values the bulk UI ever offers
+/// (`DELIVERY_STATUS_OPTIONS` in Tickets.tsx: "Delivered"/"Not delivered") -
+/// same "quick action bar only offers a closed set, single-ticket edit still
+/// allows any free text" split `bulk_update_sale_payment_status_impl`
+/// already draws for payment_status/pending/paid vs. refund.
+///
+/// No `#[tauri::command]` wrapper: this is an internal primitive, called
+/// from the Orders/Sales list's own bulk actions (`commands::orders::
+/// bulk_set_orders_delivery_status`, `commands::sales::
+/// bulk_set_sale_groups_delivery_status`) after THEY resolve their own
+/// order/sale-group selection down to ticket ids - never invoked directly
+/// from the frontend today.
+pub(crate) fn bulk_update_ticket_delivery_status_impl(
+    conn: &mut Connection,
+    ticket_ids: &[i64],
+    delivery_status: &str,
+) -> AppResult<Vec<i64>> {
+    if ticket_ids.is_empty() {
+        return Err(AppError::Validation(
+            "Select at least one ticket to update".into(),
+        ));
+    }
+    if !["Delivered", "Not delivered"].contains(&delivery_status) {
+        return Err(AppError::Validation(
+            "Delivery status can only be bulk-changed to Delivered or Not delivered.".into(),
+        ));
+    }
+
+    // Dedupe so the same id selected twice (e.g. a stale double click, or
+    // the same ticket reachable through two different resolved selections)
+    // is applied once, not treated as two separate writes - same convention
+    // as bulk_update_ticket_status_impl.
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut seen = HashSet::new();
+        for &id in ticket_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    let tx = conn.transaction()?;
+
+    // Validate every id exists BEFORE writing anything - all-or-nothing, one
+    // query not one per id (same technique as bulk_update_ticket_status_impl
+    // right above). No further semantic guard needed - see this function's
+    // own doc comment for why delivery_status has nothing to protect against.
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing_ids: HashSet<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM tickets WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing_ids.contains(id)) {
+        return Err(AppError::Validation(format!("Ticket #{missing} does not exist")));
+    }
+
+    let sql = format!(
+        "UPDATE tickets SET delivery_status = ?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    update_params.push(Box::new(delivery_status.to_string()));
+    for &id in &ids {
+        update_params.push(Box::new(id));
+    }
+    let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, update_refs.as_slice())?;
+
+    tx.commit()?;
+    Ok(ids)
+}
+
 /// The 5 options the app's own "New order" form (Orders.tsx) has always
 /// offered for Ticket Type, now also the seed for the Orders & Sales sheet's
 /// own Ticket Type dropdown (commands::orders_sheet_sync) - see
@@ -989,5 +1072,107 @@ mod tests {
 
         bulk_update_ticket_status_impl(&mut conn, &[ticket_id], "listed").unwrap();
         assert_eq!(ticket_status(&conn, ticket_id), "listed");
+    }
+
+    // --- 2.0.67: bulk_update_ticket_delivery_status_impl --------------------
+
+    fn ticket_delivery_status(conn: &Connection, id: i64) -> Option<String> {
+        conn.query_row("SELECT delivery_status FROM tickets WHERE id=?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_only_changes_the_selected_tickets_out_of_four() {
+        let mut conn = test_conn();
+        let ids: Vec<i64> = (0..4).map(|_| seed_one_ticket(&conn)).collect();
+        let selected = vec![ids[0], ids[1], ids[2]];
+        let untouched = ids[3];
+
+        let updated_ids = bulk_update_ticket_delivery_status_impl(&mut conn, &selected, "Delivered").unwrap();
+        assert_eq!(updated_ids.len(), 3);
+
+        for &id in &selected {
+            assert_eq!(ticket_delivery_status(&conn, id).as_deref(), Some("Delivered"));
+        }
+        assert_eq!(
+            ticket_delivery_status(&conn, untouched),
+            None,
+            "the 4th ticket was never selected, so it must stay untouched"
+        );
+    }
+
+    /// Unlike bulk_update_ticket_status_impl, there is no "sold tickets are
+    /// off-limits" guard here - delivery_status is independent of status, so
+    /// a sold ticket must be reachable through this bulk action just like any
+    /// other.
+    #[test]
+    fn bulk_update_ticket_delivery_status_works_on_a_sold_ticket_too() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sale_impl(&mut conn, &sale).unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "sold");
+
+        bulk_update_ticket_delivery_status_impl(&mut conn, &[ticket_id], "Delivered").unwrap();
+        assert_eq!(ticket_delivery_status(&conn, ticket_id).as_deref(), Some("Delivered"));
+        assert_eq!(ticket_status(&conn, ticket_id), "sold", "status itself must be untouched");
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_can_toggle_back_to_not_delivered() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        bulk_update_ticket_delivery_status_impl(&mut conn, &[id], "Delivered").unwrap();
+        bulk_update_ticket_delivery_status_impl(&mut conn, &[id], "Not delivered").unwrap();
+        assert_eq!(ticket_delivery_status(&conn, id).as_deref(), Some("Not delivered"));
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_rejects_an_arbitrary_value() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_delivery_status_impl(&mut conn, &[id], "Somewhere in transit");
+        assert!(
+            result.is_err(),
+            "the quick bulk action only ever offers Delivered/Not delivered - anything else must be rejected"
+        );
+        assert_eq!(ticket_delivery_status(&conn, id), None);
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_is_all_or_nothing_with_a_missing_id() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_delivery_status_impl(&mut conn, &[id, 999_999], "Delivered");
+        assert!(result.is_err());
+        assert_eq!(
+            ticket_delivery_status(&conn, id),
+            None,
+            "a failed bulk update must change nothing at all"
+        );
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_rejects_empty_selection() {
+        let mut conn = test_conn();
+        assert!(bulk_update_ticket_delivery_status_impl(&mut conn, &[], "Delivered").is_err());
+    }
+
+    #[test]
+    fn bulk_update_ticket_delivery_status_dedupes_ids() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let updated_ids = bulk_update_ticket_delivery_status_impl(&mut conn, &[id, id, id], "Delivered").unwrap();
+        assert_eq!(updated_ids, vec![id]);
+        assert_eq!(ticket_delivery_status(&conn, id).as_deref(), Some("Delivered"));
     }
 }
