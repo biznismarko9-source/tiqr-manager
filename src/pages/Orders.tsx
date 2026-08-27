@@ -27,11 +27,23 @@ import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { OrderRecord } from "../lib/types";
+import { inventoryStatus } from "./Tickets";
 
-// 2.0.59: "Active" vs "Paid" tabs (marko's request - see
-// REDESIGN-2.0.59-REPORT.md), same shape as Events'. Only Payment status =
-// Paid counts as done - Unpaid and Partial both still need attention, so
-// both stay in "Active" (marko's own explicit choice when asked).
+// 2.0.60 correction (marko, after trying 2.0.59): "Active" vs "Paid" here
+// was originally bucketed by an order's own Payment status field (whether
+// *marko* has paid *his supplier* for the tickets) - marko clarified that's
+// the wrong signal entirely. What actually means "done" for this page is
+// whether the order's tickets have been sold on to a buyer - the same
+// signal Tickets' own Active/Completed tabs already use (inventoryStatus,
+// imported from Tickets.tsx above), not a second, different notion of
+// "done" for the same ticket counts. So: Paid = inventoryStatus(o).key is
+// "soldout" or "cancelled" (nothing left to sell), Active = still has
+// available/listed stock - Payment status is completely irrelevant to which
+// tab an order lands in now, it's just still shown as its own column, as
+// before. A fully-cancelled order lands in "Paid" here for the same reason
+// it lands in "Completed" on Tickets: there's nothing further to do with
+// it, so leaving it in "Active" would misrepresent it as still needing
+// action - flag this to marko if he'd rather it stayed in Active instead.
 const ORDER_TABS: { key: "active" | "paid"; label: string }[] = [
   { key: "active", label: "Active" },
   { key: "paid", label: "Paid" },
@@ -178,8 +190,10 @@ export default function Orders() {
   // 2.0.59: tab split happens client-side, after sorting, on data the page
   // already fetched - no new backend query, same "filter what's already in
   // memory" approach the sort above already uses.
+  // 2.0.60: bucketed by inventoryStatus (ticket sold/cancelled counts), not
+  // paymentStatus - see the ORDER_TABS comment above for why.
   const visibleOrders = useMemo(
-    () => sortedOrders.filter((o) => (tab === "paid" ? o.paymentStatus === "paid" : o.paymentStatus !== "paid")),
+    () => sortedOrders.filter((o) => (inventoryStatus(o).key === "active") === (tab === "active")),
     [sortedOrders, tab],
   );
 
@@ -339,8 +353,8 @@ export default function Orders() {
           title={tab === "active" ? "No active orders" : "No paid orders yet"}
           description={
             tab === "active"
-              ? "Every order is fully paid. Switch to the Paid tab to see them."
-              : "Orders move here once their Payment status is Paid."
+              ? "Every order is fully sold or cancelled. Switch to the Paid tab to see them."
+              : "Orders move here once every ticket in them is sold or cancelled."
           }
         />
       ) : (

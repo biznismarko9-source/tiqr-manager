@@ -53,8 +53,11 @@ export default function Tickets() {
 /** An order's inventory status, derived purely from its ticket counts (there
  * is no separate DB column for this - see the report). "Active" means it
  * still has stock that could be listed/sold; "Sold out" means every ticket
- * has been sold or cancelled; "Cancelled" means the whole order was voided. */
-function inventoryStatus(o: OrderRecord): { key: string; label: string } {
+ * has been sold or cancelled; "Cancelled" means the whole order was voided.
+ * Exported (2.0.60) - Orders.tsx's own Active/Paid tabs reuse this exact
+ * bucketing instead of a second, different notion of "done" - see that
+ * file's own comment for why. */
+export function inventoryStatus(o: OrderRecord): { key: string; label: string } {
   if (o.cancelledCount === o.quantity && o.quantity > 0) return { key: "cancelled", label: "Cancelled" };
   if (o.availableCount + o.listedCount > 0) return { key: "active", label: "Active" };
   return { key: "soldout", label: "Sold out" };

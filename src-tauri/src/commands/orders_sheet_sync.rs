@@ -1964,6 +1964,23 @@ fn apply_sales_push(
     data_rows: &[Vec<String>],
     marker_col_index: usize,
 ) -> AppResult<(SheetSyncResult, Vec<(i64, Vec<(usize, String)>)>)> {
+    apply_sales_push_internal(conn, headers, data_rows, marker_col_index, false)
+}
+
+/// "Fix sync" (2.0.60) calls this with `force: true` instead - see
+/// `force_push_sales_impl`'s own doc comment for why that button exists.
+/// Shares every bit of setup and the uniform-sale/linked-pull lookups with
+/// the ordinary push above (which is now just `force: false` here), so the
+/// two buttons can never quietly drift apart on what counts as "ready to
+/// push" - only what happens once a target cell turns out NOT to be blank
+/// differs between them.
+fn apply_sales_push_internal(
+    conn: &Connection,
+    headers: &[String],
+    data_rows: &[Vec<String>],
+    marker_col_index: usize,
+    force: bool,
+) -> AppResult<(SheetSyncResult, Vec<(i64, Vec<(usize, String)>)>)> {
     let map = build_header_map(headers);
     let payout_col = find_col(&map, &["payout per ticket", "payout"]);
     if payout_col.is_none() {
@@ -2039,6 +2056,31 @@ fn apply_sales_push(
                 if let Some(c) = paid_by_col {
                     cells.push((c, sale.buyer_reference.clone().unwrap_or_default()));
                 }
+            } else if force {
+                // 2.0.60 "Fix sync": the ordinary rule above (write only when
+                // EVERY target cell is still blank) just failed - exactly the
+                // situation marko hit with a real sale. Instead of skipping
+                // the whole group, compare each cell to what the app would
+                // put there and queue a write only for the ones that
+                // actually disagree. A cell that's already correct - blank
+                // or not - is left completely alone, so running this again
+                // on an already-fixed row is always a no-op.
+                let desired: [(Option<usize>, String); 7] = [
+                    (site_listed_col, sale.platform_name.clone().unwrap_or_default()),
+                    (payout_col, format_cents_for_sheet(sale.sale_price_cents)),
+                    (status_col, sale.resale_status.clone().unwrap_or_default()),
+                    (delivery_status_col, sale.delivery_status.clone().unwrap_or_default()),
+                    (payout_status_col, sale.payment_status.clone()),
+                    (sale_date_col, format_order_date_for_sheet(&sale.sale_date)),
+                    (paid_by_col, sale.buyer_reference.clone().unwrap_or_default()),
+                ];
+                for (col_opt, value) in desired {
+                    if let Some(c) = col_opt {
+                        if cell(raw_row, Some(c)).as_deref() != Some(value.as_str()) {
+                            cells.push((c, value));
+                        }
+                    }
+                }
             }
         }
 
@@ -2053,6 +2095,19 @@ fn apply_sales_push(
                 }
                 if let Some(c) = how_much_pull_col {
                     cells.push((c, format_cents_for_sheet(amount_cents)));
+                }
+            } else if force {
+                let desired: [(Option<usize>, String); 3] = [
+                    (pull_col, "yes".to_string()),
+                    (who_pulled_col, puller_name.clone()),
+                    (how_much_pull_col, format_cents_for_sheet(amount_cents)),
+                ];
+                for (col_opt, value) in desired {
+                    if let Some(c) = col_opt {
+                        if cell(raw_row, Some(c)).as_deref() != Some(value.as_str()) {
+                            cells.push((c, value));
+                        }
+                    }
                 }
             }
         }
@@ -2137,6 +2192,95 @@ fn push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 pub fn push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
     let conn = state.db.lock().unwrap();
     push_sales_impl(&conn)
+}
+
+/// "Fix sync" (2.0.60) - marko's own request after a real sale made via the
+/// Dashboard's "New sale" shortcut didn't get pushed into the sheet by the
+/// ordinary "Push sales" button, for a reason that couldn't be pinned down
+/// from what was available to check (the order already had a sheet row,
+/// every ticket in it sold at once at one identical price, and the target
+/// cells were blank beforehand - by push_sales_impl's own rule that should
+/// already have been enough for it to write). Rather than keep guessing at
+/// increasingly specific hypotheses against marko's real, live spreadsheet,
+/// this is a separate, more permissive repair action: it shares every bit of
+/// "is this order even ready to push" logic with push_sales_impl
+/// (apply_sales_push_internal, uniform_sale_for_order,
+/// linked_pull_received_for_order - none of that changes here), but drops
+/// the "only if every target cell is still blank" gate and instead
+/// overwrites individual cells whenever they disagree with what the app
+/// currently has. An order that still doesn't have one clean uniform sale
+/// (or more than one linked pull) is left alone here exactly like it is by
+/// push_sales_impl - this button repairs a push that should have happened,
+/// it doesn't invent a value for a state this module has never been able to
+/// represent as one sheet row. Because it only ever queues a cell whose
+/// current text actually differs from the desired value, running this
+/// repeatedly - or on a sheet that's already correct - never touches
+/// anything and is always safe to click again.
+fn force_push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
+    let connection = load_connection(conn, "orders")?
+        .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Orders yet - connect one in Settings first.".to_string()))?;
+    let credential = crate::commands::google_auth::resolve_google_credential(conn, false)?;
+    let token = credential.access_token();
+
+    let range = google_sheets::a1_range(&connection.sheet_tab, "A1:AZ");
+    let value_range = google_sheets::get_values(token, &connection.spreadsheet_id, &range)?;
+    if value_range.values.is_empty() {
+        return Err(AppError::Validation("The connected sheet/tab has no header row yet.".to_string()));
+    }
+    let headers = value_range.values[0].clone();
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
+    let (marker_col_index, _marker_exists) = resolve_marker_column(&headers);
+
+    let (mut result, writes) = apply_sales_push_internal(conn, &headers, data_rows, marker_col_index, true)?;
+
+    for (sheet_row_number, cells) in writes {
+        for (col, value) in cells {
+            let col_letter = column_index_to_a1(col);
+            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{sheet_row_number}"));
+            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                result.errors.push(SheetSyncIssue {
+                    row_number: sheet_row_number,
+                    message: format!("saved locally, but could not write this change back to the sheet: {e}"),
+                });
+            }
+        }
+    }
+
+    // 2.0.54's currency catch-up (see reconcile_order_currencies) - "Fix
+    // sync" is meant to be the "clean up anything the sheet is missing"
+    // button, so it re-runs this too, not just the sale-info/pull-info
+    // repair above.
+    let currency_writes = reconcile_order_currencies(conn, &headers, data_rows);
+    for (row_number, cells) in currency_writes {
+        let mut row_ok = true;
+        for (col, value) in cells {
+            let col_letter = column_index_to_a1(col);
+            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{row_number}"));
+            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                row_ok = false;
+                result.errors.push(SheetSyncIssue { row_number, message: format!("currency catch-up failed: {e}") });
+            }
+        }
+        if row_ok {
+            result.updated += 1;
+        }
+    }
+
+    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
+
+    result.synced_at = now_iso(conn)?;
+    set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
+    Ok(result)
+}
+
+/// "Fix sync" button (Settings -> Integrations, Orders & Sales card) - see
+/// `force_push_sales_impl`'s own doc comment for exactly how this differs
+/// from "Push sales" right above it on the same card.
+#[tauri::command]
+pub fn force_push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
+    let conn = state.db.lock().unwrap();
+    force_push_sales_impl(&conn)
 }
 
 // ---------------------------------------------------------------------------
@@ -4418,6 +4562,100 @@ mod tests {
         let headers: Vec<String> = vec!["TIQR ID".to_string(), "Site Listed".to_string()];
         let err = apply_sales_push(&conn, &headers, &[], 0).unwrap_err();
         assert!(err.to_string().contains("Payout Per Ticket"), "{err}");
+    }
+
+    // ---- "Fix sync" (force_push_sales_impl / apply_sales_push_internal) ------
+
+    #[test]
+    fn force_push_corrects_only_the_cell_that_actually_disagrees() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        // Every column already holds exactly what push_sales_impl would
+        // write, EXCEPT Site Listed, which is stale (e.g. it was pushed once,
+        // then the platform got corrected in the app afterwards). The
+        // ordinary push must still refuse to touch this row at all - same
+        // "never touch a row with anything already in it" rule as
+        // `a_row_that_already_has_any_sale_info_is_never_touched_even_if_incomplete`.
+        let stale_row: Vec<String> =
+            vec![&code, "an old, now-wrong site", "45,00", "Listed", "Not yet", "paid", "20/09/2026", "buyer@example.com", "", "", ""]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[stale_row.clone()], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert!(writes.is_empty(), "ordinary push must still never touch a non-blank row");
+
+        // Force push corrects the one cell that's actually wrong, and
+        // nothing else.
+        let (result, writes) = apply_sales_push_internal(&conn, &sales_headers(), &[stale_row], 0, true).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(writes.len(), 1);
+        let (row_number, cells) = &writes[0];
+        assert_eq!(*row_number, 2);
+        assert_eq!(cells.len(), 1, "every other cell already matched, so only one write should be queued");
+        let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
+        assert_eq!(as_map.get(&1), Some(&"viagogo".to_string()), "the stale Site Listed cell gets corrected");
+    }
+
+    #[test]
+    fn force_push_leaves_an_already_correct_row_completely_alone() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        // A row that already holds exactly what the app would write BACK -
+        // note this is the OUTPUT format (comma decimal separator,
+        // DD/MM/YYYY date), not `sales_row`'s own INPUT format (which is
+        // what a person, or an Order-sync pull, would type in - "45.00"
+        // with a period parses fine going in, but this module always
+        // writes "45,00" with a comma going back out, so it is NOT the
+        // same text and reusing `sales_row` here would wrongly look like a
+        // mismatch). Force push must not queue a single write for a row
+        // that already looks like this, so running it again (or clicking
+        // it on a sheet that's already fine) is always a no-op.
+        let already_correct: Vec<String> =
+            vec![&code, "viagogo", "45,00", "Listed", "Not yet", "paid", "20/09/2026", "buyer@example.com", "", "", ""]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let (result, writes) = apply_sales_push_internal(&conn, &sales_headers(), &[already_correct], 0, true).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty(), "force push must never rewrite a cell that already has the value it wants to write");
+    }
+
+    #[test]
+    fn force_push_still_requires_a_uniform_sale_across_the_order() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        // Sold separately at two different prices, same as
+        // `non_uniform_sales_across_tickets_of_one_order_are_left_alone` - a
+        // real state the sheet's one-row-per-order model can't represent,
+        // force or not.
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+             VALUES ('SALE-000001', ?1, '2026-09-20', 4000, 'EUR', 'paid')",
+            [ticket_ids[0]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [ticket_ids[0]]).unwrap();
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+             VALUES ('SALE-000002', ?1, '2026-09-20', 5000, 'EUR', 'paid')",
+            [ticket_ids[1]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [ticket_ids[1]]).unwrap();
+
+        let mut row_data = blank_sales_row(&code);
+        row_data[1] = "some stale value".to_string();
+        let (result, writes) = apply_sales_push_internal(&conn, &sales_headers(), &[row_data], 0, true).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty(), "force must not invent a value when the order's own tickets disagree on price");
     }
 
     // -----------------------------------------------------------------

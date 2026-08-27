@@ -144,6 +144,7 @@ pub fn run() {
             commands::orders_sheet_sync::push_orders,
             commands::orders_sheet_sync::sync_sales,
             commands::orders_sheet_sync::push_sales,
+            commands::orders_sheet_sync::force_push_sales,
             commands::orders_sheet_sync::create_orders_sheet,
             commands::orders_sheet_sync::setup_orders_sheet,
             commands::google_auth::get_google_sign_in_status,

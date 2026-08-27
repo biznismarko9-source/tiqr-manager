@@ -308,6 +308,19 @@ export const api = {
    * push_sales_impl's own doc comment for exactly what counts. Sits next to
    * syncSales as a separate button. */
   pushSales: () => invoke<SheetSyncResult>("push_sales"),
+  /** 2.0.60: marko's own request after one real sale didn't make it into the
+   * sheet via `pushSales`, for a reason that couldn't be pinned down (the
+   * order was already linked, every ticket sold at once at one identical
+   * price, target cells were blank beforehand - by pushSales' own rule that
+   * should already have been enough). Same "is this order even ready"
+   * requirements as pushSales (still needs one uniform sale across every
+   * ticket), but drops its "only if every target cell is still blank" rule
+   * and instead corrects whichever cell currently disagrees with what the
+   * app has - unlike every other sync/push action, this one CAN overwrite a
+   * cell that already has something in it, so the "Fix sync" button confirms
+   * before calling this. Sits next to pushSales as a third, separate
+   * action. */
+  forcePushSales: () => invoke<SheetSyncResult>("force_push_sales"),
   /** 2.0.9: auto-creates a brand-new Orders & Sales sheet, shares it with
    * `email`, and connects it - no Google sign-in window. Mirrors
    * createPullsSheet exactly; sits next to setSheetsConnection as a second

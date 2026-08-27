@@ -542,6 +542,14 @@ export default function Settings() {
                       "Fills in the SAME row's Site Listed/Payout/Status/Payout status/paid-by columns (and pull/who pulled/how much pull, from a linked received pull) once every ticket on that order has sold the same way - but only into cells that are still completely blank, so it never overwrites anything already in the sheet.",
                     run: api.pushSales,
                   }}
+                  forcePush={{
+                    label: "Fix sync",
+                    description:
+                      'For a sale that should have pushed already (e.g. via "Push sales" above) but didn\'t. Unlike that button, this one CAN overwrite a cell that already has something in it, replacing it with what the app currently has for that order - but only cells whose current text actually disagrees; an already-correct cell is left alone, so clicking this again is always safe.',
+                    confirmMessage:
+                      'This can overwrite Site Listed / Payout / Status / Delivery status / Payout status / sale date / paid-by / pull cells that already have something in them, replacing it with what the app currently has for that order - unlike "Push sales", which only ever fills in blank cells. Use this when a sale (or received pull) you know is correct in the app didn\'t make it into the sheet. Continue?',
+                    run: api.forcePushSales,
+                  }}
                   onSetup={api.setupOrdersSheet}
                   setupDescription="For a sheet you connected above that's still completely blank: writes the correct header row for you, then immediately sets up its dropdowns and Revenue/Profit formulas - the same structure Order sync/Sales sync/Push orders/Push sales already keep up to date, applied right away instead of waiting for one of those."
                   onCreate={api.createOrdersSheet}
@@ -1064,6 +1072,7 @@ function SheetsConnectionCard({
   pushLabel,
   pushDescription,
   secondaryPush,
+  forcePush,
   onSetup,
   setupDescription,
   onCreate,
@@ -1115,6 +1124,22 @@ function SheetsConnectionCard({
    * "Push orders" here, same as "Sales sync" sits alongside "Order sync"
    * above. */
   secondaryPush?: { label: string; description: string; run: () => Promise<SheetSyncResult> };
+  /** 2.0.60 - marko's own request: a real sale made via the Dashboard's "New
+   * sale" shortcut didn't make it into the sheet through "Push sales" above,
+   * for a reason that couldn't be pinned down from the information available
+   * (the order was already linked, every ticket sold at once at one
+   * identical price, and the target cells were blank beforehand - by "Push
+   * sales"' own "only if every cell is still blank" rule, it should already
+   * have written). Rather than keep guessing against marko's real
+   * spreadsheet, this is a third, separate action that drops that rule: it
+   * corrects whichever of the same columns currently disagree with what the
+   * app knows, cell by cell, so it can also repair a row "Push sales" missed
+   * for any similar reason in the future. Unlike every other sync/push
+   * action on this card, this ONE can overwrite something already in the
+   * sheet, so the card gates it behind a confirmation dialog
+   * (`confirmMessage`) before running it. Omit for a data source with no
+   * such repair action (currently only Orders & Sales has one). */
+  forcePush?: { label: string; description: string; confirmMessage: string; run: () => Promise<SheetSyncResult> };
   /** 2.0.20: "Update sheet" - e.g. api.setupPullsSheet / api.setupOrdersSheet.
    * For a sheet/tab that's already connected (pasted URL/ID, not "Create a
    * new sheet for me" below) but turns out to have no header row yet - marko
@@ -1148,7 +1173,7 @@ function SheetsConnectionCard({
   const [createEmail, setCreateEmail] = useState("");
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<
-    "save" | "test" | "sync" | "sync2" | "push" | "push2" | "setup" | "create" | "disconnect" | null
+    "save" | "test" | "sync" | "sync2" | "push" | "push2" | "forcePush" | "setup" | "create" | "disconnect" | null
   >(null);
   const [testResult, setTestResult] = useState<SheetsConnectionTestResult | null>(null);
   const [syncResult, setSyncResult] = useState<SheetSyncResult | null>(null);
@@ -1161,10 +1186,17 @@ function SheetsConnectionCard({
   // above, now for the push direction.
   const [pushResult, setPushResult] = useState<SheetSyncResult | null>(null);
   const [secondaryPushResult, setSecondaryPushResult] = useState<SheetSyncResult | null>(null);
+  // 2.0.60: same "own slot per action" reasoning as secondaryPushResult
+  // above, now for the "Fix sync" repair action - see `forcePush`'s own
+  // comment.
+  const [forcePushResult, setForcePushResult] = useState<SheetSyncResult | null>(null);
   // 2.0.20: same "own slot per action" reasoning as pushResult above, now for
   // the "Update sheet" button.
   const [setupResult, setSetupResult] = useState<SheetSyncResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  // 2.0.60: gates `forcePush` behind a confirmation dialog, unlike every
+  // other action on this card - see that prop's own comment for why.
+  const [confirmForcePush, setConfirmForcePush] = useState(false);
   // 2.0.14: "Sheet/tab name" used to be free-text only, and marko's own
   // reports (twice) showed that typing the exact tab name by hand - even
   // once told what it should be - was itself the recurring failure, not just
@@ -1381,6 +1413,29 @@ function SheetsConnectionCard({
       setSecondaryPushResult(result);
       toast.success(
         `${secondaryPush.label}: ${result.created} added, ${result.updated} updated, ${result.unchanged} unchanged`,
+      );
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 2.0.60 - see `forcePush` prop's own comment. Unlike doPush/
+  // doSecondaryPush, the button itself never calls this directly - it opens
+  // the confirm dialog below first, and only that dialog's onConfirm calls
+  // this, since this is the one action on this card that can overwrite a
+  // cell that already has something in it.
+  const doForcePush = async () => {
+    if (!forcePush) return;
+    setBusy("forcePush");
+    setForcePushResult(null);
+    try {
+      const result = await forcePush.run();
+      setForcePushResult(result);
+      toast.success(
+        `${forcePush.label}: ${result.created} added, ${result.updated} updated, ${result.unchanged} unchanged`,
       );
       reload();
     } catch (e) {
@@ -1624,6 +1679,17 @@ function SheetsConnectionCard({
                     {busy === "push2" ? "Pushing..." : secondaryPush.label}
                   </Button>
                 )}
+                {forcePush && (
+                  <Button
+                    variant="secondary"
+                    disabled={busy === "forcePush"}
+                    onClick={() => setConfirmForcePush(true)}
+                    title={forcePush.description}
+                  >
+                    {busy === "forcePush" ? <Spinner className="h-4 w-4" /> : null}
+                    {busy === "forcePush" ? "Fixing..." : forcePush.label}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -1713,6 +1779,13 @@ function SheetsConnectionCard({
             </div>
           )}
 
+          {forcePushResult && (
+            <div className="mt-3">
+              <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{forcePush?.label} result</p>
+              <SyncResultView result={forcePushResult} />
+            </div>
+          )}
+
           {setupResult && (
             <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800 mt-3">
               <p className="mb-1 text-xs font-semibold text-slate-500 dark:text-slate-400">Update sheet result</p>
@@ -1775,6 +1848,22 @@ function SheetsConnectionCard({
             </p>
           )}
         </>
+      )}
+
+      {forcePush && (
+        <ConfirmDialog
+          open={confirmForcePush}
+          title={`${forcePush.label}?`}
+          message={<>{forcePush.confirmMessage}</>}
+          confirmLabel={forcePush.label}
+          danger
+          busy={busy === "forcePush"}
+          onCancel={() => setConfirmForcePush(false)}
+          onConfirm={async () => {
+            setConfirmForcePush(false);
+            await doForcePush();
+          }}
+        />
       )}
 
       <ConfirmDialog
