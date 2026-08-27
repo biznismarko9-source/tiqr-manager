@@ -17,6 +17,11 @@ const LIST_CAP: i64 = 5000;
 const BASE_SQL: &str = "
     SELECT s.id, s.code, s.ticket_id, t.code as ticket_code,
       t.section, t.row_label, t.seat,
+      -- 2.0.66: the ticket's own current status/delivery_status, for the new
+      -- 'Completed' indicator's per-line breakdown (Sale Detail) - see
+      -- REDESIGN-2.0.66-REPORT.md. Reuses the SAME `t` join every field
+      -- above already uses - no new JOIN needed.
+      t.status as ticket_status, t.delivery_status as ticket_delivery_status,
       t.event_id, e.name as event_name,
       t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
@@ -69,6 +74,8 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         section: row.get("section")?,
         row_label: row.get("row_label")?,
         seat: row.get("seat")?,
+        ticket_status: row.get("ticket_status")?,
+        ticket_delivery_status: row.get("ticket_delivery_status")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
         order_id: row.get("order_id")?,
@@ -140,6 +147,9 @@ fn map_sale_group(row: &Row) -> rusqlite::Result<SaleGroup> {
         roi,
         payment_status: row.get("payment_status")?,
         refunded_count: row.get("refunded_count")?,
+        sold_count: row.get("sold_count")?,
+        delivered_count: row.get("delivered_count")?,
+        paid_count: row.get("paid_count")?,
         is_demo: row.get("is_demo")?,
         seats: SeatEntry::parse_aggregate(row.get::<_, Option<String>>("seats_raw")?.as_deref()),
     })
@@ -291,6 +301,18 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       COALESCE(SUM(CASE WHEN s.payment_status != 'refunded' THEN (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) END), 0) as cost_cents,
       CASE WHEN COUNT(DISTINCT s.payment_status) = 1 THEN MAX(s.payment_status) END as payment_status,
       SUM(CASE WHEN s.payment_status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
+      -- 2.0.66: the 3 legs of the new 'Completed' indicator (see
+      -- REDESIGN-2.0.66-REPORT.md) - counts, not a single collapsed value
+      -- like payment_status above, so the UI can show '3 of 5' rather than
+      -- just Mixed. sold_count is normally = ticket_count (a `Sale` row only
+      -- exists for a sold ticket) - lower only when a line was refunded
+      -- (ticket reverts to 'available', see refund_sale_impl), same case
+      -- refunded_count above already flags. delivered_count/paid_count are
+      -- deliberately NOT refund-filtered, same convention ticket_count/seats
+      -- already follow.
+      SUM(CASE WHEN t.status = 'sold' THEN 1 ELSE 0 END) as sold_count,
+      SUM(CASE WHEN t.delivery_status = 'Delivered' THEN 1 ELSE 0 END) as delivered_count,
+      SUM(CASE WHEN s.payment_status = 'paid' THEN 1 ELSE 0 END) as paid_count,
       MAX(s.is_demo) as is_demo,
       -- 2.0.38: raw per-ticket seat data for the new Seats column - same
       -- encoding/parsing as orders.rs's own identical addition, see
@@ -2999,6 +3021,67 @@ mod tests {
         None)
         .unwrap();
         assert_eq!(furthest_first[0].sale_date, "2026-06-01", "furthest must be a descending synonym for the unset default");
+    }
+
+    /// 2.0.66: `Sale.ticket_status`/`ticket_delivery_status` power the new
+    /// "Completed" indicator's per-line breakdown on Sale Detail - must
+    /// reflect the ticket's OWN current values, read through the same join
+    /// every other ticket-derived field on `Sale` (ticket_code/section/
+    /// seat/...) already uses.
+    #[test]
+    fn sale_carries_its_tickets_current_status_and_delivery_status() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 1000)).unwrap();
+        conn.execute("UPDATE tickets SET delivery_status='Delivered' WHERE id=?1", [tickets[0]])
+            .unwrap();
+
+        let lines = list_sales_by_group_impl(&conn, sale_id).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].ticket_status, "sold", "create_sale_impl sets the ticket to sold");
+        assert_eq!(lines[0].ticket_delivery_status.as_deref(), Some("Delivered"));
+    }
+
+    /// 2.0.66: sold_count/delivered_count/paid_count (the new "Completed"
+    /// indicator, see REDESIGN-2.0.66-REPORT.md) are per-line counts, not a
+    /// single collapsed value like payment_status - a batch can have some
+    /// lines delivered and others not, or some paid and others still pending.
+    #[test]
+    fn sale_group_sold_delivered_paid_counts_reflect_each_lines_own_state() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 3);
+        let sale_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "pending")).unwrap();
+
+        // Line 0: delivered AND paid.
+        conn.execute("UPDATE tickets SET delivery_status='Delivered' WHERE id=?1", [tickets[0]]).unwrap();
+        conn.execute("UPDATE sales SET payment_status='paid' WHERE id=?1", [sale_ids[0]]).unwrap();
+        // Line 1: delivered, but its own sale is still pending.
+        conn.execute("UPDATE tickets SET delivery_status='Delivered' WHERE id=?1", [tickets[1]]).unwrap();
+        // Line 2: left exactly as created (not delivered, pending).
+
+        let group = &all_groups(&conn)[0];
+        assert_eq!(group.ticket_count, 3);
+        assert_eq!(group.sold_count, 3, "no line was refunded, all 3 tickets are still sold");
+        assert_eq!(group.delivered_count, 2, "lines 0 and 1 are delivered");
+        assert_eq!(group.paid_count, 1, "only line 0's own sale row is paid");
+    }
+
+    /// 2.0.66: a refund reverts that ONE ticket to status='available' (see
+    /// refund_sale_impl) - sold_count must drop for it while the rest of the
+    /// batch's ticket_count is unaffected, mirroring how refunded_count
+    /// already works.
+    #[test]
+    fn sale_group_sold_count_drops_after_a_refund_but_ticket_count_does_not() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        let sale_ids = create_sales_batch_impl(&mut conn, &batch_input(&tickets, 1000, "paid")).unwrap();
+        refund_sale_impl(&mut conn, sale_ids[0], None).unwrap();
+
+        let group = &all_groups(&conn)[0];
+        assert_eq!(group.ticket_count, 2, "the refund doesn't remove the line from the group");
+        assert_eq!(group.refunded_count, 1);
+        assert_eq!(group.sold_count, 1, "the refunded ticket reverted to available");
+        assert_eq!(group.paid_count, 1, "the refunded line's payment_status is now 'refunded', not 'paid'");
     }
 
     /// 1.8.0 section 4: refund status must distinguish partially- from

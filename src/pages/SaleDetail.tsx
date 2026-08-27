@@ -22,6 +22,7 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
+import { completionStatus } from "../lib/completion";
 
 /** Returns a value only when every line shares it, else null ("Mixed" in the UI). */
 function uniform<T>(lines: Sale[], pick: (s: Sale) => T): T | null {
@@ -142,6 +143,18 @@ export default function SaleDetail() {
     // surviving line the way lines[0].code (freshly fetched every load)
     // does. Always using lines[0].code matches the backend in every case.
     const code = lines[0].code;
+    // 2.0.66: the 3 legs of the new "Completed" indicator (see
+    // REDESIGN-2.0.66-REPORT.md) - same definitions as the Sales list's own
+    // SaleGroup.soldCount/deliveredCount/paidCount (sales.rs's
+    // GROUP_BASE_SELECT), just recomputed here from the raw `lines` this
+    // page already has rather than from a second, separately-fetched
+    // SaleGroup. ticketCount deliberately mirrors SaleGroup.ticketCount -
+    // not filtered by refund status, same "a refunded line is still one of
+    // this group's tickets" convention refundedCount above follows.
+    const ticketCount = lines.length;
+    const soldCount = lines.filter((s) => s.ticketStatus === "sold").length;
+    const deliveredCount = lines.filter((s) => s.ticketDeliveryStatus === "Delivered").length;
+    const paidCount = lines.filter((s) => s.paymentStatus === "paid").length;
     return {
       code,
       currency,
@@ -151,6 +164,10 @@ export default function SaleDetail() {
       platformName,
       paymentStatus,
       refundedCount,
+      ticketCount,
+      soldCount,
+      deliveredCount,
+      paidCount,
       paidCents,
       outstandingCents,
       paidCurrency,
@@ -199,6 +216,21 @@ export default function SaleDetail() {
             ) : (
               <Badge tone="mixed">Mixed</Badge>
             )}
+            {/* 2.0.66: the new "Completed" indicator (see
+                REDESIGN-2.0.66-REPORT.md) - same checks as the Sales list's
+                own new column, right next to the existing payment Badge. */}
+            {(() => {
+              const c = completionStatus([
+                { label: "Sold", done: header.soldCount === header.ticketCount },
+                { label: "Delivered", done: header.deliveredCount === header.ticketCount },
+                { label: "Paid", done: header.paidCount === header.ticketCount },
+              ]);
+              return (
+                <Badge tone={c.tone} title={c.title}>
+                  {c.label}
+                </Badge>
+              );
+            })()}
           </div>
           {/* 1.9.1: the event name used to be a <Link> to Event Detail -
               removed per marko's request to stop every "this reference jumps

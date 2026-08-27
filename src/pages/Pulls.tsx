@@ -41,8 +41,18 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconTrash, IconUsers } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
+import { completionStatus } from "../lib/completion";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
+
+// 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md),
+// unified in style with Orders/Sales - but Pulls (Given) only has ONE
+// underlying condition (transferDone), unlike those pages' 3. Pulls
+// (Received) has no completion-like field at all yet, so it doesn't get this
+// column - see the report's own note asking marko what that should mean.
+function pullCompletionChecks(p: Pull) {
+  return [{ label: "Transferred", done: p.transferDone }];
+}
 
 // Same safety-cap convention as Orders.tsx/Tickets.tsx/Sales.tsx - mirrors
 // the backend's own LIST_CAP (commands/pulls.rs, commands/pulls_received.rs)
@@ -475,20 +485,25 @@ function GivenPulls() {
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[10.732%]" />
                 <col className="w-[9.146%]" />
-                <col className="w-[24.634%]" />
+                <col className="w-[15.634%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[9.634%]" />
                 <col className="w-[17.317%]" />
                 <col className="w-[4.39%]" />
                 <col className="w-[10%]" />
                 <col className="w-[5.488%]" />
+                {/* 2.0.66: new "Completed" column - width is my own estimate
+                    (not measured against real content like the rest of this
+                    colgroup), taken entirely from Event's share above. Flag
+                    to marko if this looks visually off. */}
+                <col className="w-[9%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[8.375%]" />
                 <col className="w-[10.22%]" />
-                <col className="w-[18.027%]" />
+                <col className="w-[11.527%]" />
                 <col className="w-[6.884%]" />
                 <col className="w-[6.175%]" />
                 <col className="w-[14.123%]" />
@@ -497,6 +512,8 @@ function GivenPulls() {
                 <col className="w-[7.807%]" />
                 <col className="w-[8.943%]" />
                 <col className="w-[3.974%]" />
+                {/* 2.0.66: see the narrow colgroup's identical comment above. */}
+                <col className="w-[6.5%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -523,6 +540,7 @@ function GivenPulls() {
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Warning</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Done</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -612,6 +630,16 @@ function GivenPulls() {
                         onChange={() => toggleTransferDone(p)}
                         aria-label={`Mark pull ${p.code} as ${p.transferDone ? "not transferred" : "transferred"}`}
                       />
+                    </td>
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {(() => {
+                        const c = completionStatus(pullCompletionChecks(p));
+                        return (
+                          <Badge tone={c.tone} title={c.title}>
+                            {c.label}
+                          </Badge>
+                        );
+                      })()}
                     </td>
                   </tr>
                 );

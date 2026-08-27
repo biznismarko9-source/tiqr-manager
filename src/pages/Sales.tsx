@@ -37,6 +37,23 @@ import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, Icon
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
+import { completionStatus } from "../lib/completion";
+
+// 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md) -
+// deliberately separate from SALES_TABS above, which keeps its existing,
+// payment-only meaning (2.0.59) unchanged. "Sold" is almost always true here
+// (a SaleGroup only exists for sold tickets) - it only fails for a line that
+// was refunded, which reverts that one ticket back to "available" (see
+// refund_sale_impl); "Paid"/"Delivered" use the group's own per-line counts
+// rather than the collapsed paymentStatus field, so a partially-resolved
+// batch reads as "2 pending" instead of just "Mixed".
+function saleGroupCompletionChecks(g: SaleGroup) {
+  return [
+    { label: "Sold", done: g.soldCount === g.ticketCount },
+    { label: "Delivered", done: g.deliveredCount === g.ticketCount },
+    { label: "Paid", done: g.paidCount === g.ticketCount },
+  ];
+}
 
 // 2.0.59: "Pending" vs "Completed" tabs (marko's request - see
 // REDESIGN-2.0.59-REPORT.md). A group's paymentStatus is only Some(...) when
@@ -744,7 +761,7 @@ export default function Sales() {
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[10%]" />
-                <col className="w-[21.098%]" />
+                <col className="w-[12.098%]" />
                 <col className="w-[15.366%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[4.39%]" />
@@ -752,12 +769,17 @@ export default function Sales() {
                 <col className="w-[10%]" />
                 <col className="w-[10.488%]" />
                 <col className="w-[10%]" />
+                {/* 2.0.66: new "Completed" column - width is my own estimate
+                    (not measured against real content like the rest of this
+                    colgroup), taken entirely from Event's share above. Flag
+                    to marko if this looks visually off. */}
+                <col className="w-[9%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[7.779%]" />
-                <col className="w-[15.629%]" />
+                <col className="w-[9.129%]" />
                 <col className="w-[11.74%]" />
                 <col className="w-[6.86%]" />
                 <col className="w-[9.194%]" />
@@ -768,6 +790,8 @@ export default function Sales() {
                 <col className="w-[8.133%]" />
                 <col className="w-[7.284%]" />
                 <col className="w-[6.365%]" />
+                {/* 2.0.66: see the narrow colgroup's identical comment above. */}
+                <col className="w-[6.5%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -800,6 +824,7 @@ export default function Sales() {
                   </th>
                 )}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -903,6 +928,16 @@ export default function Sales() {
                         {g.refundedCount}/{g.ticketCount} refunded
                       </p>
                     )}
+                  </td>
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                    {(() => {
+                      const c = completionStatus(saleGroupCompletionChecks(g));
+                      return (
+                        <Badge tone={c.tone} title={c.title}>
+                          {c.label}
+                        </Badge>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}

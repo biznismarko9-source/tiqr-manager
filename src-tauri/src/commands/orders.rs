@@ -27,6 +27,15 @@ const BASE_SQL: &str = "
       COUNT(CASE WHEN t.status='available' THEN 1 END) as available_count,
       COUNT(CASE WHEN t.status='listed' THEN 1 END) as listed_count,
       COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled_count,
+      -- 2.0.66: the other two legs of the new 'Completed' indicator (see
+      -- REDESIGN-2.0.66-REPORT.md) - both scoped to SOLD tickets only, same
+      -- as this order's true 'how many are actually resolved' question. The
+      -- `sa` join right below mirrors fetch_sales_summary's own identical
+      -- join/comment further down this file: a ticket has at most one
+      -- CURRENT (non-refunded) sale row, so this never fans out the ticket
+      -- count above.
+      COUNT(CASE WHEN t.status='sold' AND t.delivery_status='Delivered' THEN 1 END) as delivered_count,
+      COUNT(CASE WHEN t.status='sold' AND sa.payment_status='paid' THEN 1 END) as paid_count,
       -- 2.0.38: raw per-ticket seat data for the new Seats column - see
       -- SeatEntry::parse_aggregate's own doc comment (models.rs) for exactly
       -- how this string is encoded/decoded and why (not a plain DISTINCT
@@ -42,6 +51,7 @@ const BASE_SQL: &str = "
     LEFT JOIN suppliers sup ON sup.id = o.supplier_id
     LEFT JOIN platforms p ON p.id = o.platform_id
     LEFT JOIN tickets t ON t.order_id = o.id
+    LEFT JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status != 'refunded'
 ";
 
 fn map_order(row: &Row) -> rusqlite::Result<Order> {
@@ -73,6 +83,8 @@ fn map_order(row: &Row) -> rusqlite::Result<Order> {
         available_count: row.get("available_count")?,
         listed_count: row.get("listed_count")?,
         cancelled_count: row.get("cancelled_count")?,
+        delivered_count: row.get("delivered_count")?,
+        paid_count: row.get("paid_count")?,
         seats: SeatEntry::parse_aggregate(row.get::<_, Option<String>>("seats_raw")?.as_deref()),
     })
 }
@@ -1701,6 +1713,17 @@ mod tests {
         .unwrap();
     }
 
+    /// 2.0.66: sets a ticket's free-text `delivery_status` directly - same
+    /// "raw UPDATE, bypass the command layer" convention as `set_status`
+    /// right above.
+    fn set_delivery_status(conn: &Connection, ticket_id: i64, delivery_status: &str) {
+        conn.execute(
+            "UPDATE tickets SET delivery_status=?1 WHERE id=?2",
+            params![delivery_status, ticket_id],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn sold_available_listed_cancelled_counts_always_sum_to_quantity() {
         let conn = test_conn();
@@ -1726,6 +1749,75 @@ mod tests {
             order.quantity,
             "every ticket must be in exactly one bucket - none lost, none double-counted"
         );
+    }
+
+    /// 2.0.66: `delivered_count`/`paid_count` (the other two legs of the new
+    /// "Completed" indicator, see REDESIGN-2.0.66-REPORT.md) must only ever
+    /// count SOLD tickets - an available ticket that happens to already have
+    /// `delivery_status='Delivered'` set (e.g. leftover pre-resale stock)
+    /// must not count, and a sold-but-still-pending sale must not count
+    /// toward `paid_count`.
+    #[test]
+    fn delivered_and_paid_counts_only_count_sold_tickets() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 4), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        // t0: sold, delivered, paid - counts toward both.
+        set_status(&conn, tickets[0], "sold");
+        set_delivery_status(&conn, tickets[0], "Delivered");
+        insert_sale(&conn, "SAL-100001", tickets[0], 2000, "paid");
+        // t1: sold, NOT delivered, paid - counts toward paid_count only.
+        set_status(&conn, tickets[1], "sold");
+        insert_sale(&conn, "SAL-100002", tickets[1], 2000, "paid");
+        // t2: sold, delivered, but sale still pending - counts toward
+        // delivered_count only.
+        set_status(&conn, tickets[2], "sold");
+        set_delivery_status(&conn, tickets[2], "Delivered");
+        insert_sale(&conn, "SAL-100003", tickets[2], 2000, "pending");
+        // t3: never sold (still available) - even with delivery_status set,
+        // must NOT count toward delivered_count (nothing to deliver yet).
+        set_delivery_status(&conn, tickets[3], "Delivered");
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(order.sold_count, 3);
+        assert_eq!(order.available_count, 1);
+        assert_eq!(order.delivered_count, 2, "only t0 and t2 are both sold and delivered");
+        assert_eq!(order.paid_count, 2, "only t0 and t1 are both sold and paid");
+    }
+
+    /// 2.0.66: a refund reverts the ticket to `status='available'` (mirrors
+    /// `refund_sale_impl` in commands/sales.rs) - once that happens the
+    /// ticket must drop out of `sold_count` (and therefore out of
+    /// `delivered_count`/`paid_count` too), never double-penalized as
+    /// "sold but unpaid".
+    #[test]
+    fn refunded_ticket_drops_out_of_sold_delivered_and_paid_counts() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+        let tickets = ticket_ids(&conn, order_id);
+
+        // t0: sold and paid, never refunded.
+        set_status(&conn, tickets[0], "sold");
+        set_delivery_status(&conn, tickets[0], "Delivered");
+        insert_sale(&conn, "SAL-200001", tickets[0], 2000, "paid");
+        // t1: was sold and paid, then refunded - mirror refund_sale_impl's
+        // own two effects (payment_status='refunded' AND ticket reverts to
+        // 'available').
+        set_status(&conn, tickets[1], "sold");
+        set_delivery_status(&conn, tickets[1], "Delivered");
+        insert_sale(&conn, "SAL-200002", tickets[1], 2000, "paid");
+        conn.execute("UPDATE sales SET payment_status='refunded' WHERE ticket_id=?1", [tickets[1]])
+            .unwrap();
+        set_status(&conn, tickets[1], "available");
+
+        let order = fetch_one(&conn, order_id).unwrap();
+        assert_eq!(order.sold_count, 1);
+        assert_eq!(order.available_count, 1);
+        assert_eq!(order.delivered_count, 1, "refunded ticket must not count even though delivery_status is still 'Delivered'");
+        assert_eq!(order.paid_count, 1, "refunded ticket must not count - its only sale row is now payment_status='refunded'");
     }
 
     #[test]

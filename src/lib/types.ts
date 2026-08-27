@@ -140,6 +140,13 @@ export interface OrderRecord {
   availableCount: number;
   listedCount: number;
   cancelledCount: number;
+  /** 2.0.66: how many of this order's SOLD tickets (out of soldCount) have
+   * deliveryStatus "Delivered" - see the new "Completed" indicator
+   * (completionStatus in lib/completion.ts). */
+  deliveredCount: number;
+  /** 2.0.66: how many of this order's SOLD tickets (out of soldCount) have a
+   * current (non-refunded) sale with paymentStatus "paid". */
+  paidCount: number;
   /** 2.0.38: every ticket in this order's own seat location (not filtered by
    * ticket status - includes cancelled tickets' seats too, same "true
    * complete count" convention soldCount/availableCount/etc. above follow). */
@@ -268,6 +275,13 @@ export interface Sale {
   section: string | null;
   rowLabel: string | null;
   seat: string | null;
+  /** 2.0.66: the ticket's own current status - almost always "sold" (a Sale
+   * only exists for a sold ticket), EXCEPT after a refund, which reverts the
+   * ticket to "available" while this historical Sale row stays as-is. Powers
+   * the new "Completed" indicator's per-line breakdown on Sale Detail. */
+  ticketStatus: TicketStatus;
+  /** 2.0.66: the ticket's own deliveryStatus (see Ticket.deliveryStatus). */
+  ticketDeliveryStatus: string | null;
   eventId: number;
   eventName: string;
   /** The ticket's own order - every ticket belongs to exactly one order, so
@@ -341,6 +355,19 @@ export interface SaleGroup {
    * several tickets was refunded later) - show "Mixed", not a single badge. */
   paymentStatus: SalePaymentStatus | null;
   refundedCount: number;
+  /** 2.0.66: how many of this group's ticketCount tickets currently have
+   * status "sold". Normally equals ticketCount - lower only when a line was
+   * refunded (its ticket reverts to "available"), the same case
+   * refundedCount above already flags. Feeds the new "Completed" indicator
+   * (completionStatus in lib/completion.ts). */
+  soldCount: number;
+  /** 2.0.66: how many of this group's ticketCount tickets have
+   * deliveryStatus "Delivered". */
+  deliveredCount: number;
+  /** 2.0.66: how many of this group's OWN sale lines have paymentStatus
+   * "paid" (each line's own status - paymentStatus above collapses to null
+   * the moment lines disagree, which is too coarse for "3 of 5 paid"). */
+  paidCount: number;
   isDemo: boolean;
   /** 2.0.38: the seat location of every ticket THIS SALE GROUP actually sold
    * (not filtered by refund status - a refunded line is still one of the

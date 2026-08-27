@@ -28,6 +28,24 @@ import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { OrderRecord } from "../lib/types";
 import { inventoryStatus } from "./Tickets";
+import { completionStatus } from "../lib/completion";
+
+// 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md) -
+// deliberately separate from inventoryStatus()/ORDER_TABS above, which keep
+// their existing, ticket-count-only meaning (2.0.60) unchanged. "Sold" here
+// reuses the exact same soldout definition inventoryStatus() already uses
+// (nothing left in available/listed - a fully cancelled order counts as
+// nothing outstanding, same as that tab). Delivered/Paid are scoped to SOLD
+// tickets only (see Order.deliveredCount/paidCount's own doc comments,
+// models.rs) - an order with 0 sold tickets fails the Sold check already, so
+// the vacuous 0-of-0 comparisons for the other two never hide anything.
+export function orderCompletionChecks(o: OrderRecord) {
+  return [
+    { label: "Sold", done: o.availableCount === 0 && o.listedCount === 0 },
+    { label: "Delivered", done: o.deliveredCount === o.soldCount },
+    { label: "Paid", done: o.paidCount === o.soldCount },
+  ];
+}
 
 // 2.0.60 correction (marko, after trying 2.0.59): "Active" vs "Paid" here
 // was originally bucketed by an order's own Payment status field (whether
@@ -462,18 +480,23 @@ export default function Orders() {
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[10.488%]" />
-                <col className="w-[48.659%]" />
+                <col className="w-[39.659%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[4.39%]" />
                 <col className="w-[8.293%]" />
                 <col className="w-[11.22%]" />
                 <col className="w-[8.293%]" />
+                {/* 2.0.66: new "Completed" column - width is my own estimate
+                    (not measured against real content like the rest of this
+                    colgroup), taken entirely from Event's share above. Flag
+                    to marko if this looks visually off. */}
+                <col className="w-[9%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[8.133%]" />
-                <col className="w-[23.338%]" />
+                <col className="w-[16.838%]" />
                 <col className="w-[6.86%]" />
                 <col className="w-[9.194%]" />
                 <col className="w-[16.124%]" />
@@ -482,6 +505,8 @@ export default function Orders() {
                 <col className="w-[6.506%]" />
                 <col className="w-[8.699%]" />
                 <col className="w-[5.728%]" />
+                {/* 2.0.66: see the narrow colgroup's identical comment above. */}
+                <col className="w-[6.5%]" />
               </colgroup>
             )}
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -507,6 +532,7 @@ export default function Orders() {
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total cost</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payment</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -591,6 +617,16 @@ export default function Orders() {
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(o.totalCostCents, o.currency)}</td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={o.paymentStatus}>{o.paymentStatus}</Badge>
+                  </td>
+                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                    {(() => {
+                      const c = completionStatus(orderCompletionChecks(o));
+                      return (
+                        <Badge tone={c.tone} title={c.title}>
+                          {c.label}
+                        </Badge>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}

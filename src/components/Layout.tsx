@@ -37,7 +37,6 @@ const NAV = [
   { to: "/sales", label: "Sales", icon: IconReceipt },
   { to: "/inventory", label: "Inventory", icon: IconBoxes },
   { to: "/pulls", label: "Pulls", icon: IconUsers },
-  { to: "/settings", label: "Settings", icon: IconSettings },
 ];
 
 export default function Layout() {
@@ -111,11 +110,11 @@ export default function Layout() {
           {profileOpen && (
             <div className="absolute inset-x-2 bottom-full mb-1 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
               <Link
-                to="/settings/account"
+                to="/settings"
                 onClick={() => setProfileOpen(false)}
                 className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                <IconSettings className="h-3.5 w-3.5" /> Account settings
+                <IconSettings className="h-3.5 w-3.5" /> Settings
               </Link>
               <button
                 type="button"

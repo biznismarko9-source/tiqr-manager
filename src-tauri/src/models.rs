@@ -336,6 +336,20 @@ pub struct Order {
     pub available_count: i64,
     pub listed_count: i64,
     pub cancelled_count: i64,
+    /// 2.0.66: how many of this order's SOLD tickets (out of `sold_count`)
+    /// have `Ticket.delivery_status = 'Delivered'` - see the new "Completed"
+    /// indicator (Orders/Sales/Pulls, REDESIGN-2.0.66-REPORT.md). Scoped to
+    /// sold tickets only, same spirit as `sold_count` itself excluding
+    /// available/listed stock - an available ticket has nothing to deliver
+    /// yet, so it shouldn't count against this.
+    pub delivered_count: i64,
+    /// 2.0.66: how many of this order's SOLD tickets (out of `sold_count`)
+    /// have a CURRENT (non-refunded) sale whose `payment_status = 'paid'` -
+    /// see `delivered_count` above for why this is scoped to sold tickets
+    /// only. A refunded ticket reverts to `status='available'` (see
+    /// `refund_sale_impl`), so it's already excluded from `sold_count` and
+    /// therefore from this count too - it isn't double-penalized here.
+    pub paid_count: i64,
     /// 2.0.38: every ticket in this order's own seat location (deduplicated,
     /// order not significant - the frontend sorts/groups for display). NOT
     /// filtered by ticket status - matches `sold_count`/`available_count`/etc.
@@ -570,6 +584,16 @@ pub struct Sale {
     pub section: Option<String>,
     pub row_label: Option<String>,
     pub seat: Option<String>,
+    /// 2.0.66: the ticket's OWN current status - almost always "sold" (a
+    /// `Sale` row only exists for a ticket that was sold), EXCEPT after a
+    /// refund, which reverts the ticket to "available" (see
+    /// `refund_sale_impl`) while this historical `Sale` row stays as-is.
+    /// Powers the new "Completed" indicator's per-line breakdown on Sale
+    /// Detail - see REDESIGN-2.0.66-REPORT.md.
+    pub ticket_status: String,
+    /// 2.0.66: the ticket's own `delivery_status` - see
+    /// `Ticket::delivery_status`'s doc comment for why this is free-text.
+    pub ticket_delivery_status: Option<String>,
     pub event_id: i64,
     pub event_name: String,
     /// 1.8.0: the ticket's own order, so Sale Detail can link straight to
@@ -661,6 +685,23 @@ pub struct SaleGroup {
     /// single, misleading badge.
     pub payment_status: Option<String>,
     pub refunded_count: i64,
+    /// 2.0.66: how many of this group's `ticket_count` tickets currently have
+    /// `Ticket.status = 'sold'`. Normally equals `ticket_count` (a `Sale` row
+    /// only exists for a sold ticket) - lower only when a line was refunded
+    /// (its ticket reverts to "available", see `refund_sale_impl`), which is
+    /// exactly the case `refunded_count` above already flags. Feeds the new
+    /// "Completed" indicator, see REDESIGN-2.0.66-REPORT.md.
+    pub sold_count: i64,
+    /// 2.0.66: how many of this group's `ticket_count` tickets have
+    /// `Ticket.delivery_status = 'Delivered'`. Not refund-filtered, same
+    /// "not filtered by refund status" convention `ticket_count`/`seats`
+    /// already follow above.
+    pub delivered_count: i64,
+    /// 2.0.66: how many of this group's OWN sale lines have
+    /// `payment_status = 'paid'` (each line's own status, not derived from
+    /// `payment_status` above - that field collapses to `None` the moment
+    /// lines disagree, which is too coarse for "3 of 5 paid").
+    pub paid_count: i64,
     pub is_demo: bool,
     /// 2.0.38: the seat location of every ticket THIS SALE GROUP actually
     /// sold (deduplicated). Unlike `Order.seats` above, this is naturally

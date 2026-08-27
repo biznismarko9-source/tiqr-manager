@@ -31,6 +31,8 @@ import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../com
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { TicketEditModal } from "./Tickets";
+import { orderCompletionChecks } from "./Orders";
+import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
 
 export default function OrderDetail() {
@@ -161,6 +163,19 @@ export default function OrderDetail() {
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
             <Badge tone={order.paymentStatus}>{order.paymentStatus}</Badge>
+            {/* 2.0.66: the new "Completed" indicator (see
+                REDESIGN-2.0.66-REPORT.md) - same checks as the Orders list's
+                own new column, right next to the existing Payment badge so
+                "check exactly which of the 3 is missing" (hover) is one
+                click closer than going back to the list. */}
+            {(() => {
+              const c = completionStatus(orderCompletionChecks(order));
+              return (
+                <Badge tone={c.tone} title={c.title}>
+                  {c.label}
+                </Badge>
+              );
+            })()}
           </div>
           {/* 1.9.1: the event name used to be a <Link> to Event Detail -
               removed per marko's request to stop every "this reference jumps

@@ -232,10 +232,11 @@ const STATUS_TONES: Record<string, string> = {
   mixed: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30",
 };
 
-export function Badge({ tone, children }: { tone: string; children: ReactNode }) {
+export function Badge({ tone, title, children }: { tone: string; title?: string; children: ReactNode }) {
   const cls = STATUS_TONES[tone] ?? "bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600";
   return (
     <span
+      title={title}
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset ${cls}`}
     >
       {children}
