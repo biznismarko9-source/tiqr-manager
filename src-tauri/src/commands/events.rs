@@ -1,7 +1,9 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
-use crate::models::{BulkDeleteResult, BulkDeleteSkip, Event, EventInput, EventWithStats};
+use crate::models::{
+    BulkDeleteResult, BulkDeleteSkip, CategoryDetectionResult, Event, EventInput, EventWithStats,
+};
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
@@ -305,6 +307,62 @@ pub fn bulk_delete_events(state: State<AppState>, ids: Vec<i64>) -> AppResult<Bu
     bulk_delete_events_impl(&mut conn, &ids)
 }
 
+/// 2.0.63 "Detect categories" - the manual, retroactive sibling of the
+/// automatic detection `commands::orders_sheet_sync::resolve_or_create_
+/// event` already runs on every brand-new event a sheet sync creates (see
+/// ai_categorize.rs's own module doc comment for the full free-rules-then-AI
+/// design marko confirmed). Only ever looks at events with `category_id IS
+/// NULL` and a non-blank name - an event that already has a category,
+/// however it got one (auto-detected, synced from the sheet, or picked by
+/// hand), is never touched. That makes running this again, or running it
+/// after more events have synced in, always safe - exactly the same "safe
+/// to click repeatedly" property "Fix sync" (2.0.60) already holds itself
+/// to.
+fn detect_event_categories_impl(conn: &Connection) -> AppResult<CategoryDetectionResult> {
+    let ai_configured = crate::ai_categorize::embedded_anthropic_api_key().is_some();
+    let rows: Vec<(i64, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM events WHERE category_id IS NULL AND trim(name) <> ''")?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+
+    let mut categorized_by_rule = 0i64;
+    let mut categorized_by_ai = 0i64;
+    let mut left_uncategorized = 0i64;
+    for (id, name) in &rows {
+        match crate::ai_categorize::detect_category_for_event_name(conn, name) {
+            Some(m) => {
+                conn.execute(
+                    "UPDATE events SET category_id = ?1, category = ?2 WHERE id = ?3",
+                    params![m.id, m.name, id],
+                )?;
+                if m.via_ai {
+                    categorized_by_ai += 1;
+                } else {
+                    categorized_by_rule += 1;
+                }
+            }
+            None => left_uncategorized += 1,
+        }
+    }
+    Ok(CategoryDetectionResult {
+        checked: rows.len() as i64,
+        categorized_by_rule,
+        categorized_by_ai,
+        left_uncategorized,
+        ai_configured,
+    })
+}
+
+#[tauri::command]
+pub fn detect_event_categories(state: State<AppState>) -> AppResult<CategoryDetectionResult> {
+    let conn = state.db.lock().unwrap();
+    detect_event_categories_impl(&conn)
+}
+
 #[cfg(test)]
 mod tests {
     //! events.rs has never had a test module (see PROTECTED-AREAS-NOTES.md -
@@ -371,5 +429,74 @@ mod tests {
         let mut conn = test_conn();
         let err = bulk_delete_events_impl(&mut conn, &[]).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // -- detect_event_categories_impl (2.0.63) ------------------------------
+    //
+    // No ANTHROPIC_API_KEY in this test environment (see ai_categorize::
+    // embedded_anthropic_api_key's own test), so `ai_configured` is always
+    // false here and only the free keyword rules can actually resolve
+    // anything - these tests are about the retroactive scan/update logic
+    // itself, not the rule/AI decision (covered by ai_categorize.rs's tests).
+
+    #[test]
+    fn only_scans_events_that_currently_have_no_category() {
+        let conn = test_conn();
+        let already_categorized = seed_event_named(&conn, "Monaco Grand Prix");
+        conn.execute(
+            "UPDATE events SET category_id = 1, category = 'Concert' WHERE id = ?1",
+            [already_categorized],
+        )
+        .unwrap();
+        let uncategorized = seed_event_named(&conn, "Reading Festival");
+
+        let result = detect_event_categories_impl(&conn).unwrap();
+
+        assert_eq!(result.checked, 1, "the already-categorized event must not even be looked at");
+        assert_eq!(result.categorized_by_rule, 1);
+        let category: Option<String> =
+            conn.query_row("SELECT category FROM events WHERE id = ?1", [uncategorized], |r| r.get(0)).unwrap();
+        assert_eq!(category.as_deref(), Some("Festival"));
+        // and the already-categorized one must be completely untouched:
+        let untouched: String = conn
+            .query_row("SELECT category FROM events WHERE id = ?1", [already_categorized], |r| r.get(0))
+            .unwrap();
+        assert_eq!(untouched, "Concert");
+    }
+
+    #[test]
+    fn counts_rule_matches_and_leftovers_separately_and_reports_ai_not_configured() {
+        let conn = test_conn();
+        seed_event_named(&conn, "Monaco Grand Prix"); // free-rule match
+        seed_event_named(&conn, "Celine Dion"); // no signal, no AI key here
+
+        let result = detect_event_categories_impl(&conn).unwrap();
+
+        assert_eq!(result.checked, 2);
+        assert_eq!(result.categorized_by_rule, 1);
+        assert_eq!(result.categorized_by_ai, 0);
+        assert_eq!(result.left_uncategorized, 1);
+        assert!(!result.ai_configured, "this test build never has ANTHROPIC_API_KEY set");
+    }
+
+    #[test]
+    fn running_it_twice_in_a_row_is_a_no_op_the_second_time() {
+        let conn = test_conn();
+        seed_event_named(&conn, "Monaco Grand Prix");
+
+        let first = detect_event_categories_impl(&conn).unwrap();
+        let second = detect_event_categories_impl(&conn).unwrap();
+
+        assert_eq!(first.categorized_by_rule, 1);
+        assert_eq!(second.checked, 0, "already-categorized now, so the second run finds nothing left to scan");
+        assert_eq!(second.categorized_by_rule, 0);
+    }
+
+    #[test]
+    fn a_blank_named_event_is_never_scanned() {
+        let conn = test_conn();
+        seed_event_named(&conn, "");
+        let result = detect_event_categories_impl(&conn).unwrap();
+        assert_eq!(result.checked, 0);
     }
 }

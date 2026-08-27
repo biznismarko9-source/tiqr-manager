@@ -6,6 +6,7 @@ import type {
   BulkSalePaymentStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
+  CategoryDetectionResult,
   CreatedSheetResult,
   CsvImportResult,
   CsvPreview,
@@ -55,6 +56,11 @@ export const api = {
   deleteEvent: (id: number) => invoke<void>("delete_event", { id }),
   /** 2.0.28: bulk delete for the Events list's "Delete" selection mode - see BulkDeleteResult's doc comment (types.ts). */
   bulkDeleteEvents: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_events", { ids }),
+  /** 2.0.63: retroactively tries to categorize every event that currently has no category, using
+   * the same free-keyword-rules-then-AI logic that already runs automatically on brand-new events
+   * created by a sheet sync (see ai_categorize.rs). Only ever touches events with no category yet -
+   * see CategoryDetectionResult's doc comment (types.ts) - so this is always safe to run again. */
+  detectEventCategories: () => invoke<CategoryDetectionResult>("detect_event_categories"),
 
   // Orders
   listOrders: (params: {

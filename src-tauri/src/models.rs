@@ -132,6 +132,36 @@ pub struct EventWithStats {
     pub stats: FinanceSummary,
 }
 
+/// Result of one "Detect categories" run (commands::events::
+/// detect_event_categories, 2.0.63) - the retroactive, one-click sibling of
+/// the automatic detection `commands::orders_sheet_sync::resolve_or_create_
+/// event` already runs on every brand-new event a sheet sync creates. Only
+/// ever touches events that currently have `category_id IS NULL`, so
+/// running this again is always safe - see ai_categorize.rs's module doc
+/// comment for the full free-rules-then-AI design this reports on.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDetectionResult {
+    /// How many uncategorized events this run looked at.
+    pub checked: i64,
+    /// Of those, how many got a category from a free keyword rule (no AI
+    /// involved).
+    pub categorized_by_rule: i64,
+    /// Of those, how many got a category only because the AI fallback
+    /// actually recognized the team/artist/performer - always 0 when
+    /// `ai_configured` is false.
+    pub categorized_by_ai: i64,
+    /// Left exactly as they were (still uncategorized) - either nothing
+    /// recognized them, or `ai_configured` is false so only the free rules
+    /// ever ran.
+    pub left_uncategorized: i64,
+    /// Whether this build has an Anthropic key embedded at all (see
+    /// ai_categorize::embedded_anthropic_api_key) - the frontend uses this
+    /// to explain a non-zero `left_uncategorized` accurately, rather than
+    /// implying the AI tried and failed when it was never consulted.
+    pub ai_configured: bool,
+}
+
 /// 2.0.38: one ticket's seat location, as shown on the Orders/Tickets/Sales
 /// list screens' new "Seats" column (`Order.seats`/`SaleGroup.seats` below).
 /// Deliberately the same three nullable fields `Sale`/`Ticket` already carry

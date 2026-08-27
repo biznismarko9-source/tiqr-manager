@@ -75,6 +75,21 @@ name: Build Windows Installer
 # src-tauri/build.rs and google_oauth.rs's embedded_firebase_oauth_client().
 # Independent of every secret above - any of them can be present without
 # the others.
+#
+# Automatic event category detection's AI fallback (2.0.63+, see
+# ai_categorize.rs) needs ONE MORE repository secret, added the same way,
+# also used by BOTH build paths above - this one is OPTIONAL:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     Name:  ANTHROPIC_API_KEY
+#     Value: an API key from console.anthropic.com (Anthropic's own site, not
+#            Google's) - plain text, just the key itself
+# Without this secret, both build paths still succeed and category detection
+# still runs - it just only ever resolves the handful of categories its free
+# keyword rules can recognize for free (Motorsport/Festival/Theatre-Musical/
+# Comedy) and leaves everything else (all Sports matchups, any bare
+# team/artist name like "Celine Dion") uncategorized exactly like every event
+# is today, see src-tauri/build.rs and ai_categorize.rs's embedded_anthropic_
+# api_key(). Independent of every secret above.
 
 on:
   workflow_dispatch: {}
@@ -119,6 +134,10 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_ID }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET }}
+          # 2.0.63: optional - automatic event category detection's AI
+          # fallback (ai_categorize.rs) simply stays unconfigured (free
+          # keyword rules still work) until this secret exists.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           tauriScript: npx tauri
 
@@ -197,6 +216,10 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_ID }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET }}
+          # 2.0.63: optional - automatic event category detection's AI
+          # fallback (ai_categorize.rs) simply stays unconfigured (free
+          # keyword rules still work) until this secret exists.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TIQR Manager ${{ github.ref_name }}"

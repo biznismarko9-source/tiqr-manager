@@ -1,3 +1,4 @@
+mod ai_categorize;
 mod codes;
 mod commands;
 mod db;
@@ -59,6 +60,7 @@ pub fn run() {
             commands::events::update_event,
             commands::events::delete_event,
             commands::events::bulk_delete_events,
+            commands::events::detect_event_categories,
             commands::orders::list_orders,
             commands::orders::get_order,
             commands::orders::get_order_sales_summary,

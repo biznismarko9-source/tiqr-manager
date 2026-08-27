@@ -22,7 +22,7 @@ import {
 } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconCalendarDays, IconPlus, IconSearch, IconTrash } from "../components/icons";
+import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
@@ -88,6 +88,14 @@ export default function Events() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  // 2.0.63: "Detect categories" - retroactively runs the same free-rules-
+  // then-AI detection a sheet sync already runs automatically on brand-new
+  // events (see ai_categorize.rs), but against every event already sitting
+  // here with no category. Only ever touches events with no category yet,
+  // so re-running this is always safe - same "safe to click repeatedly"
+  // property Settings.tsx's "Fix sync" (2.0.60) already holds itself to.
+  const [confirmDetectCategories, setConfirmDetectCategories] = useState(false);
+  const [detectingCategories, setDetectingCategories] = useState(false);
 
   useEffect(() => {
     api.listEventCategories().then(setCategories).catch(() => {});
@@ -164,6 +172,35 @@ export default function Events() {
     }
   };
 
+  const runDetectCategories = async () => {
+    setDetectingCategories(true);
+    try {
+      const result = await api.detectEventCategories();
+      const resolved = result.categorizedByRule + result.categorizedByAi;
+      if (result.checked === 0) {
+        toast.success("Every event already has a category - nothing to do.");
+      } else if (resolved === 0) {
+        toast.error(
+          result.aiConfigured
+            ? `Checked ${result.checked}, but none could be confidently identified.`
+            : `Checked ${result.checked}, but none matched a free keyword rule (AI lookup isn't set up in this build).`,
+        );
+      } else {
+        const aiNote = result.categorizedByAi > 0 ? ` (${result.categorizedByAi} via AI)` : "";
+        toast.success(
+          `Categorized ${resolved} of ${result.checked} event${result.checked === 1 ? "" : "s"}${aiNote}.` +
+            (result.leftUncategorized > 0 ? ` ${result.leftUncategorized} still need a category by hand.` : ""),
+        );
+      }
+      setConfirmDetectCategories(false);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setDetectingCategories(false);
+    }
+  };
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -196,6 +233,11 @@ export default function Events() {
         subtitle="Every event you buy or sell tickets for."
         actions={
           <div className="flex items-center gap-2">
+            {!selectionMode && events && events.length > 0 && (
+              <Button variant="secondary" onClick={() => setConfirmDetectCategories(true)}>
+                <IconTag className="h-4 w-4" /> Detect categories
+              </Button>
+            )}
             {!selectionMode && events && events.length > 0 && (
               <Button variant="secondary" onClick={() => setSelectionMode(true)}>
                 <IconTrash className="h-4 w-4" /> Delete
@@ -480,6 +522,16 @@ export default function Events() {
         busy={bulkDeleting}
         onCancel={() => setConfirmBulkDelete(false)}
         onConfirm={confirmDeleteSelected}
+      />
+
+      <ConfirmDialog
+        open={confirmDetectCategories}
+        title="Detect categories for uncategorized events?"
+        message="Tries to figure out a category for every event that currently has none - first using a few safe keywords (Grand Prix/Festival/Musical/Comedy), then, only for what those cannot recognize, asking an AI model to actually identify the team or artist by name (needs an Anthropic API key embedded in this build - if none is set up, that second step is simply skipped). An event that already has a category, however it got one, is never touched or changed - so this is always safe to run again later."
+        confirmLabel="Detect categories"
+        busy={detectingCategories}
+        onCancel={() => setConfirmDetectCategories(false)}
+        onConfirm={runDetectCategories}
       />
     </div>
   );

@@ -302,9 +302,18 @@ fn format_order_date_for_sheet(iso: &str) -> String {
 /// requiring him to pre-create every event in the app first would defeat the
 /// point. A freshly created event gets this row's own date and otherwise
 /// default fields (status "upcoming") - exactly like typing only the
-/// name+date into "New event" by hand. An event that already exists by name
-/// is reused as-is and its date is deliberately left untouched even if a
-/// later row's date differs - see this function's own tests.
+/// name+date into "New event" by hand - EXCEPT for category: 2.0.63 has a
+/// freshly created event also try `ai_categorize::detect_category_for_event_
+/// name` on its own name, writing both `category_id` and its `category` text
+/// mirror when that finds a confident match (see that module's doc comment
+/// for the full free-rules-then-AI design), exactly as if marko had picked a
+/// category by hand right after typing the name. Never blocks or fails this
+/// function if detection finds nothing (or isn't configured) - the event is
+/// still created, just with no category, same as every event before 2.0.63.
+/// An event that already exists by name is reused as-is - its date AND
+/// category (or lack of one) are deliberately left untouched even if a later
+/// row's own data would suggest something different - see this function's
+/// own tests.
 fn resolve_or_create_event(conn: &Connection, name: &str, event_date: &str) -> AppResult<i64> {
     if let Some(id) = conn
         .query_row("SELECT id FROM events WHERE LOWER(name) = LOWER(?1)", [name], |r| r.get(0))
@@ -312,9 +321,15 @@ fn resolve_or_create_event(conn: &Connection, name: &str, event_date: &str) -> A
     {
         return Ok(id);
     }
+    let category_match = crate::ai_categorize::detect_category_for_event_name(conn, name);
     conn.execute(
-        "INSERT INTO events (name, event_date, status) VALUES (?1, ?2, 'upcoming')",
-        params![name, event_date],
+        "INSERT INTO events (name, event_date, status, category_id, category) VALUES (?1, ?2, 'upcoming', ?3, ?4)",
+        params![
+            name,
+            event_date,
+            category_match.as_ref().map(|m| m.id),
+            category_match.as_ref().map(|m| m.name.clone())
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -3143,6 +3158,63 @@ mod tests {
     }
 
     const MARKER_COL: usize = 13; // one past the 13 headers in full_headers()
+
+    // -- resolve_or_create_event's 2.0.63 category-detection hook ----------
+    //
+    // `test_conn()` runs the real migrations, including 012_event_
+    // categories.sql's 6-category seed, and this test environment never has
+    // ANTHROPIC_API_KEY set (see ai_categorize::embedded_anthropic_api_key's
+    // own test), so only the free keyword rules can actually fire here -
+    // exactly like a real build marko hasn't added that optional secret to
+    // yet. See ai_categorize.rs's own test module for the rule/AI decision
+    // logic itself; these tests are only about resolve_or_create_event
+    // actually wiring that result into the INSERT correctly.
+
+    #[test]
+    fn a_brand_new_event_gets_auto_categorized_when_its_name_has_a_free_rule_signal() {
+        let conn = test_conn();
+        let id = resolve_or_create_event(&conn, "Spa-Francorchamps Grand Prix", "2026-09-01").unwrap();
+        let (category, category_id): (Option<String>, Option<i64>) = conn
+            .query_row("SELECT category, category_id FROM events WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(category.as_deref(), Some("Motorsport"));
+        assert!(category_id.is_some(), "category_id must be set alongside the category text mirror");
+    }
+
+    #[test]
+    fn a_brand_new_event_with_no_recognizable_signal_is_created_with_no_category() {
+        // Same as every event before 2.0.63 - no free rule fires on a bare
+        // name, and no AI key is embedded in this test build, so this must
+        // NOT error and must NOT guess; the event itself still gets created.
+        let conn = test_conn();
+        let id = resolve_or_create_event(&conn, "Celine Dion", "2026-09-01").unwrap();
+        let (category, category_id): (Option<String>, Option<i64>) = conn
+            .query_row("SELECT category, category_id FROM events WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(category, None);
+        assert_eq!(category_id, None);
+    }
+
+    #[test]
+    fn an_existing_events_category_is_never_touched_by_a_later_resolve() {
+        // marko may have deliberately cleared a category by hand, or set a
+        // different one than a rule would now suggest - either way, an
+        // event that already exists by name must be reused completely as-
+        // is, exactly like its date already was before 2.0.63.
+        let conn = test_conn();
+        let first_id = resolve_or_create_event(&conn, "Monaco Grand Prix", "2026-05-01").unwrap();
+        conn.execute("UPDATE events SET category_id = NULL, category = NULL WHERE id = ?1", [first_id])
+            .unwrap();
+        let second_id = resolve_or_create_event(&conn, "Monaco Grand Prix", "2026-05-01").unwrap();
+        assert_eq!(first_id, second_id);
+        let category: Option<String> =
+            conn.query_row("SELECT category FROM events WHERE id = ?1", [first_id], |r| r.get(0)).unwrap();
+        assert_eq!(category, None, "a re-resolved existing event must not be re-categorized");
+    }
 
     fn headers_with_marker() -> Vec<String> {
         let mut h = full_headers();

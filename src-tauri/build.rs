@@ -69,5 +69,22 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FIREBASE_GOOGLE_OAUTH_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET");
 
+    // 2.0.63: same embed-at-build-time mechanism again, for ai_categorize.rs's
+    // automatic event category detection (marko's own request - "Football"/
+    // "Concert" auto-detected from an event's name during sheet sync). A
+    // single opaque API key, not JSON, from the repository secret
+    // ANTHROPIC_API_KEY - marko adds this himself (GitHub repo -> Settings ->
+    // Secrets and variables -> Actions) once he has a key from
+    // console.anthropic.com; until he does, this embeds empty exactly like
+    // every other credential above on a plain local build, and
+    // ai_categorize::embedded_anthropic_api_key() treats that as "the AI half
+    // of this feature isn't configured" rather than panicking - the free
+    // keyword rules still work either way. See ai_categorize.rs's own module
+    // doc comment for the full design.
+    let anthropic_api_key = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+    fs::write(Path::new(&out_dir).join("anthropic_api_key.txt"), anthropic_api_key)
+        .expect("failed to write the embedded Anthropic API key file");
+    println!("cargo:rerun-if-env-changed=ANTHROPIC_API_KEY");
+
     tauri_build::build()
 }

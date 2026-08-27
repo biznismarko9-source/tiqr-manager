@@ -83,6 +83,20 @@ export interface BulkDeleteResult {
   skipped: { id: number; reason: string }[];
 }
 
+/** 2.0.63: result of one "Detect categories" run (models.rs' `CategoryDetectionResult`) -
+ * the retroactive, one-click sibling of the automatic detection that already runs on every
+ * brand-new event a sheet sync creates. Only ever touches events that had no category yet,
+ * so running this again is always safe. `aiConfigured` says whether this build even has an
+ * Anthropic key embedded - when false, `leftUncategorized` only ever reflects what the free
+ * keyword rules couldn't recognize, not a failed AI attempt. */
+export interface CategoryDetectionResult {
+  checked: number;
+  categorizedByRule: number;
+  categorizedByAi: number;
+  leftUncategorized: number;
+  aiConfigured: boolean;
+}
+
 /** 2.0.38: one ticket's seat location, as returned in the new `seats` list on
  * OrderRecord/SaleGroup below (mirrors the backend's `SeatEntry`, models.rs).
  * Formatting a whole list of these into the compact "Seats" column string
