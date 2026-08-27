@@ -2733,7 +2733,7 @@ struct OrdersSummarySpec {
 /// | col+0 | col+1 | col+2 | col+3 | col+4 | col+5 |
 /// |---|---|---|---|---|---|
 /// | Summary | (total cost) | Summary-Paid | (total paid) | Summary-Unpaid | (total unpaid) |
-/// | Total Cost | =SUM(total purchase price) | Total Paid | =SUMPRODUCT((status="Paid")*revenue) | Total Unpaid | =SUM(revenue)-SUMPRODUCT((status="Paid")*revenue) |
+/// | Total Cost | =SUMPRODUCT((total purchase price)*1) | Total Paid | =SUMPRODUCT((status="Paid")*revenue) | Total Unpaid | =SUM(revenue)-SUMPRODUCT((status="Paid")*revenue) |
 /// | Total Revenue | =SUM(revenue) | | | | |
 /// | Total Profit | =SUM(profit) | | | | |
 ///
@@ -2799,7 +2799,27 @@ fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> 
     let start_col = how_much_pull_col + 3;
     let bound = SUMPRODUCT_ROW_BOUND;
 
-    let cost_formula = format!("=SUM({total_letter}:{total_letter})");
+    // 2.0.62 correction: `Total Purchase Price` is written by this app via
+    // `update_values` (`valueInputOption=RAW`, deliberately - see that
+    // function's own doc comment), same as every other plain value this
+    // module writes - so Sheets stores it as literal TEXT, never as a
+    // genuine number, no matter how numeric it looks. `SUM()` silently skips
+    // text cells rather than coercing them, so `=SUM({total_letter}:
+    // {total_letter})` was *always* going to show 0,00 the moment marko
+    // actually looked at it - not something Fix sync (or anything else
+    // recent) broke. `Revenue`/`Profit` don't have this problem because
+    // they're the one exception (`update_values_as_formulas`, USER_ENTERED)
+    // - a formula's result is a genuine number - which is exactly why
+    // `revenue_formula`/`profit_formula` below can stay plain `SUM()`. The
+    // fix mirrors what `paid_sumproduct` below already does for the exact
+    // same reason: `*1` forces the same numeric coercion Sheets already
+    // performs for a plain arithmetic operator (which is why the per-row
+    // Profit formula, `Revenue - Total Purchase Price`, has always computed
+    // correctly despite this) - bounded to `SUMPRODUCT_ROW_BOUND` rows
+    // starting at row 2, never row 1, for the same reason `paid_sumproduct`
+    // is: multiplying the header row's own text by 1 would error the whole
+    // calculation out rather than just that one cell.
+    let cost_formula = format!("=SUMPRODUCT(({total_letter}2:{total_letter}{bound})*1)");
     let revenue_formula = format!("=SUM({revenue_letter}:{revenue_letter})");
     let profit_formula = format!("=SUM({profit_letter}:{profit_letter})");
     let paid_sumproduct = format!(
@@ -5034,9 +5054,13 @@ mod tests {
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
         assert_eq!(text_col(&spec, 9), Some(&vec!["Summary".to_string(), "Total Cost".to_string(), "Total Revenue".to_string(), "Total Profit".to_string()]));
         // Total Purchase Price=F, Revenue=D, Profit=E in summary_headers().
+        // Total Cost is SUMPRODUCT-with-coercion, not a plain SUM - see
+        // cost_formula's own 2.0.62 comment for why (Total Purchase Price is
+        // written as literal text, unlike Revenue/Profit which are live
+        // formulas and so already hold real numbers).
         assert_eq!(
             formula_col(&spec, 10),
-            Some(&vec![String::new(), "=SUM(F:F)".to_string(), "=SUM(D:D)".to_string(), "=SUM(E:E)".to_string()])
+            Some(&vec![String::new(), "=SUMPRODUCT((F2:F100000)*1)".to_string(), "=SUM(D:D)".to_string(), "=SUM(E:E)".to_string()])
         );
     }
 
@@ -5064,7 +5088,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_orders_summary_updates_paid_and_unpaid_never_use_a_locale_sensitive_function_argument_separator() {
+    fn plan_orders_summary_updates_cost_paid_and_unpaid_never_use_a_locale_sensitive_function_argument_separator() {
         // 2.0.42 regression test for the real bug: SUMIF(a,b,c) broke as
         // #ERROR! on marko's own comma-decimal-locale sheet, because Google
         // Sheets parses a USER_ENTERED formula's function-argument separator
@@ -5075,10 +5099,13 @@ mod tests {
         // that shape directly rather than just the exact formula text above,
         // so a future edit that reintroduces a multi-argument SUMIF/SUMIFS
         // here fails this test even if it changes the exact letters/bound.
+        // 2.0.62: `cost` joined this test once it also became a SUMPRODUCT
+        // (see its own doc comment for why) - same shape, same reasoning.
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        let cost = &formula_col(&spec, 10).unwrap()[1];
         let paid = &formula_col(&spec, 12).unwrap()[1];
         let unpaid = &formula_col(&spec, 14).unwrap()[1];
-        for formula in [paid, unpaid] {
+        for formula in [cost, paid, unpaid] {
             assert!(formula.contains("SUMPRODUCT"), "expected SUMPRODUCT in {formula}");
             assert!(!formula.contains(",\"Paid\","), "must not contain a comma-separated SUMIF-style argument list: {formula}");
         }
@@ -5094,7 +5121,7 @@ mod tests {
         let spec = plan_orders_summary_updates(&headers).unwrap();
         assert_eq!(column_index_to_a1(27), "AB");
         assert!(text_col(&spec, 27).is_some(), "block must start at column AB (index 27)");
-        assert_eq!(formula_col(&spec, 28).unwrap()[1], "=SUM(H:H)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[1], "=SUMPRODUCT((H2:H100000)*1)");
         assert_eq!(formula_col(&spec, 28).unwrap()[2], "=SUM(P:P)");
         assert_eq!(formula_col(&spec, 28).unwrap()[3], "=SUM(Q:Q)");
         assert_eq!(formula_col(&spec, 30).unwrap()[1], "=SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
