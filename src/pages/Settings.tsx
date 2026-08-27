@@ -545,9 +545,9 @@ export default function Settings() {
                   forcePush={{
                     label: "Fix sync",
                     description:
-                      'For a sale that should have pushed already (e.g. via "Push sales" above) but didn\'t. Unlike that button, this one CAN overwrite a cell that already has something in it, replacing it with what the app currently has for that order - but only cells whose current text actually disagrees; an already-correct cell is left alone, so clicking this again is always safe.',
+                      'For a sale that should have pushed already (e.g. via "Push sales" above) but didn\'t. Unlike that button, this one CAN overwrite a cell that already has something in it, replacing it with what the app currently has for that order - but only cells whose current text actually disagrees with a value the app actually has; a cell the app has no data for (e.g. no platform recorded) is always left exactly as-is, never blanked, and an already-correct cell is left alone too - so clicking this again is always safe. Never touches Total Purchase Price, currency, or the sheet\'s dropdowns/formulas - only "Push sales"\' own columns.',
                     confirmMessage:
-                      'This can overwrite Site Listed / Payout / Status / Delivery status / Payout status / sale date / paid-by / pull cells that already have something in them, replacing it with what the app currently has for that order - unlike "Push sales", which only ever fills in blank cells. Use this when a sale (or received pull) you know is correct in the app didn\'t make it into the sheet. Continue?',
+                      'This can overwrite Site Listed / Payout / Status / Delivery status / Payout status / sale date / paid-by / pull cells that already have something in them, replacing it with what the app currently has for that order - unlike "Push sales", which only ever fills in blank cells. It will never blank a cell the app itself has no data for, and never touches Total Purchase Price, currency, or the sheet\'s dropdowns/formulas. Use this when a sale (or received pull) you know is correct in the app didn\'t make it into the sheet. Continue?',
                     run: api.forcePushSales,
                   }}
                   onSetup={api.setupOrdersSheet}

@@ -1258,8 +1258,21 @@ fn currency_push_cells(
     if let Some(c) = find_col(&map, &["price per ticket", "unit price", "price"]) {
         cells.push((c, format_cents_for_sheet(new_unit_price_cents)));
     }
-    if let Some(c) = find_col(&map, &["total purchase price", "total price"]) {
-        cells.push((c, format_cents_for_sheet(new_total_cost_cents)));
+    // 2.0.61: never push a computed total of exactly zero over a cell that
+    // might hold a real, non-zero number already - a real order's total
+    // purchase price is never actually free, so a "correction" to 0,00 is
+    // far more likely to mean this order's own `total_cost_cents` is itself
+    // wrong/unset than that the sheet's existing value needs replacing.
+    // Silently trusting it either way is exactly the kind of thing this
+    // module elsewhere refuses to do (see `reconcile_order_pricing`'s own
+    // "anything bigger still gets the row rejected rather than silently
+    // trusting one number over the other") - skip the cell here rather than
+    // risk wiping a real value, and let whoever calls this decide whether to
+    // surface that as something to look into.
+    if new_total_cost_cents != 0 {
+        if let Some(c) = find_col(&map, &["total purchase price", "total price"]) {
+            cells.push((c, format_cents_for_sheet(new_total_cost_cents)));
+        }
     }
     Some((row_number, cells))
 }
@@ -2065,20 +2078,40 @@ fn apply_sales_push_internal(
                 // actually disagree. A cell that's already correct - blank
                 // or not - is left completely alone, so running this again
                 // on an already-fixed row is always a no-op.
-                let desired: [(Option<usize>, String); 7] = [
-                    (site_listed_col, sale.platform_name.clone().unwrap_or_default()),
-                    (payout_col, format_cents_for_sheet(sale.sale_price_cents)),
-                    (status_col, sale.resale_status.clone().unwrap_or_default()),
-                    (delivery_status_col, sale.delivery_status.clone().unwrap_or_default()),
-                    (payout_status_col, sale.payment_status.clone()),
-                    (sale_date_col, format_order_date_for_sheet(&sale.sale_date)),
-                    (paid_by_col, sale.buyer_reference.clone().unwrap_or_default()),
+                //
+                // 2.0.61 correction: `sale.resale_status`/`sale.delivery_
+                // status`/`sale.platform_name`/`sale.buyer_reference` are
+                // each `Option<String>`, and a ticket sold through the app's
+                // own "record a sale" flow (Sales.tsx / the Dashboard "New
+                // sale" shortcut - the exact flow behind the original Push
+                // sales report) never sets resale_status/delivery_status at
+                // all - only Sales sync's PULL direction stamps those two
+                // from the sheet's own Status/Delivery status columns (see
+                // `apply_sales_rows`). So `None` here does not mean "the app
+                // knows this should be blank" - it means "the app has no
+                // opinion on this cell" - and the first version of this
+                // branch used `.unwrap_or_default()` to turn that `None`
+                // into `""`, which then "disagreed" with whatever real value
+                // (e.g. "Listed"/"Not yet", typed in by marko or written by
+                // an earlier push) already sat in the cell, and blanked it.
+                // That is exactly the regression marko reported (Fix sync
+                // wiping Status/Delivery status on rows that were already
+                // correct). Fixed by only ever comparing/writing a field the
+                // app actually has a value for; a field the app has no
+                // opinion on is skipped entirely, whatever the sheet holds.
+                let desired: [(Option<usize>, Option<String>); 7] = [
+                    (site_listed_col, sale.platform_name.clone()),
+                    (payout_col, Some(format_cents_for_sheet(sale.sale_price_cents))),
+                    (status_col, sale.resale_status.clone()),
+                    (delivery_status_col, sale.delivery_status.clone()),
+                    (payout_status_col, Some(sale.payment_status.clone())),
+                    (sale_date_col, Some(format_order_date_for_sheet(&sale.sale_date))),
+                    (paid_by_col, sale.buyer_reference.clone()),
                 ];
-                for (col_opt, value) in desired {
-                    if let Some(c) = col_opt {
-                        if cell(raw_row, Some(c)).as_deref() != Some(value.as_str()) {
-                            cells.push((c, value));
-                        }
+                for (col_opt, value_opt) in desired {
+                    let (Some(c), Some(value)) = (col_opt, value_opt) else { continue };
+                    if cell(raw_row, Some(c)).as_deref() != Some(value.as_str()) {
+                        cells.push((c, value));
                     }
                 }
             }
@@ -2194,28 +2227,39 @@ pub fn push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
     push_sales_impl(&conn)
 }
 
-/// "Fix sync" (2.0.60) - marko's own request after a real sale made via the
-/// Dashboard's "New sale" shortcut didn't get pushed into the sheet by the
-/// ordinary "Push sales" button, for a reason that couldn't be pinned down
-/// from what was available to check (the order already had a sheet row,
-/// every ticket in it sold at once at one identical price, and the target
-/// cells were blank beforehand - by push_sales_impl's own rule that should
-/// already have been enough for it to write). Rather than keep guessing at
-/// increasingly specific hypotheses against marko's real, live spreadsheet,
-/// this is a separate, more permissive repair action: it shares every bit of
-/// "is this order even ready to push" logic with push_sales_impl
-/// (apply_sales_push_internal, uniform_sale_for_order,
-/// linked_pull_received_for_order - none of that changes here), but drops
-/// the "only if every target cell is still blank" gate and instead
-/// overwrites individual cells whenever they disagree with what the app
-/// currently has. An order that still doesn't have one clean uniform sale
-/// (or more than one linked pull) is left alone here exactly like it is by
-/// push_sales_impl - this button repairs a push that should have happened,
-/// it doesn't invent a value for a state this module has never been able to
-/// represent as one sheet row. Because it only ever queues a cell whose
-/// current text actually differs from the desired value, running this
-/// repeatedly - or on a sheet that's already correct - never touches
-/// anything and is always safe to click again.
+/// "Fix sync" (2.0.60, narrowed in 2.0.61) - marko's own request after a
+/// real sale made via the Dashboard's "New sale" shortcut didn't get pushed
+/// into the sheet by the ordinary "Push sales" button, for a reason that
+/// couldn't be pinned down from what was available to check (the order
+/// already had a sheet row, every ticket in it sold at once at one
+/// identical price, and the target cells were blank beforehand - by
+/// push_sales_impl's own rule that should already have been enough for it
+/// to write). Rather than keep guessing at increasingly specific hypotheses
+/// against marko's real, live spreadsheet, this is a separate, more
+/// permissive repair action: it shares every bit of "is this order even
+/// ready to push" logic with push_sales_impl (apply_sales_push_internal,
+/// uniform_sale_for_order, linked_pull_received_for_order - none of that
+/// changes here), but drops the "only if every target cell is still blank"
+/// gate and instead overwrites individual cells whenever they disagree with
+/// a value the app actually has for them (never a field the app has no
+/// opinion on - see apply_sales_push_internal's own `force` branch comment,
+/// added in 2.0.61 after this button wiped a real Status/Delivery status
+/// value on the first try). An order that still doesn't have one clean
+/// uniform sale (or more than one linked pull) is left alone here exactly
+/// like it is by push_sales_impl - this button repairs a push that should
+/// have happened, it doesn't invent a value for a state this module has
+/// never been able to represent as one sheet row. Because it only ever
+/// queues a cell whose current text actually differs from a value the app
+/// actually has, running this repeatedly - or on a sheet that's already
+/// correct - never touches anything and is always safe to click again.
+///
+/// 2.0.61: no longer also runs the currency catch-up
+/// (`reconcile_order_currencies`) or the structure refresh
+/// (`refresh_sheet_structure_soft_fail`) that `push_sales_impl` runs at its
+/// own tail - see this function's own body comment for why marko's "Total
+/// Cost" summary going to 0 right after using this button pointed straight
+/// at the currency catch-up step, and why removing it here (rather than
+/// changing what `push_sales_impl` itself does) is the correct fix.
 fn force_push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let connection = load_connection(conn, "orders")?
         .ok_or_else(|| AppError::Validation("No spreadsheet is connected for Orders yet - connect one in Settings first.".to_string()))?;
@@ -2247,28 +2291,21 @@ fn force_push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         }
     }
 
-    // 2.0.54's currency catch-up (see reconcile_order_currencies) - "Fix
-    // sync" is meant to be the "clean up anything the sheet is missing"
-    // button, so it re-runs this too, not just the sale-info/pull-info
-    // repair above.
-    let currency_writes = reconcile_order_currencies(conn, &headers, data_rows);
-    for (row_number, cells) in currency_writes {
-        let mut row_ok = true;
-        for (col, value) in cells {
-            let col_letter = column_index_to_a1(col);
-            let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{row_number}"));
-            if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
-                row_ok = false;
-                result.errors.push(SheetSyncIssue { row_number, message: format!("currency catch-up failed: {e}") });
-            }
-        }
-        if row_ok {
-            result.updated += 1;
-        }
-    }
-
-    refresh_sheet_structure_soft_fail(conn, token, &connection.spreadsheet_id, &connection.sheet_tab, &headers, data_rows, &mut result);
-
+    // 2.0.61: this used to also re-run the 2.0.54 currency catch-up
+    // (`reconcile_order_currencies`) and the dropdown/Revenue-Profit/Summary
+    // structure refresh (`refresh_sheet_structure_soft_fail`) here, on the
+    // reasoning that "Fix sync" should clean up anything the sheet is
+    // missing, not just the sale-info/pull-info repair above. Removed:
+    // marko never asked for either of those, and `reconcile_order_currencies`
+    // pushes whatever `orders.total_cost_cents` currently holds for EVERY
+    // linked order straight into its sheet row's "Total Purchase Price" cell
+    // the moment the two disagree, with no check that the app's own number
+    // still makes sense - the same run that fixed the Status/Delivery status
+    // regression (see the force-branch's own 2.0.61 comment above) is the
+    // most likely way marko's "Total Cost" summary also went to 0 right
+    // after clicking this button. "Push sales"/"Push orders" still run both
+    // of those steps exactly as before (unchanged, not implicated here) -
+    // this button is now scoped to only what marko actually asked it to fix.
     result.synced_at = now_iso(conn)?;
     set_setting(conn, &last_pushed_key("orders"), &result.synced_at)?;
     Ok(result)
@@ -4658,6 +4695,55 @@ mod tests {
         assert!(writes.is_empty(), "force must not invent a value when the order's own tickets disagree on price");
     }
 
+    #[test]
+    fn force_push_never_blanks_a_cell_the_app_has_no_opinion_on() {
+        // 2.0.61 regression test - this is the exact scenario that made Fix
+        // sync wipe a real Status/Delivery status cell on marko's live sheet.
+        // A sale recorded through the app's own UI (Sales.tsx / the
+        // Dashboard "New sale" shortcut) never sets a ticket's resale_status/
+        // delivery_status - only Sales sync's PULL direction does that (see
+        // apply_sales_rows) - so inserting the sale directly, the same way
+        // `non_uniform_sales_across_tickets_of_one_order_are_left_alone`
+        // already does, reproduces that real "the app has no opinion" state
+        // instead of accidentally curing it via apply_sales_rows's own
+        // stamping (which is what every earlier force-push test in this
+        // file does, without realizing it was never exercising this case).
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        conn.execute(
+            "INSERT INTO sales (code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+             VALUES ('SALE-000001', ?1, '2026-09-20', 4500, 'EUR', 'paid')",
+            [ticket_ids[0]],
+        )
+        .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [ticket_ids[0]]).unwrap();
+
+        // The sheet row already has real values in exactly the columns the
+        // app has no opinion on for this order (no platform was ever
+        // recorded either) - e.g. marko typed them in by hand. Payout/
+        // Payout status/sale date are blank, matching his original report
+        // (those are the ones "Push sales" should have filled and didn't).
+        let mut row_data = blank_sales_row(&code);
+        row_data[1] = "viagogo".to_string(); // Site Listed
+        row_data[3] = "Listed".to_string(); // Status
+        row_data[4] = "Not yet".to_string(); // Delivery status
+
+        let (result, writes) = apply_sales_push_internal(&conn, &sales_headers(), &[row_data], 0, true).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(writes.len(), 1);
+        let as_map: HashMap<usize, String> = writes[0].1.iter().cloned().collect();
+        assert!(!as_map.contains_key(&1), "Site Listed: no platform was ever recorded - must not blank it: {as_map:?}");
+        assert!(!as_map.contains_key(&3), "Status: app never stamped resale_status for this ticket - must not blank it: {as_map:?}");
+        assert!(!as_map.contains_key(&4), "Delivery status: same as Status - app has no opinion, must not blank it: {as_map:?}");
+        assert!(!as_map.contains_key(&7), "paid by: no buyer_reference was ever recorded - must not write anything here: {as_map:?}");
+        // The columns the app DOES have a real value for still get filled -
+        // this button must still do what marko originally asked for.
+        assert_eq!(as_map.get(&2), Some(&"45,00".to_string()), "Payout Per Ticket");
+        assert_eq!(as_map.get(&5), Some(&"paid".to_string()), "Payout status");
+        assert_eq!(as_map.get(&6), Some(&"20/09/2026".to_string()), "sale date");
+    }
+
     // -----------------------------------------------------------------
     // Sheet structure (dropdowns + Revenue/Profit formulas), 2.0.19
     // -----------------------------------------------------------------
@@ -5209,6 +5295,21 @@ mod tests {
         assert!(cells.contains(&(9, "50,00".to_string())), "{cells:?}");
         assert!(cells.contains(&(7, "100,00".to_string())), "{cells:?}");
         assert_eq!(cells.len(), 3);
+    }
+
+    #[test]
+    fn currency_push_cells_never_pushes_a_computed_total_purchase_price_of_exactly_zero() {
+        // 2.0.61: a real order's total purchase price is never actually
+        // free - a computed 0 almost always means this order's own
+        // total_cost_cents is itself wrong/unset, not that the sheet's
+        // existing (possibly real, non-zero) cell needs replacing. Currency
+        // and unit price still get pushed independently - only the
+        // suspicious zero total is held back.
+        let headers = headers_with_marker();
+        let data_rows = vec![sample_row("ORD-000001")];
+        let (_, cells) = currency_push_cells(&headers, &data_rows, "ORD-000001", "EUR", 5000, 0).unwrap();
+        assert!(cells.iter().all(|(_, v)| v != "0,00"), "must never queue a 0,00 write: {cells:?}");
+        assert_eq!(cells.len(), 2, "currency + unit price only - the zero total purchase price is skipped: {cells:?}");
     }
 
     #[test]
