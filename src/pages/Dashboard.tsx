@@ -60,6 +60,11 @@ function warningLabel(daysLeft: number): string {
 // - shown in the section label only, never re-derived/recomputed here.
 const UPCOMING_EVENT_WINDOW_DAYS = 14;
 
+// 2.0.70: how many rows each Activity-tab Recent card shows before its "Show
+// more" button appears - the backend now sends up to 15 (dashboard.rs), this
+// is purely how many of those are rendered up front.
+const RECENT_LIST_PREVIEW_COUNT = 5;
+
 // dashboard.rs's period_bounds() encodes "no lower/upper bound" (the "All
 // time" period, or a Custom range with the From date left blank) as these
 // two sentinel dates so the underlying SQL BETWEEN query always has a real
@@ -180,6 +185,15 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   // 1.9.3: which Dashboard tab is active - see useDashboardTab above.
   const [tab, setTab] = useDashboardTab();
+  // 2.0.70: each Recent card on the Activity tab shows RECENT_LIST_PREVIEW_COUNT
+  // rows by default and reveals the rest (up to however many the backend sent -
+  // see dashboard.rs's own 2.0.70 comment) on click. Three independent flags,
+  // not one - expanding Recent orders shouldn't also expand Recent sales.
+  // Plain local UI state, not persisted (unlike the tab itself) - always
+  // starts collapsed on a fresh page load, same as before this existed.
+  const [eventsExpanded, setEventsExpanded] = useState(false);
+  const [ordersExpanded, setOrdersExpanded] = useState(false);
+  const [salesExpanded, setSalesExpanded] = useState(false);
   // BUG (Custom date filter): Custom with both From/To empty must not
   // silently behave like "All time" (see period_bounds() fallback in
   // dashboard.rs). This is recomputed from current state on every render,
@@ -546,22 +560,29 @@ export default function Dashboard() {
                   {data.recentEvents.length === 0 ? (
                     <EmptyRow text="No events yet" />
                   ) : (
-                    <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {data.recentEvents.map((ev) => (
-                        <li key={ev.id}>
-                          <Link
-                            to={`/events/${ev.id}`}
-                            className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
-                              <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(ev.eventDate)}</p>
-                            </div>
-                            <Badge tone={ev.status}>{ev.status}</Badge>
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {(eventsExpanded ? data.recentEvents : data.recentEvents.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((ev) => (
+                          <li key={ev.id}>
+                            <Link
+                              to={`/events/${ev.id}`}
+                              className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
+                                <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(ev.eventDate)}</p>
+                              </div>
+                              <Badge tone={ev.status}>{ev.status}</Badge>
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                      <ShowMoreToggle
+                        expanded={eventsExpanded}
+                        onToggle={() => setEventsExpanded((v) => !v)}
+                        hiddenCount={data.recentEvents.length - RECENT_LIST_PREVIEW_COUNT}
+                      />
+                    </>
                   )}
                 </RecentCard>
 
@@ -569,24 +590,31 @@ export default function Dashboard() {
                   {data.recentOrders.length === 0 ? (
                     <EmptyRow text="No orders yet" />
                   ) : (
-                    <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {data.recentOrders.map((o) => (
-                        <li key={o.id}>
-                          <Link
-                            to={`/orders/${o.id}`}
-                            className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</p>
-                              <p className="truncate text-xs text-slate-400 dark:text-slate-500">{o.eventName}</p>
-                            </div>
-                            <p className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
-                              {formatMoney(o.totalCostCents, o.currency)}
-                            </p>
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {(ordersExpanded ? data.recentOrders : data.recentOrders.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((o) => (
+                          <li key={o.id}>
+                            <Link
+                              to={`/orders/${o.id}`}
+                              className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</p>
+                                <p className="truncate text-xs text-slate-400 dark:text-slate-500">{o.eventName}</p>
+                              </div>
+                              <p className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
+                                {formatMoney(o.totalCostCents, o.currency)}
+                              </p>
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                      <ShowMoreToggle
+                        expanded={ordersExpanded}
+                        onToggle={() => setOrdersExpanded((v) => !v)}
+                        hiddenCount={data.recentOrders.length - RECENT_LIST_PREVIEW_COUNT}
+                      />
+                    </>
                   )}
                 </RecentCard>
 
@@ -594,8 +622,9 @@ export default function Dashboard() {
                   {data.recentSales.length === 0 ? (
                     <EmptyRow text="No sales yet" />
                   ) : (
-                    <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {data.recentSales.map((s) => (
+                    <>
+                      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {(salesExpanded ? data.recentSales : data.recentSales.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((s) => (
                         <li key={s.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -636,7 +665,13 @@ export default function Dashboard() {
                           )}
                         </li>
                       ))}
-                    </ul>
+                      </ul>
+                      <ShowMoreToggle
+                        expanded={salesExpanded}
+                        onToggle={() => setSalesExpanded((v) => !v)}
+                        hiddenCount={data.recentSales.length - RECENT_LIST_PREVIEW_COUNT}
+                      />
+                    </>
                   )}
                 </RecentCard>
               </div>
@@ -783,6 +818,33 @@ function RecentCard({
       </div>
       {children}
     </Card>
+  );
+}
+
+/** 2.0.70: footer button for the three Activity-tab Recent cards - marko's
+ * own request ("daj tlacitko ku kazdemu see more a ukaze sa toho viac").
+ * Renders nothing once there's nothing to expand into (hiddenCount <= 0,
+ * i.e. the backend's own recent list - up to 15, see dashboard.rs - already
+ * fits inside RECENT_LIST_PREVIEW_COUNT), so a business with only a couple
+ * of orders/sales/events never sees a dead button. */
+function ShowMoreToggle({
+  expanded,
+  onToggle,
+  hiddenCount,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  hiddenCount: number;
+}) {
+  if (!expanded && hiddenCount <= 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="w-full border-t border-slate-100 px-4 py-2 text-center text-xs font-medium text-brand-600 hover:bg-slate-50 dark:border-slate-800 dark:text-brand-400 dark:hover:bg-slate-800/60"
+    >
+      {expanded ? "Show less" : `Show ${hiddenCount} more`}
+    </button>
   );
 }
 

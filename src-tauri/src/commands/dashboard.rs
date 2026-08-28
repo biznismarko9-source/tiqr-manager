@@ -840,9 +840,16 @@ pub(crate) fn get_dashboard_impl(
         currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
     };
 
-    let recent_orders = orders_cmd::fetch_recent(conn, 5)?;
-    let recent_sales = sales_cmd::fetch_recent_groups(conn, 5)?;
-    let recent_events = events_cmd::fetch_recent(conn, 5)?;
+    // 2.0.70: fetches 15 now (was 5) so the Activity tab's "Show more" button
+    // (Dashboard.tsx) has real rows to reveal beyond the first 5 shown by
+    // default - marko's own request ("tuto cast mozes urobit dlhsiu, alebo
+    // daj tlacitko... a ukaze sa toho viac"). Still a fixed, cheap LIMIT on a
+    // local SQLite query, not real pagination - fine for what this section
+    // is for (a recent-activity glance, not a full list - Orders/Sales/
+    // Events already exist as complete, filterable pages for that).
+    let recent_orders = orders_cmd::fetch_recent(conn, 15)?;
+    let recent_sales = sales_cmd::fetch_recent_groups(conn, 15)?;
+    let recent_events = events_cmd::fetch_recent(conn, 15)?;
 
     Ok(DashboardData {
         inventory,

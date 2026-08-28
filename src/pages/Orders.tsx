@@ -761,7 +761,12 @@ function OrderFormModal({
   // closing the modal could land later and silently overwrite whatever the
   // next order's form now contains.
   const conversionToken = useRef(0);
-  const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
+  // 2.0.70: defaults to "paid" now (was "unpaid") - marko's own request: most
+  // of his orders are already paid by the time he enters them, so this is
+  // the safer default if he forgets to touch the field at all, not just the
+  // more common one. Still freely editable either way - see the Payment
+  // status Select below (Paid listed first, to match).
+  const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("paid");
   const [ticketType, setTicketType] = useState("");
   const [customTicketType, setCustomTicketType] = useState(false);
   const [section, setSection] = useState("");
@@ -795,7 +800,7 @@ function OrderFormModal({
     setPullFee("0");
     setCurrency("EUR");
     setCustomCurrency(false);
-    setPaymentStatus("unpaid");
+    setPaymentStatus("paid");
     setTicketType("");
     setCustomTicketType(false);
     setSection("");
@@ -1242,9 +1247,9 @@ function OrderFormModal({
           <div className="col-span-2">
             <Field label="Payment status">
               <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
-                <option value="unpaid">Unpaid</option>
-                <option value="partial">Partial</option>
                 <option value="paid">Paid</option>
+                <option value="partial">Partial</option>
+                <option value="unpaid">Unpaid</option>
               </Select>
             </Field>
           </div>

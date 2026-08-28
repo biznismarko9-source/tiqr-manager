@@ -1039,7 +1039,6 @@ function SaleFormModal({
   // not here - at the moment the modal opens no ticket is selected yet, so
   // there's nothing to derive a sensible default from.
   const [saleCurrency, setSaleCurrency] = useState("EUR");
-  const [customSaleCurrency, setCustomSaleCurrency] = useState(false);
   // "Convert to EUR" button next to it - own loading flag (not `saving`,
   // which is for the final Record submit) so the button can show
   // "Converting..." without touching the rest of the form. Mirrors Orders.tsx
@@ -1077,7 +1076,6 @@ function SaleFormModal({
     setBulkPrice("");
     setBulkFees("");
     setSaleCurrency("EUR");
-    setCustomSaleCurrency(false);
     setConvertingCurrency(false);
     setPaymentStatus("pending");
     setBuyerReference("");
@@ -1096,8 +1094,13 @@ function SaleFormModal({
     if (!currencyTouched.current) {
       const first = selected[0]?.currency;
       const uniform = first && selected.every((t) => t.currency === first) ? first : "EUR";
+      // 2.0.70: no longer flips into a free-text "custom currency" mode here
+      // - see the Sale currency picker's own 2.0.70 comment below for why.
+      // The Select already handles a non-preferred uniform currency fine
+      // (it prepends whatever `saleCurrency` currently is to its own option
+      // list), so this line was only ever about which INPUT to show, never
+      // about which value ended up selected.
       setSaleCurrency(uniform);
-      setCustomSaleCurrency(!PREFERRED_CURRENCIES.includes(uniform));
     }
     setStep("details");
   };
@@ -1136,7 +1139,6 @@ function SaleFormModal({
       const fromCurrency = saleCurrency;
       currencyTouched.current = true;
       setSaleCurrency("EUR");
-      setCustomSaleCurrency(false);
       toast.success(
         `Converted at today's rate: 1 ${fromCurrency} = ${result.rate.toFixed(4)} EUR (rate as of ${formatDateNumeric(result.rateDate)})`,
       );
@@ -1452,47 +1454,30 @@ function SaleFormModal({
                 here afterward. */}
             <div className="w-24">
               <span className="label">Sale currency</span>
-              {customSaleCurrency ? (
-                <Input
-                  autoFocus
-                  placeholder="e.g. AED"
-                  value={saleCurrency}
-                  onChange={(e) => {
-                    currencyTouched.current = true;
-                    setSaleCurrency(e.target.value.toUpperCase());
-                  }}
-                  disabled={convertingCurrency}
-                />
-              ) : (
-                <Select
-                  value={saleCurrency}
-                  onChange={(e) => {
-                    currencyTouched.current = true;
-                    setSaleCurrency(e.target.value);
-                  }}
-                  disabled={convertingCurrency}
-                >
-                  {(PREFERRED_CURRENCIES.includes(saleCurrency) ? PREFERRED_CURRENCIES : [saleCurrency, ...PREFERRED_CURRENCIES]).map(
-                    (c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ),
-                  )}
-                </Select>
-              )}
+              {/* 2.0.70: dropped the "Other..." free-text escape hatch
+                  (marko's own request) - this Select alone already covers
+                  the one case that used to need it: when the selected
+                  tickets' own uniform currency isn't in PREFERRED_CURRENCIES,
+                  it's prepended to the option list below so it's still
+                  shown, still selected, still correct - there's just no more
+                  way to type in some other, unrelated code by hand. */}
+              <Select
+                value={saleCurrency}
+                onChange={(e) => {
+                  currencyTouched.current = true;
+                  setSaleCurrency(e.target.value);
+                }}
+                disabled={convertingCurrency}
+              >
+                {(PREFERRED_CURRENCIES.includes(saleCurrency) ? PREFERRED_CURRENCIES : [saleCurrency, ...PREFERRED_CURRENCIES]).map(
+                  (c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ),
+                )}
+              </Select>
             </div>
-            <button
-              type="button"
-              className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-              onClick={() => {
-                currencyTouched.current = true;
-                setCustomSaleCurrency((v) => !v);
-              }}
-              disabled={convertingCurrency}
-            >
-              {customSaleCurrency ? "Choose from list" : "Other..."}
-            </button>
             {saleCurrency !== "EUR" && (
               <Button type="button" variant="secondary" disabled={convertingCurrency} onClick={convertToEur}>
                 {convertingCurrency ? "Converting..." : "Convert to EUR"}
