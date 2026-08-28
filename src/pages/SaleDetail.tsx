@@ -388,27 +388,48 @@ export default function SaleDetail() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
+              // 2.0.68: same 8-column budget as before, minus Fees (already
+              // hidden here) split to make room for 2 new status columns -
+              // Status/Delivery status are new, Payout status reuses the old
+              // "Status" column's own 10% (just renamed - same paymentStatus
+              // badge). The 15.317% they need is funded entirely out of
+              // Seat's surplus (27.317% -> 12.317%) - the one column this
+              // file's own history already documents as having deliberate,
+              // squeezable headroom; every other column here was previously
+              // fixed at its measured floor to stop a real truncation bug
+              // (2.0.35/2.0.38) and is left untouched. Seat's existing
+              // truncate+title fallback is the same "honest narrow-window
+              // tradeoff" this file already accepts elsewhere.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[9.756%]" />
                 <col className="w-[10.488%]" />
-                <col className="w-[27.317%]" />
+                <col className="w-[12.317%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10.488%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8%]" />
                 <col className="w-[10%]" />
                 <col className="w-[11.951%]" />
               </colgroup>
             ) : (
+              // 2.0.68: same reasoning as the narrow colgroup above - the new
+              // Status/Delivery status columns' 13.5% combined budget comes
+              // out of Seat's surplus (39.463% -> 25.963%), every other
+              // column keeps its previously-measured width exactly. Payout
+              // status is the old "Status" column, unchanged width.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[7.638%]" />
                 <col className="w-[8.133%]" />
-                <col className="w-[39.463%]" />
+                <col className="w-[25.963%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[8.133%]" />
+                <col className="w-[6%]" />
+                <col className="w-[7.5%]" />
                 <col className="w-[6.365%]" />
                 <col className="w-[6.931%]" />
               </colgroup>
@@ -431,7 +452,13 @@ export default function SaleDetail() {
                 {!isNarrow && <th className="th-c text-right">Fees</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
+                {/* 2.0.68 (marko's report): this used to be one bare "Status"
+                    column showing paymentStatus - now split into the 3
+                    distinct status-like fields a ticket actually has, none
+                    replacing another. See REDESIGN-2.0.68-REPORT.md. */}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Delivery status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payout status</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"} />
               </tr>
             </thead>
@@ -499,6 +526,27 @@ export default function SaleDetail() {
                     >
                       {formatMoneyOrMixed(s.profitCents, s.currencyMismatch ? null : s.currency)}
                     </td>
+                    {/* 2.0.68: marko's own manual Listed/Unlisted/Sold - see
+                        Ticket.resaleStatus's doc comment. Independent of, and
+                        never replacing, the paymentStatus badge below. */}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {s.ticketResaleStatus ? (
+                        <Badge tone={s.ticketResaleStatus.toLowerCase()}>{s.ticketResaleStatus}</Badge>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
+                    </td>
+                    {/* 2.0.68: the ticket's own deliveryStatus - see
+                        Ticket.deliveryStatus's doc comment. */}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {s.ticketDeliveryStatus ? (
+                        <Badge tone={s.ticketDeliveryStatus.toLowerCase()}>{s.ticketDeliveryStatus}</Badge>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
+                    </td>
+                    {/* 2.0.68: renamed from the old bare "Status" - same
+                        paymentStatus badge, completely unchanged otherwise. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
                       {s.paymentStatus === "refunded" && s.refundedAt && (

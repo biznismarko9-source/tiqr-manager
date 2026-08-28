@@ -113,6 +113,164 @@ fn bucket_key_expr(granularity: &str) -> &'static str {
     }
 }
 
+/// The same bucket key `bucket_key_expr`'s SQL computes for one given date -
+/// used by `fill_time_series_gaps` both to build the "expected" list of
+/// every bucket that should exist, and, on the real rows the main query
+/// returns, to know which expected slot each one fills. Day and month are
+/// answered directly (a month's key is just its own year/month - no need to
+/// ask SQLite); week goes through one tiny `strftime` query so it is
+/// byte-identical to SQLite's own Monday-based `%W` week numbering instead
+/// of a hand-rolled reimplementation that could quietly drift out of sync
+/// with it.
+fn bucket_key_of_date(conn: &Connection, date: NaiveDate, granularity: &str) -> AppResult<String> {
+    match granularity {
+        "month" => Ok(format!("{:04}-{:02}", date.year(), date.month())),
+        "week" => Ok(conn.query_row("SELECT strftime('%Y-W%W', ?1)", [date.to_string()], |r| r.get(0))?),
+        _ => Ok(date.to_string()),
+    }
+}
+
+/// Every bucket key that SHOULD exist between `from` and `to` (inclusive) at
+/// `granularity`, each paired with a representative date to use as that
+/// bucket's `bucket_start` if it turns out to have no real sales at all - see
+/// `fill_time_series_gaps`'s own doc comment for why this matters. Walks one
+/// calendar day at a time to discover key transitions, which is always a
+/// small, bounded amount of work in practice: week/month granularity only
+/// kick in past 31/180 days (`time_series_granularity`), and
+/// `fill_time_series_gaps` itself clamps away `period_bounds`'s "All time"/
+/// empty-Custom sentinel dates before this is ever called, so `to - from` is
+/// always a real, human-scale business-history span, never literally "year 1
+/// to year 9999".
+fn expected_bucket_keys(
+    conn: &Connection,
+    from: NaiveDate,
+    to: NaiveDate,
+    granularity: &str,
+) -> AppResult<Vec<(String, NaiveDate)>> {
+    let mut keys = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut d = from;
+    while d <= to {
+        let key = bucket_key_of_date(conn, d, granularity)?;
+        if seen.insert(key.clone()) {
+            keys.push((key, d));
+        }
+        d = d + Duration::days(1);
+    }
+    Ok(keys)
+}
+
+/// Backfills every calendar-gap bucket the main `revenue_time_series` query
+/// can never produce on its own with an explicit zero-value point, so the
+/// chart never has to connect two real, far-apart sale days with one
+/// misleadingly smooth sloped line across days that actually had no sales at
+/// all.
+///
+/// 2.0.68 (marko's report - "niečo sa s [grafmi] urobilo"): `MetricChart.tsx`
+/// places points EVENLY SPACED BY INDEX along the x-axis (`xAt = i * stepX`),
+/// not by real calendar date - exactly right when every bucket in the range
+/// is present, but the query above only ever returns a row for a bucket that
+/// had at least one real sale (`GROUP BY bucket_key`), so a week with sales
+/// on Monday and Friday only, say, comes back as exactly 2 points. The chart
+/// then draws them right next to each other with one smooth connecting
+/// curve, which reads as a continuous rise-or-decline across the WHOLE week
+/// even though Tue-Thu had zero sales and should be a flat line at 0. This
+/// backfills every missing bucket in range with an explicit zero point so
+/// the x-axis spacing (and the line drawn across it) reflects real calendar
+/// time again.
+///
+/// Pads the FULL requested `[period_from, period_to]` - not just the span
+/// between the first and last real sale - so e.g. a quiet last few days of
+/// "1 Wk" still show as a real flat 0 tail rather than the chart silently
+/// ending early. The one exception is `period_bounds`'s own sentinel dates
+/// ("0001-01-01" for "All time"/an empty Custom `from`, "9999-12-31" for an
+/// empty Custom `to`) - padding out from year 1 or to year 9999 would be
+/// both useless and slow, so a sentinel bound is clamped to the earliest/
+/// latest REAL bucket already returned instead (`points` is already sorted
+/// ascending by the SQL's own `ORDER BY`, so its first/last entries are that
+/// real min/max).
+///
+/// Falls back to returning `points` completely unpadded, rather than ever
+/// erroring the whole dashboard, if a date somehow fails to parse - every
+/// date here is either `period_bounds`'s own output or a real `sale_date`
+/// already trusted elsewhere in this file, so this should never actually
+/// trigger; it exists purely so one malformed row can't take the rest of the
+/// dashboard down with it (same defensive spirit as
+/// `time_series_granularity`'s own parse-failure fallback above).
+fn fill_time_series_gaps(
+    conn: &Connection,
+    points: Vec<RevenueTimeSeriesPoint>,
+    period_from: &str,
+    period_to: &str,
+    granularity: &str,
+) -> AppResult<Vec<RevenueTimeSeriesPoint>> {
+    if points.is_empty() {
+        // Nothing to anchor a range on - MetricChart.tsx already shows its
+        // own "No sales in this period yet" empty state for this case.
+        return Ok(points);
+    }
+    if points
+        .iter()
+        .any(|p| NaiveDate::parse_from_str(&p.bucket_start, "%Y-%m-%d").is_err())
+    {
+        return Ok(points);
+    }
+
+    let effective_from = if period_from == "0001-01-01" {
+        points[0].bucket_start.clone()
+    } else {
+        period_from.to_string()
+    };
+    let effective_to = if period_to == "9999-12-31" {
+        points[points.len() - 1].bucket_start.clone()
+    } else {
+        period_to.to_string()
+    };
+    let (from, to) = match (
+        NaiveDate::parse_from_str(&effective_from, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&effective_to, "%Y-%m-%d"),
+    ) {
+        (Ok(from), Ok(to)) if from <= to => (from, to),
+        _ => return Ok(points),
+    };
+
+    let mut by_key: std::collections::HashMap<String, RevenueTimeSeriesPoint> = std::collections::HashMap::new();
+    for p in points {
+        // Already validated as parseable just above.
+        let bucket_date = NaiveDate::parse_from_str(&p.bucket_start, "%Y-%m-%d").unwrap();
+        let key = bucket_key_of_date(conn, bucket_date, granularity)?;
+        by_key.insert(key, p);
+    }
+
+    let expected = expected_bucket_keys(conn, from, to, granularity)?;
+    let mut filled = Vec::with_capacity(expected.len());
+    for (key, representative_date) in expected {
+        if let Some(p) = by_key.remove(&key) {
+            filled.push(p);
+        } else {
+            filled.push(RevenueTimeSeriesPoint {
+                bucket_start: representative_date.to_string(),
+                sold_tickets: 0,
+                revenue_cents: 0,
+                selling_fees_cents: 0,
+                cogs_cents: 0,
+                profit_cents: 0,
+            });
+        }
+    }
+    if !by_key.is_empty() {
+        // Defensive: every real point's date is expected to fall inside
+        // [from, to] by construction (see this function's own doc comment
+        // above), so this should never actually trigger - append rather
+        // than silently drop, just in case a future edge case ever disagrees.
+        let mut leftovers: Vec<RevenueTimeSeriesPoint> = by_key.into_values().collect();
+        leftovers.sort_by(|a, b| a.bucket_start.cmp(&b.bucket_start));
+        filled.extend(leftovers);
+        filled.sort_by(|a, b| a.bucket_start.cmp(&b.bucket_start));
+    }
+    Ok(filled)
+}
+
 /// The equal-length window immediately preceding `period_from..period_to`
 /// (2.0.47) - used for the Dashboard KPI cards' "vs previous period" trend
 /// (DIR-001). Deliberately the generic "immediately preceding period of the
@@ -150,6 +308,28 @@ fn previous_period_bounds(period_from: &str, period_to: &str) -> Option<(String,
 /// instead of duplicating ~40 lines of SQL - the current-period call site
 /// keeps computing exactly the same values it always did, just via this
 /// function now instead of inline.
+///
+/// 2.0.68 (marko's report): `total_cost_cents` used to be the cost of
+/// tickets whose ORDER was purchased in [from,to] - a different population of
+/// tickets than the ones Revenue/Profit/Margin/ROI below are scoped to
+/// (tickets actually SOLD in [from,to]). The two numbers could legitimately
+/// never reconcile (e.g. Revenue minus the old "Purchase cost" not equal to
+/// the Profit shown right next to it), which read as a calculation bug even
+/// though each number was independently correct for what it measured.
+/// Fixed by making `total_cost_cents` equal `cogs_cents` here - the SAME
+/// sold-tickets-in-period cost already computed below for ROI - so the
+/// Dashboard's "Purchase cost" StatCard is now guaranteed to satisfy
+/// Revenue - Purchase cost - fees = Profit, exactly like a normal P&L. This
+/// only changes what "in scope" means for THIS caller of the shared
+/// `finance::compute_summary` (see finance.rs's own doc comment for the
+/// general, still-unchanged contract) - Order/Sale/Event screens that call
+/// `compute_summary` for their own all-time inventory snapshots are
+/// untouched. `period_purchased` (tickets newly bought in [from,to], by order
+/// purchase_date) is kept exactly as before - it only ever feeds the
+/// "Tickets sold" StatCard's separate "N purchased in period" sub-line,
+/// which was never part of marko's report and is a genuinely different,
+/// non-misleading fact ("how much new stock did I buy" vs "what did the
+/// stock I sold cost").
 fn period_activity_summary(
     conn: &Connection,
     from: &str,
@@ -159,7 +339,7 @@ fn period_activity_summary(
     platform_id: Option<i64>,
 ) -> AppResult<finance::FinanceSummary> {
     let mut purchase_sql = String::from(
-        "SELECT COUNT(t.id), COALESCE(SUM(t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents),0)
+        "SELECT COUNT(t.id)
          FROM tickets t JOIN orders o ON o.id = t.order_id
          WHERE o.purchase_date BETWEEN ?1 AND ?2 AND t.currency = ?3",
     );
@@ -177,8 +357,7 @@ fn period_activity_summary(
         p_params.push(Box::new(pid));
     }
     let p_refs: Vec<&dyn rusqlite::ToSql> = p_params.iter().map(|p| p.as_ref()).collect();
-    let (period_purchased, period_total_cost): (i64, i64) =
-        conn.query_row(&purchase_sql, p_refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let period_purchased: i64 = conn.query_row(&purchase_sql, p_refs.as_slice(), |r| r.get(0))?;
 
     // Refunded sales excluded here too, and only the given currency counts.
     let mut sales_sql = String::from(
@@ -212,7 +391,7 @@ fn period_activity_summary(
         0,
         period_sold,
         0,
-        period_total_cost,
+        period_cogs,
         period_cogs,
         period_revenue,
         period_fees,
@@ -423,6 +602,9 @@ pub(crate) fn get_dashboard_impl(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(ts_stmt);
+    // 2.0.68: backfill zero-sale calendar gaps - see fill_time_series_gaps's
+    // own doc comment for exactly why the chart needs this.
+    let revenue_time_series = fill_time_series_gaps(conn, revenue_time_series, &period_from, &period_to, granularity)?;
 
     // ---- Sales by platform (2.0.47, DIR-001 signature idea #02) ---------
     // Same scope as `period_summary`/`revenue_time_series` right above
@@ -1400,13 +1582,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(data.time_series_granularity, "day");
-        assert_eq!(data.revenue_time_series.len(), 2, "two distinct sale dates -> two buckets");
+        // 2.0.68: one bucket per calendar day in the whole requested range
+        // (2026-03-01..07 inclusive = 7 days) - not just the 2 days that
+        // actually had a sale. See fill_time_series_gaps's own doc comment
+        // for why the zero-sale days must be real, explicit points now.
+        assert_eq!(data.revenue_time_series.len(), 7, "every day in the period, including the zero-sale ones");
         assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
         assert_eq!(data.revenue_time_series[0].revenue_cents, 5000, "2000 + 3000 on the same day");
         assert_eq!(data.revenue_time_series[0].sold_tickets, 2, "two sales lines that day");
-        assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-03");
-        assert_eq!(data.revenue_time_series[1].revenue_cents, 1500);
-        assert_eq!(data.revenue_time_series[1].sold_tickets, 1);
+        assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-02");
+        assert_eq!(data.revenue_time_series[1].revenue_cents, 0, "no sale that day -> an explicit zero bucket, not a gap");
+        assert_eq!(data.revenue_time_series[2].bucket_start, "2026-03-03");
+        assert_eq!(data.revenue_time_series[2].revenue_cents, 1500);
+        assert_eq!(data.revenue_time_series[2].sold_tickets, 1);
+        assert_eq!(data.revenue_time_series[6].bucket_start, "2026-03-07", "the period's last day is still included");
         // Cross-check against the existing, already-trusted period total -
         // the chart must never be able to silently drift from the StatCards
         // showing the same period.
@@ -1438,9 +1627,18 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(data.revenue_time_series.len(), 1, "refunded day contributes no bucket at all");
+        // 2.0.68: every day in the period gets a bucket now (see
+        // fill_time_series_gaps) - the refunded day's own bucket must still
+        // show as an explicit zero, not silently disappear, since "no data"
+        // and "a real day with zero after its only sale was refunded" need
+        // to look the same on the chart.
+        assert_eq!(data.revenue_time_series.len(), 7, "every day in the period, including the refunded one");
+        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
         assert_eq!(data.revenue_time_series[0].revenue_cents, 2000);
         assert_eq!(data.revenue_time_series[0].sold_tickets, 1, "the refunded sale must not count as a sold ticket either");
+        assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-02");
+        assert_eq!(data.revenue_time_series[1].revenue_cents, 0, "the refunded day's only sale must not count");
+        assert_eq!(data.revenue_time_series[1].sold_tickets, 0);
     }
 
     // 1.7.5: sold_tickets is a real COUNT(*) of sales lines, deliberately
@@ -1473,11 +1671,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(data.revenue_time_series.len(), 2);
+        // 2.0.68: 7 days in the requested range now, not just the 2 that had
+        // a sale - see fill_time_series_gaps.
+        assert_eq!(data.revenue_time_series.len(), 7);
+        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
         assert_eq!(data.revenue_time_series[0].sold_tickets, 1);
         assert_eq!(data.revenue_time_series[0].revenue_cents, 9000);
+        assert_eq!(data.revenue_time_series[1].bucket_start, "2026-03-02");
         assert_eq!(data.revenue_time_series[1].sold_tickets, 3);
         assert_eq!(data.revenue_time_series[1].revenue_cents, 3000);
+        assert_eq!(data.revenue_time_series[2].sold_tickets, 0, "the rest of the period has no sales");
     }
 
     #[test]
@@ -1562,9 +1765,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(data.time_series_granularity, "week");
-        assert_eq!(data.revenue_time_series.len(), 1, "same ISO week -> one bucket");
-        assert_eq!(data.revenue_time_series[0].revenue_cents, 3000);
-        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-02-03", "earliest date in the bucket");
+        // 2.0.68: every ISO week in the 90-day requested range now gets its
+        // own bucket (see fill_time_series_gaps), so the two same-week sales
+        // still collapse into exactly ONE non-zero point among many zero
+        // ones - not a hardcoded total bucket count, which would make this
+        // test as fragile as hand-counting ISO weeks by eye.
+        assert!(data.revenue_time_series.len() > 1, "the zero-sale weeks must be real buckets too, not just this one");
+        let non_zero: Vec<_> = data.revenue_time_series.iter().filter(|p| p.revenue_cents != 0).collect();
+        assert_eq!(non_zero.len(), 1, "same ISO week -> still just one NON-ZERO bucket");
+        assert_eq!(non_zero[0].revenue_cents, 3000);
+        assert_eq!(non_zero[0].bucket_start, "2026-02-03", "earliest date in the bucket");
     }
 
     #[test]
@@ -1587,8 +1797,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(data.time_series_granularity, "month");
-        assert_eq!(data.revenue_time_series.len(), 1, "same month -> one bucket");
-        assert_eq!(data.revenue_time_series[0].revenue_cents, 3000);
+        // 2.0.68: Jan-Dec 2026 was requested, so all 12 real calendar months
+        // now get their own bucket (see fill_time_series_gaps) - not just the
+        // one month that actually had sales.
+        assert_eq!(data.revenue_time_series.len(), 12, "one bucket per real calendar month in the requested range");
+        let feb = &data.revenue_time_series[1];
+        // A real (non-empty) bucket keeps the SQL row's own bucket_start -
+        // MIN(sale_date) within the month, i.e. the earlier of the two sales -
+        // rather than the synthetic "first of the month" used to backfill an
+        // EMPTY bucket (see fill_time_series_gaps's doc comment).
+        assert_eq!(feb.bucket_start, "2026-02-03");
+        assert_eq!(feb.revenue_cents, 3000, "same month -> one non-zero bucket combining both sales");
+        let non_zero: Vec<_> = data.revenue_time_series.iter().filter(|p| p.revenue_cents != 0).collect();
+        assert_eq!(non_zero.len(), 1, "every other month must be a real zero bucket, not just absent");
     }
 
     #[test]
@@ -1611,9 +1832,67 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(data.revenue_time_series.len(), 1);
+        // 2.0.68: the 7-day requested range now yields 7 real daily buckets
+        // (see fill_time_series_gaps), not just the one day that had a sale.
+        assert_eq!(data.revenue_time_series.len(), 7, "one bucket per day across the 7-day requested range");
+        assert_eq!(data.revenue_time_series[0].bucket_start, "2026-03-01");
         assert_eq!(data.revenue_time_series[0].revenue_cents, 2000, "event_b's sale must not leak in");
-        assert_eq!(data.revenue_time_series[0].revenue_cents, data.period.revenue_cents);
+        let total: i64 = data.revenue_time_series.iter().map(|p| p.revenue_cents).sum();
+        assert_eq!(total, data.period.revenue_cents);
+    }
+
+    // ---- 2.0.68: Purchase cost reconciles with Profit (marko's report) ----
+
+    /// marko's exact report: "Purchase cost" (scoped by order purchase_date)
+    /// and Profit/Margin/ROI (scoped by sale_date) could legitimately
+    /// disagree for the very same period - even though each number was
+    /// independently correct for what it measured, side by side they never
+    /// added up. Seeds exactly the shape that exposes it: one ticket bought
+    /// well BEFORE the period but SOLD inside it (the old scoping excluded
+    /// its cost from "Purchase cost" entirely, even though it's exactly the
+    /// ticket Profit/COGS/ROI are about), and one ticket bought INSIDE the
+    /// period but not yet sold (the old scoping counted its cost toward
+    /// "Purchase cost" anyway, inflating it with a ticket Profit/COGS/ROI
+    /// never touch).
+    #[test]
+    fn period_purchase_cost_now_matches_cogs_of_tickets_actually_sold_in_the_period() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Reconcile Event", "upcoming", None);
+
+        let sold_in_period = seed_ticket(&conn, "1", event_id, "available", "EUR", 4000, None);
+        seed_sale(&mut conn, sold_in_period, "2026-03-02", 9000);
+
+        let bought_in_period_unsold = seed_ticket(&conn, "2", event_id, "available", "EUR", 2500, None);
+        conn.execute(
+            "UPDATE orders SET purchase_date = '2026-03-03' WHERE id = (SELECT order_id FROM tickets WHERE id = ?1)",
+            [bought_in_period_unsold],
+        )
+        .unwrap();
+
+        let data = get_dashboard_impl(
+            &conn,
+            Some("custom"),
+            Some("2026-03-01".to_string()),
+            Some("2026-03-07".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            data.period.purchased_tickets, 1,
+            "still just the ticket actually bought in-period - unchanged meaning, still feeds the 'N purchased in period' sub-line"
+        );
+        assert_eq!(
+            data.period.total_cost_cents, 4000,
+            "Purchase cost is now the cost of the SOLD ticket (COGS), not the unsold ticket bought in-period"
+        );
+        assert_eq!(data.period.total_cost_cents, data.period.cogs_cents, "Purchase cost and COGS must be the same figure now");
+        assert_eq!(
+            data.period.revenue_cents - data.period.total_cost_cents - data.period.selling_fees_cents,
+            data.period.profit_cents,
+            "Revenue - Purchase cost - fees must always equal the Profit shown next to it"
+        );
     }
 
     // ---- 2.0.47: previous-period comparison (DIR-001 KPI trend) -----------

@@ -506,6 +506,15 @@ pub struct Ticket {
     pub created_at: String,
     pub updated_at: String,
     pub sale_price_cents: Option<i64>,
+    /// 2.0.68: the ACTIVE (non-refunded) sale's payment_status, via the same
+    /// `LEFT JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status !=
+    /// 'refunded'` this struct's `sale_price_cents` already reuses (see
+    /// BASE_SQL's own doc comment in commands/tickets.rs) - no new JOIN, and
+    /// the same "at most one active sale per ticket" guarantee applies. None
+    /// for a never-sold ticket, or one whose only sale was refunded - same
+    /// cases where `sale_price_cents` is already None. Lets Order Detail show
+    /// a per-ticket "Payout status" column without needing `Sale[]` at all.
+    pub sale_payment_status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -594,6 +603,14 @@ pub struct Sale {
     /// 2.0.66: the ticket's own `delivery_status` - see
     /// `Ticket::delivery_status`'s doc comment for why this is free-text.
     pub ticket_delivery_status: Option<String>,
+    /// 2.0.68: the ticket's own `resale_status` (marko's manual Listed/
+    /// Unlisted/Sold tracking - see `Ticket::resale_status`'s doc comment).
+    /// Deliberately separate from `ticket_status` above: that's the real,
+    /// system-managed enum, this is marko's own free-text sheet mirror -
+    /// Sale Detail shows both as distinct badges, never one replacing the
+    /// other (marko's report: "ako je status tak bude status ... listed,
+    /// unlisted, sold").
+    pub ticket_resale_status: Option<String>,
     pub event_id: i64,
     pub event_name: String,
     /// 1.8.0: the ticket's own order, so Sale Detail can link straight to

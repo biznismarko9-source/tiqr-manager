@@ -434,22 +434,43 @@ export default function OrderDetail() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
+              // 2.0.68 (marko's report, "taktiez u orders to tak urob"): 3
+              // new columns added - Resale status/Delivery status/Payout
+              // status - alongside the existing Status column, which keeps
+              // its exact label/field/width untouched (it's ticket.status,
+              // the real system-managed enum - still essential to
+              // TicketStatusBar's bulk actions above). Their 26% combined
+              // budget comes entirely out of Seat's own considerable surplus
+              // (67.195% -> 41.195%) - this table has far fewer competing
+              // fixed columns than Sale Detail's version of this, so even
+              // after the cut Seat stays generous. See
+              // REDESIGN-2.0.68-REPORT.md.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[9.756%]" />
-                <col className="w-[67.195%]" />
+                <col className="w-[41.195%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10.122%]" />
+                <col className="w-[8%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
                 <col className="w-[2.927%]" />
               </colgroup>
             ) : (
+              // 2.0.68: same reasoning as the narrow colgroup above - the 3
+              // new columns' 22% combined budget comes out of Seat's surplus
+              // (68.175% -> 46.175%), every other column (including the
+              // existing Status) keeps its previously-measured width exactly.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[7.638%]" />
-                <col className="w-[68.175%]" />
+                <col className="w-[46.175%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[8.274%]" />
                 <col className="w-[6.436%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8.5%]" />
+                <col className="w-[6.5%]" />
                 <col className="w-[1.697%]" />
               </colgroup>
             )}
@@ -469,6 +490,12 @@ export default function OrderDetail() {
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 {!isNarrow && <th className="th-c text-right">Listing price</th>}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
+                {/* 2.0.68 (marko's report): 3 new, additive columns - none
+                    of them replace the real Status column just above, which
+                    is untouched. See REDESIGN-2.0.68-REPORT.md. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Resale status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Delivery status</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payout status</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"} />
               </tr>
             </thead>
@@ -503,6 +530,36 @@ export default function OrderDetail() {
                     )}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={t.status}>{t.status}</Badge>
+                    </td>
+                    {/* 2.0.68: marko's own manual Listed/Unlisted/Sold - see
+                        Ticket.resaleStatus's doc comment. Independent of the
+                        real Status badge just above. */}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {t.resaleStatus ? (
+                        <Badge tone={t.resaleStatus.toLowerCase()}>{t.resaleStatus}</Badge>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
+                    </td>
+                    {/* 2.0.68: the ticket's own deliveryStatus - see
+                        Ticket.deliveryStatus's doc comment. */}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {t.deliveryStatus ? (
+                        <Badge tone={t.deliveryStatus.toLowerCase()}>{t.deliveryStatus}</Badge>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
+                    </td>
+                    {/* 2.0.68: the ticket's ACTIVE sale's paymentStatus - see
+                        Ticket.salePaymentStatus's doc comment. Null for a
+                        never-sold ticket (most rows here), same as a blank
+                        Listing price shows "-" rather than a badge. */}
+                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                      {t.salePaymentStatus ? (
+                        <Badge tone={t.salePaymentStatus}>{t.salePaymentStatus}</Badge>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">

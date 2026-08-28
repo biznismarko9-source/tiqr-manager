@@ -227,6 +227,21 @@ const STATUS_TONES: Record<string, string> = {
   // Order-inventory status (derived client-side from ticket counts, not a DB column).
   active: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30",
   soldout: "bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600",
+  // 2.0.68: marko's own manual resaleStatus/deliveryStatus (Ticket.resaleStatus/
+  // deliveryStatus - free text, not a DB enum) shown as their own badges for
+  // the first time (Sale Detail, Order Detail) - see REDESIGN-2.0.68-REPORT.md.
+  // Callers pass `value.toLowerCase()` as the tone (the canonical values are
+  // capitalized - "Listed"/"Not delivered" - to match the <Select> options in
+  // Tickets.tsx's TicketEditModal), so keys here are lowercase. "listed"/
+  // "sold" deliberately reuse the SAME keys ticket.status already defines
+  // above - the two fields are conceptually related even though they're
+  // independent, so sharing a color reads as consistent rather than
+  // confusing. Any other free-text value (or the sheet-sync import path)
+  // falls back to Badge's own default slate below, same as any unrecognized
+  // tone already does.
+  unlisted: "bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600",
+  delivered: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30",
+  "not delivered": "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30",
   // Shown when a grouped sale's lines don't all share one value (e.g. one
   // ticket in a batch was refunded while the rest weren't).
   mixed: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30",

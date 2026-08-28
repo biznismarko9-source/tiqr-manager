@@ -242,6 +242,12 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   salePriceCents: number | null;
+  /** 2.0.68: the ticket's ACTIVE (non-refunded) sale's paymentStatus, via the
+   * same join salePriceCents already comes from - null for a never-sold
+   * ticket or one whose only sale was refunded, same cases where
+   * salePriceCents is already null. Powers Order Detail's Payout status
+   * column without needing a separate Sale[] fetch. */
+  salePaymentStatus: SalePaymentStatus | null;
 }
 
 export interface TicketUpdateInput {
@@ -302,6 +308,11 @@ export interface Sale {
   ticketStatus: TicketStatus;
   /** 2.0.66: the ticket's own deliveryStatus (see Ticket.deliveryStatus). */
   ticketDeliveryStatus: string | null;
+  /** 2.0.68: the ticket's own manual resaleStatus (Listed/Unlisted/Sold -
+   * see Ticket.resaleStatus). Deliberately separate from ticketStatus above:
+   * that's the real system-managed enum, this is marko's own free-text sheet
+   * mirror - Sale Detail shows both as distinct badges. */
+  ticketResaleStatus: string | null;
   eventId: number;
   eventName: string;
   /** The ticket's own order - every ticket belongs to exactly one order, so

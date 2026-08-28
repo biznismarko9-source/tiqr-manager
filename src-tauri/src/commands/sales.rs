@@ -22,6 +22,10 @@ const BASE_SQL: &str = "
       -- REDESIGN-2.0.66-REPORT.md. Reuses the SAME `t` join every field
       -- above already uses - no new JOIN needed.
       t.status as ticket_status, t.delivery_status as ticket_delivery_status,
+      -- 2.0.68: marko's own manual resale_status (Listed/Unlisted/Sold),
+      -- shown as its own distinct badge alongside ticket_status above - see
+      -- REDESIGN-2.0.68-REPORT.md.
+      t.resale_status as ticket_resale_status,
       t.event_id, e.name as event_name,
       t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
@@ -76,6 +80,7 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         seat: row.get("seat")?,
         ticket_status: row.get("ticket_status")?,
         ticket_delivery_status: row.get("ticket_delivery_status")?,
+        ticket_resale_status: row.get("ticket_resale_status")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
         order_id: row.get("order_id")?,

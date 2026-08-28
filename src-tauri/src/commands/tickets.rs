@@ -27,7 +27,12 @@ const BASE_SQL: &str = "
       t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents,
       t.listing_price_cents, t.currency, t.status, t.resale_status, t.delivery_status,
       t.notes, t.is_demo,
-      t.created_at, t.updated_at, sa.sale_price_cents as sale_price_cents
+      t.created_at, t.updated_at, sa.sale_price_cents as sale_price_cents,
+      -- 2.0.68: the active sale's payment_status, reusing the exact same
+      -- join sale_price_cents already depends on - see Ticket::sale_payment_
+      -- status's doc comment. Powers Order Detail's new Payout status
+      -- column (REDESIGN-2.0.68-REPORT.md).
+      sa.payment_status as sale_payment_status
     FROM tickets t
     JOIN events e ON e.id = t.event_id
     JOIN orders o ON o.id = t.order_id
@@ -63,6 +68,7 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         sale_price_cents: row.get("sale_price_cents")?,
+        sale_payment_status: row.get("sale_payment_status")?,
     })
 }
 
@@ -746,6 +752,51 @@ mod tests {
         let sql = format!("{BASE_SQL} WHERE t.id = ?1");
         let single = conn.query_row(&sql, [ticket_id], map_ticket).unwrap();
         assert_eq!(single.sale_price_cents, Some(1800));
+    }
+
+    /// 2.0.68: `sale_payment_status` reuses the exact same LEFT JOIN
+    /// `sale_price_cents` already depends on (see BASE_SQL's doc comment) -
+    /// this replays BUG #1's own refunded-plus-new-active-sale shape to prove
+    /// that reuse is safe: the refunded sale's own "paid" must never leak
+    /// through once a new active "pending" sale exists for the same ticket.
+    /// Powers Order Detail's new Payout status column.
+    #[test]
+    fn ticket_sale_payment_status_reflects_only_the_active_sale() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+
+        let never_sold = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        assert_eq!(
+            never_sold[0].sale_payment_status, None,
+            "a never-sold ticket has no payout status at all - not an empty string"
+        );
+
+        let first_sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        let sale_id_1 = create_sale_impl(&mut conn, &first_sale).unwrap();
+        refund_sale_impl(&mut conn, sale_id_1, None).unwrap();
+
+        let second_sale = SaleInput {
+            payment_status: Some("pending".to_string()),
+            ..first_sale
+        };
+        create_sale_impl(&mut conn, &second_sale).unwrap();
+
+        let results = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        assert_eq!(results.len(), 1, "still exactly one row - not fanned out by the join");
+        assert_eq!(
+            results[0].sale_payment_status.as_deref(),
+            Some("pending"),
+            "must reflect the new active sale, never the refunded 'paid' one"
+        );
     }
 
     // --- 1.8.3: bulk_update_tickets_impl -----------------------------------
