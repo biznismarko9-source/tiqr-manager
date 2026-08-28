@@ -481,7 +481,10 @@ export default function Settings() {
                 </div>
                 {appInfo && (
                   <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
-                    Database file: <span className="font-mono">{appInfo.dbPath}</span>
+                    {/* 2.0.72: signed-in email shown alongside the path now
+                        that different accounts can have entirely different
+                        files - see lib/auth.tsx's `switchDatabaseFor`. */}
+                    Database file ({user?.email}): <span className="font-mono">{appInfo.dbPath}</span>
                   </p>
                 )}
               </Card>
@@ -669,9 +672,16 @@ export default function Settings() {
         title="Restore this backup?"
         message={
           <>
-            Your <b>current data will be replaced</b> with the contents of{" "}
+            {/* 2.0.72: names the signed-in account explicitly, now that more
+                than one account's data can exist on this computer - a second
+                account restoring a backup file that happens to belong to a
+                different account would otherwise be an easy mistake to make,
+                since this dialog used to only ever mean "your one and only
+                database." */}
+            <b>{user?.email ?? "This account"}'s current data will be replaced</b> with the contents of{" "}
             <span className="break-all font-mono text-xs">{confirmRestorePath}</span>. The app will relaunch
-            automatically. This cannot be undone — back up your current data first if unsure.
+            automatically. This cannot be undone — make sure this backup file actually belongs to{" "}
+            {user?.email ?? "this account"} before continuing.
           </>
         }
         confirmLabel="Restore & relaunch"

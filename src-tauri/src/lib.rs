@@ -48,6 +48,15 @@ pub fn run() {
             db::run_migrations(&conn).map_err(|e| e.to_string())?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                // 2.0.72: this is the ONE global/legacy file, opened eagerly
+                // here exactly as before - it's what serves the one command
+                // that already fires before anyone is signed in (theme
+                // preference on the Welcome screen). The real per-account
+                // file (this legacy one, or a brand-new per-uid one) is
+                // switched in immediately after sign-in + approval by
+                // commands::database::switch_active_database - see that
+                // module's own doc comment for the full design.
+                db_path: Mutex::new(db_path),
                 oauth_cancel_flag: Mutex::new(None),
                 firebase_oauth_cancel_flag: Mutex::new(None),
             });
@@ -137,6 +146,7 @@ pub fn run() {
             commands::backup::validate_backup_file,
             commands::backup::restore_database,
             commands::app_info::get_app_info,
+            commands::database::switch_active_database,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
             commands::sheets_sync::get_sheets_connection_status,

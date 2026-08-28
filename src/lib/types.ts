@@ -703,6 +703,18 @@ export interface AppInfo {
   dbPath: string;
 }
 
+/** 2.0.72: result of switching the live database connection to a specific
+ * account's file - see api.ts's `switchActiveDatabase` and
+ * src-tauri/src/commands/database.rs's own doc comment for the full design. */
+export interface DatabaseSwitchOutcome {
+  dbPath: string;
+  /** True the first time this exact file is ever switched to - lets the
+   * frontend know for certain it's showing a brand-new, empty workspace
+   * rather than inferring that from an empty ticket list, which would also
+   * be (mis)read as "the switch silently failed." */
+  isNew: boolean;
+}
+
 export interface RestoreOutcome {
   safetyBackupPath: string;
 }

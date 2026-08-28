@@ -12,7 +12,7 @@ import {
 } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
 // placeholder (that version's own doc comment explained why a placeholder
@@ -49,6 +49,15 @@ interface AuthContextValue {
    * false if App.tsx's RequireAuth should show PendingApproval instead. See
    * fetchApproved below for exactly what "approved" means. */
   approved: boolean | null;
+  /** 2.0.72: true once the per-account database file for `user` is open and
+   * migrated - see `switchDatabaseFor` below. Only meaningful once `approved`
+   * is true; stays false the whole time an account is still pending, since
+   * there is nothing to switch to yet. */
+  dbReady: boolean;
+  /** 2.0.72: set when switching to this account's database file failed (e.g.
+   * disk full or a permissions problem). App.tsx's RequireAuth shows
+   * DatabaseError instead of the app itself while this is non-null. */
+  dbError: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
@@ -79,6 +88,18 @@ function toAuthUser(u: User): AuthUser {
 // every time this code runs, on every machine, in every timezone.
 const APPROVAL_GATE_CUTOFF = new Date("2026-08-28T00:00:00Z");
 
+// 2.0.72: pulled out of fetchApproved (used to be an inline closure there
+// named `createdBeforeGate`) so the per-account database switch below can
+// call the exact same check - an account is "legacy" (keeps using the one
+// original shared database file) if and only if it already existed before
+// the approval gate's own cutoff. Keeping this as one single function is
+// what guarantees the approval check and the database-file choice can never
+// drift apart from each other.
+function isGrandfatheredAccount(firebaseUser: User): boolean {
+  const createdAt = firebaseUser.metadata.creationTime ? new Date(firebaseUser.metadata.creationTime) : null;
+  return createdAt !== null && createdAt < APPROVAL_GATE_CUTOFF;
+}
+
 /** 2.0.71: the one Firestore read this whole app makes. See
  * APPROVAL_GATE_CUTOFF's own comment for the missing-doc reasoning, and
  * firestore.rules (repo root) for why the client can create this doc with
@@ -95,15 +116,11 @@ const APPROVAL_GATE_CUTOFF = new Date("2026-08-28T00:00:00Z");
  * read); a new-enough one gets approved only by an actual `approved: true`
  * successfully read back. */
 async function fetchApproved(firebaseUser: User): Promise<boolean> {
-  const createdBeforeGate = () => {
-    const createdAt = firebaseUser.metadata.creationTime ? new Date(firebaseUser.metadata.creationTime) : null;
-    return createdAt !== null && createdAt < APPROVAL_GATE_CUTOFF;
-  };
   try {
     const snap = await getDoc(doc(db, "users", firebaseUser.uid));
-    return snap.exists() ? snap.data().approved === true : createdBeforeGate();
+    return snap.exists() ? snap.data().approved === true : isGrandfatheredAccount(firebaseUser);
   } catch {
-    return createdBeforeGate();
+    return isGrandfatheredAccount(firebaseUser);
   }
 }
 
@@ -120,23 +137,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   // 2.0.71: see AuthContextValue's own doc comment for what each value means.
   const [approved, setApproved] = useState<boolean | null>(null);
+  // 2.0.72: see AuthContextValue's own doc comments for what these mean.
+  const [dbReady, setDbReady] = useState(false);
+  const [dbError, setDbError] = useState<string | null>(null);
+
+  // 2.0.72: swaps in this account's own SQLite file - called once, right
+  // after `approved` resolves to true. There is nothing meaningful to switch
+  // to before that: a still-pending account never reaches a data-consuming
+  // page (App.tsx's RequireAuth checks `approved` first, before ever looking
+  // at `dbReady`). Never throws - a failure is reported through `dbError`
+  // instead, the same pattern `fetchApproved` already uses above for
+  // Firestore read failures.
+  const switchDatabaseFor = useCallback(async (firebaseUser: User) => {
+    setDbError(null);
+    try {
+      await api.switchActiveDatabase(firebaseUser.uid, isGrandfatheredAccount(firebaseUser));
+      setDbReady(true);
+    } catch (err) {
+      setDbReady(false);
+      setDbError(errMsg(err));
+    }
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser ? toAuthUser(firebaseUser) : null);
       if (!firebaseUser) {
         setApproved(null);
+        setDbReady(false);
+        setDbError(null);
         setLoading(false);
         return;
       }
       // fetchApproved never rejects - see its own doc comment for how it
       // handles a Firestore read failure (not the same as "approved").
       fetchApproved(firebaseUser)
-        .then(setApproved)
+        .then((isApproved) => {
+          setApproved(isApproved);
+          // Fire-and-forget: RequireAuth independently gates on `dbReady`,
+          // so there's nothing more to sequence here.
+          if (isApproved) switchDatabaseFor(firebaseUser);
+        })
         .finally(() => setLoading(false));
     });
     return unsubscribe;
-  }, []);
+  }, [switchDatabaseFor]);
 
   const login = useCallback(async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
@@ -199,9 +244,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setApproved(false);
     } else {
-      setApproved(await fetchApproved(cred.user));
+      const isApproved = await fetchApproved(cred.user);
+      setApproved(isApproved);
+      if (isApproved) await switchDatabaseFor(cred.user);
     }
-  }, []);
+  }, [switchDatabaseFor]);
 
   const logout = useCallback(async () => {
     await signOut(auth);
@@ -214,8 +261,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, approved, login, register, loginWithGoogle, logout, updateName }),
-    [user, loading, approved, login, register, loginWithGoogle, logout, updateName],
+    () => ({ user, loading, approved, dbReady, dbError, login, register, loginWithGoogle, logout, updateName }),
+    [user, loading, approved, dbReady, dbError, login, register, loginWithGoogle, logout, updateName],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from "./lib/auth";
 import { useTheme } from "./lib/theme";
 import Welcome from "./pages/Welcome";
 import PendingApproval from "./pages/PendingApproval";
+import DatabaseError from "./pages/DatabaseError";
 import Dashboard from "./pages/Dashboard";
 import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
@@ -35,12 +36,19 @@ import Settings from "./pages/Settings";
 // approval check for this `user` hasn't resolved yet (see lib/auth.tsx).
 // Checked after the `!user` redirect on purpose: there is nothing to check
 // approval FOR until someone is actually signed in.
+//
+// 2.0.72: `dbError`/`dbReady` are checked last, after `approved` is
+// confirmed true - there is nothing to switch a database for until then (see
+// lib/auth.tsx's `switchDatabaseFor`), so a still-pending account can never
+// reach either of these checks.
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, loading, approved } = useAuth();
+  const { user, loading, approved, dbReady, dbError } = useAuth();
   if (loading) return null;
   if (!user) return <Navigate to="/welcome" replace />;
   if (approved === null) return null;
   if (!approved) return <PendingApproval />;
+  if (dbError) return <DatabaseError />;
+  if (!dbReady) return null;
   return <>{children}</>;
 }
 

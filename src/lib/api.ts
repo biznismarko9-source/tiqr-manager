@@ -18,6 +18,7 @@ import type {
   CsvPreview,
   CurrencyConversion,
   DashboardData,
+  DatabaseSwitchOutcome,
   EventCategory,
   EventInput,
   EventRecord,
@@ -285,6 +286,14 @@ export const api = {
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
+  /** 2.0.72: swaps the live database connection to the given account's file -
+   * called once by lib/auth.tsx right after Firebase confirms who's signed in
+   * AND that they're approved. `legacy` decides which file: `true` reuses the
+   * one original shared file (any account that already existed before this
+   * feature shipped), `false` gets its own brand-new per-account file. See
+   * commands/database.rs's own doc comment for the full design. */
+  switchActiveDatabase: (uid: string, legacy: boolean) =>
+    invoke<DatabaseSwitchOutcome>("switch_active_database", { uid, legacy }),
 
   // Settings (generic key/value, e.g. theme preference)
   getAppSetting: (key: string) => invoke<string | null>("get_app_setting", { key }),

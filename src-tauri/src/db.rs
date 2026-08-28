@@ -7,8 +7,22 @@ use tauri::Manager;
 /// Shared app state: a single mutex-guarded SQLite connection.
 /// The app is single-user/local-first, so a single serialized connection
 /// is simple and safe, and plenty fast for tens of thousands of rows.
+///
+/// 2.0.72: "single-user" above is now "single signed-in ACCOUNT at a time",
+/// not "single file forever" - see commands::database::switch_active_database.
+/// `db` can be swapped out mid-session to point at a completely different
+/// account's own file. `db_path` tracks which file that currently is, purely
+/// so restore_database/get_app_info can report/derive things relative to the
+/// CURRENT file instead of always the original legacy one. LOCK ORDERING
+/// RULE: whenever a function needs both fields together, lock `db` first,
+/// then `db_path`, inside the same critical section - never as two separate
+/// lock/unlock cycles. This is what stops a caller from ever observing the
+/// new connection paired with the old path (or vice versa) mid-switch.
+/// `switch_active_database_impl` is the only place that writes `db_path`,
+/// and it already follows this order.
 pub struct AppState {
     pub db: Mutex<Connection>,
+    pub db_path: Mutex<PathBuf>,
     /// 2.0.12: lets a "Cancel" click interrupt an in-flight "Sign in with
     /// Google" wait (see google_oauth::run_sign_in/accept_one_redirect) -
     /// `Some` only while commands::google_auth::start_google_sign_in is
@@ -87,6 +101,41 @@ pub fn resolve_db_path(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
     Ok(dir.join("tiqr-manager.sqlite3"))
 }
 
+/// 2.0.72: the one thing standing between a corrupted/unexpected Firebase
+/// uid value and a path-traversal-shaped filename. Rejects (never silently
+/// strips-and-continues) anything outside a plain alphanumeric/underscore/
+/// hyphen allowlist, plus empty input and anything implausibly long (real
+/// Firebase uids are short, fixed-length, URL-safe strings - 128 is a very
+/// generous ceiling, not a measured limit).
+pub fn sanitize_uid_for_filename(uid: &str) -> anyhow::Result<String> {
+    if uid.is_empty() {
+        anyhow::bail!("uid must not be empty");
+    }
+    if uid.len() > 128 {
+        anyhow::bail!("uid is implausibly long ({} chars)", uid.len());
+    }
+    if !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        anyhow::bail!("uid contains characters outside [A-Za-z0-9_-]");
+    }
+    Ok(uid.to_string())
+}
+
+/// 2.0.72: per-account counterpart to `resolve_db_path` above - one whole
+/// separate database file per signed-in Firebase account, so every existing
+/// query in this codebase keeps working completely unchanged (see
+/// commands::database's own module doc comment for the full reasoning).
+/// Deliberately NESTED (`users/<uid>/tiqr-manager.sqlite3`, not a flat
+/// `users/<uid>.sqlite3`) so that `db_path.parent()` - already used by
+/// restore_database to derive its `safety-backups` sibling directory -
+/// naturally lands inside that one account's own folder, with zero
+/// special-casing needed there.
+pub fn resolve_user_db_path(app: &tauri::AppHandle, uid: &str) -> anyhow::Result<PathBuf> {
+    let safe_uid = sanitize_uid_for_filename(uid)?;
+    let dir = app.path().app_data_dir()?.join("users").join(safe_uid);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("tiqr-manager.sqlite3"))
+}
+
 pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     // journal_mode returns a row with the resulting mode, so query_row it explicitly.
@@ -137,6 +186,48 @@ pub fn test_conn() -> Connection {
         .expect("enable foreign keys");
     run_migrations(&conn).expect("run migrations");
     conn
+}
+
+#[cfg(test)]
+mod sanitize_uid_tests {
+    use super::sanitize_uid_for_filename;
+
+    #[test]
+    fn a_normal_firebase_shaped_uid_passes_through_unchanged() {
+        assert_eq!(sanitize_uid_for_filename("abc123XYZ_-9").unwrap(), "abc123XYZ_-9");
+    }
+
+    #[test]
+    fn the_same_input_always_gives_the_same_output() {
+        let a = sanitize_uid_for_filename("Sameuid123").unwrap();
+        let b = sanitize_uid_for_filename("Sameuid123").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn two_different_uids_give_two_different_outputs() {
+        let a = sanitize_uid_for_filename("userAAA").unwrap();
+        let b = sanitize_uid_for_filename("userBBB").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_uid_containing_path_traversal_characters_is_rejected_not_mangled() {
+        assert!(sanitize_uid_for_filename("../../etc/passwd").is_err());
+        assert!(sanitize_uid_for_filename("a/b").is_err());
+        assert!(sanitize_uid_for_filename("a.b").is_err());
+    }
+
+    #[test]
+    fn an_empty_uid_is_rejected() {
+        assert!(sanitize_uid_for_filename("").is_err());
+    }
+
+    #[test]
+    fn an_implausibly_long_uid_is_rejected() {
+        let too_long = "a".repeat(129);
+        assert!(sanitize_uid_for_filename(&too_long).is_err());
+    }
 }
 
 /// Performance sanity check (section 10 of the stability pass): seeds a

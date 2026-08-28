@@ -266,14 +266,18 @@ pub fn validate_backup_file(src_path: String) -> AppResult<()> {
 /// responsible for relaunching the app right after this succeeds (via the
 /// process plugin's `relaunch()`), so every screen reloads with fresh data
 /// instead of risking stale in-memory state.
+///
+/// 2.0.72: derives `db_path` from `state.db_path` (the CURRENTLY active
+/// file - whichever account is signed in right now) rather than always the
+/// original legacy file, so a restore for a per-account file puts its safety
+/// backup next to THAT account's own folder, not always next to marko's. No
+/// longer needs `tauri::AppHandle` at all now that it isn't calling
+/// `resolve_db_path` itself - Tauri simply stops injecting the parameter,
+/// nothing else (the invoke_handler entry, the frontend call) needs to know.
 #[tauri::command]
-pub fn restore_database(
-    app: tauri::AppHandle,
-    state: State<AppState>,
-    src_path: String,
-) -> AppResult<RestoreOutcome> {
+pub fn restore_database(state: State<AppState>, src_path: String) -> AppResult<RestoreOutcome> {
     let mut conn = state.db.lock().unwrap();
-    let db_path = crate::db::resolve_db_path(&app)?;
+    let db_path = state.db_path.lock().unwrap().clone();
     let safety_dir = db_path
         .parent()
         .ok_or_else(|| AppError::Other("Could not resolve app data directory".into()))?
