@@ -128,6 +128,14 @@ export const IconCheck = (p: SVGProps<SVGSVGElement>) => (
     <path d="M20 6 9 17l-5-5" />
   </Svg>
 );
+// 2.0.73: Settings -> Lookups' hover-for-explanation affordance - see
+// InfoHint in Settings.tsx for how this is used.
+export const IconInfo = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 16v-5M12 8h.01" />
+  </Svg>
+);
 export const IconDatabase = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
     <ellipse cx="12" cy="5" rx="9" ry="3" />

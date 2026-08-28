@@ -13,8 +13,15 @@ export function Button({
   children,
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+  // 2.0.74: `transition-colors` -> `transition` (Tailwind's curated
+  // property list - color/background/border/opacity/box-shadow/transform/
+  // filter, not literally every property) plus `active:scale-[0.97]` - a
+  // small, brief press-down on click/tap, the same tactile feedback most
+  // native buttons already give you for free, that "hover:bg-..." alone
+  // doesn't. Purely cosmetic - disabled:pointer-events-none above already
+  // stops :active from ever triggering on a disabled button.
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus:ring-2 focus:ring-offset-1";
+    "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus:ring-2 focus:ring-offset-1";
   const variants: Record<ButtonVariant, string> = {
     primary: "bg-brand-600 text-white hover:bg-brand-700 shadow-sm focus:ring-brand-300",
     secondary:
@@ -421,8 +428,15 @@ export function Modal({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[1px] dark:bg-black/60">
-      <div className={`w-full ${width} rounded-xl bg-white shadow-xl dark:bg-slate-900`}>
+    // 2.0.74: backdrop fades in (`fadein`), panel fades+scales in
+    // (`pop-in`) - both defined once in index.css, shared with
+    // ConfirmDialog and the profile dropdown so every "a box just appeared"
+    // moment in the app moves the same way. Entrance-only (closing is still
+    // an instant unmount, same as before) - keeps this a small, contained
+    // change rather than needing every caller to also manage an "is this
+    // still animating out" state just to unmount a beat later.
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[1px] dark:bg-black/60 animate-[fadein_.15s_ease-out]">
+      <div className={`w-full ${width} rounded-xl bg-white shadow-xl dark:bg-slate-900 animate-[pop-in_.18s_ease-out]`}>
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5 dark:border-slate-800">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
           <button
@@ -467,8 +481,9 @@ export function ConfirmDialog({
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[1px] dark:bg-black/60">
-      <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl dark:bg-slate-900">
+    // 2.0.74: same entrance treatment as Modal above - see its comment.
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[1px] dark:bg-black/60 animate-[fadein_.15s_ease-out]">
+      <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl dark:bg-slate-900 animate-[pop-in_.18s_ease-out]">
         <div className="flex gap-3">
           <div
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${danger ? "bg-red-100 text-red-600 dark:bg-red-500/10 dark:text-red-400" : "bg-amber-100 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400"}`}

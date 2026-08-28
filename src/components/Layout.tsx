@@ -108,7 +108,12 @@ export default function Layout() {
             bottom of the sidebar - opening down would run off the window. */}
         <div ref={profileRef} className="relative border-t border-slate-100 dark:border-slate-800">
           {profileOpen && (
-            <div className="absolute inset-x-2 bottom-full mb-1 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
+            // 2.0.74: same "pop-in" entrance as Modal/ConfirmDialog
+            // (index.css) - `origin-bottom` so it visibly grows up out of
+            // the button it's anchored to (this menu opens upward) instead
+            // of scaling from its own center, which would look like it's
+            // growing out of thin air above the button.
+            <div className="absolute inset-x-2 bottom-full mb-1 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
               <Link
                 to="/settings"
                 onClick={() => setProfileOpen(false)}

@@ -44,6 +44,7 @@ import {
   IconChevronDown,
   IconDatabase,
   IconDownload,
+  IconInfo,
   IconLink,
   IconLogOut,
   IconPlus,
@@ -356,17 +357,24 @@ export default function Settings() {
 
           {section === "lookups" && (
             <Card className="p-5 lg:max-w-3xl">
-              <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
               {/* 1.9.3: split into two lists - marko didn't want "where you
                   bought it" and "where you sold it" sharing one pool any
                   more. Backed by the same `platforms` table either way (its
                   `kind` column has existed since the first migration, so no
                   schema change was needed) - a platform tagged "Both" simply
-                  appears in both lists below, via PlatformList's own filter. */}
-              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-                Purchase platforms show up when recording an order; Selling platforms show up when recording a sale.
-                Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.
-              </p>
+                  appears in both lists below, via PlatformList's own filter.
+                  2.0.73: the explanation of what Purchase/Selling/Both mean
+                  used to be a permanent paragraph here, every time - same
+                  "keep every feature, just don't show it when you don't need
+                  it" simplification already applied to Settings ->
+                  Integrations (REDESIGN-2.0.65-REPORT.md). It's now on the
+                  heading's own hover hint (InfoHint below) instead - nothing
+                  explained before is explained any less, it's just not
+                  permanently on screen. */}
+              <div className="mb-4 flex items-center gap-1.5">
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
+                <InfoHint text={`Purchase platforms show up when recording an order; Selling platforms show up when recording a sale. Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.`} />
+              </div>
               <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                 <PlatformList
                   heading="Purchase platforms"
@@ -393,11 +401,10 @@ export default function Settings() {
                   automatically the first time it's added (see
                   EventCategoryBadge.tsx) - nothing to pick here. */}
               <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-800">
-                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Event categories</h3>
-                <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-                  Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales.
-                  Not hardcoded — add as many as you like, each gets its own color automatically.
-                </p>
+                <div className="mb-4 flex items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Event categories</h3>
+                  <InfoHint text="Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales. Not hardcoded — add as many as you like, each gets its own color automatically." />
+                </div>
                 <div className="sm:max-w-sm">
                   <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
                 </div>
@@ -758,6 +765,19 @@ export default function Settings() {
  * existing platform be re-tagged after the fact (mainly useful right after
  * upgrading: every platform created before 1.9.3 defaulted to "both" and so
  * starts out in both lists, until re-tagged here). */
+/** 2.0.73: a small "(i)" glyph that carries a longer explanation as a native
+ * hover tooltip (plain `title` attribute - every browser/webview already
+ * knows how to show this, no extra tooltip library needed for one line of
+ * text). Lets a heading stay explained without a permanent paragraph of text
+ * underneath it - see Settings -> Lookups for where this replaced one. */
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span title={text} className="inline-flex cursor-help text-slate-300 dark:text-slate-600">
+      <IconInfo className="h-3.5 w-3.5" />
+    </span>
+  );
+}
+
 function PlatformList({
   heading,
   kind,

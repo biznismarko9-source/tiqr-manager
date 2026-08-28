@@ -61,6 +61,31 @@
   }
 }
 
+/* 2.0.74: shared entrance/exit motion for the app's "something just
+   appeared/disappeared" moments - toasts, modals, confirm dialogs, the
+   profile dropdown. Deliberately kept to these 3 keyframes (not one per
+   component) so every one of those moments reads as the same app, not a
+   pile of unrelated effects - and deliberately quick (150-190ms everywhere
+   these are used) so it reads as responsive polish, not something that
+   makes the app feel slower to use. `fadein` alone is for backdrops/overlays
+   (a plain dim, nothing to "grow" from); `pop-in` is for the box itself
+   (modal panel, confirm dialog panel, profile dropdown, a toast arriving);
+   `toast-out` is the one deliberate exit animation in the app, since a
+   toast disappearing on its own (nobody clicked anything) looks like a
+   glitch if it just vanishes - see lib/toast.tsx for how it's sequenced. */
+@keyframes fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-6px) scale(0.98); }
+}
+
 /* Thin, unobtrusive scrollbars for the dense tables in this app */
 ::-webkit-scrollbar {
   width: 10px;
