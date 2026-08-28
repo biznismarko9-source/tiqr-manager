@@ -5,6 +5,7 @@ import { ToastProvider } from "./lib/toast";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { useTheme } from "./lib/theme";
 import Welcome from "./pages/Welcome";
+import PendingApproval from "./pages/PendingApproval";
 import Dashboard from "./pages/Dashboard";
 import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
@@ -28,10 +29,18 @@ import Settings from "./pages/Settings";
 // in. Redirecting during that window would flash the Welcome screen on
 // every single app launch before snapping back. A blank instant is better
 // than a wrong-then-corrected screen.
+//
+// 2.0.71: `approved === null` gets the exact same "render nothing, don't
+// flash the wrong screen" treatment as `loading` - it means the Firestore
+// approval check for this `user` hasn't resolved yet (see lib/auth.tsx).
+// Checked after the `!user` redirect on purpose: there is nothing to check
+// approval FOR until someone is actually signed in.
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, approved } = useAuth();
   if (loading) return null;
   if (!user) return <Navigate to="/welcome" replace />;
+  if (approved === null) return null;
+  if (!approved) return <PendingApproval />;
   return <>{children}</>;
 }
 

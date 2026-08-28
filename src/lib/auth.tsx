@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   createUserWithEmailAndPassword,
+  getAdditionalUserInfo,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithCredential,
@@ -9,7 +10,8 @@ import {
   updateProfile,
   type User,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { auth, db } from "./firebase";
 import { api } from "./api";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
@@ -42,6 +44,11 @@ interface AuthContextValue {
   /** True only until Firebase's own session-restore has resolved once on
    * launch - see the effect below for why App.tsx's RequireAuth needs this. */
   loading: boolean;
+  /** 2.0.71: null while the Firestore approval check for the current `user`
+   * hasn't resolved yet (or there is no user), true if they can use the app,
+   * false if App.tsx's RequireAuth should show PendingApproval instead. See
+   * fetchApproved below for exactly what "approved" means. */
+  approved: boolean | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
@@ -59,6 +66,47 @@ function toAuthUser(u: User): AuthUser {
   };
 }
 
+// 2.0.71: any account created before this feature shipped has no
+// `users/{uid}` doc at all and must never be blocked by a gate that didn't
+// exist when they signed up (marko's own existing account included) - a
+// missing doc for one of those is treated as approved. An account created
+// ON OR AFTER this cutoff is a different story: for THOSE, a missing doc
+// means the write in register()/loginWithGoogle() below failed (Firestore
+// not enabled yet, rules not pasted in, offline at exactly the wrong
+// moment, ...) - and the correct failure direction there is "still
+// pending", never "let them in". Deliberately a fixed instant, not
+// "today" recomputed live - it must keep meaning the same real moment
+// every time this code runs, on every machine, in every timezone.
+const APPROVAL_GATE_CUTOFF = new Date("2026-08-28T00:00:00Z");
+
+/** 2.0.71: the one Firestore read this whole app makes. See
+ * APPROVAL_GATE_CUTOFF's own comment for the missing-doc reasoning, and
+ * firestore.rules (repo root) for why the client can create this doc with
+ * approved:false but can never itself flip it to true - only marko can, by
+ * hand, in the Firebase Console.
+ *
+ * Deliberately never rejects - both "no doc" AND "the read itself failed"
+ * (offline, Firestore not enabled yet, rules not pasted in yet, ...) fall
+ * back to the exact same cutoff rule below, on purpose: a failed read must
+ * NOT be treated as automatic approval, or shipping this before Firestore
+ * is actually set up in the Console would silently wave every brand-new
+ * registration straight through with no gate at all. An old-enough account
+ * gets the same benefit of the doubt either way (missing doc or failed
+ * read); a new-enough one gets approved only by an actual `approved: true`
+ * successfully read back. */
+async function fetchApproved(firebaseUser: User): Promise<boolean> {
+  const createdBeforeGate = () => {
+    const createdAt = firebaseUser.metadata.creationTime ? new Date(firebaseUser.metadata.creationTime) : null;
+    return createdAt !== null && createdAt < APPROVAL_GATE_CUTOFF;
+  };
+  try {
+    const snap = await getDoc(doc(db, "users", firebaseUser.uid));
+    return snap.exists() ? snap.data().approved === true : createdBeforeGate();
+  } catch {
+    return createdBeforeGate();
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   // Firebase restores a persisted session ASYNCHRONOUSLY on launch -
@@ -70,11 +118,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // of treating `user === null` as "definitely signed out" during that
   // window.
   const [loading, setLoading] = useState(true);
+  // 2.0.71: see AuthContextValue's own doc comment for what each value means.
+  const [approved, setApproved] = useState<boolean | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser ? toAuthUser(firebaseUser) : null);
-      setLoading(false);
+      if (!firebaseUser) {
+        setApproved(null);
+        setLoading(false);
+        return;
+      }
+      // fetchApproved never rejects - see its own doc comment for how it
+      // handles a Firestore read failure (not the same as "approved").
+      fetchApproved(firebaseUser)
+        .then(setApproved)
+        .finally(() => setLoading(false));
     });
     return unsubscribe;
   }, []);
@@ -92,6 +151,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // field change isn't an auth-state change) - update locally too so the
     // name appears immediately rather than only after a relaunch.
     setUser(toAuthUser(cred.user));
+    // 2.0.71: marks this brand-new account pending - see firestore.rules for
+    // why the app can write approved:false here but can never write true.
+    // Failure is swallowed on purpose, not surfaced as a registration error:
+    // the account itself was created successfully either way, and
+    // fetchApproved's own cutoff logic already treats a missing doc on a
+    // new-enough account as pending, not approved - so there's no silent
+    // bypass here, just a worse Console experience for marko on that one
+    // account (no name/email to see there, only pending status once he
+    // notices it in Authentication instead of Firestore).
+    try {
+      await setDoc(doc(db, "users", cred.user.uid), { name, email, approved: false, createdAt: serverTimestamp() });
+    } catch {
+      // see comment above
+    }
+    setApproved(false);
   }, []);
 
   const loginWithGoogle = useCallback(async (): Promise<void> => {
@@ -108,6 +182,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // resolves, but setting eagerly here means the UI never has to wait on
     // that round trip to show the right name.
     setUser(toAuthUser(cred.user));
+    // 2.0.71: a first-ever Google sign-in is also a brand-new account - same
+    // gate as register() above. getAdditionalUserInfo is the modular SDK's
+    // own way to tell "just created" apart from "signed in before", no
+    // extra network round trip needed to know which one this is.
+    if (getAdditionalUserInfo(cred)?.isNewUser) {
+      try {
+        await setDoc(doc(db, "users", cred.user.uid), {
+          name: toAuthUser(cred.user).name,
+          email: cred.user.email ?? "",
+          approved: false,
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        // see register()'s own comment on why this is swallowed on purpose
+      }
+      setApproved(false);
+    } else {
+      setApproved(await fetchApproved(cred.user));
+    }
   }, []);
 
   const logout = useCallback(async () => {
@@ -121,8 +214,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, login, register, loginWithGoogle, logout, updateName }),
-    [user, loading, login, register, loginWithGoogle, logout, updateName],
+    () => ({ user, loading, approved, login, register, loginWithGoogle, logout, updateName }),
+    [user, loading, approved, login, register, loginWithGoogle, logout, updateName],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

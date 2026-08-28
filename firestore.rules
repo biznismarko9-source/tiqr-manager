@@ -1,0 +1,55 @@
+rules_version = '2';
+
+// TIQR Manager - Firestore security rules.
+//
+// 2.0.71: added for exactly one purpose - marko's account-approval gate
+// (stop one person from registering multiple accounts). This is the ONLY
+// thing Firestore is used for in this app - see src/lib/firebase.ts's own
+// comment on `db` before reaching for Firestore anywhere else without
+// updating this file too.
+//
+// HOW TO APPLY THIS: Firebase Console -> your TIQR Manager project ->
+// Firestore Database -> Rules tab -> replace everything there with the
+// contents of this file -> Publish. This repo has no Firebase CLI project
+// wired up, so these rules are never deployed automatically by anything -
+// pasting them into the Console by hand (once, and again any time this file
+// changes) is the only way they take effect.
+//
+// WHAT THIS ACTUALLY ENFORCES: each signed-in Firebase user gets exactly one
+// document, at users/{their own uid}, created once by the app itself at
+// registration (src/lib/auth.tsx's register() / loginWithGoogle()) with
+// approved: false. These rules let that ONE specific write through - a
+// brand-new doc, for yourself, with approved explicitly false - and nothing
+// else: no updates, no deletes, and no way to create your own doc already
+// marked approved: true. The only way approved ever becomes true is marko
+// opening this same doc in the Firebase Console's data viewer (Firestore
+// Database -> Data tab -> users -> that document) and changing the field by
+// hand - Console access authenticates as the project owner, which these
+// rules do not apply to at all, by design (that asymmetry - the app can
+// never approve itself, only marko's own separate Console session can - is
+// the entire point of this file).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      // Read your own approval status only - never anyone else's.
+      allow get: if request.auth != null && request.auth.uid == userId;
+
+      // Create your own doc only, and only ever pending - never pre-approved.
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.approved == false;
+
+      // Nobody - including the doc's own owner - can update or delete it
+      // from the app. Approving someone is a Console-only action (see above).
+      allow update, delete: if false;
+    }
+
+    // Everything else is denied by default (no rule matches -> no access) -
+    // there is nothing else in this database to protect yet, but this stays
+    // explicit rather than relying on Firestore's own default-deny alone, so
+    // it's obvious at a glance that nothing was simply forgotten here.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
