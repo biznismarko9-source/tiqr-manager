@@ -515,6 +515,12 @@ pub struct Ticket {
     /// cases where `sale_price_cents` is already None. Lets Order Detail show
     /// a per-ticket "Payout status" column without needing `Sale[]` at all.
     pub sale_payment_status: Option<String>,
+    /// 2.0.69: the same active sale's own `id` - same join, same None cases
+    /// as `sale_payment_status` right above. Lets Order Detail's inline
+    /// Payout-status edit call the existing `bulk_update_sale_payment_status`
+    /// (sale-id-based, unchanged since before this feature) directly, with
+    /// no new "set payment status by ticket id" endpoint needed.
+    pub sale_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -581,6 +587,39 @@ pub struct BulkTicketUpdateInput {
 pub struct BulkTicketStatusInput {
     pub ticket_ids: Vec<i64>,
     pub status: String,
+}
+
+/// 2.0.69: input for the new direct, single-ticket-friendly command exposing
+/// `bulk_update_ticket_delivery_status_impl` (2.0.67) - that function has
+/// existed since 2.0.67 but was, until now, only ever reached indirectly via
+/// the Orders/Sales LIST pages' own order/sale-group-scoped bulk actions
+/// (`BulkOrdersDeliveryStatusInput`/`BulkSaleGroupsDeliveryStatusInput`
+/// above), neither of which fits "change just THIS one row's delivery
+/// status inline" - those resolve a whole order/sale-group down to tickets,
+/// not a single already-known ticket id. `ticket_ids` still takes a Vec (not
+/// a single id) so a future bulk selection elsewhere in the app - not just
+/// Sale/Order Detail's inline edit - could reuse this same endpoint; today's
+/// callers always pass exactly one.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketDeliveryStatusInput {
+    pub ticket_ids: Vec<i64>,
+    pub delivery_status: String,
+}
+
+/// 2.0.69: same shape and reasoning as `BulkTicketDeliveryStatusInput` above,
+/// for the brand-new `bulk_update_ticket_resale_status_impl` - marko's
+/// report wanted Status (his own manual Listed/Unlisted/Sold) editable
+/// inline on Sale Detail's table, and no endpoint at any raw-ticket-id level
+/// existed yet for `resale_status` (only the single-ticket `TicketUpdateInput`
+/// full-record editor did). Validated the same closed set the single-ticket
+/// editor's own `<Select>` offers - `RESALE_STATUS_OPTIONS` in Tickets.tsx -
+/// see `bulk_update_ticket_resale_status_impl`'s own doc comment.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketResaleStatusInput {
+    pub ticket_ids: Vec<i64>,
+    pub resale_status: String,
 }
 
 #[derive(Debug, Serialize, Clone)]

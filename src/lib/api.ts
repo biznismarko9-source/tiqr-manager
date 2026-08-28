@@ -8,6 +8,8 @@ import type {
   BulkSaleGroupsDeliveryStatusInput,
   BulkSaleGroupsPaymentStatusInput,
   BulkSalePaymentStatusInput,
+  BulkTicketDeliveryStatusInput,
+  BulkTicketResaleStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
   CategoryDetectionResult,
@@ -129,6 +131,13 @@ export const api = {
   /** 1.8.3: set one field to one value across many tickets at once, in a single all-or-nothing transaction. */
   bulkUpdateTickets: (input: BulkTicketUpdateInput) => invoke<Ticket[]>("bulk_update_tickets", { input }),
   bulkUpdateTicketStatus: (input: BulkTicketStatusInput) => invoke<Ticket[]>("bulk_update_ticket_status", { input }),
+  /** 2.0.69: direct, raw-ticket-id endpoints for Sale/Order Detail's inline
+   * status-badge edit - see BulkTicketDeliveryStatusInput/
+   * BulkTicketResaleStatusInput's own doc comments in types.ts. */
+  bulkUpdateTicketDeliveryStatus: (input: BulkTicketDeliveryStatusInput) =>
+    invoke<Ticket[]>("bulk_update_ticket_delivery_status", { input }),
+  bulkUpdateTicketResaleStatus: (input: BulkTicketResaleStatusInput) =>
+    invoke<Ticket[]>("bulk_update_ticket_resale_status", { input }),
   /** 2.0.19: every ticket type marko can currently pick - the 5 built-in
    * defaults, plus any other value already used on a real ticket (typed via
    * "Other..." in the app, or synced in from a sheet cell). Powers the "New

@@ -11,6 +11,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  InlineStatusSelect,
   Input,
   LoadingBlock,
   Modal,
@@ -23,6 +24,13 @@ import { IconArrowLeft, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
+import { DELIVERY_STATUS_OPTIONS, RESALE_STATUS_OPTIONS } from "./Tickets";
+
+// 2.0.69: the only 2 payment statuses this page's inline Payout-status edit
+// ever offers - "refunded" is deliberately excluded, it's its own dedicated
+// one-way action (the existing "Refund" button/RefundDialog), never a plain
+// status flip like the other two.
+const PAYOUT_STATUS_OPTIONS = ["pending", "paid"];
 
 /** Returns a value only when every line shares it, else null ("Mixed" in the UI). */
 function uniform<T>(lines: Sale[], pick: (s: Sale) => T): T | null {
@@ -528,27 +536,79 @@ export default function SaleDetail() {
                     </td>
                     {/* 2.0.68: marko's own manual Listed/Unlisted/Sold - see
                         Ticket.resaleStatus's doc comment. Independent of, and
-                        never replacing, the paymentStatus badge below. */}
+                        never replacing, the paymentStatus badge below.
+                        2.0.69: now editable right here, no Edit modal needed -
+                        see InlineStatusSelect's own doc comment. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      {s.ticketResaleStatus ? (
-                        <Badge tone={s.ticketResaleStatus.toLowerCase()}>{s.ticketResaleStatus}</Badge>
-                      ) : (
-                        <span className="text-slate-400 dark:text-slate-500">-</span>
-                      )}
+                      <InlineStatusSelect
+                        value={s.ticketResaleStatus}
+                        options={RESALE_STATUS_OPTIONS}
+                        title="Change Status"
+                        onChange={async (next) => {
+                          try {
+                            await api.bulkUpdateTicketResaleStatus({
+                              ticketIds: [s.ticketId],
+                              resaleStatus: next as "Listed" | "Unlisted" | "Sold",
+                            });
+                            toast.success(`${s.ticketCode} marked as ${next}`);
+                            load();
+                          } catch (e) {
+                            toast.error(errMsg(e));
+                          }
+                        }}
+                      />
                     </td>
                     {/* 2.0.68: the ticket's own deliveryStatus - see
-                        Ticket.deliveryStatus's doc comment. */}
+                        Ticket.deliveryStatus's doc comment. 2.0.69: editable
+                        right here, same as Status above. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      {s.ticketDeliveryStatus ? (
-                        <Badge tone={s.ticketDeliveryStatus.toLowerCase()}>{s.ticketDeliveryStatus}</Badge>
-                      ) : (
-                        <span className="text-slate-400 dark:text-slate-500">-</span>
-                      )}
+                      <InlineStatusSelect
+                        value={s.ticketDeliveryStatus}
+                        options={DELIVERY_STATUS_OPTIONS}
+                        title="Change delivery status"
+                        onChange={async (next) => {
+                          try {
+                            await api.bulkUpdateTicketDeliveryStatus({
+                              ticketIds: [s.ticketId],
+                              deliveryStatus: next as "Delivered" | "Not delivered",
+                            });
+                            toast.success(`${s.ticketCode} marked as ${next}`);
+                            load();
+                          } catch (e) {
+                            toast.error(errMsg(e));
+                          }
+                        }}
+                      />
                     </td>
                     {/* 2.0.68: renamed from the old bare "Status" - same
-                        paymentStatus badge, completely unchanged otherwise. */}
+                        paymentStatus badge, completely unchanged otherwise.
+                        2.0.69: editable right here too, EXCEPT once refunded -
+                        a refund stays its own dedicated, one-way action (the
+                        "Refund" button below), never a plain pending/paid
+                        flip, so a refunded line keeps the old plain,
+                        non-interactive Badge exactly as before. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
+                      {s.paymentStatus === "refunded" ? (
+                        <Badge tone={s.paymentStatus}>{s.paymentStatus}</Badge>
+                      ) : (
+                        <InlineStatusSelect
+                          value={s.paymentStatus}
+                          options={PAYOUT_STATUS_OPTIONS}
+                          title="Change payout status"
+                          onChange={async (next) => {
+                            try {
+                              await api.bulkUpdateSalePaymentStatus({
+                                saleIds: [s.id],
+                                paymentStatus: next as "pending" | "paid",
+                              });
+                              toast.success(`${s.code} marked as ${next}`);
+                              load();
+                            } catch (e) {
+                              toast.error(errMsg(e));
+                            }
+                          }}
+                        />
+                      )}
                       {s.paymentStatus === "refunded" && s.refundedAt && (
                         <p
                           className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500"

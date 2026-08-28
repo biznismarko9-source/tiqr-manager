@@ -248,6 +248,10 @@ export interface Ticket {
    * salePriceCents is already null. Powers Order Detail's Payout status
    * column without needing a separate Sale[] fetch. */
   salePaymentStatus: SalePaymentStatus | null;
+  /** 2.0.69: the same active sale's own id - null in the same cases
+   * salePaymentStatus is. Lets Order Detail's inline Payout-status edit call
+   * `bulkUpdateSalePaymentStatus` (sale-id-based) directly. */
+  saleId: number | null;
 }
 
 export interface TicketUpdateInput {
@@ -291,6 +295,26 @@ export interface BulkTicketUpdateInput {
 export interface BulkTicketStatusInput {
   ticketIds: number[];
   status: "available" | "listed" | "cancelled";
+}
+
+/** Input for `bulkUpdateTicketDeliveryStatus` (2.0.69) - a direct, raw-
+ * ticket-id endpoint around the same write `bulkSetOrdersDeliveryStatus`/
+ * `bulkSetSaleGroupsDeliveryStatus` already use internally, for Sale/Order
+ * Detail's inline Delivery status edit (one row = one already-known ticket
+ * id, nothing to resolve from an order/sale-group selection). `ticketIds`
+ * still takes an array so a future bulk selection could reuse this same
+ * endpoint - today's callers always pass exactly one id. */
+export interface BulkTicketDeliveryStatusInput {
+  ticketIds: number[];
+  deliveryStatus: "Delivered" | "Not delivered";
+}
+
+/** Input for `bulkUpdateTicketResaleStatus` (2.0.69) - same shape/reasoning
+ * as `BulkTicketDeliveryStatusInput` above, for marko's own manual Listed/
+ * Unlisted/Sold tracking. Powers Sale Detail's inline Status edit. */
+export interface BulkTicketResaleStatusInput {
+  ticketIds: number[];
+  resaleStatus: "Listed" | "Unlisted" | "Sold";
 }
 
 export interface Sale {

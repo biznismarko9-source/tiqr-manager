@@ -19,6 +19,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  InlineStatusSelect,
   Input,
   LoadingBlock,
   Modal,
@@ -30,10 +31,21 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
-import { TicketEditModal } from "./Tickets";
+import { DELIVERY_STATUS_OPTIONS, TicketEditModal } from "./Tickets";
 import { orderCompletionChecks } from "./Orders";
 import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
+
+// 2.0.69: the 3 real statuses a ticket can freely move between outside of a
+// sale - same closed set TicketStatusBar's own 3 buttons already offer, and
+// the same set bulk_update_ticket_status_impl accepts ("sold" is reachable
+// only via the Sales screen, never a plain dropdown pick - see that
+// function's doc comment in tickets.rs).
+const TICKET_STATUS_OPTIONS = ["available", "listed", "cancelled"];
+// 2.0.69: the only 2 payment statuses Order Detail's inline Payout-status
+// edit ever offers - "refunded" is its own dedicated action elsewhere
+// (Sale Detail's "Refund" button), never reachable from a plain dropdown.
+const PAYOUT_STATUS_OPTIONS = ["pending", "paid"];
 
 export default function OrderDetail() {
   const { id } = useParams();
@@ -434,41 +446,45 @@ export default function OrderDetail() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
-              // 2.0.68 (marko's report, "taktiez u orders to tak urob"): 3
-              // new columns added - Resale status/Delivery status/Payout
-              // status - alongside the existing Status column, which keeps
-              // its exact label/field/width untouched (it's ticket.status,
-              // the real system-managed enum - still essential to
-              // TicketStatusBar's bulk actions above). Their 26% combined
+              // 2.0.68 (marko's report, "taktiez u orders to tak urob"): 2
+              // new columns added - Delivery status/Payout status - alongside
+              // the existing Status column, which keeps its exact label/
+              // field/width untouched (it's ticket.status, the real
+              // system-managed enum - still essential to TicketStatusBar's
+              // bulk actions above). 2.0.69: dropped the 3rd new column,
+              // Resale status - marko's own follow-up: on this table it
+              // showed the same value as the real Status column right next
+              // to it in practice (both "Sold"), so it was pure redundant
+              // noise here - unlike Sale Detail, which has no other Status
+              // column to duplicate it, so that one stays. Their combined
               // budget comes entirely out of Seat's own considerable surplus
-              // (67.195% -> 41.195%) - this table has far fewer competing
+              // (67.195% -> 49.195%) - this table has far fewer competing
               // fixed columns than Sale Detail's version of this, so even
               // after the cut Seat stays generous. See
-              // REDESIGN-2.0.68-REPORT.md.
+              // REDESIGN-2.0.68-REPORT.md / REDESIGN-2.0.69-REPORT.md.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[9.756%]" />
-                <col className="w-[41.195%]" />
+                <col className="w-[49.195%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10.122%]" />
-                <col className="w-[8%]" />
                 <col className="w-[10%]" />
                 <col className="w-[8%]" />
                 <col className="w-[2.927%]" />
               </colgroup>
             ) : (
-              // 2.0.68: same reasoning as the narrow colgroup above - the 3
-              // new columns' 22% combined budget comes out of Seat's surplus
-              // (68.175% -> 46.175%), every other column (including the
-              // existing Status) keeps its previously-measured width exactly.
+              // 2.0.68/2.0.69: same reasoning as the narrow colgroup above -
+              // the 2 new columns' combined budget comes out of Seat's
+              // surplus (68.175% -> 53.175%), every other column (including
+              // the existing Status) keeps its previously-measured width
+              // exactly.
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[7.638%]" />
-                <col className="w-[46.175%]" />
+                <col className="w-[53.175%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[8.274%]" />
                 <col className="w-[6.436%]" />
-                <col className="w-[7%]" />
                 <col className="w-[8.5%]" />
                 <col className="w-[6.5%]" />
                 <col className="w-[1.697%]" />
@@ -490,10 +506,11 @@ export default function OrderDetail() {
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 {!isNarrow && <th className="th-c text-right">Listing price</th>}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
-                {/* 2.0.68 (marko's report): 3 new, additive columns - none
-                    of them replace the real Status column just above, which
-                    is untouched. See REDESIGN-2.0.68-REPORT.md. */}
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Resale status</th>
+                {/* 2.0.68 (marko's report): additive columns - neither
+                    replaces the real Status column just above, which is
+                    untouched. See REDESIGN-2.0.68-REPORT.md. (2.0.69 dropped
+                    a 3rd, Resale status - redundant with Status on this
+                    particular table, see REDESIGN-2.0.69-REPORT.md.) */}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Delivery status</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payout status</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"} />
@@ -528,35 +545,85 @@ export default function OrderDetail() {
                         {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
                       </td>
                     )}
+                    {/* 2.0.69: editable right here, EXCEPT once sold - "sold"
+                        must always correspond to an active sale (see
+                        bulk_update_ticket_status_impl's doc comment in
+                        tickets.rs), so it's neither a selectable target NOR a
+                        starting point this dropdown can move away from. A
+                        sold ticket keeps the old plain, non-interactive
+                        Badge; only leaves "sold" via a refund on Sale
+                        Detail. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      <Badge tone={t.status}>{t.status}</Badge>
-                    </td>
-                    {/* 2.0.68: marko's own manual Listed/Unlisted/Sold - see
-                        Ticket.resaleStatus's doc comment. Independent of the
-                        real Status badge just above. */}
-                    <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      {t.resaleStatus ? (
-                        <Badge tone={t.resaleStatus.toLowerCase()}>{t.resaleStatus}</Badge>
+                      {t.status === "sold" ? (
+                        <Badge tone={t.status}>{t.status}</Badge>
                       ) : (
-                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                        <InlineStatusSelect
+                          value={t.status}
+                          options={TICKET_STATUS_OPTIONS}
+                          title="Change status"
+                          onChange={async (next) => {
+                            try {
+                              await api.bulkUpdateTicketStatus({
+                                ticketIds: [t.id],
+                                status: next as "available" | "listed" | "cancelled",
+                              });
+                              toast.success(`${t.code} marked as ${next}`);
+                              load();
+                            } catch (e) {
+                              toast.error(errMsg(e));
+                            }
+                          }}
+                        />
                       )}
                     </td>
                     {/* 2.0.68: the ticket's own deliveryStatus - see
-                        Ticket.deliveryStatus's doc comment. */}
+                        Ticket.deliveryStatus's doc comment. 2.0.69: editable
+                        right here, no Edit modal needed. */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      {t.deliveryStatus ? (
-                        <Badge tone={t.deliveryStatus.toLowerCase()}>{t.deliveryStatus}</Badge>
-                      ) : (
-                        <span className="text-slate-400 dark:text-slate-500">-</span>
-                      )}
+                      <InlineStatusSelect
+                        value={t.deliveryStatus}
+                        options={DELIVERY_STATUS_OPTIONS}
+                        title="Change delivery status"
+                        onChange={async (next) => {
+                          try {
+                            await api.bulkUpdateTicketDeliveryStatus({
+                              ticketIds: [t.id],
+                              deliveryStatus: next as "Delivered" | "Not delivered",
+                            });
+                            toast.success(`${t.code} marked as ${next}`);
+                            load();
+                          } catch (e) {
+                            toast.error(errMsg(e));
+                          }
+                        }}
+                      />
                     </td>
                     {/* 2.0.68: the ticket's ACTIVE sale's paymentStatus - see
                         Ticket.salePaymentStatus's doc comment. Null for a
                         never-sold ticket (most rows here), same as a blank
-                        Listing price shows "-" rather than a badge. */}
+                        Listing price shows "-" rather than a badge - nothing
+                        to attach a payout status to yet, so nothing to edit
+                        either. 2.0.69: editable right here once there IS an
+                        active sale, via that sale's own id (saleId). */}
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                      {t.salePaymentStatus ? (
-                        <Badge tone={t.salePaymentStatus}>{t.salePaymentStatus}</Badge>
+                      {t.salePaymentStatus && t.saleId != null ? (
+                        <InlineStatusSelect
+                          value={t.salePaymentStatus}
+                          options={PAYOUT_STATUS_OPTIONS}
+                          title="Change payout status"
+                          onChange={async (next) => {
+                            try {
+                              await api.bulkUpdateSalePaymentStatus({
+                                saleIds: [t.saleId as number],
+                                paymentStatus: next as "pending" | "paid",
+                              });
+                              toast.success(`${t.code} marked as ${next}`);
+                              load();
+                            } catch (e) {
+                              toast.error(errMsg(e));
+                            }
+                          }}
+                        />
                       ) : (
                         <span className="text-slate-400 dark:text-slate-500">-</span>
                       )}

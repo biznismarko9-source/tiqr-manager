@@ -509,8 +509,11 @@ export function TicketsView({
 // možnosti", not growable like Ticket Type/Site Listed), matching exactly
 // the Orders & Sales sheet's own Status/Delivery status dropdowns
 // (commands/orders_sheet_sync.rs's STATUS_OPTIONS/DELIVERY_STATUS_OPTIONS).
-const RESALE_STATUS_OPTIONS = ["Listed", "Unlisted", "Sold"];
-const DELIVERY_STATUS_OPTIONS = ["Delivered", "Not delivered"];
+// 2.0.69: exported so Sale Detail/Order Detail's own inline status-badge
+// dropdowns (InlineStatusSelect) offer the exact same closed set as this
+// modal's own <Select> - one source of truth, not 3 copies that could drift.
+export const RESALE_STATUS_OPTIONS = ["Listed", "Unlisted", "Sold"];
+export const DELIVERY_STATUS_OPTIONS = ["Delivered", "Not delivered"];
 
 export function TicketEditModal({
   open,

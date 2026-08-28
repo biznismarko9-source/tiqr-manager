@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { IconAlertTriangle, IconChevronDown, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
 import type { TrendInfo } from "../lib/format";
 
@@ -256,6 +256,84 @@ export function Badge({ tone, title, children }: { tone: string; title?: string;
     >
       {children}
     </span>
+  );
+}
+
+/** 2.0.69 (marko's report): a `Badge` that IS the editing control - clicking
+ * it opens a native dropdown of `options` and commits the change immediately
+ * on selection, no separate Edit button/modal/Save step. Used for the
+ * Status/Delivery status/Payout status columns on Sale Detail and Order
+ * Detail, replacing the old "click Edit, change a field in the modal, click
+ * Save" round trip for exactly these 3 fields (every OTHER field - Section/
+ * Row/Seat/Notes/etc - still only edits through the full ticket/sale editor,
+ * unchanged).
+ *
+ * Deliberately a real `<select>`, not a custom floating listbox: same
+ * `appearance-none` + hand-drawn chevron trick the shared `Select` component
+ * above already uses (some WebKit builds otherwise force native light chrome
+ * on a `<select>`'s closed box once a non-first option is chosen, breaking
+ * dark mode) - proven to already work correctly in this exact app, and it
+ * comes with working keyboard/screen-reader support for free that a custom
+ * popup would have to rebuild from scratch. The trade-off: the OPEN
+ * dropdown's own list styling is whatever the OS/webview renders natively,
+ * not fully themeable - an accepted, minor cosmetic limitation of this
+ * approach, not a bug.
+ *
+ * `onChange` is awaited and this shows a brief disabled/"saving" state on
+ * the control itself while in flight - the caller is responsible for the
+ * actual API call, a toast, and reloading the page's data afterward (this
+ * component has no idea which field or endpoint it's driving). Selecting the
+ * value already shown, or the empty placeholder, is a no-op. */
+export function InlineStatusSelect({
+  value,
+  options,
+  onChange,
+  title,
+  emptyLabel = "-",
+}: {
+  value: string | null;
+  options: readonly string[];
+  onChange: (next: string) => void | Promise<void>;
+  title?: string;
+  emptyLabel?: string;
+}) {
+  const [saving, setSaving] = useState(false);
+  const cls =
+    STATUS_TONES[(value ?? "").toLowerCase()] ??
+    "bg-slate-100 text-slate-700 ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600";
+
+  return (
+    <div className="relative inline-block">
+      <select
+        title={title}
+        aria-label={title}
+        disabled={saving}
+        value={value ?? ""}
+        onChange={async (e) => {
+          const next = e.target.value;
+          if (!next || next === value) return;
+          setSaving(true);
+          try {
+            await onChange(next);
+          } finally {
+            setSaving(false);
+          }
+        }}
+        className={`appearance-none rounded-full py-0.5 pl-2 pr-5 text-xs font-medium capitalize ring-1 ring-inset cursor-pointer disabled:cursor-wait disabled:opacity-60 ${cls}`}
+      >
+        {!value && (
+          <option value="" disabled>
+            {emptyLabel}
+          </option>
+        )}
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+      <IconChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
+    </div>
   );
 }
 

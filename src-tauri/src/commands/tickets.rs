@@ -1,6 +1,9 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{BulkTicketField, BulkTicketStatusInput, BulkTicketUpdateInput, Ticket, TicketUpdateInput};
+use crate::models::{
+    BulkTicketDeliveryStatusInput, BulkTicketField, BulkTicketResaleStatusInput, BulkTicketStatusInput,
+    BulkTicketUpdateInput, Ticket, TicketUpdateInput,
+};
 use rusqlite::{params, Connection, Row};
 use std::collections::HashSet;
 use tauri::State;
@@ -32,7 +35,12 @@ const BASE_SQL: &str = "
       -- join sale_price_cents already depends on - see Ticket::sale_payment_
       -- status's doc comment. Powers Order Detail's new Payout status
       -- column (REDESIGN-2.0.68-REPORT.md).
-      sa.payment_status as sale_payment_status
+      sa.payment_status as sale_payment_status,
+      -- 2.0.69: the same active sale's own id, again reusing the exact same
+      -- join - lets the frontend call the existing sale-id-based
+      -- bulk_update_sale_payment_status directly for Order Detail's inline
+      -- Payout-status edit, with no new endpoint needed.
+      sa.id as sale_id
     FROM tickets t
     JOIN events e ON e.id = t.event_id
     JOIN orders o ON o.id = t.order_id
@@ -69,6 +77,7 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         updated_at: row.get("updated_at")?,
         sale_price_cents: row.get("sale_price_cents")?,
         sale_payment_status: row.get("sale_payment_status")?,
+        sale_id: row.get("sale_id")?,
     })
 }
 
@@ -479,12 +488,14 @@ pub fn bulk_update_ticket_status(state: State<AppState>, input: BulkTicketStatus
 /// allows any free text" split `bulk_update_sale_payment_status_impl`
 /// already draws for payment_status/pending/paid vs. refund.
 ///
-/// No `#[tauri::command]` wrapper: this is an internal primitive, called
-/// from the Orders/Sales list's own bulk actions (`commands::orders::
+/// Called from the Orders/Sales list's own bulk actions (`commands::orders::
 /// bulk_set_orders_delivery_status`, `commands::sales::
 /// bulk_set_sale_groups_delivery_status`) after THEY resolve their own
-/// order/sale-group selection down to ticket ids - never invoked directly
-/// from the frontend today.
+/// order/sale-group selection down to ticket ids. 2.0.69: ALSO now reachable
+/// directly, via the `bulk_update_ticket_delivery_status` command right
+/// below - Sale/Order Detail's new inline edit already has a raw ticket id
+/// in hand (one row = one ticket) and has no order/sale-group selection to
+/// resolve, so it calls straight in with a one-element `ticket_ids`.
 pub(crate) fn bulk_update_ticket_delivery_status_impl(
     conn: &mut Connection,
     ticket_ids: &[i64],
@@ -544,6 +555,108 @@ pub(crate) fn bulk_update_ticket_delivery_status_impl(
 
     tx.commit()?;
     Ok(ids)
+}
+
+/// 2.0.69: thin direct wrapper around `bulk_update_ticket_delivery_status_
+/// impl` - see that function's own doc comment for why this exists alongside
+/// the order/sale-group-scoped bulk actions rather than replacing them.
+/// Returns the updated ticket(s) refetched in one query, same pattern as
+/// `bulk_update_ticket_status` right above.
+#[tauri::command]
+pub fn bulk_update_ticket_delivery_status(
+    state: State<AppState>,
+    input: BulkTicketDeliveryStatusInput,
+) -> AppResult<Vec<Ticket>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_ticket_delivery_status_impl(&mut conn, &input.ticket_ids, &input.delivery_status)?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("{BASE_SQL} WHERE t.id IN ({placeholders}) ORDER BY t.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_ticket)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 2.0.69 (marko's report - Status editable inline on Sale Detail): the
+/// `tickets.resale_status` equivalent of `bulk_update_ticket_delivery_status_
+/// impl` right above - byte-identical shape (dedupe, validate-every-id-
+/// exists, one all-or-nothing UPDATE), just a different column and a
+/// different closed set. No status-based guard here either: `resale_status`
+/// is free text, completely independent of the protected `status` column
+/// (migration 010), settable regardless of whether the ticket is available/
+/// listed/sold/cancelled - exactly like `delivery_status` and exactly like
+/// the single-ticket `TicketEditModal` already allows.
+///
+/// Restricted to exactly the 3 values the app's own UI ever offers
+/// (`RESALE_STATUS_OPTIONS` in Tickets.tsx: "Listed"/"Unlisted"/"Sold") -
+/// same closed-set convention `bulk_update_ticket_delivery_status_impl`
+/// already follows for its own two values.
+pub(crate) fn bulk_update_ticket_resale_status_impl(
+    conn: &mut Connection,
+    ticket_ids: &[i64],
+    resale_status: &str,
+) -> AppResult<Vec<i64>> {
+    if ticket_ids.is_empty() {
+        return Err(AppError::Validation(
+            "Select at least one ticket to update".into(),
+        ));
+    }
+    if !["Listed", "Unlisted", "Sold"].contains(&resale_status) {
+        return Err(AppError::Validation(
+            "Status can only be changed to Listed, Unlisted or Sold.".into(),
+        ));
+    }
+
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut seen = HashSet::new();
+        for &id in ticket_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    let tx = conn.transaction()?;
+
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing_ids: HashSet<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM tickets WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing_ids.contains(id)) {
+        return Err(AppError::Validation(format!("Ticket #{missing} does not exist")));
+    }
+
+    let sql = format!(
+        "UPDATE tickets SET resale_status = ?1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    update_params.push(Box::new(resale_status.to_string()));
+    for &id in &ids {
+        update_params.push(Box::new(id));
+    }
+    let update_refs: Vec<&dyn rusqlite::ToSql> = update_params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, update_refs.as_slice())?;
+
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// 2.0.69: thin direct wrapper around `bulk_update_ticket_resale_status_impl`
+/// - same pattern as `bulk_update_ticket_delivery_status` right above.
+#[tauri::command]
+pub fn bulk_update_ticket_resale_status(
+    state: State<AppState>,
+    input: BulkTicketResaleStatusInput,
+) -> AppResult<Vec<Ticket>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_ticket_resale_status_impl(&mut conn, &input.ticket_ids, &input.resale_status)?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("{BASE_SQL} WHERE t.id IN ({placeholders}) ORDER BY t.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_ticket)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// The 5 options the app's own "New order" form (Orders.tsx) has always
@@ -1225,5 +1338,152 @@ mod tests {
         let updated_ids = bulk_update_ticket_delivery_status_impl(&mut conn, &[id, id, id], "Delivered").unwrap();
         assert_eq!(updated_ids, vec![id]);
         assert_eq!(ticket_delivery_status(&conn, id).as_deref(), Some("Delivered"));
+    }
+
+    // --- 2.0.69: bulk_update_ticket_resale_status_impl (inline Status edit) -
+
+    fn ticket_resale_status(conn: &Connection, id: i64) -> Option<String> {
+        conn.query_row("SELECT resale_status FROM tickets WHERE id=?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_only_changes_the_selected_tickets_out_of_four() {
+        let mut conn = test_conn();
+        let ids: Vec<i64> = (0..4).map(|_| seed_one_ticket(&conn)).collect();
+        let selected = vec![ids[0], ids[1], ids[2]];
+        let untouched = ids[3];
+
+        let updated_ids = bulk_update_ticket_resale_status_impl(&mut conn, &selected, "Listed").unwrap();
+        assert_eq!(updated_ids.len(), 3);
+
+        for &id in &selected {
+            assert_eq!(ticket_resale_status(&conn, id).as_deref(), Some("Listed"));
+        }
+        assert_eq!(
+            ticket_resale_status(&conn, untouched),
+            None,
+            "the 4th ticket was never selected, so it must stay untouched"
+        );
+    }
+
+    /// Same independence as bulk_update_ticket_delivery_status_impl - a sold
+    /// ticket must be reachable through this too, since resale_status has no
+    /// coupling to the protected `status` column.
+    #[test]
+    fn bulk_update_ticket_resale_status_works_on_a_sold_ticket_too() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        create_sale_impl(&mut conn, &sale).unwrap();
+        assert_eq!(ticket_status(&conn, ticket_id), "sold");
+
+        bulk_update_ticket_resale_status_impl(&mut conn, &[ticket_id], "Sold").unwrap();
+        assert_eq!(ticket_resale_status(&conn, ticket_id).as_deref(), Some("Sold"));
+        assert_eq!(ticket_status(&conn, ticket_id), "sold", "the real status column must be untouched");
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_can_move_between_all_three_values() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        bulk_update_ticket_resale_status_impl(&mut conn, &[id], "Listed").unwrap();
+        assert_eq!(ticket_resale_status(&conn, id).as_deref(), Some("Listed"));
+        bulk_update_ticket_resale_status_impl(&mut conn, &[id], "Unlisted").unwrap();
+        assert_eq!(ticket_resale_status(&conn, id).as_deref(), Some("Unlisted"));
+        bulk_update_ticket_resale_status_impl(&mut conn, &[id], "Sold").unwrap();
+        assert_eq!(ticket_resale_status(&conn, id).as_deref(), Some("Sold"));
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_rejects_an_arbitrary_value() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_resale_status_impl(&mut conn, &[id], "Maybe");
+        assert!(
+            result.is_err(),
+            "only Listed/Unlisted/Sold are real options - anything else must be rejected"
+        );
+        assert_eq!(ticket_resale_status(&conn, id), None);
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_is_all_or_nothing_with_a_missing_id() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let result = bulk_update_ticket_resale_status_impl(&mut conn, &[id, 999_999], "Listed");
+        assert!(result.is_err());
+        assert_eq!(
+            ticket_resale_status(&conn, id),
+            None,
+            "a failed bulk update must change nothing at all"
+        );
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_rejects_empty_selection() {
+        let mut conn = test_conn();
+        assert!(bulk_update_ticket_resale_status_impl(&mut conn, &[], "Listed").is_err());
+    }
+
+    #[test]
+    fn bulk_update_ticket_resale_status_dedupes_ids() {
+        let mut conn = test_conn();
+        let id = seed_one_ticket(&conn);
+        let updated_ids = bulk_update_ticket_resale_status_impl(&mut conn, &[id, id, id], "Listed").unwrap();
+        assert_eq!(updated_ids, vec![id]);
+        assert_eq!(ticket_resale_status(&conn, id).as_deref(), Some("Listed"));
+    }
+
+    // --- 2.0.69: Ticket.sale_id (powers Order Detail's inline Payout edit) -
+
+    #[test]
+    fn ticket_sale_id_is_none_until_sold_then_follows_the_active_sale_only() {
+        let mut conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+
+        let never_sold = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        assert_eq!(never_sold[0].sale_id, None);
+
+        let first_sale = SaleInput {
+            ticket_id,
+            platform_id: None,
+            sale_date: "2026-02-01".to_string(),
+            sale_price_cents: 2000,
+            selling_fees_cents: 0,
+            payment_status: Some("paid".to_string()),
+            buyer_reference: None,
+            notes: None,
+        };
+        let sale_id_1 = create_sale_impl(&mut conn, &first_sale).unwrap();
+        let after_sale = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        assert_eq!(after_sale[0].sale_id, Some(sale_id_1));
+
+        refund_sale_impl(&mut conn, sale_id_1, None).unwrap();
+        let second_sale = SaleInput { ..first_sale };
+        let sale_id_2 = create_sale_impl(&mut conn, &second_sale).unwrap();
+        assert_ne!(sale_id_1, sale_id_2);
+
+        let after_resell = list_tickets_impl(&conn, None, None, None, None, None, None).unwrap();
+        assert_eq!(
+            after_resell.len(),
+            1,
+            "still exactly one row - not fanned out by the join"
+        );
+        assert_eq!(
+            after_resell[0].sale_id,
+            Some(sale_id_2),
+            "must point at the new active sale, never the refunded one - this id is what Order Detail's \
+             inline Payout-status edit sends straight to bulk_update_sale_payment_status"
+        );
     }
 }

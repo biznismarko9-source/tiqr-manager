@@ -77,6 +77,8 @@ pub fn run() {
             commands::tickets::update_ticket,
             commands::tickets::bulk_update_tickets,
             commands::tickets::bulk_update_ticket_status,
+            commands::tickets::bulk_update_ticket_delivery_status,
+            commands::tickets::bulk_update_ticket_resale_status,
             commands::tickets::list_ticket_types,
             commands::pulls::list_pulls,
             commands::pulls::get_pull,
