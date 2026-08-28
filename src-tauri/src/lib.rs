@@ -41,6 +41,10 @@ pub fn run() {
         // 2.0.5: opens the system browser for "Sign in with Google" - see
         // google_oauth.rs's module doc comment.
         .plugin(tauri_plugin_opener::init())
+        // 2.0.76: desktop notifications for the new outbound-notification
+        // feature (commands/notifications.rs) - no ordering constraint
+        // against the other plugins here (unlike single-instance above).
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
@@ -147,6 +151,12 @@ pub fn run() {
             commands::backup::restore_database,
             commands::app_info::get_app_info,
             commands::database::switch_active_database,
+            commands::notifications::get_notification_status,
+            commands::notifications::set_notification_config,
+            commands::notifications::test_desktop_notification,
+            commands::notifications::test_email_notification,
+            commands::notifications::test_pushover_notification,
+            commands::notifications::check_and_send_notifications,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
             commands::sheets_sync::get_sheets_connection_status,

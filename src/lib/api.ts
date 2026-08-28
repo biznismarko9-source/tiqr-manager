@@ -25,6 +25,9 @@ import type {
   EventWithStats,
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
+  NotificationConfigInput,
+  NotificationStatus,
+  NotificationTestResult,
   OrderCurrencyConversionResult,
   OrderEditInput,
   OrderInput,
@@ -424,6 +427,21 @@ export const api = {
    * only on a real machine. */
   convertCurrency: (fromCurrency: string, toCurrency: string, amountsCents: number[]) =>
     invoke<CurrencyConversion>("convert_currency", { fromCurrency, toCurrency, amountsCents }),
+
+  // Outbound notifications (2.0.76) - desktop, email, Pushover. Settings ->
+  // Notifications; checkAndSendNotifications is the periodic check, called
+  // from Layout.tsx every 30 minutes - see that file's own comment.
+  getNotificationStatus: () => invoke<NotificationStatus>("get_notification_status"),
+  setNotificationConfig: (input: NotificationConfigInput) =>
+    invoke<NotificationStatus>("set_notification_config", { input }),
+  testDesktopNotification: () => invoke<NotificationTestResult>("test_desktop_notification"),
+  testEmailNotification: () => invoke<NotificationTestResult>("test_email_notification"),
+  testPushoverNotification: () => invoke<NotificationTestResult>("test_pushover_notification"),
+  /** Silent by design (mirrors checkForUpdate's own "never surfaces an
+   * error" contract) - a single disabled/misconfigured channel, or being
+   * fully offline, must never interrupt the app with an error toast. See
+   * commands/notifications.rs::check_and_send_notifications's doc comment. */
+  checkAndSendNotifications: () => invoke<void>("check_and_send_notifications"),
 };
 
 export function errMsg(e: unknown): string {

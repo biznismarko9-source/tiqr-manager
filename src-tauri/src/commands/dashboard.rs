@@ -412,6 +412,111 @@ pub fn get_dashboard(
     get_dashboard_impl(&conn, period.as_deref(), from, to, event_id, platform_id)
 }
 
+/// Attention/alerts (see `DashboardAlerts` doc comment in models.rs).
+/// Extracted (2.0.76) out of `get_dashboard_impl` below so it can be shared
+/// with `commands::notifications::check_and_send_notifications` - the new
+/// periodic outbound-notification check needs exactly this data and none of
+/// the rest of `DashboardData` (revenue trends, cashflow, recent lists), so
+/// keeping this piece standalone keeps a check that runs every 30 minutes
+/// cheap. `today` is passed in rather than calling `Local::now()` here,
+/// same "impl function stays pure/testable, caller supplies the real
+/// wall-clock date" convention `period_bounds` above already uses.
+pub(crate) fn compute_dashboard_alerts(conn: &Connection, today: NaiveDate) -> AppResult<DashboardAlerts> {
+    // Same "one primary currency, mixed = null" convention get_dashboard_impl
+    // itself uses for its own other sections - recomputed here (a cheap
+    // SELECT DISTINCT over an indexed column, see db.rs's own perf_smoke
+    // tests) rather than threaded through as parameters, so this function
+    // stays fully self-contained and independently testable with nothing
+    // but a Connection and a date.
+    let currencies: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT DISTINCT currency FROM tickets ORDER BY currency")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mixed_currencies = currencies.len() > 1;
+    let primary_currency = if currencies.is_empty() {
+        "EUR".to_string()
+    } else if currencies.iter().any(|c| c == "EUR") {
+        "EUR".to_string()
+    } else {
+        currencies[0].clone()
+    };
+
+    let unpaid_orders_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM orders WHERE payment_status IN ('unpaid','partial')",
+        [],
+        |r| r.get(0),
+    )?;
+    let missing_listing_price_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tickets
+         WHERE status IN ('available','listed') AND listing_price_cents IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let missing_listing_price_orders_count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT order_id) FROM tickets
+         WHERE status IN ('available','listed') AND listing_price_cents IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let (pending_sales_count, pending_sales_amount_cents): (i64, i64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(DISTINCT {key}), COALESCE(SUM(s.sale_price_cents),0)
+             FROM sales s WHERE s.payment_status = 'pending' AND s.currency = ?1",
+            key = sales_cmd::GROUP_KEY_EXPR
+        ),
+        [&primary_currency],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    let today_str = today.to_string();
+    let window_end = (today + Duration::days(UPCOMING_EVENT_WINDOW_DAYS)).to_string();
+    let upcoming_events_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+            SELECT e.id
+            FROM events e JOIN tickets t ON t.event_id = e.id
+            WHERE e.status = 'upcoming' AND e.event_date IS NOT NULL
+              AND e.event_date >= ?1 AND e.event_date <= ?2
+              AND t.status IN ('available','listed')
+            GROUP BY e.id
+         )",
+        params![today_str, window_end],
+        |r| r.get(0),
+    )?;
+    let mut upcoming_stmt = conn.prepare(
+        "SELECT e.id, e.name, e.event_date, COUNT(t.id) AS relevant_inventory
+         FROM events e JOIN tickets t ON t.event_id = e.id
+         WHERE e.status = 'upcoming' AND e.event_date IS NOT NULL
+           AND e.event_date >= ?1 AND e.event_date <= ?2
+           AND t.status IN ('available','listed')
+         GROUP BY e.id
+         ORDER BY e.event_date ASC, e.id ASC
+         LIMIT ?3",
+    )?;
+    let upcoming_events = upcoming_stmt
+        .query_map(params![today_str, window_end, UPCOMING_EVENTS_CAP], |r| {
+            Ok(UpcomingEventAlert {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                event_date: r.get(2)?,
+                relevant_inventory: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(upcoming_stmt);
+
+    Ok(DashboardAlerts {
+        unpaid_orders_count,
+        missing_listing_price_count,
+        missing_listing_price_orders_count,
+        upcoming_events_count,
+        upcoming_events,
+        pending_sales_count,
+        pending_sales_amount_cents,
+        pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
+    })
+}
+
 /// Split out from the `get_dashboard` command (same "impl function + thin
 /// tauri::command wrapper" pattern already used by list_orders/list_tickets/
 /// list_sale_groups) so it is directly unit-testable against a plain
@@ -698,120 +803,9 @@ pub(crate) fn get_dashboard_impl(
     };
 
     // ---- Attention / Alerts ----------------------------------------------
-    // Simple, transparent counts - no scoring, no new alert engine, no
-    // persisted state, not period-filtered (these are "right now" facts).
-    let unpaid_orders_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM orders WHERE payment_status IN ('unpaid','partial')",
-        [],
-        |r| r.get(0),
-    )?;
-    let missing_listing_price_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tickets
-         WHERE status IN ('available','listed') AND listing_price_cents IS NULL",
-        [],
-        |r| r.get(0),
-    )?;
-    // 2.0.48: marko's report - the Activity tab's "Missing listing price"
-    // card reads confusingly ticket-by-ticket (showed "27") when he thinks
-    // in orders - one order can hold many tickets, so one half-priced order
-    // shouldn't look like a pile of 27 unrelated problems. Deliberately a
-    // SEPARATE field from `missing_listing_price_count` above rather than
-    // changing what that one counts: that field stays ticket-scoped because
-    // the Overview "Potential Profit" sentence (Dashboard.tsx, and the
-    // identical wording on Event Detail) is genuinely about how many
-    // individual tickets are dragging the estimate down, which IS a
-    // per-ticket fact and must not change. This new field is order-scoped,
-    // for the Activity alert card specifically - counts an order once no
-    // matter how many of its still-unsold tickets are missing a price.
-    let missing_listing_price_orders_count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT order_id) FROM tickets
-         WHERE status IN ('available','listed') AND listing_price_cents IS NULL",
-        [],
-        |r| r.get(0),
-    )?;
-    // 1.8.3 (section 13, Payments visibility): sales side of "money not yet
-    // settled" - the counterpart to unpaid_orders_count above. Scoped to
-    // primary_currency like every other money total on this dashboard (see
-    // pending_sales_currency doc comment on DashboardAlerts for why that's
-    // safe even though this query itself doesn't touch tickets.currency).
-    //
-    // 2.0.48: COUNT used to be a plain COUNT(*) against the `sales` table,
-    // which stores one row PER TICKET - a multi-ticket "New sale" batch
-    // shares one batch_id across several rows (see sales.rs's GROUP_KEY_EXPR
-    // doc comment), so a single 4-ticket pending sale used to count as 4.
-    // That's exactly marko's report: "shows 12, I only made 3 sales". Now
-    // counts distinct sale GROUPS with the same GROUP_KEY_EXPR the Sales
-    // screen itself already groups by. The SUM stays a plain per-row sum on
-    // purpose - the total money outstanding is correct regardless of how
-    // many tickets any one sale bundled together.
-    //
-    // Second pair of eyes caught one honest caveat worth stating rather than
-    // overclaiming: this query is scoped to `primary_currency`, same as
-    // every other money total on this dashboard (pre-existing behavior,
-    // unchanged by this fix) - but `create_sales_batch_impl` never enforces
-    // one currency across a batch's lines, so a (very unusual) batch mixing
-    // two currencies could have some of its lines counted here and others
-    // not, while the Sales screen's own grouped view has no such currency
-    // filter and would still show it as one row. Not something marko
-    // reported and not fixed here - flagging it precisely so nobody
-    // mistakes this dashboard number for a byte-for-byte match of "rows on
-    // the Sales screen" in that specific edge case.
-    let (pending_sales_count, pending_sales_amount_cents): (i64, i64) = conn.query_row(
-        &format!(
-            "SELECT COUNT(DISTINCT {key}), COALESCE(SUM(s.sale_price_cents),0)
-             FROM sales s WHERE s.payment_status = 'pending' AND s.currency = ?1",
-            key = sales_cmd::GROUP_KEY_EXPR
-        ),
-        [&primary_currency],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-
-    let today = Local::now().date_naive().to_string();
-    let window_end = (Local::now().date_naive() + Duration::days(UPCOMING_EVENT_WINDOW_DAYS)).to_string();
-    let upcoming_events_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM (
-            SELECT e.id
-            FROM events e JOIN tickets t ON t.event_id = e.id
-            WHERE e.status = 'upcoming' AND e.event_date IS NOT NULL
-              AND e.event_date >= ?1 AND e.event_date <= ?2
-              AND t.status IN ('available','listed')
-            GROUP BY e.id
-         )",
-        params![today, window_end],
-        |r| r.get(0),
-    )?;
-    let mut upcoming_stmt = conn.prepare(
-        "SELECT e.id, e.name, e.event_date, COUNT(t.id) AS relevant_inventory
-         FROM events e JOIN tickets t ON t.event_id = e.id
-         WHERE e.status = 'upcoming' AND e.event_date IS NOT NULL
-           AND e.event_date >= ?1 AND e.event_date <= ?2
-           AND t.status IN ('available','listed')
-         GROUP BY e.id
-         ORDER BY e.event_date ASC, e.id ASC
-         LIMIT ?3",
-    )?;
-    let upcoming_events = upcoming_stmt
-        .query_map(params![today, window_end, UPCOMING_EVENTS_CAP], |r| {
-            Ok(UpcomingEventAlert {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                event_date: r.get(2)?,
-                relevant_inventory: r.get(3)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(upcoming_stmt);
-
-    let alerts = DashboardAlerts {
-        unpaid_orders_count,
-        missing_listing_price_count,
-        missing_listing_price_orders_count,
-        upcoming_events_count,
-        upcoming_events,
-        pending_sales_count,
-        pending_sales_amount_cents,
-        pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
-    };
+    // Extracted (2.0.76) into compute_dashboard_alerts, shared with the new
+    // periodic notification check - see that function's own doc comment.
+    let alerts = compute_dashboard_alerts(conn, today)?;
 
     // ---- Cashflow (1.9.0) ---------------------------------------------------
     // Money actually collected from buyers vs. still owed to be collected -

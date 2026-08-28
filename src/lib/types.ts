@@ -1029,3 +1029,57 @@ export interface BulkCurrencyConversionResult {
   converted: OrderCurrencyConversion[];
   skipped: { id: number; reason: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// Outbound notifications (2.0.76) - desktop, email, Pushover. Settings ->
+// Notifications; the periodic check itself runs from Layout.tsx. Mirrors
+// src-tauri/src/models.rs's NotificationStatus/NotificationConfigInput/
+// NotificationTestResult exactly (serde's rename_all = "camelCase") - see
+// that file's own doc comments for the full design (never echoing a secret
+// back, Option<String> = "leave unchanged" on the input side, etc).
+// ---------------------------------------------------------------------------
+
+/** What Settings -> Notifications loads to show the current state. Secret
+ * fields (the SMTP password, the Pushover keys) are never included - only
+ * whether one is currently stored (`*Set`). Never pre-fill a secret input
+ * from this - see NotificationConfigInput below. */
+export interface NotificationStatus {
+  desktopEnabled: boolean;
+  emailEnabled: boolean;
+  emailSmtpHost: string;
+  emailSmtpPort: number;
+  emailSmtpUsername: string;
+  emailSmtpPasswordSet: boolean;
+  emailFromAddress: string;
+  emailToAddress: string;
+  pushoverEnabled: boolean;
+  pushoverUserKeySet: boolean;
+  pushoverApiTokenSet: boolean;
+}
+
+/** What Settings -> Notifications submits to `setNotificationConfig`. Every
+ * secret field is optional/nullable: omit it (or send null) to leave
+ * whatever is already stored untouched - exactly what a secret input the
+ * user left blank means, since it's never pre-filled with a real value to
+ * begin with. Send a real string only when the user actually typed a new
+ * one. */
+export interface NotificationConfigInput {
+  desktopEnabled: boolean;
+  emailEnabled: boolean;
+  emailSmtpHost: string;
+  emailSmtpPort: number;
+  emailSmtpUsername: string;
+  emailSmtpPassword?: string | null;
+  emailFromAddress: string;
+  emailToAddress: string;
+  pushoverEnabled: boolean;
+  pushoverUserKey?: string | null;
+  pushoverApiToken?: string | null;
+}
+
+/** Result of one "Send test" click (one per channel) - unlike the silent
+ * periodic check, a test click says plainly whether it worked. */
+export interface NotificationTestResult {
+  success: boolean;
+  message: string;
+}

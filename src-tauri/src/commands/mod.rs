@@ -10,6 +10,7 @@ pub mod events;
 pub mod firebase_google_auth;
 pub mod google_auth;
 pub mod lookups;
+pub mod notifications;
 pub mod orders;
 pub mod orders_sheet_sync;
 pub mod pulls;

@@ -90,6 +90,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "012_event_categories",
         include_str!("../migrations/012_event_categories.sql"),
     ),
+    (
+        "013_notifications",
+        include_str!("../migrations/013_notifications.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

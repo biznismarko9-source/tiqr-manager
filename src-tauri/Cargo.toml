@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.0.74"
+version = "2.0.76"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -38,6 +38,11 @@ tauri-plugin-single-instance = "2"
 # does not affect) the existing service-account flows, which never show the
 # user anything in a browser.
 tauri-plugin-opener = "2"
+# 2.0.76: desktop notifications for the new outbound-notification feature
+# (commands/notifications.rs) - Tauri's own official plugin for this, same
+# "official plugin, one Cargo line + one capability permission" pattern as
+# every other tauri-plugin-* dependency above.
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
@@ -68,6 +73,24 @@ base64 = "0.22"
 # authenticates as a fixed machine identity rather than a human signing in.
 rand = "0.9"
 sha2 = "0.10"
+# 2.0.76: the email channel of the new outbound-notification feature
+# (commands/notifications.rs). Uses the BLOCKING SmtpTransport (not
+# AsyncSmtpTransport, which needs a tokio runtime this app doesn't otherwise
+# run) inside tauri::async_runtime::spawn_blocking - see that module's own
+# doc comment. default-features = false + explicit "rustls-tls" (checked
+# directly against lettre 0.11.23's own Cargo.toml, not guessed) is
+# deliberate: lettre's OWN default feature set pulls in "native-tls", which
+# means openssl/openssl-sys - exactly the "needs a system OpenSSL install on
+# the Windows GitHub Actions runner that actually produces the shipped
+# installer" problem the reqwest dependency above already avoids on
+# purpose. "rustls-tls" pulls in rustls + ring (crypto) + webpki-roots
+# (a bundled Mozilla root store, no OS cert store dependency either) -
+# fully self-contained, same portability reasoning as reqwest's own
+# "rustls" feature above. "pool" (SMTP connection pooling, in lettre's
+# default set) is dropped too - this app only ever sends one-off messages
+# from an occasional periodic check, never enough volume to benefit from a
+# pooled/reused connection.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls-tls"] }
 
 [profile.release]
 panic = "abort"

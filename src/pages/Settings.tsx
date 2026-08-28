@@ -9,6 +9,9 @@ import {
   type CsvPreview,
   type EventCategory,
   type GoogleSignInStatus,
+  type NotificationConfigInput,
+  type NotificationStatus,
+  type NotificationTestResult,
   type Platform,
   type SheetsConnectionStatus,
   type SheetsConnectionTestResult,
@@ -19,6 +22,7 @@ import {
   Badge,
   Button,
   Card,
+  CHECKBOX_CLASS,
   ConfirmDialog,
   Field,
   Input,
@@ -41,6 +45,7 @@ import { EventCategorySwatch } from "../components/EventCategoryBadge";
 import {
   IconAlertTriangle,
   IconArrowLeft,
+  IconBell,
   IconChevronDown,
   IconDatabase,
   IconDownload,
@@ -81,6 +86,10 @@ const SECTIONS = [
   { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
   { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
   { key: "integrations", title: "Integrations", description: "Connect Pulls, Orders and Tickets to a Google Sheet.", icon: IconLink },
+  // 2.0.76: desktop/email/Pushover alerts for the same 4 things the
+  // Dashboard's bell already tracks - see NotificationsCard below and
+  // REDESIGN-2.0.76-REPORT.md.
+  { key: "notifications", title: "Notifications", description: "Desktop, email and Pushover alerts for the things that need your attention.", icon: IconBell },
   { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
   // 2.0.44: your name/email/sign-in + Log out - see the profile widget at
@@ -566,6 +575,12 @@ export default function Settings() {
                   onCreate={api.createOrdersSheet}
                 />
               </div>
+            </div>
+          )}
+
+          {section === "notifications" && (
+            <div className="lg:max-w-2xl">
+              <NotificationsCard />
             </div>
           )}
 
@@ -2227,5 +2242,318 @@ function CsvImportModal({
         </Button>
       </ModalFooter>
     </Modal>
+  );
+}
+
+// 2.0.76: Settings -> Notifications. Desktop/email/Pushover alerts for the
+// same 4 categories AlertBell/AttentionSection (Dashboard.tsx) already
+// track - no new detection logic here, this only configures where those
+// same facts also get sent. See commands/notifications.rs's module doc
+// comment for the full backend design.
+//
+// Same "collapse once configured" visual convention SheetsConnectionCard
+// uses (2.0.65) - `editing` reopens the full form, e.g. to change a
+// password or add a second channel. Not configured yet (no channel
+// enabled), there's nothing to collapse, so the full form always shows.
+//
+// Secret fields (SMTP password, Pushover user key/API token) are NEVER
+// pre-filled from `NotificationStatus` - it only ever carries `*Set: bool`
+// presence flags, never the actual values (see that type's own doc comment,
+// types.ts). Each secret field always starts blank with a placeholder
+// explaining that; leaving it blank on Save means "keep whatever is already
+// stored", exactly what `NotificationConfigInput`'s `Option<String>` fields
+// expect.
+function NotificationsCard() {
+  const toast = useToast();
+  const [status, setStatus] = useState<NotificationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testBusy, setTestBusy] = useState<"desktop" | "email" | "pushover" | null>(null);
+  const [testResults, setTestResults] = useState<
+    Partial<Record<"desktop" | "email" | "pushover", NotificationTestResult>>
+  >({});
+
+  const [desktopEnabled, setDesktopEnabled] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [emailSmtpHost, setEmailSmtpHost] = useState("");
+  const [emailSmtpPort, setEmailSmtpPort] = useState(587);
+  const [emailSmtpUsername, setEmailSmtpUsername] = useState("");
+  const [emailSmtpPassword, setEmailSmtpPassword] = useState("");
+  const [emailFromAddress, setEmailFromAddress] = useState("");
+  const [emailToAddress, setEmailToAddress] = useState("");
+  const [pushoverEnabled, setPushoverEnabled] = useState(false);
+  const [pushoverUserKey, setPushoverUserKey] = useState("");
+  const [pushoverApiToken, setPushoverApiToken] = useState("");
+
+  // Applies a freshly loaded/saved status to the form - every non-secret
+  // field mirrors it exactly; secret fields always reset to blank (see this
+  // component's own doc comment above for why).
+  const applyStatus = (s: NotificationStatus) => {
+    setStatus(s);
+    setDesktopEnabled(s.desktopEnabled);
+    setEmailEnabled(s.emailEnabled);
+    setEmailSmtpHost(s.emailSmtpHost);
+    setEmailSmtpPort(s.emailSmtpPort);
+    setEmailSmtpUsername(s.emailSmtpUsername);
+    setEmailFromAddress(s.emailFromAddress);
+    setEmailToAddress(s.emailToAddress);
+    setPushoverEnabled(s.pushoverEnabled);
+    setEmailSmtpPassword("");
+    setPushoverUserKey("");
+    setPushoverApiToken("");
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .getNotificationStatus()
+      .then(applyStatus)
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const configured = desktopEnabled || emailEnabled || pushoverEnabled;
+
+  const doSave = async () => {
+    setSaving(true);
+    try {
+      const input: NotificationConfigInput = {
+        desktopEnabled,
+        emailEnabled,
+        emailSmtpHost,
+        emailSmtpPort,
+        emailSmtpUsername,
+        emailSmtpPassword: emailSmtpPassword.trim() ? emailSmtpPassword : null,
+        emailFromAddress,
+        emailToAddress,
+        pushoverEnabled,
+        pushoverUserKey: pushoverUserKey.trim() ? pushoverUserKey : null,
+        pushoverApiToken: pushoverApiToken.trim() ? pushoverApiToken : null,
+      };
+      const result = await api.setNotificationConfig(input);
+      applyStatus(result);
+      setTestResults({});
+      toast.success("Notification settings saved");
+      setEditing(false);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Every "Send test" button acts on whatever is currently SAVED, same as
+  // SheetsConnectionCard's own "Test connection" - a click here never uses
+  // unsaved edits still sitting in the form (see the hint text next to the
+  // Save button below).
+  const doTest = async (channel: "desktop" | "email" | "pushover") => {
+    setTestBusy(channel);
+    try {
+      const result = await (channel === "desktop"
+        ? api.testDesktopNotification()
+        : channel === "email"
+          ? api.testEmailNotification()
+          : api.testPushoverNotification());
+      setTestResults((r) => ({ ...r, [channel]: result }));
+      if (!result.success) toast.error(result.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTestBusy(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  const TestResultLine = ({ channel }: { channel: "desktop" | "email" | "pushover" }) => {
+    const result = testResults[channel];
+    if (!result) return null;
+    return (
+      <span className={`text-xs ${result.success ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+        {result.message}
+      </span>
+    );
+  };
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Notifications</h3>
+        <Badge tone={configured ? "sold" : "available"}>{configured ? "Enabled" : "Off"}</Badge>
+      </div>
+      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+        Get notified about the same things the Dashboard&apos;s bell already tracks - unpaid orders, pending sales,
+        missing listing prices, and events coming up soon - even when you&apos;re not looking at the app. Each
+        channel sends at most one notification per category per day, and only while TIQR Manager is running.
+      </p>
+
+      {configured && !editing ? (
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+          <p className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">
+            {[desktopEnabled && "Desktop", emailEnabled && "Email", pushoverEnabled && "Pushover"].filter(Boolean).join(", ")}
+          </p>
+          <Button variant="ghost" onClick={() => setEditing(true)}>
+            Change settings
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                className={CHECKBOX_CLASS}
+                checked={desktopEnabled}
+                onChange={(e) => setDesktopEnabled(e.target.checked)}
+              />
+              Desktop notifications
+            </label>
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+              Shows a system notification while TIQR Manager is open. No setup needed.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" disabled={testBusy === "desktop"} onClick={() => doTest("desktop")}>
+                {testBusy === "desktop" ? <Spinner className="h-4 w-4" /> : null}
+                Send test
+              </Button>
+              <TestResultLine channel="desktop" />
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                className={CHECKBOX_CLASS}
+                checked={emailEnabled}
+                onChange={(e) => setEmailEnabled(e.target.checked)}
+              />
+              Email notifications
+            </label>
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="SMTP host">
+                <Input placeholder="smtp.gmail.com" value={emailSmtpHost} onChange={(e) => setEmailSmtpHost(e.target.value)} />
+              </Field>
+              <Field label="SMTP port">
+                <Input
+                  type="number"
+                  placeholder="587"
+                  value={emailSmtpPort}
+                  onChange={(e) => setEmailSmtpPort(Number(e.target.value) || 0)}
+                />
+              </Field>
+              <Field label="SMTP username">
+                <Input value={emailSmtpUsername} onChange={(e) => setEmailSmtpUsername(e.target.value)} />
+              </Field>
+              <Field
+                label="SMTP password"
+                hint={status?.emailSmtpPasswordSet ? "A password is already saved - leave blank to keep it." : undefined}
+              >
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={status?.emailSmtpPasswordSet ? "Leave blank to keep the current password" : ""}
+                  value={emailSmtpPassword}
+                  onChange={(e) => setEmailSmtpPassword(e.target.value)}
+                />
+              </Field>
+              <Field label="From address">
+                <Input placeholder="you@example.com" value={emailFromAddress} onChange={(e) => setEmailFromAddress(e.target.value)} />
+              </Field>
+              <Field label="To address">
+                <Input placeholder="you@example.com" value={emailToAddress} onChange={(e) => setEmailToAddress(e.target.value)} />
+              </Field>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" disabled={testBusy === "email"} onClick={() => doTest("email")}>
+                {testBusy === "email" ? <Spinner className="h-4 w-4" /> : null}
+                Send test
+              </Button>
+              <TestResultLine channel="email" />
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                className={CHECKBOX_CLASS}
+                checked={pushoverEnabled}
+                onChange={(e) => setPushoverEnabled(e.target.checked)}
+              />
+              Pushover (mobile push)
+            </label>
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+              Needs the free Pushover app on your phone - install it, then paste your user key and an application
+              token from pushover.net below.
+            </p>
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="User key"
+                hint={status?.pushoverUserKeySet ? "Already saved - leave blank to keep it." : undefined}
+              >
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  placeholder={status?.pushoverUserKeySet ? "Leave blank to keep the current key" : ""}
+                  value={pushoverUserKey}
+                  onChange={(e) => setPushoverUserKey(e.target.value)}
+                />
+              </Field>
+              <Field
+                label="API token"
+                hint={status?.pushoverApiTokenSet ? "Already saved - leave blank to keep it." : undefined}
+              >
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  placeholder={status?.pushoverApiTokenSet ? "Leave blank to keep the current token" : ""}
+                  value={pushoverApiToken}
+                  onChange={(e) => setPushoverApiToken(e.target.value)}
+                />
+              </Field>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" disabled={testBusy === "pushover"} onClick={() => doTest("pushover")}>
+                {testBusy === "pushover" ? <Spinner className="h-4 w-4" /> : null}
+                Send test
+              </Button>
+              <TestResultLine channel="pushover" />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+            <Button variant="primary" disabled={saving} onClick={doSave}>
+              {saving ? <Spinner className="h-4 w-4" /> : null}
+              Save
+            </Button>
+            {configured && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  if (status) applyStatus(status);
+                  setEditing(false);
+                }}
+              >
+                Cancel
+              </Button>
+            )}
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              &quot;Send test&quot; uses whatever is currently saved - save first if you just changed something.
+            </span>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

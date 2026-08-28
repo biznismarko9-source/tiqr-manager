@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
@@ -17,6 +17,7 @@ import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart"
 import {
   IconAlertTriangle,
   IconBarChart,
+  IconBell,
   IconCalendarDays,
   IconDownload,
   IconPackage,
@@ -227,19 +228,26 @@ export default function Dashboard() {
           // same prominent spot Customize used to occupy. The period picker
           // itself moved into the Overview tab's own content (below) since
           // it's the only tab it actually affects - see that comment for why.
-          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                    tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {/* 2.0.75: marko's own request - "v dashboarde hore vpravo tie
+                najdolezitejsie sa ukazu ako nejaka notification alebo
+                warning". Rendered only once real data has loaded (never a
+                bell with stale/fabricated counts). */}
+            {data && <AlertBell data={data} onShowUpcoming={() => setTab("activity")} />}
+          </>
         }
       />
 
@@ -893,6 +901,112 @@ function EmptyRow({ text }: { text: string }) {
   return (
     <div className="p-4">
       <EmptyState title={text} />
+    </div>
+  );
+}
+
+/** 2.0.75: Dashboard's top-right alert bell. Deliberately reuses the exact
+ * same 4 fields AttentionSection's own `allClear` check below uses - this
+ * bell must never be able to disagree with the Attention tiles about
+ * whether something needs attention. No new detection logic, no new alert
+ * engine - purely a compact, always-visible summary of what
+ * AttentionSection already renders further down the page.
+ *
+ * Badge counts how many of the 4 categories are non-zero (0-4), amber by
+ * default. It only escalates to red once the soonest upcoming event is due
+ * today or overdue - same `daysUntil`/threshold `UpcomingEventRow` already
+ * uses for its own amber-vs-red split, so the two never disagree either. */
+function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcoming: () => void }) {
+  const { alerts } = data;
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Same click-outside-to-close pattern as Layout.tsx's profile dropdown -
+  // this is a small anchored menu, not a full-screen Modal.
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const rows = [
+    { key: "unpaid", label: "Unpaid payments", count: alerts.unpaidOrdersCount, linkTo: "/orders" },
+    { key: "pending", label: "Pending sales", count: alerts.pendingSalesCount, linkTo: "/sales" },
+    { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/inventory" },
+  ] as const;
+
+  const soonestEvent = alerts.upcomingEvents[0];
+  const upcomingCritical = soonestEvent !== undefined && daysUntil(soonestEvent.eventDate) <= 0;
+  const activeCount =
+    (alerts.unpaidOrdersCount > 0 ? 1 : 0) +
+    (alerts.missingListingPriceCount > 0 ? 1 : 0) +
+    (alerts.upcomingEventsCount > 0 ? 1 : 0) +
+    (alerts.pendingSalesCount > 0 ? 1 : 0);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Attention summary"
+        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+      >
+        <IconBell className="h-4 w-4" />
+        {activeCount > 0 && (
+          <span
+            className={`absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
+              upcomingCritical ? "bg-red-500" : "bg-amber-500"
+            }`}
+          >
+            {activeCount}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+          {activeCount === 0 ? (
+            <p className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {rows
+                .filter((r) => r.count > 0)
+                .map((r) => (
+                  <li key={r.key}>
+                    <Link
+                      to={r.linkTo}
+                      onClick={() => setOpen(false)}
+                      className="flex items-center justify-between gap-2 px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    >
+                      <span className="font-medium text-slate-700 dark:text-slate-300">{r.label}</span>
+                      <span className="tabular-nums text-slate-400 dark:text-slate-500">{r.count}</span>
+                    </Link>
+                  </li>
+                ))}
+              {alerts.upcomingEventsCount > 0 && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      onShowUpcoming();
+                    }}
+                    className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  >
+                    <span className="flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
+                      {upcomingCritical && <IconAlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-500" />}
+                      Upcoming events
+                    </span>
+                    <span className="tabular-nums text-slate-400 dark:text-slate-500">{alerts.upcomingEventsCount}</span>
+                  </button>
+                </li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

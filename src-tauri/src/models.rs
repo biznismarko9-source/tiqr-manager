@@ -1461,3 +1461,114 @@ pub struct SheetSyncResult {
     pub corrected: Vec<SheetSyncIssue>,
     pub synced_at: String,
 }
+
+// ---------------------------------------------------------------------------
+// Outbound notifications (2.0.76) - desktop/email/Pushover, built on top of
+// the same 4 categories `DashboardAlerts` above already tracks. See
+// commands/notifications.rs for the actual logic; these are just the DTOs,
+// same split every other feature in this file already follows (dashboard.rs
+// stays logic-only, its structs live here).
+// ---------------------------------------------------------------------------
+
+/// The whole notification configuration, stored as ONE JSON blob under
+/// app_settings["notification_config"] via commands::sheets_sync's existing
+/// get_setting/set_setting helpers (already reused once by google_auth.rs
+/// for its own, separate secret - this is the second, independent reuse).
+/// Round-trips through serde on both sides: Rust struct <-> JSON text <->
+/// the `app_settings` table.
+///
+/// `#[serde(default)]` on every level here defensively tolerates a stored
+/// blob from a slightly older shape (e.g. a field added in a later version)
+/// failing to deserialize a whole config just because one new field is
+/// missing - the same defensive posture this codebase already takes with
+/// external API response shapes (see google_sheets.rs's `conditional_
+/// formats`/`grid_properties`), applied here to a value THIS app itself
+/// writes and later reads back across app updates.
+///
+/// This is the ONLY place a real secret (the SMTP password, the Pushover
+/// keys) is ever held as a plain field - it must never be sent to the
+/// frontend as-is. See `NotificationStatus` (safe to send) and
+/// `NotificationConfigInput` (safe to receive) below.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotificationConfig {
+    pub desktop_enabled: bool,
+    pub email: EmailChannelConfig,
+    pub pushover: PushoverChannelConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EmailChannelConfig {
+    pub enabled: bool,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: String,
+    pub smtp_password: String,
+    pub from_address: String,
+    pub to_address: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PushoverChannelConfig {
+    pub enabled: bool,
+    pub user_key: String,
+    pub api_token: String,
+}
+
+/// What Settings -> Notifications actually receives from the GET status
+/// command - same shape as `NotificationConfig`, but every secret field is
+/// replaced by a `*_set: bool` presence flag. Precedented by
+/// `GoogleSignInStatus` (google_auth.rs), which returns `sign_in_available:
+/// bool` + an email but never the OAuth refresh token itself - same idea,
+/// second implementation.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationStatus {
+    pub desktop_enabled: bool,
+    pub email_enabled: bool,
+    pub email_smtp_host: String,
+    pub email_smtp_port: u16,
+    pub email_smtp_username: String,
+    pub email_smtp_password_set: bool,
+    pub email_from_address: String,
+    pub email_to_address: String,
+    pub pushover_enabled: bool,
+    pub pushover_user_key_set: bool,
+    pub pushover_api_token_set: bool,
+}
+
+/// What Settings -> Notifications sends to the SET command. Every secret
+/// field is `Option<String>`: `None` means "leave whatever is already
+/// stored untouched", `Some(value)` overwrites it (including with an empty
+/// string, if that's ever genuinely what's submitted). The frontend never
+/// pre-fills a secret field from `NotificationStatus` (which only ever
+/// carries presence booleans, never values) - a secret field the user
+/// simply didn't touch is submitted as `None`, which is exactly "leave
+/// unchanged".
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationConfigInput {
+    pub desktop_enabled: bool,
+    pub email_enabled: bool,
+    pub email_smtp_host: String,
+    pub email_smtp_port: u16,
+    pub email_smtp_username: String,
+    pub email_smtp_password: Option<String>,
+    pub email_from_address: String,
+    pub email_to_address: String,
+    pub pushover_enabled: bool,
+    pub pushover_user_key: Option<String>,
+    pub pushover_api_token: Option<String>,
+}
+
+/// Result of a "Send test" click in Settings -> Notifications (one per
+/// channel) - unlike the silent periodic check, a test click should say
+/// plainly whether it worked.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationTestResult {
+    pub success: bool,
+    pub message: String,
+}

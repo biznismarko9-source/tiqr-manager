@@ -180,7 +180,7 @@ mod tests {
         let migration_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(migration_count, 12, "a fresh per-account file must end up on the same schema version as every other file");
+        assert_eq!(migration_count, 13, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 
