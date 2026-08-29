@@ -1955,6 +1955,46 @@ fn uniform_sale_for_order(conn: &Connection, order_id: i64) -> AppResult<Option<
     }))
 }
 
+/// 2.0.80: marko's own bug report - once every ticket on an order has been
+/// refunded, `uniform_sale_for_order` above correctly starts returning `None`
+/// for it (a refunded ticket goes back to `status = 'available'`, so it fails
+/// that function's own first check - see `refund_sale_impl`'s doc comment),
+/// but NOTHING was ever pushing that change to the sheet: the row's Sales-
+/// sync columns (Site Listed/Payout Per Ticket/Status/Delivery status/Payout
+/// status/Sale date/paid by) simply kept whatever they said before the
+/// refund, forever - not even "Fix sync" could correct them, since its force
+/// path also goes through `uniform_sale_for_order` and finds nothing to
+/// compare against. Two real consequences, both reported at once: the
+/// Summary block's Total Revenue/Profit/Paid/Unpaid kept counting a sale that
+/// no longer exists (see `plan_orders_summary_updates`'s own 2.0.80 doc
+/// comment for the other half of the same report), and a future "Sales
+/// sync" pull could mistake the still-non-blank `Payout Per Ticket` cell for
+/// a brand new sale ready to record - `apply_sales_rows` only checks whether
+/// that one cell is blank, not whether the ticket has a refund in its
+/// history - silently creating a duplicate sale from stale numbers.
+///
+/// `true` exactly when this order needs its stale row cleared: nothing on it
+/// is currently `sold`, but at least one of its tickets carries a refunded
+/// sale in `sales` - i.e. this row used to be represented as sold in the
+/// sheet and no longer should be. `false` for an order that was simply never
+/// sold at all (its target cells are already blank, so clearing would be a
+/// no-op anyway) and for a partially-refunded order (some tickets still
+/// genuinely `sold` - `sold_count` above zero) - same "can't represent,
+/// leave it alone" territory `uniform_sale_for_order` already stakes out for
+/// any other non-uniform mix, not something this function tries to improve
+/// on.
+fn order_fully_refunded(conn: &Connection, order_id: i64) -> AppResult<bool> {
+    let (sold_count, refunded_count): (i64, i64) = conn.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM tickets WHERE order_id = ?1 AND status = 'sold'),
+            (SELECT COUNT(*) FROM tickets t JOIN sales s ON s.ticket_id = t.id
+             WHERE t.order_id = ?1 AND s.payment_status = 'refunded')",
+        [order_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(sold_count == 0 && refunded_count > 0)
+}
+
 /// One order can have several manually-added `pulls_received` rows linked
 /// to it (only the auto-linked-from-sheet-sync kind is limited to one per
 /// order - see migrations/011_pulls_received.sql's partial unique index) -
@@ -2128,6 +2168,28 @@ fn apply_sales_push_internal(
                     if cell(raw_row, Some(c)).as_deref() != Some(value.as_str()) {
                         cells.push((c, value));
                     }
+                }
+            }
+        } else if order_fully_refunded(conn, order_id)? {
+            // 2.0.80: see order_fully_refunded's own doc comment for the full
+            // incident. Blank every one of the 7 Sales-sync target cells that
+            // isn't already blank - the exact same columns uniform_sale_for_
+            // order's own branch above would have written - so the row goes
+            // back to looking like a not-yet-sold ticket: Revenue/Profit
+            // formulas naturally re-evaluate to 0 for it with no change
+            // needed to the Summary formulas themselves, and it's ready to
+            // represent a genuine future resale if marko fills it in again.
+            // Deliberately unconditional on `force`, unlike the block above -
+            // this isn't "the app's opinion might be wrong so only overwrite
+            // when marko asks for a repair" - a refunded ticket is definitely
+            // not an active sale any more, so there is nothing to weigh
+            // against. Pull/who pulled/how much pull are a separate concern
+            // (that money was actually received, refunding the resale later
+            // doesn't undo it) and are never touched here.
+            let target_cols = [site_listed_col, payout_col, status_col, delivery_status_col, payout_status_col, sale_date_col, paid_by_col];
+            for c in target_cols.into_iter().flatten() {
+                if cell(raw_row, Some(c)).is_some() {
+                    cells.push((c, String::new()));
                 }
             }
         }
@@ -2749,8 +2811,8 @@ struct OrdersSummarySpec {
 /// |---|---|---|---|---|---|
 /// | Summary | (total cost) | Summary-Paid | (total paid) | Summary-Unpaid | (total unpaid) |
 /// | Total Cost | =SUMPRODUCT((total purchase price)*1) | Total Paid | =SUMPRODUCT((status="Paid")*revenue) | Total Unpaid | =SUM(revenue)-SUMPRODUCT((status="Paid")*revenue) |
-/// | Total Revenue | =SUM(revenue) | | | | |
-/// | Total Profit | =SUM(profit) | | | | |
+/// | Total Revenue | =SUMPRODUCT((status="Paid")*revenue) | | | | |
+/// | Total Profit | =SUMPRODUCT((status="Paid")*profit) | | | | |
 ///
 /// All 5 source columns (`how much pull` for placement, `Total Purchase
 /// Price`/`Revenue`/`Profit`/`Payout status` for the actual math) must be
@@ -2798,6 +2860,30 @@ struct OrdersSummarySpec {
 /// own text (e.g. "Revenue") in a numeric range makes the whole calculation
 /// error out - even on the elements where the paired condition is FALSE,
 /// since both arrays are evaluated in full rather than short-circuited.
+///
+/// **2.0.80: "Total Revenue"/"Total Profit" also gate on `Payout status =
+/// "Paid"` now, not just "Total Paid" - marko's own bug report**: *"summary
+/// paid a unpaid nefunguju dobre v tabulke, az ked je payment status paid az
+/// vtedy sa to moze zapocitat do tej tabulky, inak nie"* (the paid/unpaid
+/// summary don't work well - only once payment_status is paid can something
+/// be counted into that table, otherwise not), confirmed literally via
+/// AskUserQuestion rather than assumed. Before this version "Total Revenue"/
+/// "Total Profit" summed every SOLD row regardless of payment status (Paid
+/// and still-Pending rows counted alike) - only "Total Paid" applied the
+/// Payout-status filter. Now all three (`revenue_formula`/`profit_formula`/
+/// `paid_formula`) share the exact same `SUMPRODUCT((status_range="Paid")*
+/// ...)` shape, which deliberately makes "Total Revenue" numerically
+/// IDENTICAL to "Total Paid" from now on (both are the same expression
+/// against the same Revenue column) - not a bug if a future reader notices
+/// the two cells always match; marko confirmed this exact scope rather than,
+/// say, only the separate refund-staleness fix below. "Total Unpaid" is
+/// deliberately UNCHANGED: it still needs the *ungated* `SUM(revenue)` as
+/// its own base to mean "everything sold but not yet paid" - gating it the
+/// same way would make it always read zero. See `order_fully_refunded`'s own
+/// doc comment (`apply_sales_push_internal`, earlier in this file) for the
+/// other half of the same report - a refunded sale's stale pre-refund data
+/// never being cleared from the sheet, which this Paid-only gate alone does
+/// not fix for a row whose Payout status cell still (wrongly) says "Paid".
 fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> {
     let map = build_header_map(headers);
     let how_much_pull_col = find_col(&map, &["how much pull"])?;
@@ -2824,22 +2910,23 @@ fn plan_orders_summary_updates(headers: &[String]) -> Option<OrdersSummarySpec> 
     // actually looked at it - not something Fix sync (or anything else
     // recent) broke. `Revenue`/`Profit` don't have this problem because
     // they're the one exception (`update_values_as_formulas`, USER_ENTERED)
-    // - a formula's result is a genuine number - which is exactly why
-    // `revenue_formula`/`profit_formula` below can stay plain `SUM()`. The
-    // fix mirrors what `paid_sumproduct` below already does for the exact
-    // same reason: `*1` forces the same numeric coercion Sheets already
-    // performs for a plain arithmetic operator (which is why the per-row
-    // Profit formula, `Revenue - Total Purchase Price`, has always computed
-    // correctly despite this) - bounded to `SUMPRODUCT_ROW_BOUND` rows
-    // starting at row 2, never row 1, for the same reason `paid_sumproduct`
-    // is: multiplying the header row's own text by 1 would error the whole
-    // calculation out rather than just that one cell.
+    // - a formula's result is a genuine number, so plain `SUM()` would have
+    // coerced correctly for them even before 2.0.80. Their own move to
+    // `SUMPRODUCT` below is for a completely unrelated reason - the Paid-only
+    // gate, see this function's own 2.0.80 doc comment - not this text-vs-
+    // number issue, which only ever applied to `cost_formula`.
     let cost_formula = format!("=SUMPRODUCT(({total_letter}2:{total_letter}{bound})*1)");
-    let revenue_formula = format!("=SUM({revenue_letter}:{revenue_letter})");
-    let profit_formula = format!("=SUM({profit_letter}:{profit_letter})");
     let paid_sumproduct = format!(
         "SUMPRODUCT(({payout_status_letter}2:{payout_status_letter}{bound}=\"Paid\")*{revenue_letter}2:{revenue_letter}{bound})"
     );
+    // 2.0.80: same SUMPRODUCT shape as `paid_sumproduct` above, against the
+    // Profit column instead of Revenue - see this function's own 2.0.80 doc
+    // comment for why "Total Profit" now needs this gate too.
+    let profit_sumproduct = format!(
+        "SUMPRODUCT(({payout_status_letter}2:{payout_status_letter}{bound}=\"Paid\")*{profit_letter}2:{profit_letter}{bound})"
+    );
+    let revenue_formula = format!("={paid_sumproduct}");
+    let profit_formula = format!("={profit_sumproduct}");
     let paid_formula = format!("={paid_sumproduct}");
     let unpaid_formula = format!("=SUM({revenue_letter}:{revenue_letter})-{paid_sumproduct}");
 
@@ -3116,6 +3203,7 @@ pub fn setup_orders_sheet(state: State<AppState>) -> AppResult<SheetSyncResult> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::sales::refund_sale_impl;
     use crate::db::test_conn;
 
     // Header order mirrors marko's own real sheet - see this module's doc
@@ -4836,6 +4924,144 @@ mod tests {
         assert_eq!(as_map.get(&6), Some(&"20/09/2026".to_string()), "sale date");
     }
 
+    // -----------------------------------------------------------------------
+    // Refund staleness (2.0.80) - marko's own bug report: refunding a sale
+    // never told the sheet, so a refunded ticket's pre-refund Sales-sync data
+    // sat there forever - still counted by the Summary block, and still able
+    // to look like "a new sale ready to record" to a future Sales sync pull.
+    // See order_fully_refunded's own doc comment for the full incident.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn order_fully_refunded_is_false_for_an_order_never_sold_at_all() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        assert!(!order_fully_refunded(&conn, order_id).unwrap());
+    }
+
+    #[test]
+    fn order_fully_refunded_is_false_while_normally_sold_and_never_refunded() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        assert!(!order_fully_refunded(&conn, order_id).unwrap());
+    }
+
+    #[test]
+    fn order_fully_refunded_is_true_once_every_ticket_on_the_order_is_refunded() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+        assert!(order_fully_refunded(&conn, order_id).unwrap());
+    }
+
+    #[test]
+    fn order_fully_refunded_is_false_when_only_some_tickets_are_refunded() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        let sale_id: i64 =
+            conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_ids[0]], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+        // ticket_ids[1] is still genuinely sold - this order is not "fully"
+        // refunded, same "can't represent, leave it alone" territory as any
+        // other non-uniform order.
+        assert!(!order_fully_refunded(&conn, order_id).unwrap());
+    }
+
+    #[test]
+    fn a_fully_refunded_orders_stale_sheet_row_gets_cleared_by_push() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+
+        // The sheet still shows the pre-refund row - nothing has pushed
+        // since - ordinary "Push sales" must now clear it, unlike the "not
+        // fully sold yet" row an ordinary, never-sold order leaves untouched
+        // (an_order_not_fully_sold_yet_is_left_alone above).
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[sales_row(&code, "45,00")], 0).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(writes.len(), 1);
+        let (row_number, cells) = &writes[0];
+        assert_eq!(*row_number, 2);
+        let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
+        for col in 1..=7 {
+            assert_eq!(as_map.get(&col), Some(&String::new()), "column {col} must be cleared back to blank");
+        }
+        assert!(
+            !as_map.contains_key(&8) && !as_map.contains_key(&9) && !as_map.contains_key(&10),
+            "pull columns are a separate concern - must never be touched here: {as_map:?}"
+        );
+    }
+
+    #[test]
+    fn clearing_a_refunded_orders_row_is_idempotent() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+
+        // The row is ALREADY blank (e.g. push already ran once) - running
+        // push again must be a true no-op, same "safe to click again"
+        // guarantee every other push/force-push path in this module gives.
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[blank_sales_row(&code)], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn force_push_also_clears_a_refunded_orders_stale_row() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let ticket_id = ticket_ids_for_order(&conn, &code)[0];
+        let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_id], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+
+        // Deliberately unconditional on `force` - see order_fully_refunded's
+        // own call site comment for why. "Fix sync" must clear this too, not
+        // only the ordinary "Push sales" button.
+        let (result, writes) =
+            apply_sales_push_internal(&conn, &sales_headers(), &[sales_row(&code, "45,00")], 0, true).unwrap();
+        assert_eq!(result.updated, 1);
+        assert_eq!(writes.len(), 1);
+    }
+
+    #[test]
+    fn a_partially_refunded_order_is_left_alone_by_push() {
+        let mut conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 2);
+        apply_sales_rows(&mut conn, &sales_headers(), &[sales_row(&code, "45.00")], 0).unwrap();
+        let ticket_ids = ticket_ids_for_order(&conn, &code);
+        let sale_id: i64 =
+            conn.query_row("SELECT id FROM sales WHERE ticket_id = ?1", [ticket_ids[0]], |r| r.get(0)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, None).unwrap();
+
+        // ticket_ids[1] is still genuinely sold - same "can't represent,
+        // leave it alone" territory as any other non-uniform order (see
+        // non_uniform_sales_across_tickets_of_one_order_are_left_alone
+        // above), not something this refund-staleness fix tries to improve.
+        let (result, writes) = apply_sales_push(&conn, &sales_headers(), &[sales_row(&code, "45,00")], 0).unwrap();
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.unchanged, 1);
+        assert!(writes.is_empty());
+    }
+
     // -----------------------------------------------------------------
     // Sheet structure (dropdowns + Revenue/Profit formulas), 2.0.19
     // -----------------------------------------------------------------
@@ -5125,15 +5351,44 @@ mod tests {
     fn plan_orders_summary_updates_summary_block_has_the_right_labels_and_real_column_formulas() {
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
         assert_eq!(text_col(&spec, 9), Some(&vec!["Summary".to_string(), "Total Cost".to_string(), "Total Revenue".to_string(), "Total Profit".to_string()]));
-        // Total Purchase Price=F, Revenue=D, Profit=E in summary_headers().
-        // Total Cost is SUMPRODUCT-with-coercion, not a plain SUM - see
-        // cost_formula's own 2.0.62 comment for why (Total Purchase Price is
-        // written as literal text, unlike Revenue/Profit which are live
-        // formulas and so already hold real numbers).
+        // Total Purchase Price=F, Revenue=D, Profit=E, Payout status=B in
+        // summary_headers(). Total Cost is SUMPRODUCT-with-coercion (Total
+        // Purchase Price is written as literal text - see cost_formula's own
+        // 2.0.62 comment). Total Revenue/Total Profit are SUMPRODUCT-with-
+        // Paid-gate as of 2.0.80 - see plan_orders_summary_updates's own
+        // 2.0.80 doc comment for why (marko's own bug report).
         assert_eq!(
             formula_col(&spec, 10),
-            Some(&vec![String::new(), "=SUMPRODUCT((F2:F100000)*1)".to_string(), "=SUM(D:D)".to_string(), "=SUM(E:E)".to_string()])
+            Some(&vec![
+                String::new(),
+                "=SUMPRODUCT((F2:F100000)*1)".to_string(),
+                "=SUMPRODUCT((B2:B100000=\"Paid\")*D2:D100000)".to_string(),
+                "=SUMPRODUCT((B2:B100000=\"Paid\")*E2:E100000)".to_string(),
+            ])
         );
+    }
+
+    #[test]
+    fn plan_orders_summary_updates_revenue_and_profit_only_count_paid_rows_2_0_80() {
+        // marko's own explicit request (confirmed via AskUserQuestion after a
+        // 2.0.80 bug report): "Total Revenue"/"Total Profit" must not
+        // recognize a sale's revenue/profit until its Payout status is
+        // literally "Paid" - the exact rule "Total Paid" already enforced
+        // before this version, now shared by Revenue/Profit too. This
+        // deliberately makes "Total Revenue" numerically IDENTICAL to "Total
+        // Paid" (both are now the exact same SUMPRODUCT expression against
+        // the Revenue column) - not a bug, see plan_orders_summary_updates's
+        // own 2.0.80 doc comment. "Total Unpaid" is intentionally untouched
+        // here - it still needs the *ungated* total (every sold row, Paid or
+        // Pending) as its base, to correctly show "revenue sold but not yet
+        // paid" - see the dedicated unpaid test below.
+        let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
+        let revenue = &formula_col(&spec, 10).unwrap()[2];
+        let profit = &formula_col(&spec, 10).unwrap()[3];
+        let paid = &formula_col(&spec, 12).unwrap()[1];
+        assert_eq!(revenue, paid, "Total Revenue must now equal Total Paid exactly - Pending/Refunded rows no longer count");
+        assert_eq!(revenue, "=SUMPRODUCT((B2:B100000=\"Paid\")*D2:D100000)");
+        assert_eq!(profit, "=SUMPRODUCT((B2:B100000=\"Paid\")*E2:E100000)");
     }
 
     #[test]
@@ -5173,11 +5428,15 @@ mod tests {
         // here fails this test even if it changes the exact letters/bound.
         // 2.0.62: `cost` joined this test once it also became a SUMPRODUCT
         // (see its own doc comment for why) - same shape, same reasoning.
+        // 2.0.80: `revenue`/`profit` joined for the same reason, once they
+        // too became Paid-gated SUMPRODUCT expressions.
         let spec = plan_orders_summary_updates(&summary_headers()).unwrap();
         let cost = &formula_col(&spec, 10).unwrap()[1];
+        let revenue = &formula_col(&spec, 10).unwrap()[2];
+        let profit = &formula_col(&spec, 10).unwrap()[3];
         let paid = &formula_col(&spec, 12).unwrap()[1];
         let unpaid = &formula_col(&spec, 14).unwrap()[1];
-        for formula in [cost, paid, unpaid] {
+        for formula in [cost, revenue, profit, paid, unpaid] {
             assert!(formula.contains("SUMPRODUCT"), "expected SUMPRODUCT in {formula}");
             assert!(!formula.contains(",\"Paid\","), "must not contain a comma-separated SUMIF-style argument list: {formula}");
         }
@@ -5194,8 +5453,8 @@ mod tests {
         assert_eq!(column_index_to_a1(27), "AB");
         assert!(text_col(&spec, 27).is_some(), "block must start at column AB (index 27)");
         assert_eq!(formula_col(&spec, 28).unwrap()[1], "=SUMPRODUCT((H2:H100000)*1)");
-        assert_eq!(formula_col(&spec, 28).unwrap()[2], "=SUM(P:P)");
-        assert_eq!(formula_col(&spec, 28).unwrap()[3], "=SUM(Q:Q)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[2], "=SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
+        assert_eq!(formula_col(&spec, 28).unwrap()[3], "=SUMPRODUCT((T2:T100000=\"Paid\")*Q2:Q100000)");
         assert_eq!(formula_col(&spec, 30).unwrap()[1], "=SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
         assert_eq!(formula_col(&spec, 32).unwrap()[1], "=SUM(P:P)-SUMPRODUCT((T2:T100000=\"Paid\")*P2:P100000)");
     }
