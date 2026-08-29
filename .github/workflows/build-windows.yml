@@ -90,6 +90,14 @@ name: Build Windows Installer
 # team/artist name like "Celine Dion") uncategorized exactly like every event
 # is today, see src-tauri/build.rs and ai_categorize.rs's embedded_anthropic_
 # api_key(). Independent of every secret above.
+#
+# Outbound notifications' mobile-push channel (2.0.76+, see
+# commands/notifications.rs) needs NO repository secret at all as of 2.0.78 -
+# it uses ntfy.sh's public server, which has no application-level
+# credential to embed (2.0.77 briefly used Pushover instead, which DID need
+# one; that channel was replaced for exactly this reason). Each person just
+# picks their own "topic" string in Settings -> Notifications and enters it
+# on their phone's ntfy app - nothing for this workflow to configure.
 
 on:
   workflow_dispatch: {}

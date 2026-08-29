@@ -86,5 +86,11 @@ fn main() {
         .expect("failed to write the embedded Anthropic API key file");
     println!("cargo:rerun-if-env-changed=ANTHROPIC_API_KEY");
 
+    // 2.0.77 briefly added a PUSHOVER_API_TOKEN embed here for a Pushover
+    // notification channel - 2.0.78 replaced Pushover with ntfy (see
+    // commands/notifications.rs's module doc comment) specifically because
+    // ntfy's public server needs no application-level credential at all, so
+    // there is nothing left to embed here for notifications any more.
+
     tauri_build::build()
 }

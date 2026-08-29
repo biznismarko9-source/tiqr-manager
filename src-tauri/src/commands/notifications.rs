@@ -1,7 +1,7 @@
-//! Outbound notifications (2.0.76) - desktop, email, Pushover. marko's own
-//! request: "chcem tiez nejake pushup notifikacie, najlepsie aj do mobilu,
-//! no len tie najviac prioritne" (push notifications, ideally to mobile
-//! too, but only the highest-priority ones).
+//! Outbound notifications (2.0.76) - desktop and ntfy. marko's own request:
+//! "chcem tiez nejake pushup notifikacie, najlepsie aj do mobilu, no len
+//! tie najviac prioritne" (push notifications, ideally to mobile too, but
+//! only the highest-priority ones).
 //!
 //! Deliberately reuses the exact same 4 categories AlertBell/
 //! AttentionSection already track on the Dashboard (see `DashboardAlerts`
@@ -15,13 +15,45 @@
 //! showing on the Dashboard bell (cheap, glanceable) but not worth
 //! interrupting marko's phone for yet.
 //!
-//! Credentials (the SMTP password, the Pushover keys) are stored the same
-//! way every other secret in this app already is - plain text in the
+//! 2.0.77 removed the email channel this feature shipped with in 2.0.76 at
+//! marko's own request ("email zatial odstranme") - no `EmailChannelConfig`,
+//! no `lettre` dependency, no SMTP anywhere in this app any more. If email
+//! ever comes back, treat it as a fresh design rather than resurrecting
+//! this: 2.0.76 asked for full SMTP credentials, exactly the kind of
+//! per-person setup marko has since said he does not want.
+//!
+//! 2.0.77 also tried simplifying the mobile-push channel (then Pushover) to
+//! "just a user key" by embedding this app's own application token at
+//! build time - marko pushed back wanting it to need only ONE thing with
+//! zero setup anywhere, not even a one-time app registration by him. That
+//! is not something Pushover's API can ever do: every send needs BOTH a
+//! user key (who receives it) AND an application token (which app is
+//! sending) - no way to derive one from the other, by design, for any app
+//! that uses Pushover. 2.0.78 replaced Pushover with **ntfy**
+//! (<https://ntfy.sh>) instead, which actually satisfies "just one thing,
+//! no signup anywhere": its public server accepts a plain HTTP POST to
+//! `https://ntfy.sh/<topic>` with no authentication and no application-
+//! level credential at all - the "topic" (any string the person makes up)
+//! is the only identifier that exists on either side. A person installs the
+//! free ntfy app, subscribes to their own made-up topic, and types that
+//! same topic into Settings -> Notifications - nothing to register, nothing
+//! for this app to embed. The trade-off, stated plainly for whoever reads
+//! this next: since ntfy's public server has no authentication, the topic
+//! name IS the entire access control - anyone who learns it can publish to
+//! it (or read it), so Settings' own copy tells people to pick something
+//! non-guessable, the same way a password would be. This is a materially
+//! different trust model from Pushover's (a per-account user key plus a
+//! per-app token), accepted here because it is what lets this feature ask
+//! for only one thing, which marko explicitly said matters more to him than
+//! Pushover's extra layer of protection.
+//!
+//! Credentials this app itself stores (just the ntfy topic now) are kept
+//! the same way every other local secret already is - plain text in the
 //! generic `app_settings` key/value table (see commands::settings and
 //! google_auth.rs's own doc comment on why that's the accepted trust
 //! boundary for this local, single-user desktop app). Never echoed back to
-//! the frontend: `NotificationStatus` (models.rs) carries only `*_set: bool`
-//! presence flags, precedented by `GoogleSignInStatus`.
+//! the frontend: `NotificationStatus` (models.rs) carries only a `*_set:
+//! bool` presence flag, precedented by `GoogleSignInStatus`.
 //!
 //! Anything that touches the network runs `async fn` + `tauri::async_
 //! runtime::spawn_blocking` - this codebase already hit and fixed the
@@ -33,23 +65,22 @@
 //! local OS call, no network.
 //!
 //! Testing follows the same split as google_sheets.rs/ai_categorize.rs/
-//! fx.rs: the actual `.send()`/HTTP calls stay thin and deliberately
-//! untested (this sandbox can reach neither `api.pushover.net` nor any real
-//! SMTP host - see fx.rs's own doc comment on the same restriction),
-//! everything else (which categories are due, what a notification says, how
-//! config merges) is a small pure function with full unit-test coverage.
+//! fx.rs: the actual `.send()`/HTTP call stays thin and deliberately
+//! untested (this sandbox cannot reach `ntfy.sh` - see fx.rs's own doc
+//! comment on the same restriction), everything else (which categories are
+//! due, what a notification says, how config merges) is a small pure
+//! function with full unit-test coverage.
 
 use crate::commands::dashboard::compute_dashboard_alerts;
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DashboardAlerts, EmailChannelConfig, NotificationConfig, NotificationConfigInput,
-    NotificationStatus, NotificationTestResult, PushoverChannelConfig,
+    DashboardAlerts, NotificationConfig, NotificationConfigInput, NotificationStatus,
+    NotificationTestResult, NtfyChannelConfig,
 };
 use chrono::{Local, NaiveDate};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, SmtpTransport, Transport};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
 use tauri::State;
@@ -205,62 +236,28 @@ pub(crate) fn build_notification_message(
 }
 
 /// What Settings -> Notifications actually receives from the GET command -
-/// never the raw secret values, only whether one is currently stored.
+/// never the raw secret value, only whether one is currently stored.
 fn status_from_config(config: &NotificationConfig) -> NotificationStatus {
     NotificationStatus {
         desktop_enabled: config.desktop_enabled,
-        email_enabled: config.email.enabled,
-        email_smtp_host: config.email.smtp_host.clone(),
-        email_smtp_port: config.email.smtp_port,
-        email_smtp_username: config.email.smtp_username.clone(),
-        email_smtp_password_set: !config.email.smtp_password.is_empty(),
-        email_from_address: config.email.from_address.clone(),
-        email_to_address: config.email.to_address.clone(),
-        pushover_enabled: config.pushover.enabled,
-        pushover_user_key_set: !config.pushover.user_key.is_empty(),
-        pushover_api_token_set: !config.pushover.api_token.is_empty(),
+        ntfy_enabled: config.ntfy.enabled,
+        ntfy_topic_set: !config.ntfy.topic.is_empty(),
     }
 }
 
 /// Merges a `NotificationConfigInput` (submitted by Settings) onto the
-/// existing stored config. Every non-secret field comes from the input
-/// unconditionally (Settings always submits its whole form); every secret
-/// field is `Option<String>` and only overwrites when `Some` - `None` means
-/// the user left that field blank, i.e. keep whatever is already stored.
+/// existing stored config. `desktop_enabled`/`ntfy_enabled` come from the
+/// input unconditionally (Settings always submits its whole form); the
+/// secret `ntfy_topic` is `Option<String>` and only overwrites when `Some` -
+/// `None` means the user left that field blank, i.e. keep whatever is
+/// already stored.
 fn apply_input(existing: NotificationConfig, input: NotificationConfigInput) -> NotificationConfig {
     NotificationConfig {
         desktop_enabled: input.desktop_enabled,
-        email: EmailChannelConfig {
-            enabled: input.email_enabled,
-            smtp_host: input.email_smtp_host,
-            smtp_port: input.email_smtp_port,
-            smtp_username: input.email_smtp_username,
-            smtp_password: input.email_smtp_password.unwrap_or(existing.email.smtp_password),
-            from_address: input.email_from_address,
-            to_address: input.email_to_address,
+        ntfy: NtfyChannelConfig {
+            enabled: input.ntfy_enabled,
+            topic: input.ntfy_topic.unwrap_or(existing.ntfy.topic),
         },
-        pushover: PushoverChannelConfig {
-            enabled: input.pushover_enabled,
-            user_key: input.pushover_user_key.unwrap_or(existing.pushover.user_key),
-            api_token: input.pushover_api_token.unwrap_or(existing.pushover.api_token),
-        },
-    }
-}
-
-/// Pure - turns a failed Pushover HTTP response into a human-readable
-/// message. Same "describe_rejected_request" convention fx.rs already
-/// established for a different external API: takes a plain `StatusCode` +
-/// body string (never a real `reqwest::blocking::Response`), so it's
-/// testable without a live network call.
-fn describe_pushover_error(status: reqwest::StatusCode, body: &str) -> String {
-    // Pushover's own error shape on failure: {"status":0,"errors":["..."]}
-    let messages: Option<Vec<String>> = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("errors").cloned())
-        .and_then(|errs| serde_json::from_value(errs).ok());
-    match messages {
-        Some(msgs) if !msgs.is_empty() => format!("Pushover rejected the request ({status}): {}", msgs.join(", ")),
-        _ => format!("Pushover rejected the request ({status}): {body}"),
     }
 }
 
@@ -317,53 +314,34 @@ fn send_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) ->
         .map_err(|e| AppError::Other(format!("could not show desktop notification: {e}")))
 }
 
-fn send_pushover(cfg: &PushoverChannelConfig, title: &str, body: &str) -> AppResult<()> {
+/// ntfy.sh's public server needs no authentication and no application-level
+/// credential (see this module's top doc comment) - a plain POST to
+/// `https://ntfy.sh/<topic>` with the message as the body and the title as
+/// a header is the entire protocol. `utf8_percent_encode`/`NON_ALPHANUMERIC`
+/// is the same URL-path-segment-encoding idiom google_sheets.rs already uses
+/// for spreadsheet/file ids - defensive against a topic containing spaces,
+/// diacritics, or other characters that would otherwise break the URL.
+fn send_ntfy(cfg: &NtfyChannelConfig, title: &str, body: &str) -> AppResult<()> {
+    let topic = cfg.topic.trim();
+    if topic.is_empty() {
+        return Err(AppError::Validation("no ntfy topic is set".to_string()));
+    }
+    let encoded_topic = utf8_percent_encode(topic, NON_ALPHANUMERIC);
+    let url = format!("https://ntfy.sh/{encoded_topic}");
+
     let client = reqwest::blocking::Client::new();
     let resp = client
-        .post("https://api.pushover.net/1/messages.json")
-        .form(&[
-            ("token", cfg.api_token.as_str()),
-            ("user", cfg.user_key.as_str()),
-            ("title", title),
-            ("message", body),
-        ])
+        .post(&url)
+        .header("Title", title)
+        .body(body.to_string())
         .send()
-        .map_err(|e| AppError::External(format!("could not reach Pushover: {e}")))?;
+        .map_err(|e| AppError::External(format!("could not reach ntfy: {e}")))?;
 
     let status = resp.status();
-    let text = resp
-        .text()
-        .map_err(|e| AppError::External(format!("could not read Pushover's response: {e}")))?;
     if !status.is_success() {
-        return Err(AppError::External(describe_pushover_error(status, &text)));
+        let text = resp.text().unwrap_or_default();
+        return Err(AppError::External(format!("ntfy rejected the request ({status}): {text}")));
     }
-    Ok(())
-}
-
-fn send_email(cfg: &EmailChannelConfig, title: &str, body: &str) -> AppResult<()> {
-    let email = Message::builder()
-        .from(
-            cfg.from_address
-                .parse()
-                .map_err(|e| AppError::Validation(format!("invalid 'from' email address: {e}")))?,
-        )
-        .to(cfg
-            .to_address
-            .parse()
-            .map_err(|e| AppError::Validation(format!("invalid 'to' email address: {e}")))?)
-        .subject(title)
-        .body(body.to_string())
-        .map_err(|e| AppError::Other(format!("failed to build the email: {e}")))?;
-
-    let mailer = SmtpTransport::relay(&cfg.smtp_host)
-        .map_err(|e| AppError::External(format!("could not configure the SMTP connection: {e}")))?
-        .port(cfg.smtp_port)
-        .credentials(Credentials::new(cfg.smtp_username.clone(), cfg.smtp_password.clone()))
-        .build();
-
-    mailer
-        .send(&email)
-        .map_err(|e| AppError::External(format!("could not send the email: {e}")))?;
     Ok(())
 }
 
@@ -387,7 +365,7 @@ pub fn set_notification_config(state: State<AppState>, input: NotificationConfig
 }
 
 /// Local OS call only, no network - stays plain `fn` (see module doc
-/// comment for why the other two test commands below can't).
+/// comment for why the ntfy test command below can't).
 #[tauri::command]
 pub fn test_desktop_notification(app: tauri::AppHandle) -> AppResult<NotificationTestResult> {
     Ok(match send_desktop_notification(&app, "TIQR Manager", "This is a test notification.") {
@@ -397,49 +375,29 @@ pub fn test_desktop_notification(app: tauri::AppHandle) -> AppResult<Notificatio
 }
 
 #[tauri::command]
-pub async fn test_email_notification(state: State<'_, AppState>) -> AppResult<NotificationTestResult> {
+pub async fn test_ntfy_notification(state: State<'_, AppState>) -> AppResult<NotificationTestResult> {
     let cfg = {
         let conn = state.db.lock().unwrap();
-        load_notification_config(&conn)?.email
+        load_notification_config(&conn)?.ntfy
     };
     let result = tauri::async_runtime::spawn_blocking(move || {
-        send_email(&cfg, "TIQR Manager - test", "This is a test email from TIQR Manager.")
+        send_ntfy(&cfg, "TIQR Manager", "This is a test ntfy notification.")
     })
     .await;
     Ok(match result {
-        Ok(Ok(())) => NotificationTestResult { success: true, message: "Test email sent.".to_string() },
+        Ok(Ok(())) => NotificationTestResult { success: true, message: "Test ntfy notification sent.".to_string() },
         Ok(Err(e)) => NotificationTestResult { success: false, message: e.to_string() },
         Err(e) => NotificationTestResult {
             success: false,
-            message: format!("the test-email task did not complete cleanly: {e}"),
-        },
-    })
-}
-
-#[tauri::command]
-pub async fn test_pushover_notification(state: State<'_, AppState>) -> AppResult<NotificationTestResult> {
-    let cfg = {
-        let conn = state.db.lock().unwrap();
-        load_notification_config(&conn)?.pushover
-    };
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        send_pushover(&cfg, "TIQR Manager", "This is a test Pushover notification.")
-    })
-    .await;
-    Ok(match result {
-        Ok(Ok(())) => NotificationTestResult { success: true, message: "Test Pushover notification sent.".to_string() },
-        Ok(Err(e)) => NotificationTestResult { success: false, message: e.to_string() },
-        Err(e) => NotificationTestResult {
-            success: false,
-            message: format!("the test-pushover task did not complete cleanly: {e}"),
+            message: format!("the test-ntfy task did not complete cleanly: {e}"),
         },
     })
 }
 
 /// The periodic check (Layout.tsx calls this every 30 minutes). `async fn` +
-/// `spawn_blocking` for email/Pushover - see module doc comment. Silent on
-/// both success and failure toward the caller (Layout.tsx's own `.catch(()
-/// => {})`) - same "no new alert noise" philosophy `DashboardAlerts` itself
+/// `spawn_blocking` for ntfy - see module doc comment. Silent on both
+/// success and failure toward the caller (Layout.tsx's own `.catch(() =>
+/// {})`) - same "no new alert noise" philosophy `DashboardAlerts` itself
 /// already follows; a single channel failing never stops the others from
 /// being tried, and never fails the whole run.
 #[tauri::command]
@@ -448,7 +406,7 @@ pub async fn check_and_send_notifications(app: tauri::AppHandle, state: State<'_
         let conn = state.db.lock().unwrap();
         load_notification_config(&conn)?
     };
-    if !config.desktop_enabled && !config.email.enabled && !config.pushover.enabled {
+    if !config.desktop_enabled && !config.ntfy.enabled {
         return Ok(());
     }
 
@@ -469,18 +427,10 @@ pub async fn check_and_send_notifications(app: tauri::AppHandle, state: State<'_
         if config.desktop_enabled && send_desktop_notification(&app, &title, &body).is_ok() {
             any_success = true;
         }
-        if config.email.enabled {
-            let cfg = config.email.clone();
+        if config.ntfy.enabled {
+            let cfg = config.ntfy.clone();
             let (t, b) = (title.clone(), body.clone());
-            let sent = tauri::async_runtime::spawn_blocking(move || send_email(&cfg, &t, &b)).await;
-            if matches!(sent, Ok(Ok(()))) {
-                any_success = true;
-            }
-        }
-        if config.pushover.enabled {
-            let cfg = config.pushover.clone();
-            let (t, b) = (title.clone(), body.clone());
-            let sent = tauri::async_runtime::spawn_blocking(move || send_pushover(&cfg, &t, &b)).await;
+            let sent = tauri::async_runtime::spawn_blocking(move || send_ntfy(&cfg, &t, &b)).await;
             if matches!(sent, Ok(Ok(()))) {
                 any_success = true;
             }
@@ -723,90 +673,46 @@ mod tests {
     // ---- status_from_config / apply_input -------------------------------
 
     #[test]
-    fn status_never_carries_the_actual_secret_values() {
+    fn status_never_carries_the_actual_secret_value() {
         let config = NotificationConfig {
             desktop_enabled: true,
-            email: EmailChannelConfig {
-                enabled: true,
-                smtp_host: "smtp.example.com".to_string(),
-                smtp_port: 587,
-                smtp_username: "marko@example.com".to_string(),
-                smtp_password: "super-secret-password".to_string(),
-                from_address: "marko@example.com".to_string(),
-                to_address: "marko@example.com".to_string(),
-            },
-            pushover: PushoverChannelConfig {
-                enabled: true,
-                user_key: "u-key-value".to_string(),
-                api_token: "a-token-value".to_string(),
-            },
+            ntfy: NtfyChannelConfig { enabled: true, topic: "my-very-secret-topic".to_string() },
         };
         let status = status_from_config(&config);
-        assert!(status.email_smtp_password_set);
-        assert!(status.pushover_user_key_set);
-        assert!(status.pushover_api_token_set);
-        // The debug representation of the status must never contain any of
-        // the actual secret text - only booleans about its presence.
+        assert!(status.ntfy_topic_set);
+        // The debug representation of the status must never contain the
+        // actual secret text - only a boolean about its presence.
         let dump = format!("{status:?}");
-        assert!(!dump.contains("super-secret-password"));
-        assert!(!dump.contains("u-key-value"));
-        assert!(!dump.contains("a-token-value"));
+        assert!(!dump.contains("my-very-secret-topic"));
     }
 
     #[test]
     fn a_none_secret_in_the_input_keeps_the_existing_stored_secret() {
         let existing = NotificationConfig {
-            email: EmailChannelConfig { smtp_password: "old-password".to_string(), ..Default::default() },
-            pushover: PushoverChannelConfig {
-                user_key: "old-user-key".to_string(),
-                api_token: "old-api-token".to_string(),
-                ..Default::default()
-            },
+            ntfy: NtfyChannelConfig { topic: "old-topic".to_string(), ..Default::default() },
             ..Default::default()
         };
-        let input = NotificationConfigInput {
-            desktop_enabled: true,
-            email_enabled: true,
-            email_smtp_host: "smtp.example.com".to_string(),
-            email_smtp_port: 587,
-            email_smtp_username: "marko".to_string(),
-            email_smtp_password: None,
-            email_from_address: "marko@example.com".to_string(),
-            email_to_address: "marko@example.com".to_string(),
-            pushover_enabled: true,
-            pushover_user_key: None,
-            pushover_api_token: None,
-        };
+        let input = NotificationConfigInput { desktop_enabled: true, ntfy_enabled: true, ntfy_topic: None };
         let merged = apply_input(existing, input);
-        assert_eq!(merged.email.smtp_password, "old-password");
-        assert_eq!(merged.pushover.user_key, "old-user-key");
-        assert_eq!(merged.pushover.api_token, "old-api-token");
+        assert_eq!(merged.ntfy.topic, "old-topic");
         // Non-secret fields still come from the input.
-        assert_eq!(merged.email.smtp_host, "smtp.example.com");
         assert!(merged.desktop_enabled);
+        assert!(merged.ntfy.enabled);
     }
 
     #[test]
     fn a_some_secret_in_the_input_overwrites_the_existing_stored_secret() {
         let existing = NotificationConfig {
-            email: EmailChannelConfig { smtp_password: "old-password".to_string(), ..Default::default() },
+            ntfy: NtfyChannelConfig { topic: "old-topic".to_string(), ..Default::default() },
             ..Default::default()
         };
         let input = NotificationConfigInput {
             desktop_enabled: false,
-            email_enabled: false,
-            email_smtp_host: String::new(),
-            email_smtp_port: 0,
-            email_smtp_username: String::new(),
-            email_smtp_password: Some("new-password".to_string()),
-            email_from_address: String::new(),
-            email_to_address: String::new(),
-            pushover_enabled: false,
-            pushover_user_key: None,
-            pushover_api_token: None,
+            ntfy_enabled: false,
+            ntfy_topic: Some("new-topic".to_string()),
         };
         let merged = apply_input(existing, input);
-        assert_eq!(merged.email.smtp_password, "new-password");
+        assert_eq!(merged.ntfy.topic, "new-topic");
     }
 
     // ---- config storage round-trip (app_settings) -----------------------
@@ -816,8 +722,7 @@ mod tests {
         let conn = test_conn();
         let config = load_notification_config(&conn).unwrap();
         assert!(!config.desktop_enabled);
-        assert!(!config.email.enabled);
-        assert!(!config.pushover.enabled);
+        assert!(!config.ntfy.enabled);
     }
 
     #[test]
@@ -825,28 +730,27 @@ mod tests {
         let conn = test_conn();
         let config = NotificationConfig {
             desktop_enabled: true,
-            email: EmailChannelConfig {
-                enabled: true,
-                smtp_host: "smtp.example.com".to_string(),
-                smtp_port: 465,
-                smtp_username: "marko".to_string(),
-                smtp_password: "p@ss".to_string(),
-                from_address: "a@example.com".to_string(),
-                to_address: "b@example.com".to_string(),
-            },
-            pushover: PushoverChannelConfig {
-                enabled: true,
-                user_key: "uk".to_string(),
-                api_token: "at".to_string(),
-            },
+            ntfy: NtfyChannelConfig { enabled: true, topic: "tiqr-marko-alerts".to_string() },
         };
         save_notification_config(&conn, &config).unwrap();
         let loaded = load_notification_config(&conn).unwrap();
         assert_eq!(loaded.desktop_enabled, config.desktop_enabled);
-        assert_eq!(loaded.email.smtp_host, config.email.smtp_host);
-        assert_eq!(loaded.email.smtp_port, config.email.smtp_port);
-        assert_eq!(loaded.pushover.user_key, config.pushover.user_key);
-        assert_eq!(loaded.pushover.api_token, config.pushover.api_token);
+        assert_eq!(loaded.ntfy.topic, config.ntfy.topic);
+    }
+
+    #[test]
+    fn a_config_stored_by_an_older_shape_with_leftover_email_and_pushover_fields_still_loads() {
+        // 2.0.77 dropped the `email` field NotificationConfig used to
+        // carry; 2.0.78 dropped `pushover` (replaced by `ntfy`).
+        // `#[serde(default)]` must tolerate both leftover keys rather than
+        // treating an existing install's stored config as corrupt.
+        let conn = test_conn();
+        let old_shape = r#"{"desktopEnabled":true,"email":{"enabled":true,"smtpHost":"smtp.example.com"},"pushover":{"enabled":true,"userKey":"uk"},"ntfy":{"enabled":true,"topic":"my-topic"}}"#;
+        set_setting(&conn, NOTIFICATION_CONFIG_KEY, old_shape).unwrap();
+        let loaded = load_notification_config(&conn).unwrap();
+        assert!(loaded.desktop_enabled);
+        assert!(loaded.ntfy.enabled);
+        assert_eq!(loaded.ntfy.topic, "my-topic");
     }
 
     #[test]
@@ -866,16 +770,8 @@ mod tests {
         let conn = test_conn();
         let input = NotificationConfigInput {
             desktop_enabled: true,
-            email_enabled: false,
-            email_smtp_host: "smtp.example.com".to_string(),
-            email_smtp_port: 587,
-            email_smtp_username: String::new(),
-            email_smtp_password: Some("secret".to_string()),
-            email_from_address: String::new(),
-            email_to_address: String::new(),
-            pushover_enabled: false,
-            pushover_user_key: None,
-            pushover_api_token: None,
+            ntfy_enabled: true,
+            ntfy_topic: Some("secret-topic".to_string()),
         };
         let existing = load_notification_config(&conn).unwrap();
         let merged = apply_input(existing, input);
@@ -884,8 +780,7 @@ mod tests {
         let reloaded = load_notification_config(&conn).unwrap();
         let status = status_from_config(&reloaded);
         assert!(status.desktop_enabled);
-        assert!(status.email_smtp_password_set);
-        assert_eq!(status.email_smtp_host, "smtp.example.com");
+        assert!(status.ntfy_topic_set);
     }
 
     // ---- notification_log dedup (013_notifications.sql) -----------------
@@ -931,19 +826,19 @@ mod tests {
         assert!(already_sent_today(&conn, today).unwrap().is_empty());
     }
 
-    // ---- describe_pushover_error -----------------------------------------
+    // ---- send_ntfy ---------------------------------------------------------
 
     #[test]
-    fn describe_pushover_error_extracts_the_real_error_list() {
-        let body = r#"{"user":"invalid","errors":["user identifier is invalid"],"status":0,"request":"abc"}"#;
-        let msg = describe_pushover_error(reqwest::StatusCode::from_u16(400).unwrap(), body);
-        assert!(msg.contains("user identifier is invalid"));
+    fn send_ntfy_fails_cleanly_with_no_topic_set() {
+        let cfg = NtfyChannelConfig { enabled: true, topic: String::new() };
+        let err = send_ntfy(&cfg, "title", "body").unwrap_err();
+        assert!(err.to_string().contains("no ntfy topic is set"), "{err}");
     }
 
     #[test]
-    fn describe_pushover_error_falls_back_gracefully_on_a_non_json_body() {
-        let msg = describe_pushover_error(reqwest::StatusCode::from_u16(500).unwrap(), "internal server error");
-        assert!(msg.contains("500"));
-        assert!(msg.contains("internal server error"));
+    fn send_ntfy_fails_cleanly_with_a_blank_topic() {
+        let cfg = NtfyChannelConfig { enabled: true, topic: "   ".to_string() };
+        let err = send_ntfy(&cfg, "title", "body").unwrap_err();
+        assert!(err.to_string().contains("no ntfy topic is set"), "{err}");
     }
 }

@@ -72,8 +72,8 @@ export default function Layout() {
   }, []);
 
   // 2.0.76: periodic check for the outbound-notification feature (desktop/
-  // email/Pushover - Settings -> Notifications) - see commands/
-  // notifications.rs's module doc comment. Fires once shortly after mount,
+  // ntfy - Settings -> Notifications) - see commands/notifications.rs's
+  // module doc comment. Fires once shortly after mount,
   // not just after the first full interval, so a category that's already
   // due isn't left waiting up to 30 minutes to be noticed - then every 30
   // minutes after that for as long as the app stays open. Silent on both

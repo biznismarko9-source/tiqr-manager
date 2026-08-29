@@ -1463,11 +1463,16 @@ pub struct SheetSyncResult {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound notifications (2.0.76) - desktop/email/Pushover, built on top of
-// the same 4 categories `DashboardAlerts` above already tracks. See
-// commands/notifications.rs for the actual logic; these are just the DTOs,
-// same split every other feature in this file already follows (dashboard.rs
-// stays logic-only, its structs live here).
+// Outbound notifications (2.0.76; email channel removed again in 2.0.77 -
+// marko decided against it. The mobile-push channel was Pushover in 2.0.76-
+// 2.0.77, replaced by ntfy in 2.0.78 because Pushover's API always needs
+// BOTH a user key AND an application token, and marko wanted a channel that
+// needs only ONE thing from him - see notifications.rs's module doc
+// comment) - desktop/ntfy, built on top of the same 4 categories
+// `DashboardAlerts` above already tracks. See commands/notifications.rs for
+// the actual logic; these are just the DTOs, same split every other feature
+// in this file already follows (dashboard.rs stays logic-only, its structs
+// live here).
 // ---------------------------------------------------------------------------
 
 /// The whole notification configuration, stored as ONE JSON blob under
@@ -1478,47 +1483,45 @@ pub struct SheetSyncResult {
 /// the `app_settings` table.
 ///
 /// `#[serde(default)]` on every level here defensively tolerates a stored
-/// blob from a slightly older shape (e.g. a field added in a later version)
-/// failing to deserialize a whole config just because one new field is
-/// missing - the same defensive posture this codebase already takes with
-/// external API response shapes (see google_sheets.rs's `conditional_
-/// formats`/`grid_properties`), applied here to a value THIS app itself
-/// writes and later reads back across app updates.
+/// blob from a slightly older shape (e.g. a field added in a later version,
+/// or - 2.0.77 - the whole `email` field this struct used to carry, or -
+/// 2.0.78 - the `pushover` field it carried before that) failing to
+/// deserialize a whole config just because one field no longer matches -
+/// the same defensive posture this codebase already takes with external API
+/// response shapes (see google_sheets.rs's `conditional_formats`/`grid_
+/// properties`), applied here to a value THIS app itself writes and later
+/// reads back across app updates.
 ///
-/// This is the ONLY place a real secret (the SMTP password, the Pushover
-/// keys) is ever held as a plain field - it must never be sent to the
-/// frontend as-is. See `NotificationStatus` (safe to send) and
-/// `NotificationConfigInput` (safe to receive) below.
+/// This is the ONLY place a real secret (the ntfy topic) is ever held as a
+/// plain field - it must never be sent to the frontend as-is. See
+/// `NotificationStatus` (safe to send) and `NotificationConfigInput` (safe
+/// to receive) below.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NotificationConfig {
     pub desktop_enabled: bool,
-    pub email: EmailChannelConfig,
-    pub pushover: PushoverChannelConfig,
+    pub ntfy: NtfyChannelConfig,
 }
 
+/// 2.0.78: ntfy (https://ntfy.sh) replaced Pushover as this app's mobile-
+/// push channel - see notifications.rs's module doc comment for the full
+/// reasoning. `topic` is the ONE thing a person needs: a name they made up
+/// themselves, entered both here and in the free ntfy app on their phone.
+/// ntfy's public server needs no signup and no application-level credential
+/// on either side, so - unlike Pushover - there is nothing for this app to
+/// ship an embedded build secret for any more. Treated as a secret (never
+/// echoed back, see `NotificationStatus` below) because on ntfy's public
+/// server the topic name IS the entire access control - anyone who knows it
+/// can publish to it or read it.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
-pub struct EmailChannelConfig {
+pub struct NtfyChannelConfig {
     pub enabled: bool,
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_username: String,
-    pub smtp_password: String,
-    pub from_address: String,
-    pub to_address: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct PushoverChannelConfig {
-    pub enabled: bool,
-    pub user_key: String,
-    pub api_token: String,
+    pub topic: String,
 }
 
 /// What Settings -> Notifications actually receives from the GET status
-/// command - same shape as `NotificationConfig`, but every secret field is
+/// command - same shape as `NotificationConfig`, but the secret field is
 /// replaced by a `*_set: bool` presence flag. Precedented by
 /// `GoogleSignInStatus` (google_auth.rs), which returns `sign_in_available:
 /// bool` + an email but never the OAuth refresh token itself - same idea,
@@ -1527,40 +1530,23 @@ pub struct PushoverChannelConfig {
 #[serde(rename_all = "camelCase")]
 pub struct NotificationStatus {
     pub desktop_enabled: bool,
-    pub email_enabled: bool,
-    pub email_smtp_host: String,
-    pub email_smtp_port: u16,
-    pub email_smtp_username: String,
-    pub email_smtp_password_set: bool,
-    pub email_from_address: String,
-    pub email_to_address: String,
-    pub pushover_enabled: bool,
-    pub pushover_user_key_set: bool,
-    pub pushover_api_token_set: bool,
+    pub ntfy_enabled: bool,
+    pub ntfy_topic_set: bool,
 }
 
-/// What Settings -> Notifications sends to the SET command. Every secret
+/// What Settings -> Notifications sends to the SET command. The secret
 /// field is `Option<String>`: `None` means "leave whatever is already
 /// stored untouched", `Some(value)` overwrites it (including with an empty
 /// string, if that's ever genuinely what's submitted). The frontend never
-/// pre-fills a secret field from `NotificationStatus` (which only ever
-/// carries presence booleans, never values) - a secret field the user
-/// simply didn't touch is submitted as `None`, which is exactly "leave
-/// unchanged".
+/// pre-fills the secret field from `NotificationStatus` (which only ever
+/// carries a presence boolean, never the value) - leaving it blank is
+/// submitted as `None`, which is exactly "leave unchanged".
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationConfigInput {
     pub desktop_enabled: bool,
-    pub email_enabled: bool,
-    pub email_smtp_host: String,
-    pub email_smtp_port: u16,
-    pub email_smtp_username: String,
-    pub email_smtp_password: Option<String>,
-    pub email_from_address: String,
-    pub email_to_address: String,
-    pub pushover_enabled: bool,
-    pub pushover_user_key: Option<String>,
-    pub pushover_api_token: Option<String>,
+    pub ntfy_enabled: bool,
+    pub ntfy_topic: Option<String>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per

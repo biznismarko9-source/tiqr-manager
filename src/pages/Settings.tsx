@@ -86,10 +86,12 @@ const SECTIONS = [
   { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
   { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
   { key: "integrations", title: "Integrations", description: "Connect Pulls, Orders and Tickets to a Google Sheet.", icon: IconLink },
-  // 2.0.76: desktop/email/Pushover alerts for the same 4 things the
-  // Dashboard's bell already tracks - see NotificationsCard below and
-  // REDESIGN-2.0.76-REPORT.md.
-  { key: "notifications", title: "Notifications", description: "Desktop, email and Pushover alerts for the things that need your attention.", icon: IconBell },
+  // 2.0.76: desktop/mobile-push alerts for the same 4 things the Dashboard's
+  // bell already tracks - see NotificationsCard below and REDESIGN-2.0.76-
+  // REPORT.md. 2.0.77 removed the email channel this shipped with at
+  // marko's own request; 2.0.78 switched the mobile-push channel from
+  // Pushover to ntfy - see NotificationsCard's own doc comment.
+  { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts for the things that need your attention.", icon: IconBell },
   { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
   // 2.0.44: your name/email/sign-in + Log out - see the profile widget at
@@ -2245,63 +2247,59 @@ function CsvImportModal({
   );
 }
 
-// 2.0.76: Settings -> Notifications. Desktop/email/Pushover alerts for the
+// 2.0.76: Settings -> Notifications. Desktop/mobile-push alerts for the
 // same 4 categories AlertBell/AttentionSection (Dashboard.tsx) already
 // track - no new detection logic here, this only configures where those
 // same facts also get sent. See commands/notifications.rs's module doc
 // comment for the full backend design.
 //
-// Same "collapse once configured" visual convention SheetsConnectionCard
-// uses (2.0.65) - `editing` reopens the full form, e.g. to change a
-// password or add a second channel. Not configured yet (no channel
-// enabled), there's nothing to collapse, so the full form always shows.
+// 2.0.77: the email channel this shipped with in 2.0.76 was removed at
+// marko's own request ("email zatial odstranme").
 //
-// Secret fields (SMTP password, Pushover user key/API token) are NEVER
-// pre-filled from `NotificationStatus` - it only ever carries `*Set: bool`
-// presence flags, never the actual values (see that type's own doc comment,
-// types.ts). Each secret field always starts blank with a placeholder
-// explaining that; leaving it blank on Save means "keep whatever is already
-// stored", exactly what `NotificationConfigInput`'s `Option<String>` fields
-// expect.
+// 2.0.78: the mobile-push channel switched from Pushover to ntfy
+// (https://ntfy.sh) - Pushover always needs both a personal user key AND a
+// separate application token with no way to derive one from the other, so
+// even the 2.0.77 "just paste your user key" version still required a
+// one-time app registration from marko. ntfy's public server needs neither:
+// the only thing to configure is a single self-chosen "topic" string, and
+// there is nothing to register anywhere. See notifications.rs's module doc
+// comment for the full reasoning, including the trade-off this implies
+// (the topic name is the entire access control on ntfy's public server, so
+// it must be a private, hard-to-guess phrase - treated as a secret here
+// exactly like the old Pushover key was).
+//
+// Same "collapse once configured" visual convention SheetsConnectionCard
+// uses (2.0.65) - `editing` reopens the full form, e.g. to change the ntfy
+// topic. Not configured yet (no channel enabled), there's nothing to
+// collapse, so the full form always shows.
+//
+// The ntfy topic is NEVER pre-filled from `NotificationStatus` - it only
+// ever carries a `ntfyTopicSet: bool` presence flag, never the actual value
+// (see that type's own doc comment, types.ts). The field always starts
+// blank with a placeholder explaining that; leaving it blank on Save means
+// "keep whatever is already stored", exactly what
+// `NotificationConfigInput.ntfyTopic`'s `Option<String>` expects.
 function NotificationsCard() {
   const toast = useToast();
   const [status, setStatus] = useState<NotificationStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [testBusy, setTestBusy] = useState<"desktop" | "email" | "pushover" | null>(null);
-  const [testResults, setTestResults] = useState<
-    Partial<Record<"desktop" | "email" | "pushover", NotificationTestResult>>
-  >({});
+  const [testBusy, setTestBusy] = useState<"desktop" | "ntfy" | null>(null);
+  const [testResults, setTestResults] = useState<Partial<Record<"desktop" | "ntfy", NotificationTestResult>>>({});
 
   const [desktopEnabled, setDesktopEnabled] = useState(false);
-  const [emailEnabled, setEmailEnabled] = useState(false);
-  const [emailSmtpHost, setEmailSmtpHost] = useState("");
-  const [emailSmtpPort, setEmailSmtpPort] = useState(587);
-  const [emailSmtpUsername, setEmailSmtpUsername] = useState("");
-  const [emailSmtpPassword, setEmailSmtpPassword] = useState("");
-  const [emailFromAddress, setEmailFromAddress] = useState("");
-  const [emailToAddress, setEmailToAddress] = useState("");
-  const [pushoverEnabled, setPushoverEnabled] = useState(false);
-  const [pushoverUserKey, setPushoverUserKey] = useState("");
-  const [pushoverApiToken, setPushoverApiToken] = useState("");
+  const [ntfyEnabled, setNtfyEnabled] = useState(false);
+  const [ntfyTopic, setNtfyTopic] = useState("");
 
-  // Applies a freshly loaded/saved status to the form - every non-secret
-  // field mirrors it exactly; secret fields always reset to blank (see this
-  // component's own doc comment above for why).
+  // Applies a freshly loaded/saved status to the form - `desktopEnabled`/
+  // `ntfyEnabled` mirror it exactly; the secret field always resets to
+  // blank (see this component's own doc comment above for why).
   const applyStatus = (s: NotificationStatus) => {
     setStatus(s);
     setDesktopEnabled(s.desktopEnabled);
-    setEmailEnabled(s.emailEnabled);
-    setEmailSmtpHost(s.emailSmtpHost);
-    setEmailSmtpPort(s.emailSmtpPort);
-    setEmailSmtpUsername(s.emailSmtpUsername);
-    setEmailFromAddress(s.emailFromAddress);
-    setEmailToAddress(s.emailToAddress);
-    setPushoverEnabled(s.pushoverEnabled);
-    setEmailSmtpPassword("");
-    setPushoverUserKey("");
-    setPushoverApiToken("");
+    setNtfyEnabled(s.ntfyEnabled);
+    setNtfyTopic("");
   };
 
   useEffect(() => {
@@ -2314,23 +2312,15 @@ function NotificationsCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const configured = desktopEnabled || emailEnabled || pushoverEnabled;
+  const configured = desktopEnabled || ntfyEnabled;
 
   const doSave = async () => {
     setSaving(true);
     try {
       const input: NotificationConfigInput = {
         desktopEnabled,
-        emailEnabled,
-        emailSmtpHost,
-        emailSmtpPort,
-        emailSmtpUsername,
-        emailSmtpPassword: emailSmtpPassword.trim() ? emailSmtpPassword : null,
-        emailFromAddress,
-        emailToAddress,
-        pushoverEnabled,
-        pushoverUserKey: pushoverUserKey.trim() ? pushoverUserKey : null,
-        pushoverApiToken: pushoverApiToken.trim() ? pushoverApiToken : null,
+        ntfyEnabled,
+        ntfyTopic: ntfyTopic.trim() ? ntfyTopic : null,
       };
       const result = await api.setNotificationConfig(input);
       applyStatus(result);
@@ -2348,14 +2338,10 @@ function NotificationsCard() {
   // SheetsConnectionCard's own "Test connection" - a click here never uses
   // unsaved edits still sitting in the form (see the hint text next to the
   // Save button below).
-  const doTest = async (channel: "desktop" | "email" | "pushover") => {
+  const doTest = async (channel: "desktop" | "ntfy") => {
     setTestBusy(channel);
     try {
-      const result = await (channel === "desktop"
-        ? api.testDesktopNotification()
-        : channel === "email"
-          ? api.testEmailNotification()
-          : api.testPushoverNotification());
+      const result = await (channel === "desktop" ? api.testDesktopNotification() : api.testNtfyNotification());
       setTestResults((r) => ({ ...r, [channel]: result }));
       if (!result.success) toast.error(result.message);
     } catch (e) {
@@ -2375,7 +2361,7 @@ function NotificationsCard() {
     );
   }
 
-  const TestResultLine = ({ channel }: { channel: "desktop" | "email" | "pushover" }) => {
+  const TestResultLine = ({ channel }: { channel: "desktop" | "ntfy" }) => {
     const result = testResults[channel];
     if (!result) return null;
     return (
@@ -2400,7 +2386,7 @@ function NotificationsCard() {
       {configured && !editing ? (
         <div className="mb-1 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
           <p className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">
-            {[desktopEnabled && "Desktop", emailEnabled && "Email", pushoverEnabled && "Pushover"].filter(Boolean).join(", ")}
+            {[desktopEnabled && "Desktop", ntfyEnabled && "ntfy"].filter(Boolean).join(", ")}
           </p>
           <Button variant="ghost" onClick={() => setEditing(true)}>
             Change settings
@@ -2435,100 +2421,37 @@ function NotificationsCard() {
               <input
                 type="checkbox"
                 className={CHECKBOX_CLASS}
-                checked={emailEnabled}
-                onChange={(e) => setEmailEnabled(e.target.checked)}
+                checked={ntfyEnabled}
+                onChange={(e) => setNtfyEnabled(e.target.checked)}
               />
-              Email notifications
-            </label>
-            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="SMTP host">
-                <Input placeholder="smtp.gmail.com" value={emailSmtpHost} onChange={(e) => setEmailSmtpHost(e.target.value)} />
-              </Field>
-              <Field label="SMTP port">
-                <Input
-                  type="number"
-                  placeholder="587"
-                  value={emailSmtpPort}
-                  onChange={(e) => setEmailSmtpPort(Number(e.target.value) || 0)}
-                />
-              </Field>
-              <Field label="SMTP username">
-                <Input value={emailSmtpUsername} onChange={(e) => setEmailSmtpUsername(e.target.value)} />
-              </Field>
-              <Field
-                label="SMTP password"
-                hint={status?.emailSmtpPasswordSet ? "A password is already saved - leave blank to keep it." : undefined}
-              >
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder={status?.emailSmtpPasswordSet ? "Leave blank to keep the current password" : ""}
-                  value={emailSmtpPassword}
-                  onChange={(e) => setEmailSmtpPassword(e.target.value)}
-                />
-              </Field>
-              <Field label="From address">
-                <Input placeholder="you@example.com" value={emailFromAddress} onChange={(e) => setEmailFromAddress(e.target.value)} />
-              </Field>
-              <Field label="To address">
-                <Input placeholder="you@example.com" value={emailToAddress} onChange={(e) => setEmailToAddress(e.target.value)} />
-              </Field>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button variant="secondary" disabled={testBusy === "email"} onClick={() => doTest("email")}>
-                {testBusy === "email" ? <Spinner className="h-4 w-4" /> : null}
-                Send test
-              </Button>
-              <TestResultLine channel="email" />
-            </div>
-          </div>
-
-          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
-            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-              <input
-                type="checkbox"
-                className={CHECKBOX_CLASS}
-                checked={pushoverEnabled}
-                onChange={(e) => setPushoverEnabled(e.target.checked)}
-              />
-              Pushover (mobile push)
+              ntfy (mobile push)
             </label>
             <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-              Needs the free Pushover app on your phone - install it, then paste your user key and an application
-              token from pushover.net below.
+              Needs the free ntfy app on your phone (search &quot;ntfy&quot; on the App Store/Google Play) - no
+              account or sign-up either there or here. Pick your own private, hard-to-guess phrase below (this is
+              your &quot;topic&quot; - anyone who knows it can see your notifications, so don&apos;t use something
+              obvious), then subscribe to that exact same phrase in the app.
             </p>
-            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-2 max-w-sm">
               <Field
-                label="User key"
-                hint={status?.pushoverUserKeySet ? "Already saved - leave blank to keep it." : undefined}
+                label="Topic"
+                hint={status?.ntfyTopicSet ? "Already saved - leave blank to keep it." : undefined}
               >
                 <Input
                   type="password"
                   autoComplete="off"
-                  placeholder={status?.pushoverUserKeySet ? "Leave blank to keep the current key" : ""}
-                  value={pushoverUserKey}
-                  onChange={(e) => setPushoverUserKey(e.target.value)}
-                />
-              </Field>
-              <Field
-                label="API token"
-                hint={status?.pushoverApiTokenSet ? "Already saved - leave blank to keep it." : undefined}
-              >
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  placeholder={status?.pushoverApiTokenSet ? "Leave blank to keep the current token" : ""}
-                  value={pushoverApiToken}
-                  onChange={(e) => setPushoverApiToken(e.target.value)}
+                  placeholder={status?.ntfyTopicSet ? "Leave blank to keep the current topic" : "e.g. tiqr-marko-8k2f"}
+                  value={ntfyTopic}
+                  onChange={(e) => setNtfyTopic(e.target.value)}
                 />
               </Field>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button variant="secondary" disabled={testBusy === "pushover"} onClick={() => doTest("pushover")}>
-                {testBusy === "pushover" ? <Spinner className="h-4 w-4" /> : null}
+              <Button variant="secondary" disabled={testBusy === "ntfy"} onClick={() => doTest("ntfy")}>
+                {testBusy === "ntfy" ? <Spinner className="h-4 w-4" /> : null}
                 Send test
               </Button>
-              <TestResultLine channel="pushover" />
+              <TestResultLine channel="ntfy" />
             </div>
           </div>
 

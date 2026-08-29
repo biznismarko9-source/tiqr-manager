@@ -1031,50 +1031,41 @@ export interface BulkCurrencyConversionResult {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound notifications (2.0.76) - desktop, email, Pushover. Settings ->
-// Notifications; the periodic check itself runs from Layout.tsx. Mirrors
-// src-tauri/src/models.rs's NotificationStatus/NotificationConfigInput/
-// NotificationTestResult exactly (serde's rename_all = "camelCase") - see
-// that file's own doc comments for the full design (never echoing a secret
-// back, Option<String> = "leave unchanged" on the input side, etc).
+// Outbound notifications (2.0.76) - desktop + a mobile push channel.
+// Settings -> Notifications; the periodic check itself runs from
+// Layout.tsx. Mirrors src-tauri/src/models.rs's
+// NotificationStatus/NotificationConfigInput/NotificationTestResult exactly
+// (serde's rename_all = "camelCase") - see that file's own doc comments for
+// the full design (never echoing a secret back, Option<String> = "leave
+// unchanged" on the input side, etc).
+//
+// 2.0.78: the mobile-push channel is ntfy (https://ntfy.sh), not Pushover -
+// see src-tauri/src/commands/notifications.rs's module doc comment for why
+// (Pushover always needs both a user key AND a separate application token,
+// with no way to derive one from the other; ntfy's public server needs
+// neither - just one self-chosen "topic" string, so that's the only secret
+// this shape has).
 // ---------------------------------------------------------------------------
 
-/** What Settings -> Notifications loads to show the current state. Secret
- * fields (the SMTP password, the Pushover keys) are never included - only
- * whether one is currently stored (`*Set`). Never pre-fill a secret input
- * from this - see NotificationConfigInput below. */
+/** What Settings -> Notifications loads to show the current state. The
+ * secret field (the ntfy topic) is never included - only whether one is
+ * currently stored (`ntfyTopicSet`). Never pre-fill the secret input from
+ * this - see NotificationConfigInput below. */
 export interface NotificationStatus {
   desktopEnabled: boolean;
-  emailEnabled: boolean;
-  emailSmtpHost: string;
-  emailSmtpPort: number;
-  emailSmtpUsername: string;
-  emailSmtpPasswordSet: boolean;
-  emailFromAddress: string;
-  emailToAddress: string;
-  pushoverEnabled: boolean;
-  pushoverUserKeySet: boolean;
-  pushoverApiTokenSet: boolean;
+  ntfyEnabled: boolean;
+  ntfyTopicSet: boolean;
 }
 
-/** What Settings -> Notifications submits to `setNotificationConfig`. Every
+/** What Settings -> Notifications submits to `setNotificationConfig`. The
  * secret field is optional/nullable: omit it (or send null) to leave
- * whatever is already stored untouched - exactly what a secret input the
- * user left blank means, since it's never pre-filled with a real value to
- * begin with. Send a real string only when the user actually typed a new
- * one. */
+ * whatever is already stored untouched - exactly what leaving the input
+ * blank means, since it's never pre-filled with a real value to begin with.
+ * Send a real string only when the user actually typed a new one. */
 export interface NotificationConfigInput {
   desktopEnabled: boolean;
-  emailEnabled: boolean;
-  emailSmtpHost: string;
-  emailSmtpPort: number;
-  emailSmtpUsername: string;
-  emailSmtpPassword?: string | null;
-  emailFromAddress: string;
-  emailToAddress: string;
-  pushoverEnabled: boolean;
-  pushoverUserKey?: string | null;
-  pushoverApiToken?: string | null;
+  ntfyEnabled: boolean;
+  ntfyTopic?: string | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
