@@ -1,5 +1,6 @@
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
+use crate::finance;
 use crate::money::format_cents;
 use rusqlite::Connection;
 use tauri::State;
@@ -12,6 +13,18 @@ fn yesno(b: bool) -> &'static str {
         "yes"
     } else {
         "no"
+    }
+}
+/// 2.0.79: same one-decimal-place convention as the frontend's own
+/// `formatPercent` (lib/format.ts) - kept blank (not "N/A") on `None`,
+/// matching every other inapplicable/missing value already exported blank
+/// in this file (e.g. a currency-mismatched `profit` above), since a CSV
+/// meant for reimport/analysis should never carry a non-numeric placeholder
+/// string in what is otherwise a numeric column.
+fn format_percent_opt(ratio: Option<f64>) -> String {
+    match ratio {
+        Some(r) => format!("{:.1}%", r * 100.0),
+        None => String::new(),
     }
 }
 
@@ -85,9 +98,16 @@ pub fn export_events_csv_selected(state: State<AppState>, path: String, ids: Vec
 /// as `export_events_csv_impl` above. `ids: None` means "every order"
 /// (unchanged pre-1.9.1 behaviour), `Some(ids)` restricts to exactly those.
 fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) -> AppResult<i64> {
+    // 2.0.79: `e.category` appended at the end rather than inlined among the
+    // existing columns, so every already-established positional `row.get(i)`
+    // call below keeps its original index - see this file's module-level
+    // convention (new columns read by name, existing ones stay positional).
+    // Same legacy free-text column the Events export already reads directly
+    // (Order::category_name's own doc comment, models.rs) - this export just
+    // hadn't been updated to include it since categories shipped in 2.0.27.
     let mut sql = "SELECT o.code, e.name, sup.name, p.name, o.purchase_date, o.quantity,
                 o.unit_price_cents, o.fees_cents, o.other_costs_cents, o.total_cost_cents,
-                o.currency, o.payment_status, o.notes, o.is_demo, o.created_at
+                o.currency, o.payment_status, o.notes, o.is_demo, o.created_at, e.category
          FROM orders o
          JOIN events e ON e.id = o.event_id
          LEFT JOIN suppliers sup ON sup.id = o.supplier_id
@@ -109,7 +129,7 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
     let mut stmt = conn.prepare(&sql)?;
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
-        "order_code", "event", "supplier", "platform", "purchase_date", "quantity",
+        "order_code", "event", "category", "supplier", "platform", "purchase_date", "quantity",
         "unit_price", "fees", "other_costs", "total_cost", "currency", "payment_status",
         "notes", "is_demo", "created_at",
     ])?;
@@ -120,6 +140,7 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
         wtr.write_record([
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
+            opt(row.get("category")?),
             opt(row.get(2)?),
             opt(row.get(3)?),
             row.get::<_, String>(4)?,
@@ -166,9 +187,14 @@ fn export_tickets_inner(
     event_id: Option<i64>,
     ids: Option<&[i64]>,
 ) -> AppResult<i64> {
+    // 2.0.79: `resale_status`/`delivery_status` appended at the end (see
+    // export_orders_csv_impl's own comment just above for why) - marko's own
+    // manual Listed/Unlisted/Sold tracking and delivery tracking (both since
+    // 2.0.10, Ticket::resale_status/delivery_status) had never been added to
+    // this export.
     let mut sql = "SELECT t.code, e.name, o.code, t.section, t.row_label, t.seat, t.ticket_type,
                 t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents, t.listing_price_cents,
-                t.currency, t.status, t.notes, t.is_demo, t.created_at
+                t.currency, t.status, t.notes, t.is_demo, t.created_at, t.resale_status, t.delivery_status
          FROM tickets t
          JOIN events e ON e.id = t.event_id
          JOIN orders o ON o.id = t.order_id
@@ -205,7 +231,7 @@ fn export_tickets_inner(
     wtr.write_record([
         "ticket_code", "event", "order_code", "section", "row", "seat", "ticket_type",
         "purchase_cost", "purchase_fees", "other_costs", "listing_price", "currency",
-        "status", "notes", "is_demo", "created_at",
+        "status", "resale_status", "delivery_status", "notes", "is_demo", "created_at",
     ])?;
     let mut count = 0i64;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -226,6 +252,8 @@ fn export_tickets_inner(
             listing_price.map(format_cents).unwrap_or_default(),
             row.get::<_, String>(11)?,
             row.get::<_, String>(12)?,
+            opt(row.get("resale_status")?),
+            opt(row.get("delivery_status")?),
             opt(row.get(13)?),
             yesno(row.get(14)?).to_string(),
             row.get::<_, String>(15)?,
@@ -303,14 +331,26 @@ fn write_sales_csv(
     where_extra: &str,
     extra_params: &[&dyn rusqlite::ToSql],
 ) -> AppResult<i64> {
+    // 2.0.79: order_code/section/row_label/seat/resale_status/delivery_status/
+    // refunded_at/refund_reason appended at the end (existing positional
+    // row.get(i) calls below keep their original indices unchanged) and read
+    // back by name - this export had drifted well behind what Sale (models.rs)
+    // and Sale Detail's own screen already show; see this file's other
+    // 2.0.79 comments for the same pattern applied to Orders/Tickets export.
+    // `o.code` is explicitly aliased to `order_code`: `s.code`/`t.code` are
+    // already both bare "code" in this same SELECT (that's why they're read
+    // positionally, not by name, below), so a second unaliased `o.code`
+    // would collide with them too.
     let sql = format!(
         "SELECT s.code, t.code, e.name, p.name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
                 (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) as cost_cents,
                 s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at,
-                t.currency as ticket_currency
+                t.currency as ticket_currency, o.code as order_code, t.section, t.row_label, t.seat,
+                t.resale_status, t.delivery_status, s.refunded_at, s.refund_reason
          FROM sales s
          JOIN tickets t ON t.id = s.ticket_id
          JOIN events e ON e.id = t.event_id
+         JOIN orders o ON o.id = t.order_id
          LEFT JOIN platforms p ON p.id = s.platform_id
          {where_extra}
          ORDER BY s.id"
@@ -318,9 +358,10 @@ fn write_sales_csv(
     let mut stmt = conn.prepare(&sql)?;
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
-        "sale_code", "ticket_code", "event", "platform", "sale_date", "sale_price",
-        "selling_fees", "cost", "profit", "currency", "payment_status", "buyer_reference",
-        "notes", "is_demo", "created_at",
+        "sale_code", "ticket_code", "order_code", "event", "section", "row", "seat",
+        "platform", "sale_date", "sale_price", "selling_fees", "cost", "profit", "margin",
+        "roi", "currency", "payment_status", "resale_status", "delivery_status",
+        "buyer_reference", "refunded_at", "refund_reason", "notes", "is_demo", "created_at",
     ])?;
     let mut count = 0i64;
     let mut rows = stmt.query(extra_params)?;
@@ -357,19 +398,36 @@ fn write_sales_csv(
         } else {
             Some(sale_price - cost - fees)
         };
+        // 2.0.79: same `finance::safe_ratio` sales.rs::map_sale computes
+        // margin/ROI with, applied to the SAME already-adjusted `profit`
+        // above - so a refund's margin/ROI come out 0.0% (matching profit's
+        // own 0), and a currency mismatch leaves them blank (profit is
+        // already None there, and `and_then` short-circuits on that).
+        let margin = profit.and_then(|p| finance::safe_ratio(p, sale_price));
+        let roi = profit.and_then(|p| finance::safe_ratio(p, cost));
         wtr.write_record([
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
+            row.get::<_, String>("order_code")?,
             row.get::<_, String>(2)?,
+            opt(row.get("section")?),
+            opt(row.get("row_label")?),
+            opt(row.get("seat")?),
             opt(row.get(3)?),
             row.get::<_, String>(4)?,
             format_cents(sale_price),
             format_cents(fees),
             format_cents(cost),
             profit.map(format_cents).unwrap_or_default(),
+            format_percent_opt(margin),
+            format_percent_opt(roi),
             sale_currency,
             payment_status.clone(),
+            opt(row.get("resale_status")?),
+            opt(row.get("delivery_status")?),
             opt(row.get(10)?),
+            opt(row.get("refunded_at")?),
+            opt(row.get("refund_reason")?),
             opt(row.get(11)?),
             yesno(row.get(12)?).to_string(),
             row.get::<_, String>(13)?,
@@ -546,12 +604,16 @@ mod tests {
 
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1);
-        // columns: sale_code,ticket_code,event,platform,sale_date,sale_price,
-        // selling_fees,cost,profit,currency,payment_status,...
-        assert_eq!(rows[0][5], "20.00", "sale_price");
-        assert_eq!(rows[0][7], "10.00", "cost");
-        assert_eq!(rows[0][8], "9.00", "profit: 20.00 - 10.00 - 1.00 fees");
-        assert_eq!(rows[0][10], "paid");
+        // 2.0.79 columns: sale_code,ticket_code,order_code,event,section,row,
+        // seat,platform,sale_date,sale_price,selling_fees,cost,profit,margin,
+        // roi,currency,payment_status,resale_status,delivery_status,
+        // buyer_reference,refunded_at,refund_reason,notes,is_demo,created_at
+        assert_eq!(rows[0][9], "20.00", "sale_price");
+        assert_eq!(rows[0][11], "10.00", "cost");
+        assert_eq!(rows[0][12], "9.00", "profit: 20.00 - 10.00 - 1.00 fees");
+        assert_eq!(rows[0][13], "45.0%", "margin: 9.00 profit / 20.00 sale_price");
+        assert_eq!(rows[0][14], "90.0%", "roi: 9.00 profit / 10.00 cost");
+        assert_eq!(rows[0][16], "paid");
     }
 
     #[test]
@@ -607,10 +669,12 @@ mod tests {
         export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][5], "50.00", "sale_price still exports normally, in its own (EUR) currency");
-        assert_eq!(rows[0][7], "10.00", "cost still exports normally, in its own (USD) currency");
-        assert_eq!(rows[0][8], "", "profit left blank rather than silently subtracting USD cost from EUR revenue");
-        assert_eq!(rows[0][9], "EUR", "the currency column reflects the sale's OWN currency");
+        assert_eq!(rows[0][9], "50.00", "sale_price still exports normally, in its own (EUR) currency");
+        assert_eq!(rows[0][11], "10.00", "cost still exports normally, in its own (USD) currency");
+        assert_eq!(rows[0][12], "", "profit left blank rather than silently subtracting USD cost from EUR revenue");
+        assert_eq!(rows[0][13], "", "margin left blank too - it can't be derived from a blank profit");
+        assert_eq!(rows[0][14], "", "roi left blank too - it can't be derived from a blank profit");
+        assert_eq!(rows[0][15], "EUR", "the currency column reflects the sale's OWN currency");
     }
 
     #[test]
@@ -629,11 +693,14 @@ mod tests {
         assert_eq!(count, 1, "refunded sale still appears in the export (full history)");
 
         let rows = read_csv_rows(&out.0);
-        assert_eq!(rows[0][10], "refunded", "payment_status column shows why profit is 0");
+        assert_eq!(rows[0][16], "refunded", "payment_status column shows why profit is 0");
         // sale_price/cost/fees stay as this row's own real historical
-        // values - only the profit column changes for a refunded row.
-        assert_eq!(rows[0][5], "20.00", "sale_price is still the row's real historical value");
-        assert_eq!(rows[0][8], "0.00", "profit must be 0, not 9.00 - refunded sales are never realized");
+        // values - only the profit (and derived margin/roi) columns change
+        // for a refunded row.
+        assert_eq!(rows[0][9], "20.00", "sale_price is still the row's real historical value");
+        assert_eq!(rows[0][12], "0.00", "profit must be 0, not 9.00 - refunded sales are never realized");
+        assert_eq!(rows[0][13], "0.0%", "margin must be 0% too, same realized-only rule as profit");
+        assert_eq!(rows[0][14], "0.0%", "roi must be 0% too, same realized-only rule as profit");
     }
 
     #[test]
@@ -655,7 +722,7 @@ mod tests {
         let rows = read_csv_rows(&out.0);
         let total_profit_cents: i64 = rows
             .iter()
-            .map(|r| (r[8].parse::<f64>().unwrap() * 100.0).round() as i64)
+            .map(|r| (r[12].parse::<f64>().unwrap() * 100.0).round() as i64)
             .sum();
         // Only the active line: 2000 - 1000 - 100 = 900 cents. The refunded
         // line (5000 sale price) contributes 0, not 5000-1000-100=3900.
@@ -735,11 +802,11 @@ mod tests {
         assert_eq!(count, 2, "selecting either line of the batch resolves to the whole 2-line group");
 
         let rows = read_csv_rows(&out.0);
-        let refunded_row = rows.iter().find(|r| r[10] == "refunded").expect("the refunded line must still be exported");
-        assert_eq!(refunded_row[8], "0.00", "refunded line must export 0 profit, same rule as Export all");
-        let active_row = rows.iter().find(|r| r[10] == "paid").expect("the active line must still be exported");
+        let refunded_row = rows.iter().find(|r| r[16] == "refunded").expect("the refunded line must still be exported");
+        assert_eq!(refunded_row[12], "0.00", "refunded line must export 0 profit, same rule as Export all");
+        let active_row = rows.iter().find(|r| r[16] == "paid").expect("the active line must still be exported");
         // batch_input() above: sale_price 20.00, selling_fees 0.00, cost 10.00 (seed_tickets' 1000 cents) -> profit 10.00.
-        assert_eq!(active_row[8], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
+        assert_eq!(active_row[12], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
     }
 
     // ---- 1.9.1: "Export selected" for events/orders/tickets (Settings -> Data picker) ----
@@ -867,5 +934,106 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count, 2, "both tickets match the available+listed status filter, unchanged by the ids param");
+    }
+
+    // ---- 2.0.79: exports had drifted behind the current data model -------
+    // (marko: "csv su stare, treba ich updatnut vsetky") - each test below
+    // locks in one field that already existed on the model/screen but had
+    // never made it into the corresponding export.
+
+    #[test]
+    fn export_orders_csv_impl_includes_the_events_category() {
+        // `category` is the same legacy free-text column the Events export
+        // already reads directly (Event::category's own doc comment) - it
+        // had simply never been added to the Orders export since categories
+        // shipped in 2.0.27.
+        let mut conn = test_conn();
+        conn.execute("INSERT INTO events (name, category) VALUES ('Cup Final', 'Football')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        let input = OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            quantity: 1,
+            unit_price_cents: 1000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        insert_order_with_tickets(&mut conn, &input, false).unwrap();
+
+        let out = temp_csv_path();
+        export_orders_csv_impl(&conn, out.0.to_str().unwrap(), None).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1);
+        // header: order_code,event,category,supplier,platform,...
+        assert_eq!(rows[0][2], "Football", "category is the 3rd column");
+    }
+
+    #[test]
+    fn export_tickets_inner_includes_resale_and_delivery_status() {
+        // Both fields exist on Ticket since 2.0.10 (marko's own manual
+        // Listed/Unlisted/Sold + delivery tracking) but had never been added
+        // to this export (which also powers the Inventory button).
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        conn.execute(
+            "UPDATE tickets SET resale_status='Listed', delivery_status='Delivered' WHERE id=?1",
+            [tickets[0]],
+        )
+        .unwrap();
+
+        let out = temp_csv_path();
+        export_tickets_inner(&conn, out.0.to_str().unwrap(), None, None, None).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1);
+        // header: ticket_code,event,order_code,section,row,seat,ticket_type,
+        // purchase_cost,purchase_fees,other_costs,listing_price,currency,
+        // status,resale_status,delivery_status,notes,is_demo,created_at
+        assert_eq!(rows[0][13], "Listed");
+        assert_eq!(rows[0][14], "Delivered");
+    }
+
+    #[test]
+    fn export_sales_csv_includes_order_code_seat_info_and_refund_details() {
+        // order_code/section/row/seat/refunded_at/refund_reason all already
+        // exist on Sale (models.rs) and show on Sale Detail, but this export
+        // had never been updated to include them.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        conn.execute("UPDATE tickets SET section='A', row_label='12', seat='5' WHERE id=?1", [tickets[0]])
+            .unwrap();
+        let order_code: String = conn
+            .query_row(
+                "SELECT code FROM orders WHERE id=(SELECT order_id FROM tickets WHERE id=?1)",
+                [tickets[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let sale_id = create_sale_impl(&mut conn, &sale_input(tickets[0], 2000)).unwrap();
+        refund_sale_impl(&mut conn, sale_id, Some("buyer changed their mind")).unwrap();
+
+        let out = temp_csv_path();
+        export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1, "refunded sale still appears (full history)");
+        // header: sale_code,ticket_code,order_code,event,section,row,seat,
+        // platform,sale_date,sale_price,selling_fees,cost,profit,margin,roi,
+        // currency,payment_status,resale_status,delivery_status,
+        // buyer_reference,refunded_at,refund_reason,notes,is_demo,created_at
+        assert_eq!(rows[0][2], order_code, "order_code");
+        assert_eq!(rows[0][4], "A", "section");
+        assert_eq!(rows[0][5], "12", "row");
+        assert_eq!(rows[0][6], "5", "seat");
+        assert!(!rows[0][20].is_empty(), "refunded_at must be populated for a refunded sale");
+        assert_eq!(rows[0][21], "buyer changed their mind", "refund_reason");
     }
 }

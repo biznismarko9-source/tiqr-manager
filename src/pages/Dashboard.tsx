@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
 import {
@@ -19,11 +19,8 @@ import {
   IconBarChart,
   IconBell,
   IconCalendarDays,
-  IconDownload,
   IconPackage,
-  IconPlus,
   IconReceipt,
-  IconUpload,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -173,7 +170,6 @@ function useDashboardTab(): [DashboardTab, (tab: DashboardTab) => void] {
 
 export default function Dashboard() {
   const toast = useToast();
-  const navigate = useNavigate();
   // 1.7.5: default changed from "30d" to "1y" to match the reference
   // screenshot's default selection (its "1 Yr" pill is the one shown
   // active) - purely an initial UI state, one click away from anything
@@ -253,12 +249,12 @@ export default function Dashboard() {
 
       {tab === "overview" && (
         <>
-          {/* 1.9.6: the Quick Actions row (New Event/Order/Sale/Import/
-              Export) used to open right here, above the period switcher -
-              marko wanted it lower on the page so it's not the first thing
-              you see. It now renders at the very bottom of this tab,
-              after the chart - see the matching comment down there for why
-              that's inside the data-loaded branch instead of up here. */}
+          {/* 1.9.6 moved the Quick Actions row (New Event/Order/Sale/
+              Import/Export) down here, to the bottom of this tab, after
+              the chart. 2.0.79 removed that row entirely at marko's
+              request - Events/Orders/Sales each already have their own
+              "New X" button, and Import/Export CSV already live in
+              Settings -> Data, so the shortcut was redundant. */}
 
           {/* 1.9.3: moved here from PageHeader's actions. Financials
               (Cashflow/Inventory/Potential profit) and Activity (Attention/
@@ -428,35 +424,6 @@ export default function Dashboard() {
                 <SalesByPlatformCard data={data} />
                 </>
               )}
-              {/* 1.9.6: relocated here from the top of this tab (see the
-                  comment up there) - marko wanted it lower on the page, not
-                  the first thing you see. Same buttons, same behavior
-                  (reuses existing routes/modals via navigate(path, {state}),
-                  no new backend command or page), just moved. One real
-                  side effect of the move: it's now inside the
-                  `loading || !data` branch, so it briefly doesn't render
-                  during the initial load spinner instead of always being
-                  there - a deliberate small tradeoff for "lower on the
-                  page" actually meaning lower, not just visually secondary
-                  in the same spot. Local SQLite loads are fast enough that
-                  this is a moment, not a real gap. */}
-              <div className="mt-6 flex flex-wrap items-center gap-2">
-                <Button variant="secondary" onClick={() => navigate("/events", { state: { openCreate: true } })}>
-                  <IconPlus className="h-4 w-4" /> New Event
-                </Button>
-                <Button variant="secondary" onClick={() => navigate("/orders", { state: { openCreate: true } })}>
-                  <IconPlus className="h-4 w-4" /> New Order
-                </Button>
-                <Button variant="secondary" onClick={() => navigate("/sales", { state: { openCreate: true } })}>
-                  <IconPlus className="h-4 w-4" /> New Sale
-                </Button>
-                <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-                  <IconUpload className="h-4 w-4" /> Import CSV
-                </Button>
-                <Button variant="secondary" onClick={() => navigate("/settings/data")}>
-                  <IconDownload className="h-4 w-4" /> Export CSV
-                </Button>
-              </div>
             </>
           )}
 
@@ -932,8 +899,11 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
+  // 2.0.79: "pulls" replaces "unpaid" (unpaid orders) here - marko's own
+  // request. See DashboardAlerts.pullsNeedingTransferCount's doc comment
+  // (types.ts) for why unpaidOrdersCount itself is untouched elsewhere.
   const rows = [
-    { key: "unpaid", label: "Unpaid payments", count: alerts.unpaidOrdersCount, linkTo: "/orders" },
+    { key: "pulls", label: "Pulls near deadline", count: alerts.pullsNeedingTransferCount, linkTo: "/pulls" },
     { key: "pending", label: "Pending sales", count: alerts.pendingSalesCount, linkTo: "/sales" },
     { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/inventory" },
   ] as const;
@@ -941,7 +911,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
   const soonestEvent = alerts.upcomingEvents[0];
   const upcomingCritical = soonestEvent !== undefined && daysUntil(soonestEvent.eventDate) <= 0;
   const activeCount =
-    (alerts.unpaidOrdersCount > 0 ? 1 : 0) +
+    (alerts.pullsNeedingTransferCount > 0 ? 1 : 0) +
     (alerts.missingListingPriceCount > 0 ? 1 : 0) +
     (alerts.upcomingEventsCount > 0 ? 1 : 0) +
     (alerts.pendingSalesCount > 0 ? 1 : 0);
@@ -1017,8 +987,12 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
  * already decided is attention-worthy. */
 function AttentionSection({ data }: { data: DashboardData }) {
   const { alerts } = data;
+  // 2.0.79: pullsNeedingTransferCount replaces unpaidOrdersCount here -
+  // marko's own request. See DashboardAlerts.pullsNeedingTransferCount's
+  // doc comment (types.ts) for why unpaidOrdersCount itself is unchanged
+  // elsewhere (still used by the outbound-notifications feature).
   const allClear =
-    alerts.unpaidOrdersCount === 0 &&
+    alerts.pullsNeedingTransferCount === 0 &&
     alerts.missingListingPriceCount === 0 &&
     alerts.upcomingEventsCount === 0 &&
     alerts.pendingSalesCount === 0;
@@ -1033,11 +1007,11 @@ function AttentionSection({ data }: { data: DashboardData }) {
       ) : (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
           <AlertCard
-            label="Unpaid payments"
-            count={alerts.unpaidOrdersCount}
-            description="Orders that are unpaid or only partially paid"
-            linkTo="/orders"
-            linkLabel="View orders"
+            label="Pulls near deadline"
+            count={alerts.pullsNeedingTransferCount}
+            description="Pulls not yet transferred, with the event coming up soon or already past"
+            linkTo="/pulls"
+            linkLabel="View pulls"
           />
           <AlertCard
             label="Pending sales"

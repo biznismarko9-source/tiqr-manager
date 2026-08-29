@@ -17,6 +17,12 @@ use tauri::State;
 const UPCOMING_EVENT_WINDOW_DAYS: i64 = 14;
 // Same cap/convention already used for Recent Events/Orders/Sales below.
 const UPCOMING_EVENTS_CAP: i64 = 5;
+// 2.0.79: same threshold as Pulls.tsx's own `WARNING_WINDOW_DAYS` (that
+// file's "Deadline" column warning) - see
+// `DashboardAlerts::pulls_needing_transfer_count`'s doc comment (models.rs)
+// for why this mirrors that existing, already-shipped mechanism instead of
+// introducing a new one.
+const PULLS_WARNING_WINDOW_DAYS: i64 = 3;
 
 /// Subtracts `months` whole calendar months from `date`, clamping to the
 /// last valid day of the resulting month when `date`'s day-of-month doesn't
@@ -505,6 +511,18 @@ pub(crate) fn compute_dashboard_alerts(conn: &Connection, today: NaiveDate) -> A
         .collect::<Result<Vec<_>, _>>()?;
     drop(upcoming_stmt);
 
+    // 2.0.79: see PULLS_WARNING_WINDOW_DAYS's own comment above - deliberately
+    // no lower bound on event_date (unlike upcoming_events_count's window
+    // above), mirroring Pulls.tsx's own warning, which never stops flagging
+    // an untransferred pull just because its event date is now in the past.
+    let pulls_window_end = (today + Duration::days(PULLS_WARNING_WINDOW_DAYS)).to_string();
+    let pulls_needing_transfer_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pulls
+         WHERE transfer_done = 0 AND event_date IS NOT NULL AND event_date <= ?1",
+        [&pulls_window_end],
+        |r| r.get(0),
+    )?;
+
     Ok(DashboardAlerts {
         unpaid_orders_count,
         missing_listing_price_count,
@@ -514,6 +532,7 @@ pub(crate) fn compute_dashboard_alerts(conn: &Connection, today: NaiveDate) -> A
         pending_sales_count,
         pending_sales_amount_cents,
         pending_sales_currency: if mixed_currencies { None } else { Some(primary_currency.clone()) },
+        pulls_needing_transfer_count,
     })
 }
 
@@ -1095,6 +1114,7 @@ mod tests {
         assert_eq!(data.alerts.pending_sales_count, 0);
         assert_eq!(data.alerts.pending_sales_amount_cents, 0);
         assert_eq!(data.alerts.pending_sales_currency, Some("EUR".to_string()));
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 0);
         assert_eq!(data.cashflow.paid_cents, 0);
         assert_eq!(data.cashflow.outstanding_cents, 0);
         assert_eq!(data.cashflow.revenue_cents, 0);
@@ -1509,6 +1529,77 @@ mod tests {
         assert_eq!(data.alerts.upcoming_events.len(), 2);
         assert_eq!(data.alerts.upcoming_events[0].id, sooner_event, "the sooner event must come first");
         assert_eq!(data.alerts.upcoming_events[1].id, later_event);
+    }
+
+    // ---- Attention: pulls needing transfer (2.0.79) ------------------------
+    // Replaces unpaid_orders_count on the Dashboard's Activity tab (marko's
+    // own request) - mirrors Pulls.tsx's own "Deadline" warning exactly:
+    // not yet transferred, event_date within PULLS_WARNING_WINDOW_DAYS or
+    // already past (no lower bound), unlike upcoming_events_count above.
+
+    fn seed_pull(conn: &Connection, code: &str, event_date: Option<&str>, transfer_done: bool) {
+        conn.execute(
+            "INSERT INTO pulls (code, buyer_name, event_name, event_date, transfer_done)
+             VALUES (?1, 'Test Buyer', 'Test Pull Event', ?2, ?3)",
+            rusqlite::params![code, event_date, transfer_done as i64],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pulls_needing_transfer_counts_an_overdue_untransferred_pull() {
+        let conn = test_conn();
+        let today = Local::now().date_naive();
+        let overdue = (today - Duration::days(10)).to_string();
+        seed_pull(&conn, "P1", Some(&overdue), false);
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 1, "no lower bound - still overdue 10 days later");
+    }
+
+    #[test]
+    fn pulls_needing_transfer_counts_a_pull_within_the_warning_window() {
+        let conn = test_conn();
+        let today = Local::now().date_naive();
+        let soon = (today + Duration::days(PULLS_WARNING_WINDOW_DAYS)).to_string(); // exactly at the boundary
+        seed_pull(&conn, "P1", Some(&soon), false);
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 1, "boundary day itself must count, same as event_date <= window_end");
+    }
+
+    #[test]
+    fn pulls_needing_transfer_excludes_a_pull_further_out_than_the_window() {
+        let conn = test_conn();
+        let today = Local::now().date_naive();
+        let far = (today + Duration::days(PULLS_WARNING_WINDOW_DAYS + 1)).to_string();
+        seed_pull(&conn, "P1", Some(&far), false);
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 0);
+    }
+
+    #[test]
+    fn pulls_needing_transfer_excludes_an_already_transferred_pull_regardless_of_date() {
+        let conn = test_conn();
+        let today = Local::now().date_naive();
+        let overdue = (today - Duration::days(30)).to_string();
+        seed_pull(&conn, "P1", Some(&overdue), true);
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 0, "marked transferred - must never count no matter how overdue");
+    }
+
+    #[test]
+    fn pulls_needing_transfer_excludes_a_pull_with_no_event_date_at_all() {
+        // Same "can't judge soon without a date" rule upcoming_events_count
+        // already applies - and matches Pulls.tsx's own `daysLeft !== null`
+        // guard, which never shows a warning for a pull with no event date.
+        let conn = test_conn();
+        seed_pull(&conn, "P1", None, false);
+
+        let data = get_dashboard_impl(&conn, None, None, None, None, None).unwrap();
+        assert_eq!(data.alerts.pulls_needing_transfer_count, 0);
     }
 
     // ---- Regression: new blocks must not disturb existing summaries -------

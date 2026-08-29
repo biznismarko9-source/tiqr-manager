@@ -462,6 +462,10 @@ mod tests {
             pending_sales_count: 0,
             pending_sales_amount_cents: 0,
             pending_sales_currency: Some("EUR".to_string()),
+            // 2.0.79: not one of this module's own notification categories
+            // (see this file's module doc comment) - added only because
+            // DashboardAlerts now requires it.
+            pulls_needing_transfer_count: 0,
         }
     }
 

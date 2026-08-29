@@ -999,6 +999,19 @@ pub struct DashboardAlerts {
     /// whose currency `sales.currency` always copies at creation time)
     /// rather than a second, narrower check scoped to just pending sales.
     pub pending_sales_currency: Option<String>,
+    /// 2.0.79: pulls (Given - see Pull's own doc comment) not yet
+    /// `transfer_done`, whose `event_date` is already past or within
+    /// `dashboard::PULLS_WARNING_WINDOW_DAYS` days from now - i.e. exactly
+    /// the same "not transferred + event date approaching or past" condition
+    /// Pulls.tsx's own `WARNING_WINDOW_DAYS`/"Deadline" column warning
+    /// already flags there (unbounded on the overdue side, same as that
+    /// warning - a pull doesn't stop needing attention just because its
+    /// event date has passed and it's still untransferred). Replaces
+    /// `unpaid_orders_count` on the Dashboard's Activity tab specifically
+    /// (marko's own request) - `unpaid_orders_count` itself is unchanged and
+    /// still used by the outbound-notifications feature
+    /// (commands/notifications.rs), which marko did not ask to change.
+    pub pulls_needing_transfer_count: i64,
 }
 
 /// Dashboard "Cashflow" section (1.9.0). A small, transparent snapshot of

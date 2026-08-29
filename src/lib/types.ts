@@ -558,7 +558,11 @@ export interface UpcomingEventAlert {
 /** Dashboard "Attention" section - simple, transparent counts. Never
  * period-filtered (these are "right now" facts). */
 export interface DashboardAlerts {
-  /** Orders with payment_status 'unpaid' or 'partial' (purchase side - money owed to a supplier). */
+  /** Orders with payment_status 'unpaid' or 'partial' (purchase side - money
+   * owed to a supplier). 2.0.79: no longer shown on the Dashboard's Activity
+   * tab (marko's own request - replaced there by pullsNeedingTransferCount
+   * below) - still computed and still used by the outbound-notifications
+   * feature (commands/notifications.rs), which marko did not ask to change. */
   unpaidOrdersCount: number;
   /** Available/listed tickets with no listing price set. Ticket-scoped -
    * feeds the Overview "Potential Profit" sentence. For the Activity tab's
@@ -579,6 +583,12 @@ export interface DashboardAlerts {
   pendingSalesAmountCents: number;
   /** Null means mixed currencies - same convention as InventoryPotential.currency. */
   pendingSalesCurrency: string | null;
+  /** 2.0.79: pulls (Given) not yet marked transferred, whose eventDate is
+   * already past or within Pulls.tsx's own WARNING_WINDOW_DAYS from now -
+   * mirrors that page's existing "Deadline" column warning exactly, rather
+   * than a new rule. Replaces unpaidOrdersCount on the Dashboard's Activity
+   * tab (marko's own request). */
+  pullsNeedingTransferCount: number;
 }
 
 /** Dashboard "Cashflow" section (1.9.0) - what was sold vs. what has
