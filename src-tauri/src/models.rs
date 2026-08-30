@@ -1723,6 +1723,40 @@ pub struct PriceCheckerSummary {
     pub expected_roi: Option<f64>,
 }
 
+/// Result of one `commands::price_checker_auto::auto_check_price` attempt
+/// (2.1.1) - see that module's own doc comment for the full design. Never
+/// persisted directly: this only flows back to the frontend, which reuses
+/// the EXISTING paste-extraction pipeline (PriceChecker.tsx,
+/// `extractPricesFromText`) to fill SavePriceCheckModal's fields for marko
+/// to review, exactly like a real paste would. A successful auto-check
+/// only ever becomes a `price_checks` row once marko reviews it and clicks
+/// Save - same unchanged `save_price_check` command as every manual/pasted
+/// check.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCheckResult {
+    /// `"ok"` (prices found), `"unable_to_read"` (page loaded, nothing
+    /// found), `"blocked"` (an anti-bot/verification challenge was
+    /// detected - never bypassed), or `"error"` (couldn't open/read the
+    /// page at all, e.g. a malformed URL or the reader window failed to
+    /// load).
+    pub status: String,
+    /// Individual prices found on the page (never pre-averaged - the
+    /// frontend computes lowest/average/highest/count from these the exact
+    /// same way it already does for a real paste, via
+    /// `extractPricesFromText`'s own min/max/mean). Empty unless `status`
+    /// is `"ok"`.
+    pub prices: Vec<f64>,
+    /// Best-effort currency guess (ISO 4217-ish code, e.g. "USD"/"EUR") -
+    /// `None` if it couldn't be determined; marko's currently-selected
+    /// dropdown value is left alone in that case, same convention
+    /// `detectCurrencyFromText` already uses for a real paste.
+    pub currency: Option<String>,
+    /// Human-readable explanation shown next to the "Auto-check" button -
+    /// present whenever `status` isn't `"ok"`.
+    pub message: Option<String>,
+}
+
 // --- Finance (2.0.83) -------------------------------------------------------
 // marko's personal + business money tracker - see
 // migrations/015_finance.sql's doc comment for the full design rationale.

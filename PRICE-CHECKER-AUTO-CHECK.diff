@@ -1,0 +1,330 @@
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/package.json tiqr-manager/package.json
+--- tiqr-manager-original/package.json	2026-08-30 13:40:30.000000000 +0000
++++ tiqr-manager/package.json	2026-08-30 14:26:08.345345448 +0000
+@@ -1,7 +1,7 @@
+ {
+   "name": "tiqr-manager",
+   "private": true,
+-  "version": "2.1.0",
++  "version": "2.1.1",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src/lib/api.ts tiqr-manager/src/lib/api.ts
+--- tiqr-manager-original/src/lib/api.ts	2026-08-30 13:17:00.000000000 +0000
++++ tiqr-manager/src/lib/api.ts	2026-08-30 14:14:44.521650388 +0000
+@@ -47,6 +47,7 @@
+   PriceCheck,
+   PriceCheckInput,
+   PriceCheckerSummary,
++  AutoCheckResult,
+   Pull,
+   PullEditInput,
+   PullInput,
+@@ -504,6 +505,8 @@
+   savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
+   /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
+   getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
++  /** 2.1.1: opens `url` in the app's own embedded WebView and reads back whatever prices are actually on the page - see commands/price_checker_auto.rs's module doc comment. Never saved directly; the result only pre-fills SavePriceCheckModal for marko to review, same as a real paste. */
++  autoCheckPrice: (url: string) => invoke<AutoCheckResult>("auto_check_price", { url }),
+ };
+ 
+ export function errMsg(e: unknown): string {
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src/lib/types.ts tiqr-manager/src/lib/types.ts
+--- tiqr-manager-original/src/lib/types.ts	2026-08-30 13:16:24.000000000 +0000
++++ tiqr-manager/src/lib/types.ts	2026-08-30 14:14:54.946991876 +0000
+@@ -1400,3 +1400,20 @@
+    * conditions as `expectedProfitCents`. */
+   expectedRoi: number | null;
+ }
++
++/** Result of one `api.autoCheckPrice` attempt (2.1.1) - see
++ * commands/price_checker_auto.rs's module doc comment (Rust) for the full
++ * design. Never saved directly - PriceChecker.tsx feeds `prices`/`currency`
++ * through the exact same `extractPricesFromText`-driven fill it already
++ * uses for a real paste, so marko reviews before anything is saved via the
++ * unchanged `savePriceCheck`. */
++export interface AutoCheckResult {
++  /** "ok" | "unable_to_read" | "blocked" | "error" */
++  status: string;
++  /** Individual prices found (never pre-averaged) - empty unless status is "ok". */
++  prices: number[];
++  /** Best-effort currency guess, or null if undetermined. */
++  currency: string | null;
++  /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
++  message: string | null;
++}
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src/pages/PriceChecker.tsx tiqr-manager/src/pages/PriceChecker.tsx
+--- tiqr-manager-original/src/pages/PriceChecker.tsx	2026-08-30 07:24:40.000000000 +0000
++++ tiqr-manager/src/pages/PriceChecker.tsx	2026-08-30 14:23:55.056568764 +0000
+@@ -10,7 +10,7 @@
+ import { useCallback, useEffect, useState } from "react";
+ import { useLocation } from "react-router-dom";
+ import { api, errMsg } from "../lib/api";
+-import type { EventWithStats, MarketplacePriceView, PriceCheck, PriceCheckerSummary } from "../lib/types";
++import type { EventWithStats, MarketplacePriceView, PriceCheck, PriceCheckerSummary, AutoCheckResult } from "../lib/types";
+ import { centsToDecimalString, decimalStringToCents, formatDateTime, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
+ import {
+   Button,
+@@ -88,15 +88,24 @@
+   view,
+   onLinkSaved,
+   onCheckPrices,
++  onAutoCheckResult,
+ }: {
+   eventId: number;
+   view: MarketplacePriceView;
+   onLinkSaved: () => void;
+   onCheckPrices: () => void;
++  /** 2.1.1: called once an auto-check attempt finishes, whatever its
++   *  status - see commands/price_checker_auto.rs's module doc comment
++   *  (Rust). The parent opens SavePriceCheckModal exactly like a normal
++   *  "Check Prices" click and, only when status is "ok", pre-fills it
++   *  through the same handlePasteTextChange pipeline a real paste already
++   *  uses. */
++  onAutoCheckResult: (result: AutoCheckResult) => void;
+ }) {
+   const toast = useToast();
+   const [url, setUrl] = useState(view.link?.url ?? "");
+   const [savingLink, setSavingLink] = useState(false);
++  const [autoChecking, setAutoChecking] = useState(false);
+ 
+   // Keeps the field in sync when the parent reloads (e.g. after this exact
+   // save, or after switching away and back to this event) without clobbering
+@@ -120,6 +129,28 @@
+     }
+   };
+ 
++  // 2.1.1: tries the saved link first, falling back to whatever is
++  // currently typed in the field (not yet saved) - marko shouldn't have to
++  // click Save before trying this. Uses the CURRENT input, matching what
++  // "Open page" would open too.
++  const autoCheckTarget = (view.link?.url || url).trim();
++
++  const runAutoCheck = async () => {
++    if (!autoCheckTarget) {
++      toast.error("Enter this marketplace's listings page URL above first.");
++      return;
++    }
++    setAutoChecking(true);
++    try {
++      const result = await api.autoCheckPrice(autoCheckTarget);
++      onAutoCheckResult(result);
++    } catch (e) {
++      toast.error(errMsg(e));
++    } finally {
++      setAutoChecking(false);
++    }
++  };
++
+   const latest = view.history[0] ?? null;
+   const trend = trendFromHistory(view.history);
+   const older = view.history.slice(1);
+@@ -128,9 +159,14 @@
+     <Card className="flex flex-col p-4">
+       <div className="mb-3 flex items-center justify-between gap-2">
+         <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{view.marketplaceName}</h3>
+-        <Button variant="secondary" onClick={onCheckPrices}>
+-          <IconTag className="h-4 w-4" /> Check Prices
+-        </Button>
++        <div className="flex items-center gap-2">
++          <Button variant="secondary" onClick={runAutoCheck} disabled={autoChecking || !autoCheckTarget} title="Try reading this page's prices automatically in the app's own browser view - falls back to pasting/typing if it can't.">
++            {autoChecking ? <Spinner className="h-4 w-4" /> : <IconTag className="h-4 w-4" />} Auto-check
++          </Button>
++          <Button variant="secondary" onClick={onCheckPrices}>
++            <IconTag className="h-4 w-4" /> Check Prices
++          </Button>
++        </div>
+       </div>
+ 
+       <div className="mb-4 flex items-center gap-2">
+@@ -215,6 +251,7 @@
+   eventId,
+   view,
+   defaultCurrency,
++  autoCheckResult,
+   onClose,
+   onSaved,
+ }: {
+@@ -222,6 +259,14 @@
+   /** null = closed. */
+   view: MarketplacePriceView | null;
+   defaultCurrency: string;
++  /** 2.1.1: set when this modal was opened right after an auto-check
++   *  attempt (see MarketplaceCard's "Auto-check" button) - null for a
++   *  normal "Check Prices" click. When its status is "ok", its prices are
++   *  run through the exact same handlePasteTextChange pipeline a real
++   *  paste already uses below, so the result is fully editable and marko
++   *  reviews it before Save exactly like any paste. Any other status just
++   *  shows its message; the form is otherwise identical to today. */
++  autoCheckResult?: AutoCheckResult | null;
+   onClose: () => void;
+   onSaved: () => void;
+ }) {
+@@ -258,7 +303,25 @@
+     setSaving(false);
+     setPasteText("");
+     setPasteInfo(null);
+-  }, [view, defaultCurrency]);
++
++    // 2.1.1: an auto-check attempt just ran for this marketplace - seed the
++    // paste box with what it found (as plain "$31 $39 ..." text, so it's
++    // visible and fully re-editable) and run it through the SAME
++    // handlePasteTextChange pipeline a real paste uses, rather than
++    // computing lowest/average/highest separately here. A non-"ok" status
++    // (unable_to_read/blocked/error) never fills anything - it only shows
++    // its own message, and the form is otherwise identical to a normal
++    // "Check Prices" open.
++    if (autoCheckResult) {
++      if (autoCheckResult.status === "ok" && autoCheckResult.prices.length > 0) {
++        const symbol = autoCheckResult.currency === "EUR" ? "€" : autoCheckResult.currency === "GBP" ? "£" : "$";
++        handlePasteTextChange(autoCheckResult.prices.map((p) => `${symbol}${p}`).join(" "));
++      } else if (autoCheckResult.message) {
++        setPasteInfo(autoCheckResult.message);
++      }
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [view, defaultCurrency, autoCheckResult]);
+ 
+   // Runs on every keystroke/paste in the textarea - re-extracting from the
+   // full current text each time (not just the newly-pasted chunk) so
+@@ -418,6 +481,10 @@
+   const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
+   const [loading, setLoading] = useState(false);
+   const [checkModalFor, setCheckModalFor] = useState<MarketplacePriceView | null>(null);
++  // 2.1.1: result of the auto-check attempt that opened checkModalFor (if
++  // any) - null for a normal "Check Prices" click. Cleared alongside
++  // checkModalFor so a stale result never leaks into the next open.
++  const [pendingAutoCheck, setPendingAutoCheck] = useState<AutoCheckResult | null>(null);
+ 
+   useEffect(() => {
+     api.listEvents().then(setEvents).catch((e) => toast.error(errMsg(e)));
+@@ -539,7 +606,19 @@
+                 eventId={summary.eventId}
+                 view={view}
+                 onLinkSaved={load}
+-                onCheckPrices={() => setCheckModalFor(view)}
++                onCheckPrices={() => {
++                  setPendingAutoCheck(null);
++                  setCheckModalFor(view);
++                }}
++                onAutoCheckResult={(result) => {
++                  if (result.status === "ok") {
++                    toast.success(`Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"} - review before saving.`);
++                  } else {
++                    toast.error(result.message ?? "Couldn't read prices automatically - enter them below.");
++                  }
++                  setPendingAutoCheck(result);
++                  setCheckModalFor(view);
++                }}
+               />
+             ))}
+           </div>
+@@ -548,9 +627,14 @@
+             eventId={summary.eventId}
+             view={checkModalFor}
+             defaultCurrency={summary.myCurrency ?? "EUR"}
+-            onClose={() => setCheckModalFor(null)}
++            autoCheckResult={pendingAutoCheck}
++            onClose={() => {
++              setCheckModalFor(null);
++              setPendingAutoCheck(null);
++            }}
+             onSaved={() => {
+               setCheckModalFor(null);
++              setPendingAutoCheck(null);
+               load();
+             }}
+           />
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src-tauri/Cargo.toml tiqr-manager/src-tauri/Cargo.toml
+--- tiqr-manager-original/src-tauri/Cargo.toml	2026-08-30 13:40:38.000000000 +0000
++++ tiqr-manager/src-tauri/Cargo.toml	2026-08-30 14:26:08.346618803 +0000
+@@ -1,6 +1,6 @@
+ [package]
+ name = "tiqr-manager"
+-version = "2.1.0"
++version = "2.1.1"
+ description = "TIQR Manager - local-first ticket reselling manager"
+ authors = ["TIQR"]
+ edition = "2021"
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src-tauri/src/commands/mod.rs tiqr-manager/src-tauri/src/commands/mod.rs
+--- tiqr-manager-original/src-tauri/src/commands/mod.rs	2026-08-30 13:14:24.000000000 +0000
++++ tiqr-manager/src-tauri/src/commands/mod.rs	2026-08-30 14:11:46.949173495 +0000
+@@ -18,6 +18,7 @@
+ pub mod orders;
+ pub mod orders_sheet_sync;
+ pub mod price_checker;
++pub mod price_checker_auto;
+ pub mod pulls;
+ pub mod pulls_received;
+ pub mod pulls_sheet_sync;
+Only in tiqr-manager/src-tauri/src/commands: price_checker_auto.rs
+Only in tiqr-manager/src-tauri/src/commands: price_checker_auto_extract.js
+Only in tiqr-manager/src-tauri/src/commands: price_checker_auto_readiness.js
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src-tauri/src/lib.rs tiqr-manager/src-tauri/src/lib.rs
+--- tiqr-manager-original/src-tauri/src/lib.rs	2026-08-30 13:14:28.000000000 +0000
++++ tiqr-manager/src-tauri/src/lib.rs	2026-08-30 14:11:49.766111586 +0000
+@@ -211,6 +211,7 @@
+             commands::price_checker::save_event_marketplace_link,
+             commands::price_checker::save_price_check,
+             commands::price_checker::get_price_checker_summary,
++            commands::price_checker_auto::auto_check_price,
+         ])
+         .run(tauri::generate_context!())
+         .expect("error while running tauri application");
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src-tauri/src/models.rs tiqr-manager/src-tauri/src/models.rs
+--- tiqr-manager-original/src-tauri/src/models.rs	2026-08-30 13:08:34.000000000 +0000
++++ tiqr-manager/src-tauri/src/models.rs	2026-08-30 14:11:43.959074158 +0000
+@@ -1723,6 +1723,40 @@
+     pub expected_roi: Option<f64>,
+ }
+ 
++/// Result of one `commands::price_checker_auto::auto_check_price` attempt
++/// (2.1.1) - see that module's own doc comment for the full design. Never
++/// persisted directly: this only flows back to the frontend, which reuses
++/// the EXISTING paste-extraction pipeline (PriceChecker.tsx,
++/// `extractPricesFromText`) to fill SavePriceCheckModal's fields for marko
++/// to review, exactly like a real paste would. A successful auto-check
++/// only ever becomes a `price_checks` row once marko reviews it and clicks
++/// Save - same unchanged `save_price_check` command as every manual/pasted
++/// check.
++#[derive(Debug, Serialize, Clone)]
++#[serde(rename_all = "camelCase")]
++pub struct AutoCheckResult {
++    /// `"ok"` (prices found), `"unable_to_read"` (page loaded, nothing
++    /// found), `"blocked"` (an anti-bot/verification challenge was
++    /// detected - never bypassed), or `"error"` (couldn't open/read the
++    /// page at all, e.g. a malformed URL or the reader window failed to
++    /// load).
++    pub status: String,
++    /// Individual prices found on the page (never pre-averaged - the
++    /// frontend computes lowest/average/highest/count from these the exact
++    /// same way it already does for a real paste, via
++    /// `extractPricesFromText`'s own min/max/mean). Empty unless `status`
++    /// is `"ok"`.
++    pub prices: Vec<f64>,
++    /// Best-effort currency guess (ISO 4217-ish code, e.g. "USD"/"EUR") -
++    /// `None` if it couldn't be determined; marko's currently-selected
++    /// dropdown value is left alone in that case, same convention
++    /// `detectCurrencyFromText` already uses for a real paste.
++    pub currency: Option<String>,
++    /// Human-readable explanation shown next to the "Auto-check" button -
++    /// present whenever `status` isn't `"ok"`.
++    pub message: Option<String>,
++}
++
+ // --- Finance (2.0.83) -------------------------------------------------------
+ // marko's personal + business money tracker - see
+ // migrations/015_finance.sql's doc comment for the full design rationale.
+diff -ru '--exclude=node_modules' '--exclude=dist' '--exclude=target' '--exclude=package-lock.json' tiqr-manager-original/src-tauri/tauri.conf.json tiqr-manager/src-tauri/tauri.conf.json
+--- tiqr-manager-original/src-tauri/tauri.conf.json	2026-08-30 13:40:50.000000000 +0000
++++ tiqr-manager/src-tauri/tauri.conf.json	2026-08-30 14:26:08.347823675 +0000
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "TIQR Manager",
+-  "version": "2.1.0",
++  "version": "2.1.1",
+   "identifier": "com.tiqrmanager.app",
+   "build": {
+     "beforeDevCommand": "npm run dev",

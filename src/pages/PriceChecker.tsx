@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, MarketplacePriceView, PriceCheck, PriceCheckerSummary } from "../lib/types";
+import type { EventWithStats, MarketplacePriceView, PriceCheck, PriceCheckerSummary, AutoCheckResult } from "../lib/types";
 import { centsToDecimalString, decimalStringToCents, formatDateTime, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import {
   Button,
@@ -88,15 +88,24 @@ function MarketplaceCard({
   view,
   onLinkSaved,
   onCheckPrices,
+  onAutoCheckResult,
 }: {
   eventId: number;
   view: MarketplacePriceView;
   onLinkSaved: () => void;
   onCheckPrices: () => void;
+  /** 2.1.1: called once an auto-check attempt finishes, whatever its
+   *  status - see commands/price_checker_auto.rs's module doc comment
+   *  (Rust). The parent opens SavePriceCheckModal exactly like a normal
+   *  "Check Prices" click and, only when status is "ok", pre-fills it
+   *  through the same handlePasteTextChange pipeline a real paste already
+   *  uses. */
+  onAutoCheckResult: (result: AutoCheckResult) => void;
 }) {
   const toast = useToast();
   const [url, setUrl] = useState(view.link?.url ?? "");
   const [savingLink, setSavingLink] = useState(false);
+  const [autoChecking, setAutoChecking] = useState(false);
 
   // Keeps the field in sync when the parent reloads (e.g. after this exact
   // save, or after switching away and back to this event) without clobbering
@@ -120,6 +129,28 @@ function MarketplaceCard({
     }
   };
 
+  // 2.1.1: tries the saved link first, falling back to whatever is
+  // currently typed in the field (not yet saved) - marko shouldn't have to
+  // click Save before trying this. Uses the CURRENT input, matching what
+  // "Open page" would open too.
+  const autoCheckTarget = (view.link?.url || url).trim();
+
+  const runAutoCheck = async () => {
+    if (!autoCheckTarget) {
+      toast.error("Enter this marketplace's listings page URL above first.");
+      return;
+    }
+    setAutoChecking(true);
+    try {
+      const result = await api.autoCheckPrice(autoCheckTarget);
+      onAutoCheckResult(result);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setAutoChecking(false);
+    }
+  };
+
   const latest = view.history[0] ?? null;
   const trend = trendFromHistory(view.history);
   const older = view.history.slice(1);
@@ -128,9 +159,14 @@ function MarketplaceCard({
     <Card className="flex flex-col p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{view.marketplaceName}</h3>
-        <Button variant="secondary" onClick={onCheckPrices}>
-          <IconTag className="h-4 w-4" /> Check Prices
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={runAutoCheck} disabled={autoChecking || !autoCheckTarget} title="Try reading this page's prices automatically in the app's own browser view - falls back to pasting/typing if it can't.">
+            {autoChecking ? <Spinner className="h-4 w-4" /> : <IconTag className="h-4 w-4" />} Auto-check
+          </Button>
+          <Button variant="secondary" onClick={onCheckPrices}>
+            <IconTag className="h-4 w-4" /> Check Prices
+          </Button>
+        </div>
       </div>
 
       <div className="mb-4 flex items-center gap-2">
@@ -215,6 +251,7 @@ function SavePriceCheckModal({
   eventId,
   view,
   defaultCurrency,
+  autoCheckResult,
   onClose,
   onSaved,
 }: {
@@ -222,6 +259,14 @@ function SavePriceCheckModal({
   /** null = closed. */
   view: MarketplacePriceView | null;
   defaultCurrency: string;
+  /** 2.1.1: set when this modal was opened right after an auto-check
+   *  attempt (see MarketplaceCard's "Auto-check" button) - null for a
+   *  normal "Check Prices" click. When its status is "ok", its prices are
+   *  run through the exact same handlePasteTextChange pipeline a real
+   *  paste already uses below, so the result is fully editable and marko
+   *  reviews it before Save exactly like any paste. Any other status just
+   *  shows its message; the form is otherwise identical to today. */
+  autoCheckResult?: AutoCheckResult | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -258,7 +303,25 @@ function SavePriceCheckModal({
     setSaving(false);
     setPasteText("");
     setPasteInfo(null);
-  }, [view, defaultCurrency]);
+
+    // 2.1.1: an auto-check attempt just ran for this marketplace - seed the
+    // paste box with what it found (as plain "$31 $39 ..." text, so it's
+    // visible and fully re-editable) and run it through the SAME
+    // handlePasteTextChange pipeline a real paste uses, rather than
+    // computing lowest/average/highest separately here. A non-"ok" status
+    // (unable_to_read/blocked/error) never fills anything - it only shows
+    // its own message, and the form is otherwise identical to a normal
+    // "Check Prices" open.
+    if (autoCheckResult) {
+      if (autoCheckResult.status === "ok" && autoCheckResult.prices.length > 0) {
+        const symbol = autoCheckResult.currency === "EUR" ? "€" : autoCheckResult.currency === "GBP" ? "£" : "$";
+        handlePasteTextChange(autoCheckResult.prices.map((p) => `${symbol}${p}`).join(" "));
+      } else if (autoCheckResult.message) {
+        setPasteInfo(autoCheckResult.message);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, defaultCurrency, autoCheckResult]);
 
   // Runs on every keystroke/paste in the textarea - re-extracting from the
   // full current text each time (not just the newly-pasted chunk) so
@@ -418,6 +481,10 @@ export default function PriceChecker() {
   const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkModalFor, setCheckModalFor] = useState<MarketplacePriceView | null>(null);
+  // 2.1.1: result of the auto-check attempt that opened checkModalFor (if
+  // any) - null for a normal "Check Prices" click. Cleared alongside
+  // checkModalFor so a stale result never leaks into the next open.
+  const [pendingAutoCheck, setPendingAutoCheck] = useState<AutoCheckResult | null>(null);
 
   useEffect(() => {
     api.listEvents().then(setEvents).catch((e) => toast.error(errMsg(e)));
@@ -539,7 +606,19 @@ export default function PriceChecker() {
                 eventId={summary.eventId}
                 view={view}
                 onLinkSaved={load}
-                onCheckPrices={() => setCheckModalFor(view)}
+                onCheckPrices={() => {
+                  setPendingAutoCheck(null);
+                  setCheckModalFor(view);
+                }}
+                onAutoCheckResult={(result) => {
+                  if (result.status === "ok") {
+                    toast.success(`Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"} - review before saving.`);
+                  } else {
+                    toast.error(result.message ?? "Couldn't read prices automatically - enter them below.");
+                  }
+                  setPendingAutoCheck(result);
+                  setCheckModalFor(view);
+                }}
               />
             ))}
           </div>
@@ -548,9 +627,14 @@ export default function PriceChecker() {
             eventId={summary.eventId}
             view={checkModalFor}
             defaultCurrency={summary.myCurrency ?? "EUR"}
-            onClose={() => setCheckModalFor(null)}
+            autoCheckResult={pendingAutoCheck}
+            onClose={() => {
+              setCheckModalFor(null);
+              setPendingAutoCheck(null);
+            }}
             onSaved={() => {
               setCheckModalFor(null);
+              setPendingAutoCheck(null);
               load();
             }}
           />

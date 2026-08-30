@@ -47,6 +47,7 @@ import type {
   PriceCheck,
   PriceCheckInput,
   PriceCheckerSummary,
+  AutoCheckResult,
   Pull,
   PullEditInput,
   PullInput,
@@ -504,6 +505,8 @@ export const api = {
   savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
   /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
   getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
+  /** 2.1.1: opens `url` in the app's own embedded WebView and reads back whatever prices are actually on the page - see commands/price_checker_auto.rs's module doc comment. Never saved directly; the result only pre-fills SavePriceCheckModal for marko to review, same as a real paste. */
+  autoCheckPrice: (url: string) => invoke<AutoCheckResult>("auto_check_price", { url }),
 };
 
 export function errMsg(e: unknown): string {

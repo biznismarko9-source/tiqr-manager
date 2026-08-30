@@ -1400,3 +1400,20 @@ export interface PriceCheckerSummary {
    * conditions as `expectedProfitCents`. */
   expectedRoi: number | null;
 }
+
+/** Result of one `api.autoCheckPrice` attempt (2.1.1) - see
+ * commands/price_checker_auto.rs's module doc comment (Rust) for the full
+ * design. Never saved directly - PriceChecker.tsx feeds `prices`/`currency`
+ * through the exact same `extractPricesFromText`-driven fill it already
+ * uses for a real paste, so marko reviews before anything is saved via the
+ * unchanged `savePriceCheck`. */
+export interface AutoCheckResult {
+  /** "ok" | "unable_to_read" | "blocked" | "error" */
+  status: string;
+  /** Individual prices found (never pre-averaged) - empty unless status is "ok". */
+  prices: number[];
+  /** Best-effort currency guess, or null if undetermined. */
+  currency: string | null;
+  /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
+  message: string | null;
+}

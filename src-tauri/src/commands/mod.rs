@@ -18,6 +18,7 @@ pub mod notifications;
 pub mod orders;
 pub mod orders_sheet_sync;
 pub mod price_checker;
+pub mod price_checker_auto;
 pub mod pulls;
 pub mod pulls_received;
 pub mod pulls_sheet_sync;
