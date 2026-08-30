@@ -1401,14 +1401,24 @@ export interface PriceCheckerSummary {
   expectedRoi: number | null;
 }
 
-/** Result of one `api.autoCheckPrice` attempt (2.1.1) - see
- * commands/price_checker_auto.rs's module doc comment (Rust) for the full
- * design. Never saved directly - PriceChecker.tsx feeds `prices`/`currency`
- * through the exact same `extractPricesFromText`-driven fill it already
- * uses for a real paste, so marko reviews before anything is saved via the
- * unchanged `savePriceCheck`. */
+/** Result of one `api.autoCheckPrice` attempt (2.1.1, lifecycle rewritten in
+ * 2.1.2 - see commands/price_checker_auto.rs's module doc comment (Rust,
+ * "Freeze fix") for the full design). Never saved directly - PriceChecker.tsx
+ * feeds `prices`/`currency` through the exact same `extractPricesFromText`-
+ * driven fill it already uses for a real paste, so marko reviews before
+ * anything is saved via the unchanged `savePriceCheck`. */
 export interface AutoCheckResult {
-  /** "ok" | "unable_to_read" | "blocked" | "error" */
+  /** "ok" | "unable_to_read" | "blocked" | "error" | "cancelled" | "timeout"
+   * | "busy" - the last two of the first six are from 2.1.2 ("cancelled" is
+   * the direct result of `api.cancelAutoCheckPrice`, never shown as an
+   * error; "timeout" means the hard 15s ceiling was hit). "busy" is new in
+   * 2.1.3: the backend's single-flight guard rejected this attempt because
+   * another one was already running (see commands/price_checker_auto.rs's
+   * "Production hardening" doc comment) - should be unreachable via normal
+   * UI (canStartAutoCheck already prevents starting a second attempt) but
+   * PriceChecker.tsx still handles it safely if it's ever hit anyway. Every
+   * non-"ok" status is always accompanied by a plain-language `message`
+   * below. */
   status: string;
   /** Individual prices found (never pre-averaged) - empty unless status is "ok". */
   prices: number[];
@@ -1416,4 +1426,28 @@ export interface AutoCheckResult {
   currency: string | null;
   /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
   message: string | null;
+}
+
+/** 2.1.2: the real progress phases the backend actually goes through during
+ * one `autoCheckPrice` attempt, pushed live via the
+ * `price-checker-auto-check-progress` Tauri event (see
+ * commands/price_checker_auto.rs's `emit_phase`) rather than a fake
+ * client-side timer - marko's own explicit requirement after the freeze/hang
+ * report ("Starting -> Loading -> Analyzing -> Success / Unable / Blocked /
+ * Timeout"). 2.1.3 added "cleaning_up" (fires once the reader page has been
+ * read and its window is being torn down, right before the final result
+ * comes back) - matching `emit_phase`'s call sites 1:1. "Nothing running" is
+ * represented by PriceChecker.tsx's own `null` (see its `autoCheck` state),
+ * not a value here. */
+export type AutoCheckPhase = "starting" | "loading" | "analyzing" | "cleaning_up";
+
+/** Payload shape of the `price-checker-auto-check-progress` Tauri event
+ * (2.1.3) - see commands/price_checker_auto.rs's `ProgressPayload`/
+ * `emit_phase` (Rust). `requestId` is whatever PriceChecker.tsx itself
+ * minted for this attempt (see its own `requestIdRef`) and the backend only
+ * ever echoes it back unchanged - lets the listener tell a stale attempt's
+ * late event apart from the one actually being tracked right now. */
+export interface AutoCheckProgressEvent {
+  requestId: number;
+  phase: AutoCheckPhase;
 }

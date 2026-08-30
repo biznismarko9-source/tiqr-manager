@@ -1737,9 +1737,14 @@ pub struct PriceCheckerSummary {
 pub struct AutoCheckResult {
     /// `"ok"` (prices found), `"unable_to_read"` (page loaded, nothing
     /// found), `"blocked"` (an anti-bot/verification challenge was
-    /// detected - never bypassed), or `"error"` (couldn't open/read the
-    /// page at all, e.g. a malformed URL or the reader window failed to
-    /// load).
+    /// detected - never bypassed), `"error"` (couldn't open/read the page
+    /// at all, e.g. a malformed URL, the reader window failed to load, or
+    /// its JS could not be evaluated), `"cancelled"` (2.1.2 - the direct
+    /// result of `cancel_auto_check_price`), `"timeout"` (2.1.2 - the hard
+    /// 15s ceiling was hit), or `"busy"` (2.1.3 - the single-flight guard
+    /// in `commands::price_checker_auto::auto_check_price` rejected this
+    /// call because another attempt was already running - see that
+    /// module's own "Production hardening" doc comment).
     pub status: String,
     /// Individual prices found on the page (never pre-averaged - the
     /// frontend computes lowest/average/highest/count from these the exact

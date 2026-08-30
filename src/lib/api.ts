@@ -505,8 +505,15 @@ export const api = {
   savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
   /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
   getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
-  /** 2.1.1: opens `url` in the app's own embedded WebView and reads back whatever prices are actually on the page - see commands/price_checker_auto.rs's module doc comment. Never saved directly; the result only pre-fills SavePriceCheckModal for marko to review, same as a real paste. */
-  autoCheckPrice: (url: string) => invoke<AutoCheckResult>("auto_check_price", { url }),
+  /** 2.1.1: opens `url` in the app's own embedded WebView and reads back whatever prices are actually on the page - see commands/price_checker_auto.rs's module doc comment. Never saved directly; the result only pre-fills SavePriceCheckModal for marko to review, same as a real paste. 2.1.2: now always settles within ~15s (status "timeout" instead of hanging) and is safely interruptible via cancelAutoCheckPrice below - see that module's "Freeze fix" doc comment. 2.1.3: takes `requestId` (whatever PriceChecker.tsx minted for this attempt) purely so the backend can echo it back on every progress event/log line - the backend never uses it for anything else (see that module's "Production hardening" doc comment; single-flight safety is still purely backend-state-based, independent of this value). May now also resolve with status "busy" if another attempt is already running. */
+  autoCheckPrice: (url: string, requestId: number) => invoke<AutoCheckResult>("auto_check_price", { url, requestId }),
+  /** 2.1.2: the "Cancel" button shown next to Auto-check's spinner while a
+   * check is in flight - a safe no-op if nothing is actually in flight (e.g.
+   * a stray double-click, or the attempt already finished a moment earlier).
+   * Does not itself resolve `autoCheckPrice`'s own promise; that happens
+   * moments later, on its own, once the backend notices the flag this sets -
+   * same shape/contract as `cancelGoogleSignIn` above. */
+  cancelAutoCheckPrice: () => invoke<void>("cancel_auto_check_price"),
 };
 
 export function errMsg(e: unknown): string {

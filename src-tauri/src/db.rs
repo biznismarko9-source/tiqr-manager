@@ -39,6 +39,12 @@ pub struct AppState {
     /// than sharing: cancelling one must never accidentally interrupt the
     /// other if both somehow ended up in flight at once.
     pub firebase_oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    /// 2.1.2: the same idea as `oauth_cancel_flag` above, for Price
+    /// Checker's "Auto-check" (commands::price_checker_auto) - `Some` only
+    /// while `auto_check_price` is actually running, `None` otherwise. Added
+    /// as part of the freeze/hang fix - see that module's own doc comment
+    /// ("Freeze fix") for the full incident and design.
+    pub price_checker_auto_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[
