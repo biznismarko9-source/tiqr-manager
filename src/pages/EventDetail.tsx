@@ -240,9 +240,23 @@ export default function EventDetail() {
           relocated to the bottom of the page (below Orders and Tickets) per
           marko - same content and calculation, purely a position change. */}
       <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-          Potential Profit
-        </p>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            Potential Profit
+          </p>
+          {/* 2.0.81: same cross-navigation pattern as "New order for this
+              event" above (navigate + presetEventId via router state) - see
+              PriceChecker.tsx, which reads this back out of location.state
+              to preselect the event instead of leaving marko to find it
+              again in its own dropdown. */}
+          <button
+            type="button"
+            onClick={() => navigate("/price-checker", { state: { presetEventId: event.id } })}
+            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+          >
+            Compare to market prices &rarr;
+          </button>
+        </div>
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>

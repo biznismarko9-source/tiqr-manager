@@ -1571,3 +1571,433 @@ pub struct NotificationTestResult {
     pub success: bool,
     pub message: String,
 }
+
+// ---------------------------------------------------------------------------
+// Price Checker (2.0.81) - see commands::price_checker's own module doc
+// comment and migrations/014_price_checker.sql for the full design.
+// ---------------------------------------------------------------------------
+
+/// A marketplace marko can save a link/price checks against for an event
+/// (StubHub/Vivid Seats/Ticombo, seeded - same "Platforms"-style lookup
+/// pattern as `Platform`/`Supplier`/`EventCategory`, so he can add more of
+/// his own later without a new migration.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Marketplace {
+    pub id: i64,
+    pub name: String,
+    pub is_demo: bool,
+    pub created_at: String,
+}
+
+/// One saved marketplace URL for one event.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventMarketplaceLink {
+    pub id: i64,
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    pub url: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// `url` blank/whitespace-only means "clear this marketplace's link" - see
+/// `commands::price_checker::save_event_marketplace_link_impl`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventMarketplaceLinkInput {
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    pub url: String,
+}
+
+/// One "Check Prices" entry, hand-typed by marko off a marketplace's own
+/// listings page. Append-only (see the migration's own doc comment) - never
+/// updated or overwritten by a later check for the same event/marketplace.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCheck {
+    pub id: i64,
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    pub lowest_price_cents: i64,
+    pub average_price_cents: i64,
+    pub highest_price_cents: i64,
+    pub listing_count: i64,
+    pub currency: String,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCheckInput {
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    pub lowest_price_cents: i64,
+    pub average_price_cents: i64,
+    pub highest_price_cents: i64,
+    pub listing_count: i64,
+    pub currency: String,
+}
+
+/// One marketplace's row in the Price Checker page for one event: its saved
+/// link (if any) plus its full check history, newest first (`history[0]` is
+/// the latest check, `history[1]` the one before it - marko explicitly
+/// wants to see whether the price moved up or down since last time, so the
+/// frontend derives that delta straight from these two rather than the
+/// backend baking in a single "trend" value). Present for EVERY marketplace
+/// in `marketplaces`, even one marko has never linked or checked yet for
+/// this event (`link` is `None`, `history` is empty) - so the page always
+/// shows all of his marketplaces as a place to add data, not just the ones
+/// already filled in.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplacePriceView {
+    pub marketplace_id: i64,
+    pub marketplace_name: String,
+    pub link: Option<EventMarketplaceLink>,
+    pub history: Vec<PriceCheck>,
+}
+
+/// The whole Price Checker page for one event in a single round trip: every
+/// marketplace's link + history, marko's own unsold inventory for this
+/// event (cost/listing price, from the exact same ticket scope Event
+/// Detail's own "Potential profit" block already uses - available/listed,
+/// never sold/cancelled), and the derived market comparison
+/// (lowest/average/recommended/expected profit/ROI). See
+/// `commands::price_checker::get_price_checker_summary_impl`'s own doc
+/// comment for exactly how each derived field is computed and why.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCheckerSummary {
+    pub event_id: i64,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub marketplaces: Vec<MarketplacePriceView>,
+    /// `None` when marko's own unsold tickets for this event don't all
+    /// share one currency (or there are none at all) - same signal
+    /// `EventWithStats.stats.currency`/`FinanceSummary.currency` already use
+    /// everywhere else in this app.
+    pub my_currency: Option<String>,
+    pub unsold_ticket_count: i64,
+    /// Average of (purchase cost + purchase fees + other costs) across
+    /// `unsold_ticket_count` tickets. `None` only when that count is 0 - NOT
+    /// suppressed when `my_currency` is `None`. Same "always return the
+    /// blended figure, let the currency flag decide whether the UI shows it
+    /// or shows Mixed" convention as `total_cost_cents` elsewhere (see
+    /// `format.ts`'s `formatMoneyOrMixed`) - unlike a RATIO (margin/ROI
+    /// below), a blended money amount can't silently masquerade as a real
+    /// one, so it doesn't need backend-level suppression, just the same
+    /// currency flag every other money amount in this app already carries.
+    pub my_avg_purchase_cost_cents: Option<i64>,
+    /// Same shape as `my_avg_purchase_cost_cents`, but only over the subset
+    /// of unsold tickets that actually have a `listing_price_cents` set -
+    /// `None` when none of them do (not the same thing as `my_currency`
+    /// being `None`).
+    pub my_avg_listing_price_cents: Option<i64>,
+    pub missing_listing_price_count: i64,
+    /// The two fields below (and everything derived from them further down)
+    /// are the one place this summary DOES require a real, single
+    /// `my_currency` - unlike the two averages above, comparing against the
+    /// market means picking exactly one currency to match each
+    /// marketplace's latest check against, and this app never guesses that.
+    /// `None` whenever `my_currency` is `None`, OR when it is `Some` but no
+    /// marketplace's latest check happens to share it yet.
+    pub market_lowest_price_cents: Option<i64>,
+    pub market_average_price_cents: Option<i64>,
+    /// `market_lowest_price_cents` reduced by
+    /// `commands::price_checker::RECOMMENDED_PRICE_UNDERCUT_PCT` - marko's
+    /// own answer for how this should work ("Mierne pod najnižšou trhovou
+    /// cenou" - slightly under the lowest market price), kept as one plain
+    /// transparent formula rather than AI, per his explicit request.
+    pub recommended_price_cents: Option<i64>,
+    /// `recommended_price_cents - my_avg_purchase_cost_cents` - `None`
+    /// unless both are `Some` (which, per the note above, already implies a
+    /// real shared `my_currency`).
+    pub expected_profit_cents: Option<i64>,
+    /// `expected_profit_cents / my_avg_purchase_cost_cents` via
+    /// `finance::safe_ratio` - `None` under the same conditions as
+    /// `expected_profit_cents`, plus the ordinary zero-cost case
+    /// `safe_ratio` itself already guards against.
+    pub expected_roi: Option<f64>,
+}
+
+// --- Finance (2.0.83) -------------------------------------------------------
+// marko's personal + business money tracker - see
+// migrations/015_finance.sql's doc comment for the full design rationale.
+// Lives in commands::finance_entries, deliberately NOT named
+// `commands::finance` - that name is already the shared ticket-business P&L
+// calculation module (`crate::finance`, imported at the top of this file)
+// and is a completely different concept from this manual personal/business
+// ledger; picking a visibly different name keeps the two from ever being
+// confused with each other.
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceCategory {
+    pub id: i64,
+    pub name: String,
+    /// 'expense' | 'income' | 'both' - which of Finance's two entry-type
+    /// lists (mirrors FinanceEntry::entry_type) this category shows up in.
+    /// Same convention as `Platform::kind` ('purchase'/'sale'/'both').
+    pub kind: String,
+    /// Same convention as `EventCategory::color_slot` - a fixed palette
+    /// index (FinanceCategoryBadge.tsx) assigned once at creation via
+    /// MAX(color_slot)+1, never recomputed.
+    pub color_slot: i64,
+    pub is_demo: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceEntry {
+    pub id: i64,
+    /// 'income' | 'expense'.
+    pub entry_type: String,
+    pub entry_date: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    /// 'personal' | 'business' - see migrations/015_finance.sql's
+    /// `finance_entries.scope` comment for why this is just a label on an
+    /// otherwise-identical entry, never a link into orders/tickets/sales.
+    pub scope: String,
+    pub category_id: Option<i64>,
+    /// Denormalized from a LEFT JOIN, same convention as `Ticket::event_name`/
+    /// `Ticket::order_code` - lets the frontend list/badge a category without
+    /// a second round trip. `None` exactly when `category_id` is `None`
+    /// (no category picked) or points at a category since deleted (ON DELETE
+    /// SET NULL already clears `category_id` itself in that case too).
+    pub category_name: Option<String>,
+    pub category_color_slot: Option<i64>,
+    /// 2.1.0: which `Account` this entry was recorded against - optional,
+    /// same "denormalized name alongside the id, None exactly when unset or
+    /// pointing at a since-deleted row" convention as `category_id`/
+    /// `category_name` right above (accounts.rs's own `ON DELETE SET NULL`
+    /// is the whole story here too - see migrations/016_finance_v2.sql).
+    pub account_id: Option<i64>,
+    pub account_name: Option<String>,
+    pub place: Option<String>,
+    pub note: Option<String>,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for both `create_finance_entry` and `update_finance_entry` - same
+/// "one struct, not a fistful of flat arguments" convention as `OrderInput`
+/// above, used here for the same reason (this has as many fields as an
+/// order's own input does).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceEntryInput {
+    pub entry_type: String,
+    pub entry_date: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub scope: String,
+    pub category_id: Option<i64>,
+    /// 2.1.0: optional, same as `category_id` - "Account" is never a
+    /// required field on an entry (marko's own point 4: "má možnosť
+    /// Account", has the OPTION of an account), so every entry created
+    /// before this version, and any entry created without one, is simply
+    /// `None`.
+    pub account_id: Option<i64>,
+    pub place: Option<String>,
+    pub note: Option<String>,
+}
+
+// --- Finance 2.1 (Accounts / Transfers / Recurring / Forecast) -------------
+// marko's own "FINANCE 2.1" spec - see FINANCE-2.1.0-REPORT.md for the full
+// rationale, and migrations/016_finance_v2.sql's doc comment for the schema
+// and FK-delete design these structs mirror. Lives in three new modules,
+// same "impl function + thin #[tauri::command] wrapper" pattern as
+// commands::finance_entries: commands::finance_accounts (Account CRUD +
+// balances + Transfer CRUD), commands::finance_recurring (RecurringExpense
+// CRUD + Create/Skip/Pause/Resume), commands::finance_forecast (read-only).
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub id: i64,
+    pub name: String,
+    /// 'bank' | 'revolut' | 'paypal' | 'cash' | 'credit_card' | 'other' -
+    /// only ever picks an icon/preset label (Accounts.tsx); `name` is
+    /// always marko's own free text, never restricted by this.
+    pub account_type: String,
+    pub currency: String,
+    pub opening_balance_cents: i64,
+    /// Computed fresh every call as opening_balance_cents + this account's
+    /// own finance_entries (income/expense) + transfers (in/out) - ONE
+    /// aggregate query across every account at once (see
+    /// commands::finance_accounts::list_accounts), never stored, never a
+    /// per-account query. "Balance účtu musí vychádzať z jeho transakcií"
+    /// (marko's own point 3) - this is the whole implementation of that.
+    pub current_balance_cents: i64,
+    pub is_active: bool,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInput {
+    pub name: String,
+    pub account_type: String,
+    pub currency: String,
+    pub opening_balance_cents: i64,
+    pub is_active: bool,
+}
+
+/// One movement of marko's own money between two of his own accounts -
+/// deliberately NOT a `FinanceEntry` (never income/expense, never touches
+/// finance_entries at all) - see migrations/016_finance_v2.sql's header
+/// comment for why this is its own table.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Transfer {
+    pub id: i64,
+    pub transfer_date: String,
+    pub from_account_id: i64,
+    /// Denormalized from a JOIN, same convention as
+    /// `FinanceEntry::category_name` - always `Some` in practice since
+    /// accounts referenced by a transfer can never be deleted (`ON DELETE
+    /// RESTRICT`, see the migration), but typed as `Option` rather than a
+    /// bare `String` so a display bug elsewhere can never panic on this.
+    pub from_account_name: Option<String>,
+    pub to_account_id: i64,
+    pub to_account_name: Option<String>,
+    pub amount_cents: i64,
+    /// Always equal to both accounts' own currency - derived server-side,
+    /// never taken from client input (see `TransferInput` below and
+    /// commands::finance_accounts::create_transfer_impl).
+    pub currency: String,
+    pub note: Option<String>,
+    pub is_demo: bool,
+    pub created_at: String,
+}
+
+/// Deliberately has NO `currency` field - v1 disallows cross-currency
+/// transfers entirely (marko's own preferred "simpler, safer" option, point
+/// 6), so the currency is never a real choice: `create_transfer_impl`
+/// derives it from `from_account`/`to_account` after confirming they match,
+/// rather than trusting (and having to double-check) a client-supplied
+/// value that could disagree with the accounts themselves.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferInput {
+    pub transfer_date: String,
+    pub from_account_id: i64,
+    pub to_account_id: i64,
+    pub amount_cents: i64,
+    pub note: Option<String>,
+}
+
+/// A scheduled TEMPLATE, not a transaction - see
+/// migrations/016_finance_v2.sql's header comment and
+/// commands::finance_recurring's module doc comment for why the actual
+/// `FinanceEntry` row is only ever created through an explicit user action.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringExpense {
+    pub id: i64,
+    pub name: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    /// 'personal' | 'business' - same convention as `FinanceEntry::scope`;
+    /// carried on the template so the `FinanceEntry` a "Create" action
+    /// produces always has a valid scope without asking again.
+    pub scope: String,
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub category_color_slot: Option<i64>,
+    pub account_id: Option<i64>,
+    pub account_name: Option<String>,
+    /// 'weekly' | 'monthly' | 'quarterly' | 'yearly'.
+    pub frequency: String,
+    pub start_date: String,
+    /// The next occurrence this template will produce - only ever advanced
+    /// by an explicit Create/Skip action, never automatically. A value in
+    /// the past (on an still-active template) means "overdue", shown as
+    /// such by the frontend rather than silently caught up.
+    pub next_date: String,
+    pub is_active: bool,
+    pub note: Option<String>,
+    pub is_demo: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for both create and edit. Deliberately excludes `next_date` and
+/// `is_active` - those are runtime state managed only by their own actions
+/// (create_from_recurring/skip advance `next_date`; pause/resume flip
+/// `is_active`), never by a generic field edit, so editing e.g. `frequency`
+/// on an existing template can never silently jump or reset its schedule.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringExpenseInput {
+    pub name: String,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub scope: String,
+    pub category_id: Option<i64>,
+    pub account_id: Option<i64>,
+    pub frequency: String,
+    pub start_date: String,
+    pub note: Option<String>,
+}
+
+/// Result of `commands::finance_forecast::get_cashflow_forecast` - a simple,
+/// non-AI projection built only from data already in the app (marko's own
+/// point 9/10: current balances, known pending amounts, scheduled recurring
+/// expenses, already-logged future entries - never guessed sales, market
+/// prices, or inventory profit).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CashflowForecast {
+    /// `false` when there are no active EUR accounts to project a balance
+    /// from - the frontend shows "Forecast unavailable / limited data"
+    /// (marko's own explicit requirement) rather than a forecast built on
+    /// nothing. Every cents field below is `0` and not meaningful when this
+    /// is `false`.
+    pub available: bool,
+    pub current_balance_cents: i64,
+    /// Future-dated EUR income already logged (`FinanceEntry`) plus pending
+    /// ticket-business sales (`sales.payment_status = 'pending'`, the exact
+    /// same "right-now fact" concept dashboard.rs's own
+    /// `pending_sales_amount_cents` already uses) - never an unknown/
+    /// estimated future sale.
+    pub expected_income_cents: i64,
+    /// Active recurring templates whose `next_date` falls inside the
+    /// forecast window.
+    pub recurring_expenses_cents: i64,
+    /// Future-dated one-off EUR expense `FinanceEntry` rows inside the
+    /// forecast window.
+    pub upcoming_expenses_cents: i64,
+    /// `current_balance_cents + expected_income_cents - recurring_expenses_cents - upcoming_expenses_cents`.
+    pub forecast_balance_cents: i64,
+    /// The forecast window, in days, `expected_income`/`recurring_expenses`/
+    /// `upcoming_expenses` above were computed over - see
+    /// finance_forecast.rs's module doc comment for why 30.
+    pub window_days: i64,
+    /// `true` when non-EUR pending sales and/or non-EUR future
+    /// `FinanceEntry` rows exist and were deliberately excluded (never
+    /// guessed at with an invented FX rate) - the frontend shows a small
+    /// disclosure note when this is `true`.
+    pub excludes_non_eur_data: bool,
+}
+
+/// Result of `commands::finance_recurring::create_from_recurring` - the one
+/// command that touches two tables at once (see that module's own doc
+/// comment for why it runs inside an explicit transaction), so its result
+/// carries both the newly-created entry and the template's own new
+/// `next_date` in one response rather than making the frontend re-fetch
+/// either.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFromRecurringResult {
+    pub recurring: RecurringExpense,
+    pub entry: FinanceEntry,
+}

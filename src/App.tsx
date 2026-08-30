@@ -17,6 +17,8 @@ import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
+import PriceChecker from "./pages/PriceChecker";
+import Finance from "./pages/Finance";
 import Settings from "./pages/Settings";
 
 // 2.0.44: gates the whole app behind sign-in (see Welcome.tsx + lib/auth.tsx)
@@ -80,6 +82,8 @@ export default function App() {
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
               <Route path="pulls" element={<Pulls />} />
+              <Route path="price-checker" element={<PriceChecker />} />
+              <Route path="finance" element={<Finance />} />
               <Route path="settings" element={<Settings />} />
               {/* 1.8.2: Settings Home (above) plus one real route per section -
                   HashRouter makes this refresh-stable with zero extra config,

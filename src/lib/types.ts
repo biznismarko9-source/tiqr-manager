@@ -70,6 +70,189 @@ export interface EventCategory {
   createdAt: string;
 }
 
+/** 2.0.83: a managed Finance category (Settings -> Lookups). `kind` mirrors
+ * `Platform.kind`'s own convention (which of the two lists - Expense/Income -
+ * a category shows up in); `colorSlot` mirrors `EventCategory.colorSlot`
+ * (a fixed palette index, see FinanceCategoryBadge.tsx). */
+export interface FinanceCategory {
+  id: number;
+  name: string;
+  kind: "expense" | "income" | "both";
+  colorSlot: number;
+  isDemo: boolean;
+  createdAt: string;
+}
+
+/** 2.0.83: one row in marko's personal + business money ledger (Finance.tsx).
+ * `scope` is just a label - see migrations/015_finance.sql's
+ * `finance_entries.scope` comment for why this is never a link into
+ * orders/tickets/sales. `categoryName`/`categoryColorSlot` are denormalized
+ * from the backend's own join (null exactly when `categoryId` is null, or
+ * points at a since-deleted category). */
+export interface FinanceEntry {
+  id: number;
+  entryType: "income" | "expense";
+  entryDate: string;
+  amountCents: number;
+  currency: string;
+  scope: "personal" | "business";
+  categoryId: number | null;
+  categoryName: string | null;
+  categoryColorSlot: number | null;
+  /** 2.1.0: which `Account` this entry was recorded against - optional,
+   * same convention as categoryId/categoryName (null exactly when unset or
+   * pointing at a since-deleted account - accounts.ts's own ON DELETE SET
+   * NULL is the whole story, see finance_entries.rs). */
+  accountId: number | null;
+  accountName: string | null;
+  place: string | null;
+  note: string | null;
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Input for both `createFinanceEntry` and `updateFinanceEntry` - mirrors the
+ * backend's `FinanceEntryInput` (models.rs), same "one input type, not a
+ * fistful of parameters" convention as `OrderInput`/`OrderEditInput`. */
+export interface FinanceEntryInput {
+  entryType: "income" | "expense";
+  entryDate: string;
+  amountCents: number;
+  currency: string;
+  scope: "personal" | "business";
+  categoryId: number | null;
+  /** 2.1.0: optional, same as categoryId - never required (an entry can be
+   * logged with no specific account, exactly as before this version). */
+  accountId: number | null;
+  place: string | null;
+  note: string | null;
+}
+
+// --- Finance 2.1 (Accounts / Transfers / Recurring / Forecast) -------------
+// marko's own "FINANCE 2.1" spec - mirrors src-tauri/src/models.rs's own
+// "Finance 2.1" section field-for-field; see that file's doc comments for
+// the full design rationale (also in FINANCE-2.1.0-REPORT.md).
+
+/** One of marko's own wallets (Bank/Revolut/PayPal/Cash/Credit card/Other,
+ * or any custom name). `currentBalanceCents` is always computed fresh on
+ * the backend from `openingBalanceCents` plus this account's own entries/
+ * transfers - never edited directly. */
+export interface Account {
+  id: number;
+  name: string;
+  accountType: "bank" | "revolut" | "paypal" | "cash" | "credit_card" | "other";
+  currency: string;
+  openingBalanceCents: number;
+  currentBalanceCents: number;
+  isActive: boolean;
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountInput {
+  name: string;
+  accountType: "bank" | "revolut" | "paypal" | "cash" | "credit_card" | "other";
+  currency: string;
+  openingBalanceCents: number;
+  isActive: boolean;
+}
+
+/** A movement of marko's own money between two of his own accounts - never
+ * income or expense (see Overview/Reports, which never include transfers in
+ * P&L). `currency` is always derived server-side from the two accounts
+ * (which must already share one currency in v1 - no invented exchange
+ * rate), never a free choice on create. */
+export interface Transfer {
+  id: number;
+  transferDate: string;
+  fromAccountId: number;
+  fromAccountName: string | null;
+  toAccountId: number;
+  toAccountName: string | null;
+  amountCents: number;
+  currency: string;
+  note: string | null;
+  isDemo: boolean;
+  createdAt: string;
+}
+
+/** No `currency` field - see the backend's own `TransferInput` doc comment
+ * (models.rs): v1 disallows cross-currency transfers outright, so the
+ * currency is never actually a client choice. */
+export interface TransferInput {
+  transferDate: string;
+  fromAccountId: number;
+  toAccountId: number;
+  amountCents: number;
+  note: string | null;
+}
+
+/** A scheduled TEMPLATE, not a transaction - the actual `FinanceEntry` is
+ * only ever created by an explicit `createFromRecurring` call. `nextDate`
+ * only ever advances via `createFromRecurring`/`skipRecurringExpense`;
+ * `isActive` only ever changes via `pauseRecurringExpense`/
+ * `resumeRecurringExpense` - never through `updateRecurringExpense`. */
+export interface RecurringExpense {
+  id: number;
+  name: string;
+  amountCents: number;
+  currency: string;
+  scope: "personal" | "business";
+  categoryId: number | null;
+  categoryName: string | null;
+  categoryColorSlot: number | null;
+  accountId: number | null;
+  accountName: string | null;
+  frequency: "weekly" | "monthly" | "quarterly" | "yearly";
+  startDate: string;
+  nextDate: string;
+  isActive: boolean;
+  note: string | null;
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Deliberately excludes nextDate/isActive - see `RecurringExpense`'s own
+ * doc comment above. */
+export interface RecurringExpenseInput {
+  name: string;
+  amountCents: number;
+  currency: string;
+  scope: "personal" | "business";
+  categoryId: number | null;
+  accountId: number | null;
+  frequency: "weekly" | "monthly" | "quarterly" | "yearly";
+  startDate: string;
+  note: string | null;
+}
+
+/** Result of `createFromRecurring` - both the newly-created entry and the
+ * template's own advanced `nextDate` in one response. */
+export interface CreateFromRecurringResult {
+  recurring: RecurringExpense;
+  entry: FinanceEntry;
+}
+
+/** A simple, non-AI cashflow projection - see finance_forecast.rs's own
+ * module doc comment for exactly what each figure includes/excludes.
+ * `available` false means "not enough data" (marko's own explicit
+ * requirement) - the frontend shows a plain "Forecast unavailable" message
+ * rather than a number built on nothing; every cents field is 0 and not
+ * meaningful in that case. */
+export interface CashflowForecast {
+  available: boolean;
+  currentBalanceCents: number;
+  expectedIncomeCents: number;
+  recurringExpensesCents: number;
+  upcomingExpensesCents: number;
+  forecastBalanceCents: number;
+  windowDays: number;
+  excludesNonEurData: boolean;
+}
+
 /** 2.0.28: shared result shape for every `bulkDelete*` call (pulls, pulls
  * received, orders, events, sale groups) - mirrors the backend's
  * `BulkDeleteResult`/`BulkDeleteSkip` (models.rs). Deletion is judged per
@@ -1083,4 +1266,137 @@ export interface NotificationConfigInput {
 export interface NotificationTestResult {
   success: boolean;
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Price Checker (2.0.81) - compare marko's own unsold inventory for one
+// event against StubHub/Vivid Seats/Ticombo, via manually-entered checks (no
+// live API/scraping - see src-tauri/src/commands/price_checker.rs's module
+// doc comment for the full reasoning). Mirrors models.rs's own Price Checker
+// section field-for-field (serde's rename_all = "camelCase").
+// ---------------------------------------------------------------------------
+
+/** A marketplace marko checks prices on - a plain managed list (same
+ * Settings-style lookup shape as Platform/Supplier/EventCategory), seeded
+ * with StubHub/Vivid Seats/Ticombo. Marko can add more from Settings ->
+ * Lookups later without any code change. */
+export interface Marketplace {
+  id: number;
+  name: string;
+  isDemo: boolean;
+  createdAt: string;
+}
+
+/** One saved listings-page URL for one (event, marketplace) pair. */
+export interface EventMarketplaceLink {
+  id: number;
+  eventId: number;
+  marketplaceId: number;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
+ * the link (deletes it) instead of erroring; a non-blank one upserts it, so
+ * the same call saves a first-time link, edits an existing one, or removes
+ * it, with no separate delete action needed. */
+export interface EventMarketplaceLinkInput {
+  eventId: number;
+  marketplaceId: number;
+  url: string;
+}
+
+/** One "Check Prices" entry, hand-typed off a marketplace's own listings
+ * page - marko's own numbers, not fetched automatically (see this file's
+ * section comment above for why). Append-only: a later check is always a
+ * NEW row, never an overwrite of an earlier one, so the app can show
+ * whether the market moved up or down since last time. */
+export interface PriceCheck {
+  id: number;
+  eventId: number;
+  marketplaceId: number;
+  lowestPriceCents: number;
+  averagePriceCents: number;
+  highestPriceCents: number;
+  listingCount: number;
+  currency: string;
+  checkedAt: string;
+}
+
+/** Input for `savePriceCheck`. Backend rejects lowestPriceCents >
+ * averagePriceCents > highestPriceCents, or any negative amount/count. */
+export interface PriceCheckInput {
+  eventId: number;
+  marketplaceId: number;
+  lowestPriceCents: number;
+  averagePriceCents: number;
+  highestPriceCents: number;
+  listingCount: number;
+  currency: string;
+}
+
+/** One marketplace's row on the Price Checker page for one event: its saved
+ * link (if any) plus its FULL check history, newest first - history[0] is
+ * the latest check, history[1] the one before it, so the page can derive
+ * "price went up/down since last time" itself rather than the backend
+ * baking in a single trend value. Present for every marketplace in
+ * `listMarketplaces`, even one marko has never linked or checked for this
+ * event (link is null, history is empty) - so the page is always a place to
+ * add data, not just a report of what's already filled in. */
+export interface MarketplacePriceView {
+  marketplaceId: number;
+  marketplaceName: string;
+  link: EventMarketplaceLink | null;
+  history: PriceCheck[];
+}
+
+/** The whole Price Checker page for one event, in a single round trip. See
+ * commands::price_checker::get_price_checker_summary_impl's own doc comment
+ * (Rust) for exactly how each field below is computed and why. */
+export interface PriceCheckerSummary {
+  eventId: number;
+  eventName: string;
+  eventDate: string | null;
+  /** Every marketplace from `listMarketplaces`, not just ones with data. */
+  marketplaces: MarketplacePriceView[];
+  /** Null when marko's own unsold tickets for this event don't all share
+   * one currency (or there are none at all) - same signal
+   * FinanceSummary.currency/EventWithStats.stats.currency already use
+   * elsewhere in this app. */
+  myCurrency: string | null;
+  unsoldTicketCount: number;
+  /** Average of (purchase cost + fees + other costs) across
+   * `unsoldTicketCount` tickets - null only when that count is 0. NOT
+   * suppressed just because `myCurrency` is null: a real blended average
+   * across mixed currencies is still returned here (same "always return the
+   * figure, let the currency flag decide Mixed vs real" convention
+   * `formatMoneyOrMixed` already uses everywhere else) - but note
+   * `unsoldTicketCount === 0` is a DIFFERENT reason for `myCurrency` to be
+   * null than an actual mixed-currency blend, so PriceChecker.tsx checks
+   * that count first before deciding whether to show "-" or "Mixed". */
+  myAvgPurchaseCostCents: number | null;
+  /** Same shape as `myAvgPurchaseCostCents`, but only over the subset of
+   * unsold tickets that actually have a listing price set - null when none
+   * of them do (not the same thing as `myCurrency` being null). */
+  myAvgListingPriceCents: number | null;
+  missingListingPriceCount: number;
+  /** The market-comparison fields below (and everything derived from them
+   * further down) are the one place this summary DOES require a real,
+   * single `myCurrency` - comparing against the market means picking
+   * exactly one currency to match each marketplace's LATEST check against,
+   * and this app never guesses that. Null whenever `myCurrency` is null, OR
+   * when it's real but no marketplace's latest check happens to share it yet. */
+  marketLowestPriceCents: number | null;
+  marketAveragePriceCents: number | null;
+  /** `marketLowestPriceCents` reduced by a small transparent percentage -
+   * marko's own answer for how "recommended price" should work ("slightly
+   * under the lowest market price"), a plain formula, not AI. */
+  recommendedPriceCents: number | null;
+  /** `recommendedPriceCents - myAvgPurchaseCostCents` - null unless both are
+   * real (which already implies a real shared `myCurrency`). */
+  expectedProfitCents: number | null;
+  /** `expectedProfitCents / myAvgPurchaseCostCents` - null under the same
+   * conditions as `expectedProfitCents`. */
+  expectedRoi: number | null;
 }

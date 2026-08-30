@@ -68,7 +68,10 @@ const ORDER_TABS: { key: "active" | "paid"; label: string }[] = [
   { key: "paid", label: "Paid" },
 ];
 
-const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
+// Exported (2.0.81) so PriceChecker.tsx's own currency picker (the "Check
+// Prices" entry form) can reuse this exact same list instead of maintaining
+// a second copy that could quietly drift from this one.
+export const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
 // 1.9.1: preset ticket-type options for the New Order form's "Ticket type"
 // field (see submit() below) - the most common delivery formats in ticket

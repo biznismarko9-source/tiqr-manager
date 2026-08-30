@@ -9,8 +9,10 @@ import {
   IconPackage,
   IconReceipt,
   IconSettings,
+  IconTag,
   IconTicket,
   IconUsers,
+  IconWallet,
 } from "./icons";
 import { checkForUpdate } from "../lib/updater";
 import { api } from "../lib/api";
@@ -38,6 +40,15 @@ const NAV = [
   { to: "/sales", label: "Sales", icon: IconReceipt },
   { to: "/inventory", label: "Inventory", icon: IconBoxes },
   { to: "/pulls", label: "Pulls", icon: IconUsers },
+  // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
+  // v sidebar" (must be its own standalone sidebar section), not folded
+  // into Events/Settings.
+  { to: "/price-checker", label: "Price Checker", icon: IconTag },
+  // 2.0.83: same standalone-top-level-section treatment as Price Checker
+  // above (not folded into Settings/Dashboard) - Finance is a big enough
+  // feature of its own (personal + business money, separate from the
+  // Orders/Sales side of the business) to earn its own sidebar entry.
+  { to: "/finance", label: "Finance", icon: IconWallet },
 ];
 
 export default function Layout() {

@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Account,
+  AccountInput,
   AppInfo,
   BulkCurrencyConversionResult,
   BulkDeleteResult,
@@ -12,8 +14,10 @@ import type {
   BulkTicketResaleStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
+  CashflowForecast,
   CategoryDetectionResult,
   CreatedSheetResult,
+  CreateFromRecurringResult,
   CsvImportResult,
   CsvPreview,
   CurrencyConversion,
@@ -21,10 +25,16 @@ import type {
   DatabaseSwitchOutcome,
   EventCategory,
   EventInput,
+  EventMarketplaceLink,
+  EventMarketplaceLinkInput,
   EventRecord,
   EventWithStats,
+  FinanceCategory,
+  FinanceEntry,
+  FinanceEntryInput,
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
+  Marketplace,
   NotificationConfigInput,
   NotificationStatus,
   NotificationTestResult,
@@ -34,12 +44,17 @@ import type {
   OrderRecord,
   OrderSalesSummary,
   Platform,
+  PriceCheck,
+  PriceCheckInput,
+  PriceCheckerSummary,
   Pull,
   PullEditInput,
   PullInput,
   PullReceived,
   PullReceivedEditInput,
   PullReceivedInput,
+  RecurringExpense,
+  RecurringExpenseInput,
   RestoreOutcome,
   Sale,
   SaleBatchInput,
@@ -54,6 +69,8 @@ import type {
   Supplier,
   Ticket,
   TicketUpdateInput,
+  Transfer,
+  TransferInput,
 } from "./types";
 
 export const api = {
@@ -250,6 +267,34 @@ export const api = {
   createEventCategory: (name: string) => invoke<EventCategory>("create_event_category", { name }),
   deleteEventCategory: (id: number) => invoke<void>("delete_event_category", { id }),
 
+  // Finance (2.0.83)
+  listFinanceCategories: () => invoke<FinanceCategory[]>("list_finance_categories"),
+  createFinanceCategory: (name: string, kind: string) => invoke<FinanceCategory>("create_finance_category", { name, kind }),
+  deleteFinanceCategory: (id: number) => invoke<void>("delete_finance_category", { id }),
+  listFinanceEntries: () => invoke<FinanceEntry[]>("list_finance_entries"),
+  createFinanceEntry: (input: FinanceEntryInput) => invoke<FinanceEntry>("create_finance_entry", { input }),
+  updateFinanceEntry: (id: number, input: FinanceEntryInput) => invoke<FinanceEntry>("update_finance_entry", { id, input }),
+  deleteFinanceEntry: (id: number) => invoke<void>("delete_finance_entry", { id }),
+
+  // Finance 2.1: Accounts / Transfers / Recurring Expenses / Forecast
+  listAccounts: () => invoke<Account[]>("list_accounts"),
+  createAccount: (input: AccountInput) => invoke<Account>("create_account", { input }),
+  updateAccount: (id: number, input: AccountInput) => invoke<Account>("update_account", { id, input }),
+  deleteAccount: (id: number) => invoke<void>("delete_account", { id }),
+  listTransfers: () => invoke<Transfer[]>("list_transfers"),
+  createTransfer: (input: TransferInput) => invoke<Transfer>("create_transfer", { input }),
+  deleteTransfer: (id: number) => invoke<void>("delete_transfer", { id }),
+  listRecurringExpenses: () => invoke<RecurringExpense[]>("list_recurring_expenses"),
+  createRecurringExpense: (input: RecurringExpenseInput) => invoke<RecurringExpense>("create_recurring_expense", { input }),
+  updateRecurringExpense: (id: number, input: RecurringExpenseInput) =>
+    invoke<RecurringExpense>("update_recurring_expense", { id, input }),
+  deleteRecurringExpense: (id: number) => invoke<void>("delete_recurring_expense", { id }),
+  pauseRecurringExpense: (id: number) => invoke<RecurringExpense>("pause_recurring_expense", { id }),
+  resumeRecurringExpense: (id: number) => invoke<RecurringExpense>("resume_recurring_expense", { id }),
+  skipRecurringExpense: (id: number) => invoke<RecurringExpense>("skip_recurring_expense", { id }),
+  createFromRecurring: (id: number) => invoke<CreateFromRecurringResult>("create_from_recurring", { id }),
+  getCashflowForecast: () => invoke<CashflowForecast>("get_cashflow_forecast"),
+
   // Dashboard
   getDashboard: (params: {
     period?: string;
@@ -443,6 +488,22 @@ export const api = {
    * fully offline, must never interrupt the app with an error toast. See
    * commands/notifications.rs::check_and_send_notifications's doc comment. */
   checkAndSendNotifications: () => invoke<void>("check_and_send_notifications"),
+
+  // Price Checker (2.0.81) - compare marko's own unsold inventory for one
+  // event against StubHub/Vivid Seats/Ticombo. Manual entry only, no live
+  // API/scraping - see commands/price_checker.rs's module doc comment (Rust)
+  // for the full reasoning.
+  listMarketplaces: () => invoke<Marketplace[]>("list_marketplaces"),
+  /** Settings-style managed list (like Platforms/Suppliers/Event categories) - lets marko add a 4th/5th marketplace later with no code change. */
+  createMarketplace: (name: string) => invoke<Marketplace>("create_marketplace", { name }),
+  deleteMarketplace: (id: number) => invoke<void>("delete_marketplace", { id }),
+  /** Saves (non-blank url) or clears (blank url) one event's link for one marketplace - see EventMarketplaceLinkInput's own doc comment (types.ts). */
+  saveEventMarketplaceLink: (input: EventMarketplaceLinkInput) =>
+    invoke<EventMarketplaceLink | null>("save_event_marketplace_link", { input }),
+  /** Records one manually-typed "Check Prices" entry - always a new row, appended to history, never an overwrite (see PriceCheck's own doc comment). */
+  savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
+  /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
+  getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
 };
 
 export function errMsg(e: unknown): string {

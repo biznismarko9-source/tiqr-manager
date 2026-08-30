@@ -94,6 +94,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_notifications",
         include_str!("../migrations/013_notifications.sql"),
     ),
+    (
+        "014_price_checker",
+        include_str!("../migrations/014_price_checker.sql"),
+    ),
+    (
+        "015_finance",
+        include_str!("../migrations/015_finance.sql"),
+    ),
+    (
+        "016_finance_v2",
+        include_str!("../migrations/016_finance_v2.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

@@ -8,6 +8,7 @@ import {
   type CreatedSheetResult,
   type CsvPreview,
   type EventCategory,
+  type FinanceCategory,
   type GoogleSignInStatus,
   type NotificationConfigInput,
   type NotificationStatus,
@@ -42,6 +43,7 @@ import {
   type ExportPickerConfig,
 } from "../components/ExportPickerModal";
 import { EventCategorySwatch } from "../components/EventCategoryBadge";
+import { FinanceCategorySwatch } from "../components/FinanceCategoryBadge";
 import {
   IconAlertTriangle,
   IconArrowLeft,
@@ -118,12 +120,17 @@ export default function Settings() {
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   // 2.0.27: managed event categories (marko's request - "like Platforms").
   const [categories, setCategories] = useState<EventCategory[]>([]);
+  // 2.0.83: managed Finance categories (Finance.tsx) - same "like Platforms"
+  // pattern, split into Expense/Income lists the same way Platforms splits
+  // into Purchase/Selling (see FinanceCategoryList below).
+  const [financeCategories, setFinanceCategories] = useState<FinanceCategory[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
   const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<EventCategory | null>(null);
+  const [confirmDeleteFinanceCategory, setConfirmDeleteFinanceCategory] = useState<FinanceCategory | null>(null);
   const [deletingLookup, setDeletingLookup] = useState(false);
   // 1.9.1: which entity's export picker is open, if any - see
   // ExportPickerModal.tsx. Replaces the old "click = instant whole-file
@@ -147,6 +154,7 @@ export default function Settings() {
   const reload = () => {
     api.listPlatforms().then(setPlatforms).catch((e) => toast.error(errMsg(e)));
     api.listEventCategories().then(setCategories).catch((e) => toast.error(errMsg(e)));
+    api.listFinanceCategories().then(setFinanceCategories).catch((e) => toast.error(errMsg(e)));
     api.getAppInfo().then(setAppInfo).catch(() => {});
   };
 
@@ -182,6 +190,18 @@ export default function Settings() {
   const addCategory = async (name: string) => {
     try {
       await api.createEventCategory(name);
+      reload();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+  // 2.0.83: Finance categories - one list backed by `kind` ('expense'/
+  // 'income'), same split-into-two-lists-by-kind idea as `addPlatform`
+  // above, so FinanceCategoryList's own two instances (Expense/Income) just
+  // pass their own fixed `kind` through, same as PlatformList does.
+  const addFinanceCategory = async (name: string, kind: "expense" | "income") => {
+    try {
+      await api.createFinanceCategory(name, kind);
       reload();
     } catch (e) {
       toast.error(errMsg(e));
@@ -418,6 +438,34 @@ export default function Settings() {
                 </div>
                 <div className="sm:max-w-sm">
                   <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
+                </div>
+              </div>
+
+              {/* 2.0.83: Finance categories (Finance.tsx) - same
+                  Expense/Income split as Platforms' Purchase/Selling split
+                  above, backed by the same one `finance_categories` table
+                  either way (a category's `kind` decides which list(s) it
+                  shows in). */}
+              <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-800">
+                <div className="mb-4 flex items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance categories</h3>
+                  <InfoHint text="Categories for the Finance section's entries (personal and business money). Each gets its own color automatically - not hardcoded, add as many as you like." />
+                </div>
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <FinanceCategoryList
+                    heading="Expense categories"
+                    kind="expense"
+                    categories={financeCategories}
+                    onAdd={addFinanceCategory}
+                    onDelete={setConfirmDeleteFinanceCategory}
+                  />
+                  <FinanceCategoryList
+                    heading="Income categories"
+                    kind="income"
+                    categories={financeCategories}
+                    onAdd={addFinanceCategory}
+                    onDelete={setConfirmDeleteFinanceCategory}
+                  />
                 </div>
               </div>
             </Card>
@@ -771,6 +819,34 @@ export default function Settings() {
         }}
       />
 
+      <ConfirmDialog
+        open={!!confirmDeleteFinanceCategory}
+        title="Remove this category?"
+        message={
+          <>
+            Removes <b>{confirmDeleteFinanceCategory?.name}</b> from the Finance category list. Any entries using it
+            keep their amount and date - they just lose the category label.
+          </>
+        }
+        confirmLabel="Remove category"
+        danger
+        busy={deletingLookup}
+        onCancel={() => setConfirmDeleteFinanceCategory(null)}
+        onConfirm={async () => {
+          if (!confirmDeleteFinanceCategory) return;
+          setDeletingLookup(true);
+          try {
+            await api.deleteFinanceCategory(confirmDeleteFinanceCategory.id);
+            setConfirmDeleteFinanceCategory(null);
+            reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeletingLookup(false);
+          }
+        }}
+      />
+
     </div>
   );
 }
@@ -899,6 +975,72 @@ function EventCategoryList({
           <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
             <span className="flex min-w-0 items-center gap-2">
               <EventCategorySwatch colorSlot={c.colorSlot} />
+              <span className="truncate">{c.name}</span>
+            </span>
+            <button
+              className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400"
+              title="Remove"
+              onClick={() => onDelete(c)}
+            >
+              <IconTrash className="h-4 w-4" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** 2.0.83: one of the two Finance category lists (Expense/Income) - same
+ * "one list filtered by kind, own add-input state" shape as `PlatformList`
+ * above (kind = 'purchase'/'sale' there, 'expense'/'income' here), with
+ * `EventCategoryList`'s swatch-next-to-name display (a category's color is
+ * assigned automatically, nothing to pick here either). A category tagged
+ * 'both' would appear in both lists, same as a 'both' platform does -
+ * nothing in the starter set (migrations/015_finance.sql) uses it, and this
+ * form itself only ever creates 'expense'/'income' (not 'both') to keep the
+ * two-list UI simple - the 'both' kind stays fully supported by the schema
+ * and backend either way. */
+function FinanceCategoryList({
+  heading,
+  kind,
+  categories,
+  onAdd,
+  onDelete,
+}: {
+  heading: string;
+  kind: "expense" | "income";
+  categories: FinanceCategory[];
+  onAdd: (name: string, kind: "expense" | "income") => void;
+  onDelete: (category: FinanceCategory) => void;
+}) {
+  const [value, setValue] = useState("");
+  const visible = categories.filter((c) => c.kind === kind || c.kind === "both");
+
+  const add = () => {
+    if (!value.trim()) return;
+    onAdd(value.trim(), kind);
+    setValue("");
+  };
+
+  return (
+    <div>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{heading}</h4>
+      <div className="mb-2 flex gap-2">
+        <Input
+          placeholder="e.g. Doprava"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <Button onClick={add}>Add</Button>
+      </div>
+      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+        {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
+        {visible.map((c) => (
+          <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+            <span className="flex min-w-0 items-center gap-2">
+              <FinanceCategorySwatch colorSlot={c.colorSlot} />
               <span className="truncate">{c.name}</span>
             </span>
             <button
