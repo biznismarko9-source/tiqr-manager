@@ -865,6 +865,15 @@ fn should_stop_polling_for_readiness(remaining_budget: Duration) -> bool {
 /// a full `EVAL_TIMEOUT`) - but it can never be WORSE than the old always-
 /// exactly-zero behavior, since `eval_and_wait` already degrades safely to
 /// an immediate `TimedOut` on a near-zero window, same as before.
+///
+/// 2.1.7: closed that remaining gap too. The final extraction attempt below
+/// no longer derives ITS OWN timeout from the shared clock at all - it
+/// always gets a fixed, full `EVAL_TIMEOUT` window, so the "occasionally
+/// smaller than a full EVAL_TIMEOUT" case above can no longer silently
+/// shrink or (right at the edge) zero out the one attempt that actually
+/// matters. Trade-off: the true worst case is now ~`OVERALL_TIMEOUT` +
+/// `EVAL_TIMEOUT` (~63s), not a hard 60s - see that call site's own doc
+/// comment for the full reasoning.
 fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewWindow, overall_start: Instant, cancel: &AtomicBool) -> ReadOutcome {
     if cancel.load(Ordering::Relaxed) {
         return ReadOutcome::Cancelled;
@@ -920,16 +929,29 @@ fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewW
     }
     emit_phase(app, request_id, "analyzing");
     log_lifecycle(request_id, "analysis started");
-    // No early "budget is zero, give up" check here any more - the loop
-    // above now reserves EVAL_TIMEOUT specifically so there's normally
-    // still something real left to try with; see this function's own doc
-    // comment for the 2.1.6 bug this replaced. `budget` can still
-    // legitimately be small in an unlucky-timing case, but `eval_and_wait`
-    // already handles that safely (a near-zero `max_wait` just means "try,
-    // don't wait long" - see its own `is_zero()` guard) rather than this
-    // code skipping the attempt outright.
-    let budget = remaining_budget(overall_start);
-    match eval_and_wait(webview, EXTRACT_JS, budget.min(EVAL_TIMEOUT), cancel) {
+    // 2.1.7: no longer derived from `remaining_budget(overall_start)` at
+    // all. The 2.1.6 fix reserved EVAL_TIMEOUT by making the loop above
+    // stop early - correct in spirit, but its own doc comment already
+    // admitted the reserve isn't a "mathematically perfect guarantee": the
+    // loop's ~POLL_INTERVAL polling granularity means it can still break
+    // with less than a full EVAL_TIMEOUT left (e.g. it was already at
+    // budget=1.2s when a poll tick started, so the NEXT check trips
+    // `should_stop_polling_for_readiness` at 1.2s, not a full 3s), and
+    // re-deriving `budget` HERE from the same shared clock inherits
+    // whatever that shortfall was - `budget.min(EVAL_TIMEOUT)` could still
+    // end up well under 3s, or even (right at OVERALL_TIMEOUT itself)
+    // exactly zero, which `eval_and_wait` turns into an immediate
+    // `TimedOut` with no real attempt at all (see its own `is_zero()`
+    // guard) - silently reintroducing a narrower version of the exact
+    // "final attempt doesn't really happen" bug this was meant to fix.
+    // A FIXED `EVAL_TIMEOUT` here removes that dependency entirely - this
+    // one attempt always gets its full, real window no matter how the
+    // clock above landed, at the cost of `OVERALL_TIMEOUT` becoming a
+    // soft ceiling rather than a hard one (worst case ~63s total, not
+    // 60s) - an explicit, bounded, worth-it trade for "the one attempt
+    // that actually matters always gets a real chance to run" over an
+    // exact-to-the-second timeout that could still silently skip it.
+    match eval_and_wait(webview, EXTRACT_JS, EVAL_TIMEOUT, cancel) {
         EvalOutcome::Ready(raw) => {
             log_lifecycle(request_id, &format!("result received ({} bytes)", raw.len()));
             ReadOutcome::Json(raw)
