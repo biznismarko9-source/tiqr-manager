@@ -89,6 +89,73 @@
 //! populated value directly - this pass is the least field-verified of the
 //! three.
 //!
+//! marko's own later real-world report (relayed via release.ps1's commit
+//! history, 2.1.5): even after the above, Auto-check ran the full 60s and
+//! found nothing on every marketplace he actually tried it against. Taken
+//! together with the paragraph above, this is a meaningful gap worth
+//! stating plainly: the research that confirmed Vivid Seats' table exists
+//! was a one-time fetch through this session's own research tooling, not a
+//! real Windows WebView2 navigating invisibly the exact way `run_browser_
+//! read` below does - a real difference in rendering path, bot-detection
+//! behavior, or simply time passed since that fetch could each independently
+//! explain marko's result without EXTRACT_JS's own logic being wrong. This
+//! module still cannot resolve that gap from this sandbox (see "Same sandbox
+//! limitation" right below) - only marko's own machine, with the diagnostic
+//! detail `build_unable_to_read_message` now surfaces directly in the UI,
+//! can actually tell which marketplace is hitting which failure mode.
+//!
+//! ## AI-assisted extraction fallback (2.1.6)
+//!
+//! marko's own follow-up request, in the same message that asked for
+//! Viagogo: "kludne mozme pridat anthropic api keby vedel pomoct" (we could
+//! go ahead and add the Anthropic API if it could help). Confirmed via
+//! AskUserQuestion before building: add it now as an extra fallback pass,
+//! never instead of the four existing free page-rule passes above, which
+//! keep running first exactly as before.
+//!
+//! There are honestly two distinct reasons Auto-check can find nothing (see
+//! the paragraph above), and this fallback can only ever help with ONE of
+//! them. If a marketplace's own anti-bot protection stops real content from
+//! ever reaching the page (`status == "blocked"`, or a page that loads but
+//! never actually serves real listings), there is no real text to hand a
+//! model either - no extraction method, AI included, can find prices that
+//! were never delivered to the browser in the first place, and this
+//! fallback correctly never even attempts that case (see `spawn_auto_check_
+//! thread` - only `"unable_to_read"` ever triggers it, never `"blocked"`).
+//! What it CAN genuinely help with: a page that rendered real content, just
+//! not shaped the way any of the four rule-based passes happens to
+//! recognize - `try_ai_extraction_fallback` hands the model the same
+//! visible text Pass 4 already scans with a fixed regex, but a model can
+//! follow "is this actually a ticket price" contextually instead of a rigid
+//! pattern.
+//!
+//! Opt-in and zero-cost by default: with no key configured
+//! (`commands::settings::read_anthropic_api_key`), behavior is byte-for-byte
+//! identical to 2.1.5 - this fallback is only ever reached, and only ever
+//! spends any of marko's own API credit, when he has actually pasted a key
+//! into Settings. Always fits INSIDE the existing 60s `OVERALL_TIMEOUT`
+//! budget, never extends it (`AI_FALLBACK_MIN_REMAINING_BUDGET`/
+//! `try_ai_extraction_fallback`) - marko's own explicit ceiling for the
+//! whole attempt stays real, AI included, not just for the page-reading
+//! part. A result this fallback produces is marked `ai_assisted: true`
+//! (models.rs) end to end, so the frontend can ask marko to double-check it
+//! a bit more carefully than a result a hard page-structure rule found -
+//! same "never fabricate, marko is always the final check" spirit as
+//! everything else this whole feature already does.
+//!
+//! **Cannot be live-tested end-to-end from this sandbox** without spending
+//! marko's own real API credit on his own real key, which this session was
+//! never given and would never ask for - same discipline already
+//! established for Google OAuth/Sheets/Firebase/FX-rate in this app (see
+//! fx.rs's own module doc comment). Unlike those, though, api.anthropic.com
+//! itself IS reachable from this sandbox's network (fx.rs's own doc comment
+//! recorded this while checking FX-rate APIs), so the request-building and
+//! response-parsing below were checked against that real endpoint's real
+//! error shape for an invalid key - a genuine 401 it actually returned, not
+//! one guessed at from documentation - see this module's own tests. A real
+//! SUCCESSFUL extraction (a valid key, a real marketplace page's text, a
+//! real answer) can still only be exercised on marko's own machine.
+//!
 //! ## Same sandbox limitation as google_oauth.rs/google_sheets.rs
 //!
 //! This module's own live-webview path (`run_browser_read`) could not be
@@ -367,6 +434,7 @@ fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
             currency: None,
             message: Some("Auto-check was cancelled.".into()),
             listings: vec![],
+            ai_assisted: false,
         },
         ReadOutcome::TimedOut => AutoCheckResult {
             status: "timeout".into(),
@@ -377,9 +445,10 @@ fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
                     .into(),
             ),
             listings: vec![],
+            ai_assisted: false,
         },
         ReadOutcome::Error(message) => {
-            AutoCheckResult { status: "error".into(), prices: vec![], currency: None, message: Some(message), listings: vec![] }
+            AutoCheckResult { status: "error".into(), prices: vec![], currency: None, message: Some(message), listings: vec![], ai_assisted: false }
         }
     }
 }
@@ -445,6 +514,7 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
                 currency: None,
                 message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
                 listings: vec![],
+                ai_assisted: false,
             });
         }
         *slot = Some(cancel_flag.clone());
@@ -459,7 +529,7 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
     // accepted, now wait for RESULT_EVENT" (see that event's own doc
     // comment) and keeps its own Starting/Loading/Analyzing UI driven by
     // PROGRESS_EVENT exactly as before.
-    Ok(AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![] })
+    Ok(AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false })
 }
 
 /// "Cancel" button shown next to Auto-check's spinner while a check is in
@@ -494,6 +564,48 @@ fn spawn_auto_check_thread(app: AppHandle, request_id: u64, url: String, cancel:
         let overall_start = Instant::now();
         let outcome = run_browser_read(&app, request_id, &url, overall_start, &cancel);
 
+        // 2.1.6: captured BEFORE read_outcome_to_result consumes `outcome`
+        // (it takes `ReadOutcome` by value) - the only extra thing the new
+        // AI-assisted fallback needs beyond `result` itself is the RAW
+        // extraction JSON, so its title/visible-text are still available to
+        // send. `parse_auto_check_json`/`read_outcome_to_result` themselves
+        // are untouched by any of this - both stay exactly as pure and
+        // tested as before.
+        let raw_extract_json = if let ReadOutcome::Json(raw) = &outcome { Some(raw.clone()) } else { None };
+        let mut result = read_outcome_to_result(outcome);
+
+        // Last resort, only when every free page-rule pass already came up
+        // empty - see try_ai_extraction_fallback's own doc comment and this
+        // module's "AI-assisted extraction fallback" section for why this
+        // never fires for "blocked" (no real content to hand a model
+        // either way) and never spends anything when marko hasn't
+        // configured a key.
+        //
+        // 2.1.6 bugfix: this whole block used to run AFTER the cancel-flag
+        // slot below was already cleared. Since `cancel_auto_check_price`
+        // reaches this attempt's `AtomicBool` ONLY through that slot (see
+        // `cancel_google_sign_in_impl`'s own doc comment - it flips
+        // whatever's currently in the slot, and is a safe no-op when the
+        // slot is empty), clearing the slot first meant a marko click on
+        // "Cancel" during the AI call (up to ~20s, real Anthropic-API money
+        // already spent by the time it would land) did precisely nothing -
+        // the flag it needed to flip was already unreachable, even though
+        // `try_ai_extraction_fallback` itself does check `cancel` at a
+        // couple of points. It also meant the single-flight guarantee this
+        // slot exists for (see auto_check_price's own doc comment) didn't
+        // actually hold for the AI call's own duration. Moving the clear to
+        // AFTER this block (below) fixes both: the slot - and so Cancel -
+        // stays live for the attempt's ENTIRE real duration, matching
+        // spawn_auto_check_thread's own doc comment ("cleared... once the
+        // real work actually finishes").
+        if result.status == "unable_to_read" {
+            if let Some(raw) = raw_extract_json {
+                if let Some(ai_result) = try_ai_extraction_fallback(&app, request_id, &raw, overall_start, &cancel) {
+                    result = ai_result;
+                }
+            }
+        }
+
         // Cleared here, not in `auto_check_price` (which returned long
         // ago) - unconditionally, whatever the outcome, so a stale slot can
         // never block a later, unrelated attempt. Uses `try_state` (not
@@ -505,7 +617,6 @@ fn spawn_auto_check_thread(app: AppHandle, request_id: u64, url: String, cancel:
             *state.price_checker_auto_cancel_flag.lock().unwrap() = None;
         }
 
-        let result = read_outcome_to_result(outcome);
         log_lifecycle(request_id, &format!("finished: {}", result.status));
         let _ = app.emit(RESULT_EVENT, ResultPayload { request_id, result });
     });
@@ -702,16 +813,58 @@ fn eval_and_wait(webview: &tauri::WebviewWindow, js: &str, max_wait: Duration, c
     }
 }
 
+/// Whether the readiness-poll loop in `poll_then_extract` should give up
+/// polling and fall through to its final best-effort extraction attempt,
+/// given how much of the overall budget is left. Pulled out into its own
+/// pure function purely so this exact boundary is unit-testable without a
+/// real `WebviewWindow` (which `poll_then_extract` itself needs, and which
+/// this sandbox can't construct - see this module's own "what was actually
+/// verified" notes) - see `poll_then_extract`'s own doc comment for why
+/// this specific `<=` boundary (not `.is_zero()`) is the entire fix for a
+/// real 2.1.6 bug.
+fn should_stop_polling_for_readiness(remaining_budget: Duration) -> bool {
+    remaining_budget <= EVAL_TIMEOUT
+}
+
 /// The actual poll loop: waits `MIN_WAIT` for the page to start rendering,
 /// then polls `READINESS_CHECK_JS` every `POLL_INTERVAL` until it reports
-/// `ready`, the overall budget runs out, or `cancel` fires - whichever
-/// happens first (cancel always wins immediately over everything else,
-/// matching marko's own explicit priority: "Cancel musí okamžite..."). Once
-/// out of that loop (ready OR budget exhausted, but not cancelled), still
-/// makes ONE best-effort final extraction attempt on whatever the page has
-/// by then, same as the pre-2.1.2 design already did - readiness never
-/// firing doesn't mean the page has nothing; the extraction pass has its
-/// own, stricter criteria and may still find something.
+/// `ready`, the overall budget is down to its last `EVAL_TIMEOUT`, or
+/// `cancel` fires - whichever happens first (cancel always wins immediately
+/// over everything else, matching marko's own explicit priority: "Cancel
+/// musí okamžite..."). Once out of that loop (ready, or budget down to its
+/// reserve, but not cancelled), still makes ONE best-effort final
+/// extraction attempt on whatever the page has by then, same as the
+/// pre-2.1.2 design already did - readiness never firing doesn't mean the
+/// page has nothing; the extraction pass has its own, stricter criteria and
+/// may still find something.
+///
+/// 2.1.6 bugfix: the loop used to poll all the way until the budget hit
+/// exactly zero (`budget.is_zero()`), and the final extraction below used
+/// to re-check `remaining_budget(...).is_zero()` and bail out to
+/// `ReadOutcome::TimedOut` WITHOUT ever calling `eval_and_wait` if so. Once
+/// the loop had spent the entire budget polling, that second check was
+/// therefore ALWAYS true too (elapsed time only ever increases) - so the
+/// "best-effort final extraction" this doc comment promises was 100% dead
+/// code whenever readiness never fired, which is exactly what happens on a
+/// page whose prices load in a shape the cheap readiness probe doesn't
+/// recognize. Two consequences: the final-attempt promise silently never
+/// happened even before 2.1.6, and as of 2.1.6 it also meant such a page
+/// could never reach `AutoCheckResult.status == "unable_to_read"` (only a
+/// COMPLETED extraction pass produces that status - see
+/// `parse_auto_check_json`) - so the new AI fallback
+/// (`try_ai_extraction_fallback`, gated on exactly that status) could never
+/// trigger for it either, even with a key configured. That's precisely
+/// marko's own reported symptom quoted elsewhere in this module ("ran the
+/// full 60s, found nothing" on every marketplace he tried). The fix:
+/// `should_stop_polling_for_readiness` now stops the loop with
+/// `EVAL_TIMEOUT` still on the clock (not zero), reserved specifically for
+/// this final attempt, and every wait inside the loop is capped so it can
+/// never eat into that reserve. This is a reservation, not a mathematically
+/// perfect guarantee (the loop's own ~`POLL_INTERVAL` polling granularity
+/// means the exact remainder at break time can occasionally be smaller than
+/// a full `EVAL_TIMEOUT`) - but it can never be WORSE than the old always-
+/// exactly-zero behavior, since `eval_and_wait` already degrades safely to
+/// an immediate `TimedOut` on a near-zero window, same as before.
 fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewWindow, overall_start: Instant, cancel: &AtomicBool) -> ReadOutcome {
     if cancel.load(Ordering::Relaxed) {
         return ReadOutcome::Cancelled;
@@ -725,11 +878,14 @@ fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewW
             return ReadOutcome::Cancelled;
         }
         let budget = remaining_budget(overall_start);
-        if budget.is_zero() {
+        if should_stop_polling_for_readiness(budget) {
             break; // best-effort: still try ONE final extraction below, see this function's own doc comment
         }
 
-        match eval_and_wait(webview, READINESS_CHECK_JS, budget.min(EVAL_TIMEOUT), cancel) {
+        // Capped at `budget - EVAL_TIMEOUT` (never the raw budget) so this
+        // call itself can't eat into the reserve the final extraction below
+        // needs - see should_stop_polling_for_readiness's own doc comment.
+        match eval_and_wait(webview, READINESS_CHECK_JS, (budget - EVAL_TIMEOUT).min(EVAL_TIMEOUT), cancel) {
             EvalOutcome::Ready(raw) => {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
                     if parsed.get("ready").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -753,7 +909,8 @@ fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewW
         if cancel.load(Ordering::Relaxed) {
             return ReadOutcome::Cancelled;
         }
-        if !sleep_interruptible(POLL_INTERVAL.min(remaining_budget(overall_start)), cancel) {
+        // Same reserve applied to the poll-interval sleep itself.
+        if !sleep_interruptible(POLL_INTERVAL.min(remaining_budget(overall_start).saturating_sub(EVAL_TIMEOUT)), cancel) {
             return ReadOutcome::Cancelled;
         }
     }
@@ -763,10 +920,15 @@ fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewW
     }
     emit_phase(app, request_id, "analyzing");
     log_lifecycle(request_id, "analysis started");
+    // No early "budget is zero, give up" check here any more - the loop
+    // above now reserves EVAL_TIMEOUT specifically so there's normally
+    // still something real left to try with; see this function's own doc
+    // comment for the 2.1.6 bug this replaced. `budget` can still
+    // legitimately be small in an unlucky-timing case, but `eval_and_wait`
+    // already handles that safely (a near-zero `max_wait` just means "try,
+    // don't wait long" - see its own `is_zero()` guard) rather than this
+    // code skipping the attempt outright.
     let budget = remaining_budget(overall_start);
-    if budget.is_zero() {
-        return ReadOutcome::TimedOut;
-    }
     match eval_and_wait(webview, EXTRACT_JS, budget.min(EVAL_TIMEOUT), cancel) {
         EvalOutcome::Ready(raw) => {
             log_lifecycle(request_id, &format!("result received ({} bytes)", raw.len()));
@@ -792,6 +954,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             currency: None,
             message: Some("The reader window returned something unexpected.".into()),
             listings: vec![],
+            ai_assisted: false,
         };
     };
 
@@ -806,6 +969,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
                     .into(),
             ),
             listings: vec![],
+            ai_assisted: false,
         };
     }
 
@@ -825,6 +989,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
                  something went wrong reading the page. Use the paste/manual entry below instead."
             )),
             listings: vec![],
+            ai_assisted: false,
         };
     }
 
@@ -841,18 +1006,86 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             status: "unable_to_read".into(),
             prices: vec![],
             currency,
-            message: Some(
-                "The page loaded, but no prices could be found on it automatically \
-                 (most likely they only appear after you interact with the page yourself). \
-                 Use the paste/manual entry below instead."
-                    .into(),
-            ),
+            message: Some(build_unable_to_read_message(&parsed)),
             listings: vec![],
+            ai_assisted: false,
         };
     }
 
-    AutoCheckResult { status: "ok".into(), prices, currency, message: None, listings }
+    AutoCheckResult { status: "ok".into(), prices, currency, message: None, listings, ai_assisted: false }
 }
+
+/// Builds the message marko actually sees for an `"unable_to_read"` result -
+/// 2.1.5, in direct response to his real report that Auto-check ran the
+/// full 60s and found nothing on every marketplace he tried. Without this,
+/// the only way to know WHY would have been console output he has no way to
+/// see in a packaged GUI app (no terminal attached) - this puts the same
+/// information directly in the message the UI already shows, so the very
+/// next attempt is self-diagnosing instead of needing another round trip.
+/// Every piece here is something the page's own markup/visible text
+/// actually said - never invented, matching this whole module's own
+/// "never fabricate data" rule.
+fn build_unable_to_read_message(parsed: &serde_json::Value) -> String {
+    let title = parsed.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+    let diag = parsed.get("diagnostics");
+    let table_count = diag.and_then(|d| d.get("tableCount")).and_then(|v| v.as_u64());
+    let text_sample = diag
+        .and_then(|d| d.get("textSample"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let mut msg = String::from(
+        "The page loaded, but no prices could be found on it automatically. Use the paste/manual entry below instead.",
+    );
+    msg.push_str("\n\nWhat the reader actually saw (for diagnosis):");
+    if let Some(t) = title {
+        msg.push_str(&format!("\n- Page title: \"{t}\""));
+    }
+    if let Some(n) = table_count {
+        msg.push_str(&format!("\n- HTML <table> elements found: {n}"));
+    }
+    if let Some(sample) = text_sample {
+        let truncated: String = sample.chars().take(300).collect();
+        msg.push_str(&format!("\n- First visible text: \"{truncated}{}\"", if sample.chars().count() > 300 { "..." } else { "" }));
+    }
+    msg
+}
+
+#[cfg(test)]
+mod pure_module_tests {
+    use super::*;
+
+    #[test]
+    fn unable_to_read_message_includes_title_and_table_count_when_present() {
+        let raw = r#"{"prices": [], "currency": null, "blocked": false, "title": "Some Event | Marketplace", "diagnostics": {"tableCount": 0, "textSample": "Sold out - check back later"}}"#;
+        let result = parse_auto_check_json(raw);
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Some Event | Marketplace"), "must surface the real page title for diagnosis");
+        assert!(msg.contains("<table> elements found: 0"));
+        assert!(msg.contains("Sold out"));
+    }
+
+    #[test]
+    fn unable_to_read_message_degrades_gracefully_with_no_diagnostics_at_all() {
+        // Older/malformed payloads without title/diagnostics must not panic
+        // or produce a broken message - just the base sentence.
+        let raw = r#"{"prices": [], "currency": null, "blocked": false}"#;
+        let result = parse_auto_check_json(raw);
+        assert!(result.message.unwrap().contains("no prices could be found"));
+    }
+
+    #[test]
+    fn unable_to_read_message_truncates_a_very_long_text_sample() {
+        let long_text = "x".repeat(1000);
+        let raw = serde_json::json!({"prices": [], "currency": null, "blocked": false, "diagnostics": {"tableCount": 2, "textSample": long_text}}).to_string();
+        let result = parse_auto_check_json(&raw);
+        let msg = result.message.unwrap();
+        assert!(msg.contains("..."), "a long sample must be truncated, not dumped whole into the UI message");
+    }
+}
+
+
 
 /// Parses `EXTRACT_JS`'s optional `listings` array (2.1.4 - present only
 /// from the HTML-table pass, see that pass's own comment in the .js file)
@@ -880,6 +1113,362 @@ fn parse_listings(parsed: &serde_json::Value) -> Vec<AutoCheckListing> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// AI-assisted extraction fallback (2.1.6) - see this module's own doc
+// comment, "AI-assisted extraction fallback", for the full design and its
+// honest limits.
+// ---------------------------------------------------------------------------
+
+const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Dateless alias (resolves to the latest 4.5 snapshot server-side) rather
+/// than a pinned dated snapshot - this app has no auto-update-the-model-
+/// string mechanism, so pinning a dated snapshot would eventually point at
+/// a retired model with no code change able to fix it. Deliberately Haiku,
+/// not Sonnet/Opus: this is a narrow, cheap, well-specified extraction task
+/// (read this text, report any ticket prices you're confident about, say so
+/// plainly if you're not) - exactly what the fast/cheap tier is for, and it
+/// keeps marko's own per-check cost negligible (a fraction of a cent at
+/// today's published pricing for a page-sized amount of text).
+const ANTHROPIC_MODEL: &str = "claude-haiku-4-5";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+const AI_FALLBACK_MAX_TOKENS: u32 = 1024;
+/// Below this much of OVERALL_TIMEOUT remaining, don't even attempt the
+/// fallback - a real Haiku call plus network round trip realistically needs
+/// a few seconds, and starting one with almost nothing left would either
+/// get cut short pointlessly or risk overrunning OVERALL_TIMEOUT's own
+/// honest ceiling (this module's own doc comment). Skipping cleanly here
+/// just means this attempt reports the same `unable_to_read` result 2.1.5
+/// already gave - never worse than today, only sometimes better.
+const AI_FALLBACK_MIN_REMAINING_BUDGET: Duration = Duration::from_secs(8);
+/// Upper bound on the AI call's own timeout - always further capped by
+/// whatever of OVERALL_TIMEOUT is actually left, see
+/// `try_ai_extraction_fallback`.
+const AI_FALLBACK_MAX_CALL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// What `parse_ai_extraction_response` pulls out of a successful call -
+/// deliberately NOT `AutoCheckResult` itself: this is only ever the AI's
+/// half of the answer (does it think there are real prices here, and what
+/// are they), never a full result on its own. `try_ai_extraction_fallback`
+/// is the one place that turns this into an actual `AutoCheckResult` - the
+/// same "keep the pure parsing part and the result-shaping part separate"
+/// split `parse_auto_check_json`/`build_unable_to_read_message` already use.
+#[derive(Debug, Clone, PartialEq)]
+struct AiExtraction {
+    prices: Vec<f64>,
+    currency: Option<String>,
+}
+
+/// Builds the exact JSON body sent to the Messages API. Pure and
+/// unit-tested directly (no network) - see the tests below. Uses the
+/// standard "assistant turn pre-filled with `{`" technique to make the
+/// model continue straight into JSON rather than wrapping its answer in
+/// prose or a markdown code fence - more reliable than instructions alone,
+/// and it means `parse_ai_extraction_response` can always prepend the same
+/// `{` back rather than needing to strip a fence that may or may not be
+/// there.
+fn build_ai_extraction_request_body(page_title: &str, visible_text: &str) -> serde_json::Value {
+    let prompt = format!(
+        "You are reading the visible text of a ticket resale marketplace webpage, extracted by a script. \
+         Report ONLY real ticket listing prices - what a buyer would pay for one ticket. Never report fees, \
+         shipping, delivery charges, discount codes, unrelated promotions, or navigation/footer numbers. If \
+         you are not reasonably confident real ticket prices are present, set \"found\" to false and return \
+         an empty prices array - never guess.\n\n\
+         Page title: {page_title}\n\n\
+         Visible page text:\n{visible_text}\n\n\
+         Respond with ONLY a JSON object in exactly this shape, nothing else, no markdown fence:\n\
+         {{\"found\": true or false, \"currency\": a 3-letter ISO 4217 currency code guess or null, \
+         \"prices\": [array of numbers - the individual ticket prices you found]}}"
+    );
+    serde_json::json!({
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": AI_FALLBACK_MAX_TOKENS,
+        "messages": [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": "{"}
+        ]
+    })
+}
+
+/// Parses the Messages API's own raw JSON response body into an
+/// `AiExtraction`, or `None` on ANY ambiguity. A network-level failure
+/// never reaches this function at all (see `call_anthropic_api`) - from
+/// here on it's "the call succeeded, now can this actually be trusted":
+/// a malformed response shape, a text block that isn't valid JSON even
+/// after re-adding the `{` prefill, `"found": false`, an empty prices
+/// array, or any non-finite/non-positive price all mean `None`, exactly
+/// like `parse_auto_check_json` never lets a malformed page result become a
+/// fabricated success. Pure and unit-tested directly against hand-authored
+/// response bodies, including the real 401 error shape recorded from
+/// api.anthropic.com itself - see this module's own doc comment.
+fn parse_ai_extraction_response(response_body: &str) -> Option<AiExtraction> {
+    let parsed: serde_json::Value = serde_json::from_str(response_body).ok()?;
+    let text = parsed.get("content")?.as_array()?.iter().find_map(|block| {
+        if block.get("type")?.as_str()? == "text" {
+            block.get("text")?.as_str()
+        } else {
+            None
+        }
+    })?;
+    // Re-prepend the `{` the request's own assistant-turn prefill forced the
+    // model to continue from (see build_ai_extraction_request_body) - the
+    // API never echoes the prefill back itself, only what the model
+    // generated AFTER it.
+    let full_json = format!("{{{text}");
+    let extraction: serde_json::Value = serde_json::from_str(&full_json).ok()?;
+
+    if !extraction.get("found").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    let prices: Vec<f64> = extraction
+        .get("prices")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_f64())
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .take(MAX_PRICES)
+        .collect();
+    if prices.is_empty() {
+        return None;
+    }
+    let currency = sanitize_currency(extraction.get("currency").and_then(|v| v.as_str()));
+    Some(AiExtraction { prices, currency })
+}
+
+/// The one network call this fallback makes - thin by design, everything
+/// worth testing without a real HTTP round trip already lives in the pure
+/// functions around it. Returns the raw response body text on ANY 2xx
+/// status; a non-2xx status or a transport-level failure (timeout, DNS,
+/// TLS, ...) both become `Err` with a short reason, never a panic - the
+/// caller (`try_ai_extraction_fallback`) treats every `Err` identically to
+/// a `None` from `parse_ai_extraction_response`: fall through to the
+/// existing `unable_to_read` result, exactly as if this fallback had never
+/// been attempted.
+fn call_anthropic_api(api_key: &str, body: &serde_json::Value, timeout: Duration) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("could not set up the request: {e}"))?;
+    let resp = client
+        .post(ANTHROPIC_API_URL)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .json(body)
+        .send()
+        .map_err(|e| format!("could not reach the Anthropic API: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| format!("could not read the Anthropic API's response: {e}"))?;
+    if !status.is_success() {
+        return Err(describe_anthropic_rejection(status, &text));
+    }
+    Ok(text)
+}
+
+/// Formats a clear reason when the Anthropic API rejects a request outright
+/// (non-2xx status). Split out of `call_anthropic_api` purely so it's
+/// directly unit-testable the way `fx::describe_rejected_request` already
+/// is for Frankfurter's errors: a real `reqwest::blocking::Response` can't
+/// be constructed without an actual HTTP round trip, but a `StatusCode` and
+/// a body string can be built by hand in a test - see this module's own
+/// tests, which use the REAL body api.anthropic.com returned for an
+/// invalid key during development (a genuine 401, not a guess).
+fn describe_anthropic_rejection(status: reqwest::StatusCode, body: &str) -> String {
+    format!("the Anthropic API rejected the request ({status}): {body}")
+}
+
+/// Orchestrates the whole fallback: budget/key checks, the actual call, and
+/// turning a real extraction into a proper `AutoCheckResult`. Called from
+/// `spawn_auto_check_thread` only when the ordinary extraction already
+/// produced `status == "unable_to_read"` - see this module's own doc
+/// comment ("AI-assisted extraction fallback") for the full reasoning.
+/// Returns `None` (meaning: "leave the existing unable_to_read result
+/// exactly as it was") whenever anything isn't a clean, confident success -
+/// no key configured, not enough budget left, no usable text to send, the
+/// call itself failing, or the model reporting it isn't confident there are
+/// real prices. `cancel` is checked first (and again after the network
+/// call returns) so a marko Cancel-click during this fallback is honored
+/// exactly as it is everywhere else in this module.
+///
+/// 2.1.6 bugfix: emits the `"asking_ai"` phase right before the actual
+/// network call (not any earlier - the no-key/no-budget/no-text early exits
+/// above stay completely silent, matching "zero cost, zero UI change when
+/// this isn't configured"). Before this, PriceChecker.tsx's card kept
+/// showing "Cleaning up..." - the LAST phase `run_browser_read` emits -
+/// for the entire duration of a real, paid API call, with no visible sign
+/// that money was being spent at all. See the sibling fix in
+/// `spawn_auto_check_thread` (moving where the cancel-flag slot gets
+/// cleared) for the related bug where Cancel also silently did nothing
+/// during this same window.
+fn try_ai_extraction_fallback(
+    app: &AppHandle,
+    request_id: u64,
+    raw_extract_json: &str,
+    overall_start: Instant,
+    cancel: &AtomicBool,
+) -> Option<AutoCheckResult> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let state = app.try_state::<AppState>()?;
+    let api_key = {
+        let conn = state.db.lock().unwrap();
+        crate::commands::settings::read_anthropic_api_key(&conn)?
+    };
+
+    let remaining = remaining_budget(overall_start);
+    if remaining < AI_FALLBACK_MIN_REMAINING_BUDGET {
+        log_lifecycle(request_id, "AI fallback skipped: not enough of the 60s budget left to attempt it");
+        return None;
+    }
+    let call_timeout = remaining.saturating_sub(Duration::from_secs(1)).min(AI_FALLBACK_MAX_CALL_TIMEOUT);
+
+    let parsed: serde_json::Value = serde_json::from_str(raw_extract_json).ok()?;
+    let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let visible_text = parsed
+        .get("diagnostics")
+        .and_then(|d| d.get("aiText"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?;
+
+    log_lifecycle(request_id, "AI fallback: page's own rules found nothing, asking the Anthropic API");
+    emit_phase(app, request_id, "asking_ai");
+    let body = build_ai_extraction_request_body(title, visible_text);
+    let response = match call_anthropic_api(&api_key, &body, call_timeout) {
+        Ok(text) => text,
+        Err(reason) => {
+            log_lifecycle(request_id, &format!("AI fallback call failed, falling back to unable_to_read: {reason}"));
+            return None;
+        }
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let extraction = parse_ai_extraction_response(&response)?;
+    log_lifecycle(request_id, &format!("AI fallback found {} price(s)", extraction.prices.len()));
+    Some(AutoCheckResult {
+        status: "ok".into(),
+        prices: extraction.prices,
+        currency: extraction.currency,
+        message: Some(
+            "Found by AI reading the page's visible text, not by an exact page-structure rule - \
+             double-check these against the real page before saving."
+                .into(),
+        ),
+        listings: vec![],
+        ai_assisted: true,
+    })
+}
+
+#[cfg(test)]
+mod ai_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn request_body_has_the_required_fields_and_the_json_prefill() {
+        let body = build_ai_extraction_request_body("Coldplay | Vivid Seats", "Section 100 $150 each");
+        assert_eq!(body["model"], "claude-haiku-4-5");
+        assert_eq!(body["max_tokens"], AI_FALLBACK_MAX_TOKENS);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "a user turn with the page content, plus the assistant JSON prefill");
+        assert_eq!(messages[0]["role"], "user");
+        assert!(messages[0]["content"].as_str().unwrap().contains("Coldplay | Vivid Seats"), "the real page title must reach the model");
+        assert!(messages[0]["content"].as_str().unwrap().contains("Section 100 $150 each"), "the real page text must reach the model");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"], "{", "the prefill forces the reply to continue straight into JSON");
+    }
+
+    #[test]
+    fn response_parser_accepts_a_confident_answer_with_the_prefill_reattached() {
+        // Mirrors exactly what the real API returns for a successful call -
+        // "text" here is what would follow the "{" prefill, never including
+        // it (see build_ai_extraction_request_body's own doc comment).
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "\"found\": true, \"currency\": \"USD\", \"prices\": [120, 145.50, 99]}"}]
+        })
+        .to_string();
+        let extraction = parse_ai_extraction_response(&body).expect("a confident, well-formed answer must parse");
+        assert_eq!(extraction.prices, vec![120.0, 145.50, 99.0]);
+        assert_eq!(extraction.currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn response_parser_returns_none_when_the_model_is_not_confident() {
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "\"found\": false, \"currency\": null, \"prices\": []}"}]
+        })
+        .to_string();
+        assert_eq!(parse_ai_extraction_response(&body), None, "found:false must never become a fabricated success");
+    }
+
+    #[test]
+    fn response_parser_returns_none_when_found_is_true_but_prices_is_empty() {
+        // Defensive against an inconsistent answer (found:true, no actual
+        // prices) - never trusted just because "found" says true.
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "\"found\": true, \"currency\": null, \"prices\": []}"}]
+        })
+        .to_string();
+        assert_eq!(parse_ai_extraction_response(&body), None);
+    }
+
+    #[test]
+    fn response_parser_drops_non_positive_or_non_finite_prices_but_keeps_the_rest() {
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "\"found\": true, \"currency\": \"EUR\", \"prices\": [80, -5, 0, 120]}"}]
+        })
+        .to_string();
+        let extraction = parse_ai_extraction_response(&body).unwrap();
+        assert_eq!(extraction.prices, vec![80.0, 120.0]);
+    }
+
+    #[test]
+    fn response_parser_returns_none_for_a_non_text_content_block() {
+        let body = serde_json::json!({"content": [{"type": "tool_use", "id": "x"}]}).to_string();
+        assert_eq!(parse_ai_extraction_response(&body), None);
+    }
+
+    #[test]
+    fn response_parser_returns_none_for_prose_the_prefill_somehow_didnt_prevent() {
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "Sure, here are the prices I found: $120, $145"}]
+        })
+        .to_string();
+        assert_eq!(parse_ai_extraction_response(&body), None, "must never guess-parse free text - only real JSON counts");
+    }
+
+    #[test]
+    fn response_parser_returns_none_for_completely_malformed_json() {
+        assert_eq!(parse_ai_extraction_response("not json at all"), None);
+        assert_eq!(parse_ai_extraction_response(""), None);
+    }
+
+    #[test]
+    fn rejection_message_matches_the_real_401_body_api_anthropic_com_returns_for_an_invalid_key() {
+        // Captured directly from a real request against the real endpoint
+        // during development (this module's own doc comment) - not
+        // reconstructed from documentation, so this test locks in the
+        // ACTUAL shape describe_anthropic_rejection has to handle.
+        let real_body = r#"{"type":"error","error":{"type":"authentication_error","message":"API key is invalid."},"request_id":null}"#;
+        let msg = describe_anthropic_rejection(reqwest::StatusCode::UNAUTHORIZED, real_body);
+        assert!(msg.contains("401"));
+        assert!(msg.contains("authentication_error"));
+        assert!(msg.contains("API key is invalid"));
+    }
+
+    #[test]
+    fn min_remaining_budget_is_comfortably_smaller_than_the_overall_timeout() {
+        // Sanity check on the constants themselves - if someone ever tuned
+        // OVERALL_TIMEOUT down without revisiting this, a fallback could
+        // pointlessly never fire (or worse, the max call timeout could
+        // exceed what's actually left). Not a real-world scenario today
+        // (60s vs an 8s floor and a 20s cap), but cheap to guard directly.
+        assert!(AI_FALLBACK_MIN_REMAINING_BUDGET < OVERALL_TIMEOUT);
+        assert!(AI_FALLBACK_MAX_CALL_TIMEOUT <= OVERALL_TIMEOUT);
+    }
 }
 
 /// Best-effort shape check on whatever the page's own markup claims its
@@ -1073,7 +1662,7 @@ mod tests {
     fn timed_out_outcome_maps_to_a_distinct_timeout_status_not_error() {
         let result = read_outcome_to_result(ReadOutcome::TimedOut);
         assert_eq!(result.status, "timeout");
-        assert!(result.message.unwrap().contains("15 seconds"));
+        assert!(result.message.unwrap().contains("60 seconds"), "must match OVERALL_TIMEOUT (60s) - this test still said the stale pre-2.1.4 15s value");
     }
 
     #[test]
@@ -1146,6 +1735,31 @@ mod tests {
         let remaining = remaining_budget(just_started);
         assert!(remaining <= OVERALL_TIMEOUT);
         assert!(remaining >= OVERALL_TIMEOUT - Duration::from_millis(500), "got {remaining:?}");
+    }
+
+    // -- should_stop_polling_for_readiness (2.1.6 bugfix - see
+    //    poll_then_extract's own doc comment for the real bug this closes:
+    //    without this reserve, the loop always ran the budget down to
+    //    exactly zero, which made the final best-effort extraction attempt
+    //    unreachable dead code every single time readiness never fired) ---
+
+    #[test]
+    fn should_stop_polling_is_false_with_more_than_eval_timeout_left() {
+        assert!(!should_stop_polling_for_readiness(EVAL_TIMEOUT + Duration::from_millis(1)));
+        assert!(!should_stop_polling_for_readiness(OVERALL_TIMEOUT));
+    }
+
+    #[test]
+    fn should_stop_polling_is_true_at_exactly_eval_timeout_remaining() {
+        // The boundary itself: this is what actually reserves EVAL_TIMEOUT
+        // for the final extraction rather than running it down to zero.
+        assert!(should_stop_polling_for_readiness(EVAL_TIMEOUT));
+    }
+
+    #[test]
+    fn should_stop_polling_is_true_with_less_than_eval_timeout_or_nothing_left() {
+        assert!(should_stop_polling_for_readiness(EVAL_TIMEOUT - Duration::from_millis(1)));
+        assert!(should_stop_polling_for_readiness(Duration::ZERO));
     }
 
     // -- RAII cleanup pattern (see WebviewGuard's own doc comment for the
@@ -1443,6 +2057,7 @@ mod tests {
             currency: None,
             message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
             listings: vec![],
+            ai_assisted: false,
         };
         assert_eq!(busy.status, "busy");
         assert!(busy.prices.is_empty());
@@ -1496,7 +2111,7 @@ mod tests {
         // Locks in the literal string PriceChecker.tsx's own `.then()`
         // branches on for the non-terminal ack - see auto_check_price's own
         // doc comment ("True non-blocking fix").
-        let started = AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![] };
+        let started = AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false };
         assert_eq!(started.status, "started");
         assert_ne!(started.status, "ok");
         assert!(started.prices.is_empty(), "a \"started\" ack must never carry any price data of its own");

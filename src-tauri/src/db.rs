@@ -112,6 +112,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "016_finance_v2",
         include_str!("../migrations/016_finance_v2.sql"),
     ),
+    (
+        "017_price_checker_viagogo",
+        include_str!("../migrations/017_price_checker_viagogo.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -249,6 +253,92 @@ mod sanitize_uid_tests {
     fn an_implausibly_long_uid_is_rejected() {
         let too_long = "a".repeat(129);
         assert!(sanitize_uid_for_filename(&too_long).is_err());
+    }
+}
+
+/// Regression tests for a real bug an independent review of 2.1.6 found:
+/// `run_migrations` applies each migration file via a plain `execute_batch`
+/// with no transaction of its own (see that function's own doc comment) -
+/// so a migration that fails partway leaves its earlier statements
+/// committed and itself unrecorded in `schema_migrations`, meaning every
+/// later launch retries the SAME sql against an already-half-applied
+/// schema. Migration 017 (Viagogo added, StubHub retired) is now wrapped in
+/// its own explicit transaction specifically because of this - see that
+/// file's own doc comment for the full story - these tests prove the
+/// actual scenario that motivated it stays fixed.
+#[cfg(test)]
+mod migration_017_safety_tests {
+    use super::*;
+
+    fn migrated_through_016() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (version, sql) in &MIGRATIONS[..16] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn migration_017_succeeds_even_if_a_viagogo_marketplace_already_exists() {
+        // Simulates the exact scenario the review found: something (in
+        // practice, only create_marketplace could do this - no UI calls it
+        // today, but it IS a real, registered command) creates a 'Viagogo'
+        // marketplace row before migration 017 ever gets a chance to run.
+        let conn = migrated_through_016();
+        conn.execute("INSERT INTO marketplaces(name) VALUES ('Viagogo')", []).unwrap();
+
+        // Must not error, and must not leave migration 017 half-applied -
+        // this calls the REAL run_migrations, not a hand-replayed 017.
+        run_migrations(&conn).expect("migration 017 must tolerate a pre-existing Viagogo row, not brick the app");
+
+        let viagogo_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM marketplaces WHERE name = 'Viagogo'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(viagogo_count, 1, "must never end up with two Viagogo rows");
+
+        let applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = '017_price_checker_viagogo')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(applied, "017 must be recorded as applied, not silently skipped or left pending forever");
+
+        // The rest of what 017 does must still have happened - a partial,
+        // silently-rolled-back-except-for-the-conflicting-statement outcome
+        // would be just as bad as a hard failure.
+        let stubhub_active: bool = conn
+            .query_row("SELECT active FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!stubhub_active, "StubHub must still end up retired even when the Viagogo insert was a no-op");
+    }
+
+    #[test]
+    fn migration_017_still_works_normally_with_no_pre_existing_viagogo_row() {
+        // The ordinary case (every real install today) - OR IGNORE/the
+        // transaction wrapper must change nothing about it.
+        let conn = migrated_through_016();
+
+        run_migrations(&conn).unwrap();
+
+        let viagogo: (String, bool) = conn
+            .query_row("SELECT name, active FROM marketplaces WHERE name = 'Viagogo'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(viagogo, ("Viagogo".to_string(), true));
+        let stubhub_active: bool =
+            conn.query_row("SELECT active FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0)).unwrap();
+        assert!(!stubhub_active);
     }
 }
 

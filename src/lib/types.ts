@@ -1278,11 +1278,16 @@ export interface NotificationTestResult {
 
 /** A marketplace marko checks prices on - a plain managed list (same
  * Settings-style lookup shape as Platform/Supplier/EventCategory), seeded
- * with StubHub/Vivid Seats/Ticombo. Marko can add more from Settings ->
+ * with Vivid Seats/Ticombo/Viagogo. Marko can add more from Settings ->
  * Lookups later without any code change. */
 export interface Marketplace {
   id: number;
   name: string;
+  /** 2.1.6: whether marko can start something NEW here - a fresh link, a
+   * fresh check. `false` only for StubHub, retired at his own request in
+   * favor of Viagogo but kept exactly as-is (never deleted/renamed) so
+   * every past check against it stays real, readable history. */
+  active: boolean;
   isDemo: boolean;
   createdAt: string;
 }
@@ -1343,10 +1348,19 @@ export interface PriceCheckInput {
  * baking in a single trend value. Present for every marketplace in
  * `listMarketplaces`, even one marko has never linked or checked for this
  * event (link is null, history is empty) - so the page is always a place to
- * add data, not just a report of what's already filled in. */
+ * add data, not just a report of what's already filled in. A RETIRED
+ * marketplace (`marketplaceActive: false` - StubHub as of 2.1.6)
+ * additionally appears whenever THIS event already has a link or history
+ * against it, so past data is never hidden - see
+ * commands::price_checker::get_price_checker_summary_impl's own doc
+ * comment (Rust) for the exact rule. */
 export interface MarketplacePriceView {
   marketplaceId: number;
   marketplaceName: string;
+  /** 2.1.6: mirrors `Marketplace.active` for this marketplace - lets the
+   * UI show a "retired" note (e.g. next to StubHub) without a separate
+   * lookup. */
+  marketplaceActive: boolean;
   link: EventMarketplaceLink | null;
   history: PriceCheck[];
 }
@@ -1444,6 +1458,14 @@ export interface AutoCheckResult {
    * populated. Never fabricated: any of a listing's own fields the page
    * didn't state come through as `null`, not guessed. */
   listings: AutoCheckListing[];
+  /** 2.1.6: `true` only when `status` is `"ok"` AND those `prices` came
+   * from the new AI-assisted extraction fallback (marko's own request)
+   * rather than any of the four page-rule passes in
+   * price_checker_auto_extract.js - see
+   * commands::price_checker_auto's module doc comment, "AI-assisted
+   * extraction fallback", for exactly when this fires. PriceChecker.tsx
+   * shows an extra "double-check this" note when this is `true`. */
+  aiAssisted: boolean;
 }
 
 /** One real listing entry (2.1.4) - see `AutoCheckResult.listings`'s own
@@ -1466,8 +1488,17 @@ export interface AutoCheckListing {
  * read and its window is being torn down, right before the final result
  * comes back) - matching `emit_phase`'s call sites 1:1. "Nothing running" is
  * represented by PriceChecker.tsx's own `null` (see its `autoCheck` state),
- * not a value here. */
-export type AutoCheckPhase = "starting" | "loading" | "analyzing" | "cleaning_up";
+ * not a value here.
+ *
+ * 2.1.6 added "asking_ai" - fires only when the free rule-based passes
+ * found nothing AND an Anthropic API key is configured, right before the
+ * actual (real, paid) API call (see try_ai_extraction_fallback). Before
+ * this existed, that call silently happened while the UI was still showing
+ * "cleaning_up" - the LAST phase before it - with nothing telling marko
+ * money was being spent; this makes it visible, matching this app's own
+ * standing concern about never spending on a paid API without his
+ * knowledge. */
+export type AutoCheckPhase = "starting" | "loading" | "analyzing" | "cleaning_up" | "asking_ai";
 
 /** Payload shape of the `price-checker-auto-check-progress` Tauri event
  * (2.1.3) - see commands/price_checker_auto.rs's `ProgressPayload`/

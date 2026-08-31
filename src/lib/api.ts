@@ -348,6 +348,15 @@ export const api = {
   getAppSetting: (key: string) => invoke<string | null>("get_app_setting", { key }),
   setAppSetting: (key: string, value: string) => invoke<void>("set_app_setting", { key, value }),
 
+  // Anthropic API key (2.1.6, Settings -> AI-assisted price reading) - see
+  // commands::settings's own "Anthropic API key" doc comment (Rust) for why
+  // this is deliberately NOT the generic getAppSetting/setAppSetting above:
+  // the real key value is never returned to the frontend at all, only
+  // whether one is currently configured. Same "presence flag, never the
+  // value" convention the ntfy notification topic already uses.
+  getAnthropicApiKeyConfigured: () => invoke<boolean>("get_anthropic_api_key_configured"),
+  setAnthropicApiKey: (key: string) => invoke<void>("set_anthropic_api_key", { key }),
+
   // Google Sheets sync (Settings -> Integrations, 2.0.2+). `dataSource` is a
   // plain string key ("pulls" today) - see sheets_sync.rs's module doc
   // comment. Connection setup/test only for now - no row sync yet.

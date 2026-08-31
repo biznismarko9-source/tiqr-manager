@@ -87,7 +87,16 @@ const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
 const SECTIONS = [
   { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
   { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
-  { key: "integrations", title: "Integrations", description: "Connect Pulls, Orders and Tickets to a Google Sheet.", icon: IconLink },
+  {
+    key: "integrations",
+    title: "Integrations",
+    // 2.1.6: was just "Connect Pulls, Orders and Tickets to a Google
+    // Sheet." - extended (not split into a new section) once the Anthropic
+    // API key card landed here too, since it's the same idea (connect an
+    // optional external service) rather than its own new top-level concern.
+    description: "Connect Pulls, Orders and Tickets to a Google Sheet, or add an Anthropic API key for AI-assisted price reading.",
+    icon: IconLink,
+  },
   // 2.0.76: desktop/mobile-push alerts for the same 4 things the Dashboard's
   // bell already tracks - see NotificationsCard below and REDESIGN-2.0.76-
   // REPORT.md. 2.0.77 removed the email channel this shipped with at
@@ -625,6 +634,14 @@ export default function Settings() {
                   onCreate={api.createOrdersSheet}
                 />
               </div>
+
+              {/* 2.1.6: standalone - not a Google Sheets thing at all, but
+                  "integrations" is the closest existing home (connecting an
+                  optional external service) and a whole new top-level
+                  section for one API-key field felt like more navigation
+                  than marko needs. See AnthropicApiKeyCard's own doc
+                  comment. */}
+              <AnthropicApiKeyCard />
             </div>
           )}
 
@@ -1186,6 +1203,145 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
             )}
           </div>
         </>
+      )}
+    </Card>
+  );
+}
+
+// 2.1.6: optional Anthropic API key, powering Price Checker's new
+// AI-assisted extraction fallback (commands/price_checker_auto.rs's
+// try_ai_extraction_fallback) - used only as a LAST RESORT, when
+// Auto-check's own 4 free rule-based passes can't recognize a page's
+// prices at all. Nothing about Price Checker changes without a key saved
+// here; every existing free pass keeps working exactly as before, and nothing
+// is ever sent to Anthropic unless this is configured.
+//
+// Same "collapse once configured, secret never round-trips to the frontend"
+// shape as NotificationsCard's ntfy topic (see that component's own doc
+// comment) - `getAnthropicApiKeyConfigured` only ever returns a bool, never
+// the key itself, and the field always starts blank. UNLIKE ntfy's topic
+// field, though, `setAnthropicApiKey` takes a plain (not `Option<String>`)
+// string where blank always means "clear" (settings.rs) - it has no way to
+// mean "leave whatever's already saved alone". So this can't reuse ntfy's
+// "leave the field blank on Save to keep the existing value" convention -
+// blank+Save would delete it here, not skip it. Instead: a configured key
+// collapses to a summary row with separate "Change key"/"Remove" actions,
+// and only "Remove" ever submits a blank key - Save in the open form always
+// sends whatever's actually typed, and is disabled/no-ops on blank input.
+function AnthropicApiKeyCard() {
+  const toast = useToast();
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const load = () => {
+    api
+      .getAnthropicApiKeyConfigured()
+      .then((c) => {
+        setConfigured(c);
+        setEditing(!c);
+      })
+      .catch((e) => toast.error(errMsg(e)));
+  };
+  useEffect(load, []);
+
+  const doSave = async () => {
+    if (!key.trim()) {
+      toast.error("Paste your Anthropic API key first, or use Remove below to clear a saved one.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.setAnthropicApiKey(key.trim());
+      setKey("");
+      setConfigured(true);
+      setEditing(false);
+      toast.success("Anthropic API key saved");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doRemove = async () => {
+    setRemoving(true);
+    try {
+      await api.setAnthropicApiKey("");
+      setKey("");
+      setConfigured(false);
+      setEditing(true);
+      toast.success("Anthropic API key removed");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  if (configured === null) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">AI-assisted price reading</h3>
+        <Badge tone={configured ? "sold" : "available"}>{configured ? "On" : "Off"}</Badge>
+      </div>
+      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+        Optional. When Price Checker&apos;s Auto-check can&apos;t recognize a page&apos;s prices on its own, it can
+        ask Claude (Anthropic&apos;s AI) to read them instead - only as a last resort, for pages the free method
+        already failed on. AI-derived results are always shown clearly marked in Price Checker, so you can
+        double-check them before saving.
+      </p>
+
+      {configured && !editing ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+          <p className="text-xs text-slate-500 dark:text-slate-400">A key is saved.</p>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={() => setEditing(true)}>
+              Change key
+            </Button>
+            <Button variant="ghost" disabled={removing} onClick={doRemove}>
+              {removing ? <Spinner className="h-4 w-4" /> : null}
+              Remove
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="max-w-sm">
+            <Field label="Anthropic API key">
+              <Input type="password" autoComplete="off" placeholder="sk-ant-..." value={key} onChange={(e) => setKey(e.target.value)} />
+            </Field>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" disabled={saving} onClick={doSave}>
+              {saving ? <Spinner className="h-4 w-4" /> : null}
+              Save
+            </Button>
+            {configured && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setKey("");
+                  setEditing(false);
+                }}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+        </div>
       )}
     </Card>
   );

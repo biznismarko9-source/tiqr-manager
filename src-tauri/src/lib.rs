@@ -182,6 +182,8 @@ pub fn run() {
             commands::notifications::check_and_send_notifications,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
+            commands::settings::get_anthropic_api_key_configured,
+            commands::settings::set_anthropic_api_key,
             commands::sheets_sync::get_sheets_connection_status,
             commands::sheets_sync::set_sheets_connection,
             commands::sheets_sync::clear_sheets_connection,

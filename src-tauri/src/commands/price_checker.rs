@@ -42,6 +42,16 @@
 //! `RECOMMENDED_PRICE_UNDERCUT_PCT`), not AI, per his explicit "Recommended
 //! price nech je zatiaľ jednoduchý transparentný výpočet podľa existujúcich
 //! dát, nie AI."
+//!
+//! 2.1.6: marko asked to replace StubHub with Viagogo ("stubhub by som chcel
+//! zmenit za viagogo.com"), but also to keep StubHub's own history readable
+//! (confirmed via AskUserQuestion) - so `marketplaces` gained an `active`
+//! column (migrations/017_price_checker_viagogo.sql) rather than StubHub's
+//! row being renamed or deleted. `active = false` only ever means "not
+//! offered for something NEW"; every existing link/check against it is
+//! completely untouched, and `get_price_checker_summary_impl` below still
+//! shows it for exactly the events that already have one or the other - see
+//! that function's own doc comment.
 
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
@@ -68,6 +78,7 @@ fn map_marketplace(row: &Row) -> rusqlite::Result<Marketplace> {
     Ok(Marketplace {
         id: row.get("id")?,
         name: row.get("name")?,
+        active: row.get("active")?,
         is_demo: row.get("is_demo")?,
         created_at: row.get("created_at")?,
     })
@@ -132,11 +143,77 @@ pub fn create_marketplace(state: State<AppState>, name: String) -> AppResult<Mar
     Ok(conn.query_row("SELECT * FROM marketplaces WHERE id = ?1", [id], map_marketplace)?)
 }
 
+/// Core logic behind `delete_marketplace` - split out for direct
+/// unit-testability, same pattern as every other `_impl` function in this
+/// module. 2.1.6: refuses to delete a marketplace that still has saved links
+/// or price-check history - both foreign keys are `ON DELETE CASCADE`
+/// (migrations/014_price_checker.sql), so before this guard existed a plain
+/// delete would have silently wiped that history along with the row. No UI
+/// currently calls this command at all (marko manages retirement via the
+/// `active` flag instead - see this module's own doc comment), but the
+/// command stays exposed for whenever one does, and it should never be able
+/// to do by accident what marko explicitly asked NOT to happen to StubHub's
+/// own history.
+pub(crate) fn delete_marketplace_impl(conn: &Connection, id: i64) -> AppResult<()> {
+    let history_count: i64 = conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM event_marketplace_links WHERE marketplace_id = ?1)
+                + (SELECT COUNT(*) FROM price_checks WHERE marketplace_id = ?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if history_count > 0 {
+        return Err(AppError::Validation(
+            "This marketplace still has saved links or price-check history, so it can't be deleted. \
+             If you just don't want to use it for new checks anymore, it's fine to leave it as-is."
+                .into(),
+        ));
+    }
+    conn.execute("DELETE FROM marketplaces WHERE id = ?1", [id])?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn delete_marketplace(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
-    conn.execute("DELETE FROM marketplaces WHERE id = ?1", [id])?;
-    Ok(())
+    delete_marketplace_impl(&conn, id)
+}
+
+/// Shared guard for `save_event_marketplace_link_impl` and
+/// `save_price_check_impl` below - 2.1.6: a retired marketplace (StubHub,
+/// since Viagogo replaced it - see this module's own doc comment) must stay
+/// strictly read-only for anything NEW, matching marko's own explicit
+/// choice when asked ("StubHub stays visible read-only for events that
+/// already have data against it; new checks go through Viagogo only").
+///
+/// MarketplaceCard (PriceChecker.tsx) is the primary defense - it hides the
+/// "Check Prices"/"Auto-check" actions once `marketplaceActive` is false,
+/// so a normal click can't reach either command for a retired marketplace
+/// at all. This is the same second layer already applied to
+/// `delete_marketplace_impl` above, for the same reason: the backend must
+/// never be able to do what marko explicitly asked NOT to happen just
+/// because a future UI change lets a button through it shouldn't.
+///
+/// Deliberately NOT extended to `auto_check_price` (price_checker_auto.rs)
+/// - that command only ever takes a raw URL, never a marketplace_id (see
+/// its own doc comment on why it's marketplace-agnostic), so it has nothing
+/// to check active against, and reaching it for a retired marketplace can
+/// waste up to a minute of browser automation but can never itself write a
+/// row - the actual save afterward still goes through this same guard.
+fn require_marketplace_active(conn: &Connection, marketplace_id: i64) -> AppResult<()> {
+    let row: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT name, active FROM marketplaces WHERE id = ?1",
+            [marketplace_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => Err(AppError::NotFound("Marketplace not found".into())),
+        Some((_, true)) => Ok(()),
+        Some((name, false)) => Err(AppError::Validation(format!(
+            "{name} isn't used for new checks anymore - its saved history stays visible, but new links or price checks aren't accepted."
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +240,11 @@ pub(crate) fn save_event_marketplace_link_impl(
         )?;
         return Ok(None);
     }
+    // 2.1.6: only guarded here, not above - clearing an existing link (the
+    // blank-url branch just above) is always allowed even for a retired
+    // marketplace, since removing data is never what "read-only" was meant
+    // to prevent; only saving/changing to a NEW non-blank url is.
+    require_marketplace_active(conn, input.marketplace_id)?;
     conn.execute(
         "INSERT INTO event_marketplace_links(event_id, marketplace_id, url) VALUES (?1, ?2, ?3)
          ON CONFLICT(event_id, marketplace_id) DO UPDATE SET
@@ -222,6 +304,11 @@ fn validate_price_check_input(input: &PriceCheckInput) -> AppResult<()> {
 /// snapshot).
 pub(crate) fn save_price_check_impl(conn: &Connection, input: &PriceCheckInput) -> AppResult<PriceCheck> {
     validate_price_check_input(input)?;
+    // 2.1.6: unlike the link table above, price_checks is append-only and
+    // has no "clearing" concept - every call here adds a brand-new row, so
+    // this guard applies unconditionally (see require_marketplace_active's
+    // own doc comment).
+    require_marketplace_active(conn, input.marketplace_id)?;
     let currency = input.currency.trim();
     conn.execute(
         "INSERT INTO price_checks
@@ -255,10 +342,13 @@ pub fn save_price_check(state: State<AppState>, input: PriceCheckInput) -> AppRe
 /// comment for the overall design, and `PriceCheckerSummary`'s doc comment
 /// (models.rs) for exactly what each field means and when it's `None`.
 ///
-/// Every marketplace in `marketplaces` always appears in the result, even
-/// one marko has never linked or checked for this event - so the page is
-/// always a place to add data, not just a report of what's already filled
-/// in.
+/// Every ACTIVE marketplace always appears in the result, even one marko
+/// has never linked or checked for this event - so the page is always a
+/// place to add data, not just a report of what's already filled in. A
+/// retired (inactive) marketplace - StubHub as of 2.1.6 - appears too, but
+/// ONLY for an event that already has a link or check history against it;
+/// see the marketplace-selection query below and `Marketplace::active`'s
+/// own doc comment (models.rs).
 ///
 /// "My" figures (avg purchase cost / avg listing price) are computed over
 /// the exact same ticket scope as Event Detail's own "Potential profit"
@@ -279,9 +369,22 @@ pub(crate) fn get_price_checker_summary_impl(conn: &Connection, event_id: i64) -
         })
         .map_err(|_| AppError::NotFound(format!("Event #{event_id} not found")))?;
 
+    // 2.1.6: every ACTIVE marketplace always appears (unchanged behavior),
+    // plus any INACTIVE one (StubHub today) that this specific event already
+    // has a saved link or check history against - so a retired marketplace
+    // keeps showing its real past data exactly where marko left it, but
+    // never gets offered to a fresh event as somewhere new to start. See
+    // this module's own doc comment and Marketplace::active's doc comment
+    // (models.rs).
     let marketplaces: Vec<Marketplace> = {
-        let mut stmt = conn.prepare("SELECT * FROM marketplaces ORDER BY name COLLATE NOCASE")?;
-        let rows = stmt.query_map([], map_marketplace)?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM marketplaces
+             WHERE active = 1
+                OR EXISTS(SELECT 1 FROM event_marketplace_links WHERE event_id = ?1 AND marketplace_id = marketplaces.id)
+                OR EXISTS(SELECT 1 FROM price_checks WHERE event_id = ?1 AND marketplace_id = marketplaces.id)
+             ORDER BY name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([event_id], map_marketplace)?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
@@ -333,6 +436,7 @@ pub(crate) fn get_price_checker_summary_impl(conn: &Connection, event_id: i64) -
         views.push(MarketplacePriceView {
             marketplace_id: m.id,
             marketplace_name: m.name.clone(),
+            marketplace_active: m.active,
             link,
             history,
         });
@@ -453,6 +557,21 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Same idea as `seed_price_check` below - inserts a row directly via
+    /// SQL, bypassing `save_event_marketplace_link_impl`'s own
+    /// `require_marketplace_active` guard (2.1.6). Needed for any test that
+    /// needs to represent a link saved back when a marketplace was still
+    /// active (StubHub, before 2.1.6) - going through the real impl
+    /// function can no longer produce that state for a retired marketplace,
+    /// by design.
+    fn seed_link(conn: &Connection, event_id: i64, marketplace_id: i64, url: &str) {
+        conn.execute(
+            "INSERT INTO event_marketplace_links(event_id, marketplace_id, url) VALUES (?1, ?2, ?3)",
+            params![event_id, marketplace_id, url],
+        )
+        .unwrap();
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn seed_price_check(
         conn: &Connection,
@@ -475,44 +594,50 @@ mod tests {
     }
 
     // -- save_event_marketplace_link_impl ------------------------------------
+    // 2.1.6: this whole block just needs SOME marketplace, not StubHub
+    // specifically - switched to Vivid Seats (still active) now that
+    // StubHub is retired and save_event_marketplace_link_impl refuses new
+    // non-blank links against a retired one (require_marketplace_active).
+    // StubHub itself still gets exercised, deliberately, by the dedicated
+    // "2.1.6: StubHub retired" tests further down.
 
     #[test]
     fn saving_a_link_creates_it() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
-        let input = EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/x".into() };
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
+        let input = EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "https://vividseats.com/x".into() };
 
         let saved = save_event_marketplace_link_impl(&conn, &input).unwrap().unwrap();
 
-        assert_eq!(saved.url, "https://stubhub.com/x");
+        assert_eq!(saved.url, "https://vividseats.com/x");
         assert_eq!(saved.event_id, event_id);
-        assert_eq!(saved.marketplace_id, stubhub);
+        assert_eq!(saved.marketplace_id, vivid_seats);
     }
 
     #[test]
     fn saving_again_updates_the_existing_link_instead_of_duplicating_it() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/old".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "https://vividseats.com/old".into() },
         )
         .unwrap();
 
         let updated = save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/new".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "https://vividseats.com/new".into() },
         )
         .unwrap()
         .unwrap();
 
-        assert_eq!(updated.url, "https://stubhub.com/new");
+        assert_eq!(updated.url, "https://vividseats.com/new");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM event_marketplace_links WHERE event_id=?1 AND marketplace_id=?2",
-                params![event_id, stubhub],
+                params![event_id, vivid_seats],
                 |r| r.get(0),
             )
             .unwrap();
@@ -523,16 +648,16 @@ mod tests {
     fn a_blank_url_deletes_an_existing_link() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/x".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "https://vividseats.com/x".into() },
         )
         .unwrap();
 
         let result = save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "   ".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "   ".into() },
         )
         .unwrap();
 
@@ -540,7 +665,7 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM event_marketplace_links WHERE event_id=?1 AND marketplace_id=?2",
-                params![event_id, stubhub],
+                params![event_id, vivid_seats],
                 |r| r.get(0),
             )
             .unwrap();
@@ -551,27 +676,81 @@ mod tests {
     fn a_blank_url_when_nothing_exists_yet_is_a_harmless_no_op() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
 
         let result = save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "".into() },
         )
         .unwrap();
 
         assert!(result.is_none());
     }
 
+    #[test]
+    fn a_non_blank_url_against_a_retired_marketplace_is_refused() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Coldplay Arena Show");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+
+        let err = save_event_marketplace_link_impl(
+            &conn,
+            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/x".into() },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("StubHub"), "the message should name the retired marketplace, got: {err}");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_marketplace_links WHERE event_id=?1 AND marketplace_id=?2",
+                params![event_id, stubhub],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "the refused link must never have been written");
+    }
+
+    #[test]
+    fn clearing_a_retired_marketplaces_existing_link_is_still_allowed() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Coldplay Arena Show");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        seed_link(&conn, event_id, stubhub, "https://stubhub.com/x");
+
+        let result = save_event_marketplace_link_impl(
+            &conn,
+            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "   ".into() },
+        );
+
+        assert!(
+            result.is_ok(),
+            "removing data must never be blocked by the retired-marketplace guard, even though adding it now is"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_marketplace_links WHERE event_id=?1 AND marketplace_id=?2",
+                params![event_id, stubhub],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
     // -- save_price_check_impl -----------------------------------------------
+    // 2.1.6: same switch as the block above, same reason - StubHub is
+    // retired and save_price_check_impl now refuses it via
+    // require_marketplace_active, so these generic tests move to Vivid
+    // Seats; the guard itself gets its own dedicated tests right after.
 
     #[test]
     fn saving_a_valid_price_check_persists_it() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let input = PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: 5000,
             average_price_cents: 7000,
             highest_price_cents: 9000,
@@ -592,10 +771,10 @@ mod tests {
     fn saving_twice_keeps_both_as_history_never_an_overwrite() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let mk = |lowest: i64| PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: lowest,
             average_price_cents: lowest + 1000,
             highest_price_cents: lowest + 2000,
@@ -609,7 +788,7 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM price_checks WHERE event_id=?1 AND marketplace_id=?2",
-                params![event_id, stubhub],
+                params![event_id, vivid_seats],
                 |r| r.get(0),
             )
             .unwrap();
@@ -620,10 +799,10 @@ mod tests {
     fn rejects_a_lowest_price_above_the_average() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Test");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let input = PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: 9000,
             average_price_cents: 7000,
             highest_price_cents: 9500,
@@ -637,10 +816,10 @@ mod tests {
     fn rejects_an_average_price_above_the_highest() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Test");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let input = PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: 5000,
             average_price_cents: 9500,
             highest_price_cents: 9000,
@@ -654,10 +833,10 @@ mod tests {
     fn rejects_negative_prices_and_negative_listing_count() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Test");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let base = PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: 1000,
             average_price_cents: 2000,
             highest_price_cents: 3000,
@@ -678,10 +857,10 @@ mod tests {
     fn rejects_a_blank_currency() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Test");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         let input = PriceCheckInput {
             event_id,
-            marketplace_id: stubhub,
+            marketplace_id: vivid_seats,
             lowest_price_cents: 1000,
             average_price_cents: 2000,
             highest_price_cents: 3000,
@@ -689,6 +868,76 @@ mod tests {
             currency: "   ".into(),
         };
         assert!(save_price_check_impl(&conn, &input).is_err());
+    }
+
+    // -- require_marketplace_active guard (2.1.6) ----------------------------
+
+    #[test]
+    fn a_price_check_against_a_retired_marketplace_is_refused() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        let input = PriceCheckInput {
+            event_id,
+            marketplace_id: stubhub,
+            lowest_price_cents: 5000,
+            average_price_cents: 6000,
+            highest_price_cents: 7000,
+            listing_count: 10,
+            currency: "EUR".into(),
+        };
+
+        let err = save_price_check_impl(&conn, &input).unwrap_err().to_string();
+
+        assert!(err.contains("StubHub"), "the message should name the retired marketplace, got: {err}");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM price_checks WHERE event_id = ?1", [event_id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "the refused check must never have been written");
+    }
+
+    #[test]
+    fn a_price_check_against_an_active_marketplace_still_succeeds() {
+        // Guards against a too-broad guard - only StubHub (inactive) should
+        // ever be refused, every other seeded marketplace must go through
+        // exactly as before this whole 2.1.6 change.
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test");
+        let ticombo = marketplace_id_by_name(&conn, "Ticombo");
+        let input = PriceCheckInput {
+            event_id,
+            marketplace_id: ticombo,
+            lowest_price_cents: 5000,
+            average_price_cents: 6000,
+            highest_price_cents: 7000,
+            listing_count: 10,
+            currency: "EUR".into(),
+        };
+        assert!(save_price_check_impl(&conn, &input).is_ok());
+    }
+
+    #[test]
+    fn a_price_check_against_an_unknown_marketplace_id_is_a_not_found_error() {
+        // Not just is_err() - price_checks.marketplace_id is itself a
+        // foreign key (and test_conn() runs with PRAGMA foreign_keys = ON),
+        // so a plain INSERT against a nonexistent id would ALSO fail even
+        // with require_marketplace_active deleted entirely, just with a
+        // different, generic "FOREIGN KEY constraint failed" message
+        // (see error.rs's own From<rusqlite::Error>). Asserting the exact
+        // message proves this specific guard is what actually caught it.
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test");
+        let input = PriceCheckInput {
+            event_id,
+            marketplace_id: 999_999,
+            lowest_price_cents: 5000,
+            average_price_cents: 6000,
+            highest_price_cents: 7000,
+            listing_count: 10,
+            currency: "EUR".into(),
+        };
+
+        let err = save_price_check_impl(&conn, &input).unwrap_err().to_string();
+
+        assert_eq!(err, "Marketplace not found", "must be require_marketplace_active's own NotFound message");
     }
 
     // -- get_price_checker_summary_impl --------------------------------------
@@ -700,15 +949,21 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_event_with_nothing_yet_still_lists_every_marketplace_with_empty_data() {
+    fn a_fresh_event_with_nothing_yet_still_lists_every_active_marketplace_with_empty_data() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Coldplay Arena Show");
 
         let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
 
         assert_eq!(summary.event_name, "Coldplay Arena Show");
-        assert_eq!(summary.marketplaces.len(), 3, "StubHub/Vivid Seats/Ticombo must all appear even unlinked/unchecked");
+        // 2.1.6: StubHub is retired (inactive) and this event has never
+        // touched it, so only the 3 ACTIVE marketplaces show - see the
+        // dedicated StubHub-specific tests below for the retired/history
+        // behavior itself.
+        let names: Vec<&str> = summary.marketplaces.iter().map(|m| m.marketplace_name.as_str()).collect();
+        assert_eq!(names, vec!["Ticombo", "Viagogo", "Vivid Seats"], "alphabetical, active-only, for a fresh event");
         for m in &summary.marketplaces {
+            assert!(m.marketplace_active, "every marketplace shown to a fresh event must be active");
             assert!(m.link.is_none());
             assert!(m.history.is_empty());
         }
@@ -825,17 +1080,140 @@ mod tests {
     fn a_marketplace_with_a_saved_link_but_no_checks_yet_still_appears_with_the_link() {
         let conn = test_conn();
         let event_id = seed_event(&conn, "Test Event");
-        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        // 2.1.6: Vivid Seats, not StubHub - this test is about summary
+        // assembly for an ordinary active marketplace, not retirement.
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
         save_event_marketplace_link_impl(
             &conn,
-            &EventMarketplaceLinkInput { event_id, marketplace_id: stubhub, url: "https://stubhub.com/x".into() },
+            &EventMarketplaceLinkInput { event_id, marketplace_id: vivid_seats, url: "https://vividseats.com/x".into() },
         )
         .unwrap();
 
         let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
 
-        let stubhub_view = summary.marketplaces.iter().find(|m| m.marketplace_name == "StubHub").unwrap();
-        assert_eq!(stubhub_view.link.as_ref().map(|l| l.url.as_str()), Some("https://stubhub.com/x"));
-        assert!(stubhub_view.history.is_empty());
+        let view = summary.marketplaces.iter().find(|m| m.marketplace_name == "Vivid Seats").unwrap();
+        assert_eq!(view.link.as_ref().map(|l| l.url.as_str()), Some("https://vividseats.com/x"));
+        assert!(view.history.is_empty());
+    }
+
+    // -- 2.1.6: StubHub retired (active=false), Viagogo added -----------------
+
+    #[test]
+    fn a_retired_marketplace_is_excluded_from_a_fresh_event_with_no_history_against_it() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+
+        let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
+
+        assert!(
+            summary.marketplaces.iter().all(|m| m.marketplace_name != "StubHub"),
+            "StubHub must not be offered to an event that never touched it"
+        );
+    }
+
+    #[test]
+    fn a_retired_marketplace_still_appears_for_an_event_with_an_existing_link() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        // 2.1.6: seeded directly via SQL, not save_event_marketplace_link_impl -
+        // that link is being modeled as one saved back when StubHub was
+        // still active, and the impl function itself now refuses to create
+        // a brand-new one against a retired marketplace (see seed_link's
+        // own doc comment and require_marketplace_active).
+        seed_link(&conn, event_id, stubhub, "https://stubhub.com/x");
+
+        let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
+
+        let stubhub_view = summary
+            .marketplaces
+            .iter()
+            .find(|m| m.marketplace_name == "StubHub")
+            .expect("StubHub must still appear - this event has a real saved link against it");
+        assert!(!stubhub_view.marketplace_active, "StubHub must be reported as retired, not active");
+    }
+
+    #[test]
+    fn a_retired_marketplace_still_appears_for_an_event_with_existing_check_history() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        seed_price_check(&conn, event_id, stubhub, 5000, 6000, 7000, 10, "EUR");
+
+        let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
+
+        let stubhub_view = summary
+            .marketplaces
+            .iter()
+            .find(|m| m.marketplace_name == "StubHub")
+            .expect("StubHub must still appear - this event has real check history against it");
+        assert_eq!(stubhub_view.history.len(), 1, "the old history itself must still be intact and readable");
+    }
+
+    #[test]
+    fn a_retired_marketplaces_history_on_one_event_never_leaks_it_into_an_unrelated_event() {
+        let conn = test_conn();
+        let event_with_history = seed_event(&conn, "Has StubHub History");
+        let unrelated_event = seed_event(&conn, "Never Touched StubHub");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        seed_price_check(&conn, event_with_history, stubhub, 5000, 6000, 7000, 10, "EUR");
+
+        let summary = get_price_checker_summary_impl(&conn, unrelated_event).unwrap();
+
+        assert!(
+            summary.marketplaces.iter().all(|m| m.marketplace_name != "StubHub"),
+            "one event's StubHub history must not make StubHub appear for a different, unrelated event"
+        );
+    }
+
+    #[test]
+    fn viagogo_is_seeded_active_and_available_to_every_fresh_event() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+
+        let summary = get_price_checker_summary_impl(&conn, event_id).unwrap();
+
+        let viagogo = summary
+            .marketplaces
+            .iter()
+            .find(|m| m.marketplace_name == "Viagogo")
+            .expect("Viagogo must be offered to every event, same as Vivid Seats/Ticombo");
+        assert!(viagogo.marketplace_active);
+    }
+
+    // -- delete_marketplace_impl (2.1.6) ---------------------------------------
+
+    #[test]
+    fn delete_marketplace_refuses_when_a_link_exists() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        // 2.1.6: seeded directly via SQL - see seed_link's own doc comment.
+        seed_link(&conn, event_id, stubhub, "https://stubhub.com/x");
+
+        assert!(delete_marketplace_impl(&conn, stubhub).is_err(), "must refuse - deleting would cascade away the saved link");
+        let still_there: i64 = conn.query_row("SELECT COUNT(*) FROM marketplaces WHERE id = ?1", [stubhub], |r| r.get(0)).unwrap();
+        assert_eq!(still_there, 1, "the refused delete must not have happened at all");
+    }
+
+    #[test]
+    fn delete_marketplace_refuses_when_check_history_exists() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let stubhub = marketplace_id_by_name(&conn, "StubHub");
+        seed_price_check(&conn, event_id, stubhub, 5000, 6000, 7000, 10, "EUR");
+
+        assert!(delete_marketplace_impl(&conn, stubhub).is_err(), "must refuse - deleting would cascade away real history");
+    }
+
+    #[test]
+    fn delete_marketplace_succeeds_for_one_with_no_history_at_all() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO marketplaces(name) VALUES ('Throwaway Test Marketplace')", []).unwrap();
+        let id = conn.last_insert_rowid();
+
+        assert!(delete_marketplace_impl(&conn, id).is_ok());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM marketplaces WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 }

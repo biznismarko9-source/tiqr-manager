@@ -1578,7 +1578,7 @@ pub struct NotificationTestResult {
 // ---------------------------------------------------------------------------
 
 /// A marketplace marko can save a link/price checks against for an event
-/// (StubHub/Vivid Seats/Ticombo, seeded - same "Platforms"-style lookup
+/// (Vivid Seats/Ticombo/Viagogo, seeded - same "Platforms"-style lookup
 /// pattern as `Platform`/`Supplier`/`EventCategory`, so he can add more of
 /// his own later without a new migration.
 #[derive(Debug, Serialize, Clone)]
@@ -1586,6 +1586,15 @@ pub struct NotificationTestResult {
 pub struct Marketplace {
     pub id: i64,
     pub name: String,
+    /// 2.1.6 (migrations/017_price_checker_viagogo.sql): whether marko can
+    /// start something NEW here - a fresh link, a fresh check. `false` only
+    /// for StubHub, retired at his own request in favor of Viagogo but kept
+    /// exactly as-is (never deleted/renamed) so every past check against it
+    /// stays real, readable history - see
+    /// `commands::price_checker::get_price_checker_summary_impl`'s own doc
+    /// comment for exactly how this changes which marketplaces an event's
+    /// page shows.
+    pub active: bool,
     pub is_demo: bool,
     pub created_at: String,
 }
@@ -1646,16 +1655,24 @@ pub struct PriceCheckInput {
 /// the latest check, `history[1]` the one before it - marko explicitly
 /// wants to see whether the price moved up or down since last time, so the
 /// frontend derives that delta straight from these two rather than the
-/// backend baking in a single "trend" value). Present for EVERY marketplace
-/// in `marketplaces`, even one marko has never linked or checked yet for
-/// this event (`link` is `None`, `history` is empty) - so the page always
-/// shows all of his marketplaces as a place to add data, not just the ones
-/// already filled in.
+/// backend baking in a single "trend" value). Present for every ACTIVE
+/// marketplace, even one marko has never linked or checked yet for this
+/// event (`link` is `None`, `history` is empty) - so the page always shows
+/// all of his active marketplaces as a place to add data, not just the ones
+/// already filled in. A RETIRED marketplace (`active: false` - StubHub as
+/// of 2.1.6) additionally appears whenever THIS event already has a link or
+/// history against it, so past data is never hidden - see
+/// `commands::price_checker::get_price_checker_summary_impl`'s own doc
+/// comment for the exact rule.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketplacePriceView {
     pub marketplace_id: i64,
     pub marketplace_name: String,
+    /// 2.1.6: mirrors `Marketplace::active` for this marketplace - lets the
+    /// frontend show a "retired" note (e.g. next to StubHub) without a
+    /// separate lookup.
+    pub marketplace_active: bool,
     pub link: Option<EventMarketplaceLink>,
     pub history: Vec<PriceCheck>,
 }
@@ -1781,7 +1798,19 @@ pub struct AutoCheckResult {
     /// /`quantity` are `None` when the page didn't state them, never
     /// guessed).
     pub listings: Vec<AutoCheckListing>,
-
+    /// 2.1.6: `true` only when `status` is `"ok"` AND those `prices` came
+    /// from the new AI-assisted extraction fallback (marko's own request -
+    /// "kludne mozme pridat anthropic api keby vedel pomoct" - rather than
+    /// any of the four page-rule passes in price_checker_auto_extract.js.
+    /// See `commands::price_checker_auto`'s module doc comment,
+    /// "AI-assisted extraction fallback (2.1.6)", for exactly when this
+    /// fires and why it's a LAST resort, never the first thing tried. The
+    /// frontend shows an extra "double-check this" note when this is
+    /// `true` - an AI reading a messy real page deserves a bit more of
+    /// marko's own scrutiny before he saves it than a clean JSON-LD price
+    /// tag does, same "never fabricate, always let marko be the final
+    /// check" spirit as everything else this whole feature already does.
+    pub ai_assisted: bool,
 }
 
 /// One listing entry with whatever real detail `price_checker_auto_extract.js`'s

@@ -107,5 +107,51 @@
     }
   }
 
-  return JSON.stringify({ prices: prices, currency: currency, blocked: false, listings: listings });
+  // --- Pass 4: generic visible-text scan (last resort) ---
+  // Mirrors the exact same "number directly next to a currency marker"
+  // logic already proven in the EXISTING manual-paste flow
+  // (src/lib/priceParse.ts's own CONFIDENT_TOKEN) - this only ever finds
+  // what marko copying the same visible text and pasting it into the
+  // existing box would ALSO have found, not a newly-invented heuristic.
+  // Deliberately blind to the surrounding HTML (works whether the real
+  // listings sit inside a <table>, a <div>-based grid, or anything else) -
+  // Pass 2 above only recognizes a semantic <table>, which some
+  // marketplaces may not actually use for their listings even when Pass 2
+  // was originally confirmed against one that did.
+  var diagnostics = { tableCount: document.querySelectorAll("table").length, textSample: null, aiText: null };
+  if (prices.length === 0) {
+    var bodyText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+    diagnostics.textSample = bodyText.slice(0, 600);
+    // 2.1.6: a longer slice of the exact same visible text, for the new
+    // AI-assisted extraction fallback (commands/price_checker_auto.rs) to
+    // read when Pass 4 below still doesn't find its required 2 confident
+    // matches - never computed/sent anywhere unless prices stay empty here,
+    // same "only when everything else already failed" spirit the fallback
+    // itself follows. 8000 chars is generous for a real listings section
+    // without sending the whole page - same reasoning as textSample's own
+    // 600-char cap, just sized for a model to read instead of a human.
+    diagnostics.aiText = bodyText.slice(0, 8000);
+    var CONFIDENT = /([€$£])\s?(\d[\d.,]*\d|\d)|(\d[\d.,]*\d|\d)\s?([€$£])(?!\d)/g;
+    var genericFound = [];
+    var gm;
+    while ((gm = CONFIDENT.exec(bodyText)) !== null) {
+      var sym = gm[1] || gm[4];
+      var numRaw = gm[2] || gm[3];
+      var val = parseFloat(numRaw.replace(/,/g, ""));
+      if (isFinite(val) && val > 0 && val < 100000) genericFound.push({ val: val, sym: sym });
+    }
+    // Requires at least 2 matches - a single stray price-looking number
+    // elsewhere on the page (nav, footer, an unrelated widget) shouldn't
+    // count as "found real listings"; a real listings section always shows
+    // several, same caution already applied to Pass 2/3 above (a header
+    // match / an actual meta tag, never a single bare guess).
+    if (genericFound.length >= 2) {
+      genericFound.forEach(function (f) {
+        prices.push(f.val);
+        if (!currency) currency = f.sym === "$" ? "USD" : f.sym === "€" ? "EUR" : "GBP";
+      });
+    }
+  }
+
+  return JSON.stringify({ prices: prices, currency: currency, blocked: false, listings: listings, diagnostics: diagnostics, title: document.title });
 })();

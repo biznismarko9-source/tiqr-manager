@@ -1,12 +1,20 @@
 // Price Checker (2.0.81) - marko's own new section: pick an event, save each
-// marketplace's listings-page link, then manually record what the market is
-// asking there (lowest/average/highest price, listing count) and compare it
-// against his own unsold inventory. Manual entry only, no live API/scraping -
-// see src-tauri/src/commands/price_checker.rs's module doc comment for why
-// (researched, not assumed: none of StubHub/Vivid Seats/Ticombo offers an
+// marketplace's listings-page link, then record what the market is asking
+// there (lowest/average/highest price, listing count) and compare it against
+// his own unsold inventory. Originally manual-entry-only (see
+// src-tauri/src/commands/price_checker.rs's module doc comment for why:
+// researched, not assumed - none of the original 3 marketplaces offered an
 // accessible public API to an individual seller, and StubHub actively blocks
 // casual scraping - marko's own instruction was to fall back to manual entry
 // rather than bypass any site's protection).
+// 2.1.1+ added an optional automated "Auto-check" browser-read pass on top
+// of that (see price_checker_auto.rs's own module doc comment); manual
+// paste/entry stayed as the fallback for whatever it can't read.
+// 2.1.6: StubHub retired from new checks in favor of Viagogo (StubHub's own
+// existing history stays fully visible - see the `active` column on
+// marketplaces, migrations/017_price_checker_viagogo.sql), and an opt-in
+// Anthropic-API fallback now runs when Auto-check's free rule-based passes
+// find nothing readable on the page (see try_ai_extraction_fallback).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
@@ -38,7 +46,7 @@ import {
   StatCard,
   Textarea,
 } from "../components/ui";
-import { IconAlertTriangle, IconLink, IconTag, IconTrendingDown, IconTrendingUp, IconX } from "../components/icons";
+import { IconAlertTriangle, IconInfo, IconLink, IconTag, IconTrendingDown, IconTrendingUp, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { CURRENCIES } from "./Orders";
 import { extractPricesFromText } from "../lib/priceParse";
@@ -65,6 +73,9 @@ const AUTO_CHECK_PHASE_LABEL: Record<AutoCheckPhase, string> = {
   loading: "Loading page...",
   analyzing: "Analyzing...",
   cleaning_up: "Cleaning up...",
+  // 2.1.6: only ever shown when the free passes above found nothing and an
+  // Anthropic API key is configured - see AutoCheckPhase's own doc comment.
+  asking_ai: "Asking AI...",
 };
 
 // 2.1.4 ("true non-blocking" fix): purely a last-resort UI backstop now,
@@ -203,57 +214,93 @@ function MarketplaceCard({
   return (
     <Card className="flex flex-col p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{view.marketplaceName}</h3>
         <div className="flex items-center gap-2">
-          {isThisCardChecking ? (
-            <>
-              <Button variant="secondary" disabled className="cursor-default disabled:opacity-100">
-                <Spinner className="h-4 w-4" /> {AUTO_CHECK_PHASE_LABEL[autoCheckPhase]}
-              </Button>
-              <Button variant="secondary" onClick={onCancelAutoCheck} title="Stop this auto-check and use manual/paste entry instead.">
-                <IconX className="h-4 w-4" /> Cancel
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="secondary"
-              onClick={() => {
-                if (!autoCheckTarget) {
-                  toast.error("Enter this marketplace's listings page URL above first.");
-                  return;
-                }
-                onStartAutoCheck(autoCheckTarget);
-              }}
-              disabled={!canStartAutoCheck || !autoCheckTarget}
-              title={
-                !canStartAutoCheck
-                  ? "Finish or close what's currently open first - only one auto-check can run at a time."
-                  : "Try reading this page's prices automatically in the app's own browser view - falls back to pasting/typing if it can't."
-              }
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{view.marketplaceName}</h3>
+          {/* 2.1.6: `marketplaceActive` is false only for StubHub, and only
+           *  once it has real history against THIS event (see
+           *  get_price_checker_summary_impl's own doc comment) - a fresh
+           *  event never sees a StubHub card at all, so this badge only
+           *  ever shows up alongside real, pre-existing history. */}
+          {!view.marketplaceActive && (
+            <span
+              className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+              title="Not used for new checks anymore - Viagogo replaced it. The history below stays exactly as it was."
             >
-              <IconTag className="h-4 w-4" /> Auto-check
-            </Button>
+              Retired
+            </span>
           )}
-          <Button variant="secondary" onClick={onCheckPrices} disabled={autoCheckRunning} title={autoCheckRunning ? "An auto-check is running right now - wait for it to finish or cancel it first." : undefined}>
-            <IconTag className="h-4 w-4" /> Check Prices
-          </Button>
         </div>
-      </div>
-
-      <div className="mb-4 flex items-center gap-2">
-        <IconLink className="h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" />
-        <Input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste this marketplace's listings page URL..."
-          className="text-xs"
-        />
-        {linkDirty && (
-          <Button onClick={saveLink} disabled={savingLink} className="shrink-0">
-            {savingLink ? <Spinner className="h-4 w-4" /> : "Save"}
-          </Button>
+        {/* Auto-check/Check Prices only make sense for a marketplace still
+         *  accepting new checks - the backend refuses both a new link and a
+         *  new price check against a retired one either way
+         *  (require_marketplace_active in price_checker.rs), this just
+         *  keeps marko from ever seeing a button that would only error. */}
+        {view.marketplaceActive && (
+          <div className="flex items-center gap-2">
+            {isThisCardChecking ? (
+              <>
+                <Button variant="secondary" disabled className="cursor-default disabled:opacity-100">
+                  <Spinner className="h-4 w-4" /> {AUTO_CHECK_PHASE_LABEL[autoCheckPhase]}
+                </Button>
+                <Button variant="secondary" onClick={onCancelAutoCheck} title="Stop this auto-check and use manual/paste entry instead.">
+                  <IconX className="h-4 w-4" /> Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (!autoCheckTarget) {
+                    toast.error("Enter this marketplace's listings page URL above first.");
+                    return;
+                  }
+                  onStartAutoCheck(autoCheckTarget);
+                }}
+                disabled={!canStartAutoCheck || !autoCheckTarget}
+                title={
+                  !canStartAutoCheck
+                    ? "Finish or close what's currently open first - only one auto-check can run at a time."
+                    : "Try reading this page's prices automatically in the app's own browser view - falls back to pasting/typing if it can't."
+                }
+              >
+                <IconTag className="h-4 w-4" /> Auto-check
+              </Button>
+            )}
+            <Button variant="secondary" onClick={onCheckPrices} disabled={autoCheckRunning} title={autoCheckRunning ? "An auto-check is running right now - wait for it to finish or cancel it first." : undefined}>
+              <IconTag className="h-4 w-4" /> Check Prices
+            </Button>
+          </div>
         )}
       </div>
+
+      {view.marketplaceActive ? (
+        <div className="mb-4 flex items-center gap-2">
+          <IconLink className="h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" />
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="Paste this marketplace's listings page URL..."
+            className="text-xs"
+          />
+          {linkDirty && (
+            <Button onClick={saveLink} disabled={savingLink} className="shrink-0">
+              {savingLink ? <Spinner className="h-4 w-4" /> : "Save"}
+            </Button>
+          )}
+        </div>
+      ) : (
+        // Read-only, same styling as SavePriceCheckModal's own URL display -
+        // no Input/Save here, saving a new url for a retired marketplace
+        // would just be rejected by the backend anyway.
+        view.link?.url && (
+          <div className="mb-4 flex items-center gap-2">
+            <IconLink className="h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" />
+            <p className="select-all break-all rounded-lg bg-slate-50 px-2 py-1.5 font-mono text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+              {view.link.url}
+            </p>
+          </div>
+        )
+      )}
 
       {!latest ? (
         <p className="text-xs text-slate-400 dark:text-slate-500">No price checks recorded yet.</p>
@@ -339,7 +386,13 @@ function SavePriceCheckModal({
    *  paste already uses below, so the result is fully editable and marko
    *  reviews it before Save exactly like any paste. Any other status shows
    *  its own message plus Retry/Open page (see the banner below); the form
-   *  itself is otherwise identical to today. */
+   *  itself is otherwise identical to today.
+   *  2.1.6: when status is "ok" AND `aiAssisted` is true (the 4 free
+   *  rule-based passes found nothing, but the new Anthropic-API fallback
+   *  read prices off the page's visible text), a second, non-amber note
+   *  shows alongside the same prefilled/editable fields - the numbers
+   *  still go through the exact same pipeline above, this only adds a
+   *  "these came from AI, look them over" nudge (see below). */
   autoCheckResult?: AutoCheckResult | null;
   /** 2.1.2: the exact URL that auto-check attempt targeted - paired with
    *  autoCheckResult (both null together). Powers the banner's "Open page"
@@ -401,6 +454,22 @@ function SavePriceCheckModal({
     if (autoCheckResult && autoCheckResult.status === "ok" && autoCheckResult.prices.length > 0) {
       const symbol = autoCheckResult.currency === "EUR" ? "€" : autoCheckResult.currency === "GBP" ? "£" : "$";
       handlePasteTextChange(autoCheckResult.prices.map((p) => `${symbol}${p}`).join(" "));
+      // 2.1.6 bugfix: handlePasteTextChange's own currency detection only
+      // recognizes the $/€/£ symbols used to build the line above, so any
+      // OTHER currency auto-check actually reported (any 3-letter ISO code
+      // the new AI fallback can return - CZK, PLN, CHF, ...) got silently
+      // reduced to whichever of those 3 symbols the line above falls back
+      // to ($, same as USD) - and handlePasteTextChange then read that $
+      // straight back as "USD", overwriting the currency field with a
+      // flatly wrong value that could end up in a saved price check. Set
+      // it directly from what auto-check itself reported instead of
+      // trusting that lossy symbol round-trip to preserve it - this always
+      // runs AFTER handlePasteTextChange above, so it wins over whatever
+      // that call guessed from the symbol.
+      if (autoCheckResult.currency) {
+        setCurrency(autoCheckResult.currency);
+        setCustomCurrency(!CURRENCIES.includes(autoCheckResult.currency));
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, defaultCurrency, autoCheckResult]);
@@ -510,6 +579,21 @@ function SavePriceCheckModal({
                 Open the page myself
               </button>
             )}
+          </div>
+        )}
+        {/* 2.1.6: the normal, free rule-based passes found nothing, so this
+         *  result came from the Anthropic-API fallback reading the page's
+         *  visible text instead (see price_checker_auto.rs's
+         *  try_ai_extraction_fallback). The prices are already prefilled
+         *  into the same editable fields as any other auto-check/paste
+         *  result above - this is only a nudge to actually look them over,
+         *  since an AI read is more likely to be wrong than the page's own
+         *  structured price elements. Deliberately a calmer color than the
+         *  amber banner above (nothing failed here - status is "ok"). */}
+        {autoCheckResult && autoCheckResult.status === "ok" && autoCheckResult.aiAssisted && (
+          <div className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-400">
+            <IconInfo className="h-3.5 w-3.5 shrink-0" />
+            <span>AI read these prices off the page (the usual quick method didn't recognize it) - double-check the numbers below before saving.</span>
           </div>
         )}
         <Field label="Paste from the listings page" hint="Select the prices on that page, copy, and paste here - the 4 fields below fill in automatically.">
@@ -890,7 +974,7 @@ export default function PriceChecker() {
 
   return (
     <div>
-      <PageHeader title="Price Checker" subtitle="Compare your unsold inventory against StubHub, Vivid Seats and Ticombo." />
+      <PageHeader title="Price Checker" subtitle="Compare your unsold inventory against Vivid Seats, Ticombo and Viagogo." />
 
       <Card className="mb-6 max-w-md p-4">
         <Field label="Event">

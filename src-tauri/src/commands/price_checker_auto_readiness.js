@@ -27,5 +27,16 @@
   var ogPrice = document.querySelector('meta[property="og:price:amount"]');
   var hasOgPrice = !!(ogPrice && ogPrice.getAttribute("content"));
 
-  return JSON.stringify({ ready: blocked || hasJsonLdOffers || hasPriceTable || hasOgPrice, blocked: blocked });
+  // Mirrors EXTRACT_JS's own Pass 4 (generic visible-text currency-adjacent
+  // scan) so the polling loop can detect "ready" as soon as this signal
+  // appears too, instead of always running out the full budget before the
+  // one best-effort final extraction gets a chance to find it.
+  var hasGenericPrices = false;
+  if (!hasJsonLdOffers && !hasPriceTable && !hasOgPrice) {
+    var bodyText = document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 3000) : "";
+    var CONFIDENT_COUNT = (bodyText.match(/[€$£]\s?\d|\d\s?[€$£](?!\d)/g) || []).length;
+    hasGenericPrices = CONFIDENT_COUNT >= 2;
+  }
+
+  return JSON.stringify({ ready: blocked || hasJsonLdOffers || hasPriceTable || hasOgPrice || hasGenericPrices, blocked: blocked });
 })();
