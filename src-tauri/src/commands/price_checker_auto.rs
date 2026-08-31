@@ -288,7 +288,7 @@
 
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{AutoCheckListing, AutoCheckResult};
+use crate::models::{AutoCheckDiagnostics, AutoCheckListing, AutoCheckResult};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
@@ -428,6 +428,10 @@ enum ReadOutcome {
 fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
     match outcome {
         ReadOutcome::Json(raw) => parse_auto_check_json(&raw),
+        // Cancelled/TimedOut/Error never got a real page result to build
+        // diagnostics FROM (cancelled or timed out before/during an
+        // attempt, or a failure like an invalid URL that never reached a
+        // real page at all) - diagnostics: None here is honest, not a gap.
         ReadOutcome::Cancelled => AutoCheckResult {
             status: "cancelled".into(),
             prices: vec![],
@@ -435,6 +439,7 @@ fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
             message: Some("Auto-check was cancelled.".into()),
             listings: vec![],
             ai_assisted: false,
+            diagnostics: None,
         },
         ReadOutcome::TimedOut => AutoCheckResult {
             status: "timeout".into(),
@@ -446,10 +451,17 @@ fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
             ),
             listings: vec![],
             ai_assisted: false,
+            diagnostics: None,
         },
-        ReadOutcome::Error(message) => {
-            AutoCheckResult { status: "error".into(), prices: vec![], currency: None, message: Some(message), listings: vec![], ai_assisted: false }
-        }
+        ReadOutcome::Error(message) => AutoCheckResult {
+            status: "error".into(),
+            prices: vec![],
+            currency: None,
+            message: Some(message),
+            listings: vec![],
+            ai_assisted: false,
+            diagnostics: None,
+        },
     }
 }
 
@@ -515,6 +527,7 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
                 message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
                 listings: vec![],
                 ai_assisted: false,
+                diagnostics: None,
             });
         }
         *slot = Some(cancel_flag.clone());
@@ -529,7 +542,7 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
     // accepted, now wait for RESULT_EVENT" (see that event's own doc
     // comment) and keeps its own Starting/Loading/Analyzing UI driven by
     // PROGRESS_EVENT exactly as before.
-    Ok(AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false })
+    Ok(AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false, diagnostics: None })
 }
 
 /// "Cancel" button shown next to Auto-check's spinner while a check is in
@@ -826,6 +839,42 @@ fn should_stop_polling_for_readiness(remaining_budget: Duration) -> bool {
     remaining_budget <= EVAL_TIMEOUT
 }
 
+/// Upper bound on how many extraction attempts `poll_then_extract`'s retry
+/// loop (2.1.8) will make, independent of the budget-based stop condition
+/// above - marko's spec section 5 ("attempt 1, attempt 2, attempt 3...").
+/// Purely a sanity cap against pointless spinning on a page that keeps
+/// "succeeding" at scrolling further without ever showing a real listing
+/// (an infinite-scroll feed unrelated to ticket listings, say) while
+/// `OVERALL_TIMEOUT` still has plenty left - in the common case the budget
+/// check reached via `should_stop_polling_for_readiness` is what actually
+/// ends the loop, well before this count is reached.
+const MAX_EXTRACT_ATTEMPTS: u32 = 5;
+
+/// Cheap peek at one attempt's raw `EXTRACT_JS` result: is this worth
+/// stopping the retry loop for right now, on its own terms - a real
+/// anti-bot block (no point scrolling further, nothing more will ever load)
+/// or at least one price/listing actually found? Deliberately NOT the same
+/// thing as `parse_auto_check_json`'s full, stricter parsing (which also
+/// enforces `MAX_PRICES`, sanitizes currency, degrades a malformed payload
+/// to `"error"`, etc.) - this only needs to answer "keep retrying, or
+/// return this JSON as the attempt's final answer", the full parse still
+/// happens exactly once, in `read_outcome_to_result`, on whichever attempt's
+/// raw JSON this loop actually returns. A malformed/unparseable payload
+/// here is treated as "nothing found yet" (`false`), not an error - an
+/// unparseable attempt is exactly the kind of transient glitch (mid-render,
+/// a script conflict on the page) retrying is meant to ride out; the LAST
+/// attempt still reports it truthfully as `"error"` via the normal parse
+/// path once the loop actually stops.
+fn extraction_found_something(raw: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let blocked = parsed.get("blocked").and_then(|v| v.as_bool()).unwrap_or(false);
+    let has_prices = parsed.get("prices").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+    let has_listings = parsed.get("listings").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+    blocked || has_prices || has_listings
+}
+
 /// The actual poll loop: waits `MIN_WAIT` for the page to start rendering,
 /// then polls `READINESS_CHECK_JS` every `POLL_INTERVAL` until it reports
 /// `ready`, the overall budget is down to its last `EVAL_TIMEOUT`, or
@@ -874,6 +923,34 @@ fn should_stop_polling_for_readiness(remaining_budget: Duration) -> bool {
 /// matters. Trade-off: the true worst case is now ~`OVERALL_TIMEOUT` +
 /// `EVAL_TIMEOUT` (~63s), not a hard 60s - see that call site's own doc
 /// comment for the full reasoning.
+///
+/// 2.1.8: "ONE best-effort final extraction attempt" above is no longer
+/// literally one - marko's own spec, section 5 ("Extraction nerob iba raz...
+/// attempt 1, attempt 2, attempt 3... kým sa nájdu relevantné listings,
+/// stránka je označená blocked, alebo sa vyčerpá 60s budget"), in direct
+/// response to real-world marketplace pages whose listings render in
+/// several waves (a first paint, then a client-side data fetch, then
+/// lazy-loaded rows as the page scrolls) - a single attempt right as
+/// readiness first fires can easily land between two of those waves and see
+/// nothing yet, even on a page that would show real listings a couple of
+/// seconds later. The retry loop below keeps the EXACT lesson 2.1.6/2.1.7
+/// already paid for, generalized rather than special-cased: every single
+/// attempt, first or last, gets the SAME fixed, full `EVAL_TIMEOUT` window -
+/// nothing here ever derives an individual attempt's own wait duration from
+/// `remaining_budget`, because that specific pattern is what silently starved
+/// the "attempt that actually matters" twice already (see both paragraphs
+/// above). What DOES depend on the remaining budget is only ever a boolean -
+/// "is there room for another attempt after this one" - decided fresh before
+/// each attempt via the same `should_stop_polling_for_readiness` boundary
+/// already established (and unit-tested) above, so the worst-case total time
+/// stays the same documented ~63s ceiling regardless of how many attempts it
+/// took. `MAX_EXTRACT_ATTEMPTS` is a second, independent cap against
+/// pointless spinning when budget alone would otherwise allow many more
+/// retries (its own doc comment has the reasoning). Between attempts: one
+/// `READINESS_CHECK_JS` eval (whose own job, 2.1.8, now includes the actual
+/// incremental scroll marko's spec section 4 asks for - see that file's own
+/// comment) plus a short pause, so newly-scrolled-in content has a real
+/// chance to render before the next attempt looks for it.
 fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewWindow, overall_start: Instant, cancel: &AtomicBool) -> ReadOutcome {
     if cancel.load(Ordering::Relaxed) {
         return ReadOutcome::Cancelled;
@@ -929,39 +1006,90 @@ fn poll_then_extract(app: &AppHandle, request_id: u64, webview: &tauri::WebviewW
     }
     emit_phase(app, request_id, "analyzing");
     log_lifecycle(request_id, "analysis started");
-    // 2.1.7: no longer derived from `remaining_budget(overall_start)` at
-    // all. The 2.1.6 fix reserved EVAL_TIMEOUT by making the loop above
-    // stop early - correct in spirit, but its own doc comment already
-    // admitted the reserve isn't a "mathematically perfect guarantee": the
-    // loop's ~POLL_INTERVAL polling granularity means it can still break
-    // with less than a full EVAL_TIMEOUT left (e.g. it was already at
-    // budget=1.2s when a poll tick started, so the NEXT check trips
-    // `should_stop_polling_for_readiness` at 1.2s, not a full 3s), and
-    // re-deriving `budget` HERE from the same shared clock inherits
-    // whatever that shortfall was - `budget.min(EVAL_TIMEOUT)` could still
-    // end up well under 3s, or even (right at OVERALL_TIMEOUT itself)
-    // exactly zero, which `eval_and_wait` turns into an immediate
-    // `TimedOut` with no real attempt at all (see its own `is_zero()`
-    // guard) - silently reintroducing a narrower version of the exact
-    // "final attempt doesn't really happen" bug this was meant to fix.
-    // A FIXED `EVAL_TIMEOUT` here removes that dependency entirely - this
-    // one attempt always gets its full, real window no matter how the
-    // clock above landed, at the cost of `OVERALL_TIMEOUT` becoming a
-    // soft ceiling rather than a hard one (worst case ~63s total, not
-    // 60s) - an explicit, bounded, worth-it trade for "the one attempt
-    // that actually matters always gets a real chance to run" over an
-    // exact-to-the-second timeout that could still silently skip it.
-    match eval_and_wait(webview, EXTRACT_JS, EVAL_TIMEOUT, cancel) {
-        EvalOutcome::Ready(raw) => {
-            log_lifecycle(request_id, &format!("result received ({} bytes)", raw.len()));
-            ReadOutcome::Json(raw)
+
+    // 2.1.8 retry loop - see this function's own "2.1.8" doc comment above
+    // for the full reasoning. `attempt` is 1-based purely for log/
+    // diagnostic readability.
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        if cancel.load(Ordering::Relaxed) {
+            return ReadOutcome::Cancelled;
         }
-        EvalOutcome::Cancelled => ReadOutcome::Cancelled,
-        EvalOutcome::TimedOut => ReadOutcome::TimedOut,
-        // 2.1.3: previously mislabeled "timeout" (see EvalOutcome's own doc
-        // comment) - a real JS-evaluation failure now reports its own
-        // distinct "error" instead, per marko's spec section 11.
-        EvalOutcome::Failed(reason) => ReadOutcome::Error(format!("The reader page's script could not be run ({reason}).")),
+        // Decided BEFORE this attempt runs, from the CURRENT clock - once
+        // this is true, this attempt is the last one no matter what it
+        // finds, so it must be treated exactly like the old single "final"
+        // attempt (which it now literally is, on this path through the
+        // loop).
+        let is_last_attempt = should_stop_polling_for_readiness(remaining_budget(overall_start)) || attempt >= MAX_EXTRACT_ATTEMPTS;
+
+        // Every attempt, first or last, gets the SAME fixed EVAL_TIMEOUT
+        // window - never derived from remaining_budget. See this function's
+        // own "2.1.8" doc comment for why that specific derivation is
+        // exactly what silently broke this twice before (2.1.6, 2.1.7).
+        match eval_and_wait(webview, EXTRACT_JS, EVAL_TIMEOUT, cancel) {
+            EvalOutcome::Ready(raw) => {
+                log_lifecycle(request_id, &format!("attempt {attempt} result received ({} bytes)", raw.len()));
+                if is_last_attempt || extraction_found_something(&raw) {
+                    return ReadOutcome::Json(raw);
+                }
+                log_lifecycle(request_id, &format!("attempt {attempt} found nothing yet - retrying"));
+            }
+            EvalOutcome::Cancelled => return ReadOutcome::Cancelled,
+            EvalOutcome::TimedOut => {
+                log_lifecycle(request_id, &format!("attempt {attempt} timed out"));
+                if is_last_attempt {
+                    return ReadOutcome::TimedOut;
+                }
+            }
+            // 2.1.3: previously mislabeled "timeout" (see EvalOutcome's own
+            // doc comment) - a real JS-evaluation failure reports its own
+            // distinct "error" instead, per marko's spec section 11. Never
+            // retried (unlike TimedOut/an empty result above) - a dispatch/
+            // callback failure means something is wrong with the reader
+            // window itself, not "the listings haven't rendered yet",
+            // exactly the distinction EvalOutcome::Failed exists to draw.
+            EvalOutcome::Failed(reason) => return ReadOutcome::Error(format!("The reader page's script could not be run ({reason}).")),
+        }
+
+        if is_last_attempt {
+            // Unreachable in practice (every branch above that can run when
+            // is_last_attempt is true already returns), kept only so this
+            // loop is provably not infinite even if a future edit adds a
+            // branch that forgets to check it.
+            return ReadOutcome::TimedOut;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return ReadOutcome::Cancelled;
+        }
+        // Between attempts: READINESS_CHECK_JS's own side effect performs
+        // one incremental scroll step (see that file's own comment) - its
+        // `ready`/`blocked` answer is deliberately ignored here, this loop
+        // already has its own, stricter "did EXTRACT_JS itself find
+        // something" criteria via extraction_found_something.
+        //
+        // Capped by remaining budget (fixed on adversarial review - this
+        // used to be an unconditional EVAL_TIMEOUT here, which could add a
+        // full extra EVAL_TIMEOUT on top of the extraction eval above
+        // within the SAME non-last iteration, pushing the true worst case
+        // to ~OVERALL_TIMEOUT + 2*EVAL_TIMEOUT instead of the documented
+        // ~OVERALL_TIMEOUT + EVAL_TIMEOUT). This is safe to shrink, unlike
+        // the extraction eval above: this call's own `ready`/`blocked`
+        // result is thrown away either way, so a smaller window here can
+        // only mean slightly less time for this one scroll step to settle,
+        // never a starved attempt - the actual "attempt that matters" stays
+        // on its own always-fixed EVAL_TIMEOUT.
+        let _ = eval_and_wait(webview, READINESS_CHECK_JS, EVAL_TIMEOUT.min(remaining_budget(overall_start)), cancel);
+        if cancel.load(Ordering::Relaxed) {
+            return ReadOutcome::Cancelled;
+        }
+        // The pause itself IS fine to shrink under budget pressure - unlike
+        // an extraction attempt's own wait, a shorter settle pause only
+        // means slightly less time for newly-scrolled-in content to render
+        // before the next attempt, never a skipped attempt.
+        if !sleep_interruptible(POLL_INTERVAL.min(remaining_budget(overall_start)), cancel) {
+            return ReadOutcome::Cancelled;
+        }
     }
 }
 
@@ -977,8 +1105,11 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             message: Some("The reader window returned something unexpected.".into()),
             listings: vec![],
             ai_assisted: false,
+            diagnostics: None, // nothing to parse diagnostics FROM - the whole payload wasn't even valid JSON
         };
     };
+
+    let diagnostics = parse_diagnostics(&parsed);
 
     if parsed.get("blocked").and_then(|v| v.as_bool()).unwrap_or(false) {
         return AutoCheckResult {
@@ -992,6 +1123,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             ),
             listings: vec![],
             ai_assisted: false,
+            diagnostics,
         };
     }
 
@@ -1012,6 +1144,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             )),
             listings: vec![],
             ai_assisted: false,
+            diagnostics,
         };
     }
 
@@ -1028,48 +1161,166 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             status: "unable_to_read".into(),
             prices: vec![],
             currency,
-            message: Some(build_unable_to_read_message(&parsed)),
+            message: Some(build_diagnostic_message(
+                "The page loaded, but no prices could be found on it automatically. Use the paste/manual entry below instead.",
+                &parsed,
+            )),
             listings: vec![],
             ai_assisted: false,
+            diagnostics,
         };
     }
 
-    AutoCheckResult { status: "ok".into(), prices, currency, message: None, listings, ai_assisted: false }
+    // 2.1.8 (marko's spec section 9): a real price number is not the same
+    // claim as a real, confirmed ticket LISTING - `listings` only ever gets
+    // an entry when a price came with correlated section/row/seat context
+    // (see price_checker_auto_extract.js's own `readCandidates`/
+    // `nearbyListingContext`, and the Vivid Seats table pass, which has
+    // always populated it this same way since 2.1.4). Bare prices with no
+    // such context - a schema.org AggregateOffer's low/high, an og:price
+    // meta tag, a generic currency-adjacent number - are real numbers the
+    // page actually showed, never fabricated, but not confirmed as
+    // individual listings either; `"partial"` says exactly that, rather
+    // than either overclaiming `"ok"` or discarding real data as
+    // `"unable_to_read"`.
+    if listings.is_empty() {
+        return AutoCheckResult {
+            status: "partial".into(),
+            prices: prices.clone(),
+            currency,
+            message: Some(build_diagnostic_message(
+                &format!(
+                    "Found {} price{} on the page, but couldn't confirm they're individual ticket listings \
+                     (no matching section/row/seat detail nearby) - this could be an aggregate, a starting-price \
+                     figure, or an unrelated number. Double-check carefully before saving.",
+                    prices.len(),
+                    if prices.len() == 1 { "" } else { "s" }
+                ),
+                &parsed,
+            )),
+            listings: vec![],
+            ai_assisted: false,
+            diagnostics,
+        };
+    }
+
+    AutoCheckResult { status: "ok".into(), prices, currency, message: None, listings, ai_assisted: false, diagnostics }
 }
 
-/// Builds the message marko actually sees for an `"unable_to_read"` result -
-/// 2.1.5, in direct response to his real report that Auto-check ran the
-/// full 60s and found nothing on every marketplace he tried. Without this,
-/// the only way to know WHY would have been console output he has no way to
-/// see in a packaged GUI app (no terminal attached) - this puts the same
-/// information directly in the message the UI already shows, so the very
-/// next attempt is self-diagnosing instead of needing another round trip.
-/// Every piece here is something the page's own markup/visible text
-/// actually said - never invented, matching this whole module's own
-/// "never fabricate data" rule.
-fn build_unable_to_read_message(parsed: &serde_json::Value) -> String {
+/// Builds `AutoCheckDiagnostics` from `EXTRACT_JS`'s raw `diagnostics`
+/// object, or `None` if that object is missing entirely (an older cached
+/// page, or a genuinely unusual payload) - never partially-built with made-
+/// up zeros standing in for absent fields, matching every other parse in
+/// this module. Every individual field still degrades independently to
+/// `None` (not the whole struct) when only THAT one is missing/wrong-typed,
+/// so a page that reports 11 of these 14 fields correctly still gets useful
+/// diagnostics for the 11, rather than losing everything over the 3 it
+/// couldn't. Pure and unit-tested directly - see the tests below.
+fn parse_diagnostics(parsed: &serde_json::Value) -> Option<AutoCheckDiagnostics> {
+    let diag = parsed.get("diagnostics")?;
+    let s = |key: &str| diag.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+    let n = |key: &str| diag.get(key).and_then(|v| v.as_u64());
+    let n32 = |key: &str| diag.get(key).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok());
+    Some(AutoCheckDiagnostics {
+        marketplace_reader: s("marketplaceReader"),
+        attempt: n32("attempt"),
+        page_title: parsed.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(String::from),
+        final_url: s("finalUrl"),
+        dom_length: n("domLength"),
+        visible_text_length: n("visibleTextLength"),
+        table_count: n("tableCount"),
+        link_count: n("linkCount"),
+        button_count: n("buttonCount"),
+        currency_symbol_element_count: n("currencySymbolElementCount"),
+        price_text_element_count: n("priceTextElementCount"),
+        section_text_element_count: n("sectionTextElementCount"),
+        row_text_element_count: n("rowTextElementCount"),
+        candidate_listing_element_count: n("candidateListingElementCount"),
+        text_sample: s("textSample"),
+        dom_snapshot: s("domSnapshot"),
+    })
+}
+
+/// Builds the message marko actually sees for an `"unable_to_read"` or
+/// `"partial"` result - 2.1.5 originally (title/table-count/text-sample
+/// only), extended 2.1.8 (marko's spec section 7: "Aktuálna hláška...
+/// je príliš slabá") with everything else `AutoCheckDiagnostics` now
+/// carries. Without this, the only way to know WHY would have been console
+/// output marko has no way to see in a packaged GUI app (no terminal
+/// attached) - this puts the same information directly in the message the
+/// UI already shows, so marko's existing "copy the message, paste it back
+/// to me" workflow (the exact one that led to this rewrite) carries enough
+/// to actually diagnose the next miss, without another round trip just to
+/// ask "what did it see". `domSnapshot` deliberately never appears here
+/// (see `AutoCheckDiagnostics::dom_snapshot`'s own doc comment) - it would
+/// dwarf everything else in this message; it is still on the structured
+/// result for whenever it's actually needed. `base` is the one sentence
+/// that differs between the two callers; everything from "What the reader
+/// actually saw" down is identical for both. Every piece here is something
+/// the page's own markup/visible text actually said - never invented,
+/// matching this whole module's own "never fabricate data" rule.
+fn build_diagnostic_message(base: &str, parsed: &serde_json::Value) -> String {
     let title = parsed.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
     let diag = parsed.get("diagnostics");
+    let reader = diag.and_then(|d| d.get("marketplaceReader")).and_then(|v| v.as_str());
+    let attempt = diag.and_then(|d| d.get("attempt")).and_then(|v| v.as_u64());
+    let candidates = diag.and_then(|d| d.get("candidateListingElementCount")).and_then(|v| v.as_u64());
     let table_count = diag.and_then(|d| d.get("tableCount")).and_then(|v| v.as_u64());
-    let text_sample = diag
-        .and_then(|d| d.get("textSample"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
+    let link_count = diag.and_then(|d| d.get("linkCount")).and_then(|v| v.as_u64());
+    let button_count = diag.and_then(|d| d.get("buttonCount")).and_then(|v| v.as_u64());
+    let currency_count = diag.and_then(|d| d.get("currencySymbolElementCount")).and_then(|v| v.as_u64());
+    let price_count = diag.and_then(|d| d.get("priceTextElementCount")).and_then(|v| v.as_u64());
+    let section_count = diag.and_then(|d| d.get("sectionTextElementCount")).and_then(|v| v.as_u64());
+    let row_count = diag.and_then(|d| d.get("rowTextElementCount")).and_then(|v| v.as_u64());
+    let dom_length = diag.and_then(|d| d.get("domLength")).and_then(|v| v.as_u64());
+    let text_length = diag.and_then(|d| d.get("visibleTextLength")).and_then(|v| v.as_u64());
+    let text_sample = diag.and_then(|d| d.get("textSample")).and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
+    let has_snapshot = diag.and_then(|d| d.get("domSnapshot")).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
 
-    let mut msg = String::from(
-        "The page loaded, but no prices could be found on it automatically. Use the paste/manual entry below instead.",
-    );
+    let mut msg = String::from(base);
     msg.push_str("\n\nWhat the reader actually saw (for diagnosis):");
+    if let Some(r) = reader {
+        msg.push_str(&format!("\n- Marketplace reader used: {r}"));
+    }
     if let Some(t) = title {
         msg.push_str(&format!("\n- Page title: \"{t}\""));
     }
-    if let Some(n) = table_count {
-        msg.push_str(&format!("\n- HTML <table> elements found: {n}"));
+    if let Some(a) = attempt {
+        msg.push_str(&format!("\n- Extraction attempts made: {a}"));
+    }
+    if let Some(c) = candidates {
+        msg.push_str(&format!("\n- Candidate listing elements found: {c}"));
+    }
+    if table_count.is_some() || link_count.is_some() || button_count.is_some() {
+        msg.push_str(&format!(
+            "\n- HTML elements: {} <table>, {} links, {} buttons",
+            table_count.unwrap_or(0),
+            link_count.unwrap_or(0),
+            button_count.unwrap_or(0)
+        ));
+    }
+    if currency_count.is_some() || price_count.is_some() || section_count.is_some() || row_count.is_some() {
+        msg.push_str(&format!(
+            "\n- Elements mentioning a currency symbol / \"price\" / \"section\" / \"row\": {} / {} / {} / {}",
+            currency_count.unwrap_or(0),
+            price_count.unwrap_or(0),
+            section_count.unwrap_or(0),
+            row_count.unwrap_or(0)
+        ));
+    }
+    if dom_length.is_some() || text_length.is_some() {
+        msg.push_str(&format!(
+            "\n- Page size: {} chars of HTML, {} chars of visible text",
+            dom_length.unwrap_or(0),
+            text_length.unwrap_or(0)
+        ));
     }
     if let Some(sample) = text_sample {
         let truncated: String = sample.chars().take(300).collect();
         msg.push_str(&format!("\n- First visible text: \"{truncated}{}\"", if sample.chars().count() > 300 { "..." } else { "" }));
+    }
+    if has_snapshot {
+        msg.push_str("\n\n(A safe snapshot of the page's own HTML was also captured for a closer look - no cookies or login data included.)");
     }
     msg
 }
@@ -1084,7 +1335,7 @@ mod pure_module_tests {
         let result = parse_auto_check_json(raw);
         let msg = result.message.unwrap();
         assert!(msg.contains("Some Event | Marketplace"), "must surface the real page title for diagnosis");
-        assert!(msg.contains("<table> elements found: 0"));
+        assert!(msg.contains("0 <table>"));
         assert!(msg.contains("Sold out"));
     }
 
@@ -1095,6 +1346,7 @@ mod pure_module_tests {
         let raw = r#"{"prices": [], "currency": null, "blocked": false}"#;
         let result = parse_auto_check_json(raw);
         assert!(result.message.unwrap().contains("no prices could be found"));
+        assert_eq!(result.diagnostics, None, "no diagnostics object in the payload at all must mean None, not a zeroed-out struct");
     }
 
     #[test]
@@ -1104,6 +1356,69 @@ mod pure_module_tests {
         let result = parse_auto_check_json(&raw);
         let msg = result.message.unwrap();
         assert!(msg.contains("..."), "a long sample must be truncated, not dumped whole into the UI message");
+    }
+
+    #[test]
+    fn unable_to_read_message_never_inlines_the_dom_snapshot_but_notes_it_was_captured() {
+        let raw = serde_json::json!({"prices": [], "currency": null, "blocked": false, "diagnostics": {"domSnapshot": "<div class=\"secret-marker-xyz\">hi</div>"}}).to_string();
+        let result = parse_auto_check_json(&raw);
+        let msg = result.message.unwrap();
+        assert!(!msg.contains("secret-marker-xyz"), "the raw snapshot HTML must never be dumped into the human-facing message");
+        assert!(msg.contains("safe snapshot"), "must still say one was captured, so marko knows it exists");
+        assert_eq!(result.diagnostics.unwrap().dom_snapshot.as_deref(), Some("<div class=\"secret-marker-xyz\">hi</div>"), "but IS on the structured result");
+    }
+
+    #[test]
+    fn a_bare_price_with_no_listing_context_is_partial_not_ok() {
+        // og:price-shaped payload - a real number, no section/row context.
+        let raw = r#"{"prices": [199.5], "currency": "USD", "blocked": false, "listings": [], "diagnostics": {"marketplaceReader": "ticombo"}}"#;
+        let result = parse_auto_check_json(raw);
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.prices, vec![199.5], "the real number found must still be reported, not discarded");
+        assert!(result.listings.is_empty());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Found 1 price"));
+        assert!(msg.contains("couldn't confirm"));
+    }
+
+    #[test]
+    fn prices_with_real_listing_context_are_ok_not_partial() {
+        let raw = r#"{"prices": [199.5], "currency": "USD", "blocked": false,
+            "listings": [{"price": 199.5, "currency": "USD", "section": "112", "row": "A", "quantity": 2}]}"#;
+        let result = parse_auto_check_json(raw);
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.listings.len(), 1);
+        assert!(result.message.is_none(), "a confirmed ok result carries no diagnostic message, matching pre-2.1.8 behavior");
+    }
+
+    #[test]
+    fn partial_message_uses_correct_singular_plural_price_wording() {
+        let one = parse_auto_check_json(r#"{"prices": [10.0], "currency": null, "blocked": false, "listings": []}"#);
+        assert!(one.message.unwrap().contains("Found 1 price on"));
+        let two = parse_auto_check_json(r#"{"prices": [10.0, 20.0], "currency": null, "blocked": false, "listings": []}"#);
+        assert!(two.message.unwrap().contains("Found 2 prices on"));
+    }
+
+    #[test]
+    fn parse_diagnostics_keeps_the_fields_present_even_when_others_are_missing_or_wrong_typed() {
+        let raw = serde_json::json!({
+            "prices": [], "currency": null, "blocked": false,
+            "diagnostics": { "marketplaceReader": "stubhub", "tableCount": 3, "linkCount": "not a number" }
+        })
+        .to_string();
+        let result = parse_auto_check_json(&raw);
+        let d = result.diagnostics.unwrap();
+        assert_eq!(d.marketplace_reader.as_deref(), Some("stubhub"));
+        assert_eq!(d.table_count, Some(3));
+        assert_eq!(d.link_count, None, "a wrong-typed field must degrade to None for itself only, not fail the whole struct");
+    }
+
+    #[test]
+    fn blocked_result_still_carries_diagnostics() {
+        let raw = serde_json::json!({"prices": [], "currency": null, "blocked": true, "diagnostics": {"marketplaceReader": "blocked", "buttonCount": 4}}).to_string();
+        let result = parse_auto_check_json(&raw);
+        assert_eq!(result.status, "blocked");
+        assert_eq!(result.diagnostics.unwrap().button_count, Some(4), "diagnostics are still worth having on a blocked page too");
     }
 }
 
@@ -1372,7 +1687,22 @@ fn try_ai_extraction_fallback(
     let extraction = parse_ai_extraction_response(&response)?;
     log_lifecycle(request_id, &format!("AI fallback found {} price(s)", extraction.prices.len()));
     Some(AutoCheckResult {
-        status: "ok".into(),
+        // 2.1.8 (fixed on adversarial review): this used to unconditionally
+        // be "ok" - but 2.1.8 elsewhere in this same file redefined "ok" to
+        // specifically mean "confirmed real listings, price correlated with
+        // section/row/seat context" (see parse_auto_check_json's own ok/
+        // partial split). The AI fallback's prompt only ever asks for a
+        // flat prices array - it has no schema slot for section/row/seat at
+        // all, so `listings` below is always empty and this evidence is
+        // structurally identical to what earns "partial" everywhere else in
+        // this file: real prices, no confirmed listing correlation. Giving
+        // it "ok" gave an LLM's free-text guess - which this very message
+        // already admits is more likely to be wrong than the page's own
+        // structured data - a MORE confident label than a bare structured
+        // price would get. `ai_assisted: true` (below) is untouched and
+        // still drives its own separate "AI read these" note in the UI -
+        // this only changes which status string carries that evidence.
+        status: "partial".into(),
         prices: extraction.prices,
         currency: extraction.currency,
         message: Some(
@@ -1382,6 +1712,15 @@ fn try_ai_extraction_fallback(
         ),
         listings: vec![],
         ai_assisted: true,
+        // Deliberately None, not the rule-based passes' own diagnostics
+        // (which already exist, on the "unable_to_read" result this
+        // replaces) - the AI's OWN confidence signal is `ai_assisted: true`
+        // plus this message, a different kind of "double-check this" than
+        // AutoCheckDiagnostics represents, and re-attaching page-structure
+        // diagnostics to an AI-sourced result risks implying they explain
+        // ITS answer, when they only ever described why the rule-based
+        // pass came up empty in the first place.
+        diagnostics: None,
     })
 }
 
@@ -1631,7 +1970,19 @@ mod tests {
 
     #[test]
     fn parses_ok_result_with_prices() {
-        let raw = r#"{"prices": [31.0, 39.0, 39.0, 50.0, 52.0], "currency": "USD", "blocked": false}"#;
+        // 2.1.8: "ok" now specifically means real listing context was
+        // found, not merely a non-empty prices array (see this module's own
+        // "2.1.8" doc comment on parse_auto_check_json / the "partial"
+        // tests below for that new distinction) - a `listings` entry per
+        // price is what makes this fixture a genuine "ok" case rather than
+        // "partial".
+        let raw = r#"{"prices": [31.0, 39.0, 39.0, 50.0, 52.0], "currency": "USD", "blocked": false, "listings": [
+            {"price": 31.0, "currency": "USD", "section": "101", "row": "A", "quantity": 1},
+            {"price": 39.0, "currency": "USD", "section": "102", "row": "B", "quantity": 1},
+            {"price": 39.0, "currency": "USD", "section": "102", "row": "C", "quantity": 1},
+            {"price": 50.0, "currency": "USD", "section": "103", "row": "A", "quantity": 1},
+            {"price": 52.0, "currency": "USD", "section": "103", "row": "B", "quantity": 1}
+        ]}"#;
         let result = parse_auto_check_json(raw);
         assert_eq!(result.status, "ok");
         assert_eq!(result.prices, vec![31.0, 39.0, 39.0, 50.0, 52.0]);
@@ -1782,6 +2133,76 @@ mod tests {
     fn should_stop_polling_is_true_with_less_than_eval_timeout_or_nothing_left() {
         assert!(should_stop_polling_for_readiness(EVAL_TIMEOUT - Duration::from_millis(1)));
         assert!(should_stop_polling_for_readiness(Duration::ZERO));
+    }
+
+    // -- 2.1.8 multi-attempt retry loop (marko's spec section 5/6: "don't
+    //    extract only once - attempt 1, attempt 2, attempt 3... until
+    //    relevant listings are found, the page is marked blocked, or the
+    //    budget is exhausted"). `poll_then_extract` itself needs a real
+    //    `WebviewWindow` and can't be unit-tested directly (same limitation
+    //    as everywhere else in this module), so these lock in the pure
+    //    decision function the loop is actually built on:
+    //    `extraction_found_something` - "is this attempt's raw result worth
+    //    stopping for, or should the loop scroll and try again". ------------
+
+    #[test]
+    fn dynamic_content_not_ready_yet_is_reported_as_nothing_found_so_the_loop_retries() {
+        // An attempt fired before the marketplace's JS has rendered any
+        // listings - the extractor legitimately ran and came back with
+        // truly empty arrays. Must read as "keep retrying", not as a result
+        // worth returning early.
+        assert!(!extraction_found_something(r#"{"prices": [], "currency": null, "blocked": false, "listings": []}"#));
+    }
+
+    #[test]
+    fn a_listing_that_only_appears_on_a_later_attempt_is_recognized_the_moment_it_does() {
+        // Simulates the shape of "attempt 1 empty (page still loading),
+        // attempt 2 (after a scroll + short wait) finds the listing" -
+        // the two attempts' raw payloads in sequence, each fed through the
+        // same pure check the real loop uses to decide whether to stop.
+        let attempt_1 = r#"{"prices": [], "currency": null, "blocked": false, "listings": []}"#;
+        let attempt_2 = r#"{"prices": [45.0], "currency": "USD", "blocked": false, "listings": [{"price": 45.0, "currency": "USD", "section": "Floor A", "row": "3", "quantity": 2}]}"#;
+        assert!(!extraction_found_something(attempt_1), "attempt 1 has nothing yet - must not stop the loop early");
+        assert!(extraction_found_something(attempt_2), "attempt 2 found a real listing - must stop the loop here");
+    }
+
+    #[test]
+    fn scroll_revealed_only_bare_prices_still_counts_as_something_found() {
+        // A page whose lazy-loaded content is a lone aggregated/starting
+        // price rather than itemized listings still needs the loop to stop
+        // and hand that off to parse_auto_check_json (which will correctly
+        // grade it "partial", not "ok" - that grading is a separate concern
+        // from "is it worth ending the retry loop for").
+        assert!(extraction_found_something(r#"{"prices": [120.0], "currency": "EUR", "blocked": false, "listings": []}"#));
+    }
+
+    #[test]
+    fn a_blocked_page_stops_the_retry_loop_immediately_even_with_nothing_else_found() {
+        // No point scrolling a CAPTCHA/anti-bot interstitial six more times
+        // hoping a price appears - marko's spec section 6 lists "the page is
+        // marked blocked" as one of the loop's three legitimate stop
+        // conditions, independent of prices/listings being empty.
+        assert!(extraction_found_something(r#"{"prices": [], "currency": null, "blocked": true, "listings": []}"#));
+    }
+
+    #[test]
+    fn an_unparseable_attempt_result_is_treated_as_nothing_found_yet_not_as_an_error() {
+        // A single garbled attempt (mid-render, a page script conflict) is
+        // exactly the kind of transient glitch retrying is meant to ride
+        // out - see extraction_found_something's own doc comment. It must
+        // never be treated as a stop-worthy signal; the LAST attempt still
+        // reports a genuinely malformed payload truthfully as "error" later,
+        // via parse_auto_check_json, once the loop actually stops.
+        assert!(!extraction_found_something("not valid json at all"));
+        assert!(!extraction_found_something(""));
+    }
+
+    #[test]
+    fn max_extract_attempts_actually_allows_more_than_a_single_try() {
+        // Locks in marko's explicit "not just once" requirement at the
+        // constant level - a regression back to 1 would silently undo the
+        // entire retry loop while every other test here still passed.
+        assert!(MAX_EXTRACT_ATTEMPTS > 1);
     }
 
     // -- RAII cleanup pattern (see WebviewGuard's own doc comment for the
@@ -1982,11 +2403,20 @@ mod tests {
 
     #[test]
     fn exactly_max_prices_is_still_accepted_as_a_normal_success() {
+        // This fixture carries no `listings` (irrelevant to what it's
+        // actually testing - the MAX_PRICES count boundary), so 2.1.8's
+        // stricter "ok" definition correctly reports it as "partial", not
+        // "ok" - see parses_ok_result_with_prices for a fixture that
+        // exercises the "ok" path instead. What this test still proves,
+        // unchanged: exactly MAX_PRICES is accepted and NOT truncated/
+        // rejected the way MAX_PRICES + 1 is (previous test) - "still a
+        // normal success" means "not silently truncated", regardless of
+        // which of ok/partial a bare list of prices resolves to.
         let exactly_max: Vec<f64> = (0..MAX_PRICES).map(|i| (i + 1) as f64).collect();
         let raw = serde_json::json!({ "prices": exactly_max, "currency": "USD", "blocked": false }).to_string();
         let result = parse_auto_check_json(&raw);
-        assert_eq!(result.status, "ok");
-        assert_eq!(result.prices.len(), MAX_PRICES);
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.prices.len(), MAX_PRICES, "must not be truncated - all MAX_PRICES entries must survive");
     }
 
     // -- OPEN_WEBVIEW_COUNT pairing ("no orphan windows" - the closest
@@ -2050,7 +2480,10 @@ mod tests {
     #[test]
     fn every_read_outcome_variant_maps_to_a_real_terminal_status_never_a_loading_one() {
         let loading_like = ["starting", "loading", "analyzing", "cleaning_up"];
-        let terminal = ["ok", "unable_to_read", "blocked", "cancelled", "timeout", "error"];
+        // "partial" added in 2.1.8: a bare-price-no-listing-context result is
+        // just as terminal as "ok" - it must never be mistaken for a
+        // loading-shaped state either.
+        let terminal = ["ok", "partial", "unable_to_read", "blocked", "cancelled", "timeout", "error"];
         let cases = [
             ReadOutcome::Json(r#"{"prices": [10.0], "currency": "USD", "blocked": false}"#.to_string()),
             ReadOutcome::Json(r#"{"prices": [], "currency": null, "blocked": false}"#.to_string()),
@@ -2080,6 +2513,7 @@ mod tests {
             message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
             listings: vec![],
             ai_assisted: false,
+            diagnostics: None,
         };
         assert_eq!(busy.status, "busy");
         assert!(busy.prices.is_empty());
@@ -2133,7 +2567,8 @@ mod tests {
         // Locks in the literal string PriceChecker.tsx's own `.then()`
         // branches on for the non-terminal ack - see auto_check_price's own
         // doc comment ("True non-blocking fix").
-        let started = AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false };
+        let started =
+            AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![], ai_assisted: false, diagnostics: None };
         assert_eq!(started.status, "started");
         assert_ne!(started.status, "ok");
         assert!(started.prices.is_empty(), "a \"started\" ack must never carry any price data of its own");
@@ -2178,9 +2613,15 @@ mod tests {
     #[test]
     fn missing_listings_key_is_fine_prices_alone_still_work() {
         // The JSON-LD and og:price passes never populate "listings" at all.
+        // 2.1.8: a bare price with no listing context is correctly "partial"
+        // now (see the ok/partial confidence rule), not "ok" - but the
+        // original point of this test still holds and is asserted below:
+        // the price itself is never lost or blanked out just because
+        // "listings" is entirely absent from the payload.
         let raw = r#"{"prices": [99.0], "currency": "USD", "blocked": false}"#;
         let result = parse_auto_check_json(raw);
-        assert_eq!(result.status, "ok");
+        assert_eq!(result.status, "partial");
+        assert_eq!(result.prices, vec![99.0], "the price must still be reported, not lost");
         assert!(result.listings.is_empty());
     }
 

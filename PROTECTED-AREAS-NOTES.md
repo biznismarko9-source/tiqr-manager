@@ -6,6 +6,67 @@ the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files for those, one per
 release), just traps worth knowing about before working here again. New
 entries go at the top, dated by the version that found them.
 
+## 2.1.8 - Price Checker real-DOM reader rewrite
+
+`price_checker_auto_extract.js`/`price_checker_auto_readiness.js` were
+rewritten around per-marketplace readers (StubHub/Vivid Seats/Ticombo, each
+with its own layered selectors, all falling through to `readGeneric()` as a
+last resort) instead of one generic parser, plus a bounded multi-attempt
+retry loop in `poll_then_extract`. A few things that bit during this work,
+worth knowing before touching this area again:
+
+- **Never concatenate sibling elements' text without a separator when
+  scanning for context.** `.textContent` on a parent with adjacent
+  `<span>` children (exactly how JSX compiles
+  `<span>{a}</span><span>{b}</span>`, with zero whitespace between them)
+  runs their text together with NOTHING between them - "Row 12" next to "2
+  tickets" reads as "122 tickets" and silently reports the wrong quantity,
+  not just messy text. `nearbyListingContext` now uses `textWithGaps` (an
+  element-boundary-aware walker) instead of plain `textOf`/`.textContent`
+  for exactly this reason - if you add another context-scanning regex, feed
+  it `textWithGaps`, not `textOf`.
+- **A price parser is not done until it's been checked against a European
+  decimal-comma format.** `parseMoney`'s original number parsing did
+  `parseFloat(numRaw.replace(/,/g, ""))`, which silently treats a comma as
+  a thousands separator always - correct for "$1,234.56", silently 100x-1000x
+  wrong for "234,56 €" (marko is in Slovakia; this is the format he
+  actually sees). `src/lib/priceParse.ts`'s `normalizeAmountToken` already
+  had the correct locale-aware logic (look at the LAST separator and how
+  many digits follow it) - `price_checker_auto_extract.js` now has its own
+  plain-JS port of the same algorithm (can't `import` a TS module into a
+  webview eval string). If either file's money parsing is touched again,
+  re-verify BOTH "234,56 €" and "$1,234.56" still come out right, not just
+  one format.
+- **"ok" now specifically means "a price correlated with real section/row/
+  seat context", not just "a price was found".** A bare, uncorrelated price
+  is `"partial"` (own status, own amber banner in PriceChecker.tsx, still
+  prefills the editable fields) - this rule applies to EVERY path that can
+  produce an `AutoCheckResult`, including the AI-assisted fallback
+  (`try_ai_extraction_fallback`), which structurally can never populate
+  `listings` (its prompt/schema has no section/row/seat slot at all) and so
+  can never legitimately be `"ok"` either. If a future change adds a new
+  way to produce a result, it needs to honestly decide ok vs. partial by
+  this same rule, not default to "ok" because prices exist.
+- **An extraction attempt's own eval timeout must NEVER be derived from a
+  shrinking remaining-budget clock** - this is the THIRD time this exact
+  lesson mattered (2.1.6, 2.1.7, and again while adding the 2.1.8 retry
+  loop, where the between-attempts readiness/scroll eval - not the
+  extraction eval itself - needed a budget cap for a DIFFERENT reason: its
+  result is always discarded, so shrinking IT is safe, but it still needed
+  the cap to stop it silently adding up to a whole extra `EVAL_TIMEOUT` of
+  overshoot on top of the documented ~63s ceiling). The rule stands: only
+  a boolean "is this the last attempt" may depend on remaining budget: no
+  eval whose RESULT is actually used may ever get a shrunken timeout.
+- **Diagnostics text/attribute scrubbing is a defense-in-depth heuristic,
+  not a guarantee** - `scrubSensitiveText`/`stripSuspiciousAttributeValues`
+  in the extract script catch labeled patterns (Bearer/JWT/token=/session=)
+  plus generic long opaque runs (all-digit 16+, all-letter 24+, mixed
+  base64-alphabet 24+), but deliberately EXCLUDE hyphens/dots from the
+  generic mixed-run check specifically so ordinary hyphenated section/row
+  slugs ("grandstand-outfield-413") survive - don't widen that character
+  class back to include hyphens without re-testing against real listing
+  markup, or legitimate diagnostic detail silently disappears again.
+
 ## 2.1.6 - a version bump is not just the 3 JSON/TOML files
 
 The obvious version-number locations are `package.json`, `src-tauri/tauri.conf.json`

@@ -387,9 +387,10 @@ function SavePriceCheckModal({
    *  reviews it before Save exactly like any paste. Any other status shows
    *  its own message plus Retry/Open page (see the banner below); the form
    *  itself is otherwise identical to today.
-   *  2.1.6: when status is "ok" AND `aiAssisted` is true (the 4 free
-   *  rule-based passes found nothing, but the new Anthropic-API fallback
-   *  read prices off the page's visible text), a second, non-amber note
+   *  2.1.6: when `aiAssisted` is true (the free rule-based passes found
+   *  nothing, but the Anthropic-API fallback read prices off the page's
+   *  visible text - 2.1.8: this now means status "partial", not "ok", see
+   *  AutoCheckResult.aiAssisted's own doc comment), a second, non-amber note
    *  shows alongside the same prefilled/editable fields - the numbers
    *  still go through the exact same pipeline above, this only adds a
    *  "these came from AI, look them over" nudge (see below). */
@@ -445,13 +446,19 @@ function SavePriceCheckModal({
     // paste box with what it found (as plain "$31 $39 ..." text, so it's
     // visible and fully re-editable) and run it through the SAME
     // handlePasteTextChange pipeline a real paste uses, rather than
-    // computing lowest/average/highest separately here. A non-"ok" status
-    // (unable_to_read/blocked/error/cancelled/timeout, 2.1.2) never fills
-    // anything - its own message shows in the dedicated banner below
-    // instead (not routed through pasteInfo, which is reserved for actual
-    // paste-box feedback) - the form is otherwise identical to a normal
-    // "Check Prices" open.
-    if (autoCheckResult && autoCheckResult.status === "ok" && autoCheckResult.prices.length > 0) {
+    // computing lowest/average/highest separately here. A status with no
+    // real prices at all (unable_to_read/blocked/error/cancelled/timeout,
+    // 2.1.2) never fills anything - its own message shows in the dedicated
+    // banner below instead (not routed through pasteInfo, which is reserved
+    // for actual paste-box feedback) - the form is otherwise identical to a
+    // normal "Check Prices" open.
+    // 2.1.8: "partial" prefills too - real prices were found, just not
+    // confidently tied to individual listings (see AutoCheckResult.status's
+    // own doc comment) - marko still gets them pre-filled and editable
+    // exactly like "ok", the amber banner below is what carries the "double-
+    // check this" warning, same pattern the aiAssisted note already uses for
+    // a different kind of low-confidence result.
+    if (autoCheckResult && (autoCheckResult.status === "ok" || autoCheckResult.status === "partial") && autoCheckResult.prices.length > 0) {
       const symbol = autoCheckResult.currency === "EUR" ? "€" : autoCheckResult.currency === "GBP" ? "£" : "$";
       handlePasteTextChange(autoCheckResult.prices.map((p) => `${symbol}${p}`).join(" "));
       // 2.1.6 bugfix: handlePasteTextChange's own currency detection only
@@ -559,6 +566,12 @@ function SavePriceCheckModal({
             {view.link.url}
           </p>
         )}
+        {/* Covers every non-"ok" status, including "partial" (2.1.8) - for
+         *  partial this shows alongside prefilled, editable fields (see the
+         *  effect above), carrying the real "found prices but couldn't
+         *  confirm listing context" message from the backend rather than
+         *  the generic fallback text below (which only ever shows if
+         *  `message` is somehow null). */}
         {autoCheckResult && autoCheckResult.status !== "ok" && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-amber-700 dark:text-amber-400">
             <span className="inline-flex items-center gap-1.5">
@@ -589,8 +602,16 @@ function SavePriceCheckModal({
          *  result above - this is only a nudge to actually look them over,
          *  since an AI read is more likely to be wrong than the page's own
          *  structured price elements. Deliberately a calmer color than the
-         *  amber banner above (nothing failed here - status is "ok"). */}
-        {autoCheckResult && autoCheckResult.status === "ok" && autoCheckResult.aiAssisted && (
+         *  amber banner above, which also shows alongside this one now
+         *  (2.1.8: an AI-assisted result is status "partial", not "ok" -
+         *  see AutoCheckResult.aiAssisted's own doc comment for why - so
+         *  the generic non-"ok" banner above shows too, with its own
+         *  Retry/Open-page actions; this note adds the AI-specific
+         *  explanation on top, not instead of it). Gated on `aiAssisted`
+         *  alone, not also on a specific status string, so this can't
+         *  silently stop rendering if that status value ever changes
+         *  again. */}
+        {autoCheckResult && autoCheckResult.aiAssisted && (
           <div className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-400">
             <IconInfo className="h-3.5 w-3.5 shrink-0" />
             <span>AI read these prices off the page (the usual quick method didn't recognize it) - double-check the numbers below before saving.</span>
@@ -812,10 +833,17 @@ export default function PriceChecker() {
       window.clearTimeout(watchdogRef.current);
       if (result.status === "ok") {
         toast.success(`Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"} - review before saving.`);
+      } else if (result.status === "partial") {
+        // 2.1.8: real prices were found (and are prefilled below), just not
+        // confidently tied to listing context - neither a clean success
+        // (green) nor a failure (red) reads right here, so this gets the
+        // same neutral toast kind as everything else that's informational
+        // rather than good-or-bad news.
+        toast.info(result.message ?? `Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"}, but couldn't confirm they're real listings - review before saving.`);
       } else if (result.status !== "cancelled") {
         // "cancelled" was marko's own choice a moment ago - an error toast
         // for it would read as scolding him for clicking his own Cancel
-        // button. Every other non-ok status still gets one.
+        // button. Every other non-ok, non-partial status still gets one.
         toast.error(result.message ?? "Couldn't read prices automatically - enter them below.");
       }
       setAutoCheckModalData({ result, targetUrl });

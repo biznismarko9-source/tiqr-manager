@@ -1433,7 +1433,7 @@ export interface PriceCheckerSummary {
  * event payload. */
 export interface AutoCheckResult {
   /** "started" (2.1.4 - not terminal; the real outcome for this attempt
-   * always arrives later via `AutoCheckResultEvent`) | "ok" |
+   * always arrives later via `AutoCheckResultEvent`) | "ok" | "partial" |
    * "unable_to_read" | "blocked" | "error" | "cancelled" | "timeout" | "busy".
    * "cancelled" is the direct result of `api.cancelAutoCheckPrice`, never
    * shown as an error toast; "timeout" means the hard 60s ceiling
@@ -1441,31 +1441,53 @@ export interface AutoCheckResult {
    * backend's single-flight guard rejected this attempt because another one
    * was already running - should be unreachable via normal UI
    * (`canStartAutoCheck` already prevents starting a second attempt) but
-   * handled safely if it's ever hit anyway. Every status other than "ok"/
-   * "started" is always accompanied by a plain-language `message` below. */
+   * handled safely if it's ever hit anyway. "partial" (2.1.8) means real
+   * price(s) were found but couldn't be tied to individual listing context
+   * (no section/row/seat nearby) - `prices` is populated, `listings` stays
+   * empty; treat this as "worth showing marko, but he must double-check it
+   * himself before saving", same spirit as `aiAssisted` below but for a
+   * different reason. Every status other than "ok"/"started" is always
+   * accompanied by a plain-language `message` below. */
   status: string;
-  /** Individual prices found (never pre-averaged) - empty unless status is "ok". */
+  /** Individual prices found (never pre-averaged) - populated for "ok" and
+   * "partial" (2.1.8), empty otherwise. */
   prices: number[];
   /** Best-effort currency guess, or null if undetermined. */
   currency: string | null;
   /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
   message: string | null;
   /** 2.1.4: real section/row/quantity detail, when the page's own markup
-   * had it (currently only the Vivid-Seats-style HTML-table extraction
-   * pass populates this - see price_checker_auto_extract.js). Always in
-   * addition to `prices` above, never instead of it - `prices` still
-   * contains every price found regardless of whether this array is
-   * populated. Never fabricated: any of a listing's own fields the page
-   * didn't state come through as `null`, not guessed. */
+   * had it (2.1.8: each of the three marketplace-specific readers can
+   * populate this now, not only the Vivid-Seats-style HTML-table pass -
+   * see price_checker_auto_extract.js). Always in addition to `prices`
+   * above, never instead of it - `prices` still contains every price found
+   * regardless of whether this array is populated. Never fabricated: any of
+   * a listing's own fields the page didn't state come through as `null`,
+   * not guessed. A non-empty array here is exactly what makes status "ok"
+   * rather than "partial" - see `AutoCheckResult.status` above. */
   listings: AutoCheckListing[];
-  /** 2.1.6: `true` only when `status` is `"ok"` AND those `prices` came
-   * from the new AI-assisted extraction fallback (marko's own request)
-   * rather than any of the four page-rule passes in
-   * price_checker_auto_extract.js - see
+  /** 2.1.6: `true` only when those `prices` came from the AI-assisted
+   * extraction fallback (marko's own request) rather than any of the
+   * page-rule passes in price_checker_auto_extract.js - see
    * commands::price_checker_auto's module doc comment, "AI-assisted
    * extraction fallback", for exactly when this fires. PriceChecker.tsx
-   * shows an extra "double-check this" note when this is `true`. */
+   * shows an extra "double-check this" note when this is `true`.
+   * 2.1.8: `status` is `"partial"`, not `"ok"`, whenever this is `true` -
+   * the AI fallback can never populate `listings` (its response schema has
+   * no section/row/seat slot at all), the same "bare prices" shape that
+   * earns `"partial"` everywhere else. Check this field on its own, not
+   * `status === "ok"`, to detect an AI-assisted result. */
   aiAssisted: boolean;
+  /** 2.1.8 (marko's spec section 7/8 - richer diagnostics on a failed/weak
+   * read). Present whenever the reader actually got as far as running the
+   * extraction script at least once (so: "ok"/"partial"/"unable_to_read"/
+   * "blocked"), `null` otherwise ("error"/"cancelled"/"timeout"/"busy"/
+   * "started" never got a real page result to describe). The human-readable
+   * parts of this are already folded into `message` above - this is the
+   * structured copy for anything that needs the raw numbers (or to show
+   * that a DOM snapshot was captured, without ever rendering it directly -
+   * see `AutoCheckDiagnostics.domSnapshot`'s own doc comment). */
+  diagnostics: AutoCheckDiagnostics | null;
 }
 
 /** One real listing entry (2.1.4) - see `AutoCheckResult.listings`'s own
@@ -1476,6 +1498,45 @@ export interface AutoCheckListing {
   section: string | null;
   row: string | null;
   quantity: number | null;
+}
+
+/** Mirrors Rust's `AutoCheckDiagnostics` (models.rs) field-for-field - see
+ * that struct's own doc comment for the full rationale. Every field is
+ * independently nullable because a malformed/missing raw diagnostics
+ * object must degrade to "this detail isn't available", never a fabricated
+ * zero - never trust one field's presence to imply another's. Deliberately
+ * excludes anything resembling a cookie, auth token, or form value -
+ * `domSnapshot` is markup only, already stripped of `<script>`/`<style>`
+ * tags and any token/auth/session-looking attribute before it ever left
+ * the page (see price_checker_auto_extract.js's own `safeDomSnapshot`). */
+export interface AutoCheckDiagnostics {
+  /** Which reader actually ran: "stubhub" | "vividseats" | "ticombo" |
+   * "generic" | "blocked". */
+  marketplaceReader: string | null;
+  /** How many extraction attempts the retry loop had made by the time THIS
+   * particular result was produced. */
+  attempt: number | null;
+  pageTitle: string | null;
+  finalUrl: string | null;
+  domLength: number | null;
+  visibleTextLength: number | null;
+  tableCount: number | null;
+  linkCount: number | null;
+  buttonCount: number | null;
+  currencySymbolElementCount: number | null;
+  priceTextElementCount: number | null;
+  sectionTextElementCount: number | null;
+  rowTextElementCount: number | null;
+  /** How many elements the reader's own selectors matched as "this is
+   * probably one listing" - 0 means the reader found nothing resembling a
+   * listing at all; a non-zero count alongside status "unable_to_read"
+   * means candidates were found but none yielded a parseable price. */
+  candidateListingElementCount: number | null;
+  textSample: string | null;
+  /** Never shown directly - a capped (4000 char), sanitized HTML snapshot
+   * for development diagnostics only. PriceChecker.tsx should only ever
+   * note that one was captured, never render it inline. */
+  domSnapshot: string | null;
 }
 
 /** 2.1.2: the real progress phases the backend actually goes through during

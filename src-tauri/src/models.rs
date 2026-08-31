@@ -1756,16 +1756,25 @@ pub struct AutoCheckResult {
     /// to a background thread; NOT a terminal state, see
     /// `commands::price_checker_auto::RESULT_EVENT`'s own doc comment - the
     /// real terminal status for this attempt always arrives later via that
-    /// event), `"ok"` (prices found), `"unable_to_read"` (page loaded,
-    /// nothing found), `"blocked"` (an anti-bot/verification challenge was
-    /// detected - never bypassed), `"error"` (couldn't open/read the page
-    /// at all, e.g. a malformed URL, the reader window failed to load, or
-    /// its JS could not be evaluated), `"cancelled"` (2.1.2 - the direct
-    /// result of `cancel_auto_check_price`), `"timeout"` (2.1.4 - the hard
-    /// 60s ceiling was hit), or `"busy"` (2.1.3 - the single-flight guard
-    /// in `commands::price_checker_auto::auto_check_price` rejected this
-    /// call because another attempt was already running - see that
-    /// module's own "Production hardening" doc comment).
+    /// event), `"ok"` (real listings found - at least one price came with
+    /// correlated section/row/seat context, see `listings` below),
+    /// `"partial"` (2.1.8 - marko's spec section 9: real price number(s)
+    /// found, but none could be confirmed as an individual ticket listing -
+    /// `listings` stays empty even though `prices` isn't, e.g. a schema.org
+    /// `AggregateOffer`'s low/high price, an `og:price` meta tag, or a bare
+    /// currency-adjacent number with no nearby section/row text; treat this
+    /// as "worth a careful look, not a confirmed listing price" - the
+    /// frontend marks it accordingly), `"unable_to_read"` (page loaded,
+    /// nothing found at all), `"blocked"` (an anti-bot/verification
+    /// challenge was detected - never bypassed), `"error"` (couldn't open/
+    /// read the page at all, e.g. a malformed URL, the reader window failed
+    /// to load, or its JS could not be evaluated), `"cancelled"` (2.1.2 -
+    /// the direct result of `cancel_auto_check_price`), `"timeout"` (2.1.4
+    /// - the hard 60s ceiling was hit), or `"busy"` (2.1.3 - the
+    /// single-flight guard in `commands::price_checker_auto::
+    /// auto_check_price` rejected this call because another attempt was
+    /// already running - see that module's own "Production hardening" doc
+    /// comment).
     pub status: String,
     /// Individual prices found on the page (never pre-averaged - the
     /// frontend computes lowest/average/highest/count from these the exact
@@ -1798,19 +1807,43 @@ pub struct AutoCheckResult {
     /// /`quantity` are `None` when the page didn't state them, never
     /// guessed).
     pub listings: Vec<AutoCheckListing>,
-    /// 2.1.6: `true` only when `status` is `"ok"` AND those `prices` came
-    /// from the new AI-assisted extraction fallback (marko's own request -
-    /// "kludne mozme pridat anthropic api keby vedel pomoct" - rather than
-    /// any of the four page-rule passes in price_checker_auto_extract.js.
-    /// See `commands::price_checker_auto`'s module doc comment,
-    /// "AI-assisted extraction fallback (2.1.6)", for exactly when this
-    /// fires and why it's a LAST resort, never the first thing tried. The
-    /// frontend shows an extra "double-check this" note when this is
-    /// `true` - an AI reading a messy real page deserves a bit more of
-    /// marko's own scrutiny before he saves it than a clean JSON-LD price
-    /// tag does, same "never fabricate, always let marko be the final
-    /// check" spirit as everything else this whole feature already does.
+    /// 2.1.6: `true` only when those `prices` came from the new AI-assisted
+    /// extraction fallback (marko's own request - "kludne mozme pridat
+    /// anthropic api keby vedel pomoct" - rather than any of the page-rule
+    /// passes in price_checker_auto_extract.js. See
+    /// `commands::price_checker_auto`'s module doc comment, "AI-assisted
+    /// extraction fallback (2.1.6)", for exactly when this fires and why
+    /// it's a LAST resort, never the first thing tried. The frontend shows
+    /// an extra "double-check this" note when this is `true` - an AI
+    /// reading a messy real page deserves a bit more of marko's own
+    /// scrutiny before he saves it than a clean JSON-LD price tag does,
+    /// same "never fabricate, always let marko be the final check" spirit
+    /// as everything else this whole feature already does.
+    ///
+    /// 2.1.8 (fixed on adversarial review): `status` is `"partial"`, not
+    /// `"ok"`, whenever this is `true` - the AI fallback's response schema
+    /// has no slot for section/row/seat context at all, so it can never
+    /// populate `listings` either, the same "bare prices, no confirmed
+    /// listing" shape that earns `"partial"` everywhere else once 2.1.8
+    /// tightened what `"ok"` means. This field is still the more specific,
+    /// still-independent signal for "an LLM read this, not a page-structure
+    /// rule" - it just no longer implies `"ok"`.
     pub ai_assisted: bool,
+    /// 2.1.8 (marko's spec section 7 - "Aktuálna hláška... je príliš
+    /// slabá"). Present whenever the reader actually got as far as running
+    /// `EXTRACT_JS` at least once (so: `"ok"`/`"partial"`/`"unable_to_read"`/
+    /// `"blocked"`) - `None` for `"error"`/`"cancelled"`/`"timeout"`/
+    /// `"busy"`/`"started"`, which never got a real page result to describe
+    /// in the first place. Every field the raw JS diagnostics object could
+    /// have reported - see `AutoCheckDiagnostics`'s own doc comment. The
+    /// human-readable parts of this already get folded into `message`
+    /// (`commands::price_checker_auto::build_diagnostic_message`) so
+    /// marko's existing "copy the message, paste it back" workflow keeps
+    /// working exactly as it already does - this structured copy exists
+    /// alongside that, not instead of it, for anything that needs the raw
+    /// numbers (or the DOM snapshot, deliberately never inlined into
+    /// `message` itself - see that field's own doc comment).
+    pub diagnostics: Option<AutoCheckDiagnostics>,
 }
 
 /// One listing entry with whatever real detail `price_checker_auto_extract.js`'s
@@ -1825,6 +1858,61 @@ pub struct AutoCheckListing {
     pub section: Option<String>,
     pub row: Option<String>,
     pub quantity: Option<u32>,
+}
+
+/// Everything `price_checker_auto_extract.js` could report about the page it
+/// just read (2.1.8, marko's spec section 7) - built for exactly one job:
+/// when Auto-check comes back empty-handed on marko's own real machine, the
+/// SAME message he already knows to copy and paste back needs to actually
+/// be enough to diagnose why, without another round trip. Every field is
+/// `Option` because a malformed/missing raw diagnostics object (an older
+/// cached page, a truly unusual failure) must degrade to "this detail isn't
+/// available", never a fabricated zero or a panic - see
+/// `commands::price_checker_auto::parse_diagnostics`. Deliberately excludes
+/// anything resembling a cookie, auth token, or form value - `domSnapshot`
+/// is markup only, with `<script>`/`<style>` tags and any token/auth/
+/// session-looking attribute already stripped by the JS side before this
+/// struct ever sees it (see price_checker_auto_extract.js's own
+/// `safeDomSnapshot`).
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCheckDiagnostics {
+    /// Which reader actually ran: `"stubhub"`/`"vividseats"`/`"ticombo"`/
+    /// `"generic"` (or `"blocked"`, when an anti-bot page was detected
+    /// before any marketplace-specific logic ran at all) - see
+    /// price_checker_auto_extract.js's own `hostFamily`.
+    pub marketplace_reader: Option<String>,
+    /// How many extraction attempts `poll_then_extract`'s retry loop had
+    /// made by the time THIS particular result was produced (2.1.8's own
+    /// `window.__tiqrExtractAttempt` counter, purely for this diagnostic -
+    /// the Rust-side loop's own `attempt` variable is the real control
+    /// flow, this is just what got reported alongside whichever attempt's
+    /// JSON this struct was built from).
+    pub attempt: Option<u32>,
+    pub page_title: Option<String>,
+    pub final_url: Option<String>,
+    pub dom_length: Option<u64>,
+    pub visible_text_length: Option<u64>,
+    pub table_count: Option<u64>,
+    pub link_count: Option<u64>,
+    pub button_count: Option<u64>,
+    pub currency_symbol_element_count: Option<u64>,
+    pub price_text_element_count: Option<u64>,
+    pub section_text_element_count: Option<u64>,
+    pub row_text_element_count: Option<u64>,
+    /// How many elements the reader's own selectors matched as "this is
+    /// probably one listing" - 0 means the reader's selectors found nothing
+    /// resembling a listing at all (worth trying a different selector), a
+    /// non-zero count alongside `status: "unable_to_read"` would mean
+    /// candidates were found but none yielded a parseable price (a
+    /// different, more specific problem) - see `readCandidates` in
+    /// price_checker_auto_extract.js.
+    pub candidate_listing_element_count: Option<u64>,
+    pub text_sample: Option<String>,
+    /// Never shown directly in `message` (see that field's own doc
+    /// comment) - capped at 4000 characters JS-side, HTML only, always
+    /// present when a real page load and extraction actually happened.
+    pub dom_snapshot: Option<String>,
 }
 
 
