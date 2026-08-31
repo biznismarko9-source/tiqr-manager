@@ -1,0 +1,24 @@
+-- TIQR Manager - 018_price_checker_scanner
+-- 2.1.9: marko's "VISIBLE BROWSER / WEBVIEW SCANNER" rewrite - replaces the
+-- old hidden-WebView auto-check with a visible window marko can scroll
+-- himself, scanned on demand ("Scan Visible Prices"). See
+-- PRICE-CHECKER-VISIBLE-SCANNER-REPORT.md for the full design.
+--
+-- The live scan session itself (open window, accumulated deduped listings
+-- before marko reviews/saves) is intentionally NOT persisted here at all -
+-- it lives only in memory (AppState::price_scanner_sessions) for exactly as
+-- long as the window is open, same as the old auto-check's in-flight state
+-- never touched SQLite either. Only the FINAL, marko-reviewed result becomes
+-- a real `price_checks` row, through the exact same `save_price_check`
+-- command every manual/pasted check has always used - see
+-- commands::price_checker's own module doc comment for why that table stays
+-- append-only and untouched in shape.
+--
+-- The one real schema change: marko's new spec explicitly asks the saved
+-- history to include a Median alongside Lowest/Average/Highest ("## RESULT"
+-- and "## LOCAL HISTORY" sections). Nullable, no default - an existing
+-- price_checks row (manual/pasted/old-auto-check, all pre-2.1.9) simply has
+-- no median on file (never fabricated after the fact from lowest/average/
+-- highest, which would not be a real median), so NULL here honestly means
+-- "not computed for this entry", not zero.
+ALTER TABLE price_checks ADD COLUMN median_price_cents INTEGER;

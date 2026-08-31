@@ -47,7 +47,6 @@ import type {
   PriceCheck,
   PriceCheckInput,
   PriceCheckerSummary,
-  AutoCheckResult,
   Pull,
   PullEditInput,
   PullInput,
@@ -514,15 +513,47 @@ export const api = {
   savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
   /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
   getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
-  /** 2.1.1: opens `url` in the app's own embedded WebView and reads back whatever prices are actually on the page - see commands/price_checker_auto.rs's module doc comment. Never saved directly; the result only pre-fills SavePriceCheckModal for marko to review, same as a real paste. 2.1.2: now always settles within ~15s (status "timeout" instead of hanging) and is safely interruptible via cancelAutoCheckPrice below - see that module's "Freeze fix" doc comment. 2.1.3: takes `requestId` (whatever PriceChecker.tsx minted for this attempt) purely so the backend can echo it back on every progress event/log line - the backend never uses it for anything else (see that module's "Production hardening" doc comment; single-flight safety is still purely backend-state-based, independent of this value). May now also resolve with status "busy" if another attempt is already running. */
-  autoCheckPrice: (url: string, requestId: number) => invoke<AutoCheckResult>("auto_check_price", { url, requestId }),
-  /** 2.1.2: the "Cancel" button shown next to Auto-check's spinner while a
-   * check is in flight - a safe no-op if nothing is actually in flight (e.g.
-   * a stray double-click, or the attempt already finished a moment earlier).
-   * Does not itself resolve `autoCheckPrice`'s own promise; that happens
-   * moments later, on its own, once the backend notices the flag this sets -
-   * same shape/contract as `cancelGoogleSignIn` above. */
-  cancelAutoCheckPrice: () => invoke<void>("cancel_auto_check_price"),
+  // Visible Scanner (2.1.9) - marko's own full rewrite of price-check
+  // automation: a NORMAL, VISIBLE window marko scrolls himself, scanned
+  // on-demand - see commands/price_checker_scanner.rs's module doc comment
+  // (Rust) for the full design and why the old hidden-WebView auto-check
+  // (auto_check_price/cancel_auto_check_price) is gone entirely, not just
+  // renamed. All four commands here return almost immediately - the real
+  // outcome of each always arrives later via one of the
+  // `price-scanner-opened`/`price-scanner-error`/`price-scanner-scan-result`/
+  // `price-scanner-closed` Tauri events (PriceChecker.tsx listens for all
+  // four), matching this app's own established "command returns fast, an
+  // event carries the real result" pattern.
+  /** Opens a new, real, visible browser window on `url` for one marketplace
+   * card. `requestId` is whatever PriceChecker.tsx minted for this session
+   * (its own `requestIdRef`) - the backend uses it as the session's key for
+   * every later `scanVisiblePrices`/`cancelPriceScan`/`closePriceScanner`
+   * call against this same window, and echoes it back on every event so the
+   * listener knows which card it's for. Rejects immediately (before any
+   * window opens) if `url` isn't a plain http(s) link, or if this exact
+   * (eventId, marketplaceId) pair already has a session open. */
+  openPriceScanner: (requestId: number, eventId: number, marketplaceId: number, url: string) =>
+    invoke<void>("open_price_scanner", { requestId, eventId, marketplaceId, url }),
+  /** Reads whatever's CURRENTLY VISIBLE in the scanner window, once - never
+   * auto-scrolls or retries on its own (marko scrolls/navigates the window
+   * himself between scans). The result merges into the session's running,
+   * deduplicated total - see `ScanResultPayload`'s own doc comment
+   * (types.ts) for why it's the whole session, not just this scan's delta. */
+  scanVisiblePrices: (requestId: number) => invoke<void>("scan_visible_prices", { requestId }),
+  /** "Stop scanning" - interrupts a `scanVisiblePrices` call currently in
+   * flight for this session, if any. A harmless no-op otherwise (e.g. a
+   * stray click after the scan already finished). Never touches the window
+   * itself - it stays open and fully usable either way, and marko can start
+   * a fresh scan right away. */
+  cancelPriceScan: (requestId: number) => invoke<void>("cancel_price_scan", { requestId }),
+  /** Ends a scanner session - "Close" in the UI. `closeWindow: true` also
+   * closes the real browser window; `false` only forgets TIQR Manager's own
+   * bookkeeping and leaves the window open (marko's own spec: the browser
+   * "zostane otvorený alebo sa môže zavrieť podľa voľby používateľa"). Safe
+   * to call even if the window was already closed natively a moment
+   * earlier - never errors, since the end state is the same either way. */
+  closePriceScanner: (requestId: number, closeWindow: boolean) =>
+    invoke<void>("close_price_scanner", { requestId, closeWindow }),
 };
 
 export function errMsg(e: unknown): string {

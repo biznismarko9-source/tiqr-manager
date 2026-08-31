@@ -11,6 +11,7 @@ mod models;
 mod money;
 
 use db::AppState;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -63,7 +64,7 @@ pub fn run() {
                 db_path: Mutex::new(db_path),
                 oauth_cancel_flag: Mutex::new(None),
                 firebase_oauth_cancel_flag: Mutex::new(None),
-                price_checker_auto_cancel_flag: Mutex::new(None),
+                price_scanner_sessions: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -214,35 +215,40 @@ pub fn run() {
             commands::price_checker::save_event_marketplace_link,
             commands::price_checker::save_price_check,
             commands::price_checker::get_price_checker_summary,
-            commands::price_checker_auto::auto_check_price,
-            commands::price_checker_auto::cancel_auto_check_price,
+            commands::price_checker_scanner::open_price_scanner,
+            commands::price_checker_scanner::scan_visible_prices,
+            commands::price_checker_scanner::cancel_price_scan,
+            commands::price_checker_scanner::close_price_scanner,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // 2.1.3: Price Checker "Auto-check" production hardening,
-            // marko's spec section 9 ("APP SHUTDOWN... Ak treba graceful
-            // shutdown hook, implementuj ju"). `ExitRequested` fires once,
-            // right as the app is about to exit (confirmed against Tauri's
-            // own published docs, not memory - docs.rs/tauri's `RunEvent`
-            // and `App::run`). This is a BEST-EFFORT, NON-BLOCKING nudge
-            // only: it deliberately never calls `api.prevent_exit()`, so it
-            // can never delay or interrupt an ordinary close - the OS
-            // reclaims every window/handle this process owns on exit
-            // regardless of whether this fires. Its only real effect is
-            // giving an in-flight auto-check's spawned reader thread a
-            // chance to notice `cancel` a little sooner (checked every
-            // ~100ms - see price_checker_auto.rs's own doc comment) than it
-            // otherwise would have, in the narrow window between this event
-            // and the process actually terminating. Deliberately scoped to
-            // ONLY this feature's own cancel-flag slot - not
-            // `oauth_cancel_flag`/`firebase_oauth_cancel_flag`, which are a
-            // separate, already-shipped feature this hardening pass has no
-            // reason to touch (marko's own explicit "DO NOT ADD FEATURES" -
-            // this is Price Checker hardening, not an OAuth change).
+            // 2.1.3 (originally the hidden auto-check's own hardening,
+            // adapted 2.1.9 for the Visible Scanner's session map).
+            // `ExitRequested` fires once, right as the app is about to exit
+            // (confirmed against Tauri's own published docs, not memory -
+            // docs.rs/tauri's `RunEvent` and `App::run`). BEST-EFFORT,
+            // NON-BLOCKING only: never calls `api.prevent_exit()`, so it can
+            // never delay or interrupt an ordinary close - the OS reclaims
+            // every window/handle this process owns on exit regardless of
+            // whether this fires. Its only real effect is flipping every
+            // still-open scanner session's cancel flag a little sooner than
+            // process teardown alone would, in case a scan eval happens to
+            // be in flight at that exact moment - it does NOT close the
+            // scanner windows themselves, that's unnecessary (see this
+            // block's own reasoning above: the OS reclaims them anyway) and
+            // Visible Scanner windows are ordinary, user-visible windows the
+            // OS already knows how to tear down normally, unlike the old
+            // hidden reader this replaced. Deliberately scoped to ONLY this
+            // feature's own sessions - not `oauth_cancel_flag`/
+            // `firebase_oauth_cancel_flag`, a separate, unrelated feature.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    commands::google_auth::cancel_google_sign_in_impl(&state.price_checker_auto_cancel_flag);
+                    if let Ok(sessions) = state.price_scanner_sessions.lock() {
+                        for session in sessions.values() {
+                            session.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                 }
             }
         });

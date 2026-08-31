@@ -1326,11 +1326,18 @@ export interface PriceCheck {
   highestPriceCents: number;
   listingCount: number;
   currency: string;
+  /** 2.1.9 (migrations/018_price_checker_scanner.sql). `null` for every
+   * check saved before this version, or for a fully hand-typed entry with
+   * no underlying list of individual prices to compute a real median from -
+   * never backfilled/guessed from lowest/average/highest, which would not
+   * be a real median. */
+  medianPriceCents: number | null;
   checkedAt: string;
 }
 
 /** Input for `savePriceCheck`. Backend rejects lowestPriceCents >
- * averagePriceCents > highestPriceCents, or any negative amount/count. */
+ * averagePriceCents > highestPriceCents, medianPriceCents outside
+ * [lowest, highest] when present, or any negative amount/count. */
 export interface PriceCheckInput {
   eventId: number;
   marketplaceId: number;
@@ -1339,6 +1346,8 @@ export interface PriceCheckInput {
   highestPriceCents: number;
   listingCount: number;
   currency: string;
+  /** See `PriceCheck.medianPriceCents` - optional for the same reason. */
+  medianPriceCents: number | null;
 }
 
 /** One marketplace's row on the Price Checker page for one event: its saved
@@ -1415,173 +1424,82 @@ export interface PriceCheckerSummary {
   expectedRoi: number | null;
 }
 
-/** Result of one `api.autoCheckPrice` attempt (2.1.1, lifecycle rewritten in
- * 2.1.2 - see commands/price_checker_auto.rs's module doc comment (Rust,
- * "Freeze fix") for the full design). Never saved directly - PriceChecker.tsx
- * feeds `prices`/`currency` through the exact same `extractPricesFromText`-
- * driven fill it already uses for a real paste, so marko reviews before
- * anything is saved via the unchanged `savePriceCheck`. */
-/** 2.1.4 (production hardening 2 - "true non-blocking" fix): `AutoCheckResult`
- * is no longer what `api.autoCheckPrice`'s own promise resolves with for a
- * finished attempt - see `AutoCheckResultEvent` below and
- * commands/price_checker_auto.rs's module doc comment ("True non-blocking
- * fix") for exactly why. The promise now only ever carries "busy" (rejected
- * immediately, nothing started) or "started" (accepted; the real outcome
- * follows later as an event) - both still expressed as this same shape so
- * PriceChecker.tsx's `status` switch has one consistent type to handle
- * everywhere, whether it's looking at the promise's own resolution or an
- * event payload. */
-export interface AutoCheckResult {
-  /** "started" (2.1.4 - not terminal; the real outcome for this attempt
-   * always arrives later via `AutoCheckResultEvent`) | "ok" | "partial" |
-   * "unable_to_read" | "blocked" | "error" | "cancelled" | "timeout" | "busy".
-   * "cancelled" is the direct result of `api.cancelAutoCheckPrice`, never
-   * shown as an error toast; "timeout" means the hard 60s ceiling
-   * (price_checker_auto.rs's `OVERALL_TIMEOUT`) was hit. "busy" means the
-   * backend's single-flight guard rejected this attempt because another one
-   * was already running - should be unreachable via normal UI
-   * (`canStartAutoCheck` already prevents starting a second attempt) but
-   * handled safely if it's ever hit anyway. "partial" (2.1.8) means real
-   * price(s) were found but couldn't be tied to individual listing context
-   * (no section/row/seat nearby) - `prices` is populated, `listings` stays
-   * empty; treat this as "worth showing marko, but he must double-check it
-   * himself before saving", same spirit as `aiAssisted` below but for a
-   * different reason. Every status other than "ok"/"started" is always
-   * accompanied by a plain-language `message` below. */
-  status: string;
-  /** Individual prices found (never pre-averaged) - populated for "ok" and
-   * "partial" (2.1.8), empty otherwise. */
-  prices: number[];
-  /** Best-effort currency guess, or null if undetermined. */
-  currency: string | null;
-  /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
-  message: string | null;
-  /** 2.1.4: real section/row/quantity detail, when the page's own markup
-   * had it (2.1.8: each of the three marketplace-specific readers can
-   * populate this now, not only the Vivid-Seats-style HTML-table pass -
-   * see price_checker_auto_extract.js). Always in addition to `prices`
-   * above, never instead of it - `prices` still contains every price found
-   * regardless of whether this array is populated. Never fabricated: any of
-   * a listing's own fields the page didn't state come through as `null`,
-   * not guessed. A non-empty array here is exactly what makes status "ok"
-   * rather than "partial" - see `AutoCheckResult.status` above. */
-  listings: AutoCheckListing[];
-  /** 2.1.6: `true` only when those `prices` came from the AI-assisted
-   * extraction fallback (marko's own request) rather than any of the
-   * page-rule passes in price_checker_auto_extract.js - see
-   * commands::price_checker_auto's module doc comment, "AI-assisted
-   * extraction fallback", for exactly when this fires. PriceChecker.tsx
-   * shows an extra "double-check this" note when this is `true`.
-   * 2.1.8: `status` is `"partial"`, not `"ok"`, whenever this is `true` -
-   * the AI fallback can never populate `listings` (its response schema has
-   * no section/row/seat slot at all), the same "bare prices" shape that
-   * earns `"partial"` everywhere else. Check this field on its own, not
-   * `status === "ok"`, to detect an AI-assisted result. */
-  aiAssisted: boolean;
-  /** 2.1.8 (marko's spec section 7/8 - richer diagnostics on a failed/weak
-   * read). Present whenever the reader actually got as far as running the
-   * extraction script at least once (so: "ok"/"partial"/"unable_to_read"/
-   * "blocked"), `null` otherwise ("error"/"cancelled"/"timeout"/"busy"/
-   * "started" never got a real page result to describe). The human-readable
-   * parts of this are already folded into `message` above - this is the
-   * structured copy for anything that needs the raw numbers (or to show
-   * that a DOM snapshot was captured, without ever rendering it directly -
-   * see `AutoCheckDiagnostics.domSnapshot`'s own doc comment). */
-  diagnostics: AutoCheckDiagnostics | null;
-}
-
-/** One real listing entry (2.1.4) - see `AutoCheckResult.listings`'s own
- * doc comment. */
-export interface AutoCheckListing {
-  price: number;
+/** One listing found by the Visible Scanner (2.1.9) - mirrors Rust's
+ * `NormalizedListing` (models.rs) field-for-field. Every field is exactly
+ * what the page's own DOM/text/accessibility layer actually had, or `null` -
+ * never guessed. `marketplace` is which reader produced it - "stubhub" |
+ * "vividseats" | "ticombo" | "generic" - detected from the scanner window's
+ * OWN current page (its `location.hostname`), not from which
+ * MarketplaceCard the window was opened from (marko can navigate the
+ * visible window anywhere, same as any normal browser window). */
+export interface NormalizedListing {
+  priceCents: number;
   currency: string | null;
   section: string | null;
   row: string | null;
   quantity: number | null;
+  listingId: string | null;
+  marketplace: string;
 }
 
-/** Mirrors Rust's `AutoCheckDiagnostics` (models.rs) field-for-field - see
- * that struct's own doc comment for the full rationale. Every field is
- * independently nullable because a malformed/missing raw diagnostics
- * object must degrade to "this detail isn't available", never a fabricated
- * zero - never trust one field's presence to imply another's. Deliberately
- * excludes anything resembling a cookie, auth token, or form value -
- * `domSnapshot` is markup only, already stripped of `<script>`/`<style>`
- * tags and any token/auth/session-looking attribute before it ever left
- * the page (see price_checker_auto_extract.js's own `safeDomSnapshot`). */
-export interface AutoCheckDiagnostics {
-  /** Which reader actually ran: "stubhub" | "vividseats" | "ticombo" |
-   * "generic" | "blocked". */
-  marketplaceReader: string | null;
-  /** How many extraction attempts the retry loop had made by the time THIS
-   * particular result was produced. */
-  attempt: number | null;
-  pageTitle: string | null;
-  finalUrl: string | null;
-  domLength: number | null;
-  visibleTextLength: number | null;
-  tableCount: number | null;
-  linkCount: number | null;
-  buttonCount: number | null;
-  currencySymbolElementCount: number | null;
-  priceTextElementCount: number | null;
-  sectionTextElementCount: number | null;
-  rowTextElementCount: number | null;
-  /** How many elements the reader's own selectors matched as "this is
-   * probably one listing" - 0 means the reader found nothing resembling a
-   * listing at all; a non-zero count alongside status "unable_to_read"
-   * means candidates were found but none yielded a parseable price. */
-  candidateListingElementCount: number | null;
-  textSample: string | null;
-  /** Never shown directly - a capped (4000 char), sanitized HTML snapshot
-   * for development diagnostics only. PriceChecker.tsx should only ever
-   * note that one was captured, never render it inline. */
-  domSnapshot: string | null;
-}
+/** Every state a scanner card can show - marko's own spec, "## MARKETPLACE
+ * STATUS": Ready, Scanning, Success, Partial, Unable to read, Blocked,
+ * Error. "ready" and "scanning" are purely frontend-local (set the instant
+ * a window opens / a scan is kicked off - see PriceChecker.tsx's own
+ * `ScannerCardState`); the other five always come from the backend's
+ * `ScanResultPayload.status` below. */
+export type ScannerStatus = "ready" | "scanning" | "success" | "partial" | "unable_to_read" | "blocked" | "error";
 
-/** 2.1.2: the real progress phases the backend actually goes through during
- * one `autoCheckPrice` attempt, pushed live via the
- * `price-checker-auto-check-progress` Tauri event (see
- * commands/price_checker_auto.rs's `emit_phase`) rather than a fake
- * client-side timer - marko's own explicit requirement after the freeze/hang
- * report ("Starting -> Loading -> Analyzing -> Success / Unable / Blocked /
- * Timeout"). 2.1.3 added "cleaning_up" (fires once the reader page has been
- * read and its window is being torn down, right before the final result
- * comes back) - matching `emit_phase`'s call sites 1:1. "Nothing running" is
- * represented by PriceChecker.tsx's own `null` (see its `autoCheck` state),
- * not a value here.
- *
- * 2.1.6 added "asking_ai" - fires only when the free rule-based passes
- * found nothing AND an Anthropic API key is configured, right before the
- * actual (real, paid) API call (see try_ai_extraction_fallback). Before
- * this existed, that call silently happened while the UI was still showing
- * "cleaning_up" - the LAST phase before it - with nothing telling marko
- * money was being spent; this makes it visible, matching this app's own
- * standing concern about never spending on a paid API without his
- * knowledge. */
-export type AutoCheckPhase = "starting" | "loading" | "analyzing" | "cleaning_up" | "asking_ai";
-
-/** Payload shape of the `price-checker-auto-check-progress` Tauri event
- * (2.1.3) - see commands/price_checker_auto.rs's `ProgressPayload`/
- * `emit_phase` (Rust). `requestId` is whatever PriceChecker.tsx itself
- * minted for this attempt (see its own `requestIdRef`) and the backend only
- * ever echoes it back unchanged - lets the listener tell a stale attempt's
- * late event apart from the one actually being tracked right now. */
-export interface AutoCheckProgressEvent {
+/** Payload of the `price-scanner-scan-result` Tauri event (2.1.9) - fires
+ * after every `scanVisiblePrices` call that actually got a response (never
+ * for one `cancelPriceScan` successfully interrupted - see
+ * commands::price_checker_scanner's own module doc comment, Rust). Reflects
+ * the WHOLE session accumulated so far (every scan's deduplicated
+ * listings), not just this one scan's own delta - `addedThisScan` is the
+ * delta; `listings` and the stat fields are the running total, matching
+ * marko's own spec example ("Scan 1 -> 20 listings, scroll, Scan 2 ->
+ * ďalších 20 listings, výsledok: 40 unique listings"). */
+export interface ScanResultPayload {
   requestId: number;
-  phase: AutoCheckPhase;
+  status: ScannerStatus;
+  addedThisScan: number;
+  listings: NormalizedListing[];
+  lowestPriceCents: number | null;
+  medianPriceCents: number | null;
+  averagePriceCents: number | null;
+  highestPriceCents: number | null;
+  /** First non-null currency seen across `listings`, in the order they were
+   * found - `null` only when `listings` is empty. */
+  currency: string | null;
+  scanCount: number;
+  lastScanAt: string | null;
+  /** Human-readable detail for a non-"success" status - `null` exactly when
+   * `status` is "success". */
+  message: string | null;
 }
 
-/** Payload shape of the `price-checker-auto-check-result` Tauri event
- * (2.1.4) - see commands/price_checker_auto.rs's `ResultPayload`/
- * `RESULT_EVENT` (Rust) for the full "true non-blocking" design this is
- * part of. This is now the ONLY way a TERMINAL `AutoCheckResult`
- * (ok/unable_to_read/blocked/cancelled/timeout/error - never "started" or
- * "busy", which only ever come from `api.autoCheckPrice`'s own promise)
- * ever reaches the frontend. `requestId` follows the exact same
- * stale-attempt-detection convention `AutoCheckProgressEvent` already
- * uses. */
-export interface AutoCheckResultEvent {
+/** Payload of `price-scanner-opened` - fires once the Visible Scanner
+ * window has actually been created and is showing the page marko pasted a
+ * link to. */
+export interface ScannerOpenedPayload {
   requestId: number;
-  result: AutoCheckResult;
+}
+
+/** Payload of `price-scanner-error` - the WINDOW ITSELF failed to open
+ * (e.g. the URL couldn't be loaded at all). Never fires for a failed SCAN -
+ * that comes back as a `ScanResultPayload` with status "error" instead, see
+ * that type's own doc comment. */
+export interface ScannerErrorPayload {
+  requestId: number;
+  message: string;
+}
+
+/** Payload of `price-scanner-closed` - fires once, whichever happens first:
+ * marko clicks "Close" in TIQR Manager, or he closes the real scanner
+ * window himself (its native close button). Every listing this session ever
+ * found already reached the frontend via earlier `ScanResultPayload`
+ * events, so nothing is lost - this only tells the card to stop offering
+ * Scan/Stop for a session that no longer has a window behind it. */
+export interface ScannerClosedPayload {
+  requestId: number;
 }

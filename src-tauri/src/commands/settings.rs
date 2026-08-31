@@ -34,10 +34,16 @@ pub fn set_app_setting(state: State<AppState>, key: String, value: String) -> Ap
 
 // --- Anthropic API key (2.1.6) ---------------------------------------------
 // marko's own request - "kludne mozme pridat anthropic api keby vedel
-// pomoct" (we could go ahead and add the Anthropic API if it could help) -
-// for the new AI-assisted price-extraction fallback; see
-// commands::price_checker_auto's module doc comment ("AI-assisted
-// extraction fallback") for exactly when and how this key gets used.
+// pomoct" (we could go ahead and add the Anthropic API if it could help).
+// Originally consumed by the 2.1.6-2.1.8 hidden auto-check's AI-extraction
+// fallback, which 2.1.9's Visible Scanner rewrite removed entirely (that
+// fallback existed to rescue a HIDDEN reader marko couldn't see himself -
+// once the window is visible, that reason is gone, see PRICE-CHECKER-
+// VISIBLE-SCANNER-REPORT.md). The key itself, and the storage below, are
+// deliberately left in place - marko's new spec names "AI Analysis" as a
+// real future hook for this same feature - so `read_anthropic_api_key`
+// currently has no caller (see its own doc comment) but isn't dead in the
+// sense of being pointless, just not yet wired to anything.
 //
 // Deliberately its OWN table (`app_secrets`, migrations/
 // 017_price_checker_viagogo.sql), never the generic `app_settings` KV store
@@ -96,10 +102,17 @@ pub fn set_anthropic_api_key(state: State<AppState>, key: String) -> AppResult<(
     set_anthropic_api_key_impl(&conn, &key)
 }
 
-/// The one place the real key value is ever read back out - called only
-/// from `commands::price_checker_auto`'s AI-extraction fallback, never
-/// exposed as a command. `None` when nothing is configured (or it's
-/// somehow blank), exactly like every other "not set" case in this module.
+/// The one place the real key value is ever read back out - never exposed as
+/// a command. `None` when nothing is configured (or it's somehow blank),
+/// exactly like every other "not set" case in this module.
+///
+/// 2.1.9: currently has no caller - the hidden auto-check's AI-extraction
+/// fallback that used to call this was removed along with the rest of that
+/// design (see this module's own "Anthropic API key" section comment above).
+/// Kept, not deleted: marko's Visible Scanner spec explicitly names "AI
+/// Analysis" as a real future hook for this same key, and the Settings.tsx
+/// field that writes it stays fully functional either way.
+#[allow(dead_code)]
 pub(crate) fn read_anthropic_api_key(conn: &Connection) -> Option<String> {
     conn.query_row("SELECT value FROM app_secrets WHERE key = ?1", params![ANTHROPIC_API_KEY_SETTING], |r| {
         r.get::<_, String>(0)

@@ -115,7 +115,7 @@ mod tests {
             db_path: Mutex::new(path.to_path_buf()),
             oauth_cancel_flag: Mutex::new(None),
             firebase_oauth_cancel_flag: Mutex::new(None),
-            price_checker_auto_cancel_flag: Mutex::new(None),
+            price_scanner_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -181,7 +181,7 @@ mod tests {
         let migration_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(migration_count, 17, "a fresh per-account file must end up on the same schema version as every other file");
+        assert_eq!(migration_count, 18, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 

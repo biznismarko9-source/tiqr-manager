@@ -6,6 +6,82 @@ the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files for those, one per
 release), just traps worth knowing about before working here again. New
 entries go at the top, dated by the version that found them.
 
+## 2.1.9 - Price Checker: hidden auto-check replaced by the Visible Scanner
+
+The ENTIRE 2.1.1-2.1.8 hidden-WebView auto-check line (`price_checker_auto*`)
+is deleted, not just disabled - marko's own explicit call after it kept
+being unreliable no matter how the extraction logic was patched. In its
+place: `commands/price_checker_scanner.rs` (session state + the 4 Tauri
+commands) and `commands/price_checker_scan.js` (the injected 3-layer
+extraction script) open a real, visible `WebviewWindow` the user drives
+themselves. Read that module's own doc comment first for the session model
+and status-derivation rules before changing anything here. A few things
+that bit during this rewrite, worth knowing before touching this area
+again:
+
+- **`WebviewWindow::eval_with_callback`'s result is encoded TWICE, not
+  once, when the injected script itself returns `JSON.stringify(x)`.**
+  `eval_with_callback`'s own doc comment says the JS completion value "will
+  be serialized into a JSON string" for the callback - true, but
+  `price_checker_scan.js`'s completion value is ITSELF already a JSON
+  string (`return JSON.stringify(payload)`), so the callback's raw `String`
+  is a JSON string LITERAL wrapping another JSON string. A single
+  `serde_json::from_str::<ScanJsPayload>(&raw)` fails on literally every
+  real scan with "invalid type: string ..., expected struct ScanJsPayload"
+  - it silently never worked until caught by REAL runtime verification (a
+  genuine `WebviewWindow` under Xvfb; no pure-Rust unit test or jsdom-only
+  JS test can reach this, since both sides deserialize correctly in
+  isolation - only the real Tauri wire format has the extra layer). Fixed
+  in `parse_scan_js_payload` (two `serde_json::from_str` calls, unwrap the
+  outer JSON string first) - if the injected script is ever changed to
+  return a plain object completion value instead of a stringified one,
+  this needs to come out again, and re-verify with a real WebviewWindow run
+  when you do, not just the unit tests.
+- **A session's `cancel_flag` must be REPLACED (a new `Arc`), never reset
+  in place, at the start of each scan attempt.** Resetting the same shared
+  `AtomicBool` back to `false` when a new scan starts can silently undo an
+  in-flight scan's own Stop: scan A is blocked waiting on
+  `eval_with_callback`, the user clicks Stop (sets the flag true), then
+  clicks Scan again before A's result arrives - if the new attempt just
+  flips the SAME flag back to false, A's own cancel check (after its eval
+  finally returns) wrongly reads "not cancelled" and merges in a result the
+  user explicitly stopped. `scan_visible_prices` now does
+  `session.cancel_flag = Arc::new(AtomicBool::new(false))` so each attempt
+  owns an independent flag; `cancel_price_scan`/`finish_session` still just
+  flip whatever the CURRENT one is.
+- **The dedup fingerprint is a literal composite of marketplace + price +
+  currency + section + row + quantity + listing id (`fingerprint_for`,
+  same file)** - every field feeds the key, missing ones contribute an
+  empty slot. This means a listing whose section/row genuinely isn't
+  visible yet on one scan, then becomes visible on a later scan of the
+  SAME physical listing, is counted as a SECOND listing rather than
+  recognized as the same one maturing from "partial" to "success" - an
+  accepted, documented trade-off of marko's own literal fingerprint spec,
+  not something silently patched over with a heuristic (a heuristic here
+  risks the opposite, worse mistake: wrongly merging two genuinely
+  different listings that happen to share a price, e.g. a
+  general-admission listing and a specific-seat listing). If this ever
+  needs real fixing, it needs actual cross-scan listing identity, which
+  most real pages don't expose - not a quick tweak.
+- **Proving this feature actually works needs a REAL `WebviewWindow`, and
+  that needs `Builder::any_thread()` plus `App::run_return` under
+  `xvfb-run -a`, run as a temporary/throwaway test.** `cargo test`'s
+  harness runs each `#[test]` on a pooled worker thread, not the true OS
+  main thread that `tao`'s Linux event loop insists on by default -
+  `Builder::any_thread()` is the documented escape hatch, and it's only
+  safe/appropriate for a test harness like this, never for the real
+  shipped app (which legitimately starts on the real main thread via
+  `fn main`). `App::run_return(callback)` (not `.run()`, which never
+  returns) pumps the real event loop on the calling thread and hands control
+  back once something calls `AppHandle::exit()` - drive the actual
+  `#[tauri::command]` functions directly from a spawned thread inside
+  `.setup()` (they're plain callable Rust functions), poll `AppState`/
+  listen for the real Tauri events, and DELETE the throwaway test module
+  again once it's done its job - this is not something to leave enabled in
+  the permanent suite (it opens a real window and binds a real local
+  socket for a fixture HTTP server; keep it out of ordinary `cargo test`
+  runs, including `--ignored`, by not committing it at all).
+
 ## 2.1.8 - Price Checker real-DOM reader rewrite
 
 `price_checker_auto_extract.js`/`price_checker_auto_readiness.js` were

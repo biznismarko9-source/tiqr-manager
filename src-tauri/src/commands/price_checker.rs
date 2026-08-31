@@ -105,6 +105,7 @@ fn map_price_check(row: &Row) -> rusqlite::Result<PriceCheck> {
         highest_price_cents: row.get("highest_price_cents")?,
         listing_count: row.get("listing_count")?,
         currency: row.get("currency")?,
+        median_price_cents: row.get("median_price_cents")?,
         checked_at: row.get("checked_at")?,
     })
 }
@@ -193,12 +194,12 @@ pub fn delete_marketplace(state: State<AppState>, id: i64) -> AppResult<()> {
 /// never be able to do what marko explicitly asked NOT to happen just
 /// because a future UI change lets a button through it shouldn't.
 ///
-/// Deliberately NOT extended to `auto_check_price` (price_checker_auto.rs)
-/// - that command only ever takes a raw URL, never a marketplace_id (see
-/// its own doc comment on why it's marketplace-agnostic), so it has nothing
-/// to check active against, and reaching it for a retired marketplace can
-/// waste up to a minute of browser automation but can never itself write a
-/// row - the actual save afterward still goes through this same guard.
+/// Deliberately NOT extended to `open_price_scanner`/`scan_visible_prices`
+/// (commands::price_checker_scanner) - those commands only ever take a raw
+/// URL, never a marketplace_id, so they have nothing to check active
+/// against, and opening a scanner window against a retired marketplace can
+/// waste marko's own time but can never itself write a row - the actual
+/// save afterward still goes through this same guard.
 fn require_marketplace_active(conn: &Connection, marketplace_id: i64) -> AppResult<()> {
     let row: Option<(String, bool)> = conn
         .query_row(
@@ -290,6 +291,20 @@ fn validate_price_check_input(input: &PriceCheckInput) -> AppResult<()> {
             "Average price cannot be higher than the highest price".into(),
         ));
     }
+    // 2.1.9: median is optional (Visible Scanner sessions always supply it;
+    // manual/pasted entries typically won't - see PriceCheckInput's own doc
+    // comment), so only bother checking it against the other three when it's
+    // actually present.
+    if let Some(median) = input.median_price_cents {
+        if median < 0 {
+            return Err(AppError::Validation("Median price cannot be negative".into()));
+        }
+        if median < input.lowest_price_cents || median > input.highest_price_cents {
+            return Err(AppError::Validation(
+                "Median price must be between the lowest and highest price".into(),
+            ));
+        }
+    }
     if input.currency.trim().is_empty() {
         return Err(AppError::Validation("Currency is required".into()));
     }
@@ -312,8 +327,8 @@ pub(crate) fn save_price_check_impl(conn: &Connection, input: &PriceCheckInput) 
     let currency = input.currency.trim();
     conn.execute(
         "INSERT INTO price_checks
-           (event_id, marketplace_id, lowest_price_cents, average_price_cents, highest_price_cents, listing_count, currency)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+           (event_id, marketplace_id, lowest_price_cents, average_price_cents, highest_price_cents, listing_count, currency, median_price_cents)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             input.event_id,
             input.marketplace_id,
@@ -322,6 +337,7 @@ pub(crate) fn save_price_check_impl(conn: &Connection, input: &PriceCheckInput) 
             input.highest_price_cents,
             input.listing_count,
             currency,
+            input.median_price_cents,
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -756,6 +772,7 @@ mod tests {
             highest_price_cents: 9000,
             listing_count: 12,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
 
         let saved = save_price_check_impl(&conn, &input).unwrap();
@@ -780,6 +797,7 @@ mod tests {
             highest_price_cents: lowest + 2000,
             listing_count: 5,
             currency: "EUR".to_string(),
+            median_price_cents: None,
         };
 
         save_price_check_impl(&conn, &mk(5000)).unwrap();
@@ -808,6 +826,7 @@ mod tests {
             highest_price_cents: 9500,
             listing_count: 3,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
         assert!(save_price_check_impl(&conn, &input).is_err());
     }
@@ -825,6 +844,7 @@ mod tests {
             highest_price_cents: 9000,
             listing_count: 3,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
         assert!(save_price_check_impl(&conn, &input).is_err());
     }
@@ -842,6 +862,7 @@ mod tests {
             highest_price_cents: 3000,
             listing_count: 3,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
 
         let mut negative_lowest = base.clone();
@@ -866,6 +887,7 @@ mod tests {
             highest_price_cents: 3000,
             listing_count: 3,
             currency: "   ".into(),
+            median_price_cents: None,
         };
         assert!(save_price_check_impl(&conn, &input).is_err());
     }
@@ -885,6 +907,7 @@ mod tests {
             highest_price_cents: 7000,
             listing_count: 10,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
 
         let err = save_price_check_impl(&conn, &input).unwrap_err().to_string();
@@ -910,6 +933,7 @@ mod tests {
             highest_price_cents: 7000,
             listing_count: 10,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
         assert!(save_price_check_impl(&conn, &input).is_ok());
     }
@@ -933,6 +957,7 @@ mod tests {
             highest_price_cents: 7000,
             listing_count: 10,
             currency: "EUR".into(),
+            median_price_cents: None,
         };
 
         let err = save_price_check_impl(&conn, &input).unwrap_err().to_string();

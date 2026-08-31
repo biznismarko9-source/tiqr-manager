@@ -1621,9 +1621,13 @@ pub struct EventMarketplaceLinkInput {
     pub url: String,
 }
 
-/// One "Check Prices" entry, hand-typed by marko off a marketplace's own
-/// listings page. Append-only (see the migration's own doc comment) - never
-/// updated or overwritten by a later check for the same event/marketplace.
+/// One "Check Prices" entry - hand-typed off a marketplace's own listings
+/// page, pasted, or reviewed from a Visible Scanner session (2.1.9). Always
+/// the same shape regardless of source - see `commands::price_checker_
+/// scanner`'s own module doc comment for why the scanner deliberately funnels
+/// into this exact table rather than getting its own. Append-only (see the
+/// migration's own doc comment) - never updated or overwritten by a later
+/// check for the same event/marketplace.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceCheck {
@@ -1635,6 +1639,12 @@ pub struct PriceCheck {
     pub highest_price_cents: i64,
     pub listing_count: i64,
     pub currency: String,
+    /// 2.1.9 (migrations/018_price_checker_scanner.sql). `None` for every
+    /// check saved before this version, or for a fully hand-typed entry with
+    /// no underlying list of individual prices to compute a real median
+    /// from - never backfilled/guessed from lowest/average/highest, which
+    /// would not be a real median (marko's own "never invent data" rule).
+    pub median_price_cents: Option<i64>,
     pub checked_at: String,
 }
 
@@ -1648,6 +1658,8 @@ pub struct PriceCheckInput {
     pub highest_price_cents: i64,
     pub listing_count: i64,
     pub currency: String,
+    /// See `PriceCheck::median_price_cents` - optional for the same reason.
+    pub median_price_cents: Option<i64>,
 }
 
 /// One marketplace's row in the Price Checker page for one event: its saved
@@ -1740,181 +1752,110 @@ pub struct PriceCheckerSummary {
     pub expected_roi: Option<f64>,
 }
 
-/// Result of one `commands::price_checker_auto::auto_check_price` attempt
-/// (2.1.1) - see that module's own doc comment for the full design. Never
-/// persisted directly: this only flows back to the frontend, which reuses
-/// the EXISTING paste-extraction pipeline (PriceChecker.tsx,
-/// `extractPricesFromText`) to fill SavePriceCheckModal's fields for marko
-/// to review, exactly like a real paste would. A successful auto-check
-/// only ever becomes a `price_checks` row once marko reviews it and clicks
-/// Save - same unchanged `save_price_check` command as every manual/pasted
-/// check.
-#[derive(Debug, Serialize, Clone)]
+/// One deduplicated listing accumulated by a Visible Scanner session
+/// (2.1.9) - see `commands::price_checker_scanner`'s own module doc comment
+/// for the full design. Unlike the old hidden auto-check's separate
+/// `prices`/`listings` arrays, this is the ONE shape every scan result
+/// becomes: a bare price with no confirmed context is simply a
+/// `NormalizedListing` whose `section`/`row`/`quantity`/`listing_id` are all
+/// `None` - `commands::price_checker_scanner::derive_session_status` is what
+/// turns "does this session have any WITH context" into success vs. partial,
+/// not a separate field here. Never fabricated: every field is exactly what
+/// the page's own DOM/text actually had, or `None`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoCheckResult {
-    /// `"started"` (2.1.4 - the command accepted this request and handed it
-    /// to a background thread; NOT a terminal state, see
-    /// `commands::price_checker_auto::RESULT_EVENT`'s own doc comment - the
-    /// real terminal status for this attempt always arrives later via that
-    /// event), `"ok"` (real listings found - at least one price came with
-    /// correlated section/row/seat context, see `listings` below),
-    /// `"partial"` (2.1.8 - marko's spec section 9: real price number(s)
-    /// found, but none could be confirmed as an individual ticket listing -
-    /// `listings` stays empty even though `prices` isn't, e.g. a schema.org
-    /// `AggregateOffer`'s low/high price, an `og:price` meta tag, or a bare
-    /// currency-adjacent number with no nearby section/row text; treat this
-    /// as "worth a careful look, not a confirmed listing price" - the
-    /// frontend marks it accordingly), `"unable_to_read"` (page loaded,
-    /// nothing found at all), `"blocked"` (an anti-bot/verification
-    /// challenge was detected - never bypassed), `"error"` (couldn't open/
-    /// read the page at all, e.g. a malformed URL, the reader window failed
-    /// to load, or its JS could not be evaluated), `"cancelled"` (2.1.2 -
-    /// the direct result of `cancel_auto_check_price`), `"timeout"` (2.1.4
-    /// - the hard 60s ceiling was hit), or `"busy"` (2.1.3 - the
-    /// single-flight guard in `commands::price_checker_auto::
-    /// auto_check_price` rejected this call because another attempt was
-    /// already running - see that module's own "Production hardening" doc
-    /// comment).
-    pub status: String,
-    /// Individual prices found on the page (never pre-averaged - the
-    /// frontend computes lowest/average/highest/count from these the exact
-    /// same way it already does for a real paste, via
-    /// `extractPricesFromText`'s own min/max/mean). Empty unless `status`
-    /// is `"ok"`. Kept as the primary field (rather than deriving it from
-    /// `listings` below) so the frontend's existing paste-pipeline
-    /// integration never has to change shape - see PriceChecker.tsx.
-    pub prices: Vec<f64>,
-    /// Best-effort currency guess (ISO 4217-ish code, e.g. "USD"/"EUR") -
-    /// `None` if it couldn't be determined; marko's currently-selected
-    /// dropdown value is left alone in that case, same convention
-    /// `detectCurrencyFromText` already uses for a real paste.
-    pub currency: Option<String>,
-    /// Human-readable explanation shown next to the "Auto-check" button -
-    /// present whenever `status` isn't `"ok"`.
-    pub message: Option<String>,
-    /// 2.1.4 (production-hardening-2, "REAL WEB PAGE READING" /
-    /// "EXTRACTION" - marko's explicit ask for section/row/quantity, not
-    /// just bare prices). Populated ONLY by the HTML-table extraction pass
-    /// (the one confirmed, on a real Vivid Seats page, to actually expose
-    /// this level of detail - see price_checker_auto_extract.js's own
-    /// comment) - always empty for the JSON-LD and og:price passes, which
-    /// have no section/row/quantity to give. `prices` above still always
-    /// contains every price found regardless of which pass found it or
-    /// whether this array is populated - this is supplementary detail, not
-    /// a replacement, so nothing that already reads `prices` needs to
-    /// change. Never fabricated: a listing only ever appears here with
-    /// whichever of its own fields the page actually had (`section`/`row`
-    /// /`quantity` are `None` when the page didn't state them, never
-    /// guessed).
-    pub listings: Vec<AutoCheckListing>,
-    /// 2.1.6: `true` only when those `prices` came from the new AI-assisted
-    /// extraction fallback (marko's own request - "kludne mozme pridat
-    /// anthropic api keby vedel pomoct" - rather than any of the page-rule
-    /// passes in price_checker_auto_extract.js. See
-    /// `commands::price_checker_auto`'s module doc comment, "AI-assisted
-    /// extraction fallback (2.1.6)", for exactly when this fires and why
-    /// it's a LAST resort, never the first thing tried. The frontend shows
-    /// an extra "double-check this" note when this is `true` - an AI
-    /// reading a messy real page deserves a bit more of marko's own
-    /// scrutiny before he saves it than a clean JSON-LD price tag does,
-    /// same "never fabricate, always let marko be the final check" spirit
-    /// as everything else this whole feature already does.
-    ///
-    /// 2.1.8 (fixed on adversarial review): `status` is `"partial"`, not
-    /// `"ok"`, whenever this is `true` - the AI fallback's response schema
-    /// has no slot for section/row/seat context at all, so it can never
-    /// populate `listings` either, the same "bare prices, no confirmed
-    /// listing" shape that earns `"partial"` everywhere else once 2.1.8
-    /// tightened what `"ok"` means. This field is still the more specific,
-    /// still-independent signal for "an LLM read this, not a page-structure
-    /// rule" - it just no longer implies `"ok"`.
-    pub ai_assisted: bool,
-    /// 2.1.8 (marko's spec section 7 - "Aktuálna hláška... je príliš
-    /// slabá"). Present whenever the reader actually got as far as running
-    /// `EXTRACT_JS` at least once (so: `"ok"`/`"partial"`/`"unable_to_read"`/
-    /// `"blocked"`) - `None` for `"error"`/`"cancelled"`/`"timeout"`/
-    /// `"busy"`/`"started"`, which never got a real page result to describe
-    /// in the first place. Every field the raw JS diagnostics object could
-    /// have reported - see `AutoCheckDiagnostics`'s own doc comment. The
-    /// human-readable parts of this already get folded into `message`
-    /// (`commands::price_checker_auto::build_diagnostic_message`) so
-    /// marko's existing "copy the message, paste it back" workflow keeps
-    /// working exactly as it already does - this structured copy exists
-    /// alongside that, not instead of it, for anything that needs the raw
-    /// numbers (or the DOM snapshot, deliberately never inlined into
-    /// `message` itself - see that field's own doc comment).
-    pub diagnostics: Option<AutoCheckDiagnostics>,
-}
-
-/// One listing entry with whatever real detail `price_checker_auto_extract.js`'s
-/// HTML-table pass could read off the page (2.1.4). See `AutoCheckResult::
-/// listings`'s own doc comment for why this is supplementary to `prices`,
-/// not a replacement.
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AutoCheckListing {
-    pub price: f64,
+pub struct NormalizedListing {
+    pub price_cents: i64,
     pub currency: Option<String>,
     pub section: Option<String>,
     pub row: Option<String>,
     pub quantity: Option<u32>,
+    /// Best-effort element `id`/`data-*id*` attribute, when the page's own
+    /// markup has one - the strongest fingerprint component when present
+    /// (see `commands::price_checker_scanner::fingerprint_for`), but most
+    /// real listing elements won't have one, so this staying `None` is the
+    /// normal case, not a failure.
+    pub listing_id: Option<String>,
+    /// Which reader produced this - `"stubhub"` / `"vividseats"` /
+    /// `"ticombo"` / `"generic"`, mirrors the old auto-check's
+    /// `AutoCheckDiagnostics::marketplace_reader`. Constant across every
+    /// listing in one scan session today (one session always targets one
+    /// marketplace card), carried per-listing anyway so a future combined
+    /// view across sessions (marko's spec's "Market Overview") never needs a
+    /// join to know which marketplace each row came from.
+    pub marketplace: String,
 }
 
-/// Everything `price_checker_auto_extract.js` could report about the page it
-/// just read (2.1.8, marko's spec section 7) - built for exactly one job:
-/// when Auto-check comes back empty-handed on marko's own real machine, the
-/// SAME message he already knows to copy and paste back needs to actually
-/// be enough to diagnose why, without another round trip. Every field is
-/// `Option` because a malformed/missing raw diagnostics object (an older
-/// cached page, a truly unusual failure) must degrade to "this detail isn't
-/// available", never a fabricated zero or a panic - see
-/// `commands::price_checker_auto::parse_diagnostics`. Deliberately excludes
-/// anything resembling a cookie, auth token, or form value - `domSnapshot`
-/// is markup only, with `<script>`/`<style>` tags and any token/auth/
-/// session-looking attribute already stripped by the JS side before this
-/// struct ever sees it (see price_checker_auto_extract.js's own
-/// `safeDomSnapshot`).
-#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+/// `scan_visible_prices`'s result, delivered via the
+/// `price-scanner-scan-result` event (2.1.9) - the accumulated state of the
+/// WHOLE session after merging this scan's findings in, not just this scan's
+/// own delta (`added_this_scan` is the delta, everything else is the running
+/// total) - see `commands::price_checker_scanner`'s own module doc comment.
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoCheckDiagnostics {
-    /// Which reader actually ran: `"stubhub"`/`"vividseats"`/`"ticombo"`/
-    /// `"generic"` (or `"blocked"`, when an anti-bot page was detected
-    /// before any marketplace-specific logic ran at all) - see
-    /// price_checker_auto_extract.js's own `hostFamily`.
-    pub marketplace_reader: Option<String>,
-    /// How many extraction attempts `poll_then_extract`'s retry loop had
-    /// made by the time THIS particular result was produced (2.1.8's own
-    /// `window.__tiqrExtractAttempt` counter, purely for this diagnostic -
-    /// the Rust-side loop's own `attempt` variable is the real control
-    /// flow, this is just what got reported alongside whichever attempt's
-    /// JSON this struct was built from).
-    pub attempt: Option<u32>,
-    pub page_title: Option<String>,
-    pub final_url: Option<String>,
-    pub dom_length: Option<u64>,
-    pub visible_text_length: Option<u64>,
-    pub table_count: Option<u64>,
-    pub link_count: Option<u64>,
-    pub button_count: Option<u64>,
-    pub currency_symbol_element_count: Option<u64>,
-    pub price_text_element_count: Option<u64>,
-    pub section_text_element_count: Option<u64>,
-    pub row_text_element_count: Option<u64>,
-    /// How many elements the reader's own selectors matched as "this is
-    /// probably one listing" - 0 means the reader's selectors found nothing
-    /// resembling a listing at all (worth trying a different selector), a
-    /// non-zero count alongside `status: "unable_to_read"` would mean
-    /// candidates were found but none yielded a parseable price (a
-    /// different, more specific problem) - see `readCandidates` in
-    /// price_checker_auto_extract.js.
-    pub candidate_listing_element_count: Option<u64>,
-    pub text_sample: Option<String>,
-    /// Never shown directly in `message` (see that field's own doc
-    /// comment) - capped at 4000 characters JS-side, HTML only, always
-    /// present when a real page load and extraction actually happened.
-    pub dom_snapshot: Option<String>,
+pub struct ScanResultPayload {
+    pub request_id: u64,
+    /// "success" | "partial" | "unable_to_read" | "blocked" | "error" - see
+    /// `commands::price_checker_scanner::derive_session_status`.
+    pub status: String,
+    /// How many NEW, previously-unseen listings THIS scan added - lets the
+    /// frontend say "found 6 new listings" rather than just showing the
+    /// (potentially unchanged) running total, matching marko's own spec
+    /// example ("Scan 1 -> 20 listings, scroll, Scan 2 -> ďalších 20").
+    pub added_this_scan: u32,
+    pub listings: Vec<NormalizedListing>,
+    pub lowest_price_cents: Option<i64>,
+    pub median_price_cents: Option<i64>,
+    pub average_price_cents: Option<i64>,
+    pub highest_price_cents: Option<i64>,
+    /// First non-`None` currency seen across `listings`, in insertion order -
+    /// `None` only when `listings` is empty. Same "first candidate's
+    /// currency wins" convention the old extraction JS already used.
+    pub currency: Option<String>,
+    pub scan_count: u32,
+    pub last_scan_at: Option<String>,
+    /// Human-readable detail for a non-"success" status - `None` when
+    /// `status` is "success" (nothing to explain). Built the same way the
+    /// old auto-check's diagnostic message was: real counts/text the page
+    /// actually had, never invented.
+    pub message: Option<String>,
 }
 
+/// `open_price_scanner`'s async outcome, delivered via the
+/// `price-scanner-opened` / `price-scanner-error` events (2.1.9) - mirrors
+/// the old auto-check's own "command returns almost immediately, the real
+/// outcome arrives later via an event" pattern (see that design's own
+/// history in PROTECTED-AREAS-NOTES.md, "an extraction attempt's own eval
+/// timeout..." - the freeze-avoidance half of that lesson, not the timeout
+/// half, still applies here: `WebviewWindowBuilder::build()` must never be
+/// called synchronously from a command's own call stack, Tauri's own
+/// documented Windows deadlock).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerOpenedPayload {
+    pub request_id: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerErrorPayload {
+    pub request_id: u64,
+    pub message: String,
+}
+
+/// Fires when a scanner window closes - either marko clicked "Close window"
+/// (`close_price_scanner`) or he closed it directly himself (the window's own
+/// native close button, detected via `on_window_event`/`CloseRequested` -
+/// see `commands::price_checker_scanner::open_price_scanner`). The frontend
+/// already has every listing this session ever found (each `scan_visible_
+/// prices` call already delivered them via `ScanResultPayload` above), so
+/// nothing is lost - this only tells the card to stop offering Scan/Stop for
+/// a session that no longer has a window behind it.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerClosedPayload {
+    pub request_id: u64,
+}
 
 // --- Finance (2.0.83) -------------------------------------------------------
 // marko's personal + business money tracker - see

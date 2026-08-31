@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -39,12 +40,61 @@ pub struct AppState {
     /// than sharing: cancelling one must never accidentally interrupt the
     /// other if both somehow ended up in flight at once.
     pub firebase_oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
-    /// 2.1.2: the same idea as `oauth_cancel_flag` above, for Price
-    /// Checker's "Auto-check" (commands::price_checker_auto) - `Some` only
-    /// while `auto_check_price` is actually running, `None` otherwise. Added
-    /// as part of the freeze/hang fix - see that module's own doc comment
-    /// ("Freeze fix") for the full incident and design.
-    pub price_checker_auto_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    /// 2.1.9: every currently-open Price Checker "Visible Scanner" window,
+    /// keyed by the request/session id `PriceChecker.tsx` mints per "Open &
+    /// Scan" click (same "frontend mints the id, backend only ever echoes
+    /// it back" convention the old auto-check's `request_id` already
+    /// established) - see commands::price_checker_scanner's own module doc
+    /// comment for the full design. Unlike the single-slot cancel flags
+    /// above, this is a MAP: the old hidden auto-check could only ever have
+    /// one attempt in flight (a single background thread, a single slot),
+    /// but a visible window is something marko looks at and interacts with
+    /// directly, so nothing stops him opening StubHub AND Vivid Seats side
+    /// by side - each gets its own independent entry here, and one
+    /// marketplace's window misbehaving can never affect another's (marko's
+    /// own explicit spec requirement).
+    pub price_scanner_sessions: Mutex<HashMap<u64, ScannerSession>>,
+}
+
+/// One open Visible Scanner window's live state (2.1.9). Lives here, next to
+/// `AppState` itself, rather than in `commands::price_checker_scanner` - the
+/// same reasoning `AppState` itself already follows: this is shared mutable
+/// app state a command module reaches INTO, not something private to one
+/// command function. Never persisted to SQLite - see migrations/
+/// 018_price_checker_scanner.sql's own doc comment for why the only thing
+/// that ever reaches the database is the final, marko-reviewed
+/// `price_checks` row, through the ordinary `save_price_check` command.
+#[derive(Debug)]
+pub struct ScannerSession {
+    /// Tauri window label for `AppHandle::get_webview_window` - the actual
+    /// `WebviewWindow` handle itself is never stored here; every command
+    /// that needs it looks it up fresh by label, matching how this app
+    /// already looks up its own main window (see lib.rs's single-instance
+    /// plugin callback, `app.get_webview_window("main")`).
+    pub window_label: String,
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    /// Flips to interrupt an in-flight `scan_visible_prices` eval - same
+    /// `AtomicBool`-checked-during-a-bounded-wait pattern every other
+    /// cancellable operation in this codebase already uses (see
+    /// google_oauth::accept_one_redirect). Per-session, not a single shared
+    /// slot - cancelling one marketplace's scan must never touch another's.
+    pub cancel_flag: Arc<AtomicBool>,
+    /// "ready" | "scanning" | "success" | "partial" | "unable_to_read" |
+    /// "blocked" | "error" - see commands::price_checker_scanner's own
+    /// `derive_session_status` for exactly how this is computed after each
+    /// scan (reflects the ACCUMULATED session, not just the latest scan's
+    /// own delta - see that function's own doc comment).
+    pub status: String,
+    /// Deduplicated across every scan so far this session - see
+    /// commands::price_checker_scanner's own `merge_scan_into_session`.
+    pub listings: Vec<crate::models::NormalizedListing>,
+    /// The fingerprint of every listing already in `listings` above - kept
+    /// alongside it (not recomputed from it) so a repeat scan's dedup check
+    /// is a single HashSet lookup per candidate, not an O(n) rescan.
+    pub fingerprints: HashSet<String>,
+    pub scan_count: u32,
+    pub last_scan_at: Option<String>,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -115,6 +165,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "017_price_checker_viagogo",
         include_str!("../migrations/017_price_checker_viagogo.sql"),
+    ),
+    (
+        "018_price_checker_scanner",
+        include_str!("../migrations/018_price_checker_scanner.sql"),
     ),
 ];
 
