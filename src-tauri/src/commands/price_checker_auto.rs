@@ -221,7 +221,7 @@
 
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::AutoCheckResult;
+use crate::models::{AutoCheckListing, AutoCheckResult};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
