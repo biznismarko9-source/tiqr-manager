@@ -1735,13 +1735,17 @@ pub struct PriceCheckerSummary {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCheckResult {
-    /// `"ok"` (prices found), `"unable_to_read"` (page loaded, nothing
-    /// found), `"blocked"` (an anti-bot/verification challenge was
+    /// `"started"` (2.1.4 - the command accepted this request and handed it
+    /// to a background thread; NOT a terminal state, see
+    /// `commands::price_checker_auto::RESULT_EVENT`'s own doc comment - the
+    /// real terminal status for this attempt always arrives later via that
+    /// event), `"ok"` (prices found), `"unable_to_read"` (page loaded,
+    /// nothing found), `"blocked"` (an anti-bot/verification challenge was
     /// detected - never bypassed), `"error"` (couldn't open/read the page
     /// at all, e.g. a malformed URL, the reader window failed to load, or
     /// its JS could not be evaluated), `"cancelled"` (2.1.2 - the direct
-    /// result of `cancel_auto_check_price`), `"timeout"` (2.1.2 - the hard
-    /// 15s ceiling was hit), or `"busy"` (2.1.3 - the single-flight guard
+    /// result of `cancel_auto_check_price`), `"timeout"` (2.1.4 - the hard
+    /// 60s ceiling was hit), or `"busy"` (2.1.3 - the single-flight guard
     /// in `commands::price_checker_auto::auto_check_price` rejected this
     /// call because another attempt was already running - see that
     /// module's own "Production hardening" doc comment).
@@ -1750,7 +1754,9 @@ pub struct AutoCheckResult {
     /// frontend computes lowest/average/highest/count from these the exact
     /// same way it already does for a real paste, via
     /// `extractPricesFromText`'s own min/max/mean). Empty unless `status`
-    /// is `"ok"`.
+    /// is `"ok"`. Kept as the primary field (rather than deriving it from
+    /// `listings` below) so the frontend's existing paste-pipeline
+    /// integration never has to change shape - see PriceChecker.tsx.
     pub prices: Vec<f64>,
     /// Best-effort currency guess (ISO 4217-ish code, e.g. "USD"/"EUR") -
     /// `None` if it couldn't be determined; marko's currently-selected
@@ -1760,7 +1766,38 @@ pub struct AutoCheckResult {
     /// Human-readable explanation shown next to the "Auto-check" button -
     /// present whenever `status` isn't `"ok"`.
     pub message: Option<String>,
+    /// 2.1.4 (production-hardening-2, "REAL WEB PAGE READING" /
+    /// "EXTRACTION" - marko's explicit ask for section/row/quantity, not
+    /// just bare prices). Populated ONLY by the HTML-table extraction pass
+    /// (the one confirmed, on a real Vivid Seats page, to actually expose
+    /// this level of detail - see price_checker_auto_extract.js's own
+    /// comment) - always empty for the JSON-LD and og:price passes, which
+    /// have no section/row/quantity to give. `prices` above still always
+    /// contains every price found regardless of which pass found it or
+    /// whether this array is populated - this is supplementary detail, not
+    /// a replacement, so nothing that already reads `prices` needs to
+    /// change. Never fabricated: a listing only ever appears here with
+    /// whichever of its own fields the page actually had (`section`/`row`
+    /// /`quantity` are `None` when the page didn't state them, never
+    /// guessed).
+    pub listings: Vec<AutoCheckListing>,
+
 }
+
+/// One listing entry with whatever real detail `price_checker_auto_extract.js`'s
+/// HTML-table pass could read off the page (2.1.4). See `AutoCheckResult::
+/// listings`'s own doc comment for why this is supplementary to `prices`,
+/// not a replacement.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCheckListing {
+    pub price: f64,
+    pub currency: Option<String>,
+    pub section: Option<String>,
+    pub row: Option<String>,
+    pub quantity: Option<u32>,
+}
+
 
 // --- Finance (2.0.83) -------------------------------------------------------
 // marko's personal + business money tracker - see

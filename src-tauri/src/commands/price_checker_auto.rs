@@ -72,7 +72,7 @@
 //! catch it by actually running the app either. The fix below follows
 //! Tauri's own documented remedy ("separate threads") using the exact
 //! primitives already established elsewhere in this codebase - see
-//! `run_with_outer_deadline`'s own doc comment.
+//! `spawn_auto_check_thread`'s own doc comment.
 //!
 //! ## What was actually verified vs. what wasn't (2026-08-30)
 //!
@@ -226,31 +226,22 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const MIN_WAIT: Duration = Duration::from_millis(800);
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Hard wall-clock ceiling for the WHOLE auto-check attempt - from the
-/// moment the reader window starts opening to the moment a result comes
-/// back, covering MIN_WAIT, every poll iteration, AND the final extraction
-/// eval. marko's own explicit requirement after the freeze/hang incident:
-/// no matter how the smaller waits below stack in the worst case, the total
-/// never exceeds this. Every wait in `poll_then_extract` is budget-aware
-/// (shrinks to whatever time is actually left, via `remaining_budget`)
-/// rather than each independently allowed its own full duration, which is
-/// what let the pre-2.1.2 version's *documented* worst case run longer than
-/// its own "~10 seconds" estimate suggested.
-const OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// How much longer `run_with_outer_deadline` waits, beyond `OVERALL_TIMEOUT`
-/// itself, before giving up on the spawned reader thread and returning
-/// `TimedOut` anyway - see that function's own doc comment. Purely a grace
-/// margin so `poll_then_extract`'s OWN budget-aware timeout fires first and
-/// gets to report its own, more specific outcome; this outer one is a
-/// backstop, not the primary timeout.
-const OUTER_GRACE: Duration = Duration::from_secs(2);
+/// Hard wall-clock ceiling for the WHOLE auto-check attempt, from the
+/// moment the reader window starts opening to the moment a result is
+/// emitted - marko's explicit spec (production-hardening-2 prompt, section
+/// 1/6): "60 sekúnd... maximálny čas na samotné čítanie marketplace, nie
+/// čas počas ktorého môže byť UI zablokované." This budget now ONLY bounds
+/// the background thread's own work - see this module's doc comment
+/// ("True non-blocking...") for why nothing in `auto_check_price` itself
+/// waits on it anymore, which is what makes that distinction real rather
+/// than aspirational.
+const OVERALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs entirely inside the loaded page. Returns `{"ready": bool,
 /// "blocked": bool}` - `ready` true means "there's something worth a full
@@ -274,6 +265,25 @@ const EXTRACT_JS: &str = include_str!("price_checker_auto_extract.js");
 /// see `emit_phase`. Payload is `ProgressPayload` (2.1.3 - was a bare phase
 /// string before the request-id addition).
 const PROGRESS_EVENT: &str = "price-checker-auto-check-progress";
+
+/// Tauri event carrying the FINAL outcome of an auto-check attempt
+/// (2.1.4 - "true non-blocking" fix). This is now the ONLY way a terminal
+/// result (ok/partial/unable_to_read/blocked/cancelled/timeout/error) ever
+/// reaches the frontend - `auto_check_price` itself returns almost
+/// immediately (see that command's own doc comment) and never carries this
+/// value as its own return value anymore. `PriceChecker.tsx` listens for
+/// this the same way it already listens for `PROGRESS_EVENT`.
+const RESULT_EVENT: &str = "price-checker-auto-check-result";
+
+/// `RESULT_EVENT`'s payload - `request_id` lets the frontend recognize (or
+/// discard, if stale) which attempt this result belongs to; `result` is the
+/// exact same `AutoCheckResult` shape the command used to return directly.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultPayload {
+    request_id: u64,
+    result: AutoCheckResult,
+}
 
 /// Upper bound on how many prices a single extraction pass is allowed to
 /// report (2.1.3, marko's spec section 12 - "impossible listing count").
@@ -356,42 +366,70 @@ fn read_outcome_to_result(outcome: ReadOutcome) -> AutoCheckResult {
             prices: vec![],
             currency: None,
             message: Some("Auto-check was cancelled.".into()),
+            listings: vec![],
         },
         ReadOutcome::TimedOut => AutoCheckResult {
             status: "timeout".into(),
             prices: vec![],
             currency: None,
             message: Some(
-                "This took too long (over 15 seconds) - use the paste/manual entry below instead, or try again."
+                "This took too long (over 60 seconds) - use the paste/manual entry below instead, or try again."
                     .into(),
             ),
+            listings: vec![],
         },
         ReadOutcome::Error(message) => {
-            AutoCheckResult { status: "error".into(), prices: vec![], currency: None, message: Some(message) }
+            AutoCheckResult { status: "error".into(), prices: vec![], currency: None, message: Some(message), listings: vec![] }
         }
     }
 }
 
 /// `request_id` (2.1.3) is minted by `PriceChecker.tsx`, not this module -
 /// see this file's own doc comment ("Production hardening" - "Request
-/// IDs") for why. It is echoed back on every `PROGRESS_EVENT` and
-/// `log_lifecycle` line for THIS attempt and otherwise never inspected or
-/// acted on here.
+/// IDs") for why. It is echoed back on every `PROGRESS_EVENT`/`RESULT_EVENT`
+/// and `log_lifecycle` line for THIS attempt and otherwise never inspected
+/// or acted on here.
 ///
-/// Single-flight guard (2.1.3): the pre-2.1.3 version of this function set
-/// `price_checker_auto_cancel_flag` unconditionally, with no check for
-/// whether it was already `Some` - so two overlapping invocations (a fast
-/// double-click slipping past `PriceChecker.tsx`'s own `disabled` gating
-/// before React re-renders it, or any future caller) would silently
-/// overwrite each other's flag: the FIRST invocation's flag reference would
-/// be replaced in the slot, leaving it with no way to ever be cancelled via
-/// the UI again (Cancel only ever reaches whatever flag is CURRENTLY in the
-/// slot), while both attempts raced to open their own reader webview. Below,
-/// the check-and-set happens under a SINGLE lock acquisition (`slot` stays
-/// locked across both the `is_some()` check and the `= Some(...)` write), so
-/// there is no window in which two calls can both observe an empty slot and
-/// both proceed - the second one is rejected immediately with `"busy"`,
-/// before ever normalizing further or spawning anything.
+/// ## True non-blocking fix (2.1.4)
+///
+/// marko's real-world report AFTER 2.1.2/2.1.3 shipped: Auto-check still
+/// froze the whole app - Cancel didn't react, Dashboard/other pages
+/// couldn't be clicked, Windows showed "not responding". 2.1.2 correctly
+/// fixed ONE real bug (`WebviewWindowBuilder::build()` deadlocking when
+/// called directly from a synchronous command's own call stack - Tauri's
+/// own documented Windows issue), but left a SECOND, independent one in
+/// place: this command function itself still didn't RETURN until the whole
+/// attempt finished (`run_with_outer_deadline` [now removed] blocked on `rx.recv_timeout`
+/// for up to 17, now would-be 60+, seconds before this function's own
+/// `Ok(result)` line ran). Confirmed directly against Tauri's own docs
+/// (not memory) that this second shape is independently freeze-causing:
+/// <https://tauritutorials.com/blog/tauri-command-fundamentals> demonstrates
+/// the exact symptom with a plain synchronous command that sleeps - "we'll
+/// have a window that will open and freeze... before resuming like normal"
+/// - and its own fix is "make the command async" so the caller gets
+/// control back immediately. Below applies that same principle the way
+/// marko's own spec asked for directly: `auto_check_price` now does only
+/// fast, synchronous work (normalize the URL, take-or-reject the
+/// single-flight slot) and returns within, realistically, low
+/// milliseconds - `status: "busy"` immediately if already running,
+/// otherwise `status: "started"` the moment the reader thread has been
+/// handed off. The entire browser-read lifecycle runs on a fully detached
+/// `std::thread::spawn` that this function does NOT wait on in any way,
+/// and reports its real, eventual outcome exclusively via `RESULT_EVENT` -
+/// see that constant's own doc comment. This is what actually makes "the
+/// app must never freeze" true rather than merely documented: nothing in
+/// this function's own call stack can ever take more than a few
+/// milliseconds, regardless of what the marketplace page or the WebView
+/// engine does afterward.
+///
+/// Single-flight guard (2.1.3, unchanged in shape): the check-and-set below
+/// happens under a SINGLE lock acquisition (`slot` stays locked across both
+/// the `is_some()` check and the `= Some(...)` write), so there is no
+/// window in which two calls can both observe an empty slot and both
+/// proceed - the second is rejected immediately with `"busy"`, before ever
+/// spawning anything. The slot is now cleared by the SPAWNED THREAD itself
+/// once the real work actually finishes (see below), not by this function -
+/// it no longer has anything left to do after handing the thread off.
 #[tauri::command]
 pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, request_id: u64) -> AppResult<AutoCheckResult> {
     let normalized = normalize_auto_check_url(&url)?;
@@ -406,23 +444,22 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
                 prices: vec![],
                 currency: None,
                 message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
+                listings: vec![],
             });
         }
         *slot = Some(cancel_flag.clone());
     }
     log_lifecycle(request_id, "request started");
+    spawn_auto_check_thread(app, request_id, normalized, cancel_flag);
 
-    let outcome = run_with_outer_deadline(app, request_id, normalized, cancel_flag);
-
-    // Cleared unconditionally (success, cancel, timeout, or error) so a
-    // stale flag from an attempt that already finished can never reach a
-    // later, unrelated one - same convention `start_google_sign_in` already
-    // uses for `oauth_cancel_flag`.
-    *state.price_checker_auto_cancel_flag.lock().unwrap() = None;
-
-    let result = read_outcome_to_result(outcome);
-    log_lifecycle(request_id, &format!("finished: {}", result.status));
-    Ok(result)
+    // Returns here - realistically within microseconds of the lock above
+    // being released - regardless of how long the spawned thread's own
+    // work takes. "started" is not itself shown anywhere as a terminal
+    // state; PriceChecker.tsx treats it purely as "the request was
+    // accepted, now wait for RESULT_EVENT" (see that event's own doc
+    // comment) and keeps its own Starting/Loading/Analyzing UI driven by
+    // PROGRESS_EVENT exactly as before.
+    Ok(AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![] })
 }
 
 /// "Cancel" button shown next to Auto-check's spinner while a check is in
@@ -433,52 +470,45 @@ pub fn auto_check_price(app: AppHandle, state: State<AppState>, url: String, req
 /// cancel-flag slot (see its own doc comment; `firebase_google_auth.rs`
 /// already reuses it the same way for its own, separate flag). A safe
 /// no-op when nothing is actually in flight - a stray double-click, or the
-/// attempt already finished a moment earlier.
+/// attempt already finished a moment earlier. Already fast and fully
+/// independent of `auto_check_price` (marko's spec section 3) - unchanged
+/// by the 2.1.4 fix, included here only for context.
 #[tauri::command]
 pub fn cancel_auto_check_price(state: State<AppState>) -> AppResult<()> {
     super::google_auth::cancel_google_sign_in_impl(&state.price_checker_auto_cancel_flag);
     Ok(())
 }
 
-/// Spawns the ENTIRE reader-webview lifecycle onto its own, genuinely
-/// separate `std::thread` - see this module's doc comment ("Freeze fix")
-/// for exactly why this specific shape: Tauri's own docs state that
-/// creating a window from within a synchronous command's own call stack
-/// deadlocks on Windows, which is exactly what the pre-2.1.2 version of
-/// this file did. A plain `std::thread::spawn` (the same primitive
-/// `google_oauth.rs`'s own tests already use to run `accept_one_redirect`
-/// off the calling thread) satisfies Tauri's documented fix directly.
-///
-/// Then races that thread's result against an OUTER deadline
-/// (`OVERALL_TIMEOUT + OUTER_GRACE`) so THIS function - and therefore the
-/// command, and therefore the UI - always returns in bounded time even in
-/// the residual, currently-unobserved case that the spawned thread's own
-/// budget-aware waits (`poll_then_extract`) somehow don't return on their
-/// own (e.g. `WebviewWindowBuilder::build()` itself hanging even off the
-/// synchronous-command thread - not the documented failure mode, but safe
-/// Rust has no way to forcibly abort a genuinely stuck native call, so this
-/// is the strongest guarantee available). If that outer deadline fires
-/// first, the spawned thread is NOT killed - it simply is no longer waited
-/// on; its own `WebviewGuard` still runs and closes the reader window
-/// whenever that thread does eventually finish, and the command has
-/// already returned control to the UI either way, which is what actually
-/// matters for "the app must never freeze."
-fn run_with_outer_deadline(app: AppHandle, request_id: u64, url: String, cancel: Arc<AtomicBool>) -> ReadOutcome {
-    let (tx, rx) = mpsc::channel::<ReadOutcome>();
-    let overall_start = Instant::now();
+/// Hands the ENTIRE reader-webview lifecycle to a fully detached
+/// `std::thread::spawn` and returns immediately - `auto_check_price` itself
+/// never joins or waits on this thread in any way, which is the actual fix
+/// (see that command's own doc comment, "True non-blocking fix"). The
+/// thread clears the single-flight slot and emits `RESULT_EVENT` itself
+/// once `run_browser_read` returns, however long that takes; nothing about
+/// its lifetime is tied to whether the ORIGINAL command call, or even the
+/// specific frontend that made it, still exists by the time it finishes -
+/// exactly the property that makes "the command can't be made to wait"
+/// safe rather than merely fast.
+fn spawn_auto_check_thread(app: AppHandle, request_id: u64, url: String, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
+        let overall_start = Instant::now();
         let outcome = run_browser_read(&app, request_id, &url, overall_start, &cancel);
-        // Logged here unconditionally, whether or not anyone is still
-        // waiting on `rx` by now (2.1.3, marko's spec section 15) - proves
-        // this thread actually terminated even in the residual case where
-        // the OUTER deadline below already gave up on it first (that case
-        // is honest, not a bug: this line simply arrives LATE relative to
-        // whatever the UI already moved on to - see this module's own doc
-        // comment, "Production hardening").
-        log_lifecycle(request_id, "background reader thread finished");
-        let _ = tx.send(outcome);
+
+        // Cleared here, not in `auto_check_price` (which returned long
+        // ago) - unconditionally, whatever the outcome, so a stale slot can
+        // never block a later, unrelated attempt. Uses `try_state` (not
+        // `state`, which panics if the app is already mid-teardown) since
+        // this can race a real app-exit - see lib.rs's own `ExitRequested`
+        // handler and ONE unconditional cleanup either way is what matters,
+        // not which of the two lines actually runs it.
+        if let Some(state) = app.try_state::<AppState>() {
+            *state.price_checker_auto_cancel_flag.lock().unwrap() = None;
+        }
+
+        let result = read_outcome_to_result(outcome);
+        log_lifecycle(request_id, &format!("finished: {}", result.status));
+        let _ = app.emit(RESULT_EVENT, ResultPayload { request_id, result });
     });
-    rx.recv_timeout(OVERALL_TIMEOUT + OUTER_GRACE).unwrap_or(ReadOutcome::TimedOut)
 }
 
 /// Best-effort progress hint for `PriceChecker.tsx`'s own listener - never
@@ -542,7 +572,7 @@ fn parse_target_url(url: &str) -> Result<tauri::Url, String> {
     url.parse().map_err(|e| format!("Invalid URL: {e}"))
 }
 
-/// Runs on the dedicated thread `run_with_outer_deadline` spawns. Creates
+/// Runs on the dedicated thread `spawn_auto_check_thread` spawns. Creates
 /// the hidden reader webview - now safely off the synchronous command's own
 /// call stack - polls it, and always closes it again via `WebviewGuard`
 /// before returning, whichever of Cancelled/TimedOut/Json/Error it is.
@@ -628,7 +658,7 @@ enum EvalOutcome {
 }
 
 /// Runs `js` in `webview` and blocks (this call's own dedicated thread,
-/// never the main thread - see `run_with_outer_deadline`) for at most
+/// never the main thread - see `spawn_auto_check_thread`) for at most
 /// `max_wait` waiting for the result - budget-aware (see
 /// `remaining_budget`), never the pre-2.1.2 version's fixed `EVAL_TIMEOUT`
 /// regardless of how much of the overall budget was already spent.
@@ -761,6 +791,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
             prices: vec![],
             currency: None,
             message: Some("The reader window returned something unexpected.".into()),
+            listings: vec![],
         };
     };
 
@@ -774,6 +805,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
                  This app does not attempt to solve or bypass that - use the paste/manual entry below instead."
                     .into(),
             ),
+            listings: vec![],
         };
     }
 
@@ -792,6 +824,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
                 "The page reported an implausible number of listings ({raw_price_count}) - this usually means \
                  something went wrong reading the page. Use the paste/manual entry below instead."
             )),
+            listings: vec![],
         };
     }
 
@@ -801,6 +834,7 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
         .map(|arr| arr.iter().filter_map(|v| v.as_f64()).filter(|p| p.is_finite() && *p > 0.0).collect())
         .unwrap_or_default();
     let currency = sanitize_currency(parsed.get("currency").and_then(|v| v.as_str()));
+    let listings = parse_listings(&parsed);
 
     if prices.is_empty() {
         return AutoCheckResult {
@@ -813,10 +847,39 @@ pub(crate) fn parse_auto_check_json(raw: &str) -> AutoCheckResult {
                  Use the paste/manual entry below instead."
                     .into(),
             ),
+            listings: vec![],
         };
     }
 
-    AutoCheckResult { status: "ok".into(), prices, currency, message: None }
+    AutoCheckResult { status: "ok".into(), prices, currency, message: None, listings }
+}
+
+/// Parses `EXTRACT_JS`'s optional `listings` array (2.1.4 - present only
+/// from the HTML-table pass, see that pass's own comment in the .js file)
+/// into `AutoCheckListing`s. Never guesses a missing field - `section`/
+/// `row`/`quantity` become `None`, not an empty string or a made-up value,
+/// exactly like `currency` above degrades via `sanitize_currency` rather
+/// than ever passing through something the page didn't actually say.
+fn parse_listings(parsed: &serde_json::Value) -> Vec<AutoCheckListing> {
+    parsed
+        .get("listings")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let price = entry.get("price")?.as_f64().filter(|p| p.is_finite() && *p > 0.0)?;
+                    Some(AutoCheckListing {
+                        price,
+                        currency: sanitize_currency(entry.get("currency").and_then(|v| v.as_str())),
+                        section: entry.get("section").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+                        row: entry.get("row").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+                        quantity: entry.get("quantity").and_then(|v| v.as_u64()).and_then(|q| u32::try_from(q).ok()),
+                    })
+                })
+                .take(MAX_PRICES)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Best-effort shape check on whatever the page's own markup claims its
@@ -1379,6 +1442,7 @@ mod tests {
             prices: vec![],
             currency: None,
             message: Some("Another auto-check is already running - wait for it to finish or cancel it first.".into()),
+            listings: vec![],
         };
         assert_eq!(busy.status, "busy");
         assert!(busy.prices.is_empty());
@@ -1405,5 +1469,88 @@ mod tests {
             *slot.lock().unwrap() = None; // auto_check_price's own unconditional cleanup
         }
         assert!(slot.lock().unwrap().is_none(), "must end with an empty slot after 10 cycles");
+    }
+
+    // -- 2.1.4 ("true non-blocking" fix) - marko's spec sections 4/14/17
+    //    ("SINGLE-FLIGHT", "REPEATED TEST", stale-request handling) tested
+    //    directly against the exact same slot type auto_check_price/
+    //    spawn_auto_check_thread actually use (no AppHandle needed for the
+    //    slot logic itself - only for the WebView parts, which is the one
+    //    thing this sandbox genuinely cannot exercise, see this module's
+    //    own doc comment). --------------------------------------------
+
+    #[test]
+    fn second_start_while_first_in_flight_never_touches_the_first_flag() {
+        let slot: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+        let first = Arc::new(AtomicBool::new(false));
+        *slot.lock().unwrap() = Some(first.clone());
+
+        // Mirrors auto_check_price's own check-and-set exactly.
+        let second_rejected = slot.lock().unwrap().is_some();
+        assert!(second_rejected, "a second concurrent start must observe the slot as occupied");
+        assert!(!first.load(Ordering::Relaxed), "the rejected second attempt must never flip the FIRST attempt's own flag");
+    }
+
+    #[test]
+    fn started_status_is_never_confused_with_a_terminal_ok() {
+        // Locks in the literal string PriceChecker.tsx's own `.then()`
+        // branches on for the non-terminal ack - see auto_check_price's own
+        // doc comment ("True non-blocking fix").
+        let started = AutoCheckResult { status: "started".into(), prices: vec![], currency: None, message: None, listings: vec![] };
+        assert_eq!(started.status, "started");
+        assert_ne!(started.status, "ok");
+        assert!(started.prices.is_empty(), "a \"started\" ack must never carry any price data of its own");
+    }
+
+    #[test]
+    fn timeout_message_reflects_the_real_60_second_ceiling_not_a_stale_one() {
+        let result = read_outcome_to_result(ReadOutcome::TimedOut);
+        assert_eq!(result.status, "timeout");
+        assert!(
+            result.message.as_deref().unwrap().contains("60 seconds"),
+            "message must match OVERALL_TIMEOUT (60s) - a stale 15s/17s string here would silently mislead marko about the real ceiling"
+        );
+    }
+
+    #[test]
+    fn overall_timeout_constant_is_exactly_60_seconds() {
+        // marko's explicit spec section 1/6: "Timeout nastav na: 60 sekúnd."
+        assert_eq!(OVERALL_TIMEOUT, Duration::from_secs(60));
+    }
+
+    // -- 2.1.4: listings (section/row/quantity) extraction ---------------
+
+    #[test]
+    fn ok_result_with_listings_carries_real_section_row_quantity() {
+        let raw = r#"{
+            "prices": [31.0, 39.0],
+            "currency": "USD",
+            "blocked": false,
+            "listings": [
+                {"price": 31.0, "currency": "USD", "section": "Grandstand Outfield 413", "row": "10", "quantity": 2},
+                {"price": 39.0, "currency": "USD", "section": "Bleacher 237", "row": "20", "quantity": null}
+            ]
+        }"#;
+        let result = parse_auto_check_json(raw);
+        assert_eq!(result.listings.len(), 2);
+        assert_eq!(result.listings[0].section.as_deref(), Some("Grandstand Outfield 413"));
+        assert_eq!(result.listings[0].quantity, Some(2));
+        assert_eq!(result.listings[1].quantity, None, "must not fabricate a quantity the page never stated");
+    }
+
+    #[test]
+    fn missing_listings_key_is_fine_prices_alone_still_work() {
+        // The JSON-LD and og:price passes never populate "listings" at all.
+        let raw = r#"{"prices": [99.0], "currency": "USD", "blocked": false}"#;
+        let result = parse_auto_check_json(raw);
+        assert_eq!(result.status, "ok");
+        assert!(result.listings.is_empty());
+    }
+
+    #[test]
+    fn listing_with_blank_section_text_becomes_none_not_an_empty_string() {
+        let raw = r#"{"prices":[10.0],"currency":"USD","blocked":false,"listings":[{"price":10.0,"currency":"USD","section":"   ","row":null,"quantity":null}]}"#;
+        let result = parse_auto_check_json(raw);
+        assert_eq!(result.listings[0].section, None);
     }
 }

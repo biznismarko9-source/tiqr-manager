@@ -49,23 +49,45 @@
   }
 
   // --- Pass 2: HTML table shaped like Section/Row/Price (Vivid-Seats-style) ---
+  var listings = [];
   if (prices.length === 0) {
     var tables = document.querySelectorAll("table");
     tables.forEach(function (table) {
       var headerEl = table.querySelector("thead") || table;
+      var headerCells = Array.prototype.map.call(headerEl.querySelectorAll("th"), function (th) { return (th.textContent || "").trim().toLowerCase(); });
       var headerText = (headerEl.textContent || "").toLowerCase();
       if (headerText.indexOf("section") === -1 && headerText.indexOf("price") === -1) return;
+      // marko's spec ("EXTRACTION") wants real section/row/quantity, not
+      // just bare prices, wherever the page actually states them - find
+      // each column's index (if the table has one) rather than assuming a
+      // fixed order, so this keeps working if Vivid Seats ever reorders
+      // its own columns.
+      var sectionCol = headerCells.indexOf("section");
+      var rowCol = headerCells.indexOf("row");
+      var qtyCol = headerCells.findIndex(function (h) { return h.indexOf("qty") !== -1 || h.indexOf("quantity") !== -1; });
+
       var rows = table.querySelectorAll("tbody tr, tr");
       rows.forEach(function (row) {
         var cells = row.querySelectorAll("td");
         if (cells.length < 3) return;
+        var cellText = function (i) { return i >= 0 && i < cells.length ? (cells[i].textContent || "").trim() : null; };
         for (var i = 0; i < cells.length; i++) {
           var m = /([$€£])\s?([\d.,]+)/.exec(cells[i].textContent || "");
           if (m) {
             var val = parseFloat(m[2].replace(/,/g, ""));
             if (isFinite(val) && val > 0) {
+              var cur = m[1] === "$" ? "USD" : m[1] === "€" ? "EUR" : "GBP";
               prices.push(val);
-              if (!currency) currency = m[1] === "$" ? "USD" : m[1] === "€" ? "EUR" : "GBP";
+              if (!currency) currency = cur;
+              var qtyRaw = qtyCol >= 0 ? cellText(qtyCol) : null;
+              var qtyNum = qtyRaw ? parseInt(qtyRaw.replace(/[^\d]/g, ""), 10) : NaN;
+              listings.push({
+                price: val,
+                currency: cur,
+                section: sectionCol >= 0 ? cellText(sectionCol) : cellText(0),
+                row: rowCol >= 0 ? cellText(rowCol) : cellText(1),
+                quantity: isFinite(qtyNum) ? qtyNum : null,
+              });
             }
             break;
           }
@@ -85,5 +107,5 @@
     }
   }
 
-  return JSON.stringify({ prices: prices, currency: currency, blocked: false });
+  return JSON.stringify({ prices: prices, currency: currency, blocked: false, listings: listings });
 })();

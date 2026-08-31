@@ -1407,18 +1407,28 @@ export interface PriceCheckerSummary {
  * feeds `prices`/`currency` through the exact same `extractPricesFromText`-
  * driven fill it already uses for a real paste, so marko reviews before
  * anything is saved via the unchanged `savePriceCheck`. */
+/** 2.1.4 (production hardening 2 - "true non-blocking" fix): `AutoCheckResult`
+ * is no longer what `api.autoCheckPrice`'s own promise resolves with for a
+ * finished attempt - see `AutoCheckResultEvent` below and
+ * commands/price_checker_auto.rs's module doc comment ("True non-blocking
+ * fix") for exactly why. The promise now only ever carries "busy" (rejected
+ * immediately, nothing started) or "started" (accepted; the real outcome
+ * follows later as an event) - both still expressed as this same shape so
+ * PriceChecker.tsx's `status` switch has one consistent type to handle
+ * everywhere, whether it's looking at the promise's own resolution or an
+ * event payload. */
 export interface AutoCheckResult {
-  /** "ok" | "unable_to_read" | "blocked" | "error" | "cancelled" | "timeout"
-   * | "busy" - the last two of the first six are from 2.1.2 ("cancelled" is
-   * the direct result of `api.cancelAutoCheckPrice`, never shown as an
-   * error; "timeout" means the hard 15s ceiling was hit). "busy" is new in
-   * 2.1.3: the backend's single-flight guard rejected this attempt because
-   * another one was already running (see commands/price_checker_auto.rs's
-   * "Production hardening" doc comment) - should be unreachable via normal
-   * UI (canStartAutoCheck already prevents starting a second attempt) but
-   * PriceChecker.tsx still handles it safely if it's ever hit anyway. Every
-   * non-"ok" status is always accompanied by a plain-language `message`
-   * below. */
+  /** "started" (2.1.4 - not terminal; the real outcome for this attempt
+   * always arrives later via `AutoCheckResultEvent`) | "ok" |
+   * "unable_to_read" | "blocked" | "error" | "cancelled" | "timeout" | "busy".
+   * "cancelled" is the direct result of `api.cancelAutoCheckPrice`, never
+   * shown as an error toast; "timeout" means the hard 60s ceiling
+   * (price_checker_auto.rs's `OVERALL_TIMEOUT`) was hit. "busy" means the
+   * backend's single-flight guard rejected this attempt because another one
+   * was already running - should be unreachable via normal UI
+   * (`canStartAutoCheck` already prevents starting a second attempt) but
+   * handled safely if it's ever hit anyway. Every status other than "ok"/
+   * "started" is always accompanied by a plain-language `message` below. */
   status: string;
   /** Individual prices found (never pre-averaged) - empty unless status is "ok". */
   prices: number[];
@@ -1426,6 +1436,24 @@ export interface AutoCheckResult {
   currency: string | null;
   /** Explanation shown next to the Auto-check button - present whenever status isn't "ok". */
   message: string | null;
+  /** 2.1.4: real section/row/quantity detail, when the page's own markup
+   * had it (currently only the Vivid-Seats-style HTML-table extraction
+   * pass populates this - see price_checker_auto_extract.js). Always in
+   * addition to `prices` above, never instead of it - `prices` still
+   * contains every price found regardless of whether this array is
+   * populated. Never fabricated: any of a listing's own fields the page
+   * didn't state come through as `null`, not guessed. */
+  listings: AutoCheckListing[];
+}
+
+/** One real listing entry (2.1.4) - see `AutoCheckResult.listings`'s own
+ * doc comment. */
+export interface AutoCheckListing {
+  price: number;
+  currency: string | null;
+  section: string | null;
+  row: string | null;
+  quantity: number | null;
 }
 
 /** 2.1.2: the real progress phases the backend actually goes through during
@@ -1450,4 +1478,18 @@ export type AutoCheckPhase = "starting" | "loading" | "analyzing" | "cleaning_up
 export interface AutoCheckProgressEvent {
   requestId: number;
   phase: AutoCheckPhase;
+}
+
+/** Payload shape of the `price-checker-auto-check-result` Tauri event
+ * (2.1.4) - see commands/price_checker_auto.rs's `ResultPayload`/
+ * `RESULT_EVENT` (Rust) for the full "true non-blocking" design this is
+ * part of. This is now the ONLY way a TERMINAL `AutoCheckResult`
+ * (ok/unable_to_read/blocked/cancelled/timeout/error - never "started" or
+ * "busy", which only ever come from `api.autoCheckPrice`'s own promise)
+ * ever reaches the frontend. `requestId` follows the exact same
+ * stale-attempt-detection convention `AutoCheckProgressEvent` already
+ * uses. */
+export interface AutoCheckResultEvent {
+  requestId: number;
+  result: AutoCheckResult;
 }

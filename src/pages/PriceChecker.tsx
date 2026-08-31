@@ -15,6 +15,7 @@ import { api, errMsg } from "../lib/api";
 import type {
   AutoCheckPhase,
   AutoCheckProgressEvent,
+  AutoCheckResultEvent,
   EventWithStats,
   MarketplacePriceView,
   PriceCheck,
@@ -53,6 +54,12 @@ import { extractPricesFromText } from "../lib/priceParse";
 
 const AUTO_CHECK_PROGRESS_EVENT = "price-checker-auto-check-progress";
 
+// 2.1.4 ("true non-blocking" fix): the ONLY channel a terminal result now
+// arrives through - see commands/price_checker_auto.rs's `RESULT_EVENT` for
+// why `api.autoCheckPrice`'s own promise no longer carries it. Must match
+// that constant exactly, same caveat as AUTO_CHECK_PROGRESS_EVENT above.
+const AUTO_CHECK_RESULT_EVENT = "price-checker-auto-check-result";
+
 const AUTO_CHECK_PHASE_LABEL: Record<AutoCheckPhase, string> = {
   starting: "Starting...",
   loading: "Loading page...",
@@ -60,14 +67,15 @@ const AUTO_CHECK_PHASE_LABEL: Record<AutoCheckPhase, string> = {
   cleaning_up: "Cleaning up...",
 };
 
-// 2.1.3 (production hardening): the backend's OWN hard ceiling is
-// OVERALL_TIMEOUT + OUTER_GRACE = 17s (see run_with_outer_deadline's doc
-// comment, Rust) - this is that plus a 3s margin for ordinary IPC/
-// serialization overhead, not a number the backend itself is trying to
-// hit. See startAutoCheck's own comment (marko's spec section 7 - "LEVEL 2
-// outer watchdog") for what this actually guarantees and what it honestly
-// can't (it can't abort the backend call itself - invoke() has no abort).
-const FRONTEND_WATCHDOG_MS = 20000;
+// 2.1.4 ("true non-blocking" fix): purely a last-resort UI backstop now,
+// not a proxy for how long the backend call itself can take (it can't take
+// long anymore - see startAutoCheck's own comment). The backend's own hard
+// ceiling is OVERALL_TIMEOUT = 60s (price_checker_auto.rs) and reports its
+// OWN "timeout" result via AUTO_CHECK_RESULT_EVENT well before this fires
+// in the normal case; this exists only for the residual case where that
+// event somehow never arrives at all (e.g. the main window itself is
+// gone), so the button doesn't stay stuck on Loading/Analyzing forever.
+const FRONTEND_WATCHDOG_MS = 65000;
 
 // ---------------------------------------------------------------------------
 // Small local helpers
@@ -624,6 +632,25 @@ export default function PriceChecker() {
     autoCheckRef.current = autoCheck;
   }, [autoCheck]);
 
+  // 2.1.4: lets the result-event listener below look up the FULL
+  // MarketplacePriceView for whichever marketplaceId `autoCheck` is
+  // currently tracking (only that id is stored there - see its own type
+  // above) without needing `summary` itself as a listener dependency,
+  // which would force `listen()` to unsubscribe/resubscribe on every data
+  // reload. Same "ref mirrors state for synchronous reads inside a
+  // long-lived subscription" idea as `autoCheckRef` just above.
+  const summaryRef = useRef<typeof summary>(null);
+  useEffect(() => {
+    summaryRef.current = summary;
+  }, [summary]);
+  // 2.1.4: holds the CURRENT attempt's watchdog timer id so the result-event
+  // listener (which is what actually ends an attempt now, not
+  // startAutoCheck's own `.then()`) can clear it - otherwise a normal,
+  // fast completion would still leave the old watchdog armed, ready to fire
+  // its "taking unusually long" toast against whatever LATER, unrelated
+  // attempt happens to be running when its delay elapses.
+  const watchdogRef = useRef<number | undefined>(undefined);
+
   useEffect(() => {
     api.listEvents().then(setEvents).catch((e) => toast.error(errMsg(e)));
     // Mirrors Orders.tsx's own presetEventId pattern - EventDetail's "Check
@@ -666,6 +693,64 @@ export default function PriceChecker() {
       unlisten?.();
     };
   }, []);
+
+  // 2.1.4 ("true non-blocking" fix): the terminal outcome of an auto-check
+  // attempt now arrives HERE, not from `api.autoCheckPrice`'s own promise
+  // (see that function's own comment, and commands/price_checker_auto.rs's
+  // `RESULT_EVENT`) - structurally identical to the progress-event listener
+  // right above (same disposed-guard shape, same stale-attempt check via
+  // requestId), just handling the terminal statuses instead of an
+  // in-progress phase. This is what actually does the "open the modal,
+  // toast, clear autoCheck" work `startAutoCheck`'s own `.then()` used to
+  // do directly.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    listen<AutoCheckResultEvent>(AUTO_CHECK_RESULT_EVENT, (event) => {
+      const { requestId, result } = event.payload;
+      if (autoCheckRef.current?.requestId !== requestId) return; // stale - a newer attempt started, or Cancel/the watchdog already gave up on this one
+      const marketplaceId = autoCheckRef.current.marketplaceId;
+      const targetUrl = autoCheckRef.current.targetUrl;
+      const view = summaryRef.current?.marketplaces.find((m) => m.marketplaceId === marketplaceId) ?? null;
+
+      if (!view) {
+        // Residual edge case: the event data reloaded (e.g. marko switched
+        // events and back) between starting this attempt and its result
+        // arriving, so this marketplace's card no longer exists in the
+        // CURRENT summary snapshot. Nothing sensible to show - still clear
+        // the running state below rather than leave the button stuck.
+        window.clearTimeout(watchdogRef.current);
+        setAutoCheck(null);
+        autoCheckRef.current = null;
+        return;
+      }
+
+      window.clearTimeout(watchdogRef.current);
+      if (result.status === "ok") {
+        toast.success(`Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"} - review before saving.`);
+      } else if (result.status !== "cancelled") {
+        // "cancelled" was marko's own choice a moment ago - an error toast
+        // for it would read as scolding him for clicking his own Cancel
+        // button. Every other non-ok status still gets one.
+        toast.error(result.message ?? "Couldn't read prices automatically - enter them below.");
+      }
+      setAutoCheckModalData({ result, targetUrl });
+      setCheckModalFor(view);
+
+      setAutoCheck(null);
+      autoCheckRef.current = null;
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [toast]);
 
   const load = useCallback(() => {
     if (eventId === "") {
@@ -735,16 +820,12 @@ export default function PriceChecker() {
 
     const isStillCurrent = () => autoCheckRef.current?.requestId === myRequestId;
 
-    // Level-2 frontend watchdog (2.1.3, marko's spec section 7) - a pure UI
-    // safety net, independent of whatever the backend is actually doing.
-    // Honest limitation: invoke() has no abort, so this can't stop the
-    // backend call itself if it's ever somehow still running past this
-    // point - but it guarantees the BUTTON always comes back to Idle,
-    // rather than staying on Starting/Loading/Analyzing/Cleaning-up forever
-    // in some unforeseen case the backend's OWN two timeout layers
-    // (OVERALL_TIMEOUT + OUTER_GRACE, price_checker_auto.rs) somehow don't
-    // cover. Cleared in `finally` below on every normal completion, long
-    // before it would ever fire in practice.
+    // 2.1.4 ("true non-blocking" fix): watchdog now only guards against
+    // AUTO_CHECK_RESULT_EVENT itself never arriving at all (see
+    // FRONTEND_WATCHDOG_MS's own comment) - it does NOT clear the watchdog
+    // on `.then()` below anymore, because `.then()` firing with "started"
+    // does not mean the attempt is done; only the result-event listener
+    // (or this watchdog, in the residual case) does that now.
     const watchdog = window.setTimeout(() => {
       if (isStillCurrent()) {
         setAutoCheck(null);
@@ -752,11 +833,12 @@ export default function PriceChecker() {
         toast.error("Auto-check is taking unusually long - resetting. It may still finish in the background.");
       }
     }, FRONTEND_WATCHDOG_MS);
+    watchdogRef.current = watchdog;
 
     api
       .autoCheckPrice(targetUrl, myRequestId)
       .then((result) => {
-        if (!isStillCurrent()) return; // superseded (watchdog already gave up, or Cancel already confirmed) - this result is stale, ignore it entirely
+        if (!isStillCurrent()) return; // superseded (watchdog already gave up, or Cancel already confirmed) - this ack is stale, ignore it entirely
         if (result.status === "busy") {
           // Should be unreachable via normal UI now (both canStartAutoCheck
           // and startAutoCheck's own synchronous autoCheckRef guard above
@@ -764,32 +846,32 @@ export default function PriceChecker() {
           // single-flight guard is the real, authoritative defense; this is
           // just a safe, honest fallback if it's ever hit anyway (e.g. a
           // future caller of autoCheckPrice outside this exact code path).
-          // Nothing to review for an attempt that never actually started,
-          // so skip the modal.
+          // Nothing was actually started, so clear the running state now -
+          // there is no later event coming for THIS attempt.
           toast.error(result.message ?? "Another auto-check is already running.");
-          return;
-        }
-        if (result.status === "ok") {
-          toast.success(`Auto-check found ${result.prices.length} price${result.prices.length === 1 ? "" : "s"} - review before saving.`);
-        } else if (result.status !== "cancelled") {
-          // "cancelled" was marko's own choice a moment ago - an error toast
-          // for it would read as scolding him for clicking his own Cancel
-          // button. Every other non-ok status still gets one, same as 2.1.1.
-          toast.error(result.message ?? "Couldn't read prices automatically - enter them below.");
-        }
-        setAutoCheckModalData({ result, targetUrl });
-        setCheckModalFor(view);
-      })
-      .catch((e) => {
-        if (!isStillCurrent()) return;
-        toast.error(errMsg(e));
-      })
-      .finally(() => {
-        window.clearTimeout(watchdog);
-        if (isStillCurrent()) {
+          window.clearTimeout(watchdog);
           setAutoCheck(null);
           autoCheckRef.current = null;
+          return;
         }
+        // status === "started": the backend has handed this off to its own
+        // background thread and returned immediately - this promise's job
+        // is done. autoCheck/autoCheckRef stay exactly as the optimistic
+        // "starting" state set them; PROGRESS_EVENT drives the phase text
+        // from here, and AUTO_CHECK_RESULT_EVENT (not this .then()) is what
+        // eventually reports success/failure and clears the running state.
+      })
+      .catch((e) => {
+        // A genuine invoke() rejection - the command itself could not even
+        // be dispatched/validated (e.g. IPC failure, or normalize_auto_
+        // check_url's own Err for an invalid URL, which now returns before
+        // anything is ever spawned). Nothing was started, so this IS
+        // terminal for this attempt.
+        if (!isStillCurrent()) return;
+        window.clearTimeout(watchdog);
+        setAutoCheck(null);
+        autoCheckRef.current = null;
+        toast.error(errMsg(e));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
