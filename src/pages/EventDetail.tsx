@@ -14,7 +14,7 @@ import {
   TabSwitcher,
 } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
-import { IconArrowLeft, IconCheck, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
 
@@ -26,17 +26,21 @@ import { EventFormModal } from "./Events";
 // Tickets tables this page already had, just relocated; Sales/Market/Finance
 // each pull from an already-existing command (list_sale_groups,
 // get_price_checker_summary, list_finance_entries_for_order x N) rather than
-// inventing anything new. Tasks has no spec yet beyond the tab's own name -
-// left as an honest placeholder rather than guessed at.
-type WorkspaceTab = "overview" | "inventory" | "sales" | "market" | "finance" | "tasks";
+// inventing anything new. 2.2.3 (second pass): Tasks removed (marko decided
+// against it before it ever had a spec); Listings added between Inventory
+// and Sales - a read-only look at the Ticket rows already filtered to
+// status === "listed", reusing `tickets` this page already loads. No
+// marketplace/listing-URL/last-checked columns - see ListingsTab's own doc
+// comment for why (that data doesn't exist anywhere in this schema today).
+type WorkspaceTab = "overview" | "inventory" | "listings" | "sales" | "market" | "finance";
 
 const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "inventory", label: "Inventory" },
+  { key: "listings", label: "Listings" },
   { key: "sales", label: "Sales" },
   { key: "market", label: "Market" },
   { key: "finance", label: "Finance" },
-  { key: "tasks", label: "Tasks" },
 ];
 
 export default function EventDetail() {
@@ -100,10 +104,10 @@ export default function EventDetail() {
 
       {tab === "overview" && <OverviewTab event={event} />}
       {tab === "inventory" && <InventoryTab event={event} orders={orders} tickets={tickets} navigate={navigate} />}
+      {tab === "listings" && <ListingsTab tickets={tickets} />}
       {tab === "sales" && <SalesTab eventId={eventId} />}
       {tab === "market" && <MarketTab event={event} tickets={tickets} navigate={navigate} />}
       {tab === "finance" && <FinanceTab orders={orders} />}
-      {tab === "tasks" && <TasksTab />}
 
       <EventFormModal
         open={editOpen}
@@ -211,7 +215,15 @@ function InventoryTab({
       ) : orders.length === 0 ? (
         <EmptyState title="No orders for this event yet" />
       ) : (
-        <div className="mb-8 max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.2.3: max-w-[1400px] removed - marko noticed these tables
+        // stopped short of the window edge on a wide screen (the same
+        // "visible empty space on both sides" complaint that got the page
+        // shell itself de-capped back in 2.0.31 - see Layout.tsx's own
+        // comment). No colgroup/percentage-width system here unlike
+        // Sales.tsx's own table (2.0.35+) - if a specific column ends up
+        // looking oddly stretched on an ultra-wide window, that's the
+        // next thing to fix, same iterative path Sales.tsx took.
+        <div className="mb-8 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -251,9 +263,8 @@ function InventoryTab({
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets for this event yet" />
       ) : (
-        // 2.0.32: max-w-[1400px] - see Sales.tsx's own comment on the
-        // identical change for the full rationale.
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.2.3: max-w-[1400px] removed - see the Orders table above.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -325,7 +336,8 @@ function SalesTab({ eventId }: { eventId: number }) {
       {groups.length === 0 ? (
         <EmptyState title="No sales for this event yet" />
       ) : (
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.2.3: no max-w cap - see the Inventory tables' own comment.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -506,7 +518,8 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
           description={`Open one of this event's orders and use "Record in Finance" there.`}
         />
       ) : (
-        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.2.3: no max-w cap - see the Inventory tables' own comment.
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[600px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -555,17 +568,85 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tasks - no spec beyond the tab's own name yet (marko's own request listed
-// it as a target tab but gave no further detail, unlike Overview's explicit
-// field list). Left as an honest placeholder rather than guessed at - see
-// REDESIGN-2.2.3-REPORT.md.
+// Listings - a read-only look at this event's ACTIVE listings, i.e. its
+// Tickets already filtered to status === "listed" (reuses the `tickets`
+// this page already loads for Inventory - no new fetch). Deliberately shows
+// only what genuinely exists on a Ticket today: the ticket itself, its
+// listing price, currency, and status. Marketplace, listing URL, and last
+// updated/checked were all explicitly asked for, but none of the three
+// exist anywhere in this schema - a Ticket has never had a "which platform
+// is this listed on", a listing URL, or a listing-specific timestamp column
+// (checked migrations 001 and 010, the only two that ever touched
+// `tickets`, plus Price Checker's own "Your Tickets" - the closest existing
+// thing to a listings view - which doesn't have them either). Per marko's
+// own instruction not to invent data we don't have, this tab does not show
+// those 3 columns or a clickable URL - see REDESIGN-2.2.3-REPORT.md for the
+// same explanation in Slovak, and the note in the empty/summary area below.
 // ---------------------------------------------------------------------------
-function TasksTab() {
+function ListingsTab({ tickets }: { tickets: Ticket[] | null }) {
+  if (tickets === null) return <LoadingBlock />;
+
+  const listed = tickets.filter((t) => t.status === "listed");
+  const priced = listed.filter((t) => t.listingPriceCents != null);
+  const listedValueCents = priced.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
+  const prices = priced.map((t) => t.listingPriceCents as number);
+  const lowestCents = prices.length > 0 ? Math.min(...prices) : null;
+  const highestCents = prices.length > 0 ? Math.max(...prices) : null;
+  const currencies = Array.from(new Set(listed.map((t) => t.currency)));
+  const listingsCurrency = currencies.length <= 1 ? (currencies[0] ?? null) : null;
+
   return (
-    <EmptyState
-      icon={<IconCheck className="h-8 w-8" />}
-      title="Tasks are coming in a future update"
-      description="Nothing to show here yet - let me know what a task for an event should look like and I'll build it."
-    />
+    <div>
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Active listings" value={String(listed.length)} />
+        <StatCard label="Listed value" value={formatMoneyOrMixed(listedValueCents, listingsCurrency)} />
+        <StatCard label="Lowest price" value={lowestCents !== null ? formatMoneyOrMixed(lowestCents, listingsCurrency) : "-"} />
+        <StatCard label="Highest price" value={highestCents !== null ? formatMoneyOrMixed(highestCents, listingsCurrency) : "-"} />
+      </div>
+      <p className="mb-6 text-xs text-slate-400 dark:text-slate-500">
+        Marketplace, listing URL and last checked date aren&apos;t tracked in TIQR yet, so they&apos;re not shown here - let
+        me know if you want to start recording those and I&apos;ll add them properly instead of guessing.
+      </p>
+
+      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Listings ({listed.length})</h2>
+      {listed.length === 0 ? (
+        <EmptyState title="No active listings for this event yet" description={`Set a listing price and mark a ticket "Listed" in Inventory to see it here.`} />
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full min-w-[600px] border-collapse">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <tr>
+                <th className="th">Ticket</th>
+                <th className="th">Seat</th>
+                <th className="th text-right">Listing price</th>
+                <th className="th">Currency</th>
+                <th className="th">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {listed.map((t) => (
+                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td">
+                    <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                      {t.code}
+                    </Link>
+                  </td>
+                  <td className="td text-slate-500 dark:text-slate-400">
+                    {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
+                  </td>
+                  <td className="td text-right tabular-nums">
+                    {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
+                  </td>
+                  <td className="td text-slate-500 dark:text-slate-400">{t.currency}</td>
+                  <td className="td">
+                    <Badge tone={t.status}>{t.status}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

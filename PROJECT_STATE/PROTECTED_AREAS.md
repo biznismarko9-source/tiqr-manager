@@ -21,6 +21,53 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.3 - Event Workspace: Tasks removed, Listings tab added, tables full-width
+
+Second pass on the Event Workspace from 2.2.2, all frontend-only
+(`EventDetail.tsx`). Final tab order: **Overview | Inventory | Listings |
+Sales | Market | Finance**. A few things worth knowing before touching
+this page again:
+
+- **The Tasks tab is gone, completely - not just hidden.** Marko decided
+  against it before it ever got a spec (see 2.2.2's own entry below: it
+  was always an `EmptyState` placeholder with no schema, no commands, no
+  types). The 2.2.2 bullet about Tasks below is now historical only - read
+  it as "this is what used to be there," not as a description of current
+  code. If Tasks ever comes back, it starts from nothing again; there is
+  no branch or dead code to resurrect.
+- **The new Listings tab deliberately does NOT show marketplace, listing
+  URL, or last-checked/updated - three of the seven fields marko asked
+  for - because none of them exist anywhere in this codebase.** Verified
+  by reading the full `Ticket` TypeScript interface, grepping every
+  `ALTER TABLE tickets` across all 21 migrations (only migration 010 ever
+  added columns beyond the original 001 schema: `resale_status`,
+  `delivery_status` - neither is a marketplace/URL/timestamp field), and
+  checking Price Checker's own `YourTicketGroup` (the closest existing
+  "listing" concept), which also has none of the three. The tab shows
+  ticket/listing price/currency/status (all real, all already on
+  `tickets`) plus an Active listings/Listed value/Lowest/Highest summary,
+  and says plainly, in the UI itself, that the other three aren't tracked
+  yet. **Do not add fake/placeholder columns for these to "complete" the
+  table** - if marko wants them tracked for real, that is a real schema
+  migration (new `tickets` columns, likely a new marketplace-link concept)
+  and a deliberate follow-up, not a UI-only addition.
+- **`ListingsTab` receives `tickets` as a prop from the same fetch
+  `InventoryTab` already uses - no new API, no new fetch, no new
+  filtering pass beyond `status === "listed"` client-side.** Matches
+  marko's explicit "žiadne nové API" / "nevytváraj duplicitný systém"
+  constraints for this release. If Listings ever needs data `tickets`
+  doesn't carry, that's a sign a real backend change is due, not a reason
+  to bolt more client-side derivation onto this component.
+- **The `max-w-[1400px]` cap was removed from all 4 of this page's tables**
+  (Orders/Tickets in Inventory, Sales, Finance) so they fill the window
+  width on wide screens - the same fix `Layout.tsx` itself got in 2.0.31,
+  just never carried over to these tables. Deliberately NOT given
+  `Sales.tsx`'s own percentage-based `colgroup` treatment (see that file's
+  2.0.32-2.0.35 history) - that was judged to be more machinery than this
+  ask calls for. Accepted trade-off: a column could look oddly stretched
+  on a very wide/ultra-wide monitor. Only add a colgroup here if marko
+  actually reports that happening - don't pre-emptively engineer it.
+
 ## 2.2.2 - EventDetail.tsx is now the "Event Workspace" (tabbed)
 
 `EventDetail.tsx` went from one long scrolling page to 6 tabs (Overview,

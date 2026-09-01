@@ -16,6 +16,34 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.3 - Event Workspace: Listings tab, Tasks removed, tables full-width
+
+Second pass on the Event Workspace, all frontend-only. Final tab order:
+`Overview | Inventory | Listings | Sales | Market | Finance`.
+
+- **Tasks tab removed entirely** - marko decided against it before it had
+  a spec; it was only ever an empty placeholder, so there was nothing to
+  migrate.
+- **New Listings tab** - a read-only view of this event's tickets already
+  filtered to `status === "listed"`: ticket, listing price, currency,
+  status, plus an Active listings/Listed value/Lowest/Highest summary.
+  Deliberately does NOT show marketplace, listing URL, or last checked -
+  none of the three exist anywhere in the `tickets` schema (checked all 21
+  migrations) or in Price Checker's own listing data, and marko explicitly
+  asked not to invent data that isn't real. The tab says so plainly.
+  Reuses the same `tickets` array Inventory already loads - no new API.
+- **All 4 Event Workspace tables (Orders, Tickets, Sales, Finance) now
+  fill the window width** - removed the `max-w-[1400px]` cap that was
+  stopping them short of the right edge, the same fix `Layout.tsx` itself
+  got in 2.0.31.
+
+See `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.3" entry before extending
+any of these tabs further.
+
+Frontend-only - no migration, no backend command changes. `tsc -b`/
+`vite build` clean (cargo test suite unaffected - no `.rs` files touched
+this release). Full detail in `REDESIGN-2.2.3-REPORT.md`.
+
 ## 2.2.2 - Event Workspace, plus 3 small fixes
 
 `EventDetail.tsx` is now a tabbed "Event Workspace"
