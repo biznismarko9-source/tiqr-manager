@@ -2418,3 +2418,67 @@ pub struct CreateFromRecurringResult {
     pub recurring: RecurringExpense,
     pub entry: FinanceEntry,
 }
+
+// --- Ticket Listings (2.2.4) ------------------------------------------------
+// See commands::ticket_listings's own module doc comment and migrations/
+// 022_ticket_listings.sql for the full design. One ticket can now have many
+// of these (one per marketplace it's listed on), which is exactly why this
+// isn't just more columns on `Ticket` - marko's own explicit instruction.
+
+/// One (ticket, marketplace) listing - a ticket can have several of these at
+/// once, one per marketplace it's currently posted on.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketListing {
+    pub id: i64,
+    pub ticket_id: i64,
+    /// Denormalized from a JOIN onto `tickets`, same "id + display fields
+    /// alongside it" convention as `FinanceEntry::order_code`/
+    /// `Ticket::event_name` - lets the Event Workspace Listings tab render a
+    /// row without a second fetch back to `tickets`.
+    pub ticket_code: String,
+    pub ticket_section: Option<String>,
+    pub ticket_row_label: Option<String>,
+    pub ticket_seat: Option<String>,
+    pub marketplace_id: i64,
+    /// Denormalized from a JOIN onto `marketplaces`, same convention as
+    /// `FinanceEntry::category_name`/`account_name`.
+    pub marketplace_name: String,
+    /// The marketplace's OWN id for this listing, if marko has entered one -
+    /// optional, since this is manual entry and he may not always have/type
+    /// one in. Part of the no-duplicates guard - see the migration's own
+    /// doc comment.
+    pub listing_id: Option<String>,
+    pub listing_url: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    /// 'active' | 'sold' | 'removed' - the listing's OWN lifecycle,
+    /// deliberately separate from `Ticket.status` (see the migration's own
+    /// doc comment for why the two must never be conflated).
+    pub status: String,
+    pub is_demo: bool,
+    pub created_at: String,
+    /// Doubles as "last checked" for now (marko's own "updated_at / last
+    /// checked" - one field, not two, until this app ever automates
+    /// re-checking a listing's live price, which is explicitly out of scope
+    /// this release).
+    pub updated_at: String,
+}
+
+/// Input for both `create_ticket_listing` and `update_ticket_listing` - same
+/// "one struct, not flat arguments" convention as `FinanceEntryInput`/
+/// `OrderInput`. An edit always resubmits the same `ticket_id` it started
+/// with (the UI never offers to re-parent a listing to a different ticket) -
+/// same "round-trip a field the form doesn't expose" spirit as
+/// `FinanceEntryInput.order_id`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketListingInput {
+    pub ticket_id: i64,
+    pub marketplace_id: i64,
+    pub listing_id: Option<String>,
+    pub listing_url: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub status: String,
+}

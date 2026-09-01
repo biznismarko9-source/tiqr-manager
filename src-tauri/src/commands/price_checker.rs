@@ -185,16 +185,26 @@ pub fn create_marketplace(state: State<AppState>, name: String) -> AppResult<Mar
 /// command stays exposed for whenever one does, and it should never be able
 /// to do by accident what marko explicitly asked NOT to happen to StubHub's
 /// own history.
+///
+/// 2.2.4: also counts `ticket_listings` (migrations/022_ticket_listings.sql,
+/// also `ON DELETE CASCADE` on its own `marketplace_id`) - exactly the same
+/// trap this guard already exists to prevent, just for the newer table.
+/// Without this, deleting a marketplace that still has real listings
+/// recorded against it would silently wipe them out from under marko - see
+/// PROJECT_STATE/PROTECTED_AREAS.md's "2.2.0" entry, which already flagged
+/// "grep for every table with a marketplace_id column" as the exact thing
+/// to do before this guard could ever go stale again.
 pub(crate) fn delete_marketplace_impl(conn: &Connection, id: i64) -> AppResult<()> {
     let history_count: i64 = conn.query_row(
         "SELECT (SELECT COUNT(*) FROM event_marketplace_links WHERE marketplace_id = ?1)
-                + (SELECT COUNT(*) FROM price_checks WHERE marketplace_id = ?1)",
+                + (SELECT COUNT(*) FROM price_checks WHERE marketplace_id = ?1)
+                + (SELECT COUNT(*) FROM ticket_listings WHERE marketplace_id = ?1)",
         [id],
         |r| r.get(0),
     )?;
     if history_count > 0 {
         return Err(AppError::Validation(
-            "This marketplace still has saved links or price-check history, so it can't be deleted. \
+            "This marketplace still has saved links, price-check history, or real listings, so it can't be deleted. \
              If you just don't want to use it for new checks anymore, it's fine to leave it as-is."
                 .into(),
         ));
@@ -1358,6 +1368,26 @@ mod tests {
         seed_price_check(&conn, event_id, vivid_seats, 5000, 6000, 7000, 10, "EUR");
 
         assert!(delete_marketplace_impl(&conn, vivid_seats).is_err(), "must refuse - deleting would cascade away real history");
+    }
+
+    #[test]
+    fn delete_marketplace_refuses_when_a_real_listing_exists() {
+        // 2.2.4: the exact same guard, extended to cover the new
+        // commands::ticket_listings table - see delete_marketplace_impl's
+        // own updated doc comment.
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let vivid_seats = marketplace_id_by_name(&conn, "Vivid Seats");
+        let ticket_id = seed_ticket(&conn, "l1", event_id, "listed", "EUR", 10000, Some(12000));
+        conn.execute(
+            "INSERT INTO ticket_listings(ticket_id, marketplace_id, price_cents, currency) VALUES (?1, ?2, 12000, 'EUR')",
+            params![ticket_id, vivid_seats],
+        )
+        .unwrap();
+
+        assert!(delete_marketplace_impl(&conn, vivid_seats).is_err(), "must refuse - deleting would cascade away a real listing");
+        let still_there: i64 = conn.query_row("SELECT COUNT(*) FROM marketplaces WHERE id = ?1", [vivid_seats], |r| r.get(0)).unwrap();
+        assert_eq!(still_there, 1, "the refused delete must not have happened at all");
     }
 
     #[test]

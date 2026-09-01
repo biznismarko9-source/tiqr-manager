@@ -26,4 +26,5 @@ pub mod pulls_sheet_sync;
 pub mod sales;
 pub mod settings;
 pub mod sheets_sync;
+pub mod ticket_listings;
 pub mod tickets;

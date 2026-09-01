@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.4**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -30,11 +30,10 @@ are more places than the obvious 3 files.
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
-  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2/2.2.3:
-  tabbed "Event Workspace" - Overview/Inventory/Listings/Sales/Market/
-  Finance, see "Current focus" below and `PROTECTED_AREAS.md`'s "2.2.2"/
-  "2.2.3" entries before adding more event-level functionality anywhere
-  else), Orders,
+  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2-2.2.4:
+  tabbed "Event Workspace" - Overview/Listings/Sales/Finance, see "Current
+  focus" below and `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4" entries
+  before adding more event-level functionality anywhere else), Orders,
   OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail, Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
   PriceChecker, Settings, Welcome (auth), PendingApproval, DatabaseError.
@@ -42,12 +41,13 @@ are more places than the obvious 3 files.
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
   under `commands/`: events, orders (+ `orders_sheet_sync`), tickets,
-  sales, event_categories, pulls (+ `pulls_received`, `pulls_sheet_sync`),
-  finance_accounts/finance_entries (2.2.1: entries can optionally link to
-  an Order via `order_id`)/finance_recurring/finance_forecast,
-  price_checker (CRUD/marketplaces + saved-check history) +
-  price_checker_scanner (the Visible Scanner session/commands) +
-  price_checker_scan.js (injected extraction script) +
+  ticket_listings (2.2.4 - real per-marketplace listings, see "Current
+  focus" below), sales, event_categories, pulls (+ `pulls_received`,
+  `pulls_sheet_sync`), finance_accounts/finance_entries (2.2.1: entries can
+  optionally link to an Order via `order_id`)/finance_recurring/
+  finance_forecast, price_checker (CRUD/marketplaces + saved-check
+  history) + price_checker_scanner (the Visible Scanner session/commands)
+  + price_checker_scan.js (injected extraction script) +
   price_checker_analysis (2.2.0 - Market Analysis: tier/section stats,
   comparable-ticket ranking, Your Tickets recommendations, all computed
   from a scanner session's already-accumulated listings, never a separate
@@ -57,7 +57,7 @@ are more places than the obvious 3 files.
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **021_finance_entry_order_link.sql**. Migrations run
+  currently through **022_ticket_listings.sql**. Migrations run
   automatically at startup, forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
@@ -68,56 +68,60 @@ are more places than the obvious 3 files.
 
 ## Current focus / most recent work
 
-**Event Workspace (2.2.2, revised 2.2.3).** `EventDetail.tsx` is now a
-tabbed "Event Workspace" (`TabSwitcher`, same component Tickets.tsx/
+**Event Workspace (2.2.2, revised 2.2.3 and 2.2.4).** `EventDetail.tsx` is
+a tabbed "Event Workspace" (`TabSwitcher`, same component Tickets.tsx/
 Events.tsx already use for their own tabs) - current, final shape:
-**Overview | Inventory | Listings | Sales | Market | Finance**:
-- **Overview** shows exactly marko's own list (tickets, sold, available,
-  total cost, revenue, profit, margin, ROI) - nothing else. `EventWithStats
-  .stats` already had every field needed; no backend change.
-- **Inventory** is the same Orders + Tickets tables this page always had,
-  unchanged, just moved under their own tab instead of always on screen.
-- **Listings** (new in 2.2.3) is a read-only view of this event's Tickets
-  already filtered to `status === "listed"` - ticket, listing price,
-  currency, status, plus an Active listings/Listed value/Lowest/Highest
-  summary. Deliberately does NOT show marketplace, listing URL, or last
-  checked - none of the three exist anywhere in the `tickets` schema (only
-  `resale_status`/`delivery_status` were ever added beyond the original
-  columns - see migrations 001 and 010), and marko explicitly asked not to
-  invent data that isn't real. Says so plainly in the tab itself.
-- **Sales** calls `list_sale_groups({ eventId })` - the exact command
-  Sales.tsx's own Event filter already uses - and renders a compact table.
-  "Open in Sales" links out for anything more than a glance.
-- **Market** reuses `get_price_checker_summary(eventId)` (PriceChecker.tsx's
-  own summary command) for the "Market vs. mine" stats, plus the
-  "Potential Profit" block this page already had (unsold-stock estimate,
-  unchanged calculation) - both together now, since both are fundamentally
-  about this event's position against the market. "Open in Price Checker"
-  is still where marko actually adds marketplaces/scans.
+**Overview | Listings | Sales | Finance**:
+- **Overview** shows marko's own stat list (tickets, sold, available,
+  total cost, revenue, profit, margin, ROI - `EventWithStats.stats`, no
+  backend change), plus (2.2.4) the Orders + Tickets tables that used to
+  be their own "Inventory" tab, appended below - marko's own "spoj do
+  jedneho" (merge into one) instruction. Both halves are unchanged from
+  their previous tabs, just relocated into one.
+- **Listings** (2.2.3: read-only Ticket view; **rebuilt in 2.2.4 into a
+  real system**) is now backed by a real `ticket_listings` table
+  (`migrations/022_ticket_listings.sql`, `commands/ticket_listings.rs`) -
+  one ticket can have several listings at once, one per marketplace
+  (StubHub/Vivid/Ticombo-style), each with its own price/currency/status/
+  listing id/listing URL/last-updated timestamp. Reuses the EXISTING
+  `marketplaces` lookup table (Price Checker's own) rather than a second
+  marketplace concept. Full CRUD (add/edit/delete a listing) lives in this
+  tab; summary cards (Active listings/Listed value/Lowest/Highest) count
+  `status === "active"` listings only, while the table below shows every
+  listing regardless of status. Deliberately still manual entry only - no
+  marketplace API, no automatic listing creation, no repricing. Does NOT
+  touch `tickets.status`/`tickets.listingPriceCents` at all - those stay
+  exactly what they were. See `PROTECTED_AREAS.md`'s "2.2.4" entry before
+  touching this table or `delete_marketplace_impl`'s guard again.
+- **Sales** calls `list_sale_groups({ eventId })` (Sales.tsx's own Event
+  filter, reused) for its own table, plus (2.2.4) the former **Market**
+  tab's entire content appended below - "Market vs. mine"
+  (`get_price_checker_summary`) and "Potential Profit" (this page's own
+  unsold-stock estimate, unchanged calculation). Market's name/tab is gone
+  - see `PROTECTED_AREAS.md`'s "2.2.4" entry for why its content landed in
+  Sales rather than Finance (a judgment call, flagged to marko).
+  "Open in Sales"/"Open in Price Checker" still link out for anything more
+  than a glance.
 - **Finance** calls `list_finance_entries_for_order` (2.2.1) once per this
-  event's own orders and merges client-side - no new backend command,
-  since an event has at most a handful of orders.
+  event's own orders and merges client-side - completely unchanged since
+  2.2.2; marko's own final tab list keeps this as its own tab, not folded
+  into anything.
 
-2.2.3 also removed the **Tasks** tab entirely (marko decided against it
-before it ever got a spec - no code, schema, or types existed for it, so
-nothing to migrate away from) and removed the `max-w-[1400px]` cap from
-all 4 of this page's tables (Orders/Tickets/Sales/Finance) so they fill
-the window width - the same "no more max-w cap" fix the page shell itself
-got in 2.0.31 (`Layout.tsx`), just never carried over to these tables
-until now.
+2.2.3 removed the **Tasks** tab entirely (marko decided against it before
+it ever got a spec) and removed the `max-w-[1400px]` cap from this page's
+tables so they fill the window width (2.0.31's `Layout.tsx` fix, extended
+here). 2.2.2 also shipped three unrelated small fixes: Settings -> Lookups'
+3 category lists no longer cap their scroll area at a fixed 224px
+(`max-h-[60vh]` now); Price Checker's event picker only lists
+`status === "upcoming"` events (same field Events.tsx's own Upcoming/
+Completed tabs use) - a completed/cancelled event just quietly stops
+showing up there, no manual untracking needed.
 
-Read `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3" entries before adding to any
-of these tabs.
-
-2.2.2 also shipped three unrelated small fixes: Settings -> Lookups' 3
-category lists no longer cap their scroll area at a fixed 224px
-(`max-h-[60vh]` now, all 3 lists). Price Checker's event picker only
-lists `status === "upcoming"` events (same field Events.tsx's own
-Upcoming/Completed tabs use) - a completed/cancelled event just quietly
-stops showing up there, no manual untracking needed.
-
-Both releases were frontend-only - no migration, no backend command
-changes besides what these tabs reuse from 2.2.0/2.2.1.
+Read `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4" entries before adding
+to any of these tabs. 2.2.2/2.2.3 were frontend-only; 2.2.4 adds one new
+table + 4 new commands (`ticket_listings`) and extends
+`delete_marketplace_impl`'s existing guard - no other backend surface
+changed.
 
 **Finance <-> Orders link, Finance Accounts/Lookups UI simplification,
 Price Checker jump links (2.2.1).** Four independent, marko-requested
@@ -193,8 +197,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 109 of
-them as of 2.2.3. These are not read by default under this protocol; only
+`*-REPORT.md` file at the repo root (Slovak, written for marko) - 110 of
+them as of 2.2.4. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

@@ -71,6 +71,8 @@ import type {
   SheetSyncResult,
   Supplier,
   Ticket,
+  TicketListing,
+  TicketListingInput,
   TicketUpdateInput,
   Transfer,
   TransferInput,
@@ -167,6 +169,17 @@ export const api = {
    * "Other..." in the app, or synced in from a sheet cell). Powers the "New
    * order" form's Ticket Type field - was a hardcoded array before 2.0.19. */
   listTicketTypes: () => invoke<string[]>("list_ticket_types"),
+
+  // Ticket Listings (2.2.4) - real per-marketplace listings for a ticket
+  // (Event Workspace -> Listings). One ticket can have several at once, one
+  // per marketplace - see commands/ticket_listings.rs's module doc comment
+  // (Rust) for the full design. Manual entry only, same as Price Checker -
+  // no automation, no API, no repricing.
+  listTicketListingsForEvent: (eventId: number) => invoke<TicketListing[]>("list_ticket_listings_for_event", { eventId }),
+  createTicketListing: (input: TicketListingInput) => invoke<TicketListing>("create_ticket_listing", { input }),
+  updateTicketListing: (id: number, input: TicketListingInput) =>
+    invoke<TicketListing>("update_ticket_listing", { id, input }),
+  deleteTicketListing: (id: number) => invoke<void>("delete_ticket_listing", { id }),
 
   // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
   // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.

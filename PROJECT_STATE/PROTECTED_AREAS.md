@@ -21,6 +21,70 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.4 - Event Workspace down to 4 tabs; Listings is now a real system
+
+Third pass on the Event Workspace. Final tab order: **Overview | Listings |
+Sales | Finance** (Inventory folded into Overview, Market folded into
+Sales - see the judgment-call note below). A few things worth knowing
+before touching this page or the new backend module again:
+
+- **The Market-vs-Sales judgment call.** Marko's request grouped "Sales
+  Market Finance spoj do jedneho" (merge these into one) but then, in the
+  same message, explicitly listed the 4 tabs that should remain -
+  "overview, listings, sales a finance" - keeping BOTH "sales" and
+  "finance" as separate names. Since Market is the one name that
+  disappeared from that list, its content (Market vs. mine + Potential
+  Profit) was folded into Sales, not Finance - Market's content is about
+  pricing/what-could-I-get-for-this-now, which reads as a Sales concern
+  more than a Finance ledger one. This is flagged in `EventDetail.tsx`'s
+  own top-of-file doc comment and in `REDESIGN-2.2.4-REPORT.md` so marko
+  can correct it if he meant the other tab - if he does, it's a small,
+  self-contained move (the whole block is one clearly-bounded section at
+  the bottom of `SalesTab`).
+- **Inventory's old bullet points from the 2.2.2 entry below are now
+  historical only** - there is no more "Inventory" tab; its Orders/Tickets
+  tables now render at the bottom of `OverviewTab`, completely unchanged
+  otherwise. Same for "Market" in that same entry.
+- **`ticket_listings` (new table, `migrations/022_ticket_listings.sql`) is
+  a real multi-marketplace listing system - one ticket can have several
+  rows, one per marketplace.** Reuses the EXISTING `marketplaces` lookup
+  table (Price Checker's own, `014_price_checker.sql`) via
+  `marketplace_id` rather than inventing a second marketplace concept.
+  Both `ticket_id` and `marketplace_id` are `ON DELETE CASCADE` - the
+  established rule for every `marketplace_id` column in this schema (see
+  the "2.2.0" entry below). **`commands::price_checker::
+  delete_marketplace_impl`'s own existing guard query was extended to also
+  count `ticket_listings`** - without this, deleting a marketplace that
+  still has real listings against it would have silently cascaded them
+  away, exactly the bug that guard already exists to prevent for
+  `event_marketplace_links`/`price_checks`. Grep for `marketplace_id`
+  across migrations again before adding yet another such table.
+- **The dedup constraint is `UNIQUE(ticket_id, marketplace_id, listing_id)`,
+  with `listing_id` nullable.** SQLite treats every `NULL` as distinct in a
+  UNIQUE index, so several hand-entered listings for the same ticket +
+  marketplace with no external id yet can coexist - only an EXACT repeat
+  (same ticket, same marketplace, same real listing id) is rejected. Don't
+  "simplify" this to `NOT NULL` or drop `listing_id` from the key without
+  re-reading this reasoning - marko will very often not have an id to
+  enter, this being manual-entry-only (no marketplace API this release).
+- **`ticket_listings.status` (`active`/`sold`/`removed`) is deliberately a
+  SEPARATE vocabulary from `tickets.status` (`available`/`listed`/`sold`/
+  `cancelled`), and this feature never reads or writes `tickets.status`/
+  `tickets.listingPriceCents` at all.** One ticket can now have listings in
+  different states on different marketplaces at once (active on Vivid,
+  sold on Ticombo) - folding this into `tickets.status` would make that
+  column ambiguous, and marko explicitly asked not to touch existing
+  tickets/inventory/sales/refund logic. If a listing being marked "sold"
+  should ever also flip the ticket itself to sold, that is a deliberate
+  NEW cross-writing behavior to design and confirm with marko, not
+  something to wire in quietly.
+- **The Listings tab's table shows every listing regardless of status**
+  (not just active) - the top summary cards (`Active listings`/`Listed
+  value`/`Lowest`/`Highest`) are the ones scoped to `status === "active"`
+  only. This is deliberate: marko's own field list asks for a `status`
+  column, which is only meaningful if a row can show something other than
+  "active".
+
 ## 2.2.3 - Event Workspace: Tasks removed, Listings tab added, tables full-width
 
 Second pass on the Event Workspace from 2.2.2, all frontend-only

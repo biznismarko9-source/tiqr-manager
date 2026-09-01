@@ -1314,6 +1314,48 @@ export interface EventMarketplaceLink {
   updatedAt: string;
 }
 
+/** 2.2.4: one real (ticket, marketplace) listing - a ticket can have several
+ * of these at once, one per marketplace it's currently posted on. See
+ * commands::ticket_listings's own module doc comment and migrations/
+ * 022_ticket_listings.sql for the full design. */
+export interface TicketListing {
+  id: number;
+  ticketId: number;
+  /** Denormalized from the backend's own JOIN onto `tickets` - lets the
+   * Listings tab render a row without a second fetch. */
+  ticketCode: string;
+  ticketSection: string | null;
+  ticketRowLabel: string | null;
+  ticketSeat: string | null;
+  marketplaceId: number;
+  marketplaceName: string;
+  /** The marketplace's own id for this listing, if entered - optional,
+   * since this is manual entry. */
+  listingId: string | null;
+  listingUrl: string | null;
+  priceCents: number;
+  currency: string;
+  /** 'active' | 'sold' | 'removed' - the listing's OWN lifecycle,
+   * deliberately separate from a Ticket's own `status`. */
+  status: "active" | "sold" | "removed";
+  isDemo: boolean;
+  createdAt: string;
+  /** Doubles as "last checked" for now - see the backend model's own doc
+   * comment. */
+  updatedAt: string;
+}
+
+/** Input for both `createTicketListing` and `updateTicketListing`. */
+export interface TicketListingInput {
+  ticketId: number;
+  marketplaceId: number;
+  listingId: string | null;
+  listingUrl: string | null;
+  priceCents: number;
+  currency: string;
+  status: "active" | "sold" | "removed";
+}
+
 /** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
  * the link (deletes it) instead of erroring; a non-blank one upserts it, so
  * the same call saves a first-time link, edits an existing one, or removes

@@ -16,6 +16,43 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.4 - Event Workspace down to 4 tabs; Listings is now a real multi-marketplace system
+
+Third pass on the Event Workspace. Final tab order: `Overview | Listings |
+Sales | Finance`.
+
+- **Overview absorbed Inventory** - the Orders/Tickets tables now render
+  below Overview's own stat cards instead of having their own tab.
+- **Sales absorbed Market** - "Market vs. mine" and "Potential Profit" (the
+  former Market tab's content) now render below the Sales table. See
+  `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.4" entry for the judgment call
+  behind Market landing in Sales rather than Finance.
+- **Finance is unchanged**, still its own tab.
+- **Listings rebuilt into a real system.** New `ticket_listings` table
+  (`migrations/022_ticket_listings.sql`) - one ticket can now have several
+  listings at once, one per marketplace (reuses the existing `marketplaces`
+  lookup table), each with its own price/currency/status/listing id/URL/
+  last-updated timestamp. Full add/edit/delete UI in the tab; summary cards
+  count active listings only, the table shows every listing regardless of
+  status. Manual entry only - no marketplace API, no automatic listing
+  creation, no repricing. Never touches `tickets.status`/
+  `tickets.listingPriceCents`.
+- New backend: `commands/ticket_listings.rs` (4 commands: list-for-event,
+  create, update, delete) + `commands::price_checker::
+  delete_marketplace_impl`'s existing guard extended to also count
+  `ticket_listings` (so deleting a marketplace with real listings against
+  it is refused, same as it already was for saved links/price-check
+  history).
+
+See `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.4" entry before extending any
+of these tabs or the new table further.
+
+`cargo test --lib` (948 passed, up from 934 - 14 new tests: 13 for
+`ticket_listings`, 1 for the `delete_marketplace_impl` guard extension),
+`tsc -b`/`vite build` clean. One new migration (022); no changes to
+existing tickets/orders/sales/refund logic. Full detail in
+`REDESIGN-2.2.4-REPORT.md`.
+
 ## 2.2.3 - Event Workspace: Listings tab, Tasks removed, tables full-width
 
 Second pass on the Event Workspace, all frontend-only. Final tab order:

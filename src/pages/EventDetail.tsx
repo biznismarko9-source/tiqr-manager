@@ -1,45 +1,86 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, FinanceEntry, OrderRecord, PriceCheckerSummary, SaleGroup, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent, formatPercentOrMixed } from "../lib/format";
+import type {
+  EventWithStats,
+  FinanceEntry,
+  Marketplace,
+  OrderRecord,
+  PriceCheckerSummary,
+  SaleGroup,
+  Ticket,
+  TicketListing,
+  TicketListingInput,
+} from "../lib/types";
+import {
+  centsToDecimalString,
+  decimalStringToCents,
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  formatMoneyOrMixed,
+  formatPercent,
+  formatPercentOrMixed,
+} from "../lib/format";
 import {
   Badge,
   Button,
   Card,
   ConfirmDialog,
   EmptyState,
+  Field,
+  Input,
   LoadingBlock,
+  Modal,
+  ModalFooter,
+  Select,
+  Spinner,
   StatCard,
   TabSwitcher,
 } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
-import { IconArrowLeft, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
+import { CURRENCIES } from "./Orders";
 
-// 2.2.3: "Event Workspace" - marko's own request to turn this page into one
-// central place for a single Event, with everything else it touches
-// organized under tabs instead of one long scroll. Overview is the only tab
-// with genuinely new content (the same stats this page already showed,
-// trimmed to exactly marko's own list); Inventory is literally the Orders +
-// Tickets tables this page already had, just relocated; Sales/Market/Finance
-// each pull from an already-existing command (list_sale_groups,
-// get_price_checker_summary, list_finance_entries_for_order x N) rather than
-// inventing anything new. 2.2.3 (second pass): Tasks removed (marko decided
-// against it before it ever had a spec); Listings added between Inventory
-// and Sales - a read-only look at the Ticket rows already filtered to
-// status === "listed", reusing `tickets` this page already loads. No
-// marketplace/listing-URL/last-checked columns - see ListingsTab's own doc
-// comment for why (that data doesn't exist anywhere in this schema today).
-type WorkspaceTab = "overview" | "inventory" | "listings" | "sales" | "market" | "finance";
+// 2.2.4: marko's second follow-up on the Event Workspace. Two independent
+// changes bundled into one release:
+//
+// 1) Tab consolidation - "Overview Inventory spoj do jedneho" (merge these
+//    two into one) and "Sales Market Finance spoj do jedneho" (a looser
+//    grouping, resolved below) - landing on exactly the 4 tabs marko's own
+//    message names at the end: Overview | Listings | Sales | Finance.
+//    - Overview absorbed Inventory: the Orders/Tickets tables that used to
+//      have their own tab are now appended below Overview's own stat cards,
+//      completely unchanged otherwise.
+//    - Sales absorbed Market: "Market vs. mine" + "Potential Profit" (the
+//      former Market tab's entire content) now live below the Sales table,
+//      completely unchanged otherwise.
+//    - Finance was named as its own surviving tab in marko's own final list
+//      ("...sales a finance") and is untouched - not folded into anything.
+//    JUDGMENT CALL (flagged here and in REDESIGN-2.2.4-REPORT.md): marko's
+//    own sentence grouped "Sales Market Finance" together, but his
+//    immediately-following list of the 4 tabs that should remain explicitly
+//    keeps "sales" AND "finance" as two separate names - so Market (the one
+//    name that disappears from that list) was folded into Sales, not
+//    Finance. Market's content (what could I get if I sold now) reads as a
+//    Sales concern more than a Finance ledger one, which is the other
+//    reason this direction was chosen. Easy to move if marko meant it the
+//    other way.
+//
+// 2) Listings rebuilt into a real system - see ListingsTab's own doc
+//    comment and commands/ticket_listings.rs (Rust) for the full design.
+//    Replaces 2.2.3's read-only view of Ticket.listingPriceCents/status
+//    (which explicitly could not show marketplace/URL/last-checked, because
+//    none of that data existed anywhere) with real per-marketplace listing
+//    rows - one ticket can now have several at once.
+type WorkspaceTab = "overview" | "listings" | "sales" | "finance";
 
 const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
-  { key: "inventory", label: "Inventory" },
   { key: "listings", label: "Listings" },
   { key: "sales", label: "Sales" },
-  { key: "market", label: "Market" },
   { key: "finance", label: "Finance" },
 ];
 
@@ -102,11 +143,9 @@ export default function EventDetail() {
 
       <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} />
 
-      {tab === "overview" && <OverviewTab event={event} />}
-      {tab === "inventory" && <InventoryTab event={event} orders={orders} tickets={tickets} navigate={navigate} />}
-      {tab === "listings" && <ListingsTab tickets={tickets} />}
-      {tab === "sales" && <SalesTab eventId={eventId} />}
-      {tab === "market" && <MarketTab event={event} tickets={tickets} navigate={navigate} />}
+      {tab === "overview" && <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} />}
+      {tab === "listings" && <ListingsTab eventId={eventId} tickets={tickets} />}
+      {tab === "sales" && <SalesTab event={event} tickets={tickets} navigate={navigate} />}
       {tab === "finance" && <FinanceTab orders={orders} />}
 
       <EventFormModal
@@ -146,11 +185,25 @@ export default function EventDetail() {
 }
 
 // ---------------------------------------------------------------------------
-// Overview - exactly marko's own list (2.2.3): tickets, sold, available,
-// total cost, revenue, profit, margin/ROI. Nothing else - the rest of what
-// this page used to show up top now lives in its own tab.
+// Overview - marko's own stat list (tickets, sold, available, total cost,
+// revenue, profit, margin/ROI) unchanged from 2.2.2/2.2.3, plus (2.2.4) the
+// Orders + Tickets tables that used to be their own "Inventory" tab -
+// "Overview Inventory spoj do jedneho" (merge these two into one): the
+// second-named tab (Inventory) is removed, its content moved into the
+// first-named one that remains (Overview). Both halves are otherwise
+// completely unchanged, just relocated into one function.
 // ---------------------------------------------------------------------------
-function OverviewTab({ event }: { event: EventWithStats }) {
+function OverviewTab({
+  event,
+  orders,
+  tickets,
+  navigate,
+}: {
+  event: EventWithStats;
+  orders: OrderRecord[] | null;
+  tickets: Ticket[] | null;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
   const s = event.stats;
   return (
     <div>
@@ -167,7 +220,7 @@ function OverviewTab({ event }: { event: EventWithStats }) {
           individual orders and sales instead.
         </p>
       )}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard
           label="Profit"
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
@@ -178,32 +231,12 @@ function OverviewTab({ event }: { event: EventWithStats }) {
       </div>
 
       {event.notes && (
-        <Card className="mt-6 p-4">
+        <Card className="mb-6 p-4">
           <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Notes</p>
           <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{event.notes}</p>
         </Card>
       )}
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Inventory - the Orders + Tickets tables this page already had, unchanged,
-// just relocated under their own tab instead of always being on screen.
-// ---------------------------------------------------------------------------
-function InventoryTab({
-  event,
-  orders,
-  tickets,
-  navigate,
-}: {
-  event: EventWithStats;
-  orders: OrderRecord[] | null;
-  tickets: Ticket[] | null;
-  navigate: ReturnType<typeof useNavigate>;
-}) {
-  return (
-    <div>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Orders ({orders?.length ?? 0})</h2>
         <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
@@ -304,40 +337,70 @@ function InventoryTab({
 }
 
 // ---------------------------------------------------------------------------
-// Sales - new tab, but not new logic: list_sale_groups already accepts
-// eventId (Sales.tsx's own Event filter uses the exact same call). No
-// pending/completed tabs, search, or bulk actions here - this is a compact
-// summary, not a re-implementation of Sales.tsx; "Open in Sales" underneath
-// gets marko to the real thing for anything more than a glance.
+// Sales - list_sale_groups({ eventId }) (Sales.tsx's own Event filter,
+// reused), unchanged from 2.2.2, plus (2.2.4) the former Market tab's
+// entire content appended below - "Market vs. mine" (get_price_checker_
+// summary) and "Potential Profit" (this page's own unsold-inventory
+// estimate). See this file's own top-of-file doc comment for why Market's
+// content landed here rather than in Finance. Both sections load and render
+// independently (one slow fetch never blocks the other), same "each tab
+// fetches its own data" convention as before.
 // ---------------------------------------------------------------------------
-function SalesTab({ eventId }: { eventId: number }) {
+function SalesTab({
+  event,
+  tickets,
+  navigate,
+}: {
+  event: EventWithStats;
+  tickets: Ticket[] | null;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
   const toast = useToast();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
+  const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
 
   useEffect(() => {
     setGroups(null);
     api
-      .listSaleGroups({ eventId })
+      .listSaleGroups({ eventId: event.id })
       .then(setGroups)
       .catch((e) => toast.error(errMsg(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
+  }, [event.id]);
 
-  if (groups === null) return <LoadingBlock />;
+  useEffect(() => {
+    api
+      .getPriceCheckerSummary(event.id)
+      .then(setSummary)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event.id]);
+
+  // 1.8.3 (section 14) / 1.9.10: unchanged from this page's previous
+  // single-tab version - see git history there for the original reasoning.
+  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
+  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
+  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
+  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
+  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
+  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? event.stats.currency) : null;
+  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
 
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Sales ({groups.length})</h2>
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Sales ({groups?.length ?? 0})</h2>
         <Link to="/sales" className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline">
           Open in Sales &rarr;
         </Link>
       </div>
-      {groups.length === 0 ? (
+      {groups === null ? (
+        <LoadingBlock />
+      ) : groups.length === 0 ? (
         <EmptyState title="No sales for this event yet" />
       ) : (
-        // 2.2.3: no max-w cap - see the Inventory tables' own comment.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        // 2.2.3: no max-w cap - see Overview's Orders table's own comment.
+        <div className="mb-8 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
@@ -378,50 +441,7 @@ function SalesTab({ eventId }: { eventId: number }) {
           </table>
         </div>
       )}
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Market - the "Potential Profit" block this page already had (unchanged
-// calculation, just moved here since it's fundamentally about this event's
-// position against the market), plus the same "Market vs. mine" summary
-// PriceChecker.tsx itself shows once at least one price check is saved
-// (get_price_checker_summary, unchanged). "Open in Price Checker" is where
-// marko actually adds marketplaces/scans - not reimplemented here.
-// ---------------------------------------------------------------------------
-function MarketTab({
-  event,
-  tickets,
-  navigate,
-}: {
-  event: EventWithStats;
-  tickets: Ticket[] | null;
-  navigate: ReturnType<typeof useNavigate>;
-}) {
-  const toast = useToast();
-  const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
-
-  useEffect(() => {
-    api
-      .getPriceCheckerSummary(event.id)
-      .then(setSummary)
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [event.id]);
-
-  // 1.8.3 (section 14) / 1.9.10: unchanged from this page's previous single-
-  // tab version - see git history there for the original reasoning.
-  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
-  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
-  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
-  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
-  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? event.stats.currency) : null;
-  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
-
-  return (
-    <div>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Market</h2>
         <button
@@ -480,9 +500,10 @@ function MarketTab({
 
 // ---------------------------------------------------------------------------
 // Finance - pulls every Finance entry linked to one of this event's own
-// Orders (list_finance_entries_for_order, 2.2.1), merged client-side. No new
-// backend command - an event has at most a handful of orders, so N small
-// queries stays cheap and avoids adding a second way to query the same data.
+// Orders (list_finance_entries_for_order, 2.2.1), merged client-side.
+// Completely unchanged in 2.2.4 - marko's own final tab list keeps this as
+// its own surviving tab, not folded into anything (see this file's own
+// top-of-file doc comment).
 // ---------------------------------------------------------------------------
 function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
   const toast = useToast();
@@ -518,7 +539,7 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
           description={`Open one of this event's orders and use "Record in Finance" there.`}
         />
       ) : (
-        // 2.2.3: no max-w cap - see the Inventory tables' own comment.
+        // 2.2.3: no max-w cap - see Overview's Orders table's own comment.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[600px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -568,78 +589,169 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Listings - a read-only look at this event's ACTIVE listings, i.e. its
-// Tickets already filtered to status === "listed" (reuses the `tickets`
-// this page already loads for Inventory - no new fetch). Deliberately shows
-// only what genuinely exists on a Ticket today: the ticket itself, its
-// listing price, currency, and status. Marketplace, listing URL, and last
-// updated/checked were all explicitly asked for, but none of the three
-// exist anywhere in this schema - a Ticket has never had a "which platform
-// is this listed on", a listing URL, or a listing-specific timestamp column
-// (checked migrations 001 and 010, the only two that ever touched
-// `tickets`, plus Price Checker's own "Your Tickets" - the closest existing
-// thing to a listings view - which doesn't have them either). Per marko's
-// own instruction not to invent data we don't have, this tab does not show
-// those 3 columns or a clickable URL - see REDESIGN-2.2.3-REPORT.md for the
-// same explanation in Slovak, and the note in the empty/summary area below.
+// Listings (2.2.4 rebuild) - a REAL multi-marketplace listing system, on top
+// of the new `ticket_listings` table (see migrations/022_ticket_listings.sql
+// and commands/ticket_listings.rs). Replaces 2.2.3's read-only view of
+// Ticket.listingPriceCents/status (which could only show one implied
+// "listing" per ticket, and explicitly could not show marketplace/URL/last
+// checked because none of that data existed anywhere). Now: one ticket can
+// have several real listings, each tied to a real marketplace (the same
+// list Price Checker manages), with its own price/status/URL/timestamp.
+//
+// Deliberately still manual-entry only - no automatic listing creation, no
+// marketplace API, no repricing (marko's own explicit "Dôležité" list this
+// release). The table below shows EVERY listing regardless of status (not
+// just active ones) - marko's own field list explicitly asks for a
+// "status" column, which is only meaningful if a listing can be shown in a
+// state OTHER than active (sold/removed); the four summary numbers above it
+// count active listings only, matching "počet aktívnych listingov".
 // ---------------------------------------------------------------------------
-function ListingsTab({ tickets }: { tickets: Ticket[] | null }) {
-  if (tickets === null) return <LoadingBlock />;
+function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] | null }) {
+  const toast = useToast();
+  const [listings, setListings] = useState<TicketListing[] | null>(null);
+  const [marketplaces, setMarketplaces] = useState<Marketplace[] | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<TicketListing | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TicketListing | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  const listed = tickets.filter((t) => t.status === "listed");
-  const priced = listed.filter((t) => t.listingPriceCents != null);
-  const listedValueCents = priced.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-  const prices = priced.map((t) => t.listingPriceCents as number);
-  const lowestCents = prices.length > 0 ? Math.min(...prices) : null;
-  const highestCents = prices.length > 0 ? Math.max(...prices) : null;
-  const currencies = Array.from(new Set(listed.map((t) => t.currency)));
-  const listingsCurrency = currencies.length <= 1 ? (currencies[0] ?? null) : null;
+  const load = useCallback(() => {
+    api
+      .listTicketListingsForEvent(eventId)
+      .then(setListings)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    api
+      .listMarketplaces()
+      .then(setMarketplaces)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (listings === null || tickets === null) return <LoadingBlock />;
+
+  // Summary counts/values are scoped to ACTIVE listings only - "počet
+  // aktívnych listingov"/"listed value"/"lowest"/"highest" are all about
+  // what's currently for sale, not sold/removed history.
+  const active = listings.filter((l) => l.status === "active");
+  const activeValueCents = active.reduce((sum, l) => sum + l.priceCents, 0);
+  const activePrices = active.map((l) => l.priceCents);
+  const lowestCents = activePrices.length > 0 ? Math.min(...activePrices) : null;
+  const highestCents = activePrices.length > 0 ? Math.max(...activePrices) : null;
+  const activeCurrencies = Array.from(new Set(active.map((l) => l.currency)));
+  const activeCurrency = activeCurrencies.length <= 1 ? (activeCurrencies[0] ?? null) : null;
 
   return (
     <div>
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Active listings" value={String(listed.length)} />
-        <StatCard label="Listed value" value={formatMoneyOrMixed(listedValueCents, listingsCurrency)} />
-        <StatCard label="Lowest price" value={lowestCents !== null ? formatMoneyOrMixed(lowestCents, listingsCurrency) : "-"} />
-        <StatCard label="Highest price" value={highestCents !== null ? formatMoneyOrMixed(highestCents, listingsCurrency) : "-"} />
+        <StatCard label="Active listings" value={String(active.length)} />
+        <StatCard label="Listed value" value={formatMoneyOrMixed(activeValueCents, activeCurrency)} />
+        <StatCard label="Lowest price" value={lowestCents !== null ? formatMoneyOrMixed(lowestCents, activeCurrency) : "-"} />
+        <StatCard label="Highest price" value={highestCents !== null ? formatMoneyOrMixed(highestCents, activeCurrency) : "-"} />
       </div>
-      <p className="mb-6 text-xs text-slate-400 dark:text-slate-500">
-        Marketplace, listing URL and last checked date aren&apos;t tracked in TIQR yet, so they&apos;re not shown here - let
-        me know if you want to start recording those and I&apos;ll add them properly instead of guessing.
-      </p>
 
-      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Listings ({listed.length})</h2>
-      {listed.length === 0 ? (
-        <EmptyState title="No active listings for this event yet" description={`Set a listing price and mark a ticket "Listed" in Inventory to see it here.`} />
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Listings ({listings.length})</h2>
+        <Button
+          variant="secondary"
+          disabled={tickets.length === 0 || marketplaces === null}
+          onClick={() => {
+            setEditing(null);
+            setFormOpen(true);
+          }}
+        >
+          <IconPlus className="h-4 w-4" /> Add listing
+        </Button>
+      </div>
+
+      {listings.length === 0 ? (
+        <EmptyState
+          title="No listings for this event yet"
+          description={
+            tickets.length === 0
+              ? "Add a ticket to this event first, then list it on a marketplace here."
+              : `Click "Add listing" to record where a ticket is posted for sale.`
+          }
+        />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[600px] border-collapse">
+          <table className="w-full min-w-[760px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
                 <th className="th">Ticket</th>
-                <th className="th">Seat</th>
-                <th className="th text-right">Listing price</th>
-                <th className="th">Currency</th>
+                <th className="th">Marketplace</th>
+                <th className="th text-right">Price</th>
                 <th className="th">Status</th>
+                <th className="th">URL</th>
+                <th className="th">Last updated</th>
+                <th className="th" aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {listed.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+              {listings.map((l) => (
+                <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td">
-                    <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
-                      {t.code}
+                    <Link
+                      to={`/tickets?code=${encodeURIComponent(l.ticketCode)}`}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                    >
+                      {l.ticketCode}
                     </Link>
+                    {[l.ticketSection, l.ticketRowLabel, l.ticketSeat].filter(Boolean).length > 0 && (
+                      <div className="text-xs text-slate-400 dark:text-slate-500">
+                        {[l.ticketSection, l.ticketRowLabel, l.ticketSeat].filter(Boolean).join(" / ")}
+                      </div>
+                    )}
                   </td>
-                  <td className="td text-slate-500 dark:text-slate-400">
-                    {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
-                  </td>
-                  <td className="td text-right tabular-nums">
-                    {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
-                  </td>
-                  <td className="td text-slate-500 dark:text-slate-400">{t.currency}</td>
+                  <td className="td text-slate-700 dark:text-slate-300">{l.marketplaceName}</td>
+                  <td className="td text-right tabular-nums">{formatMoney(l.priceCents, l.currency)}</td>
                   <td className="td">
-                    <Badge tone={t.status}>{t.status}</Badge>
+                    <Badge tone={l.status}>{l.status}</Badge>
+                  </td>
+                  <td className="td">
+                    {l.listingUrl ? (
+                      <a
+                        href={l.listingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline"
+                      >
+                        <IconLink className="h-3.5 w-3.5" /> Open
+                      </a>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500">-</span>
+                    )}
+                  </td>
+                  <td className="td text-slate-500 dark:text-slate-400">{formatDateTime(l.updatedAt)}</td>
+                  <td className="td">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditing(l);
+                          setFormOpen(true);
+                        }}
+                        className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                        aria-label="Edit listing"
+                      >
+                        <IconPencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(l)}
+                        className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                        aria-label="Delete listing"
+                      >
+                        <IconTrash className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -647,6 +759,231 @@ function ListingsTab({ tickets }: { tickets: Ticket[] | null }) {
           </table>
         </div>
       )}
+
+      <TicketListingFormModal
+        open={formOpen}
+        initial={editing}
+        eventTickets={tickets}
+        marketplaces={marketplaces ?? []}
+        onClose={() => setFormOpen(false)}
+        onSaved={load}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this listing?"
+        message={
+          deleteTarget ? `This removes the ${deleteTarget.marketplaceName} listing for ticket ${deleteTarget.ticketCode}. This cannot be undone.` : ""
+        }
+        confirmLabel="Delete listing"
+        danger
+        busy={deleting}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          setDeleting(true);
+          try {
+            await api.deleteTicketListing(deleteTarget.id);
+            toast.success("Listing deleted.");
+            setDeleteTarget(null);
+            load();
+          } catch (e) {
+            toast.error(errMsg(e));
+          } finally {
+            setDeleting(false);
+          }
+        }}
+      />
     </div>
+  );
+}
+
+// One (ticket, marketplace) listing's create/edit form. The ticket a listing
+// belongs to is only pickable when CREATING - editing shows it as plain
+// text, same "round-trip a field the form doesn't expose" spirit as
+// Transactions.tsx's own order-linked entries (there is no UI anywhere to
+// re-parent a listing to a different ticket).
+function TicketListingFormModal({
+  open,
+  initial,
+  eventTickets,
+  marketplaces,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  initial: TicketListing | null;
+  eventTickets: Ticket[];
+  marketplaces: Marketplace[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [ticketId, setTicketId] = useState("");
+  const [marketplaceId, setMarketplaceId] = useState("");
+  const [listingIdText, setListingIdText] = useState("");
+  const [listingUrl, setListingUrl] = useState("");
+  const [price, setPrice] = useState("");
+  const [currency, setCurrency] = useState("EUR");
+  const [status, setStatus] = useState<"active" | "sold" | "removed">("active");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setTicketId(initial ? String(initial.ticketId) : "");
+    setMarketplaceId(initial ? String(initial.marketplaceId) : "");
+    setListingIdText(initial?.listingId ?? "");
+    setListingUrl(initial?.listingUrl ?? "");
+    setPrice(initial ? centsToDecimalString(initial.priceCents) : "");
+    setCurrency(initial?.currency ?? "EUR");
+    setStatus(initial?.status ?? "active");
+    setError(null);
+  }, [open, initial]);
+
+  const ticketLabel = (t: Ticket) => {
+    const seat = [t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ");
+    return seat ? `${t.code} (${seat})` : t.code;
+  };
+
+  const submit = async () => {
+    if (!ticketId) {
+      setError("Pick a ticket.");
+      return;
+    }
+    if (!marketplaceId) {
+      setError("Pick a marketplace.");
+      return;
+    }
+    const cents = decimalStringToCents(price);
+    if (cents === null || cents < 0) {
+      setError("Enter a valid price.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const input: TicketListingInput = {
+      ticketId: Number(ticketId),
+      marketplaceId: Number(marketplaceId),
+      listingId: listingIdText.trim() || null,
+      listingUrl: listingUrl.trim() || null,
+      priceCents: cents,
+      currency,
+      status,
+    };
+    try {
+      if (initial) {
+        await api.updateTicketListing(initial.id, input);
+        toast.success("Listing updated.");
+      } else {
+        await api.createTicketListing(input);
+        toast.success("Listing added.");
+      }
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title={initial ? "Edit listing" : "Add listing"}>
+      <div className="space-y-3">
+        <Field label="Ticket" required>
+          {initial ? (
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+              {initial.ticketCode}
+              {[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).length > 0 && (
+                <span className="text-slate-400 dark:text-slate-500">
+                  {" "}
+                  ({[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).join(" / ")})
+                </span>
+              )}
+            </p>
+          ) : (
+            <Select
+              value={ticketId}
+              onChange={(e) => {
+                const nextTicketId = e.target.value;
+                setTicketId(nextTicketId);
+                const picked = eventTickets.find((t) => String(t.id) === nextTicketId);
+                if (picked) setCurrency(picked.currency);
+              }}
+            >
+              <option value="">Pick a ticket...</option>
+              {eventTickets.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {ticketLabel(t)}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+
+        <Field label="Marketplace" required hint={marketplaces.length === 0 ? "Add a marketplace in Price Checker first." : undefined}>
+          <Select value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)}>
+            <option value="">Pick a marketplace...</option>
+            {marketplaces.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <div className="grid grid-cols-[1fr_110px] gap-2">
+          <Field label="Price" required>
+            <Input inputMode="decimal" placeholder="0.00" value={price} onChange={(e) => setPrice(e.target.value)} />
+          </Field>
+          <Field label="Currency">
+            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <Field label="Status">
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            {(["active", "sold", "removed"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatus(s)}
+                className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${
+                  status === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Listing ID" hint="The marketplace's own id for this listing, if you have one.">
+          <Input value={listingIdText} onChange={(e) => setListingIdText(e.target.value)} />
+        </Field>
+
+        <Field label="Listing URL">
+          <Input type="url" placeholder="https://..." value={listingUrl} onChange={(e) => setListingUrl(e.target.value)} />
+        </Field>
+
+        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={submit} disabled={saving}>
+          {saving ? <Spinner className="h-4 w-4" /> : null}
+          {initial ? "Save changes" : "Add listing"}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }

@@ -181,12 +181,12 @@ mod tests {
         let migration_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        // 2.2.1: bumped from 20 to 21 - migrations/021_finance_entry_
-        // order_link.sql. This is a deliberate canary: it must be bumped by
-        // exactly the number of new migrations any time one is added, so a
-        // forgotten MIGRATIONS registration (see db.rs) fails loudly here
-        // instead of silently shipping an unmigrated fresh install.
-        assert_eq!(migration_count, 21, "a fresh per-account file must end up on the same schema version as every other file");
+        // 2.2.4: bumped from 21 to 22 - migrations/022_ticket_listings.sql.
+        // This is a deliberate canary: it must be bumped by exactly the
+        // number of new migrations any time one is added, so a forgotten
+        // MIGRATIONS registration (see db.rs) fails loudly here instead of
+        // silently shipping an unmigrated fresh install.
+        assert_eq!(migration_count, 22, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 
