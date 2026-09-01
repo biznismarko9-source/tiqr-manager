@@ -2482,3 +2482,179 @@ pub struct TicketListingInput {
     pub currency: String,
     pub status: String,
 }
+
+// --- Ticket Listings bulk actions (2.2.5) -----------------------------------
+// marko's follow-up: the Listings tab's new multi-select table needs "edit
+// status"/"edit price"/"delete" across many selected listings at once - see
+// commands/ticket_listings.rs's own doc comment for the all-or-nothing
+// transaction design these two inputs feed. Bulk delete needs no dedicated
+// input struct - `bulk_delete_ticket_listings` takes a plain `Vec<i64>`,
+// same as the existing `bulk_delete_sale_groups`.
+
+/// Input for `bulk_update_ticket_listings_status`: set many listings'
+/// `status` (active/sold/removed) in one all-or-nothing transaction. A plain
+/// `String` rather than a closed enum - same reasoning as
+/// `BulkTicketStatusInput` above: the safety guarantee here is "which values
+/// are allowed", enforced by `bulk_update_ticket_listings_status_impl`'s own
+/// validation, not "which column can be written".
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketListingsStatusInput {
+    pub ids: Vec<i64>,
+    pub status: String,
+}
+
+/// Input for `bulk_update_ticket_listings_price`: set many listings'
+/// `price_cents` to the same amount in one all-or-nothing transaction.
+/// Currency is never part of this input - it's never written by this
+/// action, and the impl rejects the whole batch if the selected listings
+/// don't already agree on one (see that function's own doc comment).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkTicketListingsPriceInput {
+    pub ids: Vec<i64>,
+    pub price_cents: i64,
+}
+
+// --- Inventory Intelligence (2.2.6) -----------------------------------------
+// marko's request: a compact "Inventory Intelligence" block on the Event
+// Workspace's Overview tab, above the existing Orders/Tickets tables - KPIs,
+// an aging breakdown, an attention list, and breakdowns by section/
+// marketplace. See commands::inventory_intelligence's own module doc comment
+// for the full design and exactly which existing computations each field
+// reuses (finance::compute_summary's definitions, ListingsTab's own "Listed
+// value" definition, SalesTab's own "Potential Profit" definition,
+// commands::price_checker::get_price_checker_summary_impl for the market
+// comparison) rather than a second, competing implementation of any of them.
+//
+// Every clickable grouping below carries its own `ticketIds` - the frontend
+// filters the Overview tab's ALREADY-FETCHED `tickets` list by id membership
+// to show "just these tickets", rather than re-deriving any of these same
+// predicates a second time in TypeScript.
+
+/// The 6 headline numbers marko asked for. Three different scopes are in
+/// play here (all tickets / unsold tickets only / active listings only), so
+/// - same rule as every other money aggregate in this app - each carries its
+/// OWN currency flag rather than assuming they all share one.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryIntelligenceKpis {
+    /// Every ticket ever purchased for this event, regardless of status -
+    /// the exact same count as `EventWithStats.stats.purchasedTickets`
+    /// (`FinanceSummary`), computed independently here from the same
+    /// underlying rows (not a second query joined back to that struct) but
+    /// mathematically identical by construction - see this module's tests.
+    pub total_tickets: i64,
+    /// Sum of `total_cost_cents` across ALL tickets (same scope as
+    /// `total_tickets` above) - identical figure to the existing Overview
+    /// "Total cost" stat card, just re-surfaced here under the name marko
+    /// asked for.
+    pub total_invested_cents: i64,
+    pub currency: Option<String>,
+    /// Sum of `price_cents` across this event's ACTIVE `ticket_listings`
+    /// rows only - the exact same definition ListingsTab's own "Listed
+    /// value" summary card already uses (see EventDetail.tsx), computed
+    /// here independently since that one has only ever existed client-side.
+    pub current_listed_value_cents: i64,
+    pub current_listed_value_currency: Option<String>,
+    /// Unsold tickets' (available+listed) listing value minus their cost -
+    /// byte-for-byte the same formula SalesTab's existing "Potential Profit"
+    /// card already computes from `tickets.listingPriceCents` (the LEGACY
+    /// single-price field, not `ticket_listings`) - reused here as-is so the
+    /// two numbers can never disagree. See this struct's own field above for
+    /// why "current listed value" and this card's own internal listing
+    /// value are legitimately two different numbers (real per-marketplace
+    /// listings vs. the older single-price field) - flagged in
+    /// PROTECTED_AREAS.md.
+    pub potential_profit_cents: i64,
+    pub potential_profit_currency: Option<String>,
+    /// sold / total (both counting ALL tickets, cancelled included) - `None`
+    /// only when there are no tickets at all. A judgment call: could instead
+    /// exclude cancelled tickets from the denominator (arguably more
+    /// "correct" as a sell-through definition) but this keeps it consistent
+    /// with `total_tickets` above, shown right next to it - see
+    /// PROTECTED_AREAS.md.
+    pub sell_through_pct: Option<f64>,
+    /// total_invested_cents / total_tickets, rounded to the nearest cent -
+    /// `None` only when there are no tickets at all. Same
+    /// safe_ratio(...).round() idiom already used for `avg_listing_price_
+    /// cents`/`my_avg_listing_price_cents` elsewhere in this codebase.
+    pub average_ticket_cost_cents: Option<i64>,
+}
+
+/// One "days since purchased, still unsold" bucket. Always exactly 4 of
+/// these, in a fixed order (0-7 / 8-30 / 31-60 / 61+) - marko's own list,
+/// with the 8-30/30-60 overlap at day 30 resolved to 31-60 for the second
+/// bucket so every unsold ticket lands in exactly one bucket, never two.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgingBucket {
+    pub key: String,
+    pub label: String,
+    pub ticket_count: i64,
+    pub ticket_ids: Vec<i64>,
+}
+
+/// One attention row. Always exactly 4 of these, in a fixed order (event
+/// soon / missing listing price / no active listing / outside market
+/// price) - present even when `count` is 0, so the block can honestly show
+/// "all clear" rather than omitting a row silently.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionItem {
+    /// One of: "event_soon", "missing_listing_price", "no_active_listing",
+    /// "outside_market_price" - the frontend owns the actual display copy
+    /// for each (same "backend sends a stable key, frontend owns the
+    /// label" split already used for e.g. `BulkTicketField`).
+    pub key: String,
+    pub count: i64,
+    pub ticket_ids: Vec<i64>,
+    /// `false` ONLY for "outside_market_price" when this event has no
+    /// Price Checker / Market Analysis data yet - marko's own explicit "iba
+    /// ak uz existuju data" (only if that data already exists). `count`/
+    /// `ticketIds` are always empty when this is `false`; the frontend
+    /// shows this row as "not available yet", never as a misleading "0
+    /// problems". Always `true` for the other 3 keys.
+    pub available: bool,
+}
+
+/// One row of a breakdown (by section, or by marketplace). The same shape
+/// serves both - `totalCents` means "total cost" for the section breakdown
+/// and "total active listing value" for the marketplace breakdown; see
+/// commands::inventory_intelligence for which is which.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryBreakdownGroup {
+    pub label: String,
+    pub ticket_count: i64,
+    pub ticket_ids: Vec<i64>,
+    pub total_cents: i64,
+    pub currency: Option<String>,
+}
+
+/// Everything the Event Workspace Overview's "Inventory Intelligence" block
+/// needs, in one round trip. See commands::inventory_intelligence's module
+/// doc comment for the full design.
+///
+/// Deliberately does NOT include a "by tier" breakdown - `tickets` has no
+/// tier/level column anywhere in this schema (confirmed - see
+/// PROTECTED_AREAS.md's "2.2.0" entry, `YourTicketGroup.tier`'s own doc
+/// comment, and this module's own doc comment), so it cannot be computed
+/// without inventing data. The frontend says so in plain text next to the
+/// section/marketplace breakdowns rather than showing a fake/empty one -
+/// same "say plainly it isn't tracked yet" precedent as 2.2.3's Listings tab.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryIntelligence {
+    pub kpis: InventoryIntelligenceKpis,
+    pub aging: Vec<AgingBucket>,
+    pub attention: Vec<AttentionItem>,
+    pub breakdown_by_section: Vec<InventoryBreakdownGroup>,
+    pub breakdown_by_marketplace: Vec<InventoryBreakdownGroup>,
+    /// Every unsold (available+listed) ticket id - the click target for
+    /// "Potential profit" and for "event soon" when it's non-zero, so both
+    /// share one definition of "unsold" rather than two ad hoc filters.
+    pub unsold_ticket_ids: Vec<i64>,
+    /// Every sold ticket id - the click target for "Sell-through %".
+    pub sold_ticket_ids: Vec<i64>,
+}

@@ -19,11 +19,26 @@
 //! same "one shared SELECT, used by list AND by the create/update read-back"
 //! discipline, as `commands::finance_entries` - see that module for the
 //! precedent this one follows throughout.
+//!
+//! 2.2.5: marko's follow-up - "vylepšiť Listings tak, aby sa dali reálne
+//! pohodlne riadiť" (make Listings actually convenient to manage): three new
+//! bulk commands (status/price/delete) for the Listings tab's new multi-
+//! select table. Same "validate everything in one query, then write
+//! everything in one statement, inside one transaction" all-or-nothing shape
+//! as `commands::tickets::bulk_update_tickets_impl` and
+//! `commands::sales::bulk_update_sale_payment_status_impl` - see those for
+//! the precedent this follows. Deliberately stricter than
+//! `commands::sales::bulk_delete_sale_groups_impl`'s own "per-item skip,
+//! report what failed" contract: marko explicitly asked for these three to
+//! be "ideálne transakčné - buď sa zmena podarí pre všetky vybrané listingy,
+//! alebo pre žiadny" (all or nothing), so one bad id aborts the whole batch
+//! with nothing changed, rather than silently skipping it.
 
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{TicketListing, TicketListingInput};
+use crate::models::{BulkTicketListingsPriceInput, BulkTicketListingsStatusInput, TicketListing, TicketListingInput};
 use rusqlite::{Connection, OptionalExtension, Row};
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 const TICKET_LISTING_STATUSES: [&str; 3] = ["active", "sold", "removed"];
@@ -244,6 +259,197 @@ pub(crate) fn delete_ticket_listing_impl(conn: &Connection, id: i64) -> AppResul
 pub fn delete_ticket_listing(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     delete_ticket_listing_impl(&conn, id)
+}
+
+/// Small shared refetch used only by the new bulk-status/bulk-price wrappers
+/// below - `create_ticket_listing_impl`/`update_ticket_listing_impl` above
+/// keep their own inline copy of this same two-line pattern untouched
+/// (smallest safe change: no reason to touch already-tested, working code
+/// just to de-duplicate it).
+fn fetch_one(conn: &Connection, id: i64) -> AppResult<TicketListing> {
+    let sql = format!("{TICKET_LISTING_SELECT} WHERE tl.id = ?1");
+    Ok(conn.query_row(&sql, [id], map_ticket_listing)?)
+}
+
+/// De-duplicates a bulk selection so the same id appearing twice (e.g. a
+/// stale double click) is applied once, not treated as two separate writes -
+/// same convention/reasoning as `tickets::bulk_update_tickets_impl`'s own
+/// copy of this exact snippet.
+fn dedupe_ids(ids: &[i64]) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for &id in ids {
+        if seen.insert(id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Core logic behind `bulk_update_ticket_listings_status` (2.2.5 - the
+/// Listings tab's new "bulk edit status" action). All-or-nothing: every id is
+/// checked to exist BEFORE any row is written (one `SELECT ... IN (...)`,
+/// not one query per id - same technique as `bulk_update_tickets_impl`), so
+/// one bad id in the selection changes nothing at all.
+pub(crate) fn bulk_update_ticket_listings_status_impl(
+    conn: &mut Connection,
+    ids: &[i64],
+    status: &str,
+) -> AppResult<Vec<i64>> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one listing to update".into()));
+    }
+    if !TICKET_LISTING_STATUSES.contains(&status) {
+        return Err(AppError::Validation(format!(
+            "Invalid listing status '{status}' - must be 'active', 'sold' or 'removed'"
+        )));
+    }
+    let ids = dedupe_ids(ids);
+
+    let tx = conn.transaction()?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing_ids: HashSet<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM ticket_listings WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing_ids.contains(id)) {
+        return Err(AppError::Validation(format!("Listing #{missing} not found")));
+    }
+
+    let sql = format!(
+        "UPDATE ticket_listings SET status = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    params.push(Box::new(status.to_string()));
+    for &id in &ids {
+        params.push(Box::new(id));
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, refs.as_slice())?;
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Sets `status` (active/sold/removed) for many listings at once, in one
+/// all-or-nothing transaction - the Listings tab's "Edit status" bulk
+/// action. Returns the updated rows, refetched the same way
+/// `bulk_update_sale_payment_status` (sales.rs) does.
+#[tauri::command]
+pub fn bulk_update_ticket_listings_status(
+    state: State<AppState>,
+    input: BulkTicketListingsStatusInput,
+) -> AppResult<Vec<TicketListing>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_ticket_listings_status_impl(&mut conn, &input.ids, &input.status)?;
+    ids.into_iter().map(|id| fetch_one(&conn, id)).collect()
+}
+
+/// Core logic behind `bulk_update_ticket_listings_price` (2.2.5). Same
+/// all-or-nothing shape as the status version above, plus one extra guard:
+/// marko's own "mixed currencies bezpečne" requirement means a single raw
+/// amount can never be applied blindly across listings that don't already
+/// agree on a currency (a bare "450" would silently mean 450 EUR for one
+/// listing and 450 USD for another) - every selected id's CURRENT currency is
+/// read back in the same validation query, and the whole batch is rejected,
+/// unchanged, the moment more than one distinct currency is found. Currency
+/// itself is never written here - only `price_cents` changes; each listing
+/// keeps the currency it already had, per marko's own "zachovaj currency"
+/// instruction.
+pub(crate) fn bulk_update_ticket_listings_price_impl(
+    conn: &mut Connection,
+    ids: &[i64],
+    price_cents: i64,
+) -> AppResult<Vec<i64>> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one listing to update".into()));
+    }
+    if price_cents < 0 {
+        return Err(AppError::Validation("Listing price cannot be negative".into()));
+    }
+    let ids = dedupe_ids(ids);
+
+    let tx = conn.transaction()?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let currencies: HashMap<i64, String> = {
+        let mut stmt = tx.prepare(&format!("SELECT id, currency FROM ticket_listings WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !currencies.contains_key(id)) {
+        return Err(AppError::Validation(format!("Listing #{missing} not found")));
+    }
+    let distinct_currencies: HashSet<&str> = currencies.values().map(|c| c.as_str()).collect();
+    if distinct_currencies.len() > 1 {
+        return Err(AppError::Validation(
+            "Selected listings use more than one currency - bulk price edit only works within a single currency at a time.".into(),
+        ));
+    }
+
+    let sql = format!(
+        "UPDATE ticket_listings SET price_cents = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id IN ({placeholders})"
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    params.push(Box::new(price_cents));
+    for &id in &ids {
+        params.push(Box::new(id));
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    tx.execute(&sql, refs.as_slice())?;
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// Sets `price_cents` for many listings at once (currency untouched - see
+/// the impl's doc comment), in one all-or-nothing transaction - the Listings
+/// tab's "Edit price" bulk action. Returns the updated rows.
+#[tauri::command]
+pub fn bulk_update_ticket_listings_price(
+    state: State<AppState>,
+    input: BulkTicketListingsPriceInput,
+) -> AppResult<Vec<TicketListing>> {
+    let mut conn = state.db.lock().unwrap();
+    let ids = bulk_update_ticket_listings_price_impl(&mut conn, &input.ids, input.price_cents)?;
+    ids.into_iter().map(|id| fetch_one(&conn, id)).collect()
+}
+
+/// Core logic behind `bulk_delete_ticket_listings` (2.2.5). All-or-nothing,
+/// same as the two bulk updates above - a listing is disposable reference
+/// data (see `delete_ticket_listing_impl`'s own doc comment), but a bulk
+/// selection can span many rows at once, so one stale/missing id must still
+/// abort the whole batch rather than silently deleting everything else out
+/// from under the user.
+pub(crate) fn bulk_delete_ticket_listings_impl(conn: &mut Connection, ids: &[i64]) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("Select at least one listing to delete".into()));
+    }
+    let ids = dedupe_ids(ids);
+
+    let tx = conn.transaction()?;
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let existing_ids: HashSet<i64> = {
+        let mut stmt = tx.prepare(&format!("SELECT id FROM ticket_listings WHERE id IN ({placeholders})"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>()?
+    };
+    if let Some(missing) = ids.iter().copied().find(|id| !existing_ids.contains(id)) {
+        return Err(AppError::Validation(format!("Listing #{missing} not found")));
+    }
+
+    let sql = format!("DELETE FROM ticket_listings WHERE id IN ({placeholders})");
+    let deleted = tx.execute(&sql, rusqlite::params_from_iter(ids.iter()))?;
+    tx.commit()?;
+    Ok(deleted)
+}
+
+/// Deletes many listings at once, in one all-or-nothing transaction - the
+/// Listings tab's "Delete" bulk action. Returns how many rows were deleted.
+#[tauri::command]
+pub fn bulk_delete_ticket_listings(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
+    let mut conn = state.db.lock().unwrap();
+    bulk_delete_ticket_listings_impl(&mut conn, &ids)
 }
 
 #[cfg(test)]
@@ -536,5 +742,197 @@ mod tests {
 
         let err = create_ticket_listing_impl(&conn, &input).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // --- 2.2.5: bulk status / bulk price / bulk delete ---------------------
+    // marko's own explicit test list for this release: filters/search are
+    // frontend-only (this codebase has no JS/TS test runner - every "test"
+    // anywhere in this project is a Rust `#[cfg(test)]` unit test, see
+    // REDESIGN-2.2.5-REPORT.md), so the scenarios below cover bulk status,
+    // bulk price, bulk delete, select-all-style multi-id selections, mixed
+    // selections and transaction safety - the parts of this release that
+    // actually touch the database.
+
+    /// Seeds 3 listings on 3 different tickets (same marketplace/currency)
+    /// and returns their ids in creation order - the shared setup every bulk
+    /// test below starts from.
+    fn seed_three_listings(conn: &Connection, event_id: i64, marketplace_id: i64) -> Vec<i64> {
+        let mut ids = Vec::new();
+        for i in 1..=3 {
+            let ticket_id = seed_ticket(conn, &i.to_string(), event_id);
+            let mut input = sample_input(ticket_id, marketplace_id);
+            input.listing_id = Some(format!("ext-{i}"));
+            ids.push(create_ticket_listing_impl(conn, &input).unwrap().id);
+        }
+        ids
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_status_only_changes_the_selected_ones_out_of_three() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let updated = bulk_update_ticket_listings_status_impl(&mut conn, &[ids[0], ids[1]], "sold").unwrap();
+        assert_eq!(updated.len(), 2);
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        let status_of = |id: i64| listings.iter().find(|l| l.id == id).unwrap().status.clone();
+        assert_eq!(status_of(ids[0]), "sold");
+        assert_eq!(status_of(ids[1]), "sold");
+        assert_eq!(status_of(ids[2]), "active", "the 3rd listing was never selected, so it must stay untouched");
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_status_rejects_an_invalid_status_and_changes_nothing() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let err = bulk_update_ticket_listings_status_impl(&mut conn, &ids, "pending").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert!(listings.iter().all(|l| l.status == "active"), "a rejected bulk status must change nothing at all");
+    }
+
+    /// TRANSACTION SAFETY (marko's own explicit requirement): one bad id in
+    /// the batch must roll back EVERY change, not just skip the bad one -
+    /// same contract `bulk_update_tickets_impl_is_all_or_nothing` (tickets.rs)
+    /// already proves for the older bulk-edit engine this one is modeled on.
+    #[test]
+    fn bulk_update_ticket_listings_status_is_all_or_nothing() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let err = bulk_update_ticket_listings_status_impl(&mut conn, &[ids[0], ids[1], 999_999], "sold").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert!(
+            listings.iter().all(|l| l.status == "active"),
+            "a bad id anywhere in the batch must leave every listing - including the valid ones - completely unchanged"
+        );
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_status_dedupes_ids() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let updated = bulk_update_ticket_listings_status_impl(&mut conn, &[ids[0], ids[0], ids[0]], "removed").unwrap();
+        assert_eq!(updated, vec![ids[0]], "the same id selected 3 times must be applied once, not fail or triple-write");
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_price_only_changes_the_selected_ones_and_keeps_currency() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let updated = bulk_update_ticket_listings_price_impl(&mut conn, &[ids[0], ids[1]], 39900).unwrap();
+        assert_eq!(updated.len(), 2);
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        let listing = |id: i64| listings.iter().find(|l| l.id == id).unwrap().clone();
+        assert_eq!(listing(ids[0]).price_cents, 39900);
+        assert_eq!(listing(ids[0]).currency, "EUR", "bulk price edit must never touch currency");
+        assert_eq!(listing(ids[1]).price_cents, 39900);
+        assert_eq!(listing(ids[2]).price_cents, 42000, "the 3rd listing was never selected, so its price must stay untouched");
+    }
+
+    /// MIXED CURRENCY SAFETY (marko's own explicit requirement): a selection
+    /// spanning more than one currency must be rejected outright rather than
+    /// applying one raw number to listings priced in different currencies.
+    #[test]
+    fn bulk_update_ticket_listings_price_rejects_a_mixed_currency_selection_and_changes_nothing() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let ticket_a = seed_ticket(&conn, "1", event_id);
+        let ticket_b = seed_ticket(&conn, "2", event_id);
+        let eur_market = seed_marketplace(&conn, "EUR Market");
+        let usd_market = seed_marketplace(&conn, "USD Market");
+        let mut eur_input = sample_input(ticket_a, eur_market);
+        eur_input.currency = "eur".into();
+        eur_input.listing_id = Some("eur-1".into());
+        let mut usd_input = sample_input(ticket_b, usd_market);
+        usd_input.currency = "usd".into();
+        usd_input.listing_id = Some("usd-1".into());
+        let eur_id = create_ticket_listing_impl(&conn, &eur_input).unwrap().id;
+        let usd_id = create_ticket_listing_impl(&conn, &usd_input).unwrap().id;
+
+        let err = bulk_update_ticket_listings_price_impl(&mut conn, &[eur_id, usd_id], 10000).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert_eq!(listings.iter().find(|l| l.id == eur_id).unwrap().price_cents, 42000);
+        assert_eq!(listings.iter().find(|l| l.id == usd_id).unwrap().price_cents, 42000);
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_price_rejects_negative_price() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let err = bulk_update_ticket_listings_price_impl(&mut conn, &ids, -100).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn bulk_update_ticket_listings_price_is_all_or_nothing() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let err = bulk_update_ticket_listings_price_impl(&mut conn, &[ids[0], 999_999], 10000).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert!(listings.iter().all(|l| l.price_cents == 42000), "a bad id in the batch must leave every price untouched");
+    }
+
+    #[test]
+    fn bulk_delete_ticket_listings_removes_only_the_selected_ones() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let deleted = bulk_delete_ticket_listings_impl(&mut conn, &[ids[0], ids[1]]).unwrap();
+        assert_eq!(deleted, 2);
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert_eq!(listings.len(), 1);
+        assert_eq!(listings[0].id, ids[2], "the 3rd listing was never selected, so it must survive");
+    }
+
+    #[test]
+    fn bulk_delete_ticket_listings_is_all_or_nothing() {
+        let mut conn = test_conn();
+        let event_id = seed_event(&conn, "Test Event");
+        let marketplace_id = seed_marketplace(&conn, "Test Market");
+        let ids = seed_three_listings(&conn, event_id, marketplace_id);
+
+        let err = bulk_delete_ticket_listings_impl(&mut conn, &[ids[0], 999_999]).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let listings = list_ticket_listings_for_event_impl(&conn, event_id).unwrap();
+        assert_eq!(listings.len(), 3, "a bad id in the batch must leave every listing - including the valid one - undeleted");
+    }
+
+    #[test]
+    fn bulk_delete_ticket_listings_rejects_empty_selection() {
+        let mut conn = test_conn();
+        assert!(bulk_delete_ticket_listings_impl(&mut conn, &[]).is_err());
     }
 }

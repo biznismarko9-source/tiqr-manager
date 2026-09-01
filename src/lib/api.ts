@@ -35,6 +35,7 @@ import type {
   FinanceEntryInput,
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
+  InventoryIntelligence,
   MarketAnalysisResult,
   Marketplace,
   NotificationConfigInput,
@@ -73,6 +74,8 @@ import type {
   Ticket,
   TicketListing,
   TicketListingInput,
+  BulkTicketListingsStatusInput,
+  BulkTicketListingsPriceInput,
   TicketUpdateInput,
   Transfer,
   TransferInput,
@@ -180,6 +183,15 @@ export const api = {
   updateTicketListing: (id: number, input: TicketListingInput) =>
     invoke<TicketListing>("update_ticket_listing", { id, input }),
   deleteTicketListing: (id: number) => invoke<void>("delete_ticket_listing", { id }),
+  // 2.2.5: the Listings tab's new multi-select bulk actions - all
+  // all-or-nothing on the backend (see commands/ticket_listings.rs).
+  bulkUpdateTicketListingsStatus: (input: BulkTicketListingsStatusInput) =>
+    invoke<TicketListing[]>("bulk_update_ticket_listings_status", { input }),
+  bulkUpdateTicketListingsPrice: (input: BulkTicketListingsPriceInput) =>
+    invoke<TicketListing[]>("bulk_update_ticket_listings_price", { input }),
+  bulkDeleteTicketListings: (ids: number[]) => invoke<number>("bulk_delete_ticket_listings", { ids }),
+  // 2.2.6: Event Workspace Overview's "Inventory Intelligence" block.
+  getInventoryIntelligence: (eventId: number) => invoke<InventoryIntelligence>("get_inventory_intelligence", { eventId }),
 
   // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
   // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.

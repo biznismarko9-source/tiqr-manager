@@ -186,6 +186,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "022_ticket_listings",
         include_str!("../migrations/022_ticket_listings.sql"),
     ),
+    (
+        "023_add_seatriks_marketplace",
+        include_str!("../migrations/023_add_seatriks_marketplace.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

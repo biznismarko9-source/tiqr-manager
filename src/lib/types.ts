@@ -1356,6 +1356,88 @@ export interface TicketListingInput {
   status: "active" | "sold" | "removed";
 }
 
+/** 2.2.5: input for `bulkUpdateTicketListingsStatus` - the Listings tab's
+ * "Edit status" bulk action. All-or-nothing on the backend - see
+ * commands/ticket_listings.rs's own doc comment. */
+export interface BulkTicketListingsStatusInput {
+  ids: number[];
+  status: "active" | "sold" | "removed";
+}
+
+/** 2.2.5: input for `bulkUpdateTicketListingsPrice` - the Listings tab's
+ * "Edit price" bulk action. Currency is never part of this input - every
+ * selected listing must already share one, or the backend rejects the whole
+ * batch (see that command's own doc comment). */
+export interface BulkTicketListingsPriceInput {
+  ids: number[];
+  priceCents: number;
+}
+
+/** 2.2.6: the Event Workspace Overview tab's "Inventory Intelligence" block
+ * (`getInventoryIntelligence`). Every clickable field pairs a count/sum with
+ * a `ticketIds` list - the caller filters its own already-fetched `Ticket[]`
+ * by id membership to show "just these tickets" rather than re-deriving any
+ * of these predicates a second time. See commands/inventory_intelligence.rs
+ * for the full design and which existing definition each number reuses. */
+export interface InventoryIntelligenceKpis {
+  totalTickets: number;
+  totalInvestedCents: number;
+  currency: string | null;
+  currentListedValueCents: number;
+  currentListedValueCurrency: string | null;
+  potentialProfitCents: number;
+  potentialProfitCurrency: string | null;
+  sellThroughPct: number | null;
+  averageTicketCostCents: number | null;
+}
+
+/** One "days since purchased, still unsold" bucket - always exactly 4, in a
+ * fixed order (0-7 / 8-30 / 31-60 / 61+). */
+export interface AgingBucket {
+  key: string;
+  label: string;
+  ticketCount: number;
+  ticketIds: number[];
+}
+
+/** One attention row - always exactly 4, in a fixed order (event soon /
+ * missing listing price / no active listing / outside market price), even
+ * when `count` is 0, so the block can honestly show "all clear". */
+export interface AttentionItem {
+  key: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price";
+  count: number;
+  ticketIds: number[];
+  /** `false` only for "outside_market_price" when this event has no Price
+   * Checker / Market Analysis data yet - render as "not available yet", not
+   * as a misleading "0 problems". Always `true` for the other 3 keys. */
+  available: boolean;
+}
+
+/** One row of a breakdown (by section, or by marketplace) - `totalCents`
+ * means "total cost" for the section breakdown and "total active listing
+ * value" for the marketplace breakdown. */
+export interface InventoryBreakdownGroup {
+  label: string;
+  ticketCount: number;
+  ticketIds: number[];
+  totalCents: number;
+  currency: string | null;
+}
+
+/** No "by tier" breakdown - tickets have no tier/level field anywhere in
+ * this app (only section/row/seat) - see commands/inventory_intelligence.rs's
+ * own doc comment. The UI says so in plain text rather than showing a fake
+ * one. */
+export interface InventoryIntelligence {
+  kpis: InventoryIntelligenceKpis;
+  aging: AgingBucket[];
+  attention: AttentionItem[];
+  breakdownBySection: InventoryBreakdownGroup[];
+  breakdownByMarketplace: InventoryBreakdownGroup[];
+  unsoldTicketIds: number[];
+  soldTicketIds: number[];
+}
+
 /** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
  * the link (deletes it) instead of erroring; a non-blank one upserts it, so
  * the same call saves a first-time link, edits an existing one, or removes

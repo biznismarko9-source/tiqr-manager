@@ -13,6 +13,7 @@ pub mod finance_forecast;
 pub mod finance_recurring;
 pub mod firebase_google_auth;
 pub mod google_auth;
+pub mod inventory_intelligence;
 pub mod lookups;
 pub mod notifications;
 pub mod orders;

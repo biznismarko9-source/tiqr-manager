@@ -21,19 +21,24 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.4**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.6**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
-are more places than the obvious 3 files.
+are more places than the obvious 3 files. (Briefly shipped as an
+un-bumped, code-labeled-only "2.2.6" first - marko's closing checklist for
+that task didn't ask for a version bump - then bumped for real, same
+session, once he confirmed he wanted the usual release file too. See
+`PROTECTED_AREAS.md`'s "2.2.6" entry.)
 
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
-  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2-2.2.4:
-  tabbed "Event Workspace" - Overview/Listings/Sales/Finance, see "Current
-  focus" below and `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4" entries
-  before adding more event-level functionality anywhere else), Orders,
+  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2-2.2.5:
+  tabbed "Event Workspace" - Overview/Listings/Sales (Finance folded into
+  Sales in 2.2.5), see "Current focus" below and `PROTECTED_AREAS.md`'s
+  "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before adding more event-level
+  functionality anywhere else), Orders,
   OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail, Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
   PriceChecker, Settings, Welcome (auth), PendingApproval, DatabaseError.
@@ -41,8 +46,11 @@ are more places than the obvious 3 files.
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
   under `commands/`: events, orders (+ `orders_sheet_sync`), tickets,
-  ticket_listings (2.2.4 - real per-marketplace listings, see "Current
-  focus" below), sales, event_categories, pulls (+ `pulls_received`,
+  ticket_listings (2.2.4 - real per-marketplace listings; 2.2.5 added 3
+  all-or-nothing bulk commands - status/price/delete - see "Current focus"
+  below), inventory_intelligence (2.2.6 - one read-only command backing
+  Overview's "Inventory Intelligence" block, see "Current focus" below),
+  sales, event_categories, pulls (+ `pulls_received`,
   `pulls_sheet_sync`), finance_accounts/finance_entries (2.2.1: entries can
   optionally link to an Order via `order_id`)/finance_recurring/
   finance_forecast, price_checker (CRUD/marketplaces + saved-check
@@ -57,7 +65,7 @@ are more places than the obvious 3 files.
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **022_ticket_listings.sql**. Migrations run
+  currently through **023_add_seatriks_marketplace.sql**. Migrations run
   automatically at startup, forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
@@ -68,44 +76,116 @@ are more places than the obvious 3 files.
 
 ## Current focus / most recent work
 
-**Event Workspace (2.2.2, revised 2.2.3 and 2.2.4).** `EventDetail.tsx` is
-a tabbed "Event Workspace" (`TabSwitcher`, same component Tickets.tsx/
-Events.tsx already use for their own tabs) - current, final shape:
-**Overview | Listings | Sales | Finance**:
+**Event Workspace (2.2.2, revised 2.2.3, 2.2.4 and 2.2.5).**
+`EventDetail.tsx` is a tabbed "Event Workspace" (`TabSwitcher`, same
+component Tickets.tsx/Events.tsx already use for their own tabs) - current,
+final shape: **Overview | Listings | Sales** (down from 4 tabs in 2.2.4 -
+Finance folded into Sales this round):
 - **Overview** shows marko's own stat list (tickets, sold, available,
   total cost, revenue, profit, margin, ROI - `EventWithStats.stats`, no
   backend change), plus (2.2.4) the Orders + Tickets tables that used to
   be their own "Inventory" tab, appended below - marko's own "spoj do
   jedneho" (merge into one) instruction. Both halves are unchanged from
   their previous tabs, just relocated into one.
-- **Listings** (2.2.3: read-only Ticket view; **rebuilt in 2.2.4 into a
-  real system**) is now backed by a real `ticket_listings` table
-  (`migrations/022_ticket_listings.sql`, `commands/ticket_listings.rs`) -
-  one ticket can have several listings at once, one per marketplace
-  (StubHub/Vivid/Ticombo-style), each with its own price/currency/status/
-  listing id/listing URL/last-updated timestamp. Reuses the EXISTING
-  `marketplaces` lookup table (Price Checker's own) rather than a second
-  marketplace concept. Full CRUD (add/edit/delete a listing) lives in this
-  tab; summary cards (Active listings/Listed value/Lowest/Highest) count
-  `status === "active"` listings only, while the table below shows every
-  listing regardless of status. Deliberately still manual entry only - no
-  marketplace API, no automatic listing creation, no repricing. Does NOT
-  touch `tickets.status`/`tickets.listingPriceCents` at all - those stay
-  exactly what they were. See `PROTECTED_AREAS.md`'s "2.2.4" entry before
-  touching this table or `delete_marketplace_impl`'s guard again.
+- **Listings** (2.2.3: read-only Ticket view; rebuilt in 2.2.4 into a real
+  system; **2.2.5 made it genuinely manageable at volume**) is backed by a
+  real `ticket_listings` table (`migrations/022_ticket_listings.sql`,
+  `commands/ticket_listings.rs`) - one ticket can have several listings at
+  once, one per marketplace (StubHub-successor Viagogo/Vivid Seats/
+  Ticombo/Seatriks-style, see below), each with its own price/currency/
+  status/listing id/listing URL/last-updated timestamp. Reuses the
+  EXISTING `marketplaces` lookup table (Price Checker's own) rather than a
+  second marketplace concept. Summary cards (Active listings/Listed
+  value/Lowest/Highest) count `status === "active"` listings only and are
+  never affected by the filters below; the table shows every listing
+  matching the current filters regardless of status. Deliberately still
+  manual entry only - no marketplace API, no automatic listing creation,
+  no repricing. Does NOT touch `tickets.status`/`tickets.listingPriceCents`
+  at all - those stay exactly what they were.
+  2.2.5 additions, all client-side except the 3 new bulk commands: a
+  status filter (All/Active/Sold/Removed), a marketplace filter, a search
+  box (ticket/marketplace/listing id/URL), always-visible row checkboxes +
+  select-all (scoped to the currently filtered/searched rows, same
+  convention as Sales.tsx's own bulk-select), and a bulk action bar (shown
+  only while something is selected) covering Edit status / Edit price /
+  Delete - all three backed by new **all-or-nothing** transactional
+  commands (`bulk_update_ticket_listings_status`/`_price`,
+  `bulk_delete_ticket_listings`); bulk price edit is refused (frontend AND
+  backend) when the selection spans more than one currency. "Add listing"
+  also got a new ticket picker - browse this event's own orders
+  (searchable), open one, pick tickets from it, repeat across orders,
+  mirroring Sales.tsx's own New Sale flow - replacing the old flat
+  "every ticket in the event in one dropdown" picker marko found opaque.
+  Several tickets can be selected at once, creating one listing per ticket
+  on the chosen marketplace (price editable per ticket via a
+  Quick-fill-and-override grid, same UX as New Sale's own price/fees
+  grid); Listing ID/URL are offered only when exactly one ticket is
+  selected, since each marketplace posting has its own. See
+  `PROTECTED_AREAS.md`'s "2.2.4" and "2.2.5" entries before touching this
+  table, its bulk commands, or `delete_marketplace_impl`'s guard again.
 - **Sales** calls `list_sale_groups({ eventId })` (Sales.tsx's own Event
   filter, reused) for its own table, plus (2.2.4) the former **Market**
-  tab's entire content appended below - "Market vs. mine"
-  (`get_price_checker_summary`) and "Potential Profit" (this page's own
-  unsold-stock estimate, unchanged calculation). Market's name/tab is gone
-  - see `PROTECTED_AREAS.md`'s "2.2.4" entry for why its content landed in
-  Sales rather than Finance (a judgment call, flagged to marko).
-  "Open in Sales"/"Open in Price Checker" still link out for anything more
-  than a glance.
-- **Finance** calls `list_finance_entries_for_order` (2.2.1) once per this
-  event's own orders and merges client-side - completely unchanged since
-  2.2.2; marko's own final tab list keeps this as its own tab, not folded
-  into anything.
+  tab's content - "Market vs. mine" (`get_price_checker_summary`) and
+  "Potential Profit" - and (2.2.5) the former **Finance** tab's content -
+  every Finance entry linked to one of this event's own Orders
+  (`list_finance_entries_for_order`, 2.2.1) - both appended below the
+  Sales table in that order. Market's and Finance's own tabs/names are
+  gone - see `PROTECTED_AREAS.md`'s "2.2.4"/"2.2.5" entries for the
+  Sales-survives judgment calls behind both merges (flagged to marko).
+  "Open in Sales"/"Open in Price Checker"/"Open in Finance" still link out
+  to the real, standalone sections for anything more than a glance.
+
+**Overview gained an "Inventory Intelligence" block (2.2.6).** A compact
+block rendered above the Orders/Tickets
+tables on the Overview tab, backed by one new read-only command
+(`get_inventory_intelligence`, `commands/inventory_intelligence.rs`) that
+reuses existing definitions rather than inventing new money logic:
+- **KPIs**: Total tickets / Total invested (same scope as
+  `finance::compute_summary`, all tickets including cancelled), Current
+  listed value (sum of ACTIVE `ticket_listings.price_cents`, matching
+  Listings' own "Listed value"), Potential profit (byte-for-byte Sales'
+  own existing legacy-field formula, `tickets.listing_price_cents`),
+  Sell-through % (sold / total including cancelled - matches the "Total
+  tickets" denominator shown next to it), Average ticket cost.
+- **Aging** (unsold tickets only, by days since order purchase date): 0-7 /
+  8-30 / 31-60 / 61+ (marko's own spec had an overlapping 8-30/30-60 -
+  resolved to 31-60, flagged in the module's doc comment).
+- **Attention**: event within 2 days with unsold stock (marko said "48h" -
+  translated to whole calendar days since `event_date` has no time
+  component anywhere in this schema), unsold ticket with no listing price,
+  unsold ticket with no active listing, and unsold ticket priced >=20% off
+  the market average - this last one reuses
+  `commands::price_checker::get_price_checker_summary_impl` (the same
+  function Sales' own "Market vs. mine" card calls) and is explicitly
+  `available: false` (not a fake zero) when this event has no Price
+  Checker data yet.
+- **Breakdown** by section (unsold tickets) and by marketplace (active
+  listings). **No "by tier" breakdown** - `tickets` has no tier/level
+  column anywhere in this schema (`ticket_type` is a delivery method, not
+  a price tier - the same gap PROTECTED_AREAS.md's 2.2.0 entry already
+  flagged); the UI says so in plain text rather than inventing one. See
+  `PROTECTED_AREAS.md`'s new entry for the smallest proposed fix.
+- **Every KPI/aging/attention/breakdown row is clickable** - filters
+  Overview's own already-rendered Tickets table down to just those ticket
+  ids (backend returns `ticketIds`/`unsoldTicketIds`/`soldTicketIds` lists,
+  frontend filters its own already-fetched `Ticket[]` by id membership; no
+  new page, no new fetch, no new predicate logic in TypeScript), except
+  "Current listed value" which switches to the existing Listings tab
+  instead (that number is fundamentally about `ticket_listings` rows, not
+  raw tickets). Neither Tickets.tsx nor Orders.tsx gained any new
+  filtering - this stays entirely inside `EventDetail.tsx`.
+- **Does not touch** refund/resell, `batch_id`, Orders/Tickets/Sales core
+  logic, or the Finance page - read-only aggregation of already-existing
+  data, no new migration, no new dependency.
+See `PROTECTED_AREAS.md`'s new entry before touching this module again,
+in particular the two numeric judgment calls (2-day event-soon window,
+20% off-market threshold) and the dual listing-value-system nuance.
+
+**Marketplaces: Seatriks added (2.2.5).** `migrations/
+023_add_seatriks_marketplace.sql` seeds a 4th row in the shared
+`marketplaces` lookup (marko's own request) - pure data, no schema change,
+same precedent as 020_remove_stubhub.sql. Available immediately in both
+Price Checker and the Listings "Add listing" marketplace picker.
 
 2.2.3 removed the **Tasks** tab entirely (marko decided against it before
 it ever got a spec) and removed the `max-w-[1400px]` cap from this page's
@@ -117,11 +197,12 @@ here). 2.2.2 also shipped three unrelated small fixes: Settings -> Lookups'
 Completed tabs use) - a completed/cancelled event just quietly stops
 showing up there, no manual untracking needed.
 
-Read `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4" entries before adding
-to any of these tabs. 2.2.2/2.2.3 were frontend-only; 2.2.4 adds one new
-table + 4 new commands (`ticket_listings`) and extends
-`delete_marketplace_impl`'s existing guard - no other backend surface
-changed.
+Read `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
+adding to any of these tabs. 2.2.2/2.2.3 were frontend-only; 2.2.4 added
+one new table + 4 commands (`ticket_listings`) and extended
+`delete_marketplace_impl`'s existing guard; 2.2.5 added 3 more commands
+(the bulk actions) plus one pure-data migration (Seatriks) - no other
+backend surface changed either round.
 
 **Finance <-> Orders link, Finance Accounts/Lookups UI simplification,
 Price Checker jump links (2.2.1).** Four independent, marko-requested
@@ -197,8 +278,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 110 of
-them as of 2.2.4. These are not read by default under this protocol; only
+`*-REPORT.md` file at the repo root (Slovak, written for marko) - 112 of
+them as of 2.2.6. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

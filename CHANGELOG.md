@@ -16,6 +16,80 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.6 - Inventory Intelligence for Event Workspace
+
+Focused task on top of 2.2.5: a compact "Inventory Intelligence" block
+added to the Event Workspace's Overview tab, above the existing Orders/
+Tickets tables. See `REDESIGN-2.2.6-REPORT.md` for the full report
+(Slovak) and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.6" entry for the
+judgment calls behind it.
+
+- **KPIs**: Total tickets, Total invested, Current listed value (active
+  `ticket_listings` only), Potential profit (legacy `listing_price_cents`
+  field, matching Sales' existing card), Sell-through %, Average ticket
+  cost - all reusing existing money definitions, no new duplicate
+  computations.
+- **Aging**: 0-7 / 8-30 / 31-60 / 61+ days since purchase, unsold tickets
+  only.
+- **Attention**: event within 2 days with unsold stock, unsold ticket with
+  no listing price, unsold ticket with no active listing, unsold ticket
+  priced 20%+ off the market average (reuses Price Checker's own summary;
+  shown as "not available yet" rather than a fake zero when this event has
+  no Price Checker data).
+- **Breakdown** by section and by marketplace. No "by tier" breakdown -
+  `tickets` has no tier/level column anywhere in this schema; the UI says
+  so in plain text instead of inventing fallback data, per marko's own
+  explicit instruction.
+- **Every row is clickable** - filters Overview's own Tickets table to the
+  relevant tickets (or switches to the Listings tab, for "Current listed
+  value"). No changes to Tickets.tsx, Orders.tsx, or any core Orders/
+  Tickets/Sales/refund/resell logic; Finance page untouched.
+- New backend: `commands/inventory_intelligence.rs` (1 new command,
+  `get_inventory_intelligence`), no migration, no new dependency.
+- Tests: +13 new Rust unit tests (KPI scope/formula parity with existing
+  screens, aging bucket boundaries, attention-item independence and
+  availability, currency-mixed handling, section/marketplace grouping).
+  Full suite: 972 passed / 0 failed / 3 ignored. `tsc -b` and
+  `npm run build` both clean.
+
+## 2.2.5 - Event Workspace down to 3 tabs; Listings gets filters, search and bulk actions
+
+Fourth pass on the Event Workspace, plus a Price Checker lookup addition.
+Final tab order: `Overview | Listings | Sales`.
+
+- **Sales absorbed Finance** - "sales a finance daj dokopy" (unambiguous
+  this round). Finance's entries table now renders below Sales' own table
+  (and below the Market section 2.2.4 already put there). See
+  `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.5" entry for the judgment call
+  behind Sales (not Finance) surviving as the name.
+- **Listings: filters, search, multi-select, bulk actions.** Status filter
+  (All/Active/Sold/Removed), marketplace filter, search box, always-visible
+  row checkboxes with select-all/deselect-all (scoped to the currently
+  filtered/searched rows), and a bulk action bar (shown only while
+  something is selected) for Edit status / Edit price / Delete - each
+  backed by a new **all-or-nothing** transactional Rust command
+  (`bulk_update_ticket_listings_status`, `bulk_update_ticket_listings_price`,
+  `bulk_delete_ticket_listings`, all in `ticket_listings.rs`). Bulk price
+  edit is refused, on both the frontend and the backend, when the selection
+  spans more than one currency.
+- **"Add listing" ticket picker rebuilt** as an order-browse flow (search
+  this event's own orders, open one, pick tickets from it) mirroring
+  Sales.tsx's own New Sale flow, replacing the old flat "every ticket in
+  the event in one dropdown" picker. Several tickets can be picked at once,
+  creating one listing per ticket on the chosen marketplace (per-ticket
+  price, with a quick-fill/apply-to-all helper); Listing ID/URL are offered
+  only when exactly one ticket is selected. This create flow is NOT
+  all-or-nothing (unlike the 3 bulk actions above) - a partial failure
+  keeps whatever succeeded and reports the rest for retry.
+- **Marketplaces: added Seatriks** - new pure-data migration
+  `023_add_seatriks_marketplace.sql`, no schema change.
+- Existing tickets/inventory/sales/refund logic untouched; no automatic
+  listing creation, marketplace API, or repricing added.
+- Tests: +11 new Rust unit tests for the 3 bulk commands (selection
+  scoping, invalid input, mixed currency, dedup, all-or-nothing transaction
+  safety), plus 1 existing Price Checker test updated for the new 4th
+  active marketplace.
+
 ## 2.2.4 - Event Workspace down to 4 tabs; Listings is now a real multi-marketplace system
 
 Third pass on the Event Workspace. Final tab order: `Overview | Listings |

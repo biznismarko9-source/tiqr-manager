@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
+  AttentionItem,
   EventWithStats,
   FinanceEntry,
+  InventoryIntelligence,
   Marketplace,
   OrderRecord,
   PriceCheckerSummary,
@@ -26,6 +28,7 @@ import {
   Badge,
   Button,
   Card,
+  CHECKBOX_CLASS,
   ConfirmDialog,
   EmptyState,
   Field,
@@ -39,7 +42,18 @@ import {
   TabSwitcher,
 } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
-import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import {
+  IconAlertTriangle,
+  IconArrowLeft,
+  IconCheck,
+  IconChevronDown,
+  IconLink,
+  IconPencil,
+  IconPlus,
+  IconSearch,
+  IconTrash,
+  IconX,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
 import { CURRENCIES } from "./Orders";
@@ -50,7 +64,7 @@ import { CURRENCIES } from "./Orders";
 // 1) Tab consolidation - "Overview Inventory spoj do jedneho" (merge these
 //    two into one) and "Sales Market Finance spoj do jedneho" (a looser
 //    grouping, resolved below) - landing on exactly the 4 tabs marko's own
-//    message names at the end: Overview | Listings | Sales | Finance.
+//    message named at the end: Overview | Listings | Sales | Finance.
 //    - Overview absorbed Inventory: the Orders/Tickets tables that used to
 //      have their own tab are now appended below Overview's own stat cards,
 //      completely unchanged otherwise.
@@ -58,16 +72,10 @@ import { CURRENCIES } from "./Orders";
 //      former Market tab's entire content) now live below the Sales table,
 //      completely unchanged otherwise.
 //    - Finance was named as its own surviving tab in marko's own final list
-//      ("...sales a finance") and is untouched - not folded into anything.
-//    JUDGMENT CALL (flagged here and in REDESIGN-2.2.4-REPORT.md): marko's
-//    own sentence grouped "Sales Market Finance" together, but his
-//    immediately-following list of the 4 tabs that should remain explicitly
-//    keeps "sales" AND "finance" as two separate names - so Market (the one
-//    name that disappears from that list) was folded into Sales, not
-//    Finance. Market's content (what could I get if I sold now) reads as a
-//    Sales concern more than a Finance ledger one, which is the other
-//    reason this direction was chosen. Easy to move if marko meant it the
-//    other way.
+//      that release ("...sales a finance") and stayed untouched.
+//    (2.2.5 note: the paragraph above describes 2.2.4's own reasoning for
+//    keeping Finance separate - superseded by 2.2.5 below, which merges it
+//    into Sales after all. Left here as real history, not rewritten.)
 //
 // 2) Listings rebuilt into a real system - see ListingsTab's own doc
 //    comment and commands/ticket_listings.rs (Rust) for the full design.
@@ -75,13 +83,49 @@ import { CURRENCIES } from "./Orders";
 //    (which explicitly could not show marketplace/URL/last-checked, because
 //    none of that data existed anywhere) with real per-marketplace listing
 //    rows - one ticket can now have several at once.
-type WorkspaceTab = "overview" | "listings" | "sales" | "finance";
+//
+// 2.2.5: marko's third follow-up on this same page, two more independent
+// pieces:
+//
+// 1) Further tab consolidation - "Sales Market Finance spoj do jedneho" (the
+//    2.2.4 entry above) merged Market into Sales but kept Finance separate,
+//    since marko's own 2.2.4 message explicitly listed "sales" AND
+//    "finance" as two of the 4 surviving tabs. This round he asked again,
+//    unambiguously this time - "sales a finance daj dokopy" (put sales and
+//    finance together) - with no companion list keeping them apart. Down to
+//    3 tabs: Overview | Listings | Sales. JUDGMENT CALL (flagged here and in
+//    REDESIGN-2.2.5-REPORT.md): marko named "Sales" first in that sentence,
+//    so - same "first-named tab survives, its content absorbs the rest"
+//    convention already used for Overview/Inventory and Sales/Market above -
+//    Sales is the surviving name; Finance's entries table now renders at the
+//    bottom of `SalesTab`, below the Market section 2.2.4 already put there.
+//    The standalone Finance SECTION of the app (`/finance`, its own 4-tab
+//    page) is completely unrelated and untouched - this is only about this
+//    one event-scoped tab.
+//
+// 2) Listings made genuinely manageable at volume - filters (status/
+//    marketplace), search, multi-select with bulk status/price/delete, and
+//    an order-browse ticket picker for Add Listing (mirroring New Sale's own
+//    "pick an order, then pick tickets from it" flow, replacing the old flat
+//    "every ticket in the event in one dropdown" picker marko found opaque).
+//    See ListingsTab's own doc comment below for the full design.
+//
+// 2.2.6: "Inventory Intelligence" - a compact block on Overview, above the
+// Orders/Tickets tables, with KPIs/aging/attention/breakdowns. See
+// InventoryIntelligenceBlock's own doc comment below for the full design and
+// commands/inventory_intelligence.rs for which existing definition each
+// number reuses (nothing here is a second implementation of Potential
+// Profit, Listed value, or the Price Checker market comparison - all three
+// already exist elsewhere on this page/app). Clicking a KPI/aging/attention/
+// breakdown row filters THIS tab's own already-rendered Tickets table down
+// to the matching tickets (by id, computed once on the backend) rather than
+// navigating away - Overview already shows that table right below.
+type WorkspaceTab = "overview" | "listings" | "sales";
 
 const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "listings", label: "Listings" },
   { key: "sales", label: "Sales" },
-  { key: "finance", label: "Finance" },
 ];
 
 export default function EventDetail() {
@@ -143,10 +187,9 @@ export default function EventDetail() {
 
       <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} />
 
-      {tab === "overview" && <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} />}
-      {tab === "listings" && <ListingsTab eventId={eventId} tickets={tickets} />}
-      {tab === "sales" && <SalesTab event={event} tickets={tickets} navigate={navigate} />}
-      {tab === "finance" && <FinanceTab orders={orders} />}
+      {tab === "overview" && <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} onSwitchTab={setTab} />}
+      {tab === "listings" && <ListingsTab eventId={eventId} tickets={tickets} orders={orders} />}
+      {tab === "sales" && <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />}
 
       <EventFormModal
         open={editOpen}
@@ -198,13 +241,30 @@ function OverviewTab({
   orders,
   tickets,
   navigate,
+  onSwitchTab,
 }: {
   event: EventWithStats;
   orders: OrderRecord[] | null;
   tickets: Ticket[] | null;
   navigate: ReturnType<typeof useNavigate>;
+  onSwitchTab: (tab: WorkspaceTab) => void;
 }) {
   const s = event.stats;
+
+  // 2.2.6: set by InventoryIntelligenceBlock when a KPI/aging/attention/
+  // breakdown row is clicked - filters the Tickets table below down to just
+  // those ticket ids, with a small banner explaining what's shown and a way
+  // to clear it. `null` (the default) shows every ticket, unchanged from
+  // before this feature.
+  const [highlight, setHighlight] = useState<{ ids: number[]; label: string } | null>(null);
+  const ticketsAnchorRef = useRef<HTMLDivElement>(null);
+  const applyHighlight = (ids: number[] | null, label: string | null) => {
+    setHighlight(ids && label ? { ids, label } : null);
+    ticketsAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const highlightedIds = highlight ? new Set(highlight.ids) : null;
+  const visibleTickets = highlightedIds ? (tickets ?? []).filter((t) => highlightedIds.has(t.id)) : tickets;
+
   return (
     <div>
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -236,6 +296,8 @@ function OverviewTab({
           <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{event.notes}</p>
         </Card>
       )}
+
+      <InventoryIntelligenceBlock eventId={event.id} onSwitchTab={onSwitchTab} onHighlight={applyHighlight} />
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Orders ({orders?.length ?? 0})</h2>
@@ -290,11 +352,26 @@ function OverviewTab({
         </div>
       )}
 
-      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets ({tickets?.length ?? 0})</h2>
+      <div ref={ticketsAnchorRef} className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Tickets ({visibleTickets?.length ?? 0}
+          {highlight ? ` of ${tickets?.length ?? 0}` : ""})
+        </h2>
+        {highlight && (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Showing: <span className="font-medium text-slate-700 dark:text-slate-300">{highlight.label}</span>{" "}
+            <button type="button" className="font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={() => applyHighlight(null, null)}>
+              Clear filter
+            </button>
+          </p>
+        )}
+      </div>
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets for this event yet" />
+      ) : visibleTickets && visibleTickets.length === 0 ? (
+        <EmptyState title="No tickets match this filter" description="Clear the filter above to see every ticket again." />
       ) : (
         // 2.2.3: max-w-[1400px] removed - see the Orders table above.
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
@@ -309,7 +386,7 @@ function OverviewTab({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {tickets.map((t) => (
+              {(visibleTickets ?? []).map((t) => (
                 <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td">
                     <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
@@ -337,27 +414,254 @@ function OverviewTab({
 }
 
 // ---------------------------------------------------------------------------
+// Inventory Intelligence (2.2.6) - a compact block on Overview, above the
+// Orders/Tickets tables, built from a single new backend command
+// (`getInventoryIntelligence`) that reuses existing definitions rather than
+// inventing new ones - see commands/inventory_intelligence.rs's own doc
+// comment for exactly which existing computation each number below comes
+// from (finance::compute_summary's own scope for Total tickets/Total
+// invested, ListingsTab's own "Listed value" definition for Current listed
+// value, SalesTab's own "Potential Profit" definition unchanged, and
+// commands::price_checker::get_price_checker_summary_impl - the same
+// function SalesTab's "Market vs. mine" card already calls - for the
+// outside-market-price attention item).
+//
+// Fetches independently, keyed on eventId, same "each piece of the Event
+// Workspace fetches its own data" convention as Sales/Listings above (2.2.2's
+// own doc comment). Every clickable row calls `onHighlight(ticketIds, label)`
+// (filters Overview's own Tickets table, see OverviewTab above) or
+// `onSwitchTab("listings")` for Current listed value, which is fundamentally
+// about `ticket_listings` rows rather than raw tickets.
+//
+// No "by tier" breakdown - flagged explicitly, in the UI itself, rather than
+// invented: see InventoryIntelligence's own doc comment (lib/types.ts).
+// ---------------------------------------------------------------------------
+const ATTENTION_COPY: Record<AttentionItem["key"], { label: string; unavailable?: string }> = {
+  event_soon: { label: "Event within 48h with unsold tickets" },
+  missing_listing_price: { label: "Unsold tickets with no listing price" },
+  no_active_listing: { label: "Unsold tickets with no active listing" },
+  outside_market_price: {
+    label: "Unsold tickets priced significantly off-market",
+    unavailable: "No Price Checker data for this event yet",
+  },
+};
+
+/** Small local stand-in for `StatCard` that's actually clickable - `StatCard`
+ * itself has no `onClick`, and this block's whole point is that every number
+ * drills into something, so a plain non-interactive card would be the wrong
+ * primitive here. Copies the exact same `.card` look every other card on
+ * this page already uses (see index.css) rather than inventing a new style.
+ * `disabled` renders a plain, unclickable version (used for a zero-count
+ * bucket - nothing to show). */
+function ClickableStat({ label, value, sub, onClick, disabled }: { label: string; value: string; sub?: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="card p-3 text-left transition hover:ring-2 hover:ring-brand-200 disabled:cursor-default disabled:opacity-60 disabled:hover:ring-0 dark:hover:ring-brand-900"
+    >
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
+      <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{value}</p>
+      {sub && <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
+    </button>
+  );
+}
+
+function InventoryIntelligenceBlock({
+  eventId,
+  onSwitchTab,
+  onHighlight,
+}: {
+  eventId: number;
+  onSwitchTab: (tab: WorkspaceTab) => void;
+  onHighlight: (ids: number[] | null, label: string | null) => void;
+}) {
+  const toast = useToast();
+  const [data, setData] = useState<InventoryIntelligence | null>(null);
+
+  useEffect(() => {
+    setData(null);
+    api
+      .getInventoryIntelligence(eventId)
+      .then(setData)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  if (data === null) {
+    return (
+      <Card className="mb-6 p-4">
+        <LoadingBlock />
+      </Card>
+    );
+  }
+
+  const { kpis, aging, attention, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
+  const clearFilter = () => onHighlight(null, null);
+
+  return (
+    <Card className="mb-6 p-4">
+      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Inventory Intelligence</p>
+
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <ClickableStat label="Total tickets" value={String(kpis.totalTickets)} onClick={clearFilter} />
+        <ClickableStat label="Total invested" value={formatMoneyOrMixed(kpis.totalInvestedCents, kpis.currency)} onClick={clearFilter} />
+        <ClickableStat
+          label="Current listed value"
+          value={formatMoneyOrMixed(kpis.currentListedValueCents, kpis.currentListedValueCurrency)}
+          sub="Active listings"
+          onClick={() => onSwitchTab("listings")}
+        />
+        <ClickableStat
+          label="Potential profit"
+          value={formatMoneyOrMixed(kpis.potentialProfitCents, kpis.potentialProfitCurrency)}
+          sub="Unsold inventory"
+          onClick={() => onHighlight(unsoldTicketIds, "Unsold tickets (potential profit)")}
+        />
+        <ClickableStat
+          label="Sell-through"
+          value={formatPercent(kpis.sellThroughPct)}
+          onClick={() => onHighlight(soldTicketIds, "Sold tickets")}
+        />
+        <ClickableStat
+          label="Avg. ticket cost"
+          value={kpis.averageTicketCostCents != null ? formatMoneyOrMixed(kpis.averageTicketCostCents, kpis.currency) : "-"}
+          onClick={clearFilter}
+        />
+      </div>
+
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Aging (unsold tickets)</p>
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {aging.map((b) => (
+          <ClickableStat
+            key={b.key}
+            label={b.label}
+            value={String(b.ticketCount)}
+            disabled={b.ticketCount === 0}
+            onClick={() => onHighlight(b.ticketIds, `Aging: ${b.label}`)}
+          />
+        ))}
+      </div>
+
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Attention</p>
+      <div className="mb-4 space-y-1.5">
+        {attention.map((a) => {
+          const copy = ATTENTION_COPY[a.key];
+          const needsAttention = a.available && a.count > 0;
+          return (
+            <div
+              key={a.key}
+              className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${
+                !a.available
+                  ? "border-slate-200 text-slate-400 dark:border-slate-800 dark:text-slate-500"
+                  : needsAttention
+                    ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                {a.available ? needsAttention ? <IconAlertTriangle className="h-4 w-4 shrink-0" /> : <IconCheck className="h-4 w-4 shrink-0" /> : null}
+                {copy.label}
+              </span>
+              {!a.available ? (
+                <span className="text-xs">{copy.unavailable}</span>
+              ) : needsAttention ? (
+                <button type="button" className="font-semibold underline underline-offset-2" onClick={() => onHighlight(a.ticketIds, copy.label)}>
+                  {a.count}
+                </button>
+              ) : (
+                <span className="text-xs">All clear</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By section</p>
+          {breakdownBySection.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+              {breakdownBySection.map((g) => (
+                <li key={g.label}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    onClick={() => onHighlight(g.ticketIds, `Section: ${g.label}`)}
+                  >
+                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
+                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+            By tier: not tracked yet - tickets have no tier/level field in this app today (only section/row/seat).
+          </p>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By marketplace</p>
+          {breakdownByMarketplace.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500">No active listings.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+              {breakdownByMarketplace.map((g) => (
+                <li key={g.label}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    onClick={() => onHighlight(g.ticketIds, `Marketplace: ${g.label}`)}
+                  >
+                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
+                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Sales - list_sale_groups({ eventId }) (Sales.tsx's own Event filter,
 // reused), unchanged from 2.2.2, plus (2.2.4) the former Market tab's
 // entire content appended below - "Market vs. mine" (get_price_checker_
 // summary) and "Potential Profit" (this page's own unsold-inventory
-// estimate). See this file's own top-of-file doc comment for why Market's
-// content landed here rather than in Finance. Both sections load and render
-// independently (one slow fetch never blocks the other), same "each tab
-// fetches its own data" convention as before.
+// estimate) - and (2.2.5) the former Finance tab's entire content appended
+// after that - see this file's own top-of-file doc comment for why both
+// ended up here. Every section loads and renders independently (one slow
+// fetch never blocks another), same "each tab fetches its own data"
+// convention as before.
 // ---------------------------------------------------------------------------
 function SalesTab({
   event,
   tickets,
+  orders,
   navigate,
 }: {
   event: EventWithStats;
   tickets: Ticket[] | null;
+  orders: OrderRecord[] | null;
   navigate: ReturnType<typeof useNavigate>;
 }) {
   const toast = useToast();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
   const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
+  // 2.2.5: former FinanceTab state/effect, moved here verbatim - see that
+  // function's own removed doc comment (still in CHANGELOG/git history) for
+  // why this fetches per-order rather than one event-scoped query.
+  const [financeEntries, setFinanceEntries] = useState<FinanceEntry[] | null>(null);
 
   useEffect(() => {
     setGroups(null);
@@ -375,6 +679,18 @@ function SalesTab({
       .catch((e) => toast.error(errMsg(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [event.id]);
+
+  useEffect(() => {
+    if (orders === null) return;
+    if (orders.length === 0) {
+      setFinanceEntries([]);
+      return;
+    }
+    Promise.all(orders.map((o) => api.listFinanceEntriesForOrder(o.id)))
+      .then((lists) => setFinanceEntries(lists.flat().sort((a, b) => (a.entryDate < b.entryDate ? 1 : a.entryDate > b.entryDate ? -1 : b.id - a.id))))
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders]);
 
   // 1.8.3 (section 14) / 1.9.10: unchanged from this page's previous
   // single-tab version - see git history there for the original reasoning.
@@ -494,46 +810,24 @@ function SalesTab({
           </p>
         )}
       </div>
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Finance - pulls every Finance entry linked to one of this event's own
-// Orders (list_finance_entries_for_order, 2.2.1), merged client-side.
-// Completely unchanged in 2.2.4 - marko's own final tab list keeps this as
-// its own surviving tab, not folded into anything (see this file's own
-// top-of-file doc comment).
-// ---------------------------------------------------------------------------
-function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
-  const toast = useToast();
-  const [entries, setEntries] = useState<FinanceEntry[] | null>(null);
-
-  useEffect(() => {
-    if (orders === null) return;
-    if (orders.length === 0) {
-      setEntries([]);
-      return;
-    }
-    Promise.all(orders.map((o) => api.listFinanceEntriesForOrder(o.id)))
-      .then((lists) => setEntries(lists.flat().sort((a, b) => (a.entryDate < b.entryDate ? 1 : a.entryDate > b.entryDate ? -1 : b.id - a.id))))
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders]);
-
-  if (orders === null || entries === null) return <LoadingBlock />;
-
-  return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance ({entries.length})</h2>
+      {/* 2.2.5: former FinanceTab, folded in below Market - "sales a finance
+          daj dokopy" (see this file's own top-of-file doc comment for the
+          Sales-survives judgment call). Content/logic is otherwise
+          byte-for-byte what FinanceTab already rendered - only the
+          orders/loading source changed from a dedicated prop to this tab's
+          own already-fetched orders. */}
+      <div className="mt-8 mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance ({financeEntries?.length ?? 0})</h2>
         <Link to="/finance" className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline">
           Open in Finance &rarr;
         </Link>
       </div>
-      {orders.length === 0 ? (
+      {orders === null || financeEntries === null ? (
+        <LoadingBlock />
+      ) : orders.length === 0 ? (
         <EmptyState title="No orders for this event yet" description="Record a purchase first, then you can link Finance entries to it." />
-      ) : entries.length === 0 ? (
+      ) : financeEntries.length === 0 ? (
         <EmptyState
           title="Nothing recorded in Finance for this event yet"
           description={`Open one of this event's orders and use "Record in Finance" there.`}
@@ -552,7 +846,7 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {entries.map((e) => (
+              {financeEntries.map((e) => (
                 <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <td className="td">{formatDate(e.entryDate)}</td>
                   <td className="td">
@@ -589,24 +883,63 @@ function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Listings (2.2.4 rebuild) - a REAL multi-marketplace listing system, on top
-// of the new `ticket_listings` table (see migrations/022_ticket_listings.sql
-// and commands/ticket_listings.rs). Replaces 2.2.3's read-only view of
-// Ticket.listingPriceCents/status (which could only show one implied
-// "listing" per ticket, and explicitly could not show marketplace/URL/last
-// checked because none of that data existed anywhere). Now: one ticket can
-// have several real listings, each tied to a real marketplace (the same
-// list Price Checker manages), with its own price/status/URL/timestamp.
+// Listings (2.2.4 rebuild into a real system; 2.2.5 made genuinely
+// manageable at volume) - on top of the `ticket_listings` table (see
+// migrations/022_ticket_listings.sql and commands/ticket_listings.rs). One
+// ticket can have several real listings, each tied to a real marketplace
+// (the same list Price Checker manages), with its own price/status/URL/
+// timestamp.
 //
 // Deliberately still manual-entry only - no automatic listing creation, no
-// marketplace API, no repricing (marko's own explicit "Dôležité" list this
-// release). The table below shows EVERY listing regardless of status (not
-// just active ones) - marko's own field list explicitly asks for a
-// "status" column, which is only meaningful if a listing can be shown in a
-// state OTHER than active (sold/removed); the four summary numbers above it
-// count active listings only, matching "počet aktívnych listingov".
+// marketplace API, no repricing (marko's own explicit "Dôležité" list, both
+// releases). The table below shows EVERY listing matching the current
+// filters regardless of status (not just active ones) - marko's own field
+// list explicitly asks for a "status" column, which is only meaningful if a
+// listing can be shown in a state OTHER than active (sold/removed); the four
+// summary numbers above it count active listings only, matching "počet
+// aktívnych listingov" - and are NEVER affected by the status/marketplace/
+// search filters below, same "summary is a fact about the data, filters are
+// a view onto it" separation Sales.tsx's own cashTotals already follows.
+//
+// 2.2.5: marko's "vylepšiť Listings tak, aby sa dali reálne pohodlne riadiť"
+// (make this genuinely convenient to manage) - four additions, entirely
+// client-side except the three new bulk commands:
+// - Status filter (All/Active/Sold/Removed) + Marketplace filter + Search
+//   (ticket code/seat/marketplace/listing id/URL) - pure `.filter()` over
+//   the one already-fetched `listings` array, same "small enough dataset,
+//   no server round trip needed" reasoning as this tab's own summary cards.
+// - Checkboxes are always visible in this table (no separate "selection
+//   mode" toggle like Sales.tsx/Orders.tsx use for their own, usually much
+//   longer, lists) - one event's listings is a small enough table that the
+//   extra click a mode toggle would add isn't worth it. Small, reversible UI
+//   call, flagged in REDESIGN-2.2.5-REPORT.md.
+// - Select all/deselect all applies to the currently VISIBLE (filtered +
+//   searched) rows only, same convention as Sales.tsx's own
+//   `allSelected`/`toggleSelectAll` - "select all" should only ever select
+//   what's actually on screen.
+// - `ListingsBulkBar` (below) shows only while `selected.size > 0` (marko's
+//   own explicit "Bulk actions zobraz iba keď je niečo vybrané") and covers
+//   Edit status / Edit price / Delete, all backed by the new all-or-nothing
+//   bulk commands in ticket_listings.rs.
 // ---------------------------------------------------------------------------
-function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] | null }) {
+type ListingStatusFilter = "all" | "active" | "sold" | "removed";
+
+const LISTING_STATUS_TABS: { key: ListingStatusFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "sold", label: "Sold" },
+  { key: "removed", label: "Removed" },
+];
+
+function ListingsTab({
+  eventId,
+  tickets,
+  orders,
+}: {
+  eventId: number;
+  tickets: Ticket[] | null;
+  orders: OrderRecord[] | null;
+}) {
   const toast = useToast();
   const [listings, setListings] = useState<TicketListing[] | null>(null);
   const [marketplaces, setMarketplaces] = useState<Marketplace[] | null>(null);
@@ -614,6 +947,13 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
   const [editing, setEditing] = useState<TicketListing | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TicketListing | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // 2.2.5: filters/search/selection - all client-side, see this section's
+  // own doc comment above.
+  const [statusFilter, setStatusFilter] = useState<ListingStatusFilter>("all");
+  const [marketplaceFilter, setMarketplaceFilter] = useState<number | "">("");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const load = useCallback(() => {
     api
@@ -635,11 +975,23 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keeps the selection consistent with whatever `listings` actually holds -
+  // runs after every load (initial fetch, or a reload following any create/
+  // edit/delete/bulk action), so a row that's gone (deleted, bulk-deleted)
+  // can never linger in `selected` and inflate the bulk bar's count.
+  useEffect(() => {
+    if (listings === null) return;
+    setSelected((prev) => {
+      const validIds = new Set(listings.map((l) => l.id));
+      const next = new Set(Array.from(prev).filter((id) => validIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [listings]);
+
   if (listings === null || tickets === null) return <LoadingBlock />;
 
-  // Summary counts/values are scoped to ACTIVE listings only - "počet
-  // aktívnych listingov"/"listed value"/"lowest"/"highest" are all about
-  // what's currently for sale, not sold/removed history.
+  // Summary counts/values are scoped to ACTIVE listings only, and are NEVER
+  // affected by the filters below - see this section's own doc comment.
   const active = listings.filter((l) => l.status === "active");
   const activeValueCents = active.reduce((sum, l) => sum + l.priceCents, 0);
   const activePrices = active.map((l) => l.priceCents);
@@ -647,6 +999,39 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
   const highestCents = activePrices.length > 0 ? Math.max(...activePrices) : null;
   const activeCurrencies = Array.from(new Set(active.map((l) => l.currency)));
   const activeCurrency = activeCurrencies.length <= 1 ? (activeCurrencies[0] ?? null) : null;
+
+  const searchNeedle = search.trim().toLowerCase();
+  const visibleListings = listings.filter((l) => {
+    if (statusFilter !== "all" && l.status !== statusFilter) return false;
+    if (marketplaceFilter !== "" && l.marketplaceId !== marketplaceFilter) return false;
+    if (searchNeedle === "") return true;
+    const haystack = [l.ticketCode, l.ticketSection, l.ticketRowLabel, l.ticketSeat, l.marketplaceName, l.listingId, l.listingUrl]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(searchNeedle);
+  });
+
+  const selectedListings = listings.filter((l) => selected.has(l.id));
+  const allVisibleSelected = visibleListings.length > 0 && visibleListings.every((l) => selected.has(l.id));
+  const toggleSelectAll = () => {
+    setSelected(allVisibleSelected ? new Set() : new Set(visibleListings.map((l) => l.id)));
+  };
+  const toggleOne = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const hasActiveFilters = statusFilter !== "all" || marketplaceFilter !== "" || search !== "";
+  const clearFilters = () => {
+    setStatusFilter("all");
+    setMarketplaceFilter("");
+    setSearch("");
+  };
 
   return (
     <div>
@@ -661,7 +1046,7 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Listings ({listings.length})</h2>
         <Button
           variant="secondary"
-          disabled={tickets.length === 0 || marketplaces === null}
+          disabled={tickets.length === 0 || marketplaces === null || orders === null}
           onClick={() => {
             setEditing(null);
             setFormOpen(true);
@@ -670,6 +1055,40 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
           <IconPlus className="h-4 w-4" /> Add listing
         </Button>
       </div>
+
+      {listings.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-end gap-3">
+          <div>
+            <span className="label">Status</span>
+            <TabSwitcher tabs={LISTING_STATUS_TABS} active={statusFilter} onChange={setStatusFilter} />
+          </div>
+          <div className="w-48">
+            <span className="label">Marketplace</span>
+            <Select value={marketplaceFilter} onChange={(e) => setMarketplaceFilter(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">All marketplaces</option>
+              {(marketplaces ?? []).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="w-56">
+            <span className="label">Search</span>
+            <div className="relative">
+              <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+              <Input
+                placeholder="Ticket, marketplace, listing id/URL..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ListingsBulkBar selectedListings={selectedListings} onClear={() => setSelected(new Set())} onApplied={load} />
 
       {listings.length === 0 ? (
         <EmptyState
@@ -680,11 +1099,30 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
               : `Click "Add listing" to record where a ticket is posted for sale.`
           }
         />
+      ) : visibleListings.length === 0 ? (
+        <EmptyState
+          title="No listings match these filters"
+          description="Try a different status, marketplace or search term."
+          action={
+            <Button variant="secondary" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          }
+        />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
-          <table className="w-full min-w-[760px] border-collapse">
+          <table className="w-full min-w-[820px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
               <tr>
+                <th className="th w-8">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all listings"
+                  />
+                </th>
                 <th className="th">Ticket</th>
                 <th className="th">Marketplace</th>
                 <th className="th text-right">Price</th>
@@ -695,8 +1133,17 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {listings.map((l) => (
+              {visibleListings.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td">
+                    <input
+                      type="checkbox"
+                      className={CHECKBOX_CLASS}
+                      checked={selected.has(l.id)}
+                      onChange={() => toggleOne(l.id)}
+                      aria-label={`Select listing for ${l.ticketCode}`}
+                    />
+                  </td>
                   <td className="td">
                     <Link
                       to={`/tickets?code=${encodeURIComponent(l.ticketCode)}`}
@@ -764,6 +1211,7 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
         open={formOpen}
         initial={editing}
         eventTickets={tickets}
+        eventOrders={orders ?? []}
         marketplaces={marketplaces ?? []}
         onClose={() => setFormOpen(false)}
         onSaved={load}
@@ -798,15 +1246,247 @@ function ListingsTab({ eventId, tickets }: { eventId: number; tickets: Ticket[] 
   );
 }
 
-// One (ticket, marketplace) listing's create/edit form. The ticket a listing
-// belongs to is only pickable when CREATING - editing shows it as plain
-// text, same "round-trip a field the form doesn't expose" spirit as
-// Transactions.tsx's own order-linked entries (there is no UI anywhere to
-// re-parent a listing to a different ticket).
+// ---------------------------------------------------------------------------
+// ListingsBulkBar (2.2.5) - "Bulk actions zobraz iba keď je niečo vybrané"
+// (only show bulk actions while something is selected): renders nothing at
+// selectedListings.length === 0. Modeled on this codebase's existing bulk
+// bars (BulkTicketEditBar/BulkCompletionBar/BulkDeleteBar - see those for
+// the precedent), but purpose-built here as three explicit actions (marko
+// asked for these three by name) rather than BulkTicketEditBar's generic
+// "pick a field" abstraction - status and price have different enough input
+// shapes (a 3-way picker vs. a currency-aware amount) that one shared field
+// picker would add indirection without saving anything.
+// ---------------------------------------------------------------------------
+function ListingsBulkBar({
+  selectedListings,
+  onClear,
+  onApplied,
+}: {
+  selectedListings: TicketListing[];
+  onClear: () => void;
+  /** Called after any bulk action succeeds - the caller just reloads its
+   * list rather than this bar trying to merge partial updates in. */
+  onApplied: () => void;
+}) {
+  const toast = useToast();
+  const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [priceModalOpen, setPriceModalOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState<"active" | "sold" | "removed">("active");
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (selectedListings.length === 0) return null;
+
+  const count = selectedListings.length;
+  const ids = selectedListings.map((l) => l.id);
+  // Mixed-currency safety (marko's own explicit requirement): bulk price
+  // edit is only offered when every selected listing already agrees on one
+  // currency - see bulk_update_ticket_listings_price_impl's own doc comment
+  // for why a bare number can never be applied across differing currencies.
+  // The backend enforces this too (defense in depth); this is just what
+  // makes the UI honest about it up front rather than erroring after a click.
+  const distinctCurrencies = Array.from(new Set(selectedListings.map((l) => l.currency)));
+  const uniformCurrency = distinctCurrencies.length === 1 ? distinctCurrencies[0] : null;
+
+  const submitStatus = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.bulkUpdateTicketListingsStatus({ ids, status: bulkStatus });
+      toast.success(`${updated.length} listing${updated.length === 1 ? "" : "s"} marked ${bulkStatus}`);
+      setStatusModalOpen(false);
+      onApplied();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitPrice = async () => {
+    setError(null);
+    const cents = decimalStringToCents(bulkPrice);
+    if (cents === null || cents < 0) {
+      setError("Enter a valid price.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.bulkUpdateTicketListingsPrice({ ids, priceCents: cents });
+      toast.success(`${updated.length} listing${updated.length === 1 ? "" : "s"} updated to ${formatMoney(cents, uniformCurrency ?? "EUR")}`);
+      setPriceModalOpen(false);
+      onApplied();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDelete = async () => {
+    setBusy(true);
+    try {
+      const deletedCount = await api.bulkDeleteTicketListings(ids);
+      toast.success(`${deletedCount} listing${deletedCount === 1 ? "" : "s"} deleted`);
+      setConfirmDelete(false);
+      onApplied();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg bg-brand-50 dark:bg-brand-500/10 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30">
+        <span className="font-medium text-brand-800 dark:text-brand-300">
+          Selected: {count} listing{count === 1 ? "" : "s"}
+        </span>
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setBulkStatus("active");
+            setError(null);
+            setStatusModalOpen(true);
+          }}
+        >
+          Edit status
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={uniformCurrency === null}
+          title={uniformCurrency === null ? "Selected listings use different currencies - narrow your selection to one currency first." : undefined}
+          onClick={() => {
+            setBulkPrice("");
+            setError(null);
+            setPriceModalOpen(true);
+          }}
+        >
+          Edit price
+        </Button>
+        <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+          Delete
+        </Button>
+        <button type="button" className="ml-auto text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline" onClick={onClear}>
+          Clear selection
+        </button>
+      </div>
+      {uniformCurrency === null && (
+        <p className="-mt-3 mb-4 text-xs text-amber-700 dark:text-amber-400">
+          Selected listings use more than one currency, so bulk price editing is unavailable for this selection.
+        </p>
+      )}
+
+      <Modal
+        open={statusModalOpen}
+        onClose={() => setStatusModalOpen(false)}
+        title={`Set status for ${count} listing${count === 1 ? "" : "s"}`}
+        width="max-w-sm"
+      >
+        <Field label="Status">
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            {(["active", "sold", "removed"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setBulkStatus(s)}
+                className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${
+                  bulkStatus === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
+        <ModalFooter>
+          <Button variant="secondary" onClick={() => setStatusModalOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submitStatus} disabled={busy}>
+            {busy ? <Spinner className="h-4 w-4" /> : null}
+            Apply to {count}
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      <Modal
+        open={priceModalOpen}
+        onClose={() => setPriceModalOpen(false)}
+        title={`Set price for ${count} listing${count === 1 ? "" : "s"}`}
+        width="max-w-sm"
+      >
+        <Field label={`New price${uniformCurrency ? ` (${uniformCurrency})` : ""}`} required>
+          <Input autoFocus inputMode="decimal" placeholder="0.00" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} />
+        </Field>
+        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+          Currency stays {uniformCurrency} for every selected listing - only the amount changes.
+        </p>
+        {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
+        <ModalFooter>
+          <Button variant="secondary" onClick={() => setPriceModalOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submitPrice} disabled={busy}>
+            {busy ? <Spinner className="h-4 w-4" /> : null}
+            Apply to {count}
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title={`Delete ${count} selected listing${count === 1 ? "" : "s"}?`}
+        message="This cannot be undone."
+        confirmLabel="Delete selected"
+        danger
+        busy={busy}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={submitDelete}
+      />
+    </>
+  );
+}
+
+// One (ticket, marketplace) listing's create/edit form. Editing a listing
+// shows its ticket as plain text - same "round-trip a field the form
+// doesn't expose" spirit as Transactions.tsx's own order-linked entries
+// (there is no UI anywhere to re-parent a listing to a different ticket).
+//
+// 2.2.5: marko's own complaint about CREATING a listing - "teraz to je
+// uplne nepriehladne" (right now it's completely opaque), a flat dropdown
+// of every ticket in the event with no context - fixed by mirroring
+// Sales.tsx's own New Sale flow: browse this event's orders (searchable),
+// open one, pick tickets from just that order, repeat across as many
+// orders as needed, then fill in the shared details. Unlike New Sale, this
+// needs no live fetch to do it - `eventTickets`/`eventOrders` are already
+// this whole event's own tickets/orders (small, already loaded by
+// ListingsTab), so the picker below is pure client-side filtering, not a
+// second round trip to the backend.
+//
+// "vybrat dany pocet listkov" (pick a given number of tickets) is taken
+// literally - marko can select several tickets at once here, same as New
+// Sale, and this then creates one listing per selected ticket on the one
+// chosen marketplace (marketplace/currency/status shared; price defaults
+// from a "Quick-fill" but stays editable per ticket, exact same UX as New
+// Sale's own price/fees grid). Listing ID/URL are each marketplace
+// posting's OWN external identifier, so a shared value across several
+// tickets would be meaningless - offered only when exactly one ticket is
+// selected; for a batch, add them afterward via Edit on each created
+// listing. Creating a batch is NOT all-or-nothing (that stricter guarantee
+// is reserved for the bulk actions on EXISTING listings, per marko's own
+// explicit wording this release) - a failure partway through still keeps
+// whatever succeeded and reports exactly what didn't, letting the ticket
+// picker retry just the failures.
 function TicketListingFormModal({
   open,
   initial,
   eventTickets,
+  eventOrders,
   marketplaces,
   onClose,
   onSaved,
@@ -814,31 +1494,58 @@ function TicketListingFormModal({
   open: boolean;
   initial: TicketListing | null;
   eventTickets: Ticket[];
+  eventOrders: OrderRecord[];
   marketplaces: Marketplace[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const toast = useToast();
-  const [ticketId, setTicketId] = useState("");
   const [marketplaceId, setMarketplaceId] = useState("");
   const [listingIdText, setListingIdText] = useState("");
   const [listingUrl, setListingUrl] = useState("");
-  const [price, setPrice] = useState("");
+  const [price, setPrice] = useState(""); // edit mode only
   const [currency, setCurrency] = useState("EUR");
   const [status, setStatus] = useState<"active" | "sold" | "removed">("active");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Create-mode ticket picker (see this component's own doc comment above).
+  const [pickerStep, setPickerStep] = useState<"pick" | "details">("pick");
+  const [orderQuery, setOrderQuery] = useState("");
+  const [activeOrder, setActiveOrder] = useState<OrderRecord | null>(null);
+  const [selectedTickets, setSelectedTickets] = useState<Ticket[]>([]);
+  const [prices, setPrices] = useState<Record<number, string>>({});
+  const [bulkPriceQuickFill, setBulkPriceQuickFill] = useState("");
+  // Same "don't stomp a deliberate manual choice on a later recompute"
+  // guard as Sales.tsx's own `currencyTouched` - marko can go "+ Change
+  // tickets" back to picking, add another ticket, and return to details
+  // without losing a currency he already picked by hand.
+  const currencyTouched = useRef(false);
+
   useEffect(() => {
     if (!open) return;
-    setTicketId(initial ? String(initial.ticketId) : "");
-    setMarketplaceId(initial ? String(initial.marketplaceId) : "");
-    setListingIdText(initial?.listingId ?? "");
-    setListingUrl(initial?.listingUrl ?? "");
-    setPrice(initial ? centsToDecimalString(initial.priceCents) : "");
-    setCurrency(initial?.currency ?? "EUR");
-    setStatus(initial?.status ?? "active");
     setError(null);
+    if (initial) {
+      setMarketplaceId(String(initial.marketplaceId));
+      setListingIdText(initial.listingId ?? "");
+      setListingUrl(initial.listingUrl ?? "");
+      setPrice(centsToDecimalString(initial.priceCents));
+      setCurrency(initial.currency);
+      setStatus(initial.status);
+      return;
+    }
+    setPickerStep("pick");
+    setOrderQuery("");
+    setActiveOrder(null);
+    setSelectedTickets([]);
+    setPrices({});
+    setBulkPriceQuickFill("");
+    setMarketplaceId("");
+    setListingIdText("");
+    setListingUrl("");
+    setCurrency("EUR");
+    setStatus("active");
+    currencyTouched.current = false;
   }, [open, initial]);
 
   const ticketLabel = (t: Ticket) => {
@@ -846,11 +1553,65 @@ function TicketListingFormModal({
     return seat ? `${t.code} (${seat})` : t.code;
   };
 
-  const submit = async () => {
-    if (!ticketId) {
-      setError("Pick a ticket.");
-      return;
+  const ticketsByOrder = useMemo(() => {
+    const map = new Map<number, Ticket[]>();
+    for (const t of eventTickets) {
+      const list = map.get(t.orderId) ?? [];
+      list.push(t);
+      map.set(t.orderId, list);
     }
+    return map;
+  }, [eventTickets]);
+
+  const orderQueryNeedle = orderQuery.trim().toLowerCase();
+  const orderOptions = eventOrders.filter((o) => {
+    const orderTickets = ticketsByOrder.get(o.id) ?? [];
+    if (orderTickets.length === 0) return false;
+    if (orderQueryNeedle === "") return true;
+    const haystack = [o.code, o.platformName, ...orderTickets.map((t) => t.code)].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(orderQueryNeedle);
+  });
+  const visibleOrderTickets = activeOrder
+    ? (ticketsByOrder.get(activeOrder.id) ?? []).filter((t) => !selectedTickets.some((s) => s.id === t.id))
+    : [];
+
+  const addTicket = (t: Ticket) => {
+    setSelectedTickets((prev) => (prev.some((s) => s.id === t.id) ? prev : [...prev, t]));
+    setPrices((prev) => (prev[t.id] !== undefined ? prev : { ...prev, [t.id]: "" }));
+  };
+  const removeTicket = (id: number) => {
+    setSelectedTickets((prev) => prev.filter((t) => t.id !== id));
+    setPrices((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  // Same default-currency reasoning as Sales.tsx's own `goToDetails`: the
+  // selection's own uniform purchase currency if they all agree, else EUR -
+  // always still freely editable afterward.
+  const goToDetails = () => {
+    if (!currencyTouched.current) {
+      const first = selectedTickets[0]?.currency;
+      const uniform = first && selectedTickets.every((t) => t.currency === first) ? first : "EUR";
+      setCurrency(uniform);
+    }
+    setError(null);
+    setPickerStep("details");
+  };
+
+  const applyBulkPriceToAll = () => {
+    if (!bulkPriceQuickFill.trim()) return;
+    setPrices((prev) => {
+      const next = { ...prev };
+      for (const t of selectedTickets) next[t.id] = bulkPriceQuickFill;
+      return next;
+    });
+  };
+
+  const submitEdit = async () => {
+    if (!initial) return;
     if (!marketplaceId) {
       setError("Pick a marketplace.");
       return;
@@ -863,7 +1624,7 @@ function TicketListingFormModal({
     setSaving(true);
     setError(null);
     const input: TicketListingInput = {
-      ticketId: Number(ticketId),
+      ticketId: initial.ticketId,
       marketplaceId: Number(marketplaceId),
       listingId: listingIdText.trim() || null,
       listingUrl: listingUrl.trim() || null,
@@ -872,13 +1633,8 @@ function TicketListingFormModal({
       status,
     };
     try {
-      if (initial) {
-        await api.updateTicketListing(initial.id, input);
-        toast.success("Listing updated.");
-      } else {
-        await api.createTicketListing(input);
-        toast.success("Listing added.");
-      }
+      await api.updateTicketListing(initial.id, input);
+      toast.success("Listing updated.");
       onSaved();
       onClose();
     } catch (e) {
@@ -888,101 +1644,373 @@ function TicketListingFormModal({
     }
   };
 
+  // Not all-or-nothing by design - see this component's own doc comment for
+  // why that stricter guarantee is reserved for the bulk actions on
+  // EXISTING listings instead.
+  const submitCreateBatch = async () => {
+    if (!marketplaceId) {
+      setError("Pick a marketplace.");
+      return;
+    }
+    if (selectedTickets.length === 0) {
+      setError("Pick at least one ticket.");
+      return;
+    }
+    const parsed: { ticket: Ticket; cents: number }[] = [];
+    for (const t of selectedTickets) {
+      const cents = decimalStringToCents(prices[t.id] ?? "");
+      if (cents === null || cents < 0) {
+        setError(`Enter a valid price for ${t.code}.`);
+        return;
+      }
+      parsed.push({ ticket: t, cents });
+    }
+    setSaving(true);
+    setError(null);
+    const singleTicket = selectedTickets.length === 1;
+    const succeededIds: number[] = [];
+    const failed: { code: string; reason: string }[] = [];
+    for (const { ticket, cents } of parsed) {
+      const input: TicketListingInput = {
+        ticketId: ticket.id,
+        marketplaceId: Number(marketplaceId),
+        listingId: singleTicket ? listingIdText.trim() || null : null,
+        listingUrl: singleTicket ? listingUrl.trim() || null : null,
+        priceCents: cents,
+        currency,
+        status,
+      };
+      try {
+        await api.createTicketListing(input);
+        succeededIds.push(ticket.id);
+      } catch (e) {
+        failed.push({ code: ticket.code, reason: errMsg(e) });
+      }
+    }
+    setSaving(false);
+    if (succeededIds.length > 0) onSaved();
+    if (failed.length === 0) {
+      toast.success(`${succeededIds.length} listing${succeededIds.length === 1 ? "" : "s"} added.`);
+      onClose();
+    } else {
+      // Keep only the failures selected so marko can fix and retry them
+      // without re-picking everything that already succeeded.
+      setSelectedTickets((prev) => prev.filter((t) => !succeededIds.includes(t.id)));
+      setError(
+        `${succeededIds.length} of ${parsed.length} listing${parsed.length === 1 ? "" : "s"} added. Failed: ${failed
+          .map((f) => `${f.code} (${f.reason})`)
+          .join("; ")}`,
+      );
+    }
+  };
+
+  const showPicker = !initial && pickerStep === "pick";
+
   return (
-    <Modal open={open} onClose={onClose} title={initial ? "Edit listing" : "Add listing"}>
-      <div className="space-y-3">
-        <Field label="Ticket" required>
-          {initial ? (
-            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
-              {initial.ticketCode}
-              {[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).length > 0 && (
-                <span className="text-slate-400 dark:text-slate-500">
-                  {" "}
-                  ({[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).join(" / ")})
-                </span>
-              )}
-            </p>
+    <Modal open={open} onClose={onClose} title={initial ? "Edit listing" : "Add listing"} width={initial ? undefined : "max-w-2xl"}>
+      {showPicker ? (
+        <div>
+          {!activeOrder ? (
+            <>
+              <Field label="Find an order to list tickets from" required hint="Open an order, then pick which of its tickets to list.">
+                <Input
+                  autoFocus
+                  placeholder="Search by order code, platform, ticket code..."
+                  value={orderQuery}
+                  onChange={(e) => setOrderQuery(e.target.value)}
+                />
+              </Field>
+              <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                {orderOptions.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                    {eventOrders.length === 0
+                      ? "This event has no orders yet"
+                      : orderQuery
+                        ? "No matching orders with tickets"
+                        : "Start typing to search this event's orders"}
+                  </p>
+                ) : (
+                  orderOptions.map((o) => {
+                    const ticketCount = (ticketsByOrder.get(o.id) ?? []).length;
+                    return (
+                      <button
+                        key={o.id}
+                        type="button"
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                        onClick={() => setActiveOrder(o)}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</span>
+                          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                            {o.platformName ?? "No platform"} · {formatDate(o.purchaseDate)}
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span className="whitespace-nowrap rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">
+                            {ticketCount} ticket{ticketCount === 1 ? "" : "s"}
+                          </span>
+                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-400 dark:text-slate-500" />
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </>
           ) : (
-            <Select
-              value={ticketId}
-              onChange={(e) => {
-                const nextTicketId = e.target.value;
-                setTicketId(nextTicketId);
-                const picked = eventTickets.find((t) => String(t.id) === nextTicketId);
-                if (picked) setCurrency(picked.currency);
-              }}
-            >
-              <option value="">Pick a ticket...</option>
-              {eventTickets.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {ticketLabel(t)}
-                </option>
-              ))}
-            </Select>
+            <>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                  onClick={() => setActiveOrder(null)}
+                >
+                  <IconArrowLeft className="h-3.5 w-3.5" /> Back to orders
+                </button>
+                <span className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">{activeOrder.code}</span>
+              </div>
+              <div className="max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                {visibleOrderTickets.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">Every ticket from this order is already selected</p>
+                ) : (
+                  visibleOrderTickets.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                      onClick={() => addTicket(t)}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
+                        <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                          {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <Badge tone={t.status}>{t.status}</Badge>
+                        <IconPlus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </>
           )}
-        </Field>
 
-        <Field label="Marketplace" required hint={marketplaces.length === 0 ? "Add a marketplace in Price Checker first." : undefined}>
-          <Select value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)}>
-            <option value="">Pick a marketplace...</option>
-            {marketplaces.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+          {selectedTickets.length > 0 && (
+            <div className="mt-4">
+              <p className="label mb-1.5">Selected ({selectedTickets.length})</p>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedTickets.map((t) => (
+                  <span
+                    key={t.id}
+                    className="inline-flex items-center gap-1 rounded-full bg-brand-50 dark:bg-brand-500/10 py-1 pl-2.5 pr-1.5 text-xs font-medium text-brand-700 dark:text-brand-400 ring-1 ring-inset ring-brand-200 dark:ring-brand-500/30"
+                  >
+                    {t.code}
+                    <button
+                      type="button"
+                      onClick={() => removeTicket(t.id)}
+                      className="rounded-full p-0.5 hover:bg-brand-100 dark:hover:bg-brand-500/20"
+                      aria-label={`Remove ${t.code}`}
+                    >
+                      <IconX className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
-        <div className="grid grid-cols-[1fr_110px] gap-2">
-          <Field label="Price" required>
-            <Input inputMode="decimal" placeholder="0.00" value={price} onChange={(e) => setPrice(e.target.value)} />
+          {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {!initial && (
+            <div className="mb-1 flex items-center justify-between">
+              <p className="label mb-0">
+                Listing {selectedTickets.length} ticket{selectedTickets.length === 1 ? "" : "s"}
+              </p>
+              <button type="button" className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={() => setPickerStep("pick")}>
+                + Change tickets
+              </button>
+            </div>
+          )}
+
+          <Field label="Ticket" required>
+            {initial ? (
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+                {initial.ticketCode}
+                {[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).length > 0 && (
+                  <span className="text-slate-400 dark:text-slate-500">
+                    {" "}
+                    ({[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).join(" / ")})
+                  </span>
+                )}
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
+                {selectedTickets.map((t) => (
+                  <span key={t.id} className="text-sm text-slate-600 dark:text-slate-300">
+                    {ticketLabel(t)}
+                  </span>
+                ))}
+              </div>
+            )}
           </Field>
-          <Field label="Currency">
-            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
-                <option key={c} value={c}>
-                  {c}
+
+          <Field label="Marketplace" required hint={marketplaces.length === 0 ? "Add a marketplace in Price Checker first." : undefined}>
+            <Select value={marketplaceId} onChange={(e) => setMarketplaceId(e.target.value)}>
+              <option value="">Pick a marketplace...</option>
+              {marketplaces.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
                 </option>
               ))}
             </Select>
           </Field>
+
+          {!initial && selectedTickets.length > 1 ? (
+            <>
+              <div className="flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3">
+                <div className="w-20">
+                  <span className="label">Currency</span>
+                  <Select
+                    value={currency}
+                    onChange={(e) => {
+                      currencyTouched.current = true;
+                      setCurrency(e.target.value);
+                    }}
+                  >
+                    {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="w-28">
+                  <span className="label">Quick-fill price</span>
+                  <Input inputMode="decimal" placeholder="0.00" value={bulkPriceQuickFill} onChange={(e) => setBulkPriceQuickFill(e.target.value)} />
+                </div>
+                <Button type="button" variant="secondary" disabled={!bulkPriceQuickFill.trim()} onClick={applyBulkPriceToAll}>
+                  Apply to all
+                </Button>
+                <p className="w-full text-xs text-slate-400 dark:text-slate-500">
+                  Applying overwrites any price already entered below for every selected ticket.
+                </p>
+              </div>
+
+              <div className="max-h-52 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                {selectedTickets.map((t) => (
+                  <div key={t.id} className="flex items-center gap-2 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
+                      <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+                        {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                      </p>
+                    </div>
+                    <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">{currency}</span>
+                    <div className="w-24 shrink-0">
+                      <Input
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={prices[t.id] ?? ""}
+                        onChange={(e) => setPrices((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="grid grid-cols-[1fr_110px] gap-2">
+              <Field label="Price" required>
+                <Input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={initial ? price : (prices[selectedTickets[0]?.id] ?? "")}
+                  onChange={(e) =>
+                    initial ? setPrice(e.target.value) : setPrices((prev) => ({ ...prev, [selectedTickets[0]?.id]: e.target.value }))
+                  }
+                />
+              </Field>
+              <Field label="Currency">
+                <Select
+                  value={currency}
+                  onChange={(e) => {
+                    currencyTouched.current = true;
+                    setCurrency(e.target.value);
+                  }}
+                >
+                  {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          )}
+
+          <Field label="Status">
+            <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+              {(["active", "sold", "removed"] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStatus(s)}
+                  className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${
+                    status === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {(initial || selectedTickets.length === 1) && (
+            <>
+              <Field label="Listing ID" hint="The marketplace's own id for this listing, if you have one.">
+                <Input value={listingIdText} onChange={(e) => setListingIdText(e.target.value)} />
+              </Field>
+              <Field label="Listing URL">
+                <Input type="url" placeholder="https://..." value={listingUrl} onChange={(e) => setListingUrl(e.target.value)} />
+              </Field>
+            </>
+          )}
+          {!initial && selectedTickets.length > 1 && (
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Listing ID/URL aren&apos;t set here for a multi-ticket batch - each marketplace posting has its own, so add them
+              afterward by editing each created listing.
+            </p>
+          )}
+
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
+      )}
 
-        <Field label="Status">
-          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
-            {(["active", "sold", "removed"] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setStatus(s)}
-                className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  status === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        <Field label="Listing ID" hint="The marketplace's own id for this listing, if you have one.">
-          <Input value={listingIdText} onChange={(e) => setListingIdText(e.target.value)} />
-        </Field>
-
-        <Field label="Listing URL">
-          <Input type="url" placeholder="https://..." value={listingUrl} onChange={(e) => setListingUrl(e.target.value)} />
-        </Field>
-
-        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-      </div>
       <ModalFooter>
-        <Button variant="secondary" onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={submit} disabled={saving}>
-          {saving ? <Spinner className="h-4 w-4" /> : null}
-          {initial ? "Save changes" : "Add listing"}
-        </Button>
+        {showPicker ? (
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={selectedTickets.length === 0} onClick={goToDetails}>
+              Continue with {selectedTickets.length} ticket{selectedTickets.length === 1 ? "" : "s"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="secondary" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={initial ? submitEdit : submitCreateBatch} disabled={saving}>
+              {saving ? <Spinner className="h-4 w-4" /> : null}
+              {initial ? "Save changes" : `Add ${selectedTickets.length} listing${selectedTickets.length === 1 ? "" : "s"}`}
+            </Button>
+          </>
+        )}
       </ModalFooter>
     </Modal>
   );

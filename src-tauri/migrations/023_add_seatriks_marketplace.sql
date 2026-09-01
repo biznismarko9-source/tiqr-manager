@@ -1,0 +1,12 @@
+-- TIQR Manager - 023_add_seatriks_marketplace
+-- 2.2.5: marko's request ("pridaj platformu seatriks") - a 4th marketplace
+-- for the shared `marketplaces` lookup (see 014_price_checker.sql for the
+-- table itself). Pure data, no schema change - same precedent as
+-- 020_remove_stubhub.sql, which already showed a migration in this project
+-- can be a plain data change against this exact table. Marko could also add
+-- this himself from Price Checker's own "Add marketplace" UI
+-- (create_marketplace), but seeding it here means it's already available -
+-- for Price Checker AND for the new Listings "Add listing" marketplace
+-- picker - the moment he opens this version, matching how StubHub/Vivid
+-- Seats/Ticombo were originally seeded in 014.
+INSERT INTO marketplaces (name) VALUES ('Seatriks');

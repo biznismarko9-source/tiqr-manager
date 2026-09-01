@@ -1089,11 +1089,13 @@ mod tests {
 
         assert_eq!(summary.event_name, "Coldplay Arena Show");
         // 2.1.6: StubHub is retired (inactive) and this event has never
-        // touched it, so only the 3 ACTIVE marketplaces show - see the
+        // touched it, so only the ACTIVE marketplaces show - see the
         // dedicated StubHub-specific tests below for the retired/history
-        // behavior itself.
+        // behavior itself. 2.2.5: bumped from 3 to 4 active marketplaces -
+        // migrations/023_add_seatriks_marketplace.sql seeded a 4th
+        // (Seatriks), which sorts first alphabetically.
         let names: Vec<&str> = summary.marketplaces.iter().map(|m| m.marketplace_name.as_str()).collect();
-        assert_eq!(names, vec!["Ticombo", "Viagogo", "Vivid Seats"], "alphabetical, active-only, for a fresh event");
+        assert_eq!(names, vec!["Seatriks", "Ticombo", "Viagogo", "Vivid Seats"], "alphabetical, active-only, for a fresh event");
         for m in &summary.marketplaces {
             assert!(m.marketplace_active, "every marketplace shown to a fresh event must be active");
             assert!(m.link.is_none());

@@ -21,6 +21,157 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.6 - Inventory Intelligence block on Overview
+
+Focused, explicitly-scoped task on top of 2.2.5: a compact "Inventory
+Intelligence" block above the Orders/Tickets tables on the Overview tab -
+KPIs, an aging breakdown, an attention list, and section/marketplace
+breakdowns, all reusing existing money logic (see `CURRENT_STATE.md`'s
+"Current focus" section for the full field list). One new file
+(`commands/inventory_intelligence.rs`), one new command
+(`get_inventory_intelligence`), no migration, no new dependency. Things
+worth knowing before touching this again:
+
+- **This task's own closing checklist initially named only targeted
+  tests, a build check, and updating these two docs - not a version bump,
+  a `REDESIGN-*-REPORT.md`, or packaging, unlike every prior task.** Taken
+  literally at first (implemented, tested, docs updated, closing summary
+  given in chat, no bump/report/zip) and flagged to marko as a judgment
+  call in that summary; he confirmed in the very next message that he did
+  want the file too ("jasne ze aj file potrebujem"), so the normal cadence
+  (version bump, this report, packaging) was completed right after, same
+  session. Net effect: a real, normal 2.2.6 release - the brief gap is
+  recorded here only so a future session isn't confused by any leftover
+  trace of the shorter path (e.g. a stray "2.2.6" code comment written
+  before the bump actually happened).
+- **Two parallel "listing price" systems both got reused, deliberately not
+  unified.** "Current listed value" sums ACTIVE `ticket_listings.price_cents`
+  (the 2.2.4+ real per-marketplace system, matching Listings' own "Listed
+  value" card); "Potential profit" uses the LEGACY single
+  `tickets.listing_price_cents` field (matching Sales' own existing
+  "Potential Profit" card and `price_checker.rs`'s market-comparison
+  summary). Both are real, existing, independently-shown numbers elsewhere
+  in this app - unifying them was not asked for and would make one of them
+  disagree with a number marko already trusts on another tab. Don't merge
+  these into one "listing price" concept without asking first.
+- **No "by tier" breakdown - checked, not missing, same gap 2.2.0's own
+  entry above already found.** `tickets` has no tier/level column anywhere
+  in the schema; `ticket_type` is a delivery method (E-ticket/PDF/Mobile
+  transfer/Physical/Will call), not a price tier. Per marko's own explicit
+  instruction this round ("ak niektorý údaj už databáza spoľahlivo nevie
+  vyrátať, nevymýšľaj fallback dáta"), this breakdown is simply omitted,
+  with a plain-text note in the UI saying so. Smallest fix if marko wants
+  it for real: a new nullable `tickets.tier` column plus UI to set it
+  (Add/Edit ticket forms, CSV import mapping) - a real migration + several
+  small UI touch points, not a quick add.
+- **Two numeric judgment calls, neither given an exact number by marko -
+  both easy to tune, both isolated to one `const` each in
+  `inventory_intelligence.rs`:** `EVENT_SOON_DAYS = 2` (marko said "48h";
+  `event_date` has no time component anywhere in this schema, so this
+  means "event date is today, tomorrow, or the day after," not a rolling
+  48-hour clock) and `OUTSIDE_MARKET_THRESHOLD_PCT = 0.20` (marko said
+  "výrazne mimo market ceny" - significantly outside - with no number).
+  Change either in one place if marko wants a different threshold; no
+  other code depends on the specific values.
+- **Sell-through % denominator is ALL tickets including cancelled ones**,
+  matching the "Total tickets" KPI shown right next to it in the same row
+  (same scope `finance::compute_summary`/`events.rs`'s own stats already
+  use) - an "exclude cancelled" reading of sell-through is equally
+  defensible and was NOT what got built; revisit only if marko says the
+  number looks wrong against his own mental model.
+- **The aging buckets fix an overlap in marko's own spec.** He listed
+  "8-30" and "30-60" (day 30 in both); implemented as 0-7 / 8-30 / 31-60 /
+  61+ so every unsold ticket lands in exactly one bucket. Flagged here
+  rather than silently double-counting day-30 tickets in both buckets.
+- **Every clickable KPI/aging/attention/breakdown row filters Overview's
+  own Tickets table by an id list the backend already returns** - it does
+  NOT navigate to Tickets.tsx or Orders.tsx, because neither page has any
+  URL/state-based filtering mechanism to receive such a list today
+  (Tickets.tsx only supports `?code=` for one ticket; Orders.tsx's
+  `presetEventId` only pre-fills the New Order modal). "Current listed
+  value" is the one exception - it switches to this same page's own
+  Listings tab (`onSwitchTab`), since that number is about
+  `ticket_listings` rows, not raw tickets. If a future ask wants real
+  cross-page deep links (e.g. "open Tickets.tsx pre-filtered"), that means
+  adding actual filtering support to those pages first, not extending this
+  block's local-highlight approach further.
+
+## 2.2.5 - Event Workspace down to 3 tabs; Listings gets filters/search/bulk actions
+
+Fourth pass on the Event Workspace, plus one small Price Checker lookup
+addition. Final tab order: **Overview | Listings | Sales** (Finance folded
+into Sales - see the judgment-call note below). Things worth knowing before
+touching this page or `ticket_listings.rs` again:
+
+- **The Sales-absorbs-Finance judgment call.** 2.2.4's own entry below
+  explains why Finance stayed a separate tab that release: marko's message
+  said "Sales Market Finance spoj do jedneho" (merge these) but then
+  explicitly listed "sales" AND "finance" as two of the 4 surviving tabs,
+  so only Market got folded (into Sales). This round marko asked again,
+  this time with no such list keeping them apart - "sales a finance daj
+  dokopy" (put sales and finance together), unambiguous. Same "first-named
+  tab survives, absorbs the rest" convention as every merge on this page so
+  far (Overview/Inventory, Sales/Market) - Sales was named first, so Sales
+  is the surviving tab; Finance's entries table now renders at the bottom
+  of `SalesTab`, below the Market section 2.2.4 already put there. Flagged
+  in `EventDetail.tsx`'s own top-of-file doc comment and in
+  `REDESIGN-2.2.5-REPORT.md` in case marko meant the name the other way
+  round - it's one clearly-bounded block, easy to move back out.
+- **Listings bulk actions (`bulk_update_ticket_listings_status`/`_price`,
+  `bulk_delete_ticket_listings`, all in `ticket_listings.rs`) are
+  ALL-OR-NOTHING transactions - deliberately stricter than
+  `bulk_delete_sale_groups`'s own "per-item skip, report what failed"
+  contract.** Marko explicitly asked for "ideálne transakčné - buď sa
+  zmena podarí pre všetky vybrané listingy, alebo pre žiadny" this round -
+  every id is validated to exist in one query BEFORE any row is written,
+  same "validate everything, then write everything" shape as
+  `tickets::bulk_update_tickets_impl`/`sales::bulk_update_sale_payment_
+  status_impl`. Do not weaken this to a skip-and-report model to match
+  the sales-list convention without re-confirming with marko first - this
+  was an explicit, named requirement, not a default this codebase always
+  uses for bulk actions.
+- **Bulk price edit refuses a mixed-currency selection outright, on BOTH
+  ends.** `bulk_update_ticket_listings_price_impl` reads back every
+  selected listing's CURRENT currency in its validation query and rejects
+  the whole batch if more than one distinct value is found - a bare amount
+  can never be applied blindly across listings priced in different
+  currencies. The frontend (`ListingsBulkBar`) also disables the "Edit
+  price" button up front when the selection is mixed, so this is defense
+  in depth, not the only guard. Currency itself is NEVER written by this
+  command - only `price_cents` changes, per marko's own "zachovaj
+  currency" instruction.
+- **Listings' row checkboxes are always visible - no separate "selection
+  mode" toggle** like Sales.tsx/Orders.tsx use for their own (usually much
+  longer) lists. Deliberate, reversible UI call for this smaller,
+  per-event table - flagged in the report, not in marko's own spec.
+  Select-all/deselect-all is scoped to the currently filtered/searched
+  rows only, same convention as Sales.tsx's own `allSelected`/
+  `toggleSelectAll`.
+- **The "Add listing" ticket picker was rebuilt as an order-browse flow**
+  (search this event's own orders, open one, pick tickets from it, repeat
+  across orders) mirroring Sales.tsx's New Sale flow almost exactly -
+  marko's own explicit ask ("urobme to ako pri sale"). Unlike New Sale,
+  this needs NO live fetch: `TicketListingFormModal` already receives this
+  whole event's own `tickets`/`orders` as props (small, already loaded by
+  `ListingsTab`), so the picker is pure client-side filtering. Several
+  tickets can be selected at once ("vybrat dany pocet listkov" taken
+  literally) - creates one listing per selected ticket on the one chosen
+  marketplace. **This batch-create path is deliberately NOT all-or-nothing**
+  (unlike the 3 bulk actions above) - marko's "transactional" requirement
+  was stated specifically for editing EXISTING listings, not for this
+  create flow; a failure partway through keeps whatever succeeded and
+  reports exactly which tickets failed and why, leaving just those
+  selected to retry. Listing ID/URL are only offered when exactly one
+  ticket is selected (each marketplace posting has its own external id/
+  URL - a shared value across a batch would be meaningless); for a batch,
+  they're added afterward via Edit on each created listing.
+- **`marketplaces` gained a 4th seeded row, Seatriks** (marko's request -
+  `migrations/023_add_seatriks_marketplace.sql`, pure data, no schema
+  change - same precedent as `020_remove_stubhub.sql` for a data-only
+  migration against this table). Spelling/capitalization is my own best
+  guess at what marko typed ("seatriks") - trivially renameable from Price
+  Checker's own marketplace list if wrong, no migration needed for that.
+
 ## 2.2.4 - Event Workspace down to 4 tabs; Listings is now a real system
 
 Third pass on the Event Workspace. Final tab order: **Overview | Listings |
@@ -568,7 +719,14 @@ to any task touching Finance, Orders, or Sheets sync.
   mismatched version strings.
 - **`REDESIGN-X.Y.Z-REPORT.md` (Slovak) is written for every version and
   keeps being written** - confirmed with marko that `CHANGELOG.md` is
-  additive, not a replacement.
+  additive, not a replacement. Rule held even when 2.2.6's own closing
+  checklist initially didn't ask for one - see that task's own dated entry
+  above: implemented without a bump/report first, then marko confirmed he
+  wanted the full cadence too, so it was completed the same session. Don't
+  assume a closing checklist that omits "version bump"/"report" means
+  marko doesn't want them this time - ask, or flag the interpretation
+  plainly and let him correct it, rather than silently skipping the report
+  for good.
 - **Secrets stay plain text in `app_settings`** - this is an accepted,
   existing trust boundary across the whole app (Google OAuth refresh
   token, Pushover user key, Firebase config, etc.), not something to
