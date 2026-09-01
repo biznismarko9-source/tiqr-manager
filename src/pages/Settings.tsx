@@ -979,7 +979,11 @@ function PlatformList({
         />
         <Button onClick={add}>Add</Button>
       </div>
-      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+      {/* 2.2.2: was max-h-56 (a fixed 224px, ~4-5 rows) regardless of the
+          Modal's own much larger max-h-[75vh] cap - marko has 15+ platforms
+          and had to scroll constantly. max-h-[60vh] scales with the window
+          instead, same fix applied identically to all 3 lookup lists. */}
+      <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
         {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
         {visible.map((p) => (
           <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
@@ -1041,7 +1045,11 @@ function EventCategoryList({
         />
         <Button onClick={add}>Add</Button>
       </div>
-      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+      {/* 2.2.2: was max-h-56 (a fixed 224px, ~4-5 rows) regardless of the
+          Modal's own much larger max-h-[75vh] cap - marko has 15+ platforms
+          and had to scroll constantly. max-h-[60vh] scales with the window
+          instead, same fix applied identically to all 3 lookup lists. */}
+      <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
         {categories.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
         {categories.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
@@ -1107,7 +1115,11 @@ function FinanceCategoryList({
         />
         <Button onClick={add}>Add</Button>
       </div>
-      <ul className="max-h-56 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+      {/* 2.2.2: was max-h-56 (a fixed 224px, ~4-5 rows) regardless of the
+          Modal's own much larger max-h-[75vh] cap - marko has 15+ platforms
+          and had to scroll constantly. max-h-[60vh] scales with the window
+          instead, same fix applied identically to all 3 lookup lists. */}
+      <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
         {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
         {visible.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">

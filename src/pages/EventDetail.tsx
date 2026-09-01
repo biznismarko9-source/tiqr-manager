@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, OrderRecord, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed } from "../lib/format";
+import type { EventWithStats, FinanceEntry, OrderRecord, PriceCheckerSummary, SaleGroup, Ticket } from "../lib/types";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercent, formatPercentOrMixed } from "../lib/format";
 import {
   Badge,
   Button,
@@ -11,10 +11,33 @@ import {
   EmptyState,
   LoadingBlock,
   StatCard,
+  TabSwitcher,
 } from "../components/ui";
-import { IconArrowLeft, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
+import { IconArrowLeft, IconCheck, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
+
+// 2.2.3: "Event Workspace" - marko's own request to turn this page into one
+// central place for a single Event, with everything else it touches
+// organized under tabs instead of one long scroll. Overview is the only tab
+// with genuinely new content (the same stats this page already showed,
+// trimmed to exactly marko's own list); Inventory is literally the Orders +
+// Tickets tables this page already had, just relocated; Sales/Market/Finance
+// each pull from an already-existing command (list_sale_groups,
+// get_price_checker_summary, list_finance_entries_for_order x N) rather than
+// inventing anything new. Tasks has no spec yet beyond the tab's own name -
+// left as an honest placeholder rather than guessed at.
+type WorkspaceTab = "overview" | "inventory" | "sales" | "market" | "finance" | "tasks";
+
+const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "inventory", label: "Inventory" },
+  { key: "sales", label: "Sales" },
+  { key: "market", label: "Market" },
+  { key: "finance", label: "Finance" },
+  { key: "tasks", label: "Tasks" },
+];
 
 export default function EventDetail() {
   const { id } = useParams();
@@ -22,6 +45,7 @@ export default function EventDetail() {
   const navigate = useNavigate();
   const toast = useToast();
 
+  const [tab, setTab] = useState<WorkspaceTab>("overview");
   const [event, setEvent] = useState<EventWithStats | null>(null);
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -44,28 +68,6 @@ export default function EventDetail() {
   }, [load]);
 
   if (!event) return <LoadingBlock />;
-
-  const s = event.stats;
-
-  // 1.8.3 (section 14): "Potential profit" for this event's still-unsold
-  // stock, computed client-side from the tickets already loaded above -
-  // mirrors the Dashboard's InventoryPotential block field-for-field
-  // (inventory_cost_cents/listing_value_cents/potential_profit_cents), just
-  // scoped to one event instead of the whole database, so no new backend
-  // command is needed. `tickets` can still be null on first paint (it loads
-  // independently of `event`) - falls back to an empty list, same as the
-  // "Tickets (0)" heading below already tolerates.
-  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
-  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
-  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
-  // Checked against just this unsold subset (not the event-wide s.currency
-  // flag) - cheap to do precisely here since it's a plain filter over an
-  // already-loaded array, unlike the Dashboard's version which reuses its
-  // global mixed-currency flag to avoid an extra SQL query.
-  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
-  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? s.currency) : null;
-  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
 
   return (
     <div>
@@ -94,29 +96,74 @@ export default function EventDetail() {
         </div>
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Purchased" value={String(s.purchasedTickets)} />
-        {/* 1.8.3 (section 7): "Remaining" = available + listed together - the
-            true "still need to sell this" count. Previously this card led
-            with just availableTickets and buried listed in the sub-line,
-            which understated how much unsold stock was actually left
-            whenever any of it was already listed. Both individual counts
-            are still shown, just in the sub-line, not lost. */}
-        <StatCard
-          label="Remaining"
-          value={String(s.availableTickets + s.listedTickets)}
-          sub={`${s.availableTickets} available, ${s.listedTickets} listed`}
-        />
+      <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} />
+
+      {tab === "overview" && <OverviewTab event={event} />}
+      {tab === "inventory" && <InventoryTab event={event} orders={orders} tickets={tickets} navigate={navigate} />}
+      {tab === "sales" && <SalesTab eventId={eventId} />}
+      {tab === "market" && <MarketTab event={event} tickets={tickets} navigate={navigate} />}
+      {tab === "finance" && <FinanceTab orders={orders} />}
+      {tab === "tasks" && <TasksTab />}
+
+      <EventFormModal
+        open={editOpen}
+        initial={event}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => {
+          setEditOpen(false);
+          load();
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete this event?"
+        message="This can only be done if the event has no orders or tickets linked to it. This cannot be undone."
+        confirmLabel="Delete event"
+        danger
+        busy={deleting}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={async () => {
+          setDeleting(true);
+          try {
+            await api.deleteEvent(eventId);
+            toast.success("Event deleted");
+            navigate("/events");
+          } catch (e) {
+            toast.error(errMsg(e));
+            setConfirmDelete(false);
+          } finally {
+            setDeleting(false);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Overview - exactly marko's own list (2.2.3): tickets, sold, available,
+// total cost, revenue, profit, margin/ROI. Nothing else - the rest of what
+// this page used to show up top now lives in its own tab.
+// ---------------------------------------------------------------------------
+function OverviewTab({ event }: { event: EventWithStats }) {
+  const s = event.stats;
+  return (
+    <div>
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard label="Tickets" value={String(s.purchasedTickets)} />
         <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
-        <StatCard label="Cost" value={formatMoneyOrMixed(s.totalCostCents, s.currency)} />
+        <StatCard label="Available" value={String(s.availableTickets)} sub={`${s.listedTickets} listed`} />
+        <StatCard label="Total cost" value={formatMoneyOrMixed(s.totalCostCents, s.currency)} />
         <StatCard label="Revenue" value={formatMoneyOrMixed(s.revenueCents, s.currency)} />
       </div>
       {s.currency === null && (
-        <p className="-mt-5 mb-6 text-xs text-amber-700 dark:text-amber-400">
-          This event has tickets in more than one currency, so cost/revenue/profit/margin/ROI can&apos;t be combined into one number here. Check individual orders and sales instead.
+        <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
+          This event has tickets in more than one currency, so these numbers can&apos;t be combined into one here. Check
+          individual orders and sales instead.
         </p>
       )}
-      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard
           label="Profit"
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
@@ -126,24 +173,36 @@ export default function EventDetail() {
         <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
       </div>
 
-      {/* 1.9.10: the "Potential Profit" tinted zone used to sit right here,
-          between the realized Profit/Margin/ROI stats and Orders - marko
-          wanted it moved all the way down, below both Orders and Tickets.
-          See the bottom of this component for where it landed. */}
-
       {event.notes && (
-        <Card className="mb-8 p-4">
+        <Card className="mt-6 p-4">
           <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Notes</p>
           <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{event.notes}</p>
         </Card>
       )}
+    </div>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// Inventory - the Orders + Tickets tables this page already had, unchanged,
+// just relocated under their own tab instead of always being on screen.
+// ---------------------------------------------------------------------------
+function InventoryTab({
+  event,
+  orders,
+  tickets,
+  navigate,
+}: {
+  event: EventWithStats;
+  orders: OrderRecord[] | null;
+  tickets: Ticket[] | null;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
+  return (
+    <div>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Orders ({orders?.length ?? 0})</h2>
-        <Button
-          variant="secondary"
-          onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}
-        >
+        <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
           <IconPlus className="h-4 w-4" /> New order for this event
         </Button>
       </div>
@@ -192,11 +251,8 @@ export default function EventDetail() {
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets for this event yet" />
       ) : (
-        // 2.0.32: max-w-[1400px] added - see Sales.tsx's own comment on the
-        // identical change for the full rationale (this table uses plain
-        // auto table-layout rather than table-fixed, but a w-full table
-        // still stretches every column proportionally on a wide window,
-        // same fix applies).
+        // 2.0.32: max-w-[1400px] - see Sales.tsx's own comment on the
+        // identical change for the full rationale.
         <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full min-w-[700px] border-collapse">
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
@@ -232,92 +288,284 @@ export default function EventDetail() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* 1.8.3 (section 14): same tinted-zone treatment as the Dashboard's
-          "Inventory & Potential Profit" block, just scoped to this one
-          event - deliberately never called "Profit" alone, so it can't be
-          mistaken for the realized Profit stat up near the top. 1.9.10:
-          relocated to the bottom of the page (below Orders and Tickets) per
-          marko - same content and calculation, purely a position change. */}
-      <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Potential Profit
-          </p>
-          {/* 2.0.81: same cross-navigation pattern as "New order for this
-              event" above (navigate + presetEventId via router state) - see
-              PriceChecker.tsx, which reads this back out of location.state
-              to preselect the event instead of leaving marko to find it
-              again in its own dropdown. */}
-          <button
-            type="button"
-            onClick={() => navigate("/price-checker", { state: { presetEventId: event.id } })}
-            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-          >
-            Compare to market prices &rarr;
-          </button>
+// ---------------------------------------------------------------------------
+// Sales - new tab, but not new logic: list_sale_groups already accepts
+// eventId (Sales.tsx's own Event filter uses the exact same call). No
+// pending/completed tabs, search, or bulk actions here - this is a compact
+// summary, not a re-implementation of Sales.tsx; "Open in Sales" underneath
+// gets marko to the real thing for anything more than a glance.
+// ---------------------------------------------------------------------------
+function SalesTab({ eventId }: { eventId: number }) {
+  const toast = useToast();
+  const [groups, setGroups] = useState<SaleGroup[] | null>(null);
+
+  useEffect(() => {
+    setGroups(null);
+    api
+      .listSaleGroups({ eventId })
+      .then(setGroups)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  if (groups === null) return <LoadingBlock />;
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Sales ({groups.length})</h2>
+        <Link to="/sales" className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline">
+          Open in Sales &rarr;
+        </Link>
+      </div>
+      {groups.length === 0 ? (
+        <EmptyState title="No sales for this event yet" />
+      ) : (
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full min-w-[700px] border-collapse">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <tr>
+                <th className="th">Sale</th>
+                <th className="th">Date</th>
+                <th className="th">Platform</th>
+                <th className="th text-right">Qty</th>
+                <th className="th text-right">Revenue</th>
+                <th className="th text-right">Profit</th>
+                <th className="th">Payment</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {groups.map((g) => (
+                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td">
+                    <Link to={`/sales/${g.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                      {g.code}
+                    </Link>
+                  </td>
+                  <td className="td">{formatDate(g.saleDate)}</td>
+                  <td className="td text-slate-500 dark:text-slate-400">{g.platformName ?? "-"}</td>
+                  <td className="td text-right tabular-nums">{g.ticketCount}</td>
+                  <td className="td text-right tabular-nums">{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
+                  <td
+                    className={`td text-right tabular-nums font-medium ${
+                      g.currency === null ? "" : g.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : g.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""
+                    }`}
+                  >
+                    {formatMoneyOrMixed(g.profitCents, g.currency)}
+                  </td>
+                  <td className="td">
+                    {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Market - the "Potential Profit" block this page already had (unchanged
+// calculation, just moved here since it's fundamentally about this event's
+// position against the market), plus the same "Market vs. mine" summary
+// PriceChecker.tsx itself shows once at least one price check is saved
+// (get_price_checker_summary, unchanged). "Open in Price Checker" is where
+// marko actually adds marketplaces/scans - not reimplemented here.
+// ---------------------------------------------------------------------------
+function MarketTab({
+  event,
+  tickets,
+  navigate,
+}: {
+  event: EventWithStats;
+  tickets: Ticket[] | null;
+  navigate: ReturnType<typeof useNavigate>;
+}) {
+  const toast = useToast();
+  const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
+
+  useEffect(() => {
+    api
+      .getPriceCheckerSummary(event.id)
+      .then(setSummary)
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event.id]);
+
+  // 1.8.3 (section 14) / 1.9.10: unchanged from this page's previous single-
+  // tab version - see git history there for the original reasoning.
+  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
+  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
+  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
+  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
+  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
+  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? event.stats.currency) : null;
+  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Market</h2>
+        <button
+          type="button"
+          onClick={() => navigate("/price-checker", { state: { presetEventId: event.id } })}
+          className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline"
+        >
+          Open in Price Checker &rarr;
+        </button>
+      </div>
+
+      {summary && summary.marketLowestPriceCents !== null && (
+        <Card className="mb-6 p-4">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market vs. mine</p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
+            <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
+            <StatCard
+              label="Recommended price"
+              value={formatMoney(summary.recommendedPriceCents, summary.myCurrency ?? "EUR")}
+              sub="5% below the lowest market price"
+            />
+            <StatCard
+              label="Expected profit"
+              value={formatMoney(summary.expectedProfitCents, summary.myCurrency ?? "EUR")}
+              tone={
+                summary.expectedProfitCents == null ? "default" : summary.expectedProfitCents > 0 ? "positive" : summary.expectedProfitCents < 0 ? "negative" : "default"
+              }
+            />
+            <StatCard label="Expected ROI" value={formatPercent(summary.expectedRoi)} />
+          </div>
+        </Card>
+      )}
+
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Potential Profit</p>
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Inventory cost"
-            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
-            sub="What unsold tickets cost you"
-          />
-          <StatCard
-            label="Listing value"
-            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
-            sub="Unsold tickets that have a listing price"
-          />
-          <StatCard
-            label="Potential profit"
-            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
-            sub="Listing value minus inventory cost"
-          />
+          <StatCard label="Inventory cost" value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)} sub="What unsold tickets cost you" />
+          <StatCard label="Listing value" value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)} sub="Unsold tickets that have a listing price" />
+          <StatCard label="Potential profit" value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)} sub="Listing value minus inventory cost" />
         </div>
         {missingListingPriceCount > 0 && (
           <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
             {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
-            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what
-            full inventory could be worth once priced.
+            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what full inventory
+            could be worth once priced.
           </p>
         )}
       </div>
-
-      <EventFormModal
-        open={editOpen}
-        initial={event}
-        onClose={() => setEditOpen(false)}
-        onSaved={() => {
-          setEditOpen(false);
-          load();
-        }}
-      />
-
-      <ConfirmDialog
-        open={confirmDelete}
-        title="Delete this event?"
-        message="This can only be done if the event has no orders or tickets linked to it. This cannot be undone."
-        confirmLabel="Delete event"
-        danger
-        busy={deleting}
-        onCancel={() => setConfirmDelete(false)}
-        onConfirm={async () => {
-          setDeleting(true);
-          try {
-            await api.deleteEvent(eventId);
-            toast.success("Event deleted");
-            navigate("/events");
-          } catch (e) {
-            toast.error(errMsg(e));
-            setConfirmDelete(false);
-          } finally {
-            setDeleting(false);
-          }
-        }}
-      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Finance - pulls every Finance entry linked to one of this event's own
+// Orders (list_finance_entries_for_order, 2.2.1), merged client-side. No new
+// backend command - an event has at most a handful of orders, so N small
+// queries stays cheap and avoids adding a second way to query the same data.
+// ---------------------------------------------------------------------------
+function FinanceTab({ orders }: { orders: OrderRecord[] | null }) {
+  const toast = useToast();
+  const [entries, setEntries] = useState<FinanceEntry[] | null>(null);
+
+  useEffect(() => {
+    if (orders === null) return;
+    if (orders.length === 0) {
+      setEntries([]);
+      return;
+    }
+    Promise.all(orders.map((o) => api.listFinanceEntriesForOrder(o.id)))
+      .then((lists) => setEntries(lists.flat().sort((a, b) => (a.entryDate < b.entryDate ? 1 : a.entryDate > b.entryDate ? -1 : b.id - a.id))))
+      .catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders]);
+
+  if (orders === null || entries === null) return <LoadingBlock />;
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance ({entries.length})</h2>
+        <Link to="/finance" className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline">
+          Open in Finance &rarr;
+        </Link>
+      </div>
+      {orders.length === 0 ? (
+        <EmptyState title="No orders for this event yet" description="Record a purchase first, then you can link Finance entries to it." />
+      ) : entries.length === 0 ? (
+        <EmptyState
+          title="Nothing recorded in Finance for this event yet"
+          description={`Open one of this event's orders and use "Record in Finance" there.`}
+        />
+      ) : (
+        <div className="max-w-[1400px] overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full min-w-[600px] border-collapse">
+            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <tr>
+                <th className="th">Date</th>
+                <th className="th">Order</th>
+                <th className="th">Category</th>
+                <th className="th text-right">Amount</th>
+                <th className="th">Note</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {entries.map((e) => (
+                <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <td className="td">{formatDate(e.entryDate)}</td>
+                  <td className="td">
+                    {e.orderId && e.orderCode ? (
+                      <Link to={`/orders/${e.orderId}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                        {e.orderCode}
+                      </Link>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="td">
+                    {e.categoryName ? <FinanceCategoryBadge name={e.categoryName} colorSlot={e.categoryColorSlot ?? 0} /> : "-"}
+                  </td>
+                  <td
+                    className={`td text-right tabular-nums font-medium ${
+                      e.entryType === "income" ? "text-emerald-600 dark:text-emerald-400" : "text-slate-900 dark:text-slate-100"
+                    }`}
+                  >
+                    {e.entryType === "income" ? "+" : "-"}
+                    {formatMoney(e.amountCents, e.currency)}
+                  </td>
+                  <td className="td max-w-[220px] truncate text-slate-500 dark:text-slate-400" title={e.note ?? undefined}>
+                    {e.note ?? "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tasks - no spec beyond the tab's own name yet (marko's own request listed
+// it as a target tab but gave no further detail, unlike Overview's explicit
+// field list). Left as an honest placeholder rather than guessed at - see
+// REDESIGN-2.2.3-REPORT.md.
+// ---------------------------------------------------------------------------
+function TasksTab() {
+  return (
+    <EmptyState
+      icon={<IconCheck className="h-8 w-8" />}
+      title="Tasks are coming in a future update"
+      description="Nothing to show here yet - let me know what a task for an event should look like and I'll build it."
+    />
   );
 }

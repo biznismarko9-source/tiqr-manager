@@ -21,6 +21,59 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.2 - EventDetail.tsx is now the "Event Workspace" (tabbed)
+
+`EventDetail.tsx` went from one long scrolling page to 6 tabs (Overview,
+Inventory, Sales, Market, Finance, Tasks), via the same `TabSwitcher`
+component Tickets.tsx/Events.tsx already use for their own tabs. A few
+things worth knowing before extending this further:
+
+- **Sales, Market and Finance each fetch their own data independently,
+  inside their own tab component's `useEffect`, keyed on the tab
+  component actually being mounted.** There is no lifted/shared state and
+  no caching - switching away from a tab and back re-fetches it every
+  time. Deliberate (kept simple, matches "iba základ"); revisit only if
+  marko reports it feeling slow, not preemptively.
+- **The Finance tab has NO new backend command.** It calls
+  `list_finance_entries_for_order` (2.2.1) once per this event's own
+  `orders` and merges the results client-side. Fine at event scale (a
+  handful of orders); do not copy this N-calls pattern anywhere that could
+  see more than a handful of rows - add a real
+  `list_finance_entries_for_event`-style command instead if that ever
+  comes up.
+- **Inventory intentionally does NOT use the shared `TicketsView`
+  component** (`Tickets.tsx`, also used by `Inventory.tsx` the sidebar
+  page, via its `lockedStatus` prop). It reuses this page's OWN
+  already-existing Orders + Tickets tables instead, unchanged, just moved
+  under a tab. This was a deliberate scope call to avoid touching a
+  component two other pages depend on - if a future ask wants the full
+  Tickets toolset (search/sort/bulk actions) scoped to one event, that
+  means adding a `lockedEventId`-style prop to `TicketsView` (mirroring
+  `lockedStatus`), not duplicating its logic here.
+- **Market's "Market vs. mine" card only renders when
+  `get_price_checker_summary` returns a non-null `marketLowestPriceCents`**
+  - i.e. it's hidden entirely rather than shown with a "no data yet"
+  message, unlike PriceChecker.tsx's own always-visible version of the
+  same card. Intentional (an empty card reads as clutter here); keep this
+  in mind if the two ever need to look identical.
+- **Tasks is a placeholder only** (`EmptyState`, no schema, no commands,
+  no types). Building the real feature means starting from nothing - there
+  is no partial implementation to extend.
+
+## 2.2.2 - Price Checker's event picker now filters to `status === "upcoming"`
+
+`PriceChecker.tsx`'s own `events` list (used only for its "Event" picker)
+now excludes anything not `"upcoming"` - reusing the exact field
+Events.tsx's own Upcoming/Completed tabs use (2.0.59), not a new
+date-derived rule. This means an event still shows up here until marko
+manually marks it "completed"/"cancelled" elsewhere (Edit modal) - it is
+NOT automatically inferred from `event_date` having passed. If marko ever
+wants that to happen automatically from the date alone (no manual status
+flip required), that is a different, bigger change - status is currently
+a plain manually-set field everywhere else in this codebase too (Orders/
+Sales payment status work the same way), so auto-flipping it here alone
+would be a new, inconsistent behavior, not a bug fix.
+
 ## 2.2.1 - Finance entries can now link to an Order
 
 `finance_entries.order_id` (`migrations/021_finance_entry_order_link.sql`)

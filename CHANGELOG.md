@@ -16,6 +16,40 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.2 - Event Workspace, plus 3 small fixes
+
+`EventDetail.tsx` is now a tabbed "Event Workspace"
+(`Overview | Inventory | Sales | Market | Finance | Tasks`, via the same
+`TabSwitcher` Tickets.tsx/Events.tsx already use):
+
+- **Overview** - exactly marko's own list (tickets, sold, available,
+  total cost, revenue, profit, margin, ROI), no backend change.
+- **Inventory** - the existing Orders + Tickets tables, unchanged, just
+  relocated under their own tab.
+- **Sales** - `list_sale_groups({ eventId })` (Sales.tsx's own Event
+  filter, reused), compact table, "Open in Sales" for more.
+- **Market** - `get_price_checker_summary(eventId)` (PriceChecker.tsx's
+  summary command, reused) plus the existing "Potential Profit" block,
+  now together in one tab.
+- **Finance** - `list_finance_entries_for_order` (2.2.1) called once per
+  this event's own orders, merged client-side - no new backend command.
+- **Tasks** - honest placeholder (`EmptyState`), no spec given yet.
+
+See `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.2" entry before extending
+any of these tabs.
+
+Plus three unrelated small fixes: Settings -> Lookups' 3 category lists
+no longer cap their scroll area at a fixed 224px (`max-h-[60vh]` now);
+Event Detail's last table (Tickets) was missing the `mb-8` its Orders
+neighbor had, so the Potential Profit box after it read as crammed
+against it; Price Checker's event picker now only lists
+`status === "upcoming"` events, so a completed/cancelled event quietly
+stops showing up there.
+
+Frontend-only - no migration, no backend command changes. `tsc -b`/
+`vite build` clean (cargo test suite unaffected - no `.rs` files touched
+this release). Full detail in `REDESIGN-2.2.2-REPORT.md`.
+
 ## 2.2.1 - Finance Accounts redesign, Settings Lookups redesign, Price Checker jump links, Finance-Orders linking
 
 Four independent, marko-requested pieces in one release:

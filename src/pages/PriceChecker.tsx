@@ -1232,7 +1232,16 @@ export default function PriceChecker() {
   const requestIdRef = useRef(0);
 
   useEffect(() => {
-    api.listEvents().then(setEvents).catch((e) => toast.error(errMsg(e)));
+    // 2.2.2: only events still ahead of you are worth a market check - once
+    // marko marks one "completed" (or it's "cancelled"), checking live
+    // prices for it no longer means anything, so it should just quietly
+    // stop showing up here, no manual untracking needed. Reuses the exact
+    // same `status` field/value Events.tsx's own Upcoming/Completed tabs
+    // already use (2.0.59) rather than inventing a date-based rule.
+    api
+      .listEvents()
+      .then((all) => setEvents(all.filter((ev) => ev.status === "upcoming")))
+      .catch((e) => toast.error(errMsg(e)));
     // Mirrors Orders.tsx's own presetEventId pattern - EventDetail's "Check
     // prices" button navigates here with the event already chosen, so marko
     // never has to find it again in the dropdown.
