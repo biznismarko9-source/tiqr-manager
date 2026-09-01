@@ -196,11 +196,23 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
               }
             />
           ) : (
-            <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {accounts.map((a) => (
-                <AccountCard key={a.id} account={a} onEdit={openEditAccount} onDelete={setDeleteAccountTarget} />
-              ))}
-            </div>
+            // 2.2.1: marko's own request - the old sm:grid-cols-2 lg:grid-cols-3
+            // grid of full AccountCards ("zaberaju zbytocne vela miesta" - takes
+            // up unnecessary space) is replaced with one compact divide-y list,
+            // same dense-row language this codebase already uses for lookup
+            // lists (PlatformList/EventCategoryList, Settings.tsx) and the
+            // Recurring expenses table just below - every account's balance is
+            // still the most prominent number on its row, just without a whole
+            // card's padding/borders per account. A colored icon per account
+            // TYPE (not per account) gives quick visual grouping at a glance
+            // without adding a picker - see ACCOUNT_TYPE_COLORS below.
+            <Card className="mb-8 overflow-hidden p-0">
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                {accounts.map((a) => (
+                  <AccountRow key={a.id} account={a} onEdit={openEditAccount} onDelete={setDeleteAccountTarget} />
+                ))}
+              </ul>
+            </Card>
           )}
 
           <div className="mb-4 mt-8 flex flex-wrap items-start justify-between gap-3">
@@ -308,42 +320,55 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
 }
 
 // ---------------------------------------------------------------------------
-// Account card
+// Account row
 // ---------------------------------------------------------------------------
 
-function AccountCard({ account, onEdit, onDelete }: { account: Account; onEdit: (a: Account) => void; onDelete: (a: Account) => void }) {
+// 2.2.1: a per-TYPE color (not per-account - nothing to pick, same "assigned
+// automatically" spirit as EventCategoryBadge/FinanceCategoryBadge) so a
+// dense list of many accounts is still quick to scan by kind, the way the
+// old card grid's icon color already was (always brand before this - one
+// flat color regardless of type). Falls back to the "other" slate tone for
+// any future account type this map hasn't been updated for.
+const ACCOUNT_TYPE_COLORS: Record<Account["accountType"], string> = {
+  bank: "bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400",
+  revolut: "bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-400",
+  paypal: "bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400",
+  cash: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400",
+  credit_card: "bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400",
+  other: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
+};
+
+function AccountRow({ account, onEdit, onDelete }: { account: Account; onEdit: (a: Account) => void; onDelete: (a: Account) => void }) {
   const negative = account.currentBalanceCents < 0;
   return (
-    <Card className={`p-4 ${account.isActive ? "" : "opacity-60"}`}>
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400">
-            <IconWallet className="h-4 w-4" />
-          </span>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">{account.name}</p>
-            <p className="text-xs text-slate-400 dark:text-slate-500">
-              {ACCOUNT_TYPE_LABELS[account.accountType]} &middot; {account.currency}
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button type="button" className="rounded p-1 text-slate-300 hover:text-brand-600 dark:text-slate-600 dark:hover:text-brand-400" title="Edit" onClick={() => onEdit(account)}>
-            <IconPencil className="h-4 w-4" />
-          </button>
-          <button type="button" className="rounded p-1 text-slate-300 hover:text-red-600 dark:text-slate-600 dark:hover:text-red-400" title="Delete" onClick={() => onDelete(account)}>
-            <IconTrash className="h-4 w-4" />
-          </button>
-        </div>
+    <li className={`flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60 ${account.isActive ? "" : "opacity-60"}`}>
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${ACCOUNT_TYPE_COLORS[account.accountType]}`}>
+        <IconWallet className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+          {account.name}
+          {!account.isActive && <span className="ml-1.5 text-xs font-normal text-slate-400 dark:text-slate-500">(inactive)</span>}
+        </p>
+        <p className="text-xs text-slate-400 dark:text-slate-500">
+          {ACCOUNT_TYPE_LABELS[account.accountType]} &middot; {account.currency}
+        </p>
       </div>
-      <p className={`text-2xl font-semibold tabular-nums ${negative ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-100"}`}>
+      <p
+        className={`shrink-0 text-right text-sm font-semibold tabular-nums ${negative ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-100"}`}
+        title={`Opening: ${formatMoney(account.openingBalanceCents, account.currency)}`}
+      >
         {formatMoney(account.currentBalanceCents, account.currency)}
       </p>
-      <div className="mt-2 flex items-center justify-between">
-        <span className="text-xs text-slate-400 dark:text-slate-500">Opening: {formatMoney(account.openingBalanceCents, account.currency)}</span>
-        {account.isActive ? <Badge tone="active">Active</Badge> : <span className="text-xs font-medium text-slate-400 dark:text-slate-500">Inactive</span>}
+      <div className="flex shrink-0 items-center gap-1">
+        <button type="button" className="rounded p-1 text-slate-300 hover:text-brand-600 dark:text-slate-600 dark:hover:text-brand-400" title="Edit" onClick={() => onEdit(account)}>
+          <IconPencil className="h-4 w-4" />
+        </button>
+        <button type="button" className="rounded p-1 text-slate-300 hover:text-red-600 dark:text-slate-600 dark:hover:text-red-400" title="Delete" onClick={() => onDelete(account)}>
+          <IconTrash className="h-4 w-4" />
+        </button>
       </div>
-    </Card>
+    </li>
   );
 }
 

@@ -122,10 +122,12 @@ const FINANCE_ENTRY_SCOPES: [&str; 2] = ["personal", "business"];
 const FINANCE_ENTRY_SELECT: &str = "SELECT e.id, e.entry_type, e.entry_date, e.amount_cents, e.currency, e.scope,
     e.category_id, c.name AS category_name, c.color_slot AS category_color_slot,
     e.account_id, a.name AS account_name,
+    e.order_id, o.code AS order_code,
     e.place, e.note, e.is_demo, e.created_at, e.updated_at
     FROM finance_entries e
     LEFT JOIN finance_categories c ON c.id = e.category_id
-    LEFT JOIN accounts a ON a.id = e.account_id";
+    LEFT JOIN accounts a ON a.id = e.account_id
+    LEFT JOIN orders o ON o.id = e.order_id";
 
 fn map_finance_entry(row: &Row) -> rusqlite::Result<FinanceEntry> {
     Ok(FinanceEntry {
@@ -140,6 +142,8 @@ fn map_finance_entry(row: &Row) -> rusqlite::Result<FinanceEntry> {
         category_color_slot: row.get("category_color_slot")?,
         account_id: row.get("account_id")?,
         account_name: row.get("account_name")?,
+        order_id: row.get("order_id")?,
+        order_code: row.get("order_code")?,
         place: row.get("place")?,
         note: row.get("note")?,
         is_demo: row.get("is_demo")?,
@@ -188,6 +192,27 @@ pub(crate) fn validate_account(conn: &Connection, account_id: Option<i64>, curre
     Ok(())
 }
 
+/// 2.2.1: same "clear, specific error before ever reaching the database"
+/// spirit as `validate_account` right above, for the new optional
+/// `order_id` link (migrations/021_finance_entry_order_link.sql). Existence
+/// only - unlike `validate_account`, there is no currency-match requirement
+/// here: an order-linked entry doesn't feed any per-order running balance
+/// the way an account-linked entry feeds `list_accounts`' own aggregate, so
+/// there is nothing that a currency mismatch would silently corrupt. Marko
+/// may deliberately record the Finance side in a different currency than
+/// the order itself (e.g. after a currency conversion) - see PRICE-CHECKER-
+/// style precedent for keeping this a soft reference, not a hard constraint.
+pub(crate) fn validate_order(conn: &Connection, order_id: Option<i64>) -> AppResult<()> {
+    let Some(id) = order_id else { return Ok(()) };
+    let exists: Option<i64> = conn
+        .query_row("SELECT id FROM orders WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?;
+    if exists.is_none() {
+        return Err(AppError::Validation(format!("Order #{id} not found")));
+    }
+    Ok(())
+}
+
 /// Newest first (by date, then by id as a tie-breaker for same-day entries -
 /// whichever was entered last shows first), same ordering convention as
 /// every other "recent activity" list in this app.
@@ -197,6 +222,23 @@ pub fn list_finance_entries(state: State<AppState>) -> AppResult<Vec<FinanceEntr
     let sql = format!("{FINANCE_ENTRY_SELECT} ORDER BY e.entry_date DESC, e.id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], map_finance_entry)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 2.2.1: the one query Order Detail needs to show "already recorded in
+/// Finance" and let marko open/add another linked entry - deliberately its
+/// own narrow command rather than having the frontend filter the full
+/// `list_finance_entries` result (which, per this module's own doc comment,
+/// already returns every entry with no server-side filtering by design -
+/// fine for Finance's own small manual ledger, but Order Detail has no
+/// reason to fetch and hold the WHOLE ledger just to find entries for one
+/// order). Same newest-first ordering as `list_finance_entries`.
+#[tauri::command]
+pub fn list_finance_entries_for_order(state: State<AppState>, order_id: i64) -> AppResult<Vec<FinanceEntry>> {
+    let conn = state.db.lock().unwrap();
+    let sql = format!("{FINANCE_ENTRY_SELECT} WHERE e.order_id = ?1 ORDER BY e.entry_date DESC, e.id DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([order_id], map_finance_entry)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
@@ -247,11 +289,12 @@ pub(crate) fn create_finance_entry_impl(conn: &Connection, input: &FinanceEntryI
     validate_entry_fields(input)?;
     let currency = input.currency.trim().to_ascii_uppercase();
     validate_account(conn, input.account_id, &currency)?;
+    validate_order(conn, input.order_id)?;
     let place = normalize_optional(input.place.clone());
     let note = normalize_optional(input.note.clone());
     conn.execute(
-        "INSERT INTO finance_entries(entry_type, entry_date, amount_cents, currency, scope, category_id, account_id, place, note)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO finance_entries(entry_type, entry_date, amount_cents, currency, scope, category_id, account_id, order_id, place, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             input.entry_type,
             input.entry_date,
@@ -260,6 +303,7 @@ pub(crate) fn create_finance_entry_impl(conn: &Connection, input: &FinanceEntryI
             input.scope,
             input.category_id,
             input.account_id,
+            input.order_id,
             place,
             note
         ],
@@ -283,12 +327,13 @@ pub(crate) fn update_finance_entry_impl(conn: &Connection, id: i64, input: &Fina
     validate_entry_fields(input)?;
     let currency = input.currency.trim().to_ascii_uppercase();
     validate_account(conn, input.account_id, &currency)?;
+    validate_order(conn, input.order_id)?;
     let place = normalize_optional(input.place.clone());
     let note = normalize_optional(input.note.clone());
     let updated = conn.execute(
         "UPDATE finance_entries SET entry_type = ?1, entry_date = ?2, amount_cents = ?3, currency = ?4,
-             scope = ?5, category_id = ?6, account_id = ?7, place = ?8, note = ?9, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?10",
+             scope = ?5, category_id = ?6, account_id = ?7, order_id = ?8, place = ?9, note = ?10, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?11",
         rusqlite::params![
             input.entry_type,
             input.entry_date,
@@ -297,6 +342,7 @@ pub(crate) fn update_finance_entry_impl(conn: &Connection, id: i64, input: &Fina
             input.scope,
             input.category_id,
             input.account_id,
+            input.order_id,
             place,
             note,
             id
@@ -336,6 +382,7 @@ mod tests {
             scope: "personal".to_string(),
             category_id: None,
             account_id: None,
+            order_id: None,
             place: Some("  Tesco  ".to_string()),
             note: Some("  ".to_string()),
         }
@@ -524,6 +571,131 @@ mod tests {
             .unwrap();
         assert_eq!(reloaded.account_id, None, "ON DELETE SET NULL must clear account_id");
         assert_eq!(reloaded.account_name, None);
+    }
+
+    // --- 2.2.1: order_id -------------------------------------------------
+
+    fn seed_event(conn: &Connection) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES ('Test Event')", [])
+            .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Goes through the real `insert_order_with_tickets` (same as
+    /// orders.rs's own tests) rather than a hand-rolled INSERT - `orders`
+    /// has enough NOT NULL columns and its own code-generation logic that a
+    /// raw INSERT would either need to duplicate that logic or risk drifting
+    /// from it; this way every test order here is exactly as real as a
+    /// production one.
+    fn seed_order(conn: &Connection) -> i64 {
+        let event_id = seed_event(conn);
+        let input = crate::models::OrderInput {
+            event_id,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-08-30".to_string(),
+            quantity: 1,
+            unit_price_cents: 5000,
+            fees_cents: 0,
+            other_costs_cents: 0,
+            currency: "EUR".to_string(),
+            payment_status: Some("paid".to_string()),
+            notes: None,
+            ticket_type: None,
+            section: None,
+            row_label: None,
+            seats: None,
+        };
+        crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap()
+    }
+
+    #[test]
+    fn create_finance_entry_joins_order_code() {
+        let conn = test_conn();
+        let order_id = seed_order(&conn);
+        let order_code: String = conn.query_row("SELECT code FROM orders WHERE id = ?1", [order_id], |r| r.get(0)).unwrap();
+        let mut input = sample_input();
+        input.order_id = Some(order_id);
+        let created = create_finance_entry_impl(&conn, &input).unwrap();
+        assert_eq!(created.order_id, Some(order_id));
+        assert_eq!(created.order_code.as_deref(), Some(order_code.as_str()));
+    }
+
+    #[test]
+    fn create_finance_entry_allows_a_null_order() {
+        let conn = test_conn();
+        let created = create_finance_entry_impl(&conn, &sample_input()).unwrap();
+        assert_eq!(created.order_id, None);
+        assert_eq!(created.order_code, None);
+    }
+
+    #[test]
+    fn create_finance_entry_rejects_a_nonexistent_order() {
+        let conn = test_conn();
+        let mut input = sample_input();
+        input.order_id = Some(999_999);
+        let err = create_finance_entry_impl(&conn, &input).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn update_finance_entry_rejects_a_nonexistent_order() {
+        let conn = test_conn();
+        let created = create_finance_entry_impl(&conn, &sample_input()).unwrap();
+        let mut bad_input = sample_input();
+        bad_input.order_id = Some(999_999);
+        let err = update_finance_entry_impl(&conn, created.id, &bad_input).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn delete_order_leaves_existing_entries_with_no_order() {
+        let conn = test_conn();
+        let order_id = seed_order(&conn);
+        let mut input = sample_input();
+        input.order_id = Some(order_id);
+        let entry = create_finance_entry_impl(&conn, &input).unwrap();
+        assert_eq!(entry.order_id, Some(order_id));
+
+        conn.execute("DELETE FROM orders WHERE id = ?1", [order_id]).unwrap();
+
+        let reloaded = conn
+            .query_row(&format!("{FINANCE_ENTRY_SELECT} WHERE e.id = ?1"), [entry.id], map_finance_entry)
+            .unwrap();
+        assert_eq!(reloaded.order_id, None, "ON DELETE SET NULL must clear order_id");
+        assert_eq!(reloaded.order_code, None);
+    }
+
+    #[test]
+    fn list_finance_entries_for_order_returns_only_that_orders_entries() {
+        let conn = test_conn();
+        let order_a = seed_order(&conn);
+        let order_b = seed_order(&conn);
+
+        let mut for_a = sample_input();
+        for_a.order_id = Some(order_a);
+        create_finance_entry_impl(&conn, &for_a).unwrap();
+
+        let mut also_for_a = sample_input();
+        also_for_a.order_id = Some(order_a);
+        also_for_a.entry_date = "2026-08-31".to_string();
+        create_finance_entry_impl(&conn, &also_for_a).unwrap();
+
+        let mut for_b = sample_input();
+        for_b.order_id = Some(order_b);
+        create_finance_entry_impl(&conn, &for_b).unwrap();
+
+        create_finance_entry_impl(&conn, &sample_input()).unwrap(); // unlinked
+
+        let sql = format!("{FINANCE_ENTRY_SELECT} WHERE e.order_id = ?1 ORDER BY e.entry_date DESC, e.id DESC");
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows: Vec<FinanceEntry> = stmt
+            .query_map([order_a], map_finance_entry)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "only order_a's own 2 entries, not order_b's or the unlinked one");
+        assert!(rows.iter().all(|r| r.order_id == Some(order_a)));
     }
 
     #[test]

@@ -11,6 +11,61 @@ root for the detailed per-release history), just traps worth knowing
 about before working here again. New entries go at the top, dated by the
 version that found them.
 
+2026-09-01 reconciliation note: this file merges two parallel copies that
+grew independently in different sessions after 2.0.80 - the dated,
+version-tagged entries below (2.1.6 through 2.2.0) came from the session
+that built Finance/Price-Checker/Market-Analysis; the undated "Long-standing
+invariants" section at the bottom came from a separate session's own
+bootstrap of this same file, written from first-hand knowledge of the
+older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
+touched (so it never needed writing about there). Both halves are real and
+current - nothing here is superseded, they just cover different areas.
+
+## 2.2.1 - Finance entries can now link to an Order
+
+`finance_entries.order_id` (`migrations/021_finance_entry_order_link.sql`)
+is marko's own explicit, confirmed decision to reverse ONE part of
+`015_finance.sql`'s original design - that migration's own doc comment
+argued Finance should be "fully independent" of Orders/Tickets/Sales
+specifically to avoid double-counting. A few things worth knowing before
+extending this further:
+
+- **This stays a soft reference, not a merge of the two ledgers.** Nothing
+  anywhere sums a Finance entry's `amount_cents` together with an order's
+  `total_cost_cents` into one combined total - Dashboard and Finance
+  Reports remain two completely separate views, unchanged by this
+  migration. If a future change ever DOES combine them into one number
+  (e.g. a "total spent on this event, Finance + Orders" report), it must
+  either exclude order-linked Finance entries from that sum or it will
+  double-count real money - re-read this note before building that.
+- **`OrderDetail.tsx`'s "Record in Finance" modal locks Amount/Currency to
+  the order's own `total_cost_cents`/`currency` - deliberately not
+  editable there.** This is the actual mechanism that makes "aby to
+  sedelo" (so the two reconcile) true by construction rather than by
+  convention: the two numbers cannot legitimately drift apart because the
+  Finance side is never independently typed in. Every other Finance entry
+  creation path (`Transactions.tsx`'s own "New entry", recurring expenses)
+  is completely untouched and still free-typed, same as before.
+- **No UNIQUE constraint, and no currency-match requirement, on
+  `order_id`** - unlike `account_id` (`validate_account`, which DOES
+  require a currency match because an account has a running balance an
+  entry directly feeds), `validate_order` (`finance_entries.rs`) only
+  checks the order exists. More than one Finance entry may point at the
+  same order (e.g. a deposit now, the balance later - marko may
+  reasonably want this), and a Finance entry could in principle be
+  recorded in a different currency than its linked order after a
+  conversion. Don't add either constraint without checking this reasoning
+  still holds.
+- **Editing an order-linked entry from `Transactions.tsx`'s `EntryFormModal`
+  must round-trip `orderId` unchanged** - that form has no UI to set or
+  clear the link, so its submit handler explicitly carries
+  `initial?.orderId ?? null` through rather than defaulting to `null`
+  always, which would silently unlink an entry the first time marko
+  merely fixed a typo in its note. The currency-conversion re-save in
+  `Overview.tsx` has the same requirement and the same fix. If a THIRD
+  place ever writes a `FinanceEntryInput` for an existing entry, it needs
+  the same care.
+
 ## 2.2.0 - Price Checker Market Analysis (built on the Visible Scanner)
 
 `commands/price_checker_analysis.rs` is a pure/derived-data layer over a
@@ -91,7 +146,7 @@ being unreliable no matter how the extraction logic was patched. In its
 place: `commands/price_checker_scanner.rs` (session state + the 4 Tauri
 commands) and `commands/price_checker_scan.js` (the injected 3-layer
 extraction script) open a real, visible `WebviewWindow` the user drives
-themselves. Read that module's own doc comment first for the session model
+himself. Read that module's own doc comment first for the session model
 and status-derivation rules before changing anything here. A few things
 that bit during this rewrite, worth knowing before touching this area
 again:
@@ -261,3 +316,97 @@ the obvious `$Version` line.
 
 (2.1.6 is the oldest dated entry that existed in this file - this move
 carried over the complete original content, nothing was cut.)
+
+## Long-standing invariants (not tied to one dated release)
+
+The areas below predate this file's dated-entry convention and were never
+re-visited by the 2.1.x/2.2.0 work above, so they have no "found in vX.Y.Z"
+entry of their own - they are still real, current, and especially relevant
+to any task touching Finance, Orders, or Sheets sync.
+
+### Financial / data-integrity logic
+
+- **`insert_order_with_tickets`'s exact-cent cost allocation across
+  tickets** (`commands/orders.rs`) - splits an order's total cost across N
+  tickets to the exact cent. Explicitly called out elsewhere in this
+  codebase as "protected financial/data-integrity logic this project's
+  house rules say not to touch without asking first." This is also *why*
+  Google Sheets sync is deliberately creation-only for orders: editing an
+  order's purchase-side numbers after tickets already exist would touch
+  this allocation.
+- **`finance.rs`** (`profit_cents`, `safe_ratio`) - the single source of
+  truth for profit/margin/ROI math. The in-app Sales screen, the CSV
+  export, the Price Checker Market Analysis recommendations (2.2.0, see
+  above), and (indirectly) the Google Sheets Summary formulas must all stay
+  consistent with this; don't reimplement the formula locally anywhere.
+- **Sale `payment_status` transitions** (`sales.rs`) -
+  pending -> paid is a normal edit; refunding is a one-way, atomic
+  transition (`refund_sale_impl`: sale -> `refunded`, ticket back to
+  `available`, in one transaction) that can never be undone from the UI.
+  A refunded sale is never deleted (history is kept) and never
+  re-editable.
+- **The new `finance_accounts`/`finance_entries`/`finance_recurring`/
+  `finance_forecast` module family (2.1.0+) is a SEPARATE ledger, not
+  currently linked to Orders/Tickets in any way.** Any work that connects
+  Finance entries to a specific Order (marko has asked for this - see
+  `CURRENT_STATE.md`'s current-task notes) needs to decide the link
+  direction and cardinality deliberately; there is no existing foreign key
+  or convention to copy here yet.
+
+### Google Sheets sync modules
+
+- **`orders_sheet_sync.rs` / `pulls_sheet_sync.rs`** - "creation-only"
+  philosophy: ordinary sync/push must never overwrite a cell that already
+  has *anything* in it, even if it looks wrong. The only way to correct an
+  already-written cell is the explicit, separately-confirmed "Fix sync"
+  (force) action, and even that never blanks a field the app has no
+  opinion on (see `apply_sales_push_internal`'s 2.0.61 doc comment for the
+  regression this rule exists to prevent). Do not make an ordinary
+  sync/push more aggressive without asking - this has already caused a
+  real regression once.
+- **Locale-sensitive Sheets formulas** - any formula this app writes back
+  to a sheet must avoid a literal comma as a function-argument separator
+  (`SUMIF(a,b,c)`), because Google Sheets parses that separator per the
+  spreadsheet's own locale, and this app has no reliable way to know it
+  (only the 3-letter currency code, a different setting). Use a single
+  array-expression `SUMPRODUCT(...)` argument instead - see
+  `plan_orders_summary_updates`'s 2.0.42/2.0.80 doc comments for the real
+  incident and the pattern to follow.
+- **Reuse existing thresholds/mechanisms, don't invent new scoring or
+  rules.** Stated in this project's own original plan file and followed
+  since: e.g. the Dashboard alert bell and outbound notifications
+  deliberately reuse the exact same 4 "Attention" categories and the same
+  3-day upcoming-event window already shown elsewhere, rather than a new
+  rule; the "pulls near deadline" Dashboard alert reuses Pulls.tsx's own
+  existing warning window rather than a new one; Price Checker Market
+  Analysis (2.2.0) reuses `compute_scan_stats` and `finance::safe_ratio`
+  rather than reimplementing either.
+
+### Backend fields that outlive one UI consumer
+
+- Before deleting a backend field/column because one screen stopped
+  showing it, check whether another feature still reads it. Example:
+  `unpaid_orders_count` was removed from the Dashboard's own Activity tab
+  in 2.0.79 but deliberately left in the backend `DashboardAlerts`
+  struct/computation, because the outbound-notifications feature still
+  depends on it and marko only asked to change the Dashboard.
+
+### Explicitly out of scope until marko asks again
+
+- **2FA and email verification at registration** - deliberately deferred
+  ("postupom časom"). No design work, no partial implementation.
+
+### Process/packaging invariants
+
+- **Version bump is 9 occurrences across 7 files**, every release (see
+  `CURRENT_STATE.md` and the "2.1.6" dated entry above for the full
+  checklist beyond the obvious 3 files). Missing one produces a build with
+  mismatched version strings.
+- **`REDESIGN-X.Y.Z-REPORT.md` (Slovak) is written for every version and
+  keeps being written** - confirmed with marko that `CHANGELOG.md` is
+  additive, not a replacement.
+- **Secrets stay plain text in `app_settings`** - this is an accepted,
+  existing trust boundary across the whole app (Google OAuth refresh
+  token, Pushover user key, Firebase config, etc.), not something to
+  unilaterally "fix" by adding encryption without marko explicitly asking
+  for that specific change.

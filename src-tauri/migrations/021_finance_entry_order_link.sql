@@ -1,0 +1,32 @@
+-- TIQR Manager - 021_finance_entry_order_link
+-- 2.2.1: marko's own request - "finance centrum prepojit aj s listkami...
+-- ked nakupim listky, tak si viem presne dat do finances a spojit s order,
+-- aby to sedelo a davalo zmysel" (link Finance with ticket purchases too -
+-- when I buy tickets, I want to be able to record it precisely in Finance
+-- and connect it to the Order, so the figures reconcile and make sense).
+--
+-- This is a deliberate, explicit reversal of one specific part of
+-- 015_finance.sql's original design ("NOT a link into orders/tickets/sales
+-- - this ledger is fully independent of that data, by design... keeps this
+-- migration simple and completely safe against ever double-counting or
+-- drifting out of sync with the existing Orders/Sales figures") - confirmed
+-- with marko via question before implementing, picking "link + prefill"
+-- over a plain link-only field or fully-automatic entry creation on every
+-- order. The double-counting concern that original design was protecting
+-- against is about SUMMING the same money twice in one combined total -
+-- nothing today sums Finance entries and Orders/Sales figures together
+-- (Dashboard/Finance Reports stay two separate views, unchanged by this
+-- migration), so a plain optional reference does not reopen that hole; it
+-- only makes an already-recorded entry traceable back to the order that
+-- caused it, and lets Order Detail show whether that order has been logged
+-- in Finance yet.
+--
+-- Same `ON DELETE SET NULL` convention already used for finance_entries'
+-- own category_id (015) and account_id (016_finance_v2.sql) - deleting an
+-- order un-links any Finance entry that referenced it rather than deleting
+-- real financial history. Deliberately no UNIQUE constraint on order_id:
+-- marko may reasonably want more than one entry against the same order
+-- (e.g. a deposit now, the balance later) - this stays a plain optional
+-- many-to-one reference, same flexibility as category_id/account_id.
+ALTER TABLE finance_entries ADD COLUMN order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_finance_entries_order ON finance_entries(order_id);

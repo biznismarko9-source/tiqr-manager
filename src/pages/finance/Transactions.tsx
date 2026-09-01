@@ -484,6 +484,11 @@ function EntryFormModal({
       scope,
       categoryId: categoryId ? Number(categoryId) : null,
       accountId: accountId ? Number(accountId) : null,
+      // 2.2.1: this form has no UI to set/change an order link (that's
+      // OrderDetail's "Record in Finance" button) - but editing an entry
+      // that already has one must not silently drop it, so whatever
+      // `initial` already had round-trips unchanged.
+      orderId: initial?.orderId ?? null,
       place: place.trim() || null,
       note: note.trim() || null,
     };
@@ -507,6 +512,16 @@ function EntryFormModal({
   return (
     <Modal open={open} onClose={onClose} title={initial ? "Edit entry" : "New entry"}>
       <div className="space-y-3">
+        {/* 2.2.1: read-only - this form has no control to set/change the
+            order link (see OrderDetail.tsx's "Record in Finance" button),
+            just a heads-up when editing an entry that already has one so
+            it isn't a surprise that this entry is tied to a specific
+            order. */}
+        {initial?.orderCode && (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+            Linked to order <span className="font-medium text-slate-700 dark:text-slate-300">{initial.orderCode}</span>
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <span className="label">Type</span>

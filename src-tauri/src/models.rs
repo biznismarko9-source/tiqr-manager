@@ -2181,6 +2181,16 @@ pub struct FinanceEntry {
     /// is the whole story here too - see migrations/016_finance_v2.sql).
     pub account_id: Option<i64>,
     pub account_name: Option<String>,
+    /// 2.2.1: which `Order` this entry represents the recorded cost of -
+    /// optional, same "denormalized label alongside the id, None exactly
+    /// when unset or pointing at a since-deleted row" convention as
+    /// `account_id`/`account_name` right above (`ON DELETE SET NULL`, see
+    /// migrations/021_finance_entry_order_link.sql). Deliberately NOT a
+    /// replacement for `orders.total_cost_cents` - that stays the order's
+    /// own protected number (see PROTECTED_AREAS.md); this is just a
+    /// reference to it so Finance and Orders can be cross-checked.
+    pub order_id: Option<i64>,
+    pub order_code: Option<String>,
     pub place: Option<String>,
     pub note: Option<String>,
     pub is_demo: bool,
@@ -2207,6 +2217,10 @@ pub struct FinanceEntryInput {
     /// before this version, and any entry created without one, is simply
     /// `None`.
     pub account_id: Option<i64>,
+    /// 2.2.1: optional, same as `account_id` - most entries still have no
+    /// order at all (personal spending, business income, anything not a
+    /// ticket purchase).
+    pub order_id: Option<i64>,
     pub place: Option<String>,
     pub note: Option<String>,
 }

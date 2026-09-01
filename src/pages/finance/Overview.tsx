@@ -212,6 +212,11 @@ export default function Overview({ entries, accounts, loading, reload }: Finance
             scope: e.scope,
             categoryId: e.categoryId,
             accountId: e.accountId,
+            // 2.2.1: carry the order link through unchanged - this is a
+            // currency re-save of an existing entry, not a new one, so a
+            // link to an order (if any) must survive a conversion exactly
+            // like every other field here that isn't the amount/currency.
+            orderId: e.orderId,
             place: e.place,
             note: e.note,
           };

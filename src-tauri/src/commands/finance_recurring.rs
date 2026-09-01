@@ -313,6 +313,10 @@ pub(crate) fn create_from_recurring_impl(conn: &Connection, id: i64) -> AppResul
         scope: current.scope.clone(),
         category_id: current.category_id,
         account_id: current.account_id,
+        // 2.2.1: a recurring template has no order of its own - this is a
+        // template's own periodic occurrence (rent, a subscription...), not
+        // a ticket purchase.
+        order_id: None,
         place: Some(current.name.clone()),
         note: current.note.clone(),
     };

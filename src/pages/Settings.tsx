@@ -57,9 +57,11 @@ import {
   IconPlus,
   IconSun,
   IconTag,
+  IconTicket,
   IconTrash,
   IconUpload,
   IconUser,
+  IconWallet,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
@@ -141,6 +143,14 @@ export default function Settings() {
   const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<EventCategory | null>(null);
   const [confirmDeleteFinanceCategory, setConfirmDeleteFinanceCategory] = useState<FinanceCategory | null>(null);
   const [deletingLookup, setDeletingLookup] = useState(false);
+  // 2.2.1: marko's own request - Lookups is now 3 clickable summary rows
+  // (Settings Home's own row/chevron style, see the SECTIONS.map list above)
+  // instead of all three lists permanently expanded on one long Card; which
+  // one's management modal is currently open, if any. The add/delete
+  // functionality inside each modal (PlatformList/EventCategoryList/
+  // FinanceCategoryList below) is completely unchanged - only the
+  // container around it is new.
+  const [openLookup, setOpenLookup] = useState<"platforms" | "eventCategories" | "financeCategories" | null>(null);
   // 1.9.1: which entity's export picker is open, if any - see
   // ExportPickerModal.tsx. Replaces the old "click = instant whole-file
   // download" Export CSV buttons with "click = pick exactly which records"
@@ -395,90 +405,135 @@ export default function Settings() {
             </Card>
           )}
 
+          {/* 2.2.1: marko's own request - was one long Card with all three
+              lists permanently expanded (taking a lot of scroll for
+              something he only opens occasionally); now exactly 3 rows,
+              same row/chevron visual language as the Settings Home list
+              itself above (icon, title + a live count, chevron), each
+              opening its list(s) in a Modal instead. The add/delete
+              functionality inside (PlatformList/EventCategoryList/
+              FinanceCategoryList below, and their own onAdd/onDelete
+              handlers) is completely unchanged - only the container
+              changed, from "always visible" to "opens on click". */}
           {section === "lookups" && (
-            <Card className="p-5 lg:max-w-3xl">
-              {/* 1.9.3: split into two lists - marko didn't want "where you
-                  bought it" and "where you sold it" sharing one pool any
-                  more. Backed by the same `platforms` table either way (its
-                  `kind` column has existed since the first migration, so no
-                  schema change was needed) - a platform tagged "Both" simply
-                  appears in both lists below, via PlatformList's own filter.
-                  2.0.73: the explanation of what Purchase/Selling/Both mean
-                  used to be a permanent paragraph here, every time - same
-                  "keep every feature, just don't show it when you don't need
-                  it" simplification already applied to Settings ->
-                  Integrations (REDESIGN-2.0.65-REPORT.md). It's now on the
-                  heading's own hover hint (InfoHint below) instead - nothing
-                  explained before is explained any less, it's just not
-                  permanently on screen. */}
-              <div className="mb-4 flex items-center gap-1.5">
-                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
-                <InfoHint text={`Purchase platforms show up when recording an order; Selling platforms show up when recording a sale. Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.`} />
-              </div>
-              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                <PlatformList
-                  heading="Purchase platforms"
-                  kind="purchase"
-                  platforms={platforms}
-                  onAdd={addPlatform}
-                  onDelete={setConfirmDeletePlatform}
-                  onChangeKind={changePlatformKind}
-                />
-                <PlatformList
-                  heading="Selling platforms"
-                  kind="sale"
-                  platforms={platforms}
-                  onAdd={addPlatform}
-                  onDelete={setConfirmDeletePlatform}
-                  onChangeKind={changePlatformKind}
-                />
-              </div>
+            <div className="flex flex-col gap-2 lg:max-w-2xl">
+              <button
+                type="button"
+                onClick={() => setOpenLookup("platforms")}
+                className="card flex items-center gap-4 p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+              >
+                <IconTag className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
+                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                    {platforms.length} platform{platforms.length === 1 ? "" : "s"} &middot; purchase and selling
+                  </p>
+                </span>
+                <IconChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-slate-300 dark:text-slate-600" />
+              </button>
 
-              {/* 2.0.27: marko's request - filter and color-code Events/
-                  Orders/Sales by category (football, concert, etc.). One
-                  list, not a Purchase/Selling pair - a category has no
-                  "kind" split. Each category's color is assigned
-                  automatically the first time it's added (see
-                  EventCategoryBadge.tsx) - nothing to pick here. */}
-              <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-800">
-                <div className="mb-4 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setOpenLookup("eventCategories")}
+                className="card flex items-center gap-4 p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+              >
+                <IconTicket className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Event categories</h3>
-                  <InfoHint text="Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales. Not hardcoded — add as many as you like, each gets its own color automatically." />
-                </div>
-                <div className="sm:max-w-sm">
-                  <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
-                </div>
-              </div>
+                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                    {categories.length} categor{categories.length === 1 ? "y" : "ies"} &middot; colors and filters Events, Orders, Sales
+                  </p>
+                </span>
+                <IconChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-slate-300 dark:text-slate-600" />
+              </button>
 
-              {/* 2.0.83: Finance categories (Finance.tsx) - same
-                  Expense/Income split as Platforms' Purchase/Selling split
-                  above, backed by the same one `finance_categories` table
-                  either way (a category's `kind` decides which list(s) it
-                  shows in). */}
-              <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-800">
-                <div className="mb-4 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setOpenLookup("financeCategories")}
+                className="card flex items-center gap-4 p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+              >
+                <IconWallet className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
+                <span className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance categories</h3>
-                  <InfoHint text="Categories for the Finance section's entries (personal and business money). Each gets its own color automatically - not hardcoded, add as many as you like." />
-                </div>
-                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                  <FinanceCategoryList
-                    heading="Expense categories"
-                    kind="expense"
-                    categories={financeCategories}
-                    onAdd={addFinanceCategory}
-                    onDelete={setConfirmDeleteFinanceCategory}
-                  />
-                  <FinanceCategoryList
-                    heading="Income categories"
-                    kind="income"
-                    categories={financeCategories}
-                    onAdd={addFinanceCategory}
-                    onDelete={setConfirmDeleteFinanceCategory}
-                  />
-                </div>
-              </div>
-            </Card>
+                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                    {financeCategories.length} categor{financeCategories.length === 1 ? "y" : "ies"} &middot; expense and income
+                  </p>
+                </span>
+                <IconChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-slate-300 dark:text-slate-600" />
+              </button>
+            </div>
           )}
+
+          <Modal open={openLookup === "platforms"} onClose={() => setOpenLookup(null)} title="Platforms" width="max-w-3xl">
+            {/* 1.9.3: split into two lists - marko didn't want "where you
+                bought it" and "where you sold it" sharing one pool any
+                more. Backed by the same `platforms` table either way (its
+                `kind` column has existed since the first migration, so no
+                schema change was needed) - a platform tagged "Both" simply
+                appears in both lists below, via PlatformList's own filter. */}
+            <div className="mb-3 flex items-center gap-1.5">
+              <InfoHint text={`Purchase platforms show up when recording an order; Selling platforms show up when recording a sale. Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.`} />
+              <p className="text-xs text-slate-400 dark:text-slate-500">Hover the (i) for what Purchase/Selling/Both mean.</p>
+            </div>
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <PlatformList
+                heading="Purchase platforms"
+                kind="purchase"
+                platforms={platforms}
+                onAdd={addPlatform}
+                onDelete={setConfirmDeletePlatform}
+                onChangeKind={changePlatformKind}
+              />
+              <PlatformList
+                heading="Selling platforms"
+                kind="sale"
+                platforms={platforms}
+                onAdd={addPlatform}
+                onDelete={setConfirmDeletePlatform}
+                onChangeKind={changePlatformKind}
+              />
+            </div>
+          </Modal>
+
+          {/* 2.0.27: marko's request - filter and color-code Events/Orders/
+              Sales by category (football, concert, etc.). One list, not a
+              Purchase/Selling pair - a category has no "kind" split. Each
+              category's color is assigned automatically the first time it's
+              added (see EventCategoryBadge.tsx) - nothing to pick here. */}
+          <Modal open={openLookup === "eventCategories"} onClose={() => setOpenLookup(null)} title="Event categories">
+            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales. Not
+              hardcoded — add as many as you like, each gets its own color automatically.
+            </p>
+            <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
+          </Modal>
+
+          {/* 2.0.83: Finance categories (Finance.tsx) - same Expense/Income
+              split as Platforms' Purchase/Selling split above, backed by the
+              same one `finance_categories` table either way (a category's
+              `kind` decides which list(s) it shows in). */}
+          <Modal open={openLookup === "financeCategories"} onClose={() => setOpenLookup(null)} title="Finance categories" width="max-w-3xl">
+            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              Categories for the Finance section's entries (personal and business money). Each gets its own color
+              automatically - not hardcoded, add as many as you like.
+            </p>
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <FinanceCategoryList
+                heading="Expense categories"
+                kind="expense"
+                categories={financeCategories}
+                onAdd={addFinanceCategory}
+                onDelete={setConfirmDeleteFinanceCategory}
+              />
+              <FinanceCategoryList
+                heading="Income categories"
+                kind="income"
+                categories={financeCategories}
+                onAdd={addFinanceCategory}
+                onDelete={setConfirmDeleteFinanceCategory}
+              />
+            </div>
+          </Modal>
 
           {section === "data" && (
             // 1.9.5: marko wants these stacked instead of side-by-side -

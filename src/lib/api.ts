@@ -275,6 +275,7 @@ export const api = {
   createFinanceCategory: (name: string, kind: string) => invoke<FinanceCategory>("create_finance_category", { name, kind }),
   deleteFinanceCategory: (id: number) => invoke<void>("delete_finance_category", { id }),
   listFinanceEntries: () => invoke<FinanceEntry[]>("list_finance_entries"),
+  listFinanceEntriesForOrder: (orderId: number) => invoke<FinanceEntry[]>("list_finance_entries_for_order", { orderId }),
   createFinanceEntry: (input: FinanceEntryInput) => invoke<FinanceEntry>("create_finance_entry", { input }),
   updateFinanceEntry: (id: number, input: FinanceEntryInput) => invoke<FinanceEntry>("update_finance_entry", { id, input }),
   deleteFinanceEntry: (id: number) => invoke<void>("delete_finance_entry", { id }),

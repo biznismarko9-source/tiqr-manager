@@ -178,6 +178,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_remove_stubhub",
         include_str!("../migrations/020_remove_stubhub.sql"),
     ),
+    (
+        "021_finance_entry_order_link",
+        include_str!("../migrations/021_finance_entry_order_link.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

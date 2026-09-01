@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
+  Account,
+  FinanceCategory,
+  FinanceEntry,
+  FinanceEntryInput,
   OrderEditInput,
   OrderPaymentStatus,
   OrderRecord,
@@ -10,7 +14,7 @@ import type {
   PullReceived,
   Ticket,
 } from "../lib/types";
-import { decimalStringToCents, formatDate, formatDateNumeric, formatMoney, formatSeatLocation } from "../lib/format";
+import { centsToDecimalString, decimalStringToCents, formatDate, formatDateNumeric, formatMoney, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
@@ -25,10 +29,11 @@ import {
   Modal,
   ModalFooter,
   Select,
+  Spinner,
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { DELIVERY_STATUS_OPTIONS, TicketEditModal } from "./Tickets";
@@ -104,6 +109,14 @@ export default function OrderDetail() {
   const [editPull, setEditPull] = useState<PullReceived | null>(null);
   const [deletePullTarget, setDeletePullTarget] = useState<PullReceived | null>(null);
   const [deletingPull, setDeletingPull] = useState(false);
+  // 2.2.1: marko's own request - "Record in Finance" lets this order's cost
+  // be logged as a Finance expense linked back to it (see
+  // finance_entries.rs's 2.2.1 order_id addition). `financeEntriesForOrder`
+  // is loaded alongside everything else below so the page can show whether
+  // this order has already been recorded, without a fresh fetch every time
+  // the modal opens.
+  const [financeEntriesForOrder, setFinanceEntriesForOrder] = useState<FinanceEntry[] | null>(null);
+  const [recordFinanceOpen, setRecordFinanceOpen] = useState(false);
 
   const loadPullsReceived = useCallback(() => {
     api.listPullsReceivedForOrder(orderId).then(setPullsReceived).catch((e) => toast.error(errMsg(e)));
@@ -120,6 +133,7 @@ export default function OrderDetail() {
       .then(setTickets)
       .catch((e) => toast.error(errMsg(e)));
     api.getOrderSalesSummary(orderId).then(setSalesSummary).catch((e) => toast.error(errMsg(e)));
+    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch((e) => toast.error(errMsg(e)));
     loadPullsReceived();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
@@ -198,6 +212,19 @@ export default function OrderDetail() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* 2.2.1: marko's own request - same cross-navigation pattern
+              EventDetail's "Compare to market prices" link already uses
+              (navigate + presetEventId via router state, see
+              PriceChecker.tsx which reads this back out of location.state
+              to preselect the event) - offered here too so checking market
+              prices for this order's event doesn't need a detour through
+              Events first. */}
+          <Button
+            variant="secondary"
+            onClick={() => navigate("/price-checker", { state: { presetEventId: order.eventId } })}
+          >
+            <IconTag className="h-4 w-4" /> Check prices
+          </Button>
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>
@@ -260,7 +287,9 @@ export default function OrderDetail() {
           with only 2 of 3 cells filled. Long notes still wrap
           (whitespace-pre-wrap) instead of truncating - just inside a
           narrower cell than before. */}
-      <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+      {/* 2.2.1: sm:grid-cols-4 (was 3) - the new "Finance" cell below makes
+          this 4 items now. */}
+      <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
         <div>
           <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
@@ -288,6 +317,29 @@ export default function OrderDetail() {
                 Convert to EUR
               </button>
             )}
+          </div>
+        </div>
+        {/* 2.2.1: marko's own request - see RecordInFinanceModal below.
+            financeEntriesForOrder === null is "still loading", not "none
+            yet" - the button already works either way, this just avoids a
+            flash of "Not recorded" before the real answer arrives. */}
+        <div>
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Finance</p>
+          <div className="mt-1 flex items-center gap-2">
+            {financeEntriesForOrder && financeEntriesForOrder.length > 0 ? (
+              <span className="text-sm text-emerald-600 dark:text-emerald-400">
+                Recorded ({financeEntriesForOrder.length})
+              </span>
+            ) : (
+              <span className="text-sm text-slate-400 dark:text-slate-500">Not recorded</span>
+            )}
+            <button
+              type="button"
+              className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+              onClick={() => setRecordFinanceOpen(true)}
+            >
+              {financeEntriesForOrder && financeEntriesForOrder.length > 0 ? "Add another" : "Record in Finance"}
+            </button>
           </div>
         </div>
       </Card>
@@ -664,6 +716,16 @@ export default function OrderDetail() {
         }}
       />
 
+      <RecordInFinanceModal
+        open={recordFinanceOpen}
+        order={order}
+        onClose={() => setRecordFinanceOpen(false)}
+        onSaved={() => {
+          setRecordFinanceOpen(false);
+          load();
+        }}
+      />
+
       <TicketEditModal
         open={!!editTicket}
         ticket={editTicket}
@@ -848,6 +910,176 @@ function TicketStatusBar({
         Clear selection
       </button>
     </div>
+  );
+}
+
+/** 2.2.1: marko's own request - lets an order's cost be logged as a linked
+ * Finance expense in one click instead of retyping the amount by hand in
+ * Transactions (see finance_entries.rs's 2.2.1 order_id addition and its
+ * own doc comment on why this is a soft reference, not a replacement for
+ * the order's own total_cost_cents). Amount and currency are deliberately
+ * READ-ONLY here, fixed to the order's own totalCostCents/currency - the
+ * whole point marko asked for ("presne" - precisely) is that this number
+ * can never drift from what the order actually says. Every other field
+ * (date/scope/category/account/place/note) is a normal editable Finance
+ * entry field, same shape as Transactions.tsx's own EntryFormModal. */
+function RecordInFinanceModal({
+  open,
+  order,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  order: OrderRecord;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [categories, setCategories] = useState<FinanceCategory[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [scope, setScope] = useState<"personal" | "business">("business");
+  const [entryDate, setEntryDate] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [place, setPlace] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    api.listFinanceCategories().then(setCategories).catch(() => {});
+    api.listAccounts().then(setAccounts).catch(() => {});
+    setScope("business");
+    setEntryDate(order.purchaseDate);
+    setCategoryId("");
+    setAccountId("");
+    setPlace(order.eventName);
+    setNote("");
+    setError(null);
+  }, [open, order]);
+
+  // entryType is fixed "expense" here (never a picker, a ticket purchase is
+  // definitionally a cost) - same "only offer categories tagged for this
+  // entry type" filter Transactions.tsx's own EntryFormModal uses.
+  const relevantCategories = categories.filter((c) => c.kind === "expense" || c.kind === "both");
+  // Amount/currency are fixed to the order's own values (see this
+  // component's own doc comment), so - same rule as every other account
+  // picker in this app (finance_entries::validate_account) - only accounts
+  // already in the order's own currency are offered.
+  const relevantAccounts = accounts.filter((a) => a.currency === order.currency);
+
+  const submit = async () => {
+    if (!entryDate) {
+      setError("Pick a date.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const input: FinanceEntryInput = {
+      entryType: "expense",
+      entryDate,
+      amountCents: order.totalCostCents,
+      currency: order.currency,
+      scope,
+      categoryId: categoryId ? Number(categoryId) : null,
+      accountId: accountId ? Number(accountId) : null,
+      orderId: order.id,
+      place: place.trim() || null,
+      note: note.trim() || null,
+    };
+    try {
+      await api.createFinanceEntry(input);
+      toast.success("Recorded in Finance.");
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Record in Finance">
+      <div className="space-y-3">
+        <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
+          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Amount</p>
+          <p className="mt-0.5 text-lg font-semibold text-slate-800 dark:text-slate-200">
+            {formatMoney(order.totalCostCents, order.currency)}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+            This order's total cost - fixed, so the two always match. Edit the order itself to change it.
+          </p>
+        </div>
+
+        <Field label="Date" required>
+          <Input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+        </Field>
+
+        <div>
+          <span className="label">Scope</span>
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            {(["personal", "business"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setScope(s)}
+                className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  scope === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {s === "personal" ? "Personal" : "Business"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Field label="Category" hint="Manage the list in Settings -> Lookups.">
+          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+            <option value="">No category</option>
+            {relevantCategories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label="Account"
+          hint={relevantAccounts.length === 0 && accounts.length > 0 ? `No ${order.currency} account yet - manage accounts on Finance -> Accounts.` : undefined}
+        >
+          <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            <option value="">No account</option>
+            {relevantAccounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="Place / who">
+          <Input value={place} onChange={(e) => setPlace(e.target.value)} />
+        </Field>
+
+        <Field label="Note">
+          <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+
+        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={submit} disabled={saving}>
+          {saving ? <Spinner className="h-4 w-4" /> : null}
+          Record in Finance
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }
 

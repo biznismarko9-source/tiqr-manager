@@ -105,6 +105,14 @@ export interface FinanceEntry {
    * NULL is the whole story, see finance_entries.rs). */
   accountId: number | null;
   accountName: string | null;
+  /** 2.2.1: which `Order` this entry represents the recorded cost of -
+   * optional, same convention as accountId/accountName (null exactly when
+   * unset or pointing at a since-deleted order). Deliberately NOT a
+   * replacement for the order's own totalCostCents - this is just a
+   * reference so Finance and Orders can be cross-checked, see
+   * OrderDetail.tsx's "Record in Finance" button. */
+  orderId: number | null;
+  orderCode: string | null;
   place: string | null;
   note: string | null;
   isDemo: boolean;
@@ -125,6 +133,10 @@ export interface FinanceEntryInput {
   /** 2.1.0: optional, same as categoryId - never required (an entry can be
    * logged with no specific account, exactly as before this version). */
   accountId: number | null;
+  /** 2.2.1: optional, same as accountId - most entries still have no order
+   * at all (personal spending, business income, anything not a ticket
+   * purchase). */
+  orderId: number | null;
   place: string | null;
   note: string | null;
 }

@@ -286,6 +286,7 @@ mod tests {
             scope: "personal".to_string(),
             category_id: None,
             account_id: Some(account_id),
+            order_id: None,
             place: None,
             note: None,
         }
@@ -300,6 +301,7 @@ mod tests {
             scope: "personal".to_string(),
             category_id: None,
             account_id: Some(account_id),
+            order_id: None,
             place: None,
             note: None,
         }

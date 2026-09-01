@@ -139,6 +139,7 @@ pub fn run() {
             commands::finance_entries::create_finance_category,
             commands::finance_entries::delete_finance_category,
             commands::finance_entries::list_finance_entries,
+            commands::finance_entries::list_finance_entries_for_order,
             commands::finance_entries::create_finance_entry,
             commands::finance_entries::update_finance_entry,
             commands::finance_entries::delete_finance_entry,

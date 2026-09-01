@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -39,7 +39,8 @@ are more places than the obvious 3 files.
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
   under `commands/`: events, orders (+ `orders_sheet_sync`), tickets,
   sales, event_categories, pulls (+ `pulls_received`, `pulls_sheet_sync`),
-  finance_accounts/finance_entries/finance_recurring/finance_forecast,
+  finance_accounts/finance_entries (2.2.1: entries can optionally link to
+  an Order via `order_id`)/finance_recurring/finance_forecast,
   price_checker (CRUD/marketplaces + saved-check history) +
   price_checker_scanner (the Visible Scanner session/commands) +
   price_checker_scan.js (injected extraction script) +
@@ -52,7 +53,7 @@ are more places than the obvious 3 files.
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **020_remove_stubhub.sql**. Migrations run
+  currently through **021_finance_entry_order_link.sql**. Migrations run
   automatically at startup, forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
@@ -62,6 +63,39 @@ are more places than the obvious 3 files.
   logs, etc).
 
 ## Current focus / most recent work
+
+**Finance <-> Orders link, Finance Accounts/Lookups UI simplification,
+Price Checker jump links (2.2.1).** Four independent, marko-requested
+pieces in one release:
+- Finance Accounts (`src/pages/finance/Accounts.tsx`) - the old
+  `sm:grid-cols-2 lg:grid-cols-3` grid of large `AccountCard`s is now one
+  compact divide-y list (`AccountRow`), same dense-row visual language as
+  PlatformList/EventCategoryList and the Recurring expenses table. Balance
+  is still the most prominent number per row; opening balance moved to a
+  hover tooltip.
+- Settings -> Lookups (`Settings.tsx`) - was one long Card with Platforms/
+  Event categories/Finance categories always expanded; now exactly 3
+  clickable summary rows (same row/chevron style as Settings Home's own
+  list), each opening its list(s) in a Modal. The add/delete functionality
+  itself (`PlatformList`/`EventCategoryList`/`FinanceCategoryList`) is
+  unchanged - only the container is new.
+- "Check prices" jump into Price Checker, added to `OrderDetail.tsx` and
+  `SaleDetail.tsx` (hidden there when a sale group spans mixed events) -
+  same `navigate("/price-checker", { state: { presetEventId } })` pattern
+  `EventDetail.tsx` already used since 2.0.81; `PriceChecker.tsx` already
+  read `location.state.presetEventId` and needed no changes.
+- Finance entries can now optionally link to an Order (`order_id`, new
+  `migrations/021_finance_entry_order_link.sql`, `ON DELETE SET NULL` -
+  same convention as `category_id`/`account_id`). A deliberate, marko-
+  confirmed reversal of one part of `015_finance.sql`'s original "fully
+  independent ledger" design - see `PROTECTED_AREAS.md`'s new entry before
+  touching `finance_entries.rs` again. `OrderDetail.tsx` has a new "Record
+  in Finance" button/modal that pre-fills a new expense entry from the
+  order's own `total_cost_cents`/`currency`/`purchase_date` (amount/
+  currency are read-only in that modal - the whole point is the two
+  numbers can never drift apart) and shows whether the order has already
+  been recorded. `list_finance_entries_for_order` is the one new command
+  this needed.
 
 **Price Checker Market Analysis, built on top of the Visible Scanner
 (2.2.0).** New `commands/price_checker_analysis.rs` module (2 Tauri
@@ -104,8 +138,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 106 of
-them as of 2.2.0. These are not read by default under this protocol; only
+`*-REPORT.md` file at the repo root (Slovak, written for marko) - 107 of
+them as of 2.2.1. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

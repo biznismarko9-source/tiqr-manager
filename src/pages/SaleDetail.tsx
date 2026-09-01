@@ -20,7 +20,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
@@ -249,9 +249,25 @@ export default function SaleDetail() {
             {header.saleDate && ` · sold ${formatDate(header.saleDate)}`}
           </p>
         </div>
-        <Button variant="danger" onClick={() => setGroupDeleteOpen(true)}>
-          <IconTrash className="h-4 w-4" /> Delete entire sale
-        </Button>
+        <div className="flex gap-2">
+          {/* 2.2.1: marko's own request - same cross-navigation pattern as
+              OrderDetail/EventDetail's own "Check prices"/"Compare to
+              market prices" (navigate + presetEventId via router state, see
+              PriceChecker.tsx). Hidden when this sale group spans more than
+              one event (header.eventId is null, shown as "Mixed events"
+              above) - there's no single event to preselect in that case. */}
+          {header.eventId !== null && (
+            <Button
+              variant="secondary"
+              onClick={() => navigate("/price-checker", { state: { presetEventId: header.eventId } })}
+            >
+              <IconTag className="h-4 w-4" /> Check prices
+            </Button>
+          )}
+          <Button variant="danger" onClick={() => setGroupDeleteOpen(true)}>
+            <IconTrash className="h-4 w-4" /> Delete entire sale
+          </Button>
+        </div>
       </div>
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 lg:grid-cols-6">
