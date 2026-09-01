@@ -1646,6 +1646,14 @@ pub struct PriceCheck {
     /// would not be a real median (marko's own "never invent data" rule).
     pub median_price_cents: Option<i64>,
     pub checked_at: String,
+    /// 2.2.0 (migrations/019_price_checker_market_analysis.sql) - empty for
+    /// every check saved before this version, or a manual/pasted entry with
+    /// no per-tier detail to give (same "None/empty means genuinely not
+    /// computed, never backfilled" rule as `median_price_cents`). Attached
+    /// separately from the row's own columns - see
+    /// `commands::price_checker::fetch_tier_breakdown`'s own doc comment for
+    /// why `map_price_check` alone can't populate this field.
+    pub tier_breakdown: Vec<TierBreakdownRecord>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1660,6 +1668,13 @@ pub struct PriceCheckInput {
     pub currency: String,
     /// See `PriceCheck::median_price_cents` - optional for the same reason.
     pub median_price_cents: Option<i64>,
+    /// 2.2.0: optional per-tier breakdown to persist alongside this check -
+    /// see `TierBreakdownInput`'s own doc comment. `#[serde(default)]` so a
+    /// manual/pasted entry (no scan session behind it at all) can omit this
+    /// key entirely from the frontend's JSON payload rather than having to
+    /// send an explicit empty array.
+    #[serde(default)]
+    pub tier_breakdown: Vec<TierBreakdownInput>,
 }
 
 /// One marketplace's row in the Price Checker page for one event: its saved
@@ -1769,6 +1784,16 @@ pub struct NormalizedListing {
     pub currency: Option<String>,
     pub section: Option<String>,
     pub row: Option<String>,
+    /// 2.2.0 (Market Analysis): the tier/level label exactly as the page
+    /// itself showed it ("Level 100", "Tier 1", ...), best-effort detected
+    /// by `tierFor` (price_checker_scan.js) - inline text within the
+    /// listing's own container, or the nearest preceding heading-shaped
+    /// element above it when the page renders tier as a group header
+    /// instead (the more common real-world shape). `None` when neither
+    /// found anything - `commands::price_checker_analysis::group_by_tier`
+    /// is what turns that into the literal displayed string "Unclassified",
+    /// never guessed here or anywhere upstream of it.
+    pub tier: Option<String>,
     pub quantity: Option<u32>,
     /// Best-effort element `id`/`data-*id*` attribute, when the page's own
     /// markup has one - the strongest fingerprint component when present
@@ -1855,6 +1880,250 @@ pub struct ScannerErrorPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ScannerClosedPayload {
     pub request_id: u64,
+}
+
+// --- Price Checker Market Analysis (2.2.0) ----------------------------------
+// Built entirely on top of the Visible Scanner above - reads a session's
+// already-accumulated `NormalizedListing`s (or a saved `PriceCheck`'s tier
+// breakdown), never touches the scanner's own commands/session/lifecycle
+// code. See `commands::price_checker_analysis`'s own module doc comment for
+// the full design and PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md for what's
+// verified vs. not. Status-like classifications here follow this whole
+// feature's existing convention (`ScannerSession::status`/
+// `derive_session_status`) - a plain, literal, lower_snake_case `String`,
+// not a new Rust enum type.
+
+/// Lowest/median/average/highest/count over a group of listings that all
+/// share one currency - the same 4 stats `commands::price_checker_scanner::
+/// compute_scan_stats` already computes session-wide, reused here per
+/// tier/section/currency group instead (see `price_stats_for`,
+/// commands::price_checker_analysis).
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceStats {
+    pub lowest_price_cents: i64,
+    pub median_price_cents: i64,
+    pub average_price_cents: i64,
+    pub highest_price_cents: i64,
+    pub listing_count: i64,
+}
+
+/// One section's stats within one tier - marko's own spec, "## MAP /
+/// SECTION ANALYSIS".
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionBreakdown {
+    /// The section label exactly as read from the page - listings with no
+    /// section at all are simply not grouped here; they still count toward
+    /// the tier's own `TierBreakdown::stats`.
+    pub section: String,
+    pub stats: PriceStats,
+}
+
+/// One tier/level's full breakdown - marko's own spec, "## TIER PRICING" +
+/// "## MAP / SECTION ANALYSIS". `tier` is exactly what the page called it
+/// ("Level 100", "Tier 1", ...), or the literal string `"Unclassified"` for
+/// every listing `tierFor` (price_checker_scan.js) couldn't confidently
+/// place - `commands::price_checker_analysis::group_by_tier` is the only
+/// place that string is written, see its own doc comment.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TierBreakdown {
+    pub tier: String,
+    pub stats: PriceStats,
+    /// Sorted by `stats.lowest_price_cents` ascending - marko's own spec
+    /// example lists sections lowest-to-highest within a tier.
+    pub sections: Vec<SectionBreakdown>,
+}
+
+/// One listing ranked against a specific reference ticket/spec - marko's own
+/// spec, "## COMPARABLE MARKET". `level` is one of "exact_comparable" |
+/// "close_comparable" | "tier_comparable" | "general_market", decided by
+/// `classify_comparable` (commands::price_checker_analysis) purely from
+/// marko's own literal priority list ("same section, same tier, nearby
+/// sections in same tier, same quantity, nearby rows") - a plain field
+/// comparison against `reference`, independent of `data_quality` below.
+/// `level` and `data_quality` are deliberately two separate, honest facts
+/// about the same listing, not one gating the other: a listing can be
+/// `"exact_comparable"` (its `section` matches the reference's) while its
+/// own `data_quality` is still `"partial"` (no tier/row/quantity confirmed
+/// beyond that section) - suppressing a genuine section match just because
+/// other fields are missing would contradict marko's own priority order,
+/// where section match is checked first, before tier. `data_quality` is one
+/// of "strong_comparable" | "section_comparable" | "tier_comparable" |
+/// "partial" - marko's own spec, "## DATA QUALITY", decided by
+/// `data_quality_for` (same module) purely from which fields THIS listing
+/// actually has, independent of any reference ticket.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedComparable {
+    pub listing: NormalizedListing,
+    pub level: String,
+    pub data_quality: String,
+}
+
+/// What to compare a scan session's listings against - marko's own spec
+/// example ("Section 112, Row 8, Quantity 4"). Every seat-shape field is
+/// optional: the less marko provides, the less specific a match
+/// `rank_comparable` can honestly claim. `currency` is NOT optional, unlike
+/// the others - marko's own "## CURRENCY" is explicit that EUR/USD/GBP must
+/// never be blended, and a comparable ranking that mixed listings from more
+/// than one currency into a single lowest/median would do exactly that; the
+/// caller picks which of the scan session's `by_currency` groups (see
+/// `MarketAnalysisResult`) to compare the reference ticket against, same as
+/// how the rest of this feature is already split per currency rather than
+/// guessing which one the reference ticket "must" mean. This mirrors
+/// `commands::price_checker::get_price_checker_summary_impl`'s own
+/// `my_currency` requirement for its market comparison - not something
+/// marko's spec spelled out for this specific command, but the same rule
+/// applied consistently; flagged as a design decision in
+/// PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparableReferenceInput {
+    pub request_id: u64,
+    pub section: Option<String>,
+    pub tier: Option<String>,
+    pub row: Option<String>,
+    pub quantity: Option<u32>,
+    pub currency: String,
+}
+
+/// One group of marko's own unsold tickets for this event - marko's own
+/// spec, "## YOUR TICKETS" + "## PRICE RECOMMENDATION". One row per
+/// (section, row) group of available/listed tickets (same scope
+/// `commands::price_checker::get_price_checker_summary_impl` already uses),
+/// grouped rather than one row per physical ticket, since several identical
+/// unsold tickets in the same section/row are one real pricing decision, not
+/// several.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct YourTicketGroup {
+    /// Always `None` today, deliberately - checked against the real
+    /// `tickets` schema before writing this (marko's own spec, point #18:
+    /// investigate first, never invent a field that doesn't exist).
+    /// `tickets` has `section`/`row_label`/`seat`, but no tier/level column
+    /// at all; the one field that could be mistaken for it, `ticket_type`,
+    /// is actually a DELIVERY method (`TICKET_TYPES` in Orders.tsx:
+    /// "E-ticket"/"PDF"/"Mobile transfer"/"Physical"/"Will call"), not a
+    /// seating tier - grouping "Your Tickets" by it would silently produce
+    /// nonsense groups. Kept as `Option<String>` (matching `NormalizedListing
+    /// ::tier` and `ComparableReferenceInput::tier`) so a real tier source
+    /// can be wired in later without a breaking shape change, not because
+    /// one exists today - see PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md's
+    /// UNAVAILABLE DATA section.
+    pub tier: Option<String>,
+    pub section: Option<String>,
+    pub row: Option<String>,
+    pub quantity: i64,
+    pub currency: String,
+    pub avg_cost_cents: i64,
+    /// `None` when none of the tickets in this group have a listing price
+    /// set yet.
+    pub avg_listing_price_cents: Option<i64>,
+    /// `None` when the CURRENT scan session has no listings at all in this
+    /// group's own currency - never blended from a different currency's
+    /// figures (marko's own "## CURRENCY": never sum/blend EUR+USD+GBP).
+    pub recommendation: Option<PriceRecommendation>,
+}
+
+/// A single ticket group's price recommendation - marko's own spec, "##
+/// PRICE RECOMMENDATION": every number here is a plain, transparent
+/// calculation (see `recommend_price`, commands::price_checker_analysis),
+/// never AI - reuses `commands::price_checker::RECOMMENDED_PRICE_UNDERCUT_
+/// PCT`, the same constant the manual/history-based Price Checker summary
+/// already uses, rather than a second, different formula.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceRecommendation {
+    pub comparable_lowest_price_cents: i64,
+    pub comparable_median_price_cents: i64,
+    pub market_average_price_cents: i64,
+    /// `comparable_lowest_price_cents` reduced by
+    /// `RECOMMENDED_PRICE_UNDERCUT_PCT`.
+    pub recommended_price_cents: i64,
+    /// `recommended_price_cents - avg_cost_cents` for this group.
+    pub expected_profit_cents: i64,
+    pub expected_roi: Option<f64>,
+    /// Which comparable pool `comparable_lowest_price_cents`/`_median_` were
+    /// actually computed from - "Same section" | "Close match (same tier)" |
+    /// "Same tier" | "General market", the human-readable form of
+    /// `RankedComparable::level`'s 4 values in the same priority order
+    /// (`commands::price_checker_analysis::rank_comparable` always picks the
+    /// narrowest non-empty pool) - marko's own spec, "Based on:".
+    pub based_on: String,
+    /// "High" | "Medium" | "Low" - see `recommendation_confidence`
+    /// (commands::price_checker_analysis) for the exact rule.
+    pub confidence: String,
+}
+
+/// Everything derived from ONE currency's worth of a scan session's
+/// listings - marko's own spec, "## MARKET OVERVIEW" + "## TIER PRICING" +
+/// "## MAP / SECTION ANALYSIS", all computed together in one pass over the
+/// same listings (see `commands::price_checker_analysis::
+/// compute_market_analysis`, "## PERFORMANCE" - normalize once, derive
+/// everything else from that, never re-read the page per computation).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencyMarketAnalysis {
+    pub currency: String,
+    pub overall: PriceStats,
+    /// Sorted by `stats.lowest_price_cents` ascending - marko's own spec
+    /// example lists Level 100/200/500 lowest-to-highest.
+    pub tiers: Vec<TierBreakdown>,
+}
+
+/// `compute_market_analysis`'s whole result - one `CurrencyMarketAnalysis`
+/// per currency actually present in the session's listings, since prices in
+/// different currencies are never blended into one figure (marko's own
+/// spec, "## CURRENCY": "EUR + USD + GBP nikdy nesčítavaj ... alebo rozdeľ
+/// podľa meny" - this IS that split). `your_tickets` lives at this top
+/// level, not inside one `CurrencyMarketAnalysis`, because marko's own
+/// inventory has its own currency independent of what has been scanned so
+/// far - see `YourTicketGroup::recommendation`'s own doc comment for what
+/// happens when nothing scanned yet matches it.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketAnalysisResult {
+    pub request_id: u64,
+    pub by_currency: Vec<CurrencyMarketAnalysis>,
+    /// True when the session's listings span more than one currency - lets
+    /// the frontend show an explicit "Mixed - split by currency below" note
+    /// rather than the user having to notice `by_currency.len() > 1` itself.
+    pub mixed_currencies: bool,
+    /// How many of the session's listings have a price but no currency at
+    /// all (a money-shaped amount was found with no symbol/code attached).
+    /// These contribute to NO `by_currency` entry - grouping them under a
+    /// guessed currency would fabricate data - so this plain count is how
+    /// the UI stays honest about them instead of silently dropping them.
+    pub uncurrencied_listing_count: i64,
+    pub your_tickets: Vec<YourTicketGroup>,
+}
+
+/// One saved tier breakdown row for a `PriceCheck` (2.2.0,
+/// migrations/019_price_checker_market_analysis.sql) - marko's own spec,
+/// "## PRICE HISTORY".
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TierBreakdownRecord {
+    pub tier: String,
+    pub lowest_price_cents: i64,
+    pub median_price_cents: i64,
+    pub listing_count: i64,
+}
+
+/// What `save_price_check` additionally accepts to populate
+/// `price_check_tiers` - empty by default (`#[serde(default)]` on
+/// `PriceCheckInput::tier_breakdown`) so every existing caller (manual/
+/// pasted entries, which have no per-tier breakdown to give) is completely
+/// unaffected; see `commands::price_checker::save_price_check_impl`.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TierBreakdownInput {
+    pub tier: String,
+    pub lowest_price_cents: i64,
+    pub median_price_cents: i64,
+    pub listing_count: i64,
 }
 
 // --- Finance (2.0.83) -------------------------------------------------------

@@ -1333,11 +1333,37 @@ export interface PriceCheck {
    * be a real median. */
   medianPriceCents: number | null;
   checkedAt: string;
+  /** 2.2.0 (migrations/019_price_checker_market_analysis.sql): the optional
+   * per-tier breakdown saved alongside this check, lowest price ascending -
+   * empty for every check saved before this version, or a fully hand-typed
+   * entry with no per-tier data to give. See `TierBreakdownRecord`'s own
+   * doc comment. */
+  tierBreakdown: TierBreakdownRecord[];
+}
+
+/** One saved tier row on a `PriceCheck` - marko's own spec, "## PRICE
+ * HISTORY". Mirrors Rust's `TierBreakdownRecord` (models.rs) field-for-field. */
+export interface TierBreakdownRecord {
+  tier: string;
+  lowestPriceCents: number;
+  medianPriceCents: number;
+  listingCount: number;
+}
+
+/** What `savePriceCheck` accepts to populate one tier row of
+ * `TierBreakdownRecord` above - mirrors Rust's `TierBreakdownInput`
+ * (models.rs) field-for-field. */
+export interface TierBreakdownInput {
+  tier: string;
+  lowestPriceCents: number;
+  medianPriceCents: number;
+  listingCount: number;
 }
 
 /** Input for `savePriceCheck`. Backend rejects lowestPriceCents >
  * averagePriceCents > highestPriceCents, medianPriceCents outside
- * [lowest, highest] when present, or any negative amount/count. */
+ * [lowest, highest] when present, or any negative amount/count (same
+ * checks apply to each `tierBreakdown` row). */
 export interface PriceCheckInput {
   eventId: number;
   marketplaceId: number;
@@ -1348,6 +1374,12 @@ export interface PriceCheckInput {
   currency: string;
   /** See `PriceCheck.medianPriceCents` - optional for the same reason. */
   medianPriceCents: number | null;
+  /** Optional per-tier breakdown - mirrors the Rust side's
+   * `#[serde(default)]`, so omitting this field entirely (every call site
+   * before 2.2.0, and the plain manual/pasted-entry save flow which has no
+   * per-tier data to give) is equivalent to sending an empty array, not an
+   * error. */
+  tierBreakdown?: TierBreakdownInput[];
 }
 
 /** One marketplace's row on the Price Checker page for one event: its saved
@@ -1437,6 +1469,12 @@ export interface NormalizedListing {
   currency: string | null;
   section: string | null;
   row: string | null;
+  /** 2.2.0 (Market Analysis): the tier/level label exactly as the page
+   * itself showed it ("Level 100", "Tier 1", ...) - best-effort, `null`
+   * when nothing was confidently detected. See `TierBreakdown`'s own doc
+   * comment for how a `null` tier is grouped ("Unclassified"), never
+   * guessed further. */
+  tier: string | null;
   quantity: number | null;
   listingId: string | null;
   marketplace: string;
@@ -1502,4 +1540,155 @@ export interface ScannerErrorPayload {
  * Scan/Stop for a session that no longer has a window behind it. */
 export interface ScannerClosedPayload {
   requestId: number;
+}
+
+// --- Price Checker Market Analysis (2.2.0) ----------------------------------
+// Built entirely on top of the Visible Scanner above - reads a session's
+// already-accumulated NormalizedListing[] (or a saved PriceCheck's tier
+// breakdown), never touches the scanner's own commands/session/lifecycle.
+// Mirrors commands/price_checker_analysis.rs + the matching models.rs types
+// field-for-field. See PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md for what's
+// verified vs. derived-but-unverified vs. genuinely unavailable.
+
+/** Lowest/median/average/highest/count over one group of listings that all
+ * share one currency - marko's own spec, "## TIER PRICING" + "## MAP /
+ * SECTION ANALYSIS". */
+export interface PriceStats {
+  lowestPriceCents: number;
+  medianPriceCents: number;
+  averagePriceCents: number;
+  highestPriceCents: number;
+  listingCount: number;
+}
+
+/** One section's stats within one tier - listings with no section at all
+ * simply produce no `SectionBreakdown` row, but still count toward the
+ * parent `TierBreakdown.stats`. */
+export interface SectionBreakdown {
+  section: string;
+  stats: PriceStats;
+}
+
+/** One tier/level's full breakdown - `tier` is exactly what the page called
+ * it ("Level 100", "Tier 1", ...), or the literal string `"Unclassified"`
+ * for every listing with no confidently-detected tier - never guessed
+ * beyond that one literal string. `sections` is sorted lowest-price-first. */
+export interface TierBreakdown {
+  tier: string;
+  stats: PriceStats;
+  sections: SectionBreakdown[];
+}
+
+/** "How much structured data does this ONE listing carry" - marko's own
+ * spec, "## DATA QUALITY", checked strongest-first: section+row+quantity ->
+ * strong_comparable; section+tier -> section_comparable; tier alone ->
+ * tier_comparable; else partial. Independent of `ComparableLevel` below -
+ * see `RankedComparable`'s own doc comment for why a listing can be
+ * `partial` here while still `exact_comparable` there. */
+export type DataQuality = "strong_comparable" | "section_comparable" | "tier_comparable" | "partial";
+
+/** "How well does this ONE listing match a specific reference ticket" -
+ * marko's own literal priority list for "## COMPARABLE MARKET": same
+ * section, same tier (+ nearby section / same quantity / nearby row), same
+ * tier alone, or nothing - in that order, first match wins. */
+export type ComparableLevel = "exact_comparable" | "close_comparable" | "tier_comparable" | "general_market";
+
+/** One listing ranked against a specific reference ticket - `level` and
+ * `dataQuality` are two independent, honest facts about the same listing,
+ * never one gating the other (a listing can be `exact_comparable` on a
+ * matching section while its own `dataQuality` is still `partial` because
+ * nothing else was confirmed). */
+export interface RankedComparable {
+  listing: NormalizedListing;
+  level: ComparableLevel;
+  dataQuality: DataQuality;
+}
+
+/** What to compare a scan session's listings against for
+ * `computeComparableMarket` - marko's own spec example ("Section 112, Row
+ * 8, Quantity 4"). Every seat-shape field is optional (the less marko
+ * fills in, the less specific a match can honestly claim), but `currency`
+ * is required - comparing across currencies would blend EUR/USD/GBP into
+ * one figure, which marko's own "## CURRENCY" explicitly forbids; pick one
+ * of `MarketAnalysisResult.byCurrency`'s currencies to compare against. */
+export interface ComparableReferenceInput {
+  requestId: number;
+  section: string | null;
+  tier: string | null;
+  row: string | null;
+  quantity: number | null;
+  currency: string;
+}
+
+/** One transparent price recommendation - marko's own spec, "## PRICE
+ * RECOMMENDATION": a plain calculation, never AI. `recommendedPriceCents`
+ * is `comparableLowestPriceCents` undercut by a small fixed percentage (the
+ * SAME formula the manual/history-based Price Checker summary already uses
+ * - see `PriceCheckerSummary.recommendedPriceCents`). `basedOn` names which
+ * comparable pool the lowest/median actually came from - "Same section" |
+ * "Close match (same tier)" | "Same tier" | "General market", the
+ * human-readable form of `ComparableLevel`'s 4 values in the same priority
+ * order. `confidence` - "High" | "Medium" | "Low" - reflects both which
+ * pool was used and how many listings are in it; marko's spec only pins
+ * down "Low" for thin data, the rest is a reasoned judgment call (see the
+ * report). */
+export interface PriceRecommendation {
+  comparableLowestPriceCents: number;
+  comparableMedianPriceCents: number;
+  marketAveragePriceCents: number;
+  recommendedPriceCents: number;
+  expectedProfitCents: number;
+  expectedRoi: number | null;
+  basedOn: string;
+  confidence: string;
+}
+
+/** One group of marko's own unsold tickets for this event - marko's own
+ * spec, "## YOUR TICKETS" + "## PRICE RECOMMENDATION". One row per
+ * (section, row, currency) group of available/listed tickets, grouped
+ * rather than one row per physical ticket, since several identical unsold
+ * tickets in the same section/row are one real pricing decision, not
+ * several. `tier` is always `null` today - the `tickets` table has no
+ * tier/level column at all (checked before building this, never invented -
+ * see the report's UNAVAILABLE DATA section). `recommendation` is `null`
+ * exactly when the CURRENT scan session has no listings yet in this group's
+ * own currency - never blended from a different currency's figures. */
+export interface YourTicketGroup {
+  tier: string | null;
+  section: string | null;
+  row: string | null;
+  quantity: number;
+  currency: string;
+  avgCostCents: number;
+  /** `null` when none of the tickets in this group have a listing price set yet. */
+  avgListingPriceCents: number | null;
+  recommendation: PriceRecommendation | null;
+}
+
+/** Everything derived from ONE currency's worth of a scan session's
+ * listings, computed together in one pass (marko's own "## PERFORMANCE" -
+ * normalize once, derive everything else locally, never re-read the page
+ * per computation). `tiers` is sorted lowest-price-first. */
+export interface CurrencyMarketAnalysis {
+  currency: string;
+  overall: PriceStats;
+  tiers: TierBreakdown[];
+}
+
+/** `computeMarketAnalysis`'s whole result - one `CurrencyMarketAnalysis`
+ * per currency actually present in the session's listings (marko's own "##
+ * CURRENCY": EUR/USD/GBP are never summed together, always split). `
+ * uncurrenciedListingCount` is how many listings have a price but no
+ * detected currency at all - they contribute to NO `byCurrency` entry
+ * (grouping them under a guessed currency would fabricate data), so this
+ * count is how the UI stays honest about them instead of silently dropping
+ * them. `yourTickets` lives at this top level, not inside one
+ * `CurrencyMarketAnalysis`, since marko's own inventory has its own
+ * currency independent of what's been scanned so far. */
+export interface MarketAnalysisResult {
+  requestId: number;
+  byCurrency: CurrencyMarketAnalysis[];
+  mixedCurrencies: boolean;
+  uncurrenciedListingCount: number;
+  yourTickets: YourTicketGroup[];
 }

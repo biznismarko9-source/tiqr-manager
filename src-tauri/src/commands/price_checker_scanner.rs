@@ -140,6 +140,13 @@ struct ScanJsCandidate {
     section: Option<String>,
     #[serde(default)]
     row: Option<String>,
+    /// 2.2.0 (Market Analysis): mirrors `NormalizedListing::tier` - see that
+    /// field's own doc comment (models.rs). Populated by `tierFor` in
+    /// price_checker_scan.js; `#[serde(default)]` so this struct still
+    /// deserializes fine against JS payloads captured before this field
+    /// existed (no reason to force a scan-again just to add a field).
+    #[serde(default)]
+    tier: Option<String>,
     #[serde(default)]
     quantity: Option<u32>,
     #[serde(default)]
@@ -277,7 +284,7 @@ fn fingerprint_for(listing: &NormalizedListing) -> String {
     )
 }
 
-fn median_of_sorted_cents(sorted: &[i64]) -> i64 {
+pub(crate) fn median_of_sorted_cents(sorted: &[i64]) -> i64 {
     let n = sorted.len();
     if n % 2 == 1 {
         sorted[n / 2]
@@ -295,7 +302,12 @@ fn median_of_sorted_cents(sorted: &[i64]) -> i64 {
 /// codebase already uses elsewhere (see `ScanResultPayload::currency`'s own
 /// doc comment, models.rs). `None` across the board for an empty session,
 /// never a fabricated zero.
-fn compute_scan_stats(
+///
+/// `pub(crate)` (2.2.0): reused as-is by
+/// `commands::price_checker_analysis` for the overall (all-tiers) stats row
+/// of each currency group, rather than duplicating this exact lowest/
+/// median/average/highest logic a second time.
+pub(crate) fn compute_scan_stats(
     listings: &[NormalizedListing],
 ) -> (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>) {
     if listings.is_empty() {
@@ -417,6 +429,7 @@ fn merge_scan_into_session(session: &mut ScannerSession, request_id: u64, js: &S
             currency: c.currency.clone(),
             section: c.section.clone(),
             row: c.row.clone(),
+            tier: c.tier.clone(),
             quantity: c.quantity,
             listing_id: c.listing_id.clone(),
             marketplace: c.marketplace.clone(),
@@ -707,6 +720,7 @@ mod tests {
             currency: Some("EUR".to_string()),
             section: section.map(|s| s.to_string()),
             row: row.map(|s| s.to_string()),
+            tier: None,
             quantity,
             listing_id: listing_id.map(|s| s.to_string()),
             marketplace: marketplace.to_string(),
@@ -737,6 +751,7 @@ mod tests {
             currency: Some("EUR".to_string()),
             section: section.map(|s| s.to_string()),
             row: row.map(|s| s.to_string()),
+            tier: None,
             quantity: None,
             listing_id: None,
             marketplace: "stubhub".to_string(),

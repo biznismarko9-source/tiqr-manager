@@ -16,6 +16,7 @@ import type {
   BulkTicketUpdateInput,
   CashflowForecast,
   CategoryDetectionResult,
+  ComparableReferenceInput,
   CreatedSheetResult,
   CreateFromRecurringResult,
   CsvImportResult,
@@ -34,6 +35,7 @@ import type {
   FinanceEntryInput,
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
+  MarketAnalysisResult,
   Marketplace,
   NotificationConfigInput,
   NotificationStatus,
@@ -53,6 +55,7 @@ import type {
   PullReceived,
   PullReceivedEditInput,
   PullReceivedInput,
+  RankedComparable,
   RecurringExpense,
   RecurringExpenseInput,
   RestoreOutcome,
@@ -554,6 +557,26 @@ export const api = {
    * earlier - never errors, since the end state is the same either way. */
   closePriceScanner: (requestId: number, closeWindow: boolean) =>
     invoke<void>("close_price_scanner", { requestId, closeWindow }),
+  // Market Analysis (2.2.0) - built entirely on top of the Visible Scanner
+  // above, never touches its commands/session/lifecycle. See
+  // commands/price_checker_analysis.rs's module doc comment (Rust) for the
+  // full design.
+  /** Tier/section breakdown, per-currency market stats, and a "Your
+   * Tickets" pricing panel for a scanner session's already-accumulated
+   * listings - one round trip, matching marko's own "## PERFORMANCE"
+   * requirement (see `MarketAnalysisResult`'s own doc comment, types.ts).
+   * `requestId` is the SAME id `openPriceScanner` used for this card's
+   * session - rejects with "not found" if that session's window has since
+   * been closed, same as `scanVisiblePrices`. */
+  computeMarketAnalysis: (requestId: number, eventId: number) =>
+    invoke<MarketAnalysisResult>("compute_market_analysis", { requestId, eventId }),
+  /** Ranks a scanner session's listings against ONE specific reference
+   * ticket (marko's own spec example: Section 112 / Row 8 / Quantity 4) -
+   * see `ComparableReferenceInput`'s own doc comment (types.ts) for why
+   * `currency` is required, not optional. Pure in-memory on the backend;
+   * safe to call repeatedly as marko edits the reference fields. */
+  computeComparableMarket: (input: ComparableReferenceInput) =>
+    invoke<RankedComparable[]>("compute_comparable_market", { input }),
 };
 
 export function errMsg(e: unknown): string {

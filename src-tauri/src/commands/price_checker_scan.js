@@ -264,6 +264,17 @@
   var SECTION_RE = /\bsec(?:tion)?\.?\s*[:#]?\s*([A-Za-z0-9\-]{1,15})/i;
   var ROW_RE = /\brow\.?\s*[:#]?\s*([A-Za-z0-9\-]{1,6})/i;
   var QTY_RE = /\b(?:qty|quantity)\.?\s*[:#]?\s*(\d{1,2})\b|\b(\d{1,2})\s*(?:tickets?|seats?)\b|\bx\s?(\d{1,2})\b/i;
+  // 2.2.0 (Market Analysis): captures the WHOLE label including its own
+  // keyword ("Level 100", not just "100") - marko's own spec, "## TIER
+  // PRICING": "Ak marketplace poskytne iný názov tieru, zachovaj jeho
+  // názov" (if the marketplace uses a different tier name, keep ITS name).
+  // Deliberately covers the common seating-tier vocabulary
+  // (level/tier/zone/deck/category) rather than one fixed word - still a
+  // loose, best-effort pattern like SECTION_RE/ROW_RE above, not a
+  // guarantee; see tierFor's own comment for the second, usually more
+  // useful detection path (most real seating-tier UIs show this as a group
+  // HEADING above several listing rows, not repeated inline in every row).
+  var TIER_RE = /\b((?:level|tier|zone|deck|category)\.?\s*[:#]?\s*[A-Za-z0-9\-]{1,20})/i;
 
   function nearbyListingContext(containerEl) {
     var text = (containerEl.textContent || "").replace(/\s+/g, " ");
@@ -278,7 +289,88 @@
       var qty = parseInt(qtyStr, 10);
       if (isFinite(qty) && qty > 0 && qty <= 50) out.quantity = qty;
     }
+    var tm = TIER_RE.exec(text);
+    if (tm) out.tier = tm[1].trim();
     return out;
+  }
+
+  // ---------------------------------------------------------------------
+  // Tier/level detection, path 2 (2.2.0, "## TIER PRICING"): most real
+  // seating-tier UIs render "Level 100" ONCE as a group heading above a
+  // block of listing rows, not repeated inline inside every single row -
+  // TIER_RE above only ever catches the inline case. This second path
+  // collects every visible heading-shaped element whose text matches
+  // TIER_RE ONCE per scan (never per candidate - see scanPage below), then
+  // for a given listing container picks the NEAREST one that precedes it in
+  // document order, the same "closest heading above this point" association
+  // a table of contents or a print stylesheet's running header would use.
+  // Best-effort like every other selector in this file - NOT verified
+  // against real marketplace markup (this sandbox's network access to
+  // StubHub/Vivid Seats/Ticombo is blocked, same limitation as the rest of
+  // this script) - a page whose tier grouping doesn't match either this or
+  // the inline pattern simply leaves tier undefined, which the Rust side
+  // reports honestly as "Unclassified" rather than guessing (marko's own
+  // "NEVYMÝŠĽAJ tier mapping").
+  // ---------------------------------------------------------------------
+
+  var MAX_TIER_HEADINGS = 60;
+
+  function collectTierHeadings() {
+    var out = [];
+    var nodes;
+    try {
+      nodes = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]');
+    } catch (e) {
+      return out;
+    }
+    // querySelectorAll already returns nodes in document order, which
+    // nearestPrecedingTier below relies on.
+    for (var i = 0; i < nodes.length && out.length < MAX_TIER_HEADINGS; i++) {
+      var node = nodes[i];
+      if (!isVisible(node)) continue;
+      var text = accessibleText(node);
+      var m = TIER_RE.exec(text);
+      if (m) out.push({ node: node, tier: m[1].trim() });
+    }
+    return out;
+  }
+
+  // Cached per scan (this whole script re-runs fresh on every
+  // eval_with_callback call - see the module doc comment at the top of this
+  // file - so a module-level cache can never leak stale headings into a
+  // later, separate scan). Collected lazily so a page with no tier headings
+  // at all never pays for the querySelectorAll walk more than once.
+  var _tierHeadingsCache = null;
+  function tierHeadings() {
+    if (_tierHeadingsCache === null) _tierHeadingsCache = collectTierHeadings();
+    return _tierHeadingsCache;
+  }
+
+  function nearestPrecedingTier(containerEl) {
+    var headings = tierHeadings();
+    var best = null;
+    for (var i = 0; i < headings.length; i++) {
+      var rel = headings[i].node.compareDocumentPosition(containerEl);
+      var precedes = !!(rel & Node.DOCUMENT_POSITION_FOLLOWING);
+      if (precedes) {
+        // Headings are in document order, so the LAST one that precedes
+        // this container is the nearest one above it - keep overwriting.
+        best = headings[i].tier;
+        continue;
+      }
+      // headings[] is in document order, so once one heading no longer
+      // precedes the container, every later heading (further down the
+      // document) can't precede it either - safe to stop scanning early,
+      // whether or not a preceding one was already found.
+      break;
+    }
+    return best;
+  }
+
+  function tierFor(containerEl, inlineTier) {
+    if (inlineTier) return inlineTier;
+    if (!tierHeadings().length) return undefined;
+    return nearestPrecedingTier(containerEl) || undefined;
   }
 
   // Best-effort element identity - checked on the container first (a real
@@ -326,6 +418,7 @@
       section: ctx.section,
       row: ctx.row,
       quantity: ctx.quantity,
+      tier: tierFor(container, ctx.tier),
       listingId: listingIdFor(container),
       marketplace: marketplace,
     };

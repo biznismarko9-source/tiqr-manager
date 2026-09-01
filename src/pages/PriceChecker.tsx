@@ -24,16 +24,24 @@ import { useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { api, errMsg } from "../lib/api";
 import type {
+  ComparableLevel,
+  ComparableReferenceInput,
+  CurrencyMarketAnalysis,
+  DataQuality,
   EventWithStats,
+  MarketAnalysisResult,
   MarketplacePriceView,
   NormalizedListing,
   PriceCheck,
   PriceCheckerSummary,
+  RankedComparable,
   ScannerClosedPayload,
   ScannerErrorPayload,
   ScannerOpenedPayload,
   ScannerStatus,
   ScanResultPayload,
+  TierBreakdownInput,
+  YourTicketGroup,
 } from "../lib/types";
 import { centsToDecimalString, decimalStringToCents, formatDateTime, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
 import {
@@ -80,6 +88,43 @@ const SCANNER_STATUS_META: Record<ScannerStatus, { label: string; className: str
   blocked: { label: "Blocked", className: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
   error: { label: "Error", className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
 };
+
+// ---------------------------------------------------------------------------
+// Market Analysis (2.2.0) - built entirely on top of the Visible Scanner
+// above, one analysis per scanner session (never blended across marketplace
+// cards - see commands/price_checker_analysis.rs's module doc comment,
+// Rust). Own small pill maps rather than reusing the shared `Badge`
+// component's STATUS_TONES - same reasoning as SCANNER_STATUS_META just
+// above: these are a genuinely different domain (comparable-market
+// classification, not a ticket/order/sale status), and "tier_comparable"
+// happens to be a real value in BOTH ComparableLevel and DataQuality, so a
+// dedicated local map avoids any risk of an unrelated shared style changing
+// out from under this feature later.
+// ---------------------------------------------------------------------------
+
+const COMPARABLE_LEVEL_META: Record<ComparableLevel, { label: string; className: string }> = {
+  exact_comparable: { label: "Exact comparable", className: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
+  close_comparable: { label: "Close comparable", className: "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" },
+  tier_comparable: { label: "Tier comparable", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
+  general_market: { label: "General market", className: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
+};
+
+const DATA_QUALITY_META: Record<DataQuality, { label: string; className: string }> = {
+  strong_comparable: { label: "Strong data", className: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
+  section_comparable: { label: "Section data", className: "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" },
+  tier_comparable: { label: "Tier data", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
+  partial: { label: "Partial data", className: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
+};
+
+function LevelPill({ level }: { level: ComparableLevel }) {
+  const meta = COMPARABLE_LEVEL_META[level];
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>{meta.label}</span>;
+}
+
+function DataQualityPill({ quality }: { quality: DataQuality }) {
+  const meta = DATA_QUALITY_META[quality];
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>{meta.label}</span>;
+}
 
 /** One marketplace card's live scanner state, kept on PriceChecker (not
  * MarketplaceCard itself) for the same reason `autoCheck` used to live one
@@ -149,6 +194,13 @@ interface ScanPrefill {
   highestPriceCents: number;
   listingCount: number;
   currency: string | null;
+  /** 2.2.0: this session's own Market Analysis tier breakdown for
+   * `currency` above, if any was computed by the time "Save to history" was
+   * clicked - carried straight through to `savePriceCheck` so
+   * `PriceCheck.tierBreakdown` (history/"## PRICE HISTORY") isn't left
+   * empty just because a perfectly good breakdown was sitting right there.
+   * Empty when no analysis was available yet, or this currency has none. */
+  tierBreakdown: TierBreakdownInput[];
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +271,289 @@ function ScannerStatusPill({ session }: { session: ScannerCardState }) {
   );
 }
 
+/** One currency's tier/section breakdown - marko's own spec, "## TIER
+ * PRICING" + "## MAP / SECTION ANALYSIS". Deliberately NOT a literal seating
+ * chart (marko's spec explicitly doesn't require one) - a plain, scannable
+ * list of tiers lowest-price-first, each with its own sections lowest-price-
+ * first underneath. */
+function CurrencyMarketBlock({ block }: { block: CurrencyMarketAnalysis }) {
+  return (
+    <div className="mb-4 last:mb-0">
+      <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">{block.currency} market</p>
+      <div className="mb-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Listings</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{block.overall.listingCount}</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Lowest</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.lowestPriceCents, block.currency)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Median</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.medianPriceCents, block.currency)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Average</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.averagePriceCents, block.currency)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Highest</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.highestPriceCents, block.currency)}</p>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {block.tiers.map((tier) => (
+          <div key={tier.tier} className="rounded-lg border border-slate-100 p-2 dark:border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{tier.tier}</p>
+              <p className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                {formatMoney(tier.stats.lowestPriceCents, block.currency)} &ndash; {formatMoney(tier.stats.highestPriceCents, block.currency)}
+                {" · "}
+                {tier.stats.listingCount} listing{tier.stats.listingCount === 1 ? "" : "s"}
+              </p>
+            </div>
+            {tier.sections.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+                {tier.sections.map((s) => (
+                  <span key={s.section} className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Sec {s.section}: <span className="tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(s.stats.lowestPriceCents, block.currency)}</span>{" "}
+                    ({s.stats.listingCount})
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Marko's own unsold inventory for this event, grouped by section/row/
+ * currency (marko's own spec, "## YOUR TICKETS" + "## PRICE RECOMMENDATION")
+ * - reuses TIQR's real ticket data, never a duplicate of it. `recommendation`
+ * is null for a group whose currency hasn't been scanned yet in THIS
+ * session - shown as "No scan in this currency yet" rather than a blank or
+ * a fabricated number. */
+function YourTicketsTable({ groups }: { groups: YourTicketGroup[] }) {
+  if (groups.length === 0) {
+    return <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets for this event yet.</p>;
+  }
+  return (
+    <div className="max-h-56 overflow-auto rounded-lg border border-slate-100 dark:border-slate-800">
+      <table className="w-full border-collapse">
+        <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+          <tr>
+            <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
+            <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Avg cost</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Your listing</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Recommended</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Profit</th>
+            <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">ROI</th>
+            <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Based on</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          {groups.map((g, i) => (
+            <tr key={i}>
+              <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{g.section ?? "-"}</td>
+              <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{g.row ?? "-"}</td>
+              <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{g.quantity}</td>
+              <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(g.avgCostCents, g.currency)}</td>
+              <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(g.avgListingPriceCents, g.currency)}</td>
+              <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-900 dark:text-slate-100">
+                {g.recommendation ? formatMoney(g.recommendation.recommendedPriceCents, g.currency) : "-"}
+              </td>
+              <td
+                className={`px-2 py-1 text-right text-xs tabular-nums ${
+                  g.recommendation && g.recommendation.expectedProfitCents < 0
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-slate-700 dark:text-slate-300"
+                }`}
+              >
+                {g.recommendation ? formatMoney(g.recommendation.expectedProfitCents, g.currency) : "-"}
+              </td>
+              <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
+                {g.recommendation ? formatPercent(g.recommendation.expectedRoi) : "-"}
+              </td>
+              <td className="px-2 py-1 text-xs text-slate-500 dark:text-slate-400">
+                {g.recommendation ? `${g.recommendation.basedOn} · ${g.recommendation.confidence}` : "No scan in this currency yet"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** The whole Market Analysis block for one scanner session - tier/section
+ * pricing per currency, then "Your Tickets" with recommendations. `analysis`
+ * is null before the first scan (or while one is loading); this never blocks
+ * or replaces the existing raw listings table above it, purely additive. */
+function MarketAnalysisPanel({ analysis, loading, error }: { analysis: MarketAnalysisResult | null; loading: boolean; error: string | null }) {
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
+      <div className="mb-2 flex items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market Analysis</p>
+        {loading && <Spinner className="h-3.5 w-3.5" />}
+      </div>
+      {error && (
+        <p className="mb-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {error}
+        </p>
+      )}
+      {!analysis ? (
+        !loading && !error && <p className="text-xs text-slate-400 dark:text-slate-500">Scan to see tier/section pricing and recommendations.</p>
+      ) : (
+        <>
+          {analysis.mixedCurrencies && (
+            <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
+              These listings span more than one currency - shown separately below, never blended together.
+            </p>
+          )}
+          {analysis.uncurrenciedListingCount > 0 && (
+            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              {analysis.uncurrenciedListingCount} listing{analysis.uncurrenciedListingCount === 1 ? "" : "s"} had a price but no
+              detected currency, so {analysis.uncurrenciedListingCount === 1 ? "it isn't" : "they aren't"} included below.
+            </p>
+          )}
+          {analysis.byCurrency.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500">None of the listings found so far have a usable currency yet.</p>
+          ) : (
+            analysis.byCurrency.map((block) => <CurrencyMarketBlock key={block.currency} block={block} />)
+          )}
+
+          <p className="mb-2 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Your Tickets</p>
+          <YourTicketsTable groups={analysis.yourTickets} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "## COMPARABLE MARKET" - ranks this session's listings against ONE
+ * specific reference ticket marko types in (his own worked example: Section
+ * 112 / Row 8 / Quantity 4). Self-contained (fetches on its own "Compare"
+ * click, no shared state with MarketAnalysisPanel) since it's a one-off
+ * lookup, not something that needs to refresh automatically on every scan.
+ * `currencies` restricts the picker to currencies this session actually has
+ * listings in - comparing against an empty currency would only ever come
+ * back with zero results. */
+function ComparableMarketTool({ requestId, currencies }: { requestId: number; currencies: string[] }) {
+  const toast = useToast();
+  const [section, setSection] = useState("");
+  const [tier, setTier] = useState("");
+  const [row, setRow] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [currency, setCurrency] = useState("");
+  const [results, setResults] = useState<RankedComparable[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Keeps the picker pointed at a currency that actually has data - resets
+  // to the first available one whenever the current selection stops being
+  // valid (e.g. this is the very first scan, or a currency this session
+  // never had disappears from the list - which in practice never happens
+  // once a currency has appeared, but stays correct either way).
+  useEffect(() => {
+    setCurrency((c) => (currencies.includes(c) ? c : (currencies[0] ?? "")));
+  }, [currencies]);
+
+  if (currencies.length === 0) return null;
+
+  const compare = async () => {
+    if (!currency) return;
+    setLoading(true);
+    try {
+      const qty = quantity.trim() === "" ? NaN : parseInt(quantity, 10);
+      const input: ComparableReferenceInput = {
+        requestId,
+        section: section.trim() || null,
+        tier: tier.trim() || null,
+        row: row.trim() || null,
+        quantity: Number.isFinite(qty) && qty > 0 ? qty : null,
+        currency,
+      };
+      setResults(await api.computeComparableMarket(input));
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-lg border border-slate-100 p-3 dark:border-slate-800">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Compare a specific ticket</p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <Input placeholder="Section" value={section} onChange={(e) => setSection(e.target.value)} className="text-xs" />
+        <Input placeholder="Tier / level" value={tier} onChange={(e) => setTier(e.target.value)} className="text-xs" />
+        <Input placeholder="Row" value={row} onChange={(e) => setRow(e.target.value)} className="text-xs" />
+        <Input type="number" min={1} step={1} placeholder="Quantity" value={quantity} onChange={(e) => setQuantity(e.target.value)} className="text-xs" />
+        {currencies.length > 1 ? (
+          <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            {currencies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <div className="flex items-center px-1 text-xs text-slate-500 dark:text-slate-400">{currency}</div>
+        )}
+      </div>
+      <div className="mt-2">
+        <Button variant="secondary" onClick={compare} disabled={loading}>
+          {loading ? <Spinner className="h-4 w-4" /> : "Compare"}
+        </Button>
+      </div>
+
+      {results &&
+        (results.length === 0 ? (
+          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">No {currency} listings found yet to compare against.</p>
+        ) : (
+          <div className="mt-3 max-h-56 overflow-auto rounded-lg border border-slate-100 dark:border-slate-800">
+            <table className="w-full border-collapse">
+              <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+                <tr>
+                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
+                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
+                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
+                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
+                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Match</th>
+                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Data</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {results.map((r, i) => (
+                  <tr key={i}>
+                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
+                      {formatMoney(r.listing.priceCents, r.listing.currency ?? currency)}
+                    </td>
+                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.section ?? "-"}</td>
+                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.tier ?? "-"}</td>
+                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.row ?? "-"}</td>
+                    <td className="px-2 py-1">
+                      <LevelPill level={r.level} />
+                    </td>
+                    <td className="px-2 py-1">
+                      <DataQualityPill quality={r.dataQuality} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // One marketplace's card: link + latest check + full history + Visible
 // Scanner controls + "Check Prices" (manual entry, unchanged).
@@ -247,11 +582,51 @@ function MarketplaceCard({
   onScanVisible: (eventId: number, marketplaceId: number) => void;
   onStopScan: (eventId: number, marketplaceId: number) => void;
   onCloseScanner: (eventId: number, marketplaceId: number) => void;
-  onSaveScanToHistory: (view: MarketplacePriceView, session: ScannerCardState) => void;
+  onSaveScanToHistory: (view: MarketplacePriceView, session: ScannerCardState, analysis: MarketAnalysisResult | null) => void;
 }) {
   const toast = useToast();
   const [url, setUrl] = useState(view.link?.url ?? "");
   const [savingLink, setSavingLink] = useState(false);
+
+  // 2.2.0: Market Analysis for this card's OWN session - tier/section
+  // pricing + Your Tickets recommendations, built entirely on top of
+  // `session.listings` (never a separate scan, never touches the scanner
+  // itself). Refetches whenever a new scan settles (`session.scanCount`
+  // changing IS "a new scan happened", even one that added zero new
+  // listings - matches marko's own spec: "each new scan updates overall/
+  // tier/section market"). Kept local to this card, not lifted into
+  // PriceChecker's own scannerSessions map, since it's pure derived data for
+  // exactly one session and nothing else on the page needs it.
+  const [analysis, setAnalysis] = useState<MarketAnalysisResult | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!session || session.listings.length === 0) {
+      setAnalysis(null);
+      setAnalysisError(null);
+      return;
+    }
+    let cancelled = false;
+    setAnalysisLoading(true);
+    api
+      .computeMarketAnalysis(session.requestId, eventId)
+      .then((result) => {
+        if (!cancelled) {
+          setAnalysis(result);
+          setAnalysisError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setAnalysisError(errMsg(e));
+      })
+      .finally(() => {
+        if (!cancelled) setAnalysisLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.requestId, session?.scanCount, eventId]);
 
   // Keeps the field in sync when the parent reloads (e.g. after this exact
   // save, or after switching away and back to this event) without clobbering
@@ -440,6 +815,7 @@ function MarketplaceCard({
                       <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
                         <tr>
                           <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
+                          <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
                           <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
                           <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
                           <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
@@ -452,6 +828,7 @@ function MarketplaceCard({
                             <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
                               {formatMoney(l.priceCents, l.currency ?? session.currency ?? "EUR")}
                             </td>
+                            <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.tier ?? "-"}</td>
                             <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.section ?? "-"}</td>
                             <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.row ?? "-"}</td>
                             <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{l.quantity ?? "-"}</td>
@@ -463,10 +840,13 @@ function MarketplaceCard({
                   </div>
 
                   <div className="mt-3">
-                    <Button variant="primary" onClick={() => onSaveScanToHistory(view, session)}>
+                    <Button variant="primary" onClick={() => onSaveScanToHistory(view, session, analysis)}>
                       Save to history
                     </Button>
                   </div>
+
+                  <MarketAnalysisPanel analysis={analysis} loading={analysisLoading} error={analysisError} />
+                  <ComparableMarketTool requestId={session.requestId} currencies={analysis?.byCurrency.map((c) => c.currency) ?? []} />
                 </>
               )}
             </>
@@ -479,7 +859,14 @@ function MarketplaceCard({
       ) : (
         <>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
-            <p className="text-xs text-slate-400 dark:text-slate-500">Latest check &middot; {formatDateTime(latest.checkedAt)}</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Latest check &middot; {formatDateTime(latest.checkedAt)}
+              {/* 2.2.0: just a presence indicator - the per-tier numbers
+               *  themselves are saved (PriceCheck.tierBreakdown) and ready
+               *  for a future charting view, marko's own spec, "## PRICE
+               *  HISTORY" - not built out into a full trend chart here. */}
+              {latest.tierBreakdown.length > 0 && ` · ${latest.tierBreakdown.length} tier${latest.tierBreakdown.length === 1 ? "" : "s"}`}
+            </p>
             {trend && <TrendNote trend={trend} currency={latest.currency} />}
           </div>
           <div className="mb-3 grid grid-cols-5 gap-2 text-sm">
@@ -572,6 +959,12 @@ function SavePriceCheckModal({
   const [listingCount, setListingCount] = useState("");
   const [currency, setCurrency] = useState(defaultCurrency);
   const [customCurrency, setCustomCurrency] = useState(false);
+  // 2.2.0: carried straight through to savePriceCheck, never hand-edited
+  // here - see ScanPrefill.tierBreakdown's own doc comment. Not shown as
+  // editable fields (that would be a lot of new form UI for data marko
+  // never asked to hand-tweak per tier), just a small read-only summary
+  // below so he can see it's included before saving.
+  const [tierBreakdown, setTierBreakdown] = useState<TierBreakdownInput[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 2.0.82: "paste from the listings page" - see priceParse.ts. Purely a
@@ -596,6 +989,7 @@ function SavePriceCheckModal({
       const cur = prefill.currency ?? defaultCurrency;
       setCurrency(cur);
       setCustomCurrency(!CURRENCIES.includes(cur));
+      setTierBreakdown(prefill.tierBreakdown);
     } else {
       const latest = view.history[0] ?? null;
       setLowest(latest ? centsToDecimalString(latest.lowestPriceCents) : "");
@@ -606,6 +1000,12 @@ function SavePriceCheckModal({
       const cur = latest?.currency ?? defaultCurrency;
       setCurrency(cur);
       setCustomCurrency(!CURRENCIES.includes(cur));
+      // Same "start from what's already known" convention as the fields
+      // above - re-typing a fresh check for the same marketplace usually
+      // means the tiers themselves haven't changed shape even when the
+      // prices have, so this saves marko from losing that structure. Fully
+      // replaced (not merged) the moment a live scan prefill arrives instead.
+      setTierBreakdown(latest?.tierBreakdown.map((t) => ({ tier: t.tier, lowestPriceCents: t.lowestPriceCents, medianPriceCents: t.medianPriceCents, listingCount: t.listingCount })) ?? []);
     }
     setError(null);
     setSaving(false);
@@ -699,6 +1099,7 @@ function SavePriceCheckModal({
         highestPriceCents: highestCents,
         listingCount: count,
         currency: currency.trim().toUpperCase(),
+        tierBreakdown,
       });
       toast.success("Price check saved");
       onSaved();
@@ -720,6 +1121,11 @@ function SavePriceCheckModal({
         {prefill && (
           <p className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-400">
             Prefilled from your Visible Scanner scan ({prefill.listingCount} listing{prefill.listingCount === 1 ? "" : "s"}) - review before saving.
+          </p>
+        )}
+        {tierBreakdown.length > 0 && (
+          <p className="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+            Includes a breakdown for {tierBreakdown.length} tier{tierBreakdown.length === 1 ? "" : "s"} ({tierBreakdown.map((t) => t.tier).join(", ")}).
           </p>
         )}
         <Field label="Paste from the listings page" hint="Select the prices on that page, copy, and paste here - the fields below fill in automatically.">
@@ -1063,7 +1469,12 @@ export default function PriceChecker() {
   // modal any manual "Check Prices" uses, prefilled with this session's
   // current running totals. Never saves directly - marko still reviews and
   // clicks Save himself, same as every other path into price_checks.
-  const saveScanToHistory = useCallback((view: MarketplacePriceView, session: ScannerCardState) => {
+  // 2.2.0: also carries through this session's own tier breakdown for
+  // `session.currency`, if the card's Market Analysis had finished loading
+  // by the time this was clicked - see ScanPrefill.tierBreakdown's own doc
+  // comment for why (marko's spec, "## PRICE HISTORY").
+  const saveScanToHistory = useCallback((view: MarketplacePriceView, session: ScannerCardState, analysis: MarketAnalysisResult | null) => {
+    const matchingCurrency = analysis?.byCurrency.find((c) => c.currency === session.currency);
     setCheckModalPrefill({
       lowestPriceCents: session.lowestPriceCents ?? 0,
       medianPriceCents: session.medianPriceCents,
@@ -1071,6 +1482,13 @@ export default function PriceChecker() {
       highestPriceCents: session.highestPriceCents ?? 0,
       listingCount: session.listings.length,
       currency: session.currency,
+      tierBreakdown:
+        matchingCurrency?.tiers.map((t) => ({
+          tier: t.tier,
+          lowestPriceCents: t.stats.lowestPriceCents,
+          medianPriceCents: t.stats.medianPriceCents,
+          listingCount: t.stats.listingCount,
+        })) ?? [],
     });
     setCheckModalFor(view);
   }, []);

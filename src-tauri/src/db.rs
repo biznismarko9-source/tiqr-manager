@@ -170,6 +170,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "018_price_checker_scanner",
         include_str!("../migrations/018_price_checker_scanner.sql"),
     ),
+    (
+        "019_price_checker_market_analysis",
+        include_str!("../migrations/019_price_checker_market_analysis.sql"),
+    ),
+    (
+        "020_remove_stubhub",
+        include_str!("../migrations/020_remove_stubhub.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -369,13 +377,19 @@ mod migration_017_safety_tests {
             .unwrap();
         assert!(applied, "017 must be recorded as applied, not silently skipped or left pending forever");
 
-        // The rest of what 017 does must still have happened - a partial,
+        // The rest of the chain must still have run too - a partial,
         // silently-rolled-back-except-for-the-conflicting-statement outcome
-        // would be just as bad as a hard failure.
-        let stubhub_active: bool = conn
-            .query_row("SELECT active FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0))
+        // would be just as bad as a hard failure. 2.2.0: StubHub is now
+        // fully DELETED by migrations/020_remove_stubhub.sql (marko's own
+        // explicit follow-up request, confirmed via AskUserQuestion) rather
+        // than just retired by 017 - see that migration's own doc comment.
+        // run_migrations always runs the whole chain, so asserting it's
+        // gone here still proves the chain ran to completion past 017,
+        // which is this test's real point.
+        let stubhub_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0))
             .unwrap();
-        assert!(!stubhub_active, "StubHub must still end up retired even when the Viagogo insert was a no-op");
+        assert_eq!(stubhub_count, 0, "StubHub must be fully gone once the whole migration chain (through 020) has run");
     }
 
     #[test]
@@ -390,9 +404,12 @@ mod migration_017_safety_tests {
             .query_row("SELECT name, active FROM marketplaces WHERE name = 'Viagogo'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!(viagogo, ("Viagogo".to_string(), true));
-        let stubhub_active: bool =
-            conn.query_row("SELECT active FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0)).unwrap();
-        assert!(!stubhub_active);
+        // 2.2.0: StubHub is fully DELETED by migrations/020_remove_
+        // stubhub.sql by the time the whole chain has run, not just
+        // retired by 017 anymore - see that migration's own doc comment.
+        let stubhub_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM marketplaces WHERE name = 'StubHub'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stubhub_count, 0);
     }
 }
 
