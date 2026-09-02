@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet } from "react-router-dom";
 import {
   IconBoxes,
   IconCalendarDays,
+  IconCheck,
   IconChevronUp,
   IconGauge,
   IconLogOut,
@@ -38,6 +39,13 @@ const NAV = [
   { to: "/orders", label: "Orders", icon: IconPackage },
   { to: "/tickets", label: "Tickets", icon: IconTicket },
   { to: "/sales", label: "Sales", icon: IconReceipt },
+  // 2.2.12: marko's own request for one dedicated place to see everything
+  // sold that still needs finishing (payment/delivery/both) - placed right
+  // after Sales (not standalone-top-level like Price Checker/Finance below)
+  // since it's a specialized, narrower view OVER Sales' own data, not an
+  // independent feature of its own. Reuses IconCheck (already defined, used
+  // elsewhere for a plain checkmark) rather than adding a new icon.
+  { to: "/fulfillment", label: "Fulfillment Center", icon: IconCheck },
   { to: "/inventory", label: "Inventory", icon: IconBoxes },
   { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia

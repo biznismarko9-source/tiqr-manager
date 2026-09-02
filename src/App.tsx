@@ -16,6 +16,7 @@ import Tickets from "./pages/Tickets";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
+import FulfillmentCenter from "./pages/FulfillmentCenter";
 import Pulls from "./pages/Pulls";
 import PriceChecker from "./pages/PriceChecker";
 import Finance from "./pages/Finance";
@@ -81,6 +82,10 @@ export default function App() {
               <Route path="inventory" element={<Inventory />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
+              {/* 2.2.12: Fulfillment Center - a narrower work-view over the
+                  same Sales data, see Layout.tsx's NAV entry for why it sits
+                  here rather than as a standalone top-level section. */}
+              <Route path="fulfillment" element={<FulfillmentCenter />} />
               <Route path="pulls" element={<Pulls />} />
               <Route path="price-checker" element={<PriceChecker />} />
               <Route path="finance" element={<Finance />} />

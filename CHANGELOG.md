@@ -16,6 +16,59 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.12 - Fulfillment Center
+
+Marko's ČASŤ C, shipped as its own release right after 2.2.11 (same
+message, explicitly split into two releases). See
+`REDESIGN-2.2.12-REPORT.md` (Slovak) and
+`PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.12" entry. Zero backend/migration
+changes - frontend only.
+
+- **New page: Fulfillment Center** (`src/pages/FulfillmentCenter.tsx`, new
+  `/fulfillment` sidebar entry right after Sales) - one place to see every
+  sold ticket not yet fully paid, delivered, and completed. Fetches the
+  same `SaleGroup[]` Sales.tsx already fetches and reuses its exact
+  `isSaleGroupDone` rule (now exported) - no parallel status system, no new
+  backend command.
+- **4 clickable tiles double as KPIs and category filters**: Pending Sales
+  (all), Awaiting Payment, Awaiting Delivery, Ready to Complete - the last
+  one a new, pure display derivation (paid + delivered in full; the only
+  way such a group is still Pending is a partial refund).
+- **Table**: Event / Ticket+Seats / Sale price / Payment status / Delivery
+  status (new group-level badge, existing tone colors) / Overall status /
+  Action - row click or the Action button both open the existing Sale
+  Detail page (`/sales/:id`), no new navigation mechanism.
+- Verified with a disposable, esbuild-bundled Node script (built and run
+  once, then deleted) asserting all of marko's listed test scenarios
+  against the real exported functions - 21/21 passed - since this codebase
+  has no frontend test framework.
+
+## 2.2.11 - Attention Center UX rework + Dashboard cleanup
+
+Marko's own next request, split into two explicit parts, both frontend-only
+(zero backend/migration changes). See `REDESIGN-2.2.11-REPORT.md` (Slovak)
+and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.11" entry for the judgment
+calls behind each.
+
+- **Attention Center reworked from one mixed feed into 5 named, always-
+  visible boxes** (`Dashboard.tsx`): NO LISTING PRICE YET / NO ACTIVE
+  LISTING / NOT DELIVERED YET / EVENT COMING SOON / MARKET ATTENTION -
+  grouped by the item's existing `category` field instead of `priority`.
+  Clicking a box reveals only that category's own rows (reusing
+  `AttentionCenterRow` unchanged); the old mixed feed is gone as default
+  content. A box with 0 items is disabled, not hidden. Zero backend
+  changes - `attention_center.rs` already satisfied every MARKET ATTENTION
+  constraint (Price-Checker-gated, no automatic pricing, section/row/tier
+  never a pricing factor), confirmed by reading its own doc comment and
+  tests rather than assumed. `AttentionSection`/the alert bell (older,
+  separate feature) are untouched.
+- **Dashboard Overview: unbounded "Sales by platform" list capped** with
+  its own `max-h-72 overflow-y-auto`, so a long platform list scrolls
+  internally instead of growing the whole page - paired with a small,
+  one-step trim of two existing spacing values on the same tab (not a
+  redesign). `Layout.tsx`'s scroll container was checked and needed no
+  change.
+
 ## 2.2.10 - Eight follow-ups from marko's 2.2.9 review
 
 Marko reviewed 2.2.9 and sent two rapid-fire messages (7 screenshots) with

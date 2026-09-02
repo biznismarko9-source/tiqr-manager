@@ -21,6 +21,209 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.12 - Fulfillment Center
+
+Marko's ČASŤ C from the same message as 2.2.11, shipped as its own release
+right after it (explicitly requested as two separate releases). See
+`REDESIGN-2.2.12-REPORT.md` (Slovak) for the full report.
+
+- **Every DÔLEŽITÉ constraint from marko's message was checked, not just
+  assumed, before this was called done:** no refund/resell logic was
+  touched (this page only READS `refundedCount`/`paymentStatus`, the exact
+  same fields Sales.tsx's table already reads - `refund_sale_impl` itself
+  was never opened); no `batch_id` logic was touched (not referenced
+  anywhere in `FulfillmentCenter.tsx`); no money/cents logic was touched
+  (every amount is `formatMoneyOrMixed(g.revenueCents, g.currency)`, the
+  same call Sales.tsx's table already makes - no new arithmetic on cents
+  anywhere in this file); Listings/Price Checker/market pricing/Finance are
+  not referenced at all; Tier/Level is not referenced at all, let alone
+  used for pricing; and the existing Sales Completed/Pending rule is not
+  just "consistent" but the SAME FUNCTION CALL (`isSaleGroupDone`, imported
+  from `Sales.tsx`, not reimplemented) - this page is structurally
+  incapable of disagreeing with Sales.tsx about what counts as done.
+- **"Ready to Complete" - the one real design decision this task required,
+  since marko's message didn't define it.** Traced from `SaleGroup`'s own
+  field semantics rather than guessed: `soldCount` is "how many of this
+  group's `ticketCount` tickets currently have status 'sold' - normally
+  equals `ticketCount`, lower only when a line was refunded" (its own doc
+  comment, `lib/types.ts`). `isSaleGroupDone` requires `soldCount ===
+  ticketCount` (among other things) OR a full refund - so the ONLY way a
+  group can be simultaneously fully paid, fully delivered, AND still
+  Pending is a PARTIAL refund (some but not all lines refunded), which
+  permanently keeps `soldCount < ticketCount` for that group. Therefore
+  `isReadyToComplete(g) = paidCount === ticketCount && deliveredCount ===
+  ticketCount` is automatically disjoint from "done" (if it also had
+  `soldCount === ticketCount` it would already be Completed and excluded
+  from this page entirely) - there is no other way to reach this state. In
+  plain terms: on this page, "Ready to Complete" always means "this batch's
+  remaining refund/resell bookkeeping is the only thing left," never a
+  group that's genuinely still missing payment or delivery. **If marko
+  disagrees with this definition**, it's a one-function change
+  (`isReadyToComplete` in `FulfillmentCenter.tsx`) with zero ripple - it's
+  not read anywhere else.
+- **KPI row and category filters were unified into ONE set of 4 clickable
+  tiles, not built as two separate things.** Marko's message listed "KPI:
+  Pending Sales/Awaiting Payment/Awaiting Delivery/Ready to Complete" and,
+  separately, "Kategórie... môžu byť: ALL PENDING/PAYMENT/DELIVERY/READY TO
+  COMPLETE" (his own softer "môžu byť"/"can be" phrasing, not a rigid
+  mandate) - these are the exact same 4 counts under two different naming
+  schemes. Showing the same 4 numbers twice (once as static KPI cards, once
+  as separate filter pills) would be visual duplication for no benefit, so
+  they're one row of 4 tiles that both display the count AND filter the
+  table - reusing 2.2.11's own just-established Attention-Center-box
+  pattern for visual consistency across both new screens this batch. If
+  marko specifically wants a KPI row that stays fixed regardless of which
+  filter is active (so you can see "Awaiting Payment: 5" even while looking
+  at the Delivery-filtered table), that's a real, easy follow-up - flagged
+  here rather than guessed at.
+- **Delivery status needed a genuinely new badge** - unlike Payment status
+  (copied verbatim from Sales.tsx's own `g.paymentStatus ? <Badge
+  tone={g.paymentStatus}>...` pattern), Sales.tsx has no existing
+  GROUP-level delivery badge to copy (only the combined Sold+Delivered+Paid
+  "Completed" badge). `deliveryStatusBadge` in `FulfillmentCenter.tsx`
+  derives one from `deliveredCount`/`ticketCount`, reusing the exact
+  `delivered`/`"not delivered"`/`mixed` tone keys `ui.tsx`'s `STATUS_TONES`
+  already defines (today used by the per-TICKET `InlineStatusSelect` on
+  Sale/Order Detail) - no new color was added anywhere.
+- **No responsive narrow-table breakpoint was added** (unlike Sales.tsx/
+  Orders.tsx's dual `useNarrowTables()` colgroups) - this table only has 7
+  modest columns (vs. their 10-13), so a single fixed `colgroup` was judged
+  sufficient without measuring against the app's enforced 1080px minimum
+  window width the way those two tables' own narrow mode was originally
+  measured. Flag to marko if it ever looks cramped on a small window - it
+  would be a small, contained addition, not a redesign.
+- **Sidebar placement**: `/fulfillment` sits right after Sales in
+  `Layout.tsx`'s `NAV` (not standalone-top-level like Price Checker/Finance)
+  - it's a narrower work-view OVER Sales' own data, not an independent
+  feature area of its own. Reuses the existing `IconCheck` rather than
+  adding a new icon.
+- **Testing, given this codebase has no frontend test framework** (grepped
+  first, confirmed - no vitest/jest, no `*.test.*` file anywhere, ever, in
+  this project's history): `isSaleGroupDone`/`isReadyToComplete`/
+  `matchesFulfillmentCategory` were verified with a disposable,
+  esbuild-bundled Node script - built OUTSIDE the repo (`/root/verify-
+  2.2.12/`, never inside `src/`), importing the REAL exported functions
+  (not reimplemented copies) with fabricated `SaleGroup` fixtures covering
+  every scenario marko listed (payment pending, delivery pending, both at
+  once, ready-to-complete via the partial-refund edge case, a fully-done
+  group correctly excluded from the Pending set, the full-refund rule
+  correctly excluded too) - 21/21 assertions passed, then the script and
+  its output were deleted (not committed, not part of the shipped zip).
+  Navigation-to-Sale-Detail and the Attention Center's click/select
+  behavior (2.2.11) are UI/routing behavior a pure-function script can't
+  exercise - both were instead confirmed by reading the actual route/`<Link
+  to=...>` targets against `App.tsx`'s real route table, the same
+  code-reading-based verification every prior release's frontend-only
+  changes have always relied on in this sandbox (which has no display to
+  run the real Tauri app in).
+
+## 2.2.11 - Attention Center UX rework + Dashboard cleanup
+
+Marko's own next request, sent as one large structured message explicitly
+split into two releases (this one, plus 2.2.12's Fulfillment Center - see
+that entry below/above once it ships). This entry covers 2.2.11 only: Part
+A (Attention Center) and Part B (Dashboard cleanup), both entirely
+frontend-only. See `REDESIGN-2.2.11-REPORT.md` (Slovak) for the full report.
+
+- **Attention Center: category, not priority, is now the grouping axis -
+  and this was a pure frontend change.** `AttentionCenterItem.category`
+  (`"event_soon" | "missing_listing_price" | "no_active_listing" |
+  "outside_market_price" | "sold_undelivered"`) already existed on every
+  item the backend sends (`attention_center.rs`, unchanged since 2.2.9) -
+  the OLD frontend (`ATTENTION_CENTER_GROUPS`/`AttentionCenterGroup`) just
+  happened to group by the OTHER existing field, `priority`, instead. 2.2.11
+  removes both of those and replaces them with `ATTENTION_CENTER_CATEGORIES`
+  (5 entries, marko's own exact title/order) + `AttentionCategoryCard` (one
+  clickable box per category) + a rewritten `AttentionCenterBlock` that
+  tracks which ONE category is `selected` and shows only that category's
+  rows below the 5-box grid, via the untouched `AttentionCenterRow`. No new
+  field was added anywhere, no new command, no new sort - `items` arrives
+  in exactly the same shape and order as before this task.
+- **Box title <-> category mapping (memorize this, it's a 1:1 map, not a
+  re-derivation):** NO LISTING PRICE YET = `missing_listing_price`, NO
+  ACTIVE LISTING = `no_active_listing`, NOT DELIVERED YET =
+  `sold_undelivered`, EVENT COMING SOON = `event_soon`, MARKET ATTENTION =
+  `outside_market_price`. If a 6th category is ever added to
+  `attention_center.rs`, it will silently show 0 boxes for it unless
+  `ATTENTION_CENTER_CATEGORIES` is also updated - there is no fallback
+  "everything else" bucket by design (marko asked for exactly 5 named
+  boxes, not an open-ended list).
+- **Judgment call: a box's count is the number of Attention Center ROWS in
+  that category, not a raw ticket count.** Every ticket-level category has
+  already been grouped by ORDER since 2.2.9 (one row can carry many
+  `ticketIds`) - the box count reuses that same existing grouping
+  (`items.filter(i => i.category === key).length`) rather than summing
+  `ticketIds.length`, matching the precedent the old priority-group headers
+  already set (`{label} ({items.length})`). If marko wants "how many
+  tickets" instead of "how many rows/orders" shown on the box face, that's
+  a one-line change (sum `ticketIds.length`, falling back to 1 for
+  `event_soon`'s ticket-less rows) - flagged here rather than guessed at.
+- **Judgment call: a 0-count box is disabled, not hidden.** All 5 boxes
+  always render (marko's spec: 5 NAMED boxes, not a variable-length list),
+  but a box with nothing behind it can't be clicked into - there's no
+  detail view to open. If a category empties out while its detail panel is
+  open (a fresh `getAttentionCenter()` fetch drops its last row), a
+  `useEffect` closes that panel automatically rather than leaving it open
+  and empty under a now-disabled box.
+- **MARKET ATTENTION's hard constraints were already fully satisfied
+  BEFORE this task started - confirmed by reading, not assumed.** Marko's
+  message repeated 4 explicit constraints for this box (only when real
+  Price Checker data exists; no automatic price determination; section/row
+  must not be a pricing factor; tier/level must not determine or change
+  price). Read `attention_center.rs`'s own module doc comment line-by-line
+  before writing any frontend code: "No new migration, no new dependency,
+  no automatic pricing/repricing anywhere in this file, and `tier`/
+  `section`/`row` are never read as a pricing factor - every 'value' this
+  module ever shows is a value that already exists verbatim on the ticket."
+  Its `outside_market_price` arm only ever fires when
+  `attention_item.available` is true (Price Checker data exists for that
+  event - see `inventory_intelligence.rs`), and its own test
+  (`outside_market_price_only_fires_when_price_checker_data_exists_for_
+  that_event`) already locks this in. Net result: **zero backend changes
+  for Part A**, and none were needed - do not "helpfully" add a pricing
+  suggestion or a tier-based adjustment to this module later without
+  re-reading marko's own explicit constraints above first.
+- **`AttentionSection` (the OTHER Dashboard attention block, further down
+  the same Activity tab - alert bell era, 2.0.75/2.0.76/2.0.79) is
+  deliberately, completely untouched.** It is a different, already-shipped
+  feature backed by `DashboardAlerts`/`data.alerts`, not
+  `AttentionCenterItem[]` - see `attention_center.rs`'s own doc comment for
+  exactly how the two differ and why both exist. Marko's 2.2.11 message
+  named "Attention Center" specifically (capital letters, matching this
+  block's own on-page heading) and never mentioned the alert bell/
+  `AttentionSection` cards - touching those would also have been a bigger,
+  unrequested visual change than anything else in this release.
+- **Dashboard cleanup (Part B) root cause: `SalesByPlatformCard`'s `<ul>`
+  was the one truly unbounded list on the Overview tab.** Every other
+  Overview element is either a fixed handful of StatCards or a single
+  chart; this list grows by one row per DISTINCT platform a business has
+  ever sold through (free-text/picker field on Orders/Sales), so it has no
+  natural ceiling. Fixed with `max-h-72 overflow-y-auto` on just that
+  `<ul>` - a handful of platforms (marko's own screenshot showed 4) still
+  renders in full with no scrollbar at all; a long list now scrolls inside
+  its own card instead of pushing the page down. Paired with a small,
+  one-step trim of two existing Tailwind spacing values on the same tab
+  (StatCard grid `mb-6`->`mb-5`, metric chart Card `mb-8`->`mb-6`) - picked
+  because Layout.tsx's own content wrapper (`<div className="px-6 py-6">`)
+  already adds 48px of fixed top+bottom padding around every page, so a
+  borderline-overflowing Overview tab is plausible even with few platforms,
+  on a smaller/scaled display. Deliberately NOT changed: `PageHeader`'s own
+  margin (`ui.tsx`, shared by every page - out of this task's scope, and
+  changing it would ripple everywhere) and `Layout.tsx`'s `<main
+  className="overflow-y-auto">` itself (already correct - confirmed by
+  reading, it only ever scrolls when content genuinely overflows; the bug
+  was in how much content there was, not in that wrapper).
+- **Caveat marko should know, stated plainly in the report too**: this
+  sandbox cannot render a real browser at a specific OS/display scaling, so
+  the exact pixel point at which the Overview tab used to overflow (if it
+  ever did on marko's own machine at 1920x1080) was reasoned about, not
+  literally reproduced. The unbounded list was identified as the one
+  concrete, well-justified, always-correct-to-fix root cause regardless of
+  whether it was ALSO the exact trigger marko personally saw - if a full-
+  page scrollbar still appears on his machine after this release, the next
+  thing to check is Windows display scaling (a scaled-down viewport is
+  smaller than the 1920x1080 CSS pixels the screenshot suggests).
+
 ## 2.2.10 - Eight follow-ups from marko's 2.2.9 review
 
 Marko reviewed 2.2.9 and sent two rapid-fire messages (7 screenshots

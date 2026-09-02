@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.10**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.12**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -29,7 +29,7 @@ are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
 un-bumped, code-labeled-only build first - marko's closing checklist for
 that task didn't ask for a version bump - then bumped for real, same
 session, once he confirmed he wanted the usual release file too. See
-`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 through 2.2.10's own closing
+`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 through 2.2.12's own closing
 checklists all asked for the full cadence up front, no ambiguity.)
 
 ## Stack / layout
@@ -40,7 +40,9 @@ checklists all asked for the full cadence up front, no ambiguity.)
   Sales in 2.2.5), see "Current focus" below and `PROTECTED_AREAS.md`'s
   "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before adding more event-level
   functionality anywhere else), Orders,
-  OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail, Pulls
+  OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail,
+  FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
+  data, see "Current focus" below), Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
   PriceChecker, Settings, Welcome (auth), PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
@@ -55,8 +57,11 @@ checklists all asked for the full cadence up front, no ambiguity.)
   attention_center (2.2.8 - one read-only command backing the Dashboard's
   global, cross-event "Attention Center" block; 2.2.9 reworked its 4
   ticket-level categories to group by order instead of one row per ticket;
-  2.2.10 fixed its sort tie-break (see "Current focus" below) and excluded
-  done events from 3 of its 5 categories), sales, event_categories, pulls
+  2.2.10 fixed its sort tie-break and excluded done events from 3 of its 5
+  categories; 2.2.11 changed only how the FRONTEND groups/displays these
+  same items - 5 clickable category boxes instead of a priority-grouped
+  feed, see "Current focus" below - this module itself is byte-for-byte
+  unchanged), sales, event_categories, pulls
   (+ `pulls_received`, `pulls_sheet_sync` - 2.2.10: push direction's
   `sheet_sync_links` bookkeeping now only committed after a confirmed
   network write, see "Current focus" below), finance_accounts/finance_entries (2.2.1: entries can
@@ -83,6 +88,133 @@ checklists all asked for the full cadence up front, no ambiguity.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**Fulfillment Center - a new page for post-sale work (2.2.12).** Marko's
+own ČASŤ C, shipped as its own release right after 2.2.11 (same message,
+explicitly split into two releases). New `src/pages/FulfillmentCenter.tsx`
++ sidebar entry (`/fulfillment`, right after Sales) - zero backend changes,
+zero migration, no parallel status system:
+
+- **Data**: fetches the exact same `SaleGroup[]` Sales.tsx already fetches
+  (`api.listSaleGroups({})`, no new command) and buckets it using
+  `isSaleGroupDone` - imported directly from `Sales.tsx` (now exported, see
+  its own 2.2.12 comment there) rather than reimplemented, so this page can
+  never drift from Sales' own Pending/Completed rule. A group only ever
+  appears here while `!isSaleGroupDone(g)` - a fully refunded group is
+  "done" under that same existing rule and so never appears, exactly like
+  Sales' own Pending tab.
+- **4 tiles, doing double duty as both KPIs and category filters** (marko
+  listed them twice, once as KPIs and once as categories - they're the same
+  4 numbers): Pending Sales (= ALL PENDING, every not-done group), Awaiting
+  Payment (= PAYMENT, `paidCount !== ticketCount`), Awaiting Delivery (=
+  DELIVERY, `deliveredCount !== ticketCount`), Ready to Complete (= READY TO
+  COMPLETE, both counts fully matched). Same clickable-tile visual pattern
+  2.2.11 just established for Attention Center, reused rather than
+  reinvented. Awaiting Payment/Awaiting Delivery are NOT mutually exclusive
+  by design (a group missing both counts under both) - see "Current focus"
+  below's 2.2.11 entry for the identical reasoning already applied there.
+- **New concept, "Ready to complete"**: a pure display derivation
+  (`isReadyToComplete`, exported), never a stored status - paid AND
+  delivered in full. The only way such a group can still be Pending at all
+  is a PARTIAL refund (`soldCount < ticketCount`, see that field's own doc
+  comment) - so in practice this category means "just needs its remaining
+  refund/resell bookkeeping looked at," never a group genuinely still
+  missing payment or delivery.
+- **Table**: Event / Ticket+Seats / Sale price / Payment status / Delivery
+  status / Overall status / Action - the minimum marko asked for. Payment
+  status reuses Sales.tsx's own Badge pattern verbatim; Delivery status is
+  a new group-level badge (`deliveredCount`/`ticketCount`) reusing the
+  existing `delivered`/"not delivered"/`mixed` tone keys `ui.tsx` already
+  defines (used today by the per-TICKET `InlineStatusSelect` on Sale/Order
+  Detail) - no new color. Overall status shows "Ready to complete" (emerald,
+  same `completed` tone Sales.tsx's own Completed badge uses) or "Pending"
+  (amber) - never "Completed", since a truly completed group can never
+  reach this page. Clicking a row OR its "Open" Action button both navigate
+  to the existing `/sales/:id` route (`SaleDetail.tsx`) - no new navigation
+  mechanism.
+- **Verification**: this codebase has no frontend test framework (confirmed
+  by grep - no vitest/jest/*.test.* anywhere), so frontend-only logic here
+  was verified the same way `isEventDone`/`isOrderDone`/`isSaleGroupDone`
+  always have been in every prior release - by `tsc -b`, code-reading, and
+  reasoning - PLUS, this time, a disposable esbuild-bundled Node script
+  (built and run once during this task, then deleted - never part of the
+  repo) that imported the REAL exported `isSaleGroupDone`/
+  `isReadyToComplete`/`matchesFulfillmentCategory` and asserted all of
+  marko's explicit test scenarios (payment-pending, delivery-pending, both
+  pending, ready-to-complete, a fully-done group excluded from Pending, the
+  refund rule) - 21/21 passed. See `REDESIGN-2.2.12-REPORT.md` for the exact
+  scenarios and `PROTECTED_AREAS.md`'s new "2.2.12" entry for the full
+  reasoning.
+- `cargo test --lib`: 1006 passed, 0 failed - unchanged from 2.2.11, since
+  no `.rs` file was touched for this release either.
+
+**Attention Center UX rework + Dashboard cleanup (2.2.11).** Marko's own
+next request after 2.2.10, split into two explicit parts, both frontend-only
+- no migration, no new command, no backend change of any kind:
+
+1. **Attention Center: from one mixed feed to 5 named, always-visible
+   boxes.** `Dashboard.tsx`'s `AttentionCenterBlock` no longer groups
+   `AttentionCenterItem[]` by `priority` (the old Critical/Attention/Info
+   feed, `ATTENTION_CENTER_GROUPS`/`AttentionCenterGroup` - both removed).
+   It now groups by the item's existing `category` field into exactly the 5
+   boxes marko named, in his exact order: **NO LISTING PRICE YET** (
+   `missing_listing_price`), **NO ACTIVE LISTING** (`no_active_listing`),
+   **NOT DELIVERED YET** (`sold_undelivered`), **EVENT COMING SOON**
+   (`event_soon`), **MARKET ATTENTION** (`outside_market_price`). Each box
+   (`AttentionCategoryCard`, same label/value/sub visual language as
+   `ui.tsx`'s `StatCard`) shows a title, a count, and a short static
+   subtext, and is a real `<button>` - clicking one selects it and reveals
+   its own rows below (reusing `AttentionCenterRow` byte-for-byte
+   unchanged); clicking the same box again, or its detail panel's "Close",
+   collapses it. Only ONE category's rows show at a time, and the mixed
+   feed is completely gone as default/main content - exactly marko's
+   "Žiadny veľký mixed feed ako hlavný obsah... nech sa zobrazí až po
+   výbere konkrétnej kategórie." A box with 0 items is disabled (nothing to
+   drill into) rather than hidden - all 5 stay visible always, so the 5
+   lenses are always visible even at zero. Judgment call: a box's "item
+   count" is the number of Attention Center ROWS in that category (an order
+   with 40 unpriced tickets is still 1 row, same grouping 2.2.9 already
+   established) not a raw ticket count - consistent with the existing
+   per-row-already-a-group convention, not a new one. **MARKET ATTENTION
+   required zero backend work**: confirmed by reading (not assuming)
+   `attention_center.rs`'s own module doc comment and its
+   `outside_market_price_only_fires_when_price_checker_data_exists_for_
+   that_event` test - that arm already only fires when real Price Checker
+   data exists for the event, never determines a price, and the whole
+   module's doc comment already guarantees `tier`/`section`/`row` are never
+   read as a pricing factor anywhere in it. All of marko's MARKET ATTENTION
+   constraints were already true before this task started. The older
+   `AttentionSection`/`AlertCard`/alert bell block (2.0.75/2.0.76/2.0.79,
+   further down the same Activity tab) is completely untouched - it's a
+   different, already-shipped feature (see `attention_center.rs`'s own doc
+   comment for why both exist) and wasn't named in this request.
+2. **Dashboard Overview: unbounded platform list capped, plus a small
+   spacing trim.** `SalesByPlatformCard`'s `<ul>` was the one list on the
+   Overview tab with no size limit at all - a business with many distinct
+   platforms would previously push the whole tab (and the page's own
+   scrollbar) further down for every additional one. It's now
+   `max-h-72 overflow-y-auto` - a typical handful of platforms still shows
+   in full with no scrollbar anywhere, and only a genuinely long list gets
+   an internal scrollbar of its own, never the page's. Paired with a
+   modest, one-step trim of two existing Tailwind spacing values on the
+   same tab (the StatCard grid's `mb-6`->`mb-5`, the metric chart Card's
+   `mb-8`->`mb-6`) - not a redesign, every component/layout is unchanged,
+   just a little less vertical whitespace before "Sales by platform".
+   `Layout.tsx`'s `<main className="overflow-y-auto">` was checked and is
+   already correct (it only ever scrolls when content actually overflows) -
+   no change needed or made there. Judgment call, stated plainly in the
+   report: this sandbox cannot reproduce a real browser's scrollbar at a
+   specific OS/display scaling, so the unbounded list was identified as the
+   concrete, well-reasoned root cause (the only vector for indefinite
+   growth on this tab) rather than confirmed via a literal reproduction -
+   see `REDESIGN-2.2.11-REPORT.md` for the full reasoning and what to check
+   if the scrollbar still appears on marko's own machine.
+
+Verified: `cargo test --lib` (1006 passed, 0 failed, 0 new/changed - no
+Rust file touched this release, confirming zero regressions), `tsc -b` and
+`vite build` both clean. See `REDESIGN-2.2.11-REPORT.md` for the full
+report (Slovak) and `PROTECTED_AREAS.md`'s new "2.2.11" entry for every
+judgment call above.
 
 **Eight follow-up fixes from marko's review of 2.2.9 (2.2.10).** Marko sent
 two rapid-fire messages (7 screenshots combined) after 2.2.9 shipped. No

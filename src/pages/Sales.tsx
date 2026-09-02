@@ -49,7 +49,12 @@ import { completionStatus } from "../lib/completion";
 // refund_sale_impl); "Paid"/"Delivered" use the group's own per-line counts
 // rather than the collapsed paymentStatus field, so a partially-resolved
 // batch reads as "2 pending" instead of just "Mixed".
-function saleGroupCompletionChecks(g: SaleGroup) {
+//
+// 2.2.12: exported (was module-private) so the new Fulfillment Center page
+// can reuse this exact check verbatim for its own Payment/Delivery status
+// columns - marko's own explicit "Nevytváraj nový paralelný status systém."
+// No behavior change here at all.
+export function saleGroupCompletionChecks(g: SaleGroup) {
   return [
     { label: "Sold", done: g.soldCount === g.ticketCount },
     { label: "Delivered", done: g.deliveredCount === g.ticketCount },
@@ -78,7 +83,13 @@ function saleGroupCompletionChecks(g: SaleGroup) {
 // refunded later than the others) still stays in Pending - it now falls out
 // of the stricter check naturally (a partial refund also fails "Sold"),
 // with no separate rule needed for it any more.
-function isSaleGroupDone(g: SaleGroup): boolean {
+//
+// 2.2.12: exported (was module-private) - Fulfillment Center's own "Ready to
+// Complete"/"All Pending" derivation reuses this exact function so its
+// definition of "done" can never drift from Sales.tsx's own Pending/
+// Completed tabs, satisfying marko's own explicit "existujúce Sales
+// Completed/Pending pravidlo musí zostať konzistentné."
+export function isSaleGroupDone(g: SaleGroup): boolean {
   return g.paymentStatus === "refunded" || completionStatus(saleGroupCompletionChecks(g)).tone === "completed";
 }
 

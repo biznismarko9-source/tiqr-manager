@@ -351,7 +351,11 @@ export default function Dashboard() {
                       ? "All time"
                       : `${periodBoundLabel(data.periodFrom, "the beginning")} → ${periodBoundLabel(data.periodTo, "today")}`}
                   </p>
-                  <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  {/* 2.2.11: mb-6 -> mb-5 (Part B, Dashboard cleanup) - a small,
+                      deliberate trim of vertical rhythm on this tab, not a
+                      redesign. See the chart Card's own 2.2.11 comment below
+                      for the full reasoning. */}
+                  <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                     <StatCard
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
@@ -398,7 +402,21 @@ export default function Dashboard() {
                       rather than a new visual pattern. 1.9.3: no longer
                       independently toggleable - both this and the StatCards
                       above are simply "the Overview tab" now. */}
-                  <Card className="mb-8 p-4">
+                  {/* 2.2.11 (Part B, Dashboard cleanup - marko's own request:
+                      "odstráň zbytočný celostránkový vertical scroll, ak sa
+                      celý obsah zmestí do viewportu"): mb-8 -> mb-6. A modest,
+                      one-step trim of an existing Tailwind spacing value, not
+                      a redesign - every component/layout here is unchanged,
+                      this only tightens the vertical gap before "Sales by
+                      platform" below. Paired with that card's own internal
+                      scroll fix (see SalesByPlatformCard's 2.2.11 comment) -
+                      together these remove the two concrete, well-justified
+                      contributors to this tab occasionally exceeding the
+                      viewport height (an unbounded list, plus a bit of extra
+                      whitespace), without touching anything shared
+                      (PageHeader/Layout's own spacing is untouched - it's
+                      used by every other page too). */}
+                  <Card className="mb-6 p-4">
                   <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
@@ -849,7 +867,20 @@ function ShowMoreToggle({
  * site's comment in the Overview tab. Bars are relative to this list's own
  * biggest platform (not some fixed scale) - the point is comparing
  * platforms against each other, not reading an absolute value off the bar
- * itself (the revenue figure to its right already gives the exact number). */
+ * itself (the revenue figure to its right already gives the exact number).
+ *
+ * 2.2.11 (Part B, Dashboard cleanup): this was the one list on the Overview
+ * tab with no size limit at all - every OTHER list here is either a fixed
+ * few StatCards or a single chart, but this one grows by one row per
+ * distinct platform a business has ever sold through (Orders/Sales already
+ * let marko pick or free-type any platform name), so a business with a
+ * dozen platforms would previously push the whole Overview tab, and the
+ * page's own scrollbar, further down for every additional one - exactly the
+ * "unnecessary full-page scroll" marko asked to remove. Capped at
+ * `max-h-72` (~5 rows) with its own `overflow-y-auto` instead: a typical
+ * handful of platforms (marko's own screenshot shows 4) still shows in full
+ * with no scrollbar at all, and only a genuinely long list gets an internal
+ * scrollbar of its own - never the page's. */
 function SalesByPlatformCard({ data }: { data: DashboardData }) {
   const rows = data.salesByPlatform;
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
@@ -858,7 +889,7 @@ function SalesByPlatformCard({ data }: { data: DashboardData }) {
       {rows.length === 0 ? (
         <EmptyRow text="No sales in this period yet" />
       ) : (
-        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
           {rows.map((r) => (
             <li key={r.platformId ?? "none"} className="px-4 py-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1003,15 +1034,96 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
   );
 }
 
-// 2.2.8: which priority groups the Attention Center renders, in this fixed
-// order (Critical first) - the backend already sorts `items` this way too,
-// this constant only drives the section headers/colors, never a second
-// ordering decision.
-const ATTENTION_CENTER_GROUPS: { key: AttentionCenterItem["priority"]; label: string; dotClass: string }[] = [
-  { key: "critical", label: "Critical", dotClass: "bg-red-500" },
-  { key: "attention", label: "Attention", dotClass: "bg-amber-500" },
-  { key: "info", label: "Info", dotClass: "bg-slate-400" },
+// 2.2.11: which category each Attention Center box represents, and in what
+// order - marko's own exact spec (5 named, always-visible boxes, this exact
+// order and wording), replacing the old priority-grouped
+// ATTENTION_CENTER_GROUPS/AttentionCenterGroup entirely. This only changes
+// how the frontend SLICES/DISPLAYS the same `items` the backend already
+// returns (still the exact same categories/priorities/sort order computed
+// server-side, see attention_center.rs) - no new field, no new command, no
+// new business-logic rule. `subtext` is a short, static description of what
+// the category means, not a dynamically computed figure - kept simple on
+// purpose ("žiadne zbytočné karty/animácie, žiadny veľký redesign").
+const ATTENTION_CENTER_CATEGORIES: {
+  key: AttentionCenterItem["category"];
+  title: string;
+  subtext: string;
+}[] = [
+  { key: "missing_listing_price", title: "NO LISTING PRICE YET", subtext: "Unsold tickets with no listing price set" },
+  { key: "no_active_listing", title: "NO ACTIVE LISTING", subtext: "Unsold tickets not listed on any marketplace" },
+  { key: "sold_undelivered", title: "NOT DELIVERED YET", subtext: "Sold tickets still waiting on delivery" },
+  { key: "event_soon", title: "EVENT COMING SOON", subtext: "Events approaching soon with unsold inventory" },
+  {
+    key: "outside_market_price",
+    title: "MARKET ATTENTION",
+    // 2.2.11: worded to make clear this only ever reflects real Price
+    // Checker data (attention_center.rs's `outside_market_price` arm only
+    // fires when `attention_item.available` is true, i.e. Price Checker
+    // data actually exists for that event) - never an automatic/suggested
+    // price, and section/row/tier are never read as a pricing factor
+    // anywhere in that module. This box can legitimately stay at 0 forever
+    // for a business that never opened Price Checker on any event.
+    subtext: "Listings priced well outside real Price Checker market data",
+  },
 ];
+
+/** Worst (most urgent) priority currently present among a category's own
+ * rows - critical > attention > info > none. A display convenience only,
+ * computed from the exact per-row `priority` the backend already sets (see
+ * attention_center.rs) - never a new severity rule of its own. `null` when
+ * the category currently has zero rows (rendered as a plain, undotted box). */
+function worstPriority(items: AttentionCenterItem[]): AttentionCenterItem["priority"] | null {
+  if (items.some((i) => i.priority === "critical")) return "critical";
+  if (items.some((i) => i.priority === "attention")) return "attention";
+  return items.length > 0 ? "info" : null;
+}
+
+const PRIORITY_DOT_CLASS: Record<AttentionCenterItem["priority"], string> = {
+  critical: "bg-red-500",
+  attention: "bg-amber-500",
+  info: "bg-slate-400",
+};
+
+/** One of the 5 Attention Center boxes - same label/value/sub visual
+ * language as ui.tsx's StatCard (a plain, already-established look, not a
+ * new one) wrapped in a real `<button>` so it's keyboard-accessible too.
+ * Toggles this category's selection on click; disabled once it has zero
+ * rows - there is nothing to drill into, so no detail view to open. */
+function AttentionCategoryCard({
+  title,
+  subtext,
+  items,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  subtext: string;
+  items: AttentionCenterItem[];
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const priority = worstPriority(items);
+  const count = items.length;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={count === 0}
+      className={`rounded-xl border p-4 text-left transition-colors ${
+        selected
+          ? "border-brand-500 bg-brand-50/60 dark:border-brand-500 dark:bg-brand-500/10"
+          : "border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800/60"
+      } ${count === 0 ? "cursor-default opacity-60" : "cursor-pointer"}`}
+    >
+      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {priority && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${PRIORITY_DOT_CLASS[priority]}`} />}
+        <span className="truncate">{title}</span>
+      </p>
+      <p className="mt-1.5 text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</p>
+      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
+    </button>
+  );
+}
 
 /** One Attention Center row - reuses UpcomingEventRow's exact urgency-badge
  * convention (daysUntil/warningLabel/UPCOMING_WARNING_WINDOW_DAYS, all
@@ -1075,63 +1187,98 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
   );
 }
 
-/** One priority group within the Attention Center - renders nothing at all
- * when empty (never an empty "Critical (0)" header), and reuses the exact
- * same ShowMoreToggle/RECENT_LIST_PREVIEW_COUNT convention the Activity
- * tab's own Recent cards already use, so "a lot of alerts" degrades the same
- * way "a lot of recent sales" already does - a familiar pattern, not a new
- * one - satisfying marko's own "rozumný limit + Show all bez straty dát"
- * (the backend never truncates; only this client-side reveal does). */
-function AttentionCenterGroup({
-  label,
-  dotClass,
-  items,
-}: {
-  label: string;
-  dotClass: string;
-  items: AttentionCenterItem[];
-}) {
-  const [expanded, setExpanded] = useState(false);
-  if (items.length === 0) return null;
-  return (
-    <div>
-      <p className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
-        <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
-        {label} <span className="tabular-nums text-slate-400 dark:text-slate-500">({items.length})</span>
-      </p>
-      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-        {(expanded ? items : items.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((item) => (
-          <AttentionCenterRow key={item.key} item={item} />
-        ))}
-      </ul>
-      <ShowMoreToggle
-        expanded={expanded}
-        onToggle={() => setExpanded((v) => !v)}
-        hiddenCount={items.length - RECENT_LIST_PREVIEW_COUNT}
-      />
-    </div>
-  );
-}
-
-/** 2.2.8: Dashboard's new, GLOBAL (every event) "Attention Center" block -
- * marko's own request. A distinct, ADDITIONAL block from AttentionSection
- * right below (which is unchanged) - see commands/attention_center.rs's
- * module doc comment for exactly how the two differ and why both exist.
- * `items` is already fully sorted by the backend (priority, then soonest
- * event) - this component only groups/renders, no client-side scoring. */
+/** 2.2.8: Dashboard's GLOBAL (every event) "Attention Center" block - marko's
+ * own request. A distinct, ADDITIONAL block from AttentionSection further
+ * down (unchanged) - see commands/attention_center.rs's module doc comment
+ * for exactly how the two differ and why both exist.
+ *
+ * 2.2.11 rework (marko's own follow-up - see REDESIGN-2.2.11-REPORT.md):
+ * replaces the single priority-grouped mixed feed with 5 distinct,
+ * ALWAYS-VISIBLE boxes (one per `category`, marko's own exact naming/order -
+ * ATTENTION_CENTER_CATEGORIES above), each just a count + short subtext. The
+ * mixed list is gone as default/main content - clicking a box is now the
+ * only way to see its individual rows (AttentionCenterRow, unchanged, reused
+ * verbatim below), one category at a time, never several stacked together.
+ * `items` is still the exact same, already-sorted array the backend sends -
+ * this only changes how the frontend slices/displays it, never the
+ * underlying rules or data (zero backend changes this release - confirmed
+ * by reading attention_center.rs's own module doc comment, which already
+ * guarantees the MARKET ATTENTION constraints from marko's 2.2.11 request:
+ * Price-Checker-gated, no automatic pricing, section/row/tier never a
+ * pricing factor). */
 function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
+  const [selected, setSelected] = useState<AttentionCenterItem["category"] | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  // If the selected category's last row disappears from underneath it (the
+  // underlying issue got resolved and a fresh fetch dropped it to 0), close
+  // the detail view instead of leaving it open and empty beneath a now-
+  // disabled box.
+  useEffect(() => {
+    if (selected && items.every((i) => i.category !== selected)) {
+      setSelected(null);
+      setExpanded(false);
+    }
+  }, [items, selected]);
+
+  const activeCategory = ATTENTION_CENTER_CATEGORIES.find((c) => c.key === selected) ?? null;
+  const selectedItems = selected ? items.filter((i) => i.category === selected) : [];
+
   return (
     <div className="mb-8">
       <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
         <IconAlertTriangle className="h-3.5 w-3.5" /> Attention Center
       </p>
-      {items.length === 0 ? (
-        <Card className="p-4 text-sm text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</Card>
-      ) : (
-        <Card className="divide-y divide-slate-100 dark:divide-slate-800">
-          {ATTENTION_CENTER_GROUPS.map((g) => (
-            <AttentionCenterGroup key={g.key} label={g.label} dotClass={g.dotClass} items={items.filter((i) => i.priority === g.key)} />
-          ))}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {ATTENTION_CENTER_CATEGORIES.map((c) => (
+          <AttentionCategoryCard
+            key={c.key}
+            title={c.title}
+            subtext={c.subtext}
+            items={items.filter((i) => i.category === c.key)}
+            selected={selected === c.key}
+            onSelect={() => {
+              setSelected((cur) => (cur === c.key ? null : c.key));
+              setExpanded(false);
+            }}
+          />
+        ))}
+      </div>
+
+      {activeCategory && (
+        <Card className="mt-3">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{activeCategory.title}</h3>
+              <p className="truncate text-xs text-slate-400 dark:text-slate-500">{activeCategory.subtext}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelected(null);
+                setExpanded(false);
+              }}
+              className="shrink-0 text-xs font-medium text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+            >
+              Close
+            </button>
+          </div>
+          {selectedItems.length === 0 ? (
+            <EmptyRow text="Nothing in this category right now" />
+          ) : (
+            <>
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                {(expanded ? selectedItems : selectedItems.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((item) => (
+                  <AttentionCenterRow key={item.key} item={item} />
+                ))}
+              </ul>
+              <ShowMoreToggle
+                expanded={expanded}
+                onToggle={() => setExpanded((v) => !v)}
+                hiddenCount={selectedItems.length - RECENT_LIST_PREVIEW_COUNT}
+              />
+            </>
+          )}
         </Card>
       )}
     </div>
