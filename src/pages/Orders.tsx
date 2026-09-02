@@ -27,19 +27,21 @@ import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icon
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
-import type { OrderRecord } from "../lib/types";
-import { inventoryStatus } from "./Tickets";
+import type { EventStatus, OrderRecord } from "../lib/types";
 import { completionStatus } from "../lib/completion";
 
-// 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md) -
-// deliberately separate from inventoryStatus()/ORDER_TABS above, which keep
-// their existing, ticket-count-only meaning (2.0.60) unchanged. "Sold" here
-// reuses the exact same soldout definition inventoryStatus() already uses
-// (nothing left in available/listed - a fully cancelled order counts as
-// nothing outstanding, same as that tab). Delivered/Paid are scoped to SOLD
-// tickets only (see Order.deliveredCount/paidCount's own doc comments,
-// models.rs) - an order with 0 sold tickets fails the Sold check already, so
-// the vacuous 0-of-0 comparisons for the other two never hide anything.
+// 2.0.66: the "Completed" indicator (see REDESIGN-2.0.66-REPORT.md). "Sold"
+// means nothing left in available/listed (a fully cancelled order counts as
+// nothing outstanding). Delivered/Paid are scoped to SOLD tickets only (see
+// Order.deliveredCount/paidCount's own doc comments, models.rs) - an order
+// with 0 sold tickets fails the Sold check already, so the vacuous 0-of-0
+// comparisons for the other two never hide anything.
+//
+// 2.2.10: this used to be described as "deliberately separate" from
+// ORDER_TABS - that stopped being true this version, see isOrderDone below,
+// which now reuses this exact function as HALF of what Active/Completed
+// means. Still not fully merged: this function alone says nothing about the
+// order's EVENT, which is the other half.
 export function orderCompletionChecks(o: OrderRecord) {
   return [
     { label: "Sold", done: o.availableCount === 0 && o.listedCount === 0 },
@@ -48,24 +50,33 @@ export function orderCompletionChecks(o: OrderRecord) {
   ];
 }
 
-// 2.0.60 correction (marko, after trying 2.0.59): "Active" vs "Paid" here
-// was originally bucketed by an order's own Payment status field (whether
-// *marko* has paid *his supplier* for the tickets) - marko clarified that's
-// the wrong signal entirely. What actually means "done" for this page is
-// whether the order's tickets have been sold on to a buyer - the same
-// signal Tickets' own Active/Completed tabs already use (inventoryStatus,
-// imported from Tickets.tsx above), not a second, different notion of
-// "done" for the same ticket counts. So: Paid = inventoryStatus(o).key is
-// "soldout" or "cancelled" (nothing left to sell), Active = still has
-// available/listed stock - Payment status is completely irrelevant to which
-// tab an order lands in now, it's just still shown as its own column, as
-// before. A fully-cancelled order lands in "Paid" here for the same reason
-// it lands in "Completed" on Tickets: there's nothing further to do with
-// it, so leaving it in "Active" would misrepresent it as still needing
-// action - flag this to marko if he'd rather it stayed in Active instead.
-const ORDER_TABS: { key: "active" | "paid"; label: string }[] = [
+// 2.2.10 (marko, reworking 2.0.60's ticket-count-only rule): "this event is
+// done" - its own status is completed/cancelled (marko marked it done
+// himself), OR its date has already passed (today still counts as
+// upcoming - only a strictly past date counts as done). Shared by
+// isOrderDone below AND by the New Order event picker (see the `events`
+// load further down this file), so an order can never be created against an
+// event this same rule would call "done".
+function isEventDone(ev: { status: EventStatus; eventDate: string | null }): boolean {
+  return ev.status === "completed" || ev.status === "cancelled" || (ev.eventDate !== null && ev.eventDate < todayIso());
+}
+
+// 2.2.10 (marko): Active/Completed now keys off whether the order is really
+// done - its EVENT is done (isEventDone above), OR the order itself is
+// already fully wrapped up (reuses the exact same Sold/Delivered/Paid
+// checks the "Completed" badge above already computes). Either one is
+// enough. Supersedes 2.0.60's ticket-count-only bucketing: an order that's
+// fully sold but for an event still months away now correctly stays Active
+// until it's actually delivered and paid too, and an order for an event
+// that already happened moves to Completed even if a ticket never sold -
+// there's nothing more to do about it now regardless of payment state.
+function isOrderDone(o: OrderRecord): boolean {
+  return isEventDone({ status: o.eventStatus, eventDate: o.eventDate }) || completionStatus(orderCompletionChecks(o)).tone === "completed";
+}
+
+const ORDER_TABS: { key: "active" | "completed"; label: string }[] = [
   { key: "active", label: "Active" },
-  { key: "paid", label: "Paid" },
+  { key: "completed", label: "Completed" },
 ];
 
 // Exported (2.0.81) so PriceChecker.tsx's own currency picker (the "Check
@@ -167,8 +178,11 @@ export default function Orders() {
   const [dateFrom, setDateFrom] = useState(lastOrdersDateFrom);
   const [dateTo, setDateTo] = useState(lastOrdersDateTo);
   const [sortBy, setSortBy] = useState(lastOrdersSortBy);
-  // 2.0.59: see ORDER_TABS above.
-  const [tab, setTab] = useListTab("ordersTab", ["active", "paid"] as const);
+  // 2.0.59: see ORDER_TABS above. 2.2.10: renamed "paid" -> "completed" - a
+  // previously-saved "paid" value simply falls back to "active" the first
+  // time this loads post-upgrade (useListTab's own built-in "unrecognized
+  // saved value" safety, see its doc comment), no migration needed.
+  const [tab, setTab] = useListTab("ordersTab", ["active", "completed"] as const);
   const [modalOpen, setModalOpen] = useState(false);
   const [presetEventId, setPresetEventId] = useState<number | undefined>(undefined);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -251,12 +265,9 @@ export default function Orders() {
   // 2.0.59: tab split happens client-side, after sorting, on data the page
   // already fetched - no new backend query, same "filter what's already in
   // memory" approach the sort above already uses.
-  // 2.0.60: bucketed by inventoryStatus (ticket sold/cancelled counts), not
-  // paymentStatus - see the ORDER_TABS comment above for why.
-  const visibleOrders = useMemo(
-    () => sortedOrders.filter((o) => (inventoryStatus(o).key === "active") === (tab === "active")),
-    [sortedOrders, tab],
-  );
+  // 2.2.10: bucketed by isOrderDone (event done, or order fully wrapped up) -
+  // see that function's own doc comment above for why.
+  const visibleOrders = useMemo(() => sortedOrders.filter((o) => isOrderDone(o) === (tab === "completed")), [sortedOrders, tab]);
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -464,11 +475,11 @@ export default function Orders() {
         // 2.0.59: orders exist, just none in the active tab.
         <EmptyState
           icon={<IconPackage className="h-8 w-8" />}
-          title={tab === "active" ? "No active orders" : "No paid orders yet"}
+          title={tab === "active" ? "No active orders" : "No completed orders yet"}
           description={
             tab === "active"
-              ? "Every order is fully sold or cancelled. Switch to the Paid tab to see them."
-              : "Orders move here once every ticket in them is sold or cancelled."
+              ? "Every order's event is done, or the order itself is fully sold, delivered and paid. Switch to the Completed tab to see them."
+              : "Orders move here once their event has passed (or was cancelled) - or once every ticket in them is sold, delivered and paid."
           }
         />
       ) : (
@@ -789,7 +800,18 @@ function OrderFormModal({
     // a different order) - see conversionToken's own comment above.
     conversionToken.current += 1;
     setConvertingCurrency(false);
-    api.listEvents().then(setEvents).catch(() => {});
+    // 2.2.10 (marko): a brand-new order should never be creatable against an
+    // event that's already done - reuses the exact same isEventDone check
+    // ORDER_TABS' Active/Completed split uses above, so this picker and that
+    // tab can never disagree about which events still count as "active".
+    // Deliberately stricter than Price Checker's own event picker (which
+    // still just checks `status === "upcoming"`, PriceChecker.tsx) - marko's
+    // own screenshot showed a past-dated event whose status had never been
+    // manually flipped, so a status-only filter would not have fixed this.
+    api
+      .listEvents()
+      .then((all) => setEvents(all.filter((ev) => !isEventDone(ev))))
+      .catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
     api.listTicketTypes().then(setTicketTypeOptions).catch(() => {});
     setEventId(presetEventId ?? "");

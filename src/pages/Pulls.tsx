@@ -442,14 +442,20 @@ function GivenPulls() {
         // Seats shows via formatSeatsSummary - a Pull is always exactly one
         // section/row/seat triple (never a list, see Pull's own DB columns),
         // so it's wrapped as a one-element array and formatted with the same
-        // compact "204/AA 128" shorthand as the new Orders/Tickets/Sales
-        // Seats column (falls back to "General admission" when Section/Row/
-        // Seat are all blank) - 2.0.38: replaces the older, more verbose
-        // formatSeatLocation ("Sec 204 · Row AA · Seat 128") this cell used
-        // to call, both for consistency with the new column elsewhere and
-        // because the shorter form is a big part of what makes this table's
-        // narrow mode fit at all (see PROTECTED-AREAS-NOTES.md's 2.0.38
-        // section). The "Deadline" column is a warning that appears
+        // compact Orders/Tickets/Sales Seats column convention (falls back
+        // to "General admission" when Section/Row/Seat are all blank) -
+        // 2.0.38: replaces the older, more verbose formatSeatLocation
+        // ("Sec 204 · Row AA · Seat 128") this cell used to call, both for
+        // consistency with the new column elsewhere and because a shorter
+        // form is a big part of what makes this table's narrow mode fit at
+        // all (see PROTECTED-AREAS-NOTES.md's 2.0.38 section). The exact
+        // shorthand has changed shape twice since (2.2.9's dot-separated
+        // labels, then 2.2.10 dropping those labels again down to bare
+        // values - "204 · AA · 128" - see formatSeatLocation/
+        // formatSeatsSummary's own doc comments in lib/format.ts for why);
+        // this cell just calls the shared helper, so it has picked up both
+        // changes automatically with no edits needed here. The "Deadline"
+        // column is a warning that appears
         // automatically starting WARNING_WINDOW_DAYS before the event date
         // and disappears the moment transfer is marked done. Row click
         // opens the edit modal (no separate Detail page exists for Pull,

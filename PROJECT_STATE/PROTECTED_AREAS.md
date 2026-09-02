@@ -21,6 +21,245 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.10 - Eight follow-ups from marko's 2.2.9 review
+
+Marko reviewed 2.2.9 and sent two rapid-fire messages (7 screenshots
+combined) covering eight mostly-independent items, shipped together. See
+`REDESIGN-2.2.10-REPORT.md` (Slovak) for the full report. No migration this
+release - still `025_deactivate_seatriks_price_checker.sql`, everything
+below is query/logic/frontend only.
+
+- **Seats format: the "Sec"/"Row"/"Seat" labels 2.2.9 just added are gone
+  again, everywhere.** `formatSeatLocation`/`formatSeatsSummary`
+  (`src/lib/format.ts`) now join bare values with " · " - "402 · 56 · 27"
+  instead of "Sec 402 · Row 56 · Seat 27". Reason: a real `section` value is
+  sometimes already a full label on its own (marko's own screenshots -
+  "Sec 408" as the stored section text, "Category D, Standing" as another),
+  and prepending another "Sec "/gluing the two together read as broken
+  ("Sec Sec 408", "Sec Category D, Stan..."). Both functions are called from
+  every "Seats" column across Orders/Tickets/Inventory/Sales/Pulls/
+  OrderDetail/SaleDetail (all already routed through these two shared
+  helpers as of 2.2.9's own consolidation - see that entry below) so this
+  one change reaches everywhere with no per-page edits. If a future request
+  asks for labels back, put them back on BOTH functions together (they
+  share the exact same convention deliberately) - don't add a prefix to one
+  and not the other.
+
+- **`isEventDone` (`Orders.tsx`) treats an event as done on EITHER status OR
+  date, not status alone - this is a deliberate widening past this
+  codebase's own existing precedent, not an oversight.** Two DIFFERENT
+  "is this event over" conventions already existed before this release:
+  `Events.tsx`'s own Upcoming/Completed tabs and `PriceChecker.tsx`'s event
+  picker are purely status-based (`ev.status === "upcoming"`), while
+  `inventory_intelligence.rs`'s `event_soon` logic is purely date-based.
+  `events.status` (`EventStatus` - upcoming/completed/cancelled) is a
+  plain, manually-set field with ZERO automatic date-based transition
+  anywhere in the backend (confirmed by grep before writing this) - so a
+  status-only check, like PriceChecker's own, silently does nothing for an
+  event whose date has quietly passed while marko never flipped its status
+  by hand. Marko's own screenshot showed exactly this: a past-dated event
+  ("Bad Bunny 2026-08-22", checked against "today" 2026-09-02) still
+  selectable in New Order's event picker. `isEventDone` therefore ORs both
+  signals: `status === "completed" || status === "cancelled" ||
+  (eventDate !== null && eventDate < todayIso())`. This is used by BOTH
+  `isOrderDone` (Orders tab bucketing) and the New Order event picker
+  filter (see next item) - if only one of the two had been fixed, the tab
+  and the picker would disagree about which events are "active", which
+  would look like a new bug. Do not narrow this back to status-only without
+  first confirming marko is now reliably keeping `events.status` current by
+  hand - the whole reason this ORs both is that the codebase gives no
+  guarantee he is.
+
+- **Orders tabs reworked: "Active"/"Paid" (2.0.59) -> "Active"/"Completed",
+  with a genuinely different bucketing rule, not just a relabel.** Old rule
+  was purely `paymentStatus`. New rule (`isOrderDone`, `Orders.tsx`):
+  `isEventDone(order) || completionStatus(orderCompletionChecks(order)).tone
+  === "completed"` - an order is Completed once EITHER its event is done
+  (above) OR the order itself is fully wrapped up (sold + delivered + paid,
+  reusing the exact same `orderCompletionChecks`/`completionStatus` pair
+  that already powers the order's own "Completed" badge column, 2.0.66/
+  2.0.68). This is an OR, not an AND, matching marko's own wording exactly
+  ("v completed len vtedy, ak presiel datum ... alebo ak v sales bolo vsetko
+  splnene") - an order for a future event that is nonetheless already fully
+  sold/delivered/paid belongs in Completed too, it does not have to wait
+  for the event date. `useListTab("ordersTab", [...])`'s key changed from
+  `"paid"` to `"completed"` - no migration needed, a stale saved `"paid"`
+  value simply falls back to the hook's own default (`"active"`, its
+  `keys[0]`) the first time a returning user opens this page, by that
+  hook's existing built-in design (see `useListTab.ts`). `Order` gained
+  `eventDate`/`eventStatus` (`models.rs`, `types.ts`) purely as a read-time
+  denormalization via `orders.rs`'s `BASE_SQL` join on `events` - no new
+  column, no migration; `map_order` is the only construction site
+  (confirmed by grep), so no other call site needed touching.
+
+- **New Order's event picker now excludes done events too (`isEventDone`,
+  same helper as above) - previously it listed every event with no
+  filter at all.** Marko's screenshot showed a past/already-completed event
+  still creatable-against. Confirmed via grep that `OrderFormModal` (the
+  component with this picker) is used in exactly one place, always for
+  brand-new order creation ("New order" is the modal's own hardcoded
+  title) - there is no order-EDIT flow anywhere in this codebase that
+  reuses this same picker, so restricting it carries no risk of blocking
+  someone from re-opening/re-saving an existing order against its own
+  (now "done") event. This filter is deliberately stricter than
+  `PriceChecker.tsx`'s own event picker, which still filters on
+  `status === "upcoming"` only - that one was not touched this release
+  (out of scope, marko did not mention it), so the two pickers now
+  disagree slightly (PriceChecker would still offer a past-dated-but-
+  status-"upcoming" event; New Order would not). If marko later notices
+  that and wants them consistent, decide explicitly which of the two
+  conventions should win rather than silently copying one over the other -
+  PriceChecker's own picker exists for a different purpose (checking
+  market prices while planning a purchase, arguably useful even close to
+  showtime) than New Order's (recording a purchase against an event that
+  hasn't happened yet).
+
+- **Attention Center (`attention_center.rs`) "je to mixed" root cause: the
+  sort's own tie-break key, not the grouping-by-order logic itself.**
+  2.2.9's `group_by_order` rework (see that entry below) was and remains
+  correct - the bug was purely in `items.sort_by`'s final tie-break, which
+  compared `a.key.cmp(&b.key)` where `key` is formatted
+  `"{category}:order:{oid}"` - i.e. it sorted by CATEGORY NAME first among
+  same-priority/same-event rows, scattering one order's several reason-rows
+  apart from each other, interleaved with every other order sharing that
+  same category. This exactly reproduced marko's screenshot (all
+  `missing_listing_price` rows first, across several different orders, THEN
+  all `no_active_listing` rows). Fixed by inserting real tie-breakers
+  BEFORE the category-name one: priority -> soonest event date (unchanged)
+  -> `event_id` -> `order_id` -> `category` -> `key`. This groups every row
+  for the same order adjacently regardless of which categories they came
+  from, while still keeping deterministic ordering for everything else.
+  Different-reason rows for the same order are still NOT merged into one
+  row - marko's own earlier explicit allowance from the 2.2.8 round - this
+  fix only changes their ORDER relative to each other, never their count or
+  shape.
+
+- **Attention Center now also excludes DONE events (same `event_is_done`
+  concept as `isEventDone` above, reimplemented in Rust since this command
+  has no access to the frontend helper) from 3 of its 5 categories -
+  `missing_listing_price`/`no_active_listing`/`outside_market_price` - but
+  deliberately NOT from the other 2.** `event_soon` is exempted because it
+  already only fires for events within its own urgency window
+  (`EVENT_SOON_DAYS`) - a soon event cannot also be "done" by date, and
+  cancelling it should still surface if the app doesn't already know (it
+  does - added an explicit `event_status != "cancelled"` guard there too,
+  since a cancelled event has nothing to prepare for). `sold_undelivered`
+  is exempted ON PURPOSE: a ticket that was sold but never delivered stays
+  a real, actionable problem regardless of whether the event already
+  happened or was cancelled - if anything, an undelivered ticket for an
+  event that's already passed is MORE urgent, not less. Do not extend the
+  done-event exclusion to `sold_undelivered` without checking with marko
+  first - it would silently hide exactly the kind of "did I ever actually
+  send this ticket" gap this category exists to catch. `events_by_id`'s
+  value tuple grew a third field (event status) to support this - every
+  existing match-arm/destructuring site was updated (`event_is_done`'s own
+  new helper, the `sold_undelivered` section's destructuring explicitly
+  ignores the new field with `_event_status` since that category must never
+  be gated by it).
+
+- **Sales Pending/Completed: `isSaleGroupDone` (`Sales.tsx`) replaces a
+  payment-status-only check with the same completion-badge machinery
+  Orders now uses, PLUS an explicit refunded carve-out.** Marko's
+  screenshot showed a sale with Payment "Paid" but Delivery "Not
+  Delivered" still listed under Completed - the old filter apparently
+  looked at payment status alone. New rule:
+  `paymentStatus === "refunded" || completionStatus(saleGroupCompletionChecks(g)).tone
+  === "completed"` - i.e. Completed now requires ALL of sold+delivered+paid
+  (any one missing, including just delivery, keeps it in Pending - exactly
+  marko's own wording, "aj keby len delivery chyba ostava v pending"),
+  UNLESS the sale is fully refunded. The refunded carve-out is NOT new
+  behavior - it preserves a 2.0.59 rule that would otherwise silently break,
+  since `saleGroupCompletionChecks`'s own "Sold" check fails (correctly, by
+  its own definition) for a refunded group, which would have pushed every
+  refunded sale into Pending forever with no way out. If a "Mixed" payment-
+  status group existed before, it now falls into Pending naturally (it was
+  never fully paid, so it can't be fully "completed" either) - there is no
+  separate "Mixed" bucket in this rule and none is needed.
+
+- **Two real, confirmed Google Sheets push bugs fixed in
+  `orders_sheet_sync.rs`/`pulls_sheet_sync.rs` - both were the SAME root
+  cause, present independently in each file.** Marko: "tabulka napisala ze
+  bola updated, no ziadna zmena nenastala" (the app reported success, but
+  the sheet never actually changed). Root cause, confirmed by reading the
+  code (not guessed): `apply_order_push`/`apply_pull_push` (the pure,
+  testable "core" half of each push) were writing their `sheet_sync_links`
+  bookkeeping row - and counting the item as `created`/`updated` -
+  **before** the network call that was supposed to make it true had even
+  been attempted, let alone confirmed to succeed. If `push_orders_impl`'s/
+  `push_pulls_impl`'s subsequent `append_values`/`update_values` call then
+  failed, the local DB already believed the write had happened - silently
+  and permanently marking that record "already synced" even though the
+  sheet was never touched, with NO way to notice or retry short of
+  disconnecting and reconnecting the sheet. Checked and confirmed this
+  does NOT affect `sales_sheet_sync`'s own push path - `apply_sales_push`
+  performs zero DB writes of its own (confirmed by reading it end to end).
+  **The fix changes the calling contract of both core functions: they no
+  longer write to `sheet_sync_links` (or count anything as created/updated
+  in the pulls case - see below) at all.** They only decide what needs
+  writing and hand it back - `apply_order_push` returns a third tuple
+  element (`Vec<(order_id, code)>`), and `PullPushWrite`'s two variants
+  (`Append`/`Update`) each grew the extra fields (`pull_id`/`code`/
+  `snapshot_json`) the shell needs. `push_orders_impl`/`push_pulls_impl`
+  now perform the actual `sheet_sync_links` INSERT/UPDATE only in the
+  success arm of the matching `append_values`/`update_values` call. Orders'
+  append is one all-or-nothing batch call, so `result.created` resets to 0
+  entirely on failure; Pulls' per-row `Update` writes are independent
+  per-row API calls, so a partial failure there decrements `result.updated`
+  for just that row and leaves ITS stored snapshot untouched (letting the
+  next push/"Sync from sheet" naturally retry or flag it), while unrelated
+  rows in the same run are unaffected. **Any future push-direction sync for
+  a new data source must follow this same "decide first, confirm the
+  network write, THEN record locally" order** - writing local sync
+  bookkeeping before a network call it describes is done is the exact
+  anti-pattern this release exists to remove, not a style preference.
+  `apply_order_push`/`apply_pull_push`'s own unit tests now explicitly
+  assert `sheet_sync_links` has 0 rows immediately after calling them alone
+  (previously asserted 1) - a regression back to "linked immediately" would
+  fail these tests, which is the point.
+
+- **Google Sheets `invalid_grant` OAuth error now short-circuits to a
+  clean "sign in again" message instead of dumping the raw JSON body -
+  best-effort, NOT independently confirmed in this sandbox.** Marko: after
+  signing in under Settings -> Integrations, pushing anything soon after
+  throws "nejaky dlhy error" (some long error). `describe_error_response`
+  (`google_sheets.rs`) is shared by BOTH the Sheets API's own error
+  responses and `google_oauth.rs`'s token-refresh endpoint
+  (`refresh_access_token`) - on any non-2xx response it previously always
+  produced `"Google Sheets rejected the request ({status}): {body}"`,
+  dumping Google's raw error JSON verbatim regardless of source. The single
+  most common real-world OAuth failure of exactly this shape is
+  `invalid_grant` (an expired/revoked refresh token - routine for a small/
+  personal OAuth client still in Google's "Testing" publishing status,
+  where Google auto-expires refresh tokens after 7 days) - a new branch,
+  checked FIRST and unlike the two pre-existing hint branches REPLACING the
+  message entirely rather than appending to the raw dump (since an OAuth
+  token error's raw body has no useful diagnostic value for marko, unlike a
+  Sheets-API error's), catches `body.contains("invalid_grant")` and returns
+  a short "Google sign-in has expired - go to Settings -> Integrations and
+  sign in again" message. **This is a well-reasoned but UNCONFIRMED fix** -
+  this sandbox has no live Google OAuth access, so the actual error text
+  marko saw was never seen or reproduced here, only inferred from how
+  common this specific failure is for this exact kind of OAuth client. If
+  the long error still appears after this release, the report explicitly
+  asks marko for the literal text next time - don't assume this branch
+  already covers it.
+
+- **Native webview right-click context menu (Späť/Obnoviť/Uložiť ako/
+  Tlačiť/Ďalšie nástroje) disabled app-wide via
+  `document.addEventListener("contextmenu", e => e.preventDefault())` in
+  `main.tsx`, run once before the app mounts.** Tauri/WRY has NO
+  config-flag to disable its default context menu - this JS-side
+  `preventDefault` is the standard, documented fix for this exact webview
+  stack, not a workaround. Confirmed via a scoped grep (`src/` +
+  `index.html` only - an earlier unscoped attempt across the whole repo
+  including `node_modules` timed out) that no context-menu handling existed
+  anywhere before this change - a clean slate, no conflicting handler to
+  reconcile. If a future feature genuinely needs a custom right-click menu
+  somewhere (e.g. a table row), it must build its own explicit menu
+  component and stop propagation on that element specifically - it cannot
+  rely on the browser's native one coming back, anywhere, ever, since this
+  listener is global.
+
 ## 2.2.9 - Six follow-ups from marko's 2.2.8 review
 
 Six mostly-independent small changes from one rapid-fire feedback message

@@ -902,6 +902,27 @@ pub fn share_file(token: &str, file_id: &str, email: &str) -> AppResult<()> {
 /// commands::sheets_sync::set_sheets_connection_impl) is the single most
 /// common way that confusion has actually surfaced.
 fn describe_error_response(status: reqwest::StatusCode, body: &str) -> String {
+    // 2.2.10: checked first, and replaces the message entirely rather than
+    // appending a hint after the usual raw dump like the two branches below
+    // do - unlike those (Sheets API errors, where the raw JSON body still
+    // carries useful diagnostic detail), "invalid_grant" comes from
+    // google_oauth.rs's *token* endpoint (this function is shared by both -
+    // see this module's own doc comment above `parse_json_response`) and
+    // almost always means one specific thing: the stored refresh token has
+    // expired or been revoked (common for a small/personal OAuth client
+    // still in Google's "Testing" publishing status, where Google
+    // auto-expires refresh tokens after 7 days). marko's own report - after
+    // signing in under Settings -> Integrations, pushing anything soon after
+    // throws "nejaky dlhy error" (some long error) - matches exactly this:
+    // a long, raw, technical dump where a short "please sign in again" is
+    // both more honest and more actionable than anything more specific this
+    // function could guess about the underlying cause. Not independently
+    // reproducible in this sandbox (no live Google OAuth access) - see the
+    // 2.2.10 report for what to do if this turns out not to be the actual
+    // cause.
+    if body.contains("invalid_grant") {
+        return "Google sign-in has expired - go to Settings -> Integrations and sign in again, then try again.".to_string();
+    }
     let mut message = format!("Google Sheets rejected the request ({status}): {body}");
     if body.contains("Unable to parse range") {
         message.push_str(
@@ -1148,6 +1169,20 @@ mod tests {
         assert!(message.contains("permission"), "must still include Google's own raw message: {message}");
         assert!(message.to_lowercase().contains("share"), "must add a clarifying hint about sharing the sheet: {message}");
         assert!(!message.to_lowercase().contains("tab label"), "a permission error must not get the range-parsing hint: {message}");
+    }
+
+    #[test]
+    fn describe_error_response_replaces_invalid_grant_with_a_short_sign_in_again_message() {
+        // The OAuth token endpoint's own error shape (flat error/
+        // error_description, not the nested Sheets API shape the other
+        // tests here use) - google_oauth.rs's refresh_access_token shares
+        // this same function for exactly this response.
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        let body = r#"{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}"#;
+        let message = describe_error_response(status, body);
+        assert!(message.to_lowercase().contains("sign in again"), "must tell the user to sign in again: {message}");
+        assert!(!message.contains(body), "must NOT dump the raw technical body, unlike the other hints: {message}");
+        assert!(message.len() < 120, "must stay short and non-technical, not a long dump: {message}");
     }
 
     #[test]

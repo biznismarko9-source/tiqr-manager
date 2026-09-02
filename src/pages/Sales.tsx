@@ -58,12 +58,30 @@ function saleGroupCompletionChecks(g: SaleGroup) {
 }
 
 // 2.0.59: "Pending" vs "Completed" tabs (marko's request - see
-// REDESIGN-2.0.59-REPORT.md). A group's paymentStatus is only Some(...) when
-// EVERY line in it shares one status (see GROUP_BASE_SELECT in sales.rs) -
-// null ("Mixed", e.g. one ticket refunded later than another) stays in
-// Pending rather than Completed, since a group that isn't cleanly resolved
-// one way still deserves a look, same "don't quietly resolve ambiguity"
-// spirit as showing "Mixed" instead of guessing elsewhere in this app.
+// REDESIGN-2.0.59-REPORT.md).
+//
+// 2.2.10 correction (marko): the original rule below only ever looked at
+// paymentStatus, so a group that was paid but not yet delivered still
+// counted as "Completed" - marko's own example was a sale sitting in
+// Completed with a "Not Delivered" badge right next to it, which he
+// correctly called out as wrong. `isSaleGroupDone` below now requires the
+// group to be genuinely fully wrapped up - reusing the exact same three
+// checks the "Completed" BADGE above already computes
+// (saleGroupCompletionChecks: Sold/Delivered/Paid) - so "even just delivery
+// missing" now correctly keeps a group in Pending, exactly as marko asked.
+// A fully refunded group (paymentStatus === "refunded") is still treated as
+// done even though saleGroupCompletionChecks' own "Sold" check fails for it
+// (a refund reverts that ticket to "available" - accurate on the BADGE, but
+// this file's original 2.0.59 design explicitly wanted a fully-refunded
+// group to count as cleanly resolved, and marko never asked to change
+// that). A "Mixed" group (null paymentStatus, e.g. one of several tickets
+// refunded later than the others) still stays in Pending - it now falls out
+// of the stricter check naturally (a partial refund also fails "Sold"),
+// with no separate rule needed for it any more.
+function isSaleGroupDone(g: SaleGroup): boolean {
+  return g.paymentStatus === "refunded" || completionStatus(saleGroupCompletionChecks(g)).tone === "completed";
+}
+
 const SALES_TABS: { key: "pending" | "completed"; label: string }[] = [
   { key: "pending", label: "Pending" },
   { key: "completed", label: "Completed" },
@@ -241,14 +259,13 @@ export default function Sales() {
       .catch((e) => toast.error(errMsg(e)));
   };
 
-  // 2.0.59: tab split happens client-side on data the page already fetched -
-  // see SALES_TABS above for the exact bucketing rule (Mixed stays Pending).
+  // 2.0.59: tab split happens client-side on data the page already fetched.
+  // 2.2.10: bucketed by isSaleGroupDone (see its own doc comment above) -
+  // Mixed still stays Pending, now for the same reason every other
+  // not-fully-done group does.
   const visibleGroups = useMemo(() => {
     if (!groups) return [];
-    return groups.filter((g) => {
-      const isCompleted = g.paymentStatus === "paid" || g.paymentStatus === "refunded";
-      return tab === "completed" ? isCompleted : !isCompleted;
-    });
+    return groups.filter((g) => (tab === "completed" ? isSaleGroupDone(g) : !isSaleGroupDone(g)));
   }, [groups, tab]);
 
   const toggleOne = (id: number) => {
@@ -704,8 +721,8 @@ export default function Sales() {
           title={tab === "pending" ? "Nothing pending" : "Nothing completed yet"}
           description={
             tab === "pending"
-              ? "Every matching sale is paid or refunded. Switch to the Completed tab to see them."
-              : "Sales move here once their Payment status is Paid or Refunded."
+              ? "Every matching sale is fully sold, delivered and paid (or refunded). Switch to the Completed tab to see them."
+              : "Sales move here once every ticket in them is sold, delivered and paid - or the sale is fully refunded."
           }
         />
       ) : (

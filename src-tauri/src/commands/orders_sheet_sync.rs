@@ -1084,17 +1084,23 @@ fn build_order_append_row(
 /// creation - same placeholder `'{}'` snapshot `apply_order_rows`'s own
 /// create path already uses, since there is no update path here to ever
 /// compare it against).
+/// 2.2.10: now returns the (order_id, code) pairs it prepared as a THIRD
+/// element instead of writing their `sheet_sync_links` rows itself - see
+/// `push_orders_impl`'s own doc comment (2.2.10) for why that link must
+/// never be recorded before the sheet write it describes is confirmed to
+/// have actually happened.
 fn apply_order_push(
     conn: &Connection,
     headers: &[String],
     marker_col_index: usize,
-) -> AppResult<(SheetSyncResult, Vec<Vec<String>>)> {
+) -> AppResult<(SheetSyncResult, Vec<Vec<String>>, Vec<(i64, String)>)> {
     let map = build_header_map(headers);
     check_required_headers(&map)?;
 
     let mut result =
         SheetSyncResult { created: 0, updated: 0, unchanged: 0, conflicts: vec![], errors: vec![], corrected: vec![], synced_at: String::new() };
     let mut append_rows = vec![];
+    let mut pending_links: Vec<(i64, String)> = vec![];
 
     let orders: Vec<OrderForPush> = {
         let mut stmt = conn.prepare(
@@ -1136,18 +1142,13 @@ fn apply_order_push(
             rows
         };
 
-        let now = now_iso(conn)?;
-        conn.execute(
-            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
-             VALUES ('orders', ?1, ?2, '{}', ?3)",
-            params![order.id, order.code, now],
-        )?;
         let row = build_order_append_row(&map, marker_col_index, headers.len(), &order, &tickets);
         append_rows.push(row);
+        pending_links.push((order.id, order.code));
         result.created += 1;
     }
 
-    Ok((result, append_rows))
+    Ok((result, append_rows, pending_links))
 }
 
 /// The push direction's own network-calling shell for Order sync - same
@@ -1173,16 +1174,42 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
-    let (mut result, append_rows) = apply_order_push(conn, &headers, marker_col_index)?;
+    let (mut result, append_rows, pending_links) = apply_order_push(conn, &headers, marker_col_index)?;
 
     if !append_rows.is_empty() {
         let new_count = append_rows.len();
         let append_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
-        if let Err(e) = google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
-            result.errors.push(SheetSyncIssue {
-                row_number: 0,
-                message: format!("{new_count} new order(s) were prepared but could not be written to the sheet: {e}"),
-            });
+        match google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
+            // 2.2.10: the `sheet_sync_links` rows are only written here, now
+            // that the append above is confirmed to have actually reached
+            // the sheet - see `apply_order_push`'s own doc comment (2.2.10)
+            // for the bug this fixes (marko: "tabulka napisala ze bola
+            // updated, no ziadna zmena nenastala"). Same placeholder '{}'
+            // snapshot `apply_order_rows`'s own create path uses, for the
+            // same reason (no update path exists here to ever compare it
+            // against).
+            Ok(()) => {
+                let now = now_iso(conn)?;
+                for (order_id, code) in &pending_links {
+                    conn.execute(
+                        "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+                         VALUES ('orders', ?1, ?2, '{}', ?3)",
+                        params![order_id, code, now],
+                    )?;
+                }
+            }
+            Err(e) => {
+                // Nothing was actually written to the sheet, so nothing was
+                // actually "created" from the user's point of view either -
+                // nor are these orders linked, so the very next push will
+                // correctly try them again instead of silently forgetting
+                // them.
+                result.created = 0;
+                result.errors.push(SheetSyncIssue {
+                    row_number: 0,
+                    message: format!("{new_count} new order(s) were prepared but could not be written to the sheet: {e}"),
+                });
+            }
         }
     }
 
@@ -4573,20 +4600,28 @@ mod tests {
     // ---- push_orders: apply_order_push ---------------------------------------
 
     #[test]
-    fn a_never_linked_order_is_queued_as_an_append_and_linked_immediately() {
+    fn a_never_linked_order_is_queued_as_an_append_and_its_link_deferred() {
         let conn = test_conn();
         let event_id = seed_event(&conn);
-        insert_order_with_tickets(&conn, &local_order_input(event_id, 2), false).unwrap();
+        let order_id = insert_order_with_tickets(&conn, &local_order_input(event_id, 2), false).unwrap();
 
-        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
         assert_eq!(result.created, 1);
         assert_eq!(result.errors.len(), 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][0], "Coldplay Arena Show");
+        assert_eq!(pending_links.len(), 1);
+        assert_eq!(pending_links[0].0, order_id);
 
+        // 2.2.10: apply_order_push is now the pure/testable half only - it
+        // must NOT write sheet_sync_links itself any more (that would repeat
+        // the exact bug this release fixes: a record marked "synced" before
+        // the sheet write it describes is confirmed to have happened). Only
+        // push_orders_impl, after a real successful append_values call,
+        // writes these rows - see both functions' own doc comments.
         let links: i64 =
             conn.query_row("SELECT COUNT(*) FROM sheet_sync_links WHERE data_source='orders'", [], |r| r.get(0)).unwrap();
-        assert_eq!(links, 1, "must be linked right away, exactly like apply_order_rows's own create path");
+        assert_eq!(links, 0, "linking must wait for push_orders_impl to confirm the sheet write actually succeeded");
     }
 
     #[test]
@@ -4595,9 +4630,10 @@ mod tests {
         let event_id = seed_event(&conn);
         insert_order_with_tickets(&conn, &local_order_input(event_id, 1), true).unwrap(); // is_demo = true
 
-        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
         assert_eq!(result.created, 0);
         assert!(rows.is_empty());
+        assert!(pending_links.is_empty());
     }
 
     #[test]
@@ -4605,9 +4641,10 @@ mod tests {
         let conn = test_conn();
         seed_order_with_quantity(&conn, 1); // via apply_order_rows -> already linked
 
-        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
         assert_eq!(result.created, 0, "an order that already has a TIQR ID must never be re-appended");
         assert!(rows.is_empty());
+        assert!(pending_links.is_empty());
     }
 
     #[test]
@@ -4617,9 +4654,10 @@ mod tests {
         insert_order_with_tickets(&conn, &local_order_input(event_id, 1), false).unwrap();
         insert_order_with_tickets(&conn, &local_order_input(event_id, 3), false).unwrap();
 
-        let (result, rows) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
         assert_eq!(result.created, 2);
         assert_eq!(rows.len(), 2);
+        assert_eq!(pending_links.len(), 2);
     }
 
     #[test]

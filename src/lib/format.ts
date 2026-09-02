@@ -170,17 +170,21 @@ export function formatDateNumeric(iso: string | null | undefined): string {
  * Sale Detail's merged "Seat" column (was 3 separate columns). Omits
  * whichever parts are null (general-admission tickets often have none) and
  * falls back to "General admission" when all three are missing, rather than
- * a bare "-" that could be mistaken for missing data. */
+ * a bare "-" that could be mistaken for missing data.
+ *
+ * 2.2.10: dropped the "Sec"/"Row"/"Seat" prefixes marko's own 2.2.9 request
+ * had just added - a real section value is sometimes already a full label
+ * on its own (e.g. "Category D, Standing", or literally "Sec 408"), and
+ * gluing another "Sec " in front of that read as broken ("Sec Sec 408",
+ * "Sec Category D, Stan..."). Now just the raw values, "·"-joined - e.g.
+ * "402 · 56 · 27" - so whatever is actually stored is exactly what's shown,
+ * never relabeled. */
 export function formatSeatLocation(
   section: string | null | undefined,
   rowLabel: string | null | undefined,
   seat: string | null | undefined,
 ): string {
-  const parts = [
-    section ? `Sec ${section}` : null,
-    rowLabel ? `Row ${rowLabel}` : null,
-    seat ? `Seat ${seat}` : null,
-  ].filter((p): p is string => p !== null);
+  const parts = [section, rowLabel, seat].filter((p): p is string => !!p);
   return parts.length > 0 ? parts.join(" · ") : "General admission";
 }
 
@@ -224,12 +228,18 @@ function compactSeatList(seatLabels: string[]): string {
  * `truncate` class + `title={...}` pattern).
  *
  * 2.2.9: each group used to read "204/AA 128-131" (marko's own original
- * example) - marko's later request was to remove that "/" and clearly
- * separate section/row/seat instead, so this now reuses formatSeatLocation's
- * own "Sec X · Row Y · Seat Z" labeled, dot-separated convention (already
- * established above for the single-ticket detail views) instead of a bare
- * slash-joined pair - e.g. "Sec 204 · Row AA · Seat 128-131". Only the
- * labeling changed; the underlying grouping/compaction logic is unchanged. */
+ * example) - marko's request was to remove that "/" and clearly separate
+ * section/row/seat instead, so this reused formatSeatLocation's dot-
+ * separated convention (already established above for the single-ticket
+ * detail views) instead of a bare slash-joined pair.
+ *
+ * 2.2.10: formatSeatLocation itself dropped its "Sec"/"Row"/"Seat" labels
+ * (see that function's own doc comment - real section text sometimes
+ * already reads as a full label on its own, and the prefix duplicated it).
+ * This function reuses that same convention unchanged, so a group now reads
+ * as e.g. "402 · 56 · 27" rather than "Sec 402 · Row 56 · Seat 27" - only
+ * the labeling changed here too; the grouping/compaction logic below is
+ * unchanged. */
 export function formatSeatsSummary(seats: SeatEntry[]): string {
   if (seats.length === 0) return "-";
 
@@ -246,12 +256,8 @@ export function formatSeatsSummary(seats: SeatEntry[]): string {
 
   const parts = Array.from(groups.values()).map((g) => {
     const seatPart = compactSeatList(g.seatNums);
-    const labeled = [
-      g.section ? `Sec ${g.section}` : null,
-      g.rowLabel ? `Row ${g.rowLabel}` : null,
-      seatPart ? `Seat ${seatPart}` : null,
-    ].filter((p): p is string => p !== null);
-    return labeled.length > 0 ? labeled.join(" · ") : "General admission";
+    const raw = [g.section, g.rowLabel, seatPart].filter((p): p is string => !!p);
+    return raw.length > 0 ? raw.join(" · ") : "General admission";
   });
 
   return parts.join("; ");

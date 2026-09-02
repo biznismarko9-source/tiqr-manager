@@ -821,12 +821,22 @@ fn build_pull_append_row(map: &HashMap<String, usize>, marker_col_index: usize, 
 enum PullPushWrite {
     /// A brand-new local-only pull, laid out as one full sheet row
     /// (`build_pull_append_row`) ready to hand to `append_values` as-is.
-    Append(Vec<String>),
+    /// 2.2.10: now also carries what `push_pulls_impl` needs to link this
+    /// pull ONLY once that append is confirmed to have actually reached the
+    /// sheet - `pull_id`/`code`/`snapshot_json` are exactly the three values
+    /// the old premature `INSERT INTO sheet_sync_links` inside
+    /// `apply_pull_push` used to write immediately. See `apply_pull_push`'s
+    /// own doc comment (2.2.10) for why that had to change.
+    Append { row: Vec<String>, pull_id: i64, code: String, snapshot_json: String },
     /// A change to an already-linked pull's row. `sheet_row_number` is the
     /// real 1-based sheet row (header is row 1); `cells` are exactly the
     /// columns that changed, at their real column index - never a
     /// contiguous range, for the same reason `pull_push_cells` is per-cell.
-    Update { sheet_row_number: i64, cells: Vec<(usize, String)> },
+    /// 2.2.10: `pull_id`/`snapshot_json` are, likewise, what
+    /// `push_pulls_impl` needs to advance this link's stored snapshot ONLY
+    /// once every cell above is confirmed written - see `apply_pull_push`'s
+    /// doc comment (2.2.10).
+    Update { sheet_row_number: i64, cells: Vec<(usize, String)>, pull_id: i64, snapshot_json: String },
 }
 
 /// The push direction's own core, mirroring `apply_pull_rows` exactly in
@@ -849,6 +859,20 @@ enum PullPushWrite {
 /// - linked, sheet row matches what was stored, but the local pull no
 ///   longer does -> exactly the case this feature exists for: push the
 ///   local values out, per cell, and advance the link's stored snapshot.
+///
+/// `result.created`/`result.updated` below count what this function
+/// *prepared* - exactly like `orders_sheet_sync::apply_order_push`'s own
+/// 2.2.10 doc comment describes, the same real bug applies here too (marko:
+/// "tabulka napisala ze bola updated, no ziadna zmena nenastala"): the old
+/// code wrote (or advanced) each `sheet_sync_links` row right here, before
+/// `push_pulls_impl` had actually confirmed the matching `append_values`/
+/// `update_values` call succeeded. A failed network call left the link
+/// permanently marked as synced anyway - silently and wrongly. As of
+/// 2.2.10 this function performs no DB writes for either path at all; it
+/// only decides *what* to write and hands it back via `PullPushWrite`, and
+/// `push_pulls_impl` performs the real `sheet_sync_links` INSERT/UPDATE only
+/// after its own corresponding sheet write is confirmed to have succeeded -
+/// correcting `result.created`/`result.updated` back down if it wasn't.
 fn apply_pull_push(
     conn: &Connection,
     headers: &[String],
@@ -894,16 +918,14 @@ fn apply_pull_push(
         };
 
         let Some(link) = load_sync_link_by_local_id(conn, local_id)? else {
+            // 2.2.10: no more INSERT here - see this function's own doc
+            // comment (2.2.10). snapshot_json travels with the write so
+            // push_pulls_impl can link this pull once (and only once) the
+            // append below is confirmed to have actually reached the sheet.
             let snapshot = pull_to_snapshot(&pull);
             let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| AppError::Other(e.to_string()))?;
-            let now = now_iso(conn)?;
-            conn.execute(
-                "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
-                 VALUES ('pulls', ?1, ?2, ?3, ?4)",
-                params![pull.id, pull.code, snapshot_json, now],
-            )?;
             let row = build_pull_append_row(&map, marker_col_index, headers.len(), &pull);
-            writes.push(PullPushWrite::Append(row));
+            writes.push(PullPushWrite::Append { row, pull_id: pull.id, code: pull.code.clone(), snapshot_json });
             result.created += 1;
             continue;
         };
@@ -950,15 +972,13 @@ fn apply_pull_push(
             continue;
         }
 
+        // 2.2.10: no more UPDATE here either - same reasoning as the Append
+        // branch above. snapshot_json travels with the write so
+        // push_pulls_impl can advance the stored snapshot once (and only
+        // once) every cell below is confirmed written.
         let cells = pull_push_cells(&map, &pull);
-        writes.push(PullPushWrite::Update { sheet_row_number: row_number, cells });
         let snapshot_json = serde_json::to_string(&local_snapshot).map_err(|e| AppError::Other(e.to_string()))?;
-        let now = now_iso(conn)?;
-        conn.execute(
-            "UPDATE sheet_sync_links SET last_synced_snapshot = ?1, last_synced_at = ?2
-             WHERE data_source = 'pulls' AND local_id = ?3",
-            params![snapshot_json, now, pull.id],
-        )?;
+        writes.push(PullPushWrite::Update { sheet_row_number: row_number, cells, pull_id: pull.id, snapshot_json });
         result.updated += 1;
     }
 
@@ -1065,19 +1085,43 @@ fn push_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     let (mut result, writes) = apply_pull_push(conn, &headers, data_rows, &connection.currency, marker_col_index)?;
 
     let mut append_rows: Vec<Vec<String>> = vec![];
+    let mut append_links: Vec<(i64, String, String)> = vec![]; // (pull_id, code, snapshot_json), parallel to append_rows
     for write in writes {
         match write {
-            PullPushWrite::Append(row) => append_rows.push(row),
-            PullPushWrite::Update { sheet_row_number, cells } => {
+            PullPushWrite::Append { row, pull_id, code, snapshot_json } => {
+                append_rows.push(row);
+                append_links.push((pull_id, code, snapshot_json));
+            }
+            PullPushWrite::Update { sheet_row_number, cells, pull_id, snapshot_json } => {
+                let mut row_ok = true;
                 for (col, value) in cells {
                     let col_letter = column_index_to_a1(col);
                     let cell_range = google_sheets::a1_range(&connection.sheet_tab, &format!("{col_letter}{sheet_row_number}"));
                     if let Err(e) = google_sheets::update_values(token, &connection.spreadsheet_id, &cell_range, &[vec![value]]) {
+                        row_ok = false;
                         result.errors.push(SheetSyncIssue {
                             row_number: sheet_row_number,
                             message: format!("saved locally, but could not write this change back to the sheet: {e}"),
                         });
                     }
+                }
+                // 2.2.10: the stored snapshot only advances - and this row
+                // only counts toward `result.updated` - once every cell
+                // above is confirmed written. See `apply_pull_push`'s own
+                // doc comment (2.2.10) for the bug this fixes. Leaving the
+                // snapshot untouched on a partial failure means the next
+                // push (or "Sync from sheet") still sees this row as
+                // needing attention, instead of wrongly believing the sheet
+                // already matches values it doesn't actually have yet.
+                if row_ok {
+                    let now = now_iso(conn)?;
+                    conn.execute(
+                        "UPDATE sheet_sync_links SET last_synced_snapshot = ?1, last_synced_at = ?2
+                         WHERE data_source = 'pulls' AND local_id = ?3",
+                        params![snapshot_json, now, pull_id],
+                    )?;
+                } else {
+                    result.updated -= 1;
                 }
             }
         }
@@ -1085,11 +1129,34 @@ fn push_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     if !append_rows.is_empty() {
         let new_count = append_rows.len();
         let append_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
-        if let Err(e) = google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
-            result.errors.push(SheetSyncIssue {
-                row_number: 0,
-                message: format!("{new_count} new pull(s) were prepared but could not be written to the sheet: {e}"),
-            });
+        match google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
+            // 2.2.10: the `sheet_sync_links` rows for these brand-new pulls
+            // are only written here, now that the append above is confirmed
+            // to have actually reached the sheet - same fix, same reasoning
+            // as the Update branch above and as
+            // orders_sheet_sync::push_orders_impl (2.2.10).
+            Ok(()) => {
+                let now = now_iso(conn)?;
+                for (pull_id, code, snapshot_json) in &append_links {
+                    conn.execute(
+                        "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+                         VALUES ('pulls', ?1, ?2, ?3, ?4)",
+                        params![pull_id, code, snapshot_json, now],
+                    )?;
+                }
+            }
+            Err(e) => {
+                // One `append_values` call for the whole batch - either all
+                // of these pulls actually reached the sheet or none did, so
+                // (like orders_sheet_sync::push_orders_impl) the prepared
+                // count is corrected all the way back to 0 rather than left
+                // claiming a success that did not happen.
+                result.created = 0;
+                result.errors.push(SheetSyncIssue {
+                    row_number: 0,
+                    message: format!("{new_count} new pull(s) were prepared but could not be written to the sheet: {e}"),
+                });
+            }
         }
     }
 
@@ -2204,9 +2271,9 @@ mod tests {
     }
 
     #[test]
-    fn a_never_linked_pull_is_queued_as_an_append_and_linked_immediately() {
+    fn a_never_linked_pull_is_queued_as_an_append_with_its_link_deferred() {
         let conn = test_conn();
-        create_pull_impl(&conn, &make_test_pull_input(), false).unwrap();
+        let pull = create_pull_impl(&conn, &make_test_pull_input(), false).unwrap();
 
         let (result, writes) = apply_pull_push(&conn, &full_headers(), &[], "EUR", MARKER_COL).unwrap();
         assert_eq!(result.created, 1);
@@ -2214,13 +2281,24 @@ mod tests {
         assert_eq!(result.errors.len(), 0);
         assert_eq!(writes.len(), 1);
         match &writes[0] {
-            PullPushWrite::Append(row) => assert_eq!(row[0], "peter123"),
+            PullPushWrite::Append { row, pull_id, code, .. } => {
+                assert_eq!(row[0], "peter123");
+                assert_eq!(*pull_id, pull.id);
+                assert_eq!(code, &pull.code);
+            }
             _ => panic!("expected an Append write"),
         }
+
+        // 2.2.10: apply_pull_push is now the pure/testable half only - it
+        // must NOT write sheet_sync_links itself any more (that would repeat
+        // the exact bug this release fixes: a record marked "synced" before
+        // the sheet write it describes is confirmed to have happened). Only
+        // push_pulls_impl, after a real successful append_values call,
+        // writes this row - see both functions' own doc comments.
         let links: i64 = conn
             .query_row("SELECT COUNT(*) FROM sheet_sync_links WHERE data_source='pulls'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(links, 1, "must be linked right away, exactly like the sheet -> app create path already does");
+        assert_eq!(links, 0, "linking must wait for push_pulls_impl to confirm the sheet write actually succeeded");
     }
 
     #[test]
@@ -2259,14 +2337,28 @@ mod tests {
     /// append actually reached the sheet, the same way
     /// `sync_twice_seeds_a_linked_pull` simulates a completed sheet -> app
     /// sync for the read direction above.
+    /// 2.2.10: `apply_pull_push` itself no longer performs the
+    /// `sheet_sync_links` INSERT (see its own doc comment), so this helper
+    /// now does it manually - exactly what `push_pulls_impl` does once its
+    /// own `append_values` call is confirmed to succeed - so every test
+    /// using this helper still starts from a genuinely-linked pull.
     fn push_once_seeds_a_linked_pull(conn: &Connection) -> (i64, Vec<String>) {
         let pull = create_pull_impl(conn, &make_test_pull_input(), false).unwrap();
         let (result, writes) = apply_pull_push(conn, &full_headers(), &[], "EUR", MARKER_COL).unwrap();
         assert_eq!(result.created, 1);
-        let row = match &writes[0] {
-            PullPushWrite::Append(row) => row.clone(),
+        let (row, pull_id, code, snapshot_json) = match &writes[0] {
+            PullPushWrite::Append { row, pull_id, code, snapshot_json } => {
+                (row.clone(), *pull_id, code.clone(), snapshot_json.clone())
+            }
             _ => panic!("expected an Append write"),
         };
+        let now = now_iso(conn).unwrap();
+        conn.execute(
+            "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
+             VALUES ('pulls', ?1, ?2, ?3, ?4)",
+            params![pull_id, code, snapshot_json, now],
+        )
+        .unwrap();
         (pull.id, row)
     }
 
@@ -2283,7 +2375,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_the_local_pull_after_linking_queues_an_update_and_advances_the_snapshot() {
+    fn editing_the_local_pull_after_linking_queues_an_update_carrying_the_new_snapshot() {
         let conn = test_conn();
         let (id, row) = push_once_seeds_a_linked_pull(&conn);
 
@@ -2309,10 +2401,16 @@ mod tests {
         assert_eq!(result.unchanged, 0);
         assert_eq!(writes.len(), 1);
         match &writes[0] {
-            PullPushWrite::Update { sheet_row_number, cells } => {
+            PullPushWrite::Update { sheet_row_number, cells, pull_id, snapshot_json } => {
                 assert_eq!(*sheet_row_number, 2, "row 2 is the first (and only) data row");
+                assert_eq!(*pull_id, id);
                 let as_map: HashMap<usize, String> = cells.iter().cloned().collect();
                 assert_eq!(as_map.get(&11), Some(&"60,00".to_string()));
+                // 2.2.10: apply_pull_push no longer writes this snapshot
+                // itself (see its own doc comment) - it only hands the NEW
+                // snapshot back for push_pulls_impl to store, once the cell
+                // write above is confirmed to have actually succeeded.
+                assert!(snapshot_json.contains("6000"), "the prepared snapshot must already reflect the new price: {snapshot_json}");
             }
             _ => panic!("expected an Update write"),
         }
@@ -2324,7 +2422,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(stored.contains("6000"), "the link's stored snapshot must advance to the new price: {stored}");
+        assert!(
+            stored.contains("4500"),
+            "apply_pull_push alone must not advance the stored snapshot - only push_pulls_impl does, after confirming the sheet write succeeded: {stored}"
+        );
     }
 
     #[test]

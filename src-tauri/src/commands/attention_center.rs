@@ -71,6 +71,35 @@
 //! pricing factor - every "value" this module ever shows is a value that
 //! already exists verbatim on the ticket (its own listing price), never a
 //! suggested or computed one.
+//!
+//! 2.2.10: two follow-ups from marko's own review of the 2.2.9 shape (a real
+//! screenshot: the same handful of orders, scattered apart, each appearing
+//! twice under two different reasons - "je to mixed", his words):
+//!
+//! - **Sort now groups by order, not by category name.** The final sort key
+//!   gained `event_id` then `order_id` between "soonest event" and the old
+//!   `key` tie-break (see the sort at the bottom of `get_attention_center_
+//!   impl`) - previously the `key` tie-break (`"{category}:order:{oid}"`)
+//!   effectively sorted by CATEGORY NAME first, which scattered one order's
+//!   several reasons apart, interleaved with every OTHER order sharing the
+//!   same category. Now every row for one order sorts together, whatever
+//!   reasons it has.
+//! - **The 3 "you could still list/reprice this" categories now skip a
+//!   "done" event.** `missing_listing_price`/`no_active_listing`/
+//!   `outside_market_price` are only ever about tickets that could still be
+//!   sold - nagging about a listing price for an event that's already over
+//!   (or that marko cancelled) is just noise once nothing can be done about
+//!   it any more. `event_is_done` below is the exact same notion Orders.tsx
+//!   now uses for its own Active/Completed split (status is completed/
+//!   cancelled, or the date has passed) - kept independently in Rust here
+//!   since this module has no reason to depend on frontend code, but
+//!   deliberately the same rule, so the Dashboard and Orders can never
+//!   disagree about which events still count as "active". Deliberately NOT
+//!   applied to `sold_undelivered` (an already-sold, undelivered ticket
+//!   stays just as relevant - if anything MORE relevant - once its event is
+//!   over; see that category's own existing, unchanged test) or to
+//!   `event_soon` (already scoped to events 0-2 days out, so only the
+//!   cancelled half of the check is a realistic guard there).
 
 use crate::commands::inventory_intelligence::{get_inventory_intelligence_impl, EVENT_SOON_DAYS};
 use crate::db::AppState;
@@ -219,10 +248,18 @@ fn priority_rank(p: &str) -> u8 {
     }
 }
 
+/// 2.2.10: see this module's own doc comment - the same "is this event
+/// active" notion Orders.tsx's `isEventDone` now uses, kept independently
+/// here in Rust (this module has no reason to depend on frontend code) but
+/// deliberately the same rule.
+fn event_is_done(status: &str, event_date: Option<&str>, today: NaiveDate) -> bool {
+    status == "completed" || status == "cancelled" || event_date.and_then(|d| days_until(today, d)).map(|d| d < 0).unwrap_or(false)
+}
+
 pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> AppResult<Vec<AttentionCenterItem>> {
-    let events_by_id: HashMap<i64, (String, Option<String>)> = {
-        let mut stmt = conn.prepare("SELECT id, name, event_date FROM events")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))?;
+    let events_by_id: HashMap<i64, (String, Option<String>, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name, event_date, status FROM events")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
         rows.collect::<Result<HashMap<_, _>, _>>()?
     };
 
@@ -274,7 +311,12 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
     events_with_unsold.sort_unstable();
 
     for event_id in events_with_unsold {
-        let Some((event_name, event_date)) = events_by_id.get(&event_id) else { continue };
+        let Some((event_name, event_date, event_status)) = events_by_id.get(&event_id) else { continue };
+        // 2.2.10: see this module's own doc comment - the 3 "still sellable"
+        // categories below skip a done event entirely; event_soon gets only
+        // the cancelled half of the check (a soon-dated but cancelled event
+        // has nothing left to sell either).
+        let event_done = event_is_done(event_status, event_date.as_deref(), today);
         let intelligence = get_inventory_intelligence_impl(conn, event_id, today)?;
 
         for attention_item in &intelligence.attention {
@@ -289,7 +331,7 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                     // how the Dashboard's own existing "Upcoming events" list
                     // (dashboard.rs/Dashboard.tsx) already shows one row per
                     // event too, not one per ticket or order.
-                    if attention_item.count > 0 {
+                    if attention_item.count > 0 && event_status != "cancelled" {
                         push_item(
                             &mut items,
                             "event_soon",
@@ -311,7 +353,7 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                         );
                     }
                 }
-                "missing_listing_price" => {
+                "missing_listing_price" if !event_done => {
                     for (order_id, ticket_ids) in group_by_order(&attention_item.ticket_ids, &tickets_by_id) {
                         let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
                         let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
@@ -332,7 +374,7 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                         );
                     }
                 }
-                "no_active_listing" => {
+                "no_active_listing" if !event_done => {
                     for (order_id, ticket_ids) in group_by_order(&attention_item.ticket_ids, &tickets_by_id) {
                         let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
                         let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
@@ -353,7 +395,7 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                         );
                     }
                 }
-                "outside_market_price" => {
+                "outside_market_price" if !event_done => {
                     // `available` is `false` whenever this event has no
                     // Price Checker data yet - marko's own explicit "iba ak
                     // pre daný event existujú uložené Price Checker dáta".
@@ -426,7 +468,10 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
     for (order_id, ticket_ids) in group_by_order(&sold_undelivered_ids, &tickets_by_id) {
         let Some(first) = ticket_ids.first().and_then(|id| tickets_by_id.get(id)) else { continue };
         let event_id = first.event_id;
-        let Some((event_name, event_date)) = events_by_id.get(&event_id) else { continue };
+        // 2.2.10: deliberately ignores `event_status` here (unlike the 3
+        // categories above) - see this module's own doc comment for why
+        // sold_undelivered must never be gated by "is the event done".
+        let Some((event_name, event_date, _event_status)) = events_by_id.get(&event_id) else { continue };
         let days = event_date.as_deref().and_then(|d| days_until(today, d));
         // No lower bound on `days` - same reasoning `dashboard.rs`'s own
         // `PULLS_WARNING_WINDOW_DAYS` check already documents: an event that
@@ -457,16 +502,29 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
         );
     }
 
-    // ---- sort: priority first, then soonest event -------------------------
+    // ---- sort: priority, then soonest event, then group by order ----------
     // ("zoradenie podľa priority a najbližšieho eventu" - marko's own spec.)
-    // The final `.key` tie-break makes ordering fully deterministic (matters
-    // for the sort-order test below), not a display-visible concern.
+    // 2.2.10: `event_id` then `order_id` were inserted between "soonest
+    // event" and the final `key` tie-break - see this module's own doc
+    // comment ("je to mixed") for why. `order_id` is `Option<i64>`, whose
+    // derived `Ord` puts `None` (event_soon) before any `Some` - harmless,
+    // since event_soon is always alone for its event anyway (nothing else
+    // shares its key shape). `category` comes right after so one order's
+    // several reasons still sort in a stable, deterministic order among
+    // themselves; the final `.key` tie-break is now mostly redundant but
+    // kept for full determinism (matters for the sort-order tests below).
     items.sort_by(|a, b| {
-        priority_rank(&a.priority).cmp(&priority_rank(&b.priority)).then_with(|| {
-            let da = a.event_date.as_deref().unwrap_or(NO_DATE_SORT_SENTINEL);
-            let db_ = b.event_date.as_deref().unwrap_or(NO_DATE_SORT_SENTINEL);
-            da.cmp(db_)
-        }).then_with(|| a.key.cmp(&b.key))
+        priority_rank(&a.priority)
+            .cmp(&priority_rank(&b.priority))
+            .then_with(|| {
+                let da = a.event_date.as_deref().unwrap_or(NO_DATE_SORT_SENTINEL);
+                let db_ = b.event_date.as_deref().unwrap_or(NO_DATE_SORT_SENTINEL);
+                da.cmp(db_)
+            })
+            .then_with(|| a.event_id.cmp(&b.event_id))
+            .then_with(|| a.order_id.cmp(&b.order_id))
+            .then_with(|| a.category.cmp(&b.category))
+            .then_with(|| a.key.cmp(&b.key))
     });
 
     Ok(items)
@@ -490,9 +548,16 @@ mod tests {
     }
 
     fn seed_event(conn: &Connection, event_date: Option<&str>) -> i64 {
+        seed_event_with_status(conn, event_date, "upcoming")
+    }
+
+    /// 2.2.10: lets a test seed a `completed`/`cancelled` event directly,
+    /// without needing today's date to actually walk past `event_date` -
+    /// exercises the `status`-driven half of `event_is_done` on its own.
+    fn seed_event_with_status(conn: &Connection, event_date: Option<&str>, status: &str) -> i64 {
         conn.execute(
-            "INSERT INTO events (name, event_date, status) VALUES ('Test Event', ?1, 'upcoming')",
-            [event_date],
+            "INSERT INTO events (name, event_date, status) VALUES ('Test Event', ?1, ?2)",
+            params![event_date, status],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -875,5 +940,108 @@ mod tests {
             "within the same priority, the soonest event must come first regardless of seed order"
         );
         let _ = ticket_info; // seeded only to exercise the info-priority item above
+    }
+
+    #[test]
+    fn rows_for_the_same_order_sort_adjacently_even_across_different_categories() {
+        // Regression guard for marko's own "je to mixed" feedback: 2.2.9's
+        // sort effectively grouped by CATEGORY NAME first (via the `key`
+        // tie-break), which scattered one order's several reasons apart,
+        // interleaved with every other order sharing the same category -
+        // exactly what his screenshot showed. This seeds two orders under
+        // one event, each missing both a listing price AND an active
+        // listing, and asserts every row for one order comes before any row
+        // for the other - never interleaved.
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event(&conn, None);
+        let order_a = seed_order(&conn, event_id);
+        seed_ticket(&conn, event_id, order_a, "available", None, "EUR", None);
+        let order_b = seed_order(&conn, event_id);
+        seed_ticket(&conn, event_id, order_b, "available", None, "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        let relevant: Vec<i64> = items
+            .iter()
+            .filter(|i| i.category == "missing_listing_price" || i.category == "no_active_listing")
+            .map(|i| i.order_id.expect("both categories here are order-grouped"))
+            .collect();
+        assert_eq!(relevant.len(), 4, "2 orders x 2 categories each = 4 rows");
+        assert_eq!(
+            relevant,
+            vec![order_a, order_a, order_b, order_b],
+            "both of order_a's rows must sort together, before either of order_b's - never interleaved by category name: got {relevant:?}"
+        );
+    }
+
+    #[test]
+    fn listing_categories_do_not_fire_once_the_events_date_has_already_passed() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let event_id = seed_event(&conn, Some("2026-05-20")); // already happened
+        let order_id = seed_order(&conn, event_id);
+        let ticket_id = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        assert!(
+            find_containing(&items, "missing_listing_price", ticket_id).is_none(),
+            "a past event's unsold ticket can no longer be listed - must not nag about its price"
+        );
+        assert!(find_containing(&items, "no_active_listing", ticket_id).is_none());
+    }
+
+    #[test]
+    fn listing_categories_do_not_fire_for_a_cancelled_event_even_with_a_future_date() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event_with_status(&conn, Some("2026-12-01"), "cancelled");
+        let order_id = seed_order(&conn, event_id);
+        let ticket_id = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        assert!(find_containing(&items, "missing_listing_price", ticket_id).is_none());
+        assert!(find_containing(&items, "no_active_listing", ticket_id).is_none());
+    }
+
+    #[test]
+    fn outside_market_price_does_not_fire_for_a_done_event_either() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let event_id = seed_event(&conn, Some("2026-05-20")); // already happened
+        let order_id = seed_order(&conn, event_id);
+        let ticket_id = seed_ticket(&conn, event_id, order_id, "available", Some(10_000), "EUR", None);
+        let vivid = marketplace_id(&conn, "Vivid Seats");
+        seed_price_check(&conn, event_id, vivid, 1_000, "EUR");
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        assert!(find_containing(&items, "outside_market_price", ticket_id).is_none());
+    }
+
+    #[test]
+    fn sold_undelivered_still_fires_for_a_cancelled_event() {
+        // Unlike the 3 tests above - this category is deliberately NEVER
+        // gated by event_is_done (see this module's own doc comment): an
+        // already-sold ticket still needing delivery follow-up is just as
+        // real a problem for a cancelled event as for an active one.
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event_with_status(&conn, None, "cancelled");
+        let order_id = seed_order(&conn, event_id);
+        let ticket_id = seed_ticket(&conn, event_id, order_id, "sold", Some(5000), "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        assert!(find_containing(&items, "sold_undelivered", ticket_id).is_some());
+    }
+
+    #[test]
+    fn event_soon_does_not_fire_for_a_cancelled_event_even_within_the_window() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let event_id = seed_event_with_status(&conn, Some("2026-06-02"), "cancelled"); // 1 day out
+        let order_id = seed_order(&conn, event_id);
+        seed_ticket(&conn, event_id, order_id, "available", Some(5000), "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        assert!(find_event_level(&items, "event_soon", event_id).is_none());
     }
 }

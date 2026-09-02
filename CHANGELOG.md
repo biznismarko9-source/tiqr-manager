@@ -16,6 +16,49 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.10 - Eight follow-ups from marko's 2.2.9 review
+
+Marko reviewed 2.2.9 and sent two rapid-fire messages (7 screenshots) with
+eight mostly-unrelated requests. See `REDESIGN-2.2.10-REPORT.md` (Slovak)
+and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.10" entry for the judgment
+calls behind each. No migration this release.
+
+- **Seats format: dropped the "Sec"/"Row"/"Seat" labels 2.2.9 had just
+  added**, back to bare " · "-joined values (`formatSeatLocation`/
+  `formatSeatsSummary`, `lib/format.ts`) - a real section value ("Sec 408",
+  "Category D, Standing") sometimes already read as a full label, so the
+  prefix produced "Sec Sec 408"-style duplication. Reaches every "Seats"
+  column across the app via the same two shared helpers.
+- **Orders tabs reworked: "Active"/"Paid" -> "Active"/"Completed"**, with a
+  real bucketing change, not just a relabel - an order is now Completed
+  once its event's date has passed (or its status is completed/cancelled)
+  OR the order itself is fully sold+delivered+paid, whichever comes first.
+  The New Order event picker now excludes those same "done" events too
+  (previously unfiltered).
+- **Attention Center "mixed" ordering fixed** - the real cause was the
+  sort's own tie-break (grouping by category name before order), not the
+  2.2.9 grouping-by-order logic itself. Also now excludes done events from
+  3 of its 5 categories (missing listing price/no active listing/outside
+  market price) - `sold_undelivered` and `event_soon` are deliberately
+  exempt.
+- **Sales Pending/Completed now requires sold+delivered+paid together**
+  (or fully refunded) - a sale missing only its delivery status no longer
+  incorrectly showed as Completed.
+- **Two confirmed Google Sheets push bugs fixed** (Orders and Pulls push):
+  local "already synced" bookkeeping was being written before the actual
+  network write was even attempted, so a failed push still silently looked
+  successful afterward. Both now record success only after the sheet write
+  is confirmed.
+- **Google's `invalid_grant` sign-in error now shows a short "sign in
+  again" message** instead of a long raw JSON dump - best-effort fix for a
+  reported long error after Google sign-in; not independently reproducible
+  in this environment.
+- **Native right-click context menu disabled everywhere** (no config flag
+  exists for this in Tauri/WRY - the standard JS-side `preventDefault` fix).
+
+Verified: `cargo test --lib` (1006 passed, +7 net new tests, 0 failed),
+`tsc -b` and `vite build` both clean.
+
 ## 2.2.9 - Six follow-ups from marko's 2.2.8 review
 
 Marko reviewed the just-shipped 2.2.8 Attention Center and sent six mostly-

@@ -308,6 +308,11 @@ export interface OrderRecord {
   code: string;
   eventId: number;
   eventName: string;
+  /** 2.2.10: the event's own date/status - Orders' Active/Completed tabs now
+   * key off whether the EVENT is done (see Orders.tsx's `isOrderDone`/
+   * ORDER_TABS doc comment), not just this order's own ticket counts. */
+  eventDate: string | null;
+  eventStatus: EventStatus;
   /** 2.0.27: the event's category, denormalized here the same way eventName
    * already is - lets the Orders list filter/badge by category without a
    * second round trip. All three are null together when the event has no

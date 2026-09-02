@@ -309,6 +309,15 @@ pub struct Order {
     pub code: String,
     pub event_id: i64,
     pub event_name: String,
+    /// 2.2.10: the event's own date/status, denormalized here the same way
+    /// category_name/platform_name already are (2.0.27) - marko's request:
+    /// Orders' Active/Completed split now keys off whether the EVENT is
+    /// done, not just this order's own ticket counts (see Orders.tsx's
+    /// `isOrderDone`/ORDER_TABS doc comment). `event_date` is the raw
+    /// `events.event_date` (YYYY-MM-DD, or `None`); `event_status` is the
+    /// raw `events.status` ("upcoming"/"completed"/"cancelled").
+    pub event_date: Option<String>,
+    pub event_status: String,
     /// 2.0.27: the order's event's category, resolved here (same convention
     /// as `event_name`/`platform_name`) so the Orders list can filter/badge
     /// without a second round trip. `None` on both when the event has no

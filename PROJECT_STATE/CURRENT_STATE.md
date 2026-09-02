@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.9**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.10**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -29,7 +29,7 @@ are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
 un-bumped, code-labeled-only build first - marko's closing checklist for
 that task didn't ask for a version bump - then bumped for real, same
 session, once he confirmed he wanted the usual release file too. See
-`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7, 2.2.8 and 2.2.9's own closing
+`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 through 2.2.10's own closing
 checklists all asked for the full cadence up front, no ambiguity.)
 
 ## Stack / layout
@@ -46,16 +46,20 @@ checklists all asked for the full cadence up front, no ambiguity.)
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
-  under `commands/`: events, orders (+ `orders_sheet_sync`), tickets,
+  under `commands/`: events, orders (+ `orders_sheet_sync` - 2.2.10: same
+  push-bookkeeping-ordering fix as `pulls_sheet_sync` below), tickets,
   ticket_listings (2.2.4 - real per-marketplace listings; 2.2.5 added 3
   all-or-nothing bulk commands - status/price/delete - see "Current focus"
   below), inventory_intelligence (2.2.6 - one read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
   attention_center (2.2.8 - one read-only command backing the Dashboard's
   global, cross-event "Attention Center" block; 2.2.9 reworked its 4
-  ticket-level categories to group by order instead of one row per ticket -
-  see "Current focus" below), sales, event_categories, pulls (+ `pulls_received`,
-  `pulls_sheet_sync`), finance_accounts/finance_entries (2.2.1: entries can
+  ticket-level categories to group by order instead of one row per ticket;
+  2.2.10 fixed its sort tie-break (see "Current focus" below) and excluded
+  done events from 3 of its 5 categories), sales, event_categories, pulls
+  (+ `pulls_received`, `pulls_sheet_sync` - 2.2.10: push direction's
+  `sheet_sync_links` bookkeeping now only committed after a confirmed
+  network write, see "Current focus" below), finance_accounts/finance_entries (2.2.1: entries can
   optionally link to an Order via `order_id`)/finance_recurring/
   finance_forecast, price_checker (CRUD/marketplaces + saved-check
   history) + price_checker_scanner (the Visible Scanner session/commands)
@@ -79,6 +83,63 @@ checklists all asked for the full cadence up front, no ambiguity.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**Eight follow-up fixes from marko's review of 2.2.9 (2.2.10).** Marko sent
+two rapid-fire messages (7 screenshots combined) after 2.2.9 shipped. No
+migration this release - purely query/logic/frontend changes:
+
+1. **Seats format lost its labels again.** `formatSeatLocation`/
+   `formatSeatsSummary` (`lib/format.ts`) now join bare values with " · "
+   ("402 · 56 · 27") instead of 2.2.9's "Sec 402 · Row 56 · Seat 27" - a
+   real section value is sometimes already a full label on its own ("Sec
+   408", "Category D, Standing"), and the added prefix produced visible
+   duplication ("Sec Sec 408"). Reaches every "Seats" column app-wide via
+   the same two shared helpers, no per-page changes needed.
+2. **Orders tabs reworked: "Active"/"Paid" -> "Active"/"Completed"**, with a
+   real bucketing change. `isOrderDone` (`Orders.tsx`) now marks an order
+   Completed once EITHER its event is done (`isEventDone` - status
+   completed/cancelled, OR its date has already passed - deliberately an OR
+   of both signals, not status alone, since `events.status` has no
+   automatic date-based transition anywhere in this codebase) OR the order
+   itself is fully sold+delivered+paid (reusing the existing completion-
+   badge machinery). `Order` gained `eventDate`/`eventStatus` as a
+   read-time join, no migration.
+3. **New Order's event picker now excludes those same "done" events too** -
+   previously unfiltered, so a purchase could be logged against an event
+   that had already happened or was already marked completed.
+4. **Attention Center's "mixed" ordering fixed** - root cause was the
+   sort's own tie-break (grouping same-priority rows by CATEGORY NAME
+   before order), not the 2.2.9 group-by-order logic itself, which was and
+   remains correct. Also now excludes done events (same status-or-date
+   check as above) from 3 of its 5 categories (missing listing price/no
+   active listing/outside market price) - `sold_undelivered` and
+   `event_soon` are deliberately exempt, see `PROTECTED_AREAS.md`.
+5. **Sales Pending/Completed now requires sold+delivered+paid together (or
+   fully refunded)**, not payment status alone - a sale missing only its
+   delivery status no longer incorrectly showed as Completed.
+6. **Two confirmed Google Sheets push bugs fixed** (`orders_sheet_sync.rs`/
+   `pulls_sheet_sync.rs`): the local `sheet_sync_links` "already synced"
+   bookkeeping was being written BEFORE the actual network write it
+   described had even been attempted - a failed push still silently looked
+   successful afterward, permanently. Both push paths now record success
+   only once the matching `append_values`/`update_values` call is confirmed
+   to have succeeded. `sales_sheet_sync`'s own push was checked and
+   confirmed unaffected (it performs no DB writes of its own).
+7. **Google's `invalid_grant` sign-in error now shows a short "sign in
+   again" message** instead of a long raw JSON dump (`describe_error_response`,
+   `google_sheets.rs`, shared with `google_oauth.rs`'s token refresh) -
+   best-effort fix for marko's reported long error after Google sign-in;
+   NOT independently reproducible in this environment (no live Google OAuth
+   access here) - see the report for what to do if it recurs.
+8. **Native right-click context menu disabled app-wide** (`main.tsx`) - no
+   config flag exists for this in Tauri/WRY, so this is the standard
+   JS-side `contextmenu` + `preventDefault` fix, not a workaround.
+
+Verified: `cargo test --lib` (1006 passed, +7 net new tests, 0 failed),
+`tsc -b` and `vite build` both clean. See `REDESIGN-2.2.10-REPORT.md` for
+the full report (Slovak) and `PROTECTED_AREAS.md`'s new "2.2.10" entry for
+every judgment call above, especially item 2's status-or-date `isEventDone`
+formula and item 4's exact exemptions.
 
 **Six follow-up fixes from marko's review of 2.2.8 (2.2.9), plus a rework
 of the Attention Center itself.** Marko reviewed the just-shipped 2.2.8
