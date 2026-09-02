@@ -16,6 +16,47 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.9 - Six follow-ups from marko's 2.2.8 review
+
+Marko reviewed the just-shipped 2.2.8 Attention Center and sent six mostly-
+unrelated small requests in one message. See `REDESIGN-2.2.9-REPORT.md`
+(Slovak) and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.9" entry for the
+judgment calls behind each.
+
+- **Seatriks retired from Price Checker only** (`marketplaces.active = 0`,
+  `migrations/025_deactivate_seatriks_price_checker.sql`) - same mechanism
+  already used for StubHub. Stays fully available in Listings' "Add
+  listing" picker.
+- **Settings -> Integrations' Anthropic API key card relabeled** from
+  "AI-assisted price reading" to the general "AI features" - same key,
+  same storage, just a forward-looking name since it's meant to power more
+  than one AI feature over time.
+- **No live "balance" number was built** - Anthropic's API has no endpoint
+  that returns a remaining credit balance for any key type (confirmed
+  against Anthropic's own docs). A "Check usage & balance" link to the
+  Anthropic Console was added on the same card instead of fabricating one.
+- **Finance -> Overview gained "New entry"/"New account" buttons**, opening
+  the exact same modals already used on the Transactions/Accounts tabs.
+- **The per-event "Attention" list was removed from Event Workspace**
+  (Inventory Intelligence's own 2.2.6 block) - fully superseded by the
+  Dashboard's global Attention Center. The backend it was built on is
+  untouched, since the Attention Center itself still depends on it.
+- **Attention Center (2.2.8) reworked to group by order.** The four
+  ticket-level categories now emit one row per order instead of one row
+  per ticket - marko's own example was a 49-ticket order shown as 49 rows.
+  Clicking a grouped row opens that order's own page, which already lists
+  every affected ticket with its own status/price/delivery indicators.
+  `event_soon` is unchanged (still one row per event).
+- **Seats display reformatted: the "/" is gone.** `formatSeatsSummary`
+  (Orders/Tickets/Inventory/Sales/Pulls' "Seats" columns) now shows
+  clearly labeled, separated Section/Row/Seat text (e.g.
+  "Sec 402 · Row 56 · Seat 27") instead of a bare slash-joined pair, and
+  eight duplicate ad-hoc "/" joins across Sales.tsx and EventDetail.tsx
+  were consolidated into the same shared formatter.
+
+Verified: `cargo test --lib` (999 passed, +4 net new tests, 0 failed),
+`tsc -b` and `vite build` both clean.
+
 ## 2.2.8 - Dashboard global "Attention Center"
 
 Focused task on top of 2.2.6/2.2.7: a new compact Dashboard block (Activity

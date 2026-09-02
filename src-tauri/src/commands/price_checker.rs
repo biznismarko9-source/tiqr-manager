@@ -1091,11 +1091,15 @@ mod tests {
         // 2.1.6: StubHub is retired (inactive) and this event has never
         // touched it, so only the ACTIVE marketplaces show - see the
         // dedicated StubHub-specific tests below for the retired/history
-        // behavior itself. 2.2.5: bumped from 3 to 4 active marketplaces -
-        // migrations/023_add_seatriks_marketplace.sql seeded a 4th
-        // (Seatriks), which sorts first alphabetically.
+        // behavior itself. 2.2.5 bumped this to 4 active marketplaces
+        // (migrations/023_add_seatriks_marketplace.sql seeded Seatriks), but
+        // 2.2.9 retired Seatriks from Price Checker the same way (marko:
+        // "odstranit seatiks uplne" - remove it from Price Checker entirely,
+        // migrations/025_deactivate_seatriks_price_checker.sql), so this is
+        // back to 3 - Seatriks stays a real, selectable marketplace
+        // elsewhere (Listings), just like StubHub does.
         let names: Vec<&str> = summary.marketplaces.iter().map(|m| m.marketplace_name.as_str()).collect();
-        assert_eq!(names, vec!["Seatriks", "Ticombo", "Viagogo", "Vivid Seats"], "alphabetical, active-only, for a fresh event");
+        assert_eq!(names, vec!["Ticombo", "Viagogo", "Vivid Seats"], "alphabetical, active-only, for a fresh event");
         for m in &summary.marketplaces {
             assert!(m.marketplace_active, "every marketplace shown to a fresh event must be active");
             assert!(m.link.is_none());

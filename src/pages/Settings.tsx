@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
 import {
@@ -96,7 +97,10 @@ const SECTIONS = [
     // Sheet." - extended (not split into a new section) once the Anthropic
     // API key card landed here too, since it's the same idea (connect an
     // optional external service) rather than its own new top-level concern.
-    description: "Connect Pulls, Orders and Tickets to a Google Sheet, or add an Anthropic API key for AI-assisted price reading.",
+    // 2.2.9: re-worded from "...for AI-assisted price reading" - marko's own
+    // request, since the same key now powers (or will power) more than one
+    // AI feature - see AnthropicApiKeyCard's own doc comment below.
+    description: "Connect Pulls, Orders and Tickets to a Google Sheet, or add an Anthropic API key to power AI features across the app.",
     icon: IconLink,
   },
   // 2.0.76: desktop/mobile-push alerts for the same 4 things the Dashboard's
@@ -1275,13 +1279,20 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
   );
 }
 
-// 2.1.6: optional Anthropic API key, powering Price Checker's new
-// AI-assisted extraction fallback (commands/price_checker_auto.rs's
-// try_ai_extraction_fallback) - used only as a LAST RESORT, when
-// Auto-check's own 4 free rule-based passes can't recognize a page's
-// prices at all. Nothing about Price Checker changes without a key saved
-// here; every existing free pass keeps working exactly as before, and nothing
-// is ever sent to Anthropic unless this is configured.
+// 2.1.6: optional Anthropic API key. Originally introduced for (and still
+// used by) Price Checker's Auto-check AI-extraction fallback
+// (commands/price_checker_auto.rs's try_ai_extraction_fallback) - used only
+// as a LAST RESORT, when Auto-check's own free rule-based passes can't
+// recognize a page's prices at all. 2.2.9: re-labeled from "AI-assisted
+// price reading" to the general "AI features" - marko's own request, since
+// this same stored key is meant to power AI features across the app over
+// time, not just this one reading fallback; nothing about the storage/
+// commands themselves changed, only the card's own copy (see
+// commands::settings's "Anthropic API key" doc comment, which already
+// described this same forward-looking intent). Nothing about Price Checker
+// changes without a key saved here; every existing free pass keeps working
+// exactly as before, and nothing is ever sent to Anthropic unless this is
+// configured.
 //
 // Same "collapse once configured, secret never round-trips to the frontend"
 // shape as NotificationsCard's ntfy topic (see that component's own doc
@@ -1295,6 +1306,23 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 // collapses to a summary row with separate "Change key"/"Remove" actions,
 // and only "Remove" ever submits a blank key - Save in the open form always
 // sends whatever's actually typed, and is disabled/no-ops on blank input.
+//
+// 2.2.9: marko also asked for a small "how much is the balance" indicator
+// near this card. Checked first (see REDESIGN-2.2.9-REPORT.md): Anthropic's
+// API has no endpoint that returns a live remaining-credit balance at all,
+// for any kind of key - the closest thing, the Usage & Cost API, only
+// returns HISTORICAL token/cost figures, and even that requires an Admin API
+// key (org-admin privileges) or an unscoped personal/service key - a
+// workspace key like the one pasted into the field below explicitly does
+// NOT work for it. Asking marko to also generate and paste a second,
+// materially more sensitive key just to show a number would be a much bigger
+// ask than "a small balance indicator" implies, and there is still no
+// endpoint for the actual thing he wants (a current remaining balance)
+// either way - so rather than fake a number or add that bigger ask, this
+// just links straight to the real, authoritative place: the Anthropic
+// Console's own Billing page. Same "never fabricate what can't be reliably
+// computed" rule this app already follows elsewhere (see PROTECTED_AREAS.md
+// 2.2.8's own attention-center categories).
 function AnthropicApiKeyCard() {
   const toast = useToast();
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -1361,14 +1389,28 @@ function AnthropicApiKeyCard() {
   return (
     <Card className="p-5">
       <div className="mb-1 flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">AI-assisted price reading</h3>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">AI features</h3>
         <Badge tone={configured ? "sold" : "available"}>{configured ? "On" : "Off"}</Badge>
       </div>
+      <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
+        Optional. Add your Anthropic API key here once and every AI-assisted feature in the app can use it - for
+        example, Price Checker&apos;s Auto-check can ask Claude (Anthropic&apos;s AI) to read a page&apos;s prices
+        when it can&apos;t recognize them on its own, only as a last resort. AI-derived results are always shown
+        clearly marked, so you can double-check them before saving.
+      </p>
       <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-        Optional. When Price Checker&apos;s Auto-check can&apos;t recognize a page&apos;s prices on its own, it can
-        ask Claude (Anthropic&apos;s AI) to read them instead - only as a last resort, for pages the free method
-        already failed on. AI-derived results are always shown clearly marked in Price Checker, so you can
-        double-check them before saving.
+        {/* 2.2.9: see this component's own doc comment above for why this is
+            a link to Anthropic's own Console rather than a number shown
+            here - there's no API that can tell this app a live balance. */}
+        <button
+          type="button"
+          className="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+          onClick={() => {
+            openUrl("https://console.anthropic.com/settings/billing").catch(() => undefined);
+          }}
+        >
+          Check usage &amp; balance on the Anthropic Console ↗
+        </button>
       </p>
 
       {configured && !editing ? (

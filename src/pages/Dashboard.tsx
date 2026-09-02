@@ -1016,14 +1016,21 @@ const ATTENTION_CENTER_GROUPS: { key: AttentionCenterItem["priority"]; label: st
 /** One Attention Center row - reuses UpcomingEventRow's exact urgency-badge
  * convention (daysUntil/warningLabel/UPCOMING_WARNING_WINDOW_DAYS, all
  * defined at the top of this file) rather than a second "how soon" style.
- * Clicking opens the existing relevant ticket (pre-filled search on
- * Tickets.tsx, its own established `?code=` deep link - see
- * PROTECTED_AREAS.md's 2.2.6 entry for why that's the one cross-page ticket
- * link this app has) when the item is ticket-level, otherwise the event's
- * own Event Workspace - marko's own "ak už existuje vhodný route/navigation
- * systém, použi ho". */
+ *
+ * 2.2.9: every order-grouped category (all except event_soon) now links
+ * straight to that order's own page (`/orders/:id`, OrderDetail.tsx) instead
+ * of a single ticket's `?code=` deep link - marko's own feedback on the
+ * 2.2.8 shape ("nedáva zmysel" - one row per ticket flooded the list for a
+ * bulk order) asked for orders you click into to reveal their tickets, and
+ * OrderDetail.tsx already lists every one of `item.ticketIds` with its own
+ * status/listing price/delivery indicators, so this reuses that existing
+ * page rather than building a second ticket-list widget here - marko's own
+ * "ak už existuje vhodný route/navigation systém, použi ho". `event_soon`
+ * has no single order (see the Rust module's doc comment) and keeps going
+ * to the event's own Event Workspace, unchanged from 2.2.8. */
 function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
-  const href = item.ticketCode ? `/tickets?code=${encodeURIComponent(item.ticketCode)}` : `/events/${item.eventId}`;
+  const href = item.orderId != null ? `/orders/${item.orderId}` : `/events/${item.eventId}`;
+  const ticketCount = item.ticketIds.length;
   const daysLeft = item.eventDate ? daysUntil(item.eventDate) : null;
   const urgent = daysLeft !== null && daysLeft <= UPCOMING_WARNING_WINDOW_DAYS;
   const critical = daysLeft !== null && daysLeft <= 0;
@@ -1033,7 +1040,13 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
             {item.eventName}
-            {item.ticketCode && <span className="font-normal text-slate-400 dark:text-slate-500"> · {item.ticketCode}</span>}
+            {item.orderCode && (
+              <span className="font-normal text-slate-400 dark:text-slate-500">
+                {" "}
+                · Order {item.orderCode}
+                {ticketCount > 1 && ` · ${ticketCount} tickets`}
+              </span>
+            )}
           </p>
           <p className="truncate text-xs text-slate-400 dark:text-slate-500">{item.reason}</p>
         </div>

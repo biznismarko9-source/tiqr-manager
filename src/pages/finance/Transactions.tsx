@@ -397,7 +397,10 @@ function TransferRow({ transfer, onDelete }: { transfer: Transfer; onDelete: (t:
 // unchanged except for the new optional Account field.
 // ---------------------------------------------------------------------------
 
-function EntryFormModal({
+// 2.2.9: exported (was module-local) so Finance -> Overview can mount this
+// exact same modal for its new "New entry" quick-action button, instead of
+// duplicating the form - see Overview.tsx's own doc comment.
+export function EntryFormModal({
   open,
   onClose,
   onSaved,

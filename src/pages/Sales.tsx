@@ -10,6 +10,7 @@ import {
   formatMoney,
   formatMoneyOrMixed,
   formatPercentOrMixed,
+  formatSeatLocation,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
   todayIso,
@@ -1399,7 +1400,7 @@ function SaleFormModal({
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
                         <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
-                          {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                          {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
@@ -1511,9 +1512,7 @@ function SaleFormModal({
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
                     <p className="truncate text-xs text-slate-400 dark:text-slate-500">
                       Cost {formatMoney(t.totalCostCents, t.currency)}
-                      {[t.section, t.rowLabel, t.seat].some(Boolean)
-                        ? ` · ${[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ")}`
-                        : ""}
+                      {[t.section, t.rowLabel, t.seat].some(Boolean) ? ` · ${formatSeatLocation(t.section, t.rowLabel, t.seat)}` : ""}
                     </p>
                   </div>
                   {/* Persistent currency label (1.6.0 audit UX finding: a

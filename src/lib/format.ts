@@ -212,24 +212,30 @@ function compactSeatList(seatLabels: string[]): string {
 }
 
 /** 2.0.38: turns a full `SeatEntry[]` (OrderRecord.seats/SaleGroup.seats)
- * into one compact display string for the new "Seats" column on
- * Orders/Tickets/Sales - e.g. "204/AA 128-131", marko's own example when
- * asked how a multi-ticket row (one order/sale can cover several different
- * seats at once) should summarize them. Groups by section+row first (tickets
- * bought/sold together are almost always the same section/row - see
- * compactSeatList above for how the seat numbers within a group get
- * shortened), falls back to "General admission" for a group with no
- * section/row/seat at all, and comma-joins multiple truly distinct groups
- * with "; " so a rare mixed-section order doesn't read as one run-on list.
- * Always returns the FULL string, uncut - same convention as every other
- * formatter here; truncation/tooltip is a display concern handled where this
- * is rendered (the usual `truncate` class + `title={...}` pattern). */
+ * into one compact display string for the "Seats" column on Orders/Tickets/
+ * Sales/Inventory/Pulls. Groups by section+row first (tickets bought/sold
+ * together are almost always the same section/row - see compactSeatList
+ * above for how the seat numbers within a group get shortened), falls back
+ * to "General admission" for a group with no section/row/seat at all, and
+ * comma-joins multiple truly distinct groups with "; " so a rare mixed-
+ * section order doesn't read as one run-on list. Always returns the FULL
+ * string, uncut - same convention as every other formatter here; truncation/
+ * tooltip is a display concern handled where this is rendered (the usual
+ * `truncate` class + `title={...}` pattern).
+ *
+ * 2.2.9: each group used to read "204/AA 128-131" (marko's own original
+ * example) - marko's later request was to remove that "/" and clearly
+ * separate section/row/seat instead, so this now reuses formatSeatLocation's
+ * own "Sec X · Row Y · Seat Z" labeled, dot-separated convention (already
+ * established above for the single-ticket detail views) instead of a bare
+ * slash-joined pair - e.g. "Sec 204 · Row AA · Seat 128-131". Only the
+ * labeling changed; the underlying grouping/compaction logic is unchanged. */
 export function formatSeatsSummary(seats: SeatEntry[]): string {
   if (seats.length === 0) return "-";
 
   const groups = new Map<string, { section: string | null; rowLabel: string | null; seatNums: string[] }>();
   for (const s of seats) {
-    const key = `${s.section ?? ""} ${s.rowLabel ?? ""}`;
+    const key = `${s.section ?? ""}\0${s.rowLabel ?? ""}`;
     let g = groups.get(key);
     if (!g) {
       g = { section: s.section, rowLabel: s.rowLabel, seatNums: [] };
@@ -240,10 +246,12 @@ export function formatSeatsSummary(seats: SeatEntry[]): string {
 
   const parts = Array.from(groups.values()).map((g) => {
     const seatPart = compactSeatList(g.seatNums);
-    if (g.section && g.rowLabel) return seatPart ? `${g.section}/${g.rowLabel} ${seatPart}` : `${g.section}/${g.rowLabel}`;
-    if (g.section) return seatPart ? `Sec ${g.section} ${seatPart}` : `Sec ${g.section}`;
-    if (g.rowLabel) return seatPart ? `Row ${g.rowLabel} ${seatPart}` : `Row ${g.rowLabel}`;
-    return seatPart ? `Seat ${seatPart}` : "General admission";
+    const labeled = [
+      g.section ? `Sec ${g.section}` : null,
+      g.rowLabel ? `Row ${g.rowLabel}` : null,
+      seatPart ? `Seat ${seatPart}` : null,
+    ].filter((p): p is string => p !== null);
+    return labeled.length > 0 ? labeled.join(" · ") : "General admission";
   });
 
   return parts.join("; ");

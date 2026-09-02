@@ -499,7 +499,10 @@ function RecurringRow({
 // New/edit account modal
 // ---------------------------------------------------------------------------
 
-function AccountFormModal({ open, onClose, onSaved, initial }: { open: boolean; onClose: () => void; onSaved: () => void; initial: Account | null }) {
+// 2.2.9: exported (was module-local) so Finance -> Overview can mount this
+// exact same modal for its new "New account" quick-action button, instead of
+// duplicating the form - see Overview.tsx's own doc comment.
+export function AccountFormModal({ open, onClose, onSaved, initial }: { open: boolean; onClose: () => void; onSaved: () => void; initial: Account | null }) {
   const toast = useToast();
   const [name, setName] = useState("");
   const [accountType, setAccountType] = useState<Account["accountType"]>("bank");

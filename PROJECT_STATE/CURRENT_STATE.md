@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.8**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.9**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -29,8 +29,8 @@ are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
 un-bumped, code-labeled-only build first - marko's closing checklist for
 that task didn't ask for a version bump - then bumped for real, same
 session, once he confirmed he wanted the usual release file too. See
-`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 and 2.2.8's own closing
-checklists both asked for the full cadence up front, no ambiguity.)
+`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7, 2.2.8 and 2.2.9's own closing
+checklists all asked for the full cadence up front, no ambiguity.)
 
 ## Stack / layout
 
@@ -52,8 +52,9 @@ checklists both asked for the full cadence up front, no ambiguity.)
   below), inventory_intelligence (2.2.6 - one read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
   attention_center (2.2.8 - one read-only command backing the Dashboard's
-  global, cross-event "Attention Center" block, see "Current focus"
-  below), sales, event_categories, pulls (+ `pulls_received`,
+  global, cross-event "Attention Center" block; 2.2.9 reworked its 4
+  ticket-level categories to group by order instead of one row per ticket -
+  see "Current focus" below), sales, event_categories, pulls (+ `pulls_received`,
   `pulls_sheet_sync`), finance_accounts/finance_entries (2.2.1: entries can
   optionally link to an Order via `order_id`)/finance_recurring/
   finance_forecast, price_checker (CRUD/marketplaces + saved-check
@@ -68,8 +69,8 @@ checklists both asked for the full cadence up front, no ambiguity.)
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **024_ticket_tier.sql**. Migrations run automatically
-  at startup, forward-only.
+  currently through **025_deactivate_seatriks_price_checker.sql**. Migrations
+  run automatically at startup, forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
   version in 3 files, commits, tags, and pushes - the tag push triggers
@@ -78,6 +79,87 @@ checklists both asked for the full cadence up front, no ambiguity.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**Six follow-up fixes from marko's review of 2.2.8 (2.2.9), plus a rework
+of the Attention Center itself.** Marko reviewed the just-shipped 2.2.8
+result (screenshots + a rapid-fire message) and asked for six mostly-
+unrelated changes:
+
+1. **Seatriks retired from Price Checker only.** `marketplaces.active = 0`
+   for Seatriks (`migrations/025_deactivate_seatriks_price_checker.sql`),
+   the exact same mechanism already used to retire StubHub
+   (`017_price_checker_viagogo.sql`) - it stops appearing as a fresh option
+   in `get_price_checker_summary_impl`'s marketplace query, but stays fully
+   selectable in Listings' "Add listing" picker/filter (`list_marketplaces`
+   is unfiltered by `active`). Judgment call: like StubHub, an event that
+   already has a saved Seatriks link/check would still show it there - an
+   unconditional cut with zero exceptions was NOT built; see
+   `PROTECTED_AREAS.md`'s "2.2.9" entry.
+2. **Settings -> Integrations' Anthropic API key card renamed.** "AI-
+   assisted price reading" -> the general "AI features" (`Settings.tsx`'s
+   `AnthropicApiKeyCard`) - marko's own request, since the same stored key
+   is meant to power more than one AI feature over time, not just Price
+   Checker's reading fallback. No backend/storage change at all.
+3. **No live "balance" indicator was built.** Marko asked for a small
+   balance/usage indicator near the API key card. Checked first: Anthropic's
+   API has no endpoint that returns a remaining credit balance for ANY key
+   type - the closest thing (the Usage & Cost API) only returns historical
+   token/cost figures, and even that requires an Admin API key or an
+   unscoped personal/service key; a workspace key like the one this app
+   stores explicitly does not work for it. Rather than fake a number or ask
+   marko to also generate a materially more sensitive key, the card just
+   links straight to `console.anthropic.com/settings/billing` (opened via
+   the already-present `@tauri-apps/plugin-opener`/`tauri-plugin-opener`,
+   same dependency `google_oauth.rs` already uses for the sign-in browser
+   flow - no new dependency).
+4. **Finance -> Overview gained "New entry"/"New account" quick-action
+   buttons.** Reuses the exact same `EntryFormModal`/`AccountFormModal`
+   already on the Transactions/Accounts tabs (now exported, not
+   duplicated) - no new form, no new backend command.
+5. **The per-event "Attention" list was deleted from Event Workspace.**
+   Only the "Attention" rows inside `InventoryIntelligenceBlock`
+   (`EventDetail.tsx`'s Overview tab) - the ATTENTION_COPY-labeled rows
+   showing event-soon/missing-price/no-listing/off-market counts - marko's
+   own "tuto attention cast celu vymazat s events". The KPIs/Aging/By-tier/
+   section/marketplace breakdowns in that same card are UNCHANGED, and
+   critically, the BACKEND command/impl behind it
+   (`get_inventory_intelligence`) is untouched - the Dashboard's own
+   Attention Center (below) calls that same impl function directly and
+   still depends on it.
+6. **Dashboard Attention Center (2.2.8) reworked to group by order.**
+   Marko's screenshot showed one order's 49 tickets, all missing a listing
+   price, rendered as 49 separate rows - his own words, "nedáva zmysel"
+   (doesn't make sense). The four ticket-level categories
+   (`missing_listing_price`/`no_active_listing`/`outside_market_price`/
+   `sold_undelivered`) now group their flagged tickets by `order_id` first,
+   emitting one row per (event, category, order) with `ticketIds`/
+   `ticketCodes` carrying every ticket the row stands for. Clicking a
+   grouped row now opens that order's own page (`/orders/:id`,
+   `OrderDetail.tsx`) - which already lists every one of those tickets with
+   its own status/listing price/delivery indicators - instead of a single
+   ticket's `?code=` deep link. `event_soon` is UNCHANGED (still one row
+   per event, `orderId: null`) - it has no single order to group under,
+   since a soon event's unsold tickets can span more than one order. See
+   `PROTECTED_AREAS.md`'s "2.2.9" entry for the full design and the new
+   `AttentionCenterItem` shape.
+7. **Seats display reformatted everywhere - the "/" is gone.** The shared
+   `formatSeatsSummary` (`src/lib/format.ts`), used by Orders/Tickets/
+   Inventory/Sales/Pulls' "Seats" columns, used to join section+row with a
+   bare "/" (e.g. "402/56 27"). It now reuses `formatSeatLocation`'s own
+   labeled, dot-separated convention instead (e.g.
+   "Sec 402 · Row 56 · Seat 27"). Six duplicate ad-hoc "/" joins on the
+   Event Workspace page (`EventDetail.tsx`) and two more on Sales.tsx's own
+   Create Sale modal were consolidated into the same shared
+   `formatSeatLocation` call rather than patched individually. Purely a
+   frontend display change - the backend already sends section/row/seat as
+   separate fields (`SeatEntry`), nothing pre-joins with "/" on the wire.
+
+Verified: `cargo test --lib` (999 passed, +4 net new tests, 0 failed - one
+pre-existing hardcoded-migration-count canary and one hardcoded active-
+marketplace-list test were updated for the new migration/Seatriks change,
+not weakened), `tsc -b` and `vite build` both clean. See
+`REDESIGN-2.2.9-REPORT.md` for the full report (Slovak) and
+`PROTECTED_AREAS.md`'s new "2.2.9" entry for every judgment call above.
 
 **Dashboard gained a global "Attention Center" (2.2.8).** A new compact
 block on the Dashboard's Activity tab, above the existing "Attention"

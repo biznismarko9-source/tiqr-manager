@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../../lib/api";
 import type { CashflowForecast, FinanceEntry, FinanceEntryInput } from "../../lib/types";
 import { formatMoney, formatMoneyOrMixed } from "../../lib/format";
-import { Card, ConfirmDialog, EmptyState, Input, LoadingBlock, StatCard } from "../../components/ui";
+import { Button, Card, ConfirmDialog, EmptyState, Input, LoadingBlock, StatCard } from "../../components/ui";
 import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
-import { IconBarChart, IconTrendingUp } from "../../components/icons";
+import { IconBarChart, IconPlus, IconTrendingUp } from "../../components/icons";
 import { useToast } from "../../lib/toast";
 import { PERIODS, SCOPES, periodBounds, type FinanceData, type PeriodKey, type ScopeFilter } from "./shared";
+import { EntryFormModal } from "./Transactions";
+import { AccountFormModal } from "./Accounts";
 
 // 2.1.0: this is the ORIGINAL Finance.tsx's own Overview logic (period/scope
 // filtering, stat cards, both charts, the mixed-currency banner/convert
@@ -16,6 +18,14 @@ import { PERIODS, SCOPES, periodBounds, type FinanceData, type PeriodKey, type S
 // Cash Flow cards right next to it), a "Pending/Outstanding" card (reusing
 // the EXISTING Dashboard alert - never recomputed here), and the Cashflow
 // Forecast card.
+//
+// 2.2.9: "New entry"/"New account" quick-action buttons - marko's own
+// request, so starting either doesn't require first switching to the
+// Transactions/Accounts tab. Reuses those tabs' own EntryFormModal/
+// AccountFormModal exactly (now exported from their own files) rather than
+// building a second copy of either form - `categories`/`accounts` are
+// already part of `FinanceData`, and `reload` already refreshes every tab's
+// data at once, so no new data-loading was needed either.
 
 // ---------------------------------------------------------------------------
 // Monthly bucketing for the "Income vs Expenses" chart.
@@ -89,7 +99,7 @@ interface PendingSummary {
   currency: string | null;
 }
 
-export default function Overview({ entries, accounts, loading, reload }: FinanceData) {
+export default function Overview({ entries, categories, accounts, loading, reload }: FinanceData) {
   const toast = useToast();
   const [period, setPeriod] = useState<PeriodKey>("month");
   const [customFrom, setCustomFrom] = useState("");
@@ -98,6 +108,10 @@ export default function Overview({ entries, accounts, loading, reload }: Finance
 
   const [convertConfirm, setConvertConfirm] = useState<{ currency: string | null; label: string } | null>(null);
   const [converting, setConverting] = useState(false);
+
+  // 2.2.9: quick-action modals - see this file's own top-of-file doc comment.
+  const [entryFormOpen, setEntryFormOpen] = useState(false);
+  const [accountFormOpen, setAccountFormOpen] = useState(false);
 
   const [forecast, setForecast] = useState<CashflowForecast | null>(null);
   const [forecastLoading, setForecastLoading] = useState(true);
@@ -305,6 +319,17 @@ export default function Overview({ entries, accounts, loading, reload }: Finance
             </label>
           </div>
         )}
+        <div className="ml-auto flex items-center gap-2">
+          {/* Same variant="primary" the real "New entry"/"New account"
+              buttons already use on Transactions/Accounts - these open the
+              exact same modals, just from a second, more convenient spot. */}
+          <Button variant="primary" onClick={() => setEntryFormOpen(true)}>
+            <IconPlus className="h-4 w-4" /> New entry
+          </Button>
+          <Button variant="primary" onClick={() => setAccountFormOpen(true)}>
+            <IconPlus className="h-4 w-4" /> New account
+          </Button>
+        </div>
       </Card>
 
       {loading ? (
@@ -364,6 +389,16 @@ export default function Overview({ entries, accounts, loading, reload }: Finance
         onCancel={() => setConvertConfirm(null)}
         onConfirm={runConversion}
       />
+
+      <EntryFormModal
+        open={entryFormOpen}
+        onClose={() => setEntryFormOpen(false)}
+        onSaved={reload}
+        categories={categories}
+        accounts={accounts}
+        initial={null}
+      />
+      <AccountFormModal open={accountFormOpen} onClose={() => setAccountFormOpen(false)} onSaved={reload} initial={null} />
     </div>
   );
 }

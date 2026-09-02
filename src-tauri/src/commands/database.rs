@@ -181,12 +181,14 @@ mod tests {
         let migration_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        // 2.2.7: bumped from 23 to 24 - migrations/024_ticket_tier.sql. This
-        // is a deliberate canary: it must be bumped by exactly the number of
-        // new migrations any time one is added, so a forgotten MIGRATIONS
+        // 2.2.7: bumped from 23 to 24 - migrations/024_ticket_tier.sql.
+        // 2.2.9: bumped from 24 to 25 -
+        // migrations/025_deactivate_seatriks_price_checker.sql. This is a
+        // deliberate canary: it must be bumped by exactly the number of new
+        // migrations any time one is added, so a forgotten MIGRATIONS
         // registration (see db.rs) fails loudly here instead of silently
         // shipping an unmigrated fresh install.
-        assert_eq!(migration_count, 24, "a fresh per-account file must end up on the same schema version as every other file");
+        assert_eq!(migration_count, 25, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 

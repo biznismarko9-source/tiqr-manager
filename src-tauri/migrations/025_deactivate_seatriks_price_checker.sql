@@ -1,0 +1,21 @@
+-- TIQR Manager - 025_deactivate_seatriks_price_checker
+-- 2.2.9: marko's request - stop tracking/checking prices for Seatriks in
+-- Price Checker entirely ("odstranit seatiks uplne...tam nechceme sledovat
+-- cenu na price checkeri"), while it stays exactly where it already works as
+-- a sellable marketplace ("ostane u toho kde sme" - Listings' "Add listing"
+-- picker and filter dropdown, both backed by list_marketplaces, which is
+-- unfiltered by `active` - see that command's own doc comment).
+--
+-- Reuses the exact same `active` flag/precedent 017_price_checker_viagogo.sql
+-- already established for retiring StubHub: `active = 0` means "don't offer
+-- this as a NEW option in Price Checker" while every existing row that
+-- references it (the marketplaces row itself, and any already-saved
+-- event_marketplace_links/price_checks) stays completely untouched - see
+-- commands::price_checker::get_price_checker_summary_impl's own doc comment
+-- for exactly how this flag changes which marketplaces a given event's page
+-- offers. Judgment call, flagged in the report: same as StubHub, an event
+-- that already has a saved Seatriks link/check would still show that
+-- event's own Seatriks history in Price Checker - if marko wants that
+-- historical exception removed too (an unconditional cut with zero
+-- exceptions), that's a easy, separate follow-up.
+UPDATE marketplaces SET active = 0 WHERE name = 'Seatriks';

@@ -9,14 +9,15 @@
 //!   price`, `no_active_listing`, `outside_market_price`) are the EXACT same
 //!   per-event "Attention" rules `inventory_intelligence::
 //!   get_inventory_intelligence_impl` already computes for the Event
-//!   Workspace's own Overview tab (2.2.6) - this module calls that function
-//!   once per event that actually has unsold inventory (an event with none
-//!   could never produce any of the four anyway - see `events_with_unsold`
-//!   below) and flattens its `attention` list into individual, clickable
-//!   rows instead of one per-event count. A future change to that function's
-//!   own thresholds (`EVENT_SOON_DAYS`, `OUTSIDE_MARKET_THRESHOLD_PCT`) or
-//!   predicates automatically applies here too - nothing is duplicated that
-//!   could quietly drift out of sync.
+//!   Workspace's own Overview tab (2.2.6, its own frontend rendering removed
+//!   in 2.2.9 now that this block covers the same ground globally) - this
+//!   module calls that function once per event that actually has unsold
+//!   inventory (an event with none could never produce any of the four
+//!   anyway - see `events_with_unsold` below) and flattens its `attention`
+//!   list into individual, clickable rows instead of one per-event count. A
+//!   future change to that function's own thresholds (`EVENT_SOON_DAYS`,
+//!   `OUTSIDE_MARKET_THRESHOLD_PCT`) or predicates automatically applies
+//!   here too - nothing is duplicated that could quietly drift out of sync.
 //! - The fifth, new category (`sold_undelivered`) reuses the exact
 //!   `delivery_status = 'Delivered'` convention the 2.0.66 "Completed"
 //!   indicator already established (see `orders.rs`/`sales.rs`'s own
@@ -39,9 +40,31 @@
 //! completely untouched by this task. The one real overlap - unsold tickets
 //! with no listing price - is computed the same way in both places
 //! (ticket-scoped, `status IN ('available','listed') AND listing_price_cents
-//! IS NULL`) but surfaced differently (per-ORDER count there, per-TICKET row
-//! here); see `PROTECTED_AREAS.md`'s "2.2.8" entry for why these were kept
-//! as two separate features rather than merged into one.
+//! IS NULL`) but surfaced differently (per-ORDER count there, per-ORDER
+//! GROUP here too as of 2.2.9 - see below); see `PROTECTED_AREAS.md`'s
+//! "2.2.8"/"2.2.9" entries for why these were kept as two separate features
+//! rather than merged into one.
+//!
+//! 2.2.9: reworked from one row per TICKET to one row per ORDER for every
+//! ticket-level category. marko's own feedback on the 2.2.8 shape - "nedáva
+//! zmysel" (doesn't make sense), evidenced by a real screenshot of one order
+//! with 49 tickets all missing a listing price, shown as 49 separate rows -
+//! was that this flooded the list far worse than the per-event aggregation
+//! `event_soon` already used. `missing_listing_price`/`no_active_listing`/
+//! `outside_market_price`/`sold_undelivered` now group their flagged tickets
+//! by `order_id` first (see `group_by_order` below) and emit ONE row per
+//! (event, category, order) with `ticket_ids`/`ticket_codes` carrying every
+//! ticket the row stands for - a 49-ticket order now shows as ONE row,
+//! "Order <code> · 49 tickets", not 49. Clicking a grouped row navigates
+//! straight to that order's own page (`/orders/:id`, `OrderDetail.tsx`),
+//! which already lists every one of those tickets with its own status/
+//! listing price/delivery indicators - reusing that existing page rather
+//! than building a second ticket-list widget inside the Dashboard, and
+//! staying consistent with this feature's own original "click-to-navigate
+//! via existing routes" design. `event_soon` is unchanged: it was already
+//! aggregated at the EVENT level (one row per soon event, not per ticket),
+//! and a soon event's unsold tickets can genuinely span more than one
+//! order, so there is no single order to group it under.
 //!
 //! No new migration, no new dependency, no automatic pricing/repricing
 //! anywhere in this file, and `tier`/`section`/`row` are never read as a
@@ -84,9 +107,17 @@ impl Priority {
 /// reseller's local SQLite file, same "plain full-table scan, no pagination"
 /// convention `dashboard.rs` already uses (e.g. `SELECT DISTINCT currency
 /// FROM tickets`).
+///
+/// 2.2.9: added `order_id` (a real, `NOT NULL` column on `tickets` since the
+/// very first migration) so every ticket-level category can group by order -
+/// see this module's own doc comment. Every ticket under one order shares
+/// that order's `event_id` by construction (`orders::create_order_impl`
+/// inserts both the order and its tickets with the same `input.event_id`),
+/// so resolving a group's event from any one of its tickets is always safe.
 struct TicketMini {
     code: String,
     event_id: i64,
+    order_id: i64,
     status: String,
     delivery_status: Option<String>,
     currency: String,
@@ -101,6 +132,39 @@ struct TicketMini {
 /// genuinely be `None`.
 const NO_DATE_SORT_SENTINEL: &str = "9999-12-31";
 
+/// Groups a category's flagged ticket ids by their order, returning
+/// `(order_id, ticket_ids)` pairs - one per distinct order, each list of
+/// ticket ids sorted for deterministic output, pairs themselves sorted by
+/// `order_id` too. Ticket ids that no longer resolve in `tickets_by_id`
+/// (shouldn't happen - both are built from the same live query - but cheap
+/// to guard) are silently skipped rather than panicking.
+///
+/// Shared by every ticket-level category (all except `event_soon`) - see
+/// this module's doc comment for why grouping by order replaced one-row-
+/// per-ticket in 2.2.9.
+fn group_by_order(ticket_ids: &[i64], tickets_by_id: &HashMap<i64, TicketMini>) -> Vec<(i64, Vec<i64>)> {
+    let mut by_order: HashMap<i64, Vec<i64>> = HashMap::new();
+    for &ticket_id in ticket_ids {
+        if let Some(t) = tickets_by_id.get(&ticket_id) {
+            by_order.entry(t.order_id).or_default().push(ticket_id);
+        }
+    }
+    let mut order_ids: Vec<i64> = by_order.keys().copied().collect();
+    order_ids.sort_unstable();
+    order_ids
+        .into_iter()
+        .map(|oid| {
+            let mut ids = by_order.remove(&oid).unwrap_or_default();
+            ids.sort_unstable();
+            (oid, ids)
+        })
+        .collect()
+}
+
+fn ticket_codes_for(ticket_ids: &[i64], tickets_by_id: &HashMap<i64, TicketMini>) -> Vec<String> {
+    ticket_ids.iter().filter_map(|id| tickets_by_id.get(id).map(|t| t.code.clone())).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_item(
     items: &mut Vec<AttentionCenterItem>,
@@ -109,14 +173,16 @@ fn push_item(
     event_id: i64,
     event_name: &str,
     event_date: Option<&str>,
-    ticket_id: Option<i64>,
-    ticket_code: Option<&str>,
+    order_id: Option<i64>,
+    order_code: Option<&str>,
+    ticket_ids: Vec<i64>,
+    ticket_codes: Vec<String>,
     reason: String,
     amount_cents: Option<i64>,
     currency: Option<&str>,
 ) {
-    let key = match ticket_id {
-        Some(tid) => format!("{category}:{tid}"),
+    let key = match order_id {
+        Some(oid) => format!("{category}:order:{oid}"),
         None => format!("{category}:{event_id}"),
     };
     items.push(AttentionCenterItem {
@@ -126,8 +192,10 @@ fn push_item(
         event_id,
         event_name: event_name.to_string(),
         event_date: event_date.map(|s| s.to_string()),
-        ticket_id,
-        ticket_code: ticket_code.map(|s| s.to_string()),
+        order_id,
+        order_code: order_code.map(|s| s.to_string()),
+        ticket_ids,
+        ticket_codes,
         reason,
         amount_cents,
         currency: currency.map(|s| s.to_string()),
@@ -159,21 +227,31 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
     };
 
     let tickets_by_id: HashMap<i64, TicketMini> = {
-        let mut stmt =
-            conn.prepare("SELECT id, code, event_id, status, delivery_status, currency, listing_price_cents FROM tickets")?;
+        let mut stmt = conn
+            .prepare("SELECT id, code, event_id, order_id, status, delivery_status, currency, listing_price_cents FROM tickets")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 TicketMini {
                     code: r.get(1)?,
                     event_id: r.get(2)?,
-                    status: r.get(3)?,
-                    delivery_status: r.get(4)?,
-                    currency: r.get(5)?,
-                    listing_price_cents: r.get(6)?,
+                    order_id: r.get(3)?,
+                    status: r.get(4)?,
+                    delivery_status: r.get(5)?,
+                    currency: r.get(6)?,
+                    listing_price_cents: r.get(7)?,
                 },
             ))
         })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()?
+    };
+
+    // 2.2.9: order codes for display/navigation - `orders.code` is the same
+    // human-facing code OrderDetail.tsx's own route/header already use, so
+    // the frontend never has to look it up separately.
+    let orders_by_id: HashMap<i64, String> = {
+        let mut stmt = conn.prepare("SELECT id, code FROM orders")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<Result<HashMap<_, _>, _>>()?
     };
 
@@ -203,14 +281,14 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
             match attention_item.key.as_str() {
                 "event_soon" => {
                     // Deliberately ONE ROW PER EVENT here, not one per unsold
-                    // ticket - marko's own spec lists "Ticket/code (ak je
-                    // relevantný)" as OPTIONAL, and an event with e.g. 40
-                    // unsold tickets 1 day out would otherwise flood the list
-                    // with 40 near-identical rows, directly against his own
+                    // ticket or order - marko's own spec lists "Ticket/code
+                    // (ak je relevantný)" as OPTIONAL, and an event with e.g.
+                    // 40 unsold tickets 1 day out would otherwise flood the
+                    // list with near-identical rows, directly against his own
                     // "UI musí zostať prehľadné" requirement. This mirrors
                     // how the Dashboard's own existing "Upcoming events" list
                     // (dashboard.rs/Dashboard.tsx) already shows one row per
-                    // event too, not one per ticket.
+                    // event too, not one per ticket or order.
                     if attention_item.count > 0 {
                         push_item(
                             &mut items,
@@ -221,6 +299,8 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             event_date.as_deref(),
                             None,
                             None,
+                            Vec::new(),
+                            Vec::new(),
                             format!(
                                 "{} unsold ticket{} - event date approaching",
                                 attention_item.count,
@@ -232,8 +312,9 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                     }
                 }
                 "missing_listing_price" => {
-                    for &ticket_id in &attention_item.ticket_ids {
-                        let Some(t) = tickets_by_id.get(&ticket_id) else { continue };
+                    for (order_id, ticket_ids) in group_by_order(&attention_item.ticket_ids, &tickets_by_id) {
+                        let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
+                        let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
                         push_item(
                             &mut items,
                             "missing_listing_price",
@@ -241,8 +322,10 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             event_id,
                             event_name,
                             event_date.as_deref(),
-                            Some(ticket_id),
-                            Some(t.code.as_str()),
+                            Some(order_id),
+                            order_code,
+                            ticket_ids,
+                            ticket_codes,
                             "No listing price set".to_string(),
                             None,
                             None,
@@ -250,8 +333,9 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                     }
                 }
                 "no_active_listing" => {
-                    for &ticket_id in &attention_item.ticket_ids {
-                        let Some(t) = tickets_by_id.get(&ticket_id) else { continue };
+                    for (order_id, ticket_ids) in group_by_order(&attention_item.ticket_ids, &tickets_by_id) {
+                        let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
+                        let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
                         push_item(
                             &mut items,
                             "no_active_listing",
@@ -259,8 +343,10 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             event_id,
                             event_name,
                             event_date.as_deref(),
-                            Some(ticket_id),
-                            Some(t.code.as_str()),
+                            Some(order_id),
+                            order_code,
+                            ticket_ids,
+                            ticket_codes,
                             "No active listing on any marketplace".to_string(),
                             None,
                             None,
@@ -275,8 +361,23 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                     // (see `AttentionItem.available`'s own doc comment), but
                     // the explicit check keeps this arm's intent obvious.
                     if attention_item.available {
-                        for &ticket_id in &attention_item.ticket_ids {
-                            let Some(t) = tickets_by_id.get(&ticket_id) else { continue };
+                        for (order_id, ticket_ids) in group_by_order(&attention_item.ticket_ids, &tickets_by_id) {
+                            let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
+                            let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
+                            // A specific listing price only means something
+                            // for a single-ticket row - a multi-ticket group
+                            // has no one "the" price to show, so this stays
+                            // `None` rather than picking one arbitrarily. See
+                            // AttentionCenterItem.amountCents's own doc
+                            // comment.
+                            let (amount_cents, currency) = if ticket_ids.len() == 1 {
+                                tickets_by_id
+                                    .get(&ticket_ids[0])
+                                    .map(|t| (t.listing_price_cents, Some(t.currency.as_str())))
+                                    .unwrap_or((None, None))
+                            } else {
+                                (None, None)
+                            };
                             push_item(
                                 &mut items,
                                 "outside_market_price",
@@ -291,11 +392,13 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                                 event_id,
                                 event_name,
                                 event_date.as_deref(),
-                                Some(ticket_id),
-                                Some(t.code.as_str()),
+                                Some(order_id),
+                                order_code,
+                                ticket_ids,
+                                ticket_codes,
                                 "Listing price is significantly outside the market average".to_string(),
-                                t.listing_price_cents,
-                                Some(t.currency.as_str()),
+                                amount_cents,
+                                currency,
                             );
                         }
                     }
@@ -310,15 +413,20 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
     // event (zero unsold tickets) can still have an undelivered sold ticket,
     // and must not be skipped just because the pre-filter above is scoped to
     // unsold inventory. See this module's doc comment for the exact
-    // `delivery_status` convention this reuses.
-    for (ticket_id, t) in &tickets_by_id {
-        if t.status != "sold" {
-            continue;
-        }
-        if t.delivery_status.as_deref() == Some("Delivered") {
-            continue;
-        }
-        let Some((event_name, event_date)) = events_by_id.get(&t.event_id) else { continue };
+    // `delivery_status` convention this reuses, and for why grouping by
+    // order below is safe (every ticket under one order shares that order's
+    // event).
+    let mut sold_undelivered_ids: Vec<i64> = tickets_by_id
+        .iter()
+        .filter(|(_, t)| t.status == "sold" && t.delivery_status.as_deref() != Some("Delivered"))
+        .map(|(id, _)| *id)
+        .collect();
+    sold_undelivered_ids.sort_unstable();
+
+    for (order_id, ticket_ids) in group_by_order(&sold_undelivered_ids, &tickets_by_id) {
+        let Some(first) = ticket_ids.first().and_then(|id| tickets_by_id.get(id)) else { continue };
+        let event_id = first.event_id;
+        let Some((event_name, event_date)) = events_by_id.get(&event_id) else { continue };
         let days = event_date.as_deref().and_then(|d| days_until(today, d));
         // No lower bound on `days` - same reasoning `dashboard.rs`'s own
         // `PULLS_WARNING_WINDOW_DAYS` check already documents: an event that
@@ -330,15 +438,19 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
             Some(d) if d <= EVENT_SOON_DAYS => Priority::Critical,
             _ => Priority::Attention,
         };
+        let ticket_codes = ticket_codes_for(&ticket_ids, &tickets_by_id);
+        let order_code = orders_by_id.get(&order_id).map(|s| s.as_str());
         push_item(
             &mut items,
             "sold_undelivered",
             priority,
-            t.event_id,
+            event_id,
             event_name,
             event_date.as_deref(),
-            Some(*ticket_id),
-            Some(t.code.as_str()),
+            Some(order_id),
+            order_code,
+            ticket_ids,
+            ticket_codes,
             "Sold, but delivery isn't marked complete yet".to_string(),
             None,
             None,
@@ -440,8 +552,16 @@ mod tests {
         .unwrap();
     }
 
-    fn find<'a>(items: &'a [AttentionCenterItem], category: &str, ticket_id: Option<i64>) -> Option<&'a AttentionCenterItem> {
-        items.iter().find(|i| i.category == category && i.ticket_id == ticket_id)
+    /// Finds the (at most one) item under `category` whose `ticket_ids`
+    /// contains `ticket_id` - 2.2.9's grouped shape means a category can no
+    /// longer be looked up by a single ticket id directly (several tickets
+    /// now share one row), so tests search by membership instead.
+    fn find_containing<'a>(items: &'a [AttentionCenterItem], category: &str, ticket_id: i64) -> Option<&'a AttentionCenterItem> {
+        items.iter().find(|i| i.category == category && i.ticket_ids.contains(&ticket_id))
+    }
+
+    fn find_event_level<'a>(items: &'a [AttentionCenterItem], category: &str, event_id: i64) -> Option<&'a AttentionCenterItem> {
+        items.iter().find(|i| i.category == category && i.event_id == event_id && i.order_id.is_none())
     }
 
     #[test]
@@ -453,10 +573,11 @@ mod tests {
         seed_ticket(&conn, event_id, order_id, "available", Some(5000), "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        let item = find(&items, "event_soon", None).expect("event_soon item expected");
+        let item = find_event_level(&items, "event_soon", event_id).expect("event_soon item expected");
         assert_eq!(item.priority, "critical");
         assert_eq!(item.event_id, event_id);
-        assert!(item.ticket_id.is_none(), "event_soon is aggregated per event, not per ticket");
+        assert!(item.order_id.is_none(), "event_soon is aggregated per event, not per order/ticket");
+        assert!(item.ticket_ids.is_empty(), "event_soon carries no individual ticket ids");
         assert!(item.reason.contains('1'), "reason should mention the 1 unsold ticket");
     }
 
@@ -469,11 +590,11 @@ mod tests {
         seed_ticket(&conn, event_id, order_id, "available", Some(5000), "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "event_soon", None).is_none());
+        assert!(find_event_level(&items, "event_soon", event_id).is_none());
     }
 
     #[test]
-    fn unsold_ticket_without_active_listing_becomes_a_ticket_level_item() {
+    fn unsold_ticket_without_active_listing_becomes_an_order_level_item() {
         let conn = test_conn();
         let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
         let event_id = seed_event(&conn, None);
@@ -484,14 +605,16 @@ mod tests {
         let listed_bad = seed_ticket(&conn, event_id, order_id, "listed", Some(5000), "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "no_active_listing", Some(listed_ok)).is_none());
-        let item = find(&items, "no_active_listing", Some(listed_bad)).expect("expected item");
+        assert!(find_containing(&items, "no_active_listing", listed_ok).is_none());
+        let item = find_containing(&items, "no_active_listing", listed_bad).expect("expected item");
         assert_eq!(item.priority, "attention");
         assert_eq!(item.event_id, event_id);
+        assert_eq!(item.order_id, Some(order_id));
+        assert_eq!(item.ticket_ids, vec![listed_bad], "the ok ticket must not be swept into the same order's row");
     }
 
     #[test]
-    fn unsold_ticket_without_listing_price_becomes_a_ticket_level_item() {
+    fn unsold_ticket_without_listing_price_becomes_an_order_level_item() {
         let conn = test_conn();
         let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
         let event_id = seed_event(&conn, None);
@@ -500,8 +623,57 @@ mod tests {
         let unpriced = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "missing_listing_price", Some(priced)).is_none());
-        assert!(find(&items, "missing_listing_price", Some(unpriced)).is_some());
+        assert!(find_containing(&items, "missing_listing_price", priced).is_none());
+        assert!(find_containing(&items, "missing_listing_price", unpriced).is_some());
+    }
+
+    #[test]
+    fn tickets_sharing_an_order_and_category_are_grouped_into_one_row() {
+        // Regression guard for marko's own "nedáva zmysel" feedback: a real
+        // example he sent was 49 tickets, one order, all missing a listing
+        // price, shown as 49 separate rows in 2.2.8. This seeds a smaller
+        // but equivalent shape - 3 tickets, one order, same reason - and
+        // asserts exactly ONE row, not 3.
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event(&conn, None);
+        let order_id = seed_order(&conn, event_id);
+        let t1 = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
+        let t2 = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
+        let t3 = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        let rows: Vec<&AttentionCenterItem> = items.iter().filter(|i| i.category == "missing_listing_price").collect();
+        assert_eq!(rows.len(), 1, "one order, one reason, must be exactly one row");
+        let row = rows[0];
+        assert_eq!(row.order_id, Some(order_id));
+        assert!(row.order_code.is_some(), "a grouped row must resolve its order's human-facing code");
+        let mut ids = row.ticket_ids.clone();
+        ids.sort_unstable();
+        let mut expected = vec![t1, t2, t3];
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert_eq!(row.ticket_codes.len(), 3);
+    }
+
+    #[test]
+    fn tickets_under_different_orders_get_separate_rows_even_for_the_same_category_and_event() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event(&conn, None);
+        let order_a = seed_order(&conn, event_id);
+        let order_b = seed_order(&conn, event_id);
+        let ticket_a = seed_ticket(&conn, event_id, order_a, "available", None, "EUR", None);
+        let ticket_b = seed_ticket(&conn, event_id, order_b, "available", None, "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        let rows: Vec<&AttentionCenterItem> = items.iter().filter(|i| i.category == "missing_listing_price").collect();
+        assert_eq!(rows.len(), 2, "two different orders must never be merged into one row");
+        let row_a = find_containing(&items, "missing_listing_price", ticket_a).unwrap();
+        let row_b = find_containing(&items, "missing_listing_price", ticket_b).unwrap();
+        assert_ne!(row_a.order_id, row_b.order_id);
+        assert_eq!(row_a.ticket_ids, vec![ticket_a]);
+        assert_eq!(row_b.ticket_ids, vec![ticket_b]);
     }
 
     #[test]
@@ -524,13 +696,33 @@ mod tests {
 
         let items = get_attention_center_impl(&conn, today).unwrap();
         assert!(
-            find(&items, "outside_market_price", Some(ticket_a)).is_none(),
+            find_containing(&items, "outside_market_price", ticket_a).is_none(),
             "no Price Checker data for event A - must not be invented"
         );
-        let item = find(&items, "outside_market_price", Some(ticket_b)).expect("expected item for event B");
+        let item = find_containing(&items, "outside_market_price", ticket_b).expect("expected item for event B");
         assert_eq!(item.priority, "info");
-        assert_eq!(item.amount_cents, Some(10_000));
+        assert_eq!(item.order_id, Some(order_b));
+        assert_eq!(item.amount_cents, Some(10_000), "a single-ticket group still shows that ticket's own listing price");
         assert_eq!(item.currency.as_deref(), Some("EUR"));
+    }
+
+    #[test]
+    fn outside_market_price_omits_amount_for_a_multi_ticket_group() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event(&conn, None);
+        let order_id = seed_order(&conn, event_id);
+        let t1 = seed_ticket(&conn, event_id, order_id, "available", Some(10_000), "EUR", None);
+        let t2 = seed_ticket(&conn, event_id, order_id, "available", Some(11_000), "EUR", None);
+        let vivid = marketplace_id(&conn, "Vivid Seats");
+        seed_price_check(&conn, event_id, vivid, 1_000, "EUR");
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        let row = find_containing(&items, "outside_market_price", t1).unwrap();
+        assert!(find_containing(&items, "outside_market_price", t2).is_some(), "both tickets must be in the same row");
+        assert_eq!(row.ticket_ids.len(), 2);
+        assert_eq!(row.amount_cents, None, "no single 'the' price for a 2-ticket group");
+        assert_eq!(row.currency, None);
     }
 
     #[test]
@@ -552,10 +744,30 @@ mod tests {
         let never_sold = seed_ticket(&conn, event_id, order_id, "available", Some(5000), "EUR", Some("Not delivered"));
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "sold_undelivered", Some(undelivered)).is_some());
-        assert!(find(&items, "sold_undelivered", Some(delivered)).is_none());
-        assert!(find(&items, "sold_undelivered", Some(refunded)).is_none());
-        assert!(find(&items, "sold_undelivered", Some(never_sold)).is_none());
+        assert!(find_containing(&items, "sold_undelivered", undelivered).is_some());
+        assert!(find_containing(&items, "sold_undelivered", delivered).is_none());
+        assert!(find_containing(&items, "sold_undelivered", refunded).is_none());
+        assert!(find_containing(&items, "sold_undelivered", never_sold).is_none());
+    }
+
+    #[test]
+    fn sold_undelivered_groups_by_order_too() {
+        let conn = test_conn();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let event_id = seed_event(&conn, None);
+        let order_id = seed_order(&conn, event_id);
+        let t1 = seed_ticket(&conn, event_id, order_id, "sold", Some(5000), "EUR", None);
+        let t2 = seed_ticket(&conn, event_id, order_id, "sold", Some(5000), "EUR", None);
+
+        let items = get_attention_center_impl(&conn, today).unwrap();
+        let rows: Vec<&AttentionCenterItem> = items.iter().filter(|i| i.category == "sold_undelivered").collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].order_id, Some(order_id));
+        let mut ids = rows[0].ticket_ids.clone();
+        ids.sort_unstable();
+        let mut expected = vec![t1, t2];
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
     }
 
     #[test]
@@ -576,10 +788,10 @@ mod tests {
         let no_date_ticket = seed_ticket(&conn, no_date_event, order_no_date, "sold", Some(5000), "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert_eq!(find(&items, "sold_undelivered", Some(past_ticket)).unwrap().priority, "critical");
-        assert_eq!(find(&items, "sold_undelivered", Some(far_ticket)).unwrap().priority, "attention");
+        assert_eq!(find_containing(&items, "sold_undelivered", past_ticket).unwrap().priority, "critical");
+        assert_eq!(find_containing(&items, "sold_undelivered", far_ticket).unwrap().priority, "attention");
         assert_eq!(
-            find(&items, "sold_undelivered", Some(no_date_ticket)).unwrap().priority,
+            find_containing(&items, "sold_undelivered", no_date_ticket).unwrap().priority,
             "attention",
             "no event_date means urgency can't be established - defaults to attention, never a guessed critical"
         );
@@ -598,7 +810,7 @@ mod tests {
         let ticket_id = seed_ticket(&conn, event_id, order_id, "sold", Some(5000), "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "sold_undelivered", Some(ticket_id)).is_some());
+        assert!(find_containing(&items, "sold_undelivered", ticket_id).is_some());
     }
 
     #[test]
@@ -611,14 +823,14 @@ mod tests {
         let ticket_id = seed_ticket(&conn, event_id, order_id, "available", None, "EUR", None);
 
         let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find(&items, "missing_listing_price", Some(ticket_id)).is_some());
-        assert!(find(&items, "no_active_listing", Some(ticket_id)).is_some());
+        assert!(find_containing(&items, "missing_listing_price", ticket_id).is_some());
+        assert!(find_containing(&items, "no_active_listing", ticket_id).is_some());
 
         let mut keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
         let before = keys.len();
         keys.sort_unstable();
         keys.dedup();
-        assert_eq!(keys.len(), before, "no key must ever repeat - that would mean the same ticket shown twice under the same reason");
+        assert_eq!(keys.len(), before, "no key must ever repeat - that would mean the same order shown twice under the same reason");
     }
 
     #[test]

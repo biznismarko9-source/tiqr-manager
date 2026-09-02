@@ -380,7 +380,8 @@ export const api = {
   getAppSetting: (key: string) => invoke<string | null>("get_app_setting", { key }),
   setAppSetting: (key: string, value: string) => invoke<void>("set_app_setting", { key, value }),
 
-  // Anthropic API key (2.1.6, Settings -> AI-assisted price reading) - see
+  // Anthropic API key (2.1.6, Settings -> Integrations -> "AI features",
+  // renamed from "AI-assisted price reading" in 2.2.9) - see
   // commands::settings's own "Anthropic API key" doc comment (Rust) for why
   // this is deliberately NOT the generic getAppSetting/setAppSetting above:
   // the real key value is never returned to the frontend at all, only

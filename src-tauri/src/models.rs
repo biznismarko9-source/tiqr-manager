@@ -2692,22 +2692,35 @@ pub struct InventoryIntelligence {
     pub sold_ticket_ids: Vec<i64>,
 }
 
-/// One row in the Dashboard's global "Attention Center" (2.2.8) - see
-/// `commands::attention_center`'s module doc comment for the full design.
-/// Unlike `AttentionItem` above (per-event, always exactly 4 rows even at
-/// count 0), this is a flat list of INDIVIDUAL things needing a look across
-/// EVERY event - only present when they actually apply. An empty `Vec` from
-/// the command means genuinely nothing needs attention right now, not a
-/// hidden zero.
+/// One row in the Dashboard's global "Attention Center" (2.2.8; reworked in
+/// 2.2.9 to group by order) - see `commands::attention_center`'s module doc
+/// comment for the full design. Unlike `AttentionItem` above (per-event,
+/// always exactly 4 rows even at count 0), this is a flat list of
+/// INDIVIDUAL things needing a look across EVERY event - only present when
+/// they actually apply. An empty `Vec` from the command means genuinely
+/// nothing needs attention right now, not a hidden zero.
+///
+/// 2.2.9: marko's own feedback on the 2.2.8 shape - "nedáva zmysel" (doesn't
+/// make sense) - was that a single order with many affected tickets (his own
+/// example: 49 tickets, one event, all missing a listing price) showed up as
+/// 49 nearly-identical rows. Every ticket-level category now groups its
+/// tickets by `order_id` first: one row per (event, category, order)
+/// instead of one row per ticket, with `ticket_ids`/`ticket_codes` carrying
+/// every ticket the row now stands for. `event_soon` is the one category
+/// that stays as before (`order_id: None`, `ticket_ids` empty) - it was
+/// already aggregated at the EVENT level, not the ticket level, and a soon
+/// event's unsold tickets can genuinely span more than one order, so there
+/// is no single order to group it under.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AttentionCenterItem {
     /// Stable dedup id: `"{category}:{eventId}"` for the one event-level
-    /// category (`event_soon`), `"{category}:{ticketId}"` for the 4
-    /// ticket-level ones. Never reused across categories, so the same
-    /// ticket can legitimately appear more than once under DIFFERENT
-    /// reasons (marko's own explicit allowance - "rôzne dôvody môžu byť
-    /// samostatné položky") while never appearing twice under the SAME one.
+    /// category (`event_soon`), `"{category}:order:{orderId}"` for the 4
+    /// order-grouped ones. Never reused across categories, so the same
+    /// order (or ticket) can legitimately appear more than once under
+    /// DIFFERENT reasons (marko's own explicit allowance - "rôzne dôvody
+    /// môžu byť samostatné položky") while never appearing twice under the
+    /// SAME one.
     pub key: String,
     /// One of: "event_soon", "missing_listing_price", "no_active_listing",
     /// "outside_market_price", "sold_undelivered" - same "backend sends a
@@ -2722,21 +2735,33 @@ pub struct AttentionCenterItem {
     pub event_id: i64,
     pub event_name: String,
     pub event_date: Option<String>,
-    /// `None` only for "event_soon", which is deliberately aggregated per
-    /// EVENT rather than per ticket (one row per soon-event, not one per
-    /// unsold ticket on it) - see this module's doc comment for why. Real
-    /// for the other 4 categories, which are inherently per-ticket.
-    pub ticket_id: Option<i64>,
-    pub ticket_code: Option<String>,
+    /// `None` only for "event_soon" - see this struct's own doc comment.
+    /// Real (`Some`) for the other 4 categories, every one of which is
+    /// grouped under a single order. The frontend links a grouped row
+    /// straight to that order's own page (`/orders/:id`, `OrderDetail.tsx`),
+    /// which already lists every one of `ticket_ids` below with its own
+    /// status/listing price/delivery indicators - so clicking through shows
+    /// exactly the tickets this row is about, never another flat list of 49.
+    pub order_id: Option<i64>,
+    pub order_code: Option<String>,
+    /// Every ticket this row represents - length 1 for an order with only
+    /// one affected ticket, more for a genuinely grouped row. Always empty
+    /// for "event_soon" (aggregated per event, see above).
+    pub ticket_ids: Vec<i64>,
+    pub ticket_codes: Vec<String>,
     /// Human-readable, backend-owned (unlike `AttentionItem.key`, this one
-    /// has no fixed enum of frontend copy to select from - the exact count/
+    /// has no fixed enum of frontend copy to select from - the exact
     /// wording varies per row, e.g. "3 unsold tickets - event date
-    /// approaching").
+    /// approaching"). Describes the REASON, not the count - the frontend
+    /// derives "how many tickets" from `ticket_ids.len()` directly rather
+    /// than parsing it back out of this string.
     pub reason: String,
     /// A basic supporting value, where one exists and is already real data -
-    /// currently only populated for "outside_market_price" (that ticket's
-    /// own, already-entered listing price - never a suggested/computed one).
-    /// `None` for every other category rather than a fabricated number.
+    /// currently only populated for "outside_market_price" on a single-
+    /// ticket row (that ticket's own, already-entered listing price - never
+    /// a suggested/computed one, and never attempted for a multi-ticket
+    /// group, where "one amount" wouldn't mean anything specific).
+    /// `None` for every other case rather than a fabricated number.
     pub amount_cents: Option<i64>,
     pub currency: Option<String>,
 }

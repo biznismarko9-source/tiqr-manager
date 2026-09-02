@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
-  AttentionItem,
   EventWithStats,
   FinanceEntry,
   InventoryIntelligence,
@@ -23,6 +22,7 @@ import {
   formatMoneyOrMixed,
   formatPercent,
   formatPercentOrMixed,
+  formatSeatLocation,
 } from "../lib/format";
 import {
   Badge,
@@ -43,9 +43,7 @@ import {
 } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
 import {
-  IconAlertTriangle,
   IconArrowLeft,
-  IconCheck,
   IconChevronDown,
   IconLink,
   IconPencil,
@@ -394,7 +392,7 @@ function OverviewTab({
                     </Link>
                   </td>
                   <td className="td text-slate-500 dark:text-slate-400">
-                    {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "-"}
+                    {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                   </td>
                   <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
                   <td className="td text-right tabular-nums">
@@ -435,16 +433,18 @@ function OverviewTab({
 //
 // No "by tier" breakdown - flagged explicitly, in the UI itself, rather than
 // invented: see InventoryIntelligence's own doc comment (lib/types.ts).
+//
+// 2.2.9: this block's own per-event "Attention" list (event_soon/missing
+// listing price/no active listing/outside market price rows) was removed -
+// marko's own request, now fully superseded by the Dashboard's GLOBAL
+// Attention Center (2.2.8, reworked in 2.2.9 to group by order - see
+// commands/attention_center.rs), which already covers every one of these
+// same categories across every event from one place. The backend command
+// this block still calls below (`getInventoryIntelligence`) is UNCHANGED -
+// attention_center.rs calls its underlying impl function directly and still
+// depends on it - only this page's own rendering of its `.attention` field
+// was deleted; KPIs/Aging/By tier/section/marketplace below are untouched.
 // ---------------------------------------------------------------------------
-const ATTENTION_COPY: Record<AttentionItem["key"], { label: string; unavailable?: string }> = {
-  event_soon: { label: "Event within 48h with unsold tickets" },
-  missing_listing_price: { label: "Unsold tickets with no listing price" },
-  no_active_listing: { label: "Unsold tickets with no active listing" },
-  outside_market_price: {
-    label: "Unsold tickets priced significantly off-market",
-    unavailable: "No Price Checker data for this event yet",
-  },
-};
 
 /** Small local stand-in for `StatCard` that's actually clickable - `StatCard`
  * itself has no `onClick`, and this block's whole point is that every number
@@ -497,7 +497,7 @@ function InventoryIntelligenceBlock({
     );
   }
 
-  const { kpis, aging, attention, breakdownByTier, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
+  const { kpis, aging, breakdownByTier, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
   const clearFilter = () => onHighlight(null, null);
 
   return (
@@ -542,40 +542,6 @@ function InventoryIntelligenceBlock({
             onClick={() => onHighlight(b.ticketIds, `Aging: ${b.label}`)}
           />
         ))}
-      </div>
-
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Attention</p>
-      <div className="mb-4 space-y-1.5">
-        {attention.map((a) => {
-          const copy = ATTENTION_COPY[a.key];
-          const needsAttention = a.available && a.count > 0;
-          return (
-            <div
-              key={a.key}
-              className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${
-                !a.available
-                  ? "border-slate-200 text-slate-400 dark:border-slate-800 dark:text-slate-500"
-                  : needsAttention
-                    ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
-                    : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400"
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                {a.available ? needsAttention ? <IconAlertTriangle className="h-4 w-4 shrink-0" /> : <IconCheck className="h-4 w-4 shrink-0" /> : null}
-                {copy.label}
-              </span>
-              {!a.available ? (
-                <span className="text-xs">{copy.unavailable}</span>
-              ) : needsAttention ? (
-                <button type="button" className="font-semibold underline underline-offset-2" onClick={() => onHighlight(a.ticketIds, copy.label)}>
-                  {a.count}
-                </button>
-              ) : (
-                <span className="text-xs">All clear</span>
-              )}
-            </div>
-          );
-        })}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -1178,7 +1144,7 @@ function ListingsTab({
                     </Link>
                     {[l.ticketSection, l.ticketRowLabel, l.ticketSeat].filter(Boolean).length > 0 && (
                       <div className="text-xs text-slate-400 dark:text-slate-500">
-                        {[l.ticketSection, l.ticketRowLabel, l.ticketSeat].filter(Boolean).join(" / ")}
+                        {formatSeatLocation(l.ticketSection, l.ticketRowLabel, l.ticketSeat)}
                       </div>
                     )}
                   </td>
@@ -1574,8 +1540,8 @@ function TicketListingFormModal({
   }, [open, initial]);
 
   const ticketLabel = (t: Ticket) => {
-    const seat = [t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ");
-    return seat ? `${t.code} (${seat})` : t.code;
+    const hasSeat = [t.section, t.rowLabel, t.seat].some(Boolean);
+    return hasSeat ? `${t.code} (${formatSeatLocation(t.section, t.rowLabel, t.seat)})` : t.code;
   };
 
   const ticketsByOrder = useMemo(() => {
@@ -1808,7 +1774,7 @@ function TicketListingFormModal({
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
                         <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
-                          {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                          {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
@@ -1868,7 +1834,7 @@ function TicketListingFormModal({
                 {[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).length > 0 && (
                   <span className="text-slate-400 dark:text-slate-500">
                     {" "}
-                    ({[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).join(" / ")})
+                    ({formatSeatLocation(initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat)})
                   </span>
                 )}
               </p>
@@ -1931,7 +1897,7 @@ function TicketListingFormModal({
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
                       <p className="truncate text-xs text-slate-400 dark:text-slate-500">
-                        {[t.section, t.rowLabel, t.seat].filter(Boolean).join(" / ") || "No seat info"}
+                        {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                       </p>
                     </div>
                     <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">{currency}</span>

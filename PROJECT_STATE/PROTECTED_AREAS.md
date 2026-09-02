@@ -21,7 +21,137 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.9 - Six follow-ups from marko's 2.2.8 review
+
+Six mostly-independent small changes from one rapid-fire feedback message
+(6 screenshots), not a single feature - covered together since they shipped
+in one release. Judgment calls and traps, one per item:
+
+- **Seatriks removed from Price Checker via `active = 0`
+  (`migrations/025_deactivate_seatriks_price_checker.sql`), NOT an
+  unconditional cut.** Exactly the StubHub precedent
+  (`017_price_checker_viagogo.sql`): `get_price_checker_summary_impl`'s own
+  query still shows an inactive marketplace for an event that ALREADY has a
+  saved `event_marketplace_links`/`price_checks` row against it - only
+  fresh offering to a new/untouched event stops. Marko said "odstranit
+  seatiks uplne" (remove entirely) - if he still sees a Seatriks card on
+  some specific event after this ships, that event already has real
+  history against it, and the fix is a stronger, unconditional exclusion
+  (a real, deliberate follow-up, not a bug in this change). Do NOT
+  "fix" this by hardcoding the name "Seatriks" into `price_checker.rs`'s
+  query logic - this codebase keeps marketplaces purely data-driven (zero
+  hardcoded marketplace names in logic anywhere, confirmed before this
+  change), and the migration's own `UPDATE ... WHERE name = 'Seatriks'` is
+  the one, precedented place a literal name belongs.
+- **`AnthropicApiKeyCard` (`Settings.tsx`) relabeled, storage/commands
+  UNCHANGED.** Still `app_secrets`/`get_anthropic_api_key_configured`/
+  `set_anthropic_api_key` (`commands/settings.rs`), still only ever a
+  presence flag to the frontend, never the key. Only the `h3` label
+  ("AI features"), its description paragraph, and the Integrations section
+  description changed. If a genuinely new AI feature is wired to this key
+  later, this is the card to extend, not a new one to build.
+- **No live Anthropic balance is shown anywhere, and no Admin API key was
+  added to this app.** Checked directly against Anthropic's own docs
+  (`platform.claude.com/docs/en/manage-claude/usage-cost-api`) before
+  building anything: there is no endpoint, for any key type, that returns a
+  current/remaining credit balance - the Usage & Cost API only returns
+  HISTORICAL token/cost data, and that alone requires an Admin API key
+  (`sk-ant-admin01-...`) or an unscoped personal/service key; the plain
+  workspace key this app's own field asks for explicitly does not work for
+  it. Do not "solve" marko's balance request later by adding a second,
+  Admin-scoped key field to this same card without asking him first - that
+  is a materially bigger, more sensitive ask than "a small balance
+  indicator" implied, and still would not produce a live balance figure
+  even then (only historical usage/cost). The card instead links to
+  `console.anthropic.com/settings/billing` via `openUrl`
+  (`@tauri-apps/plugin-opener`, already a dependency - `google_oauth.rs`
+  already uses the Rust side of the same plugin for the sign-in browser
+  flow, so this added no new dependency, just a new frontend call site).
+- **Finance Overview's "New entry"/"New account" buttons open the SAME
+  modals as Transactions/Accounts, not copies.** `EntryFormModal`
+  (`finance/Transactions.tsx`) and `AccountFormModal`
+  (`finance/Accounts.tsx`) are now `export`ed (were module-local) and
+  imported directly into `finance/Overview.tsx`. If either modal's form
+  changes in the future, there is still only ONE place to change it - do
+  not fork a second copy for Overview's convenience.
+- **The per-event Attention list deletion was scoped to ONLY the Attention
+  rows, not the whole Inventory Intelligence card.** `EventDetail.tsx`'s
+  `InventoryIntelligenceBlock` keeps its KPIs/Aging/By tier/section/
+  marketplace sections exactly as they were (2.2.6/2.2.7) - only the
+  `ATTENTION_COPY` const and the "Attention" `<div>` block (plus the now-
+  unused `AttentionItem` type import and `IconAlertTriangle`/`IconCheck`
+  icon imports) were removed. **The backend `get_inventory_intelligence`
+  command/impl function is completely untouched and must stay that way** -
+  `commands/attention_center.rs` calls `get_inventory_intelligence_impl`
+  directly (a plain Rust function call, not through the frontend) for 4 of
+  its own 5 categories; deleting or changing that backend function would
+  silently break the Dashboard's Attention Center, not just this one
+  now-removed frontend block.
+- **Attention Center (2.2.8) reworked to group by ORDER, not ticket.**
+  `AttentionCenterItem` (`models.rs`/`types.ts`) dropped its old singular
+  `ticketId`/`ticketCode` fields for `orderId`/`orderCode` (both `null`
+  only for `event_soon`) plus `ticketIds`/`ticketCodes` arrays (every
+  ticket the row now stands for - length 1 for an order with only one
+  affected ticket). `commands/attention_center.rs`'s new `group_by_order`
+  helper groups a category's flagged ticket ids by `TicketMini.order_id`
+  (a NEW field on that struct - the module's own independent
+  `SELECT ... FROM tickets` query now also selects `order_id`) before
+  emitting one `AttentionCenterItem` per (event, category, order) instead
+  of per ticket; a new `orders_by_id` lookup (`SELECT id, code FROM
+  orders`) resolves each group's human-facing order code. This relies on
+  every ticket under one order sharing that order's `event_id` - true by
+  construction (`orders::create_order_impl` inserts the order and every one
+  of its tickets with the same `input.event_id` in one call) - do not group
+  by order across a query that could mix tickets from different events
+  without re-verifying that invariant still holds. `event_soon` is
+  UNCHANGED: still one row per event, `orderId: None`, `ticketIds: []` -
+  it has no single order to group under (a soon event's unsold tickets can
+  span several orders), and was already aggregated at the coarser event
+  level before this task even started. `amountCents`/`currency` (only ever
+  populated for `outside_market_price`) are now `None` whenever a group has
+  more than one ticket - there is no single "the" listing price for a
+  multi-ticket group, so this deliberately does not guess or average one.
+  Dashboard's `AttentionCenterRow` (`Dashboard.tsx`) now links a grouped row
+  to `/orders/:id` (`OrderDetail.tsx`, which already lists every one of
+  `ticketIds` with its own status/listing price/delivery indicators)
+  instead of a single ticket's `/tickets?code=` deep link - a genuinely new
+  navigation target for this feature, not a reuse of the 2.2.8 pattern, but
+  still an EXISTING route/page, consistent with this feature's own original
+  "click-to-navigate via existing routes" design. If a future change adds a
+  6th category, decide explicitly whether it is ticket-level (group by
+  order, like 4 of the current 5) or event-level (like `event_soon`) before
+  writing it - don't default to per-ticket rows again, that is exactly the
+  "nedáva zmysel" shape marko asked to have fixed this round.
+- **Seats formatting: `formatSeatsSummary` (`src/lib/format.ts`) changed
+  its OUTPUT FORMAT ONLY, not its grouping/compaction logic.** Each
+  section+row group now renders as `formatSeatLocation`'s own
+  "Sec X · Row Y · Seat Z" labeled/dot-joined text instead of a bare
+  "X/Y Z" slash-join - the grouping-by-section+row and seat-number-range-
+  compaction (`compactSeatList`) are byte-for-byte unchanged. Six ad-hoc
+  duplicate `[section, rowLabel, seat].filter(Boolean).join(" / ")` call
+  sites inside `EventDetail.tsx` (Tickets tab, Listings tab, Create Sale
+  modal x4) and two more inside `Sales.tsx`'s own Create Sale modal were
+  replaced with calls to the shared `formatSeatLocation` instead of being
+  hand-patched - if a NEW ad-hoc `.join(" / ")` for section/row/seat shows
+  up anywhere in a future change, that's a regression of this cleanup, not
+  a legitimate new one-off. Two sites' empty-state copy changed as a
+  side-effect (from "No seat info"/a bare "-" to "General admission") since
+  `formatSeatLocation` always returns a real label - this was a deliberate
+  consistency choice (matching OrderDetail.tsx/SaleDetail.tsx's own
+  existing convention for the same fallback), not an oversight.
+
 ## 2.2.8 - Dashboard global "Attention Center"
+
+**Superseded in part by 2.2.9 (above): the 4 ticket-level categories now
+group by order, not ticket** - anywhere below that says "per ticket"/"per-
+ticket row" for `missing_listing_price`/`no_active_listing`/
+`outside_market_price`/`sold_undelivered` describes the shape as it
+shipped in 2.2.8, not how it behaves today. Kept here unedited for history,
+per this file's own "not a changelog... just traps worth knowing" policy -
+see the 2.2.9 entry above for the current shape. Everything else below
+(the separateness from `DashboardAlerts`, the reuse of
+`get_inventory_intelligence_impl`, the priority mapping, `event_soon`'s
+per-event granularity) is still accurate as written.
 
 Focused task adding one new, GLOBAL (every event) Dashboard block listing
 individual things needing a look, built almost entirely by reusing

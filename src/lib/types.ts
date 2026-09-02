@@ -1453,31 +1453,51 @@ export interface InventoryIntelligence {
   soldTicketIds: number[];
 }
 
-/** One row in the Dashboard's global "Attention Center" (2.2.8) - see
- * commands::attention_center's module doc comment (Rust) for the full
- * design. Unlike AttentionItem above (per-event, always exactly 4 rows even
- * at count 0), this is a flat list of INDIVIDUAL things needing a look
- * across EVERY event - only present when they actually apply. An empty
- * array means genuinely nothing needs attention right now. */
+/** One row in the Dashboard's global "Attention Center" (2.2.8; reworked in
+ * 2.2.9 to group by order) - see commands::attention_center's module doc
+ * comment (Rust) for the full design. Unlike AttentionItem above (per-event,
+ * always exactly 4 rows even at count 0), this is a flat list of INDIVIDUAL
+ * things needing a look across EVERY event - only present when they
+ * actually apply. An empty array means genuinely nothing needs attention
+ * right now.
+ *
+ * 2.2.9: every ticket-level category now groups its tickets by order first -
+ * one row per (event, category, order), not one row per ticket - so a bulk
+ * order with e.g. 49 affected tickets shows as ONE row, not 49 (marko's own
+ * "nedáva zmysel" feedback on the 2.2.8 shape). `event_soon` is unchanged -
+ * it was already aggregated per EVENT, not per ticket, and can span more
+ * than one order, so it has no single order to group under. */
 export interface AttentionCenterItem {
-  /** Stable dedup id - never reused across categories, so the same ticket
-   * can legitimately appear more than once under DIFFERENT reasons, but
-   * never twice under the SAME one. */
+  /** Stable dedup id - never reused across categories, so the same order (or
+   * ticket) can legitimately appear more than once under DIFFERENT reasons,
+   * but never twice under the SAME one. */
   key: string;
   category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered";
   priority: "critical" | "attention" | "info";
   eventId: number;
   eventName: string;
   eventDate: string | null;
-  /** `null` only for "event_soon", which is deliberately aggregated per
-   * EVENT rather than per ticket - see the Rust module's doc comment. Real
-   * for the other 4 categories. */
-  ticketId: number | null;
-  ticketCode: string | null;
-  /** Backend-owned human text (unlike AttentionItem.key, there's no fixed
-   * per-category copy to select from here - the wording/counts vary per
-   * row). */
+  /** `null` only for "event_soon" - see this interface's own doc comment.
+   * Real for the other 4 categories, which are always grouped under a
+   * single order - clicking a grouped row goes straight to that order's own
+   * page (`/orders/:id`), which already lists every one of `ticketIds`
+   * below with its own status/listing price/delivery indicators. */
+  orderId: number | null;
+  orderCode: string | null;
+  /** Every ticket this row represents - length 1 for an order with only one
+   * affected ticket, more for a genuinely grouped row. Always empty for
+   * "event_soon". */
+  ticketIds: number[];
+  ticketCodes: string[];
+  /** Backend-owned human text describing the REASON, not the count - derive
+   * "how many tickets" from `ticketIds.length` directly rather than parsing
+   * it back out of this string (unlike AttentionItem.key, there's no fixed
+   * per-category copy to select from here - the wording varies per row). */
   reason: string;
+  /** Only ever populated for a single-ticket "outside_market_price" row
+   * (that ticket's own listing price) - `null` for every multi-ticket group,
+   * where "one amount" wouldn't mean anything specific, and for every other
+   * category. */
   amountCents: number | null;
   currency: string | null;
 }

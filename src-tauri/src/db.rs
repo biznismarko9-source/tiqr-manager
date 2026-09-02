@@ -194,6 +194,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "024_ticket_tier",
         include_str!("../migrations/024_ticket_tier.sql"),
     ),
+    (
+        "025_deactivate_seatriks_price_checker",
+        include_str!("../migrations/025_deactivate_seatriks_price_checker.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
