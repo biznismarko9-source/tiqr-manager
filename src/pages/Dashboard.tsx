@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
+import type { AttentionCenterItem, DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
 import {
   computeTrend,
   computeTrendPoints,
@@ -191,6 +191,13 @@ export default function Dashboard() {
   const [eventsExpanded, setEventsExpanded] = useState(false);
   const [ordersExpanded, setOrdersExpanded] = useState(false);
   const [salesExpanded, setSalesExpanded] = useState(false);
+  // 2.2.8: Dashboard's global "Attention Center" (Activity tab) - its own
+  // independent fetch, deliberately NOT tied to `period`/`from`/`to` (unlike
+  // `data` below) since none of its 5 categories are period-filtered - see
+  // commands/attention_center.rs's own doc comment. Fetched once on mount;
+  // `null` while loading, so the block renders nothing until real data
+  // exists rather than briefly flashing "nothing needs attention".
+  const [attentionCenter, setAttentionCenter] = useState<AttentionCenterItem[] | null>(null);
   // BUG (Custom date filter): Custom with both From/To empty must not
   // silently behave like "All time" (see period_bounds() fallback in
   // dashboard.rs). This is recomputed from current state on every render,
@@ -211,6 +218,20 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getAttentionCenter()
+      .then((items) => {
+        if (!cancelled) setAttentionCenter(items);
+      })
+      .catch((e) => toast.error(errMsg(e)));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div>
@@ -528,6 +549,7 @@ export default function Dashboard() {
 
           {tab === "activity" && (
             <>
+              {attentionCenter && <AttentionCenterBlock items={attentionCenter} />}
               <AttentionSection data={data} />
 
               <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
@@ -976,6 +998,128 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
             </ul>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// 2.2.8: which priority groups the Attention Center renders, in this fixed
+// order (Critical first) - the backend already sorts `items` this way too,
+// this constant only drives the section headers/colors, never a second
+// ordering decision.
+const ATTENTION_CENTER_GROUPS: { key: AttentionCenterItem["priority"]; label: string; dotClass: string }[] = [
+  { key: "critical", label: "Critical", dotClass: "bg-red-500" },
+  { key: "attention", label: "Attention", dotClass: "bg-amber-500" },
+  { key: "info", label: "Info", dotClass: "bg-slate-400" },
+];
+
+/** One Attention Center row - reuses UpcomingEventRow's exact urgency-badge
+ * convention (daysUntil/warningLabel/UPCOMING_WARNING_WINDOW_DAYS, all
+ * defined at the top of this file) rather than a second "how soon" style.
+ * Clicking opens the existing relevant ticket (pre-filled search on
+ * Tickets.tsx, its own established `?code=` deep link - see
+ * PROTECTED_AREAS.md's 2.2.6 entry for why that's the one cross-page ticket
+ * link this app has) when the item is ticket-level, otherwise the event's
+ * own Event Workspace - marko's own "ak už existuje vhodný route/navigation
+ * systém, použi ho". */
+function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
+  const href = item.ticketCode ? `/tickets?code=${encodeURIComponent(item.ticketCode)}` : `/events/${item.eventId}`;
+  const daysLeft = item.eventDate ? daysUntil(item.eventDate) : null;
+  const urgent = daysLeft !== null && daysLeft <= UPCOMING_WARNING_WINDOW_DAYS;
+  const critical = daysLeft !== null && daysLeft <= 0;
+  return (
+    <li>
+      <Link to={href} className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+            {item.eventName}
+            {item.ticketCode && <span className="font-normal text-slate-400 dark:text-slate-500"> · {item.ticketCode}</span>}
+          </p>
+          <p className="truncate text-xs text-slate-400 dark:text-slate-500">{item.reason}</p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
+          {item.amountCents != null && (
+            <span className="text-xs tabular-nums text-slate-600 dark:text-slate-400">
+              {formatMoney(item.amountCents, item.currency ?? "EUR")}
+            </span>
+          )}
+          {item.eventDate &&
+            (urgent ? (
+              <span
+                className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium ${
+                  critical ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"
+                }`}
+              >
+                <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                {warningLabel(daysLeft as number)}
+              </span>
+            ) : (
+              <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">{formatDate(item.eventDate)}</span>
+            ))}
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+/** One priority group within the Attention Center - renders nothing at all
+ * when empty (never an empty "Critical (0)" header), and reuses the exact
+ * same ShowMoreToggle/RECENT_LIST_PREVIEW_COUNT convention the Activity
+ * tab's own Recent cards already use, so "a lot of alerts" degrades the same
+ * way "a lot of recent sales" already does - a familiar pattern, not a new
+ * one - satisfying marko's own "rozumný limit + Show all bez straty dát"
+ * (the backend never truncates; only this client-side reveal does). */
+function AttentionCenterGroup({
+  label,
+  dotClass,
+  items,
+}: {
+  label: string;
+  dotClass: string;
+  items: AttentionCenterItem[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (items.length === 0) return null;
+  return (
+    <div>
+      <p className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        {label} <span className="tabular-nums text-slate-400 dark:text-slate-500">({items.length})</span>
+      </p>
+      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        {(expanded ? items : items.slice(0, RECENT_LIST_PREVIEW_COUNT)).map((item) => (
+          <AttentionCenterRow key={item.key} item={item} />
+        ))}
+      </ul>
+      <ShowMoreToggle
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+        hiddenCount={items.length - RECENT_LIST_PREVIEW_COUNT}
+      />
+    </div>
+  );
+}
+
+/** 2.2.8: Dashboard's new, GLOBAL (every event) "Attention Center" block -
+ * marko's own request. A distinct, ADDITIONAL block from AttentionSection
+ * right below (which is unchanged) - see commands/attention_center.rs's
+ * module doc comment for exactly how the two differ and why both exist.
+ * `items` is already fully sorted by the backend (priority, then soonest
+ * event) - this component only groups/renders, no client-side scoring. */
+function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
+  return (
+    <div className="mb-8">
+      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+        <IconAlertTriangle className="h-3.5 w-3.5" /> Attention Center
+      </p>
+      {items.length === 0 ? (
+        <Card className="p-4 text-sm text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</Card>
+      ) : (
+        <Card className="divide-y divide-slate-100 dark:divide-slate-800">
+          {ATTENTION_CENTER_GROUPS.map((g) => (
+            <AttentionCenterGroup key={g.key} label={g.label} dotClass={g.dotClass} items={items.filter((i) => i.priority === g.key)} />
+          ))}
+        </Card>
       )}
     </div>
   );

@@ -103,6 +103,7 @@ pub fn run() {
             commands::ticket_listings::bulk_update_ticket_listings_price,
             commands::ticket_listings::bulk_delete_ticket_listings,
             commands::inventory_intelligence::get_inventory_intelligence,
+            commands::attention_center::get_attention_center,
             commands::pulls::list_pulls,
             commands::pulls::get_pull,
             commands::pulls::create_pull,

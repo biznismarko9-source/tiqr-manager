@@ -192,9 +192,14 @@ fn export_tickets_inner(
     // manual Listed/Unlisted/Sold tracking and delivery tracking (both since
     // 2.0.10, Ticket::resale_status/delivery_status) had never been added to
     // this export.
+    // 2.2.7: `t.tier` appended at the very end for the same reason - same
+    // "append after every existing column, read it back BY NAME" convention
+    // as `resale_status`/`delivery_status` right above, so none of the
+    // positional `row.get(i)` indices below ever shift.
     let mut sql = "SELECT t.code, e.name, o.code, t.section, t.row_label, t.seat, t.ticket_type,
                 t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents, t.listing_price_cents,
-                t.currency, t.status, t.notes, t.is_demo, t.created_at, t.resale_status, t.delivery_status
+                t.currency, t.status, t.notes, t.is_demo, t.created_at, t.resale_status, t.delivery_status,
+                t.tier
          FROM tickets t
          JOIN events e ON e.id = t.event_id
          JOIN orders o ON o.id = t.order_id
@@ -229,7 +234,7 @@ fn export_tickets_inner(
     let mut stmt = conn.prepare(&sql)?;
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
-        "ticket_code", "event", "order_code", "section", "row", "seat", "ticket_type",
+        "ticket_code", "event", "order_code", "section", "row", "tier", "seat", "ticket_type",
         "purchase_cost", "purchase_fees", "other_costs", "listing_price", "currency",
         "status", "resale_status", "delivery_status", "notes", "is_demo", "created_at",
     ])?;
@@ -244,6 +249,7 @@ fn export_tickets_inner(
             row.get::<_, String>(2)?,
             opt(row.get(3)?),
             opt(row.get(4)?),
+            opt(row.get("tier")?),
             opt(row.get(5)?),
             opt(row.get(6)?),
             format_cents(row.get(7)?),
@@ -341,12 +347,13 @@ fn write_sales_csv(
     // already both bare "code" in this same SELECT (that's why they're read
     // positionally, not by name, below), so a second unaliased `o.code`
     // would collide with them too.
+    // 2.2.7: `t.tier` appended at the very end, same reason/pattern.
     let sql = format!(
         "SELECT s.code, t.code, e.name, p.name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
                 (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) as cost_cents,
                 s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at,
                 t.currency as ticket_currency, o.code as order_code, t.section, t.row_label, t.seat,
-                t.resale_status, t.delivery_status, s.refunded_at, s.refund_reason
+                t.resale_status, t.delivery_status, s.refunded_at, s.refund_reason, t.tier
          FROM sales s
          JOIN tickets t ON t.id = s.ticket_id
          JOIN events e ON e.id = t.event_id
@@ -358,7 +365,7 @@ fn write_sales_csv(
     let mut stmt = conn.prepare(&sql)?;
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record([
-        "sale_code", "ticket_code", "order_code", "event", "section", "row", "seat",
+        "sale_code", "ticket_code", "order_code", "event", "section", "row", "tier", "seat",
         "platform", "sale_date", "sale_price", "selling_fees", "cost", "profit", "margin",
         "roi", "currency", "payment_status", "resale_status", "delivery_status",
         "buyer_reference", "refunded_at", "refund_reason", "notes", "is_demo", "created_at",
@@ -412,6 +419,7 @@ fn write_sales_csv(
             row.get::<_, String>(2)?,
             opt(row.get("section")?),
             opt(row.get("row_label")?),
+            opt(row.get("tier")?),
             opt(row.get("seat")?),
             opt(row.get(3)?),
             row.get::<_, String>(4)?,
@@ -487,8 +495,9 @@ pub fn export_sales_csv_selected(state: State<AppState>, path: String, ids: Vec<
 /// actually support. Columns and order match the Settings screen's own
 /// "Columns: ..." description exactly (the primary/first-recognized name for
 /// each field - parse_rows also accepts a few synonyms, e.g. "row_label" for
-/// "row", but the template only ever shows the one preferred name so there's
-/// no ambiguity about what to type). Includes one filled-in example row so a
+/// "row", or "level" for "tier" (2.2.7), but the template only ever shows
+/// the one preferred name so there's no ambiguity about what to type).
+/// Includes one filled-in example row so a
 /// blank column isn't mistaken for "required" when it's actually optional
 /// (e.g. supplier, platform, seats, notes). Doesn't touch the database at
 /// all, so it needs no connection/state.
@@ -497,11 +506,11 @@ pub fn export_orders_csv_template(path: String) -> AppResult<()> {
     let mut wtr = csv::Writer::from_path(&path)?;
     wtr.write_record([
         "event", "purchase_date", "supplier", "platform", "quantity", "unit_price", "fees",
-        "other_costs", "currency", "payment_status", "ticket_type", "section", "row", "seats", "notes",
+        "other_costs", "currency", "payment_status", "ticket_type", "section", "row", "tier", "seats", "notes",
     ])?;
     wtr.write_record([
         "Example Event", "2026-01-01", "", "", "2", "45.00", "2.50", "0", "EUR", "unpaid", "",
-        "A", "12", "11,12", "",
+        "A", "12", "VIP", "11,12", "",
     ])?;
     wtr.flush()?;
     Ok(())
@@ -557,6 +566,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id = insert_order_with_tickets(conn, &input, false).unwrap();
@@ -604,16 +614,16 @@ mod tests {
 
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1);
-        // 2.0.79 columns: sale_code,ticket_code,order_code,event,section,row,
-        // seat,platform,sale_date,sale_price,selling_fees,cost,profit,margin,
-        // roi,currency,payment_status,resale_status,delivery_status,
+        // 2.2.7 columns: sale_code,ticket_code,order_code,event,section,row,
+        // tier,seat,platform,sale_date,sale_price,selling_fees,cost,profit,
+        // margin,roi,currency,payment_status,resale_status,delivery_status,
         // buyer_reference,refunded_at,refund_reason,notes,is_demo,created_at
-        assert_eq!(rows[0][9], "20.00", "sale_price");
-        assert_eq!(rows[0][11], "10.00", "cost");
-        assert_eq!(rows[0][12], "9.00", "profit: 20.00 - 10.00 - 1.00 fees");
-        assert_eq!(rows[0][13], "45.0%", "margin: 9.00 profit / 20.00 sale_price");
-        assert_eq!(rows[0][14], "90.0%", "roi: 9.00 profit / 10.00 cost");
-        assert_eq!(rows[0][16], "paid");
+        assert_eq!(rows[0][10], "20.00", "sale_price");
+        assert_eq!(rows[0][12], "10.00", "cost");
+        assert_eq!(rows[0][13], "9.00", "profit: 20.00 - 10.00 - 1.00 fees");
+        assert_eq!(rows[0][14], "45.0%", "margin: 9.00 profit / 20.00 sale_price");
+        assert_eq!(rows[0][15], "90.0%", "roi: 9.00 profit / 10.00 cost");
+        assert_eq!(rows[0][17], "paid");
     }
 
     #[test]
@@ -644,6 +654,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id = insert_order_with_tickets(&mut conn, &usd_order, false).unwrap();
@@ -669,12 +680,12 @@ mod tests {
         export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][9], "50.00", "sale_price still exports normally, in its own (EUR) currency");
-        assert_eq!(rows[0][11], "10.00", "cost still exports normally, in its own (USD) currency");
-        assert_eq!(rows[0][12], "", "profit left blank rather than silently subtracting USD cost from EUR revenue");
-        assert_eq!(rows[0][13], "", "margin left blank too - it can't be derived from a blank profit");
-        assert_eq!(rows[0][14], "", "roi left blank too - it can't be derived from a blank profit");
-        assert_eq!(rows[0][15], "EUR", "the currency column reflects the sale's OWN currency");
+        assert_eq!(rows[0][10], "50.00", "sale_price still exports normally, in its own (EUR) currency");
+        assert_eq!(rows[0][12], "10.00", "cost still exports normally, in its own (USD) currency");
+        assert_eq!(rows[0][13], "", "profit left blank rather than silently subtracting USD cost from EUR revenue");
+        assert_eq!(rows[0][14], "", "margin left blank too - it can't be derived from a blank profit");
+        assert_eq!(rows[0][15], "", "roi left blank too - it can't be derived from a blank profit");
+        assert_eq!(rows[0][16], "EUR", "the currency column reflects the sale's OWN currency");
     }
 
     #[test]
@@ -693,14 +704,14 @@ mod tests {
         assert_eq!(count, 1, "refunded sale still appears in the export (full history)");
 
         let rows = read_csv_rows(&out.0);
-        assert_eq!(rows[0][16], "refunded", "payment_status column shows why profit is 0");
+        assert_eq!(rows[0][17], "refunded", "payment_status column shows why profit is 0");
         // sale_price/cost/fees stay as this row's own real historical
         // values - only the profit (and derived margin/roi) columns change
         // for a refunded row.
-        assert_eq!(rows[0][9], "20.00", "sale_price is still the row's real historical value");
-        assert_eq!(rows[0][12], "0.00", "profit must be 0, not 9.00 - refunded sales are never realized");
-        assert_eq!(rows[0][13], "0.0%", "margin must be 0% too, same realized-only rule as profit");
-        assert_eq!(rows[0][14], "0.0%", "roi must be 0% too, same realized-only rule as profit");
+        assert_eq!(rows[0][10], "20.00", "sale_price is still the row's real historical value");
+        assert_eq!(rows[0][13], "0.00", "profit must be 0, not 9.00 - refunded sales are never realized");
+        assert_eq!(rows[0][14], "0.0%", "margin must be 0% too, same realized-only rule as profit");
+        assert_eq!(rows[0][15], "0.0%", "roi must be 0% too, same realized-only rule as profit");
     }
 
     #[test]
@@ -722,7 +733,7 @@ mod tests {
         let rows = read_csv_rows(&out.0);
         let total_profit_cents: i64 = rows
             .iter()
-            .map(|r| (r[12].parse::<f64>().unwrap() * 100.0).round() as i64)
+            .map(|r| (r[13].parse::<f64>().unwrap() * 100.0).round() as i64)
             .sum();
         // Only the active line: 2000 - 1000 - 100 = 900 cents. The refunded
         // line (5000 sale price) contributes 0, not 5000-1000-100=3900.
@@ -802,11 +813,11 @@ mod tests {
         assert_eq!(count, 2, "selecting either line of the batch resolves to the whole 2-line group");
 
         let rows = read_csv_rows(&out.0);
-        let refunded_row = rows.iter().find(|r| r[16] == "refunded").expect("the refunded line must still be exported");
-        assert_eq!(refunded_row[12], "0.00", "refunded line must export 0 profit, same rule as Export all");
-        let active_row = rows.iter().find(|r| r[16] == "paid").expect("the active line must still be exported");
+        let refunded_row = rows.iter().find(|r| r[17] == "refunded").expect("the refunded line must still be exported");
+        assert_eq!(refunded_row[13], "0.00", "refunded line must export 0 profit, same rule as Export all");
+        let active_row = rows.iter().find(|r| r[17] == "paid").expect("the active line must still be exported");
         // batch_input() above: sale_price 20.00, selling_fees 0.00, cost 10.00 (seed_tickets' 1000 cents) -> profit 10.00.
-        assert_eq!(active_row[12], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
+        assert_eq!(active_row[13], "10.00", "active line's real profit must still export correctly, unaffected by the other line's refund");
     }
 
     // ---- 1.9.1: "Export selected" for events/orders/tickets (Settings -> Data picker) ----
@@ -966,6 +977,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         insert_order_with_tickets(&mut conn, &input, false).unwrap();
@@ -995,11 +1007,32 @@ mod tests {
         export_tickets_inner(&conn, out.0.to_str().unwrap(), None, None, None).unwrap();
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1);
-        // header: ticket_code,event,order_code,section,row,seat,ticket_type,
+        // header: ticket_code,event,order_code,section,row,tier,seat,ticket_type,
         // purchase_cost,purchase_fees,other_costs,listing_price,currency,
         // status,resale_status,delivery_status,notes,is_demo,created_at
-        assert_eq!(rows[0][13], "Listed");
-        assert_eq!(rows[0][14], "Delivered");
+        assert_eq!(rows[0][14], "Listed");
+        assert_eq!(rows[0][15], "Delivered");
+    }
+
+    #[test]
+    fn export_tickets_inner_includes_tier() {
+        // 2.2.7: `tickets.tier` (migration 024) - see this file's own
+        // "appended at the end, read back by name" comment on the SELECT
+        // above `export_tickets_inner`.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 2);
+        conn.execute("UPDATE tickets SET tier='VIP' WHERE id=?1", [tickets[0]]).unwrap();
+        // tickets[1] is left with no tier at all - must export blank, never
+        // a fabricated value (same "NULL/empty stays NULL/empty" rule as
+        // every other optional ticket field in this export).
+
+        let out = temp_csv_path();
+        export_tickets_inner(&conn, out.0.to_str().unwrap(), None, None, None).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 2);
+        // header: ticket_code,event,order_code,section,row,tier,seat,ticket_type, ...
+        assert_eq!(rows[0][5], "VIP");
+        assert_eq!(rows[1][5], "", "no tier ever set - must export blank, not a placeholder");
     }
 
     #[test]
@@ -1025,15 +1058,55 @@ mod tests {
         export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
         let rows = read_csv_rows(&out.0);
         assert_eq!(rows.len(), 1, "refunded sale still appears (full history)");
-        // header: sale_code,ticket_code,order_code,event,section,row,seat,
+        // header: sale_code,ticket_code,order_code,event,section,row,tier,seat,
         // platform,sale_date,sale_price,selling_fees,cost,profit,margin,roi,
         // currency,payment_status,resale_status,delivery_status,
         // buyer_reference,refunded_at,refund_reason,notes,is_demo,created_at
         assert_eq!(rows[0][2], order_code, "order_code");
         assert_eq!(rows[0][4], "A", "section");
         assert_eq!(rows[0][5], "12", "row");
-        assert_eq!(rows[0][6], "5", "seat");
-        assert!(!rows[0][20].is_empty(), "refunded_at must be populated for a refunded sale");
-        assert_eq!(rows[0][21], "buyer changed their mind", "refund_reason");
+        assert_eq!(rows[0][7], "5", "seat");
+        assert!(!rows[0][21].is_empty(), "refunded_at must be populated for a refunded sale");
+        assert_eq!(rows[0][22], "buyer changed their mind", "refund_reason");
+    }
+
+    #[test]
+    fn export_sales_csv_includes_tier() {
+        // 2.2.7: `tickets.tier` (migration 024) - see write_sales_csv's own
+        // doc comment for the same "appended at the end" pattern.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        conn.execute("UPDATE tickets SET tier='Lower Bowl' WHERE id=?1", [tickets[0]]).unwrap();
+        create_sale_impl(&mut conn, &sale_input(tickets[0], 2000)).unwrap();
+
+        let out = temp_csv_path();
+        export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
+        let rows = read_csv_rows(&out.0);
+        assert_eq!(rows.len(), 1);
+        // header: sale_code,ticket_code,order_code,event,section,row,tier,seat, ...
+        assert_eq!(rows[0][6], "Lower Bowl");
+    }
+
+    #[test]
+    fn export_orders_csv_template_includes_tier_right_after_row() {
+        // 2.2.7: keeps this template (what marko downloads to build an
+        // import file by hand) in lockstep with the real import/export
+        // column set - see this file's own doc comment on
+        // `export_orders_csv_template`.
+        //
+        // `read_csv_rows` can't be reused here - it opens with the csv
+        // crate's default `has_headers(true)`, which silently consumes this
+        // file's own header row into `Reader::headers()` rather than
+        // returning it from `.records()`. This test needs both, so it reads
+        // the file directly instead.
+        let out = temp_csv_path();
+        export_orders_csv_template(out.0.to_str().unwrap().to_string()).unwrap();
+        let mut rdr = csv::Reader::from_path(&out.0).unwrap();
+        let header: Vec<String> = rdr.headers().unwrap().iter().map(|h| h.to_string()).collect();
+        let row_idx = header.iter().position(|h| h == "row").unwrap();
+        assert_eq!(header[row_idx + 1], "tier", "tier must sit immediately after row in the template header");
+        let example: Vec<String> =
+            rdr.records().next().unwrap().unwrap().iter().map(|f| f.to_string()).collect();
+        assert_eq!(example[row_idx + 1], "VIP", "the filled-in example row demonstrates a real tier value");
     }
 }

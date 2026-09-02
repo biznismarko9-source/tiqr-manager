@@ -529,6 +529,7 @@ export function TicketEditModal({
   const toast = useToast();
   const [section, setSection] = useState("");
   const [rowLabel, setRowLabel] = useState("");
+  const [tier, setTier] = useState("");
   const [seat, setSeat] = useState("");
   const [ticketType, setTicketType] = useState("");
   const [listingPrice, setListingPrice] = useState("");
@@ -543,6 +544,7 @@ export function TicketEditModal({
     if (!ticket) return;
     setSection(ticket.section ?? "");
     setRowLabel(ticket.rowLabel ?? "");
+    setTier(ticket.tier ?? "");
     setSeat(ticket.seat ?? "");
     setTicketType(ticket.ticketType ?? "");
     setListingPrice(ticket.listingPriceCents != null ? (ticket.listingPriceCents / 100).toFixed(2) : "");
@@ -570,6 +572,7 @@ export function TicketEditModal({
     const input: TicketUpdateInput = {
       section: section || null,
       rowLabel: rowLabel || null,
+      tier: tier || null,
       seat: seat || null,
       ticketType: ticketType || null,
       listingPriceCents: listingCents,
@@ -601,6 +604,9 @@ export function TicketEditModal({
         </Field>
         <Field label="Row">
           <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
+        </Field>
+        <Field label="Tier / Level">
+          <Input value={tier} onChange={(e) => setTier(e.target.value)} />
         </Field>
         <Field label="Seat">
           <Input value={seat} onChange={(e) => setSeat(e.target.value)} />

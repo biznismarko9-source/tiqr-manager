@@ -804,6 +804,14 @@ fn apply_order_rows(
             ticket_type: cell(raw_row, ticket_type_col),
             section: cell(raw_row, section_col),
             row_label: cell(raw_row, row_col),
+            // 2.2.7: no sheet column exists for tier/level (see this
+            // module's "Column mapping" table) and adding one is a separate,
+            // out-of-scope decision (which column, what header text marko
+            // would need to add to his own sheet) - out of scope for the
+            // ticket-metadata task that added `OrderInput.tier`. Same
+            // "doesn't try to source everything CSV import can" precedent
+            // already set by payment_status just above.
+            tier: None,
             seats,
         };
 
@@ -4492,6 +4500,7 @@ mod tests {
             ticket_type: Some("e-ticket".to_string()),
             section: Some("410".to_string()),
             row_label: Some("25".to_string()),
+            tier: None,
             seats: None,
         }
     }
@@ -5172,6 +5181,7 @@ mod tests {
             ticket_type: Some("Season pass".to_string()),
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         insert_order_with_tickets(&conn, &input, false).unwrap();

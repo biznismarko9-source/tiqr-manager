@@ -377,9 +377,9 @@ pub(crate) fn insert_order_with_tickets(
     let other_alloc = allocate_cents(input.other_costs_cents, input.quantity);
 
     let mut stmt = conn.prepare(
-        "INSERT INTO tickets (code, event_id, order_id, section, row_label, seat, ticket_type,
+        "INSERT INTO tickets (code, event_id, order_id, section, row_label, tier, seat, ticket_type,
            purchase_cost_cents, purchase_fees_cents, other_costs_cents, currency, status, is_demo)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'available',?12)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'available',?13)",
     )?;
     let seats = input.seats.as_ref().filter(|s| !s.is_empty());
     for i in 0..input.quantity as usize {
@@ -390,6 +390,7 @@ pub(crate) fn insert_order_with_tickets(
             order_id,
             input.section,
             input.row_label,
+            input.tier,
             seat,
             input.ticket_type,
             input.unit_price_cents,
@@ -1097,6 +1098,7 @@ mod tests {
             ticket_type: None,
             section: Some("A".to_string()),
             row_label: Some("12".to_string()),
+            tier: None,
             seats: None,
         }
     }
@@ -1127,6 +1129,47 @@ mod tests {
                 Some("14".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn tier_is_copied_onto_every_generated_ticket() {
+        // 2.2.7: `OrderInput.tier` - same "set once at order creation,
+        // copied onto every generated ticket" convention already used by
+        // section/row_label/ticket_type.
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 3);
+        input.tier = Some("VIP".to_string());
+
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let tiers: Vec<Option<String>> = conn
+            .prepare("SELECT tier FROM tickets WHERE order_id = ?1 ORDER BY id")
+            .unwrap()
+            .query_map([order_id], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tiers, vec![Some("VIP".to_string()); 3]);
+    }
+
+    #[test]
+    fn a_null_tier_at_order_creation_leaves_every_generated_ticket_with_no_tier() {
+        // marko's explicit instruction: existing/untouched tickets get
+        // NULL/empty, never a fabricated value - `base_input`'s own default
+        // is already `tier: None`, this just makes that guarantee explicit.
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let input = base_input(event_id, 2);
+        let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
+        let tiers: Vec<Option<String>> = conn
+            .prepare("SELECT tier FROM tickets WHERE order_id = ?1 ORDER BY id")
+            .unwrap()
+            .query_map([order_id], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tiers, vec![None, None]);
     }
 
     #[test]

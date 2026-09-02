@@ -3,6 +3,7 @@ import type {
   Account,
   AccountInput,
   AppInfo,
+  AttentionCenterItem,
   BulkCurrencyConversionResult,
   BulkDeleteResult,
   BulkOrdersDeliveryStatusInput,
@@ -192,6 +193,9 @@ export const api = {
   bulkDeleteTicketListings: (ids: number[]) => invoke<number>("bulk_delete_ticket_listings", { ids }),
   // 2.2.6: Event Workspace Overview's "Inventory Intelligence" block.
   getInventoryIntelligence: (eventId: number) => invoke<InventoryIntelligence>("get_inventory_intelligence", { eventId }),
+  // 2.2.8: Dashboard's global "Attention Center" - across every event, no
+  // eventId parameter (see commands/attention_center.rs).
+  getAttentionCenter: () => invoke<AttentionCenterItem[]>("get_attention_center"),
 
   // Pulls (1.9.7) - buying tickets on someone else's behalf for a fee.
   // Deliberately standalone - see src-tauri/migrations/005_pulls.sql.

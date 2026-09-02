@@ -604,6 +604,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap()

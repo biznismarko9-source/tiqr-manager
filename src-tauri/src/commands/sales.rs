@@ -1402,6 +1402,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id =
@@ -1469,6 +1470,7 @@ mod tests {
             ticket_type: None,
             section: Some(section.to_string()),
             row_label: Some(row_label.to_string()),
+            tier: None,
             seats: Some(seats.iter().map(|s| s.to_string()).collect()),
         };
         let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
@@ -2123,6 +2125,7 @@ mod tests {
                 ticket_type: None,
                 section: None,
                 row_label: None,
+                tier: None,
                 seats: None,
             };
             let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
@@ -2225,6 +2228,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();

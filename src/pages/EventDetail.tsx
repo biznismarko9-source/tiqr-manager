@@ -497,7 +497,7 @@ function InventoryIntelligenceBlock({
     );
   }
 
-  const { kpis, aging, attention, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
+  const { kpis, aging, attention, breakdownByTier, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
   const clearFilter = () => onHighlight(null, null);
 
   return (
@@ -578,7 +578,35 @@ function InventoryIntelligenceBlock({
         })}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          {/* 2.2.7: tickets.tier (migration 024) - see InventoryIntelligence's
+              own doc comment (types.ts) for why this used to say "not
+              tracked yet" here. Blank/null groups as "Unknown" (backend-
+              computed, not a frontend fallback) - deliberately different
+              wording from the section breakdown's own "No section" below. */}
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By tier</p>
+          {breakdownByTier.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+              {breakdownByTier.map((g) => (
+                <li key={g.label}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    onClick={() => onHighlight(g.ticketIds, `Tier: ${g.label}`)}
+                  >
+                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
+                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By section</p>
           {breakdownBySection.length === 0 ? (
@@ -601,9 +629,6 @@ function InventoryIntelligenceBlock({
               ))}
             </ul>
           )}
-          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-            By tier: not tracked yet - tickets have no tier/level field in this app today (only section/row/seat).
-          </p>
         </div>
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By marketplace</p>

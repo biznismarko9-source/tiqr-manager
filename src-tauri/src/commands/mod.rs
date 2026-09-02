@@ -1,4 +1,5 @@
 pub mod app_info;
+pub mod attention_center;
 pub mod backup;
 pub mod csv_export;
 pub mod csv_import;

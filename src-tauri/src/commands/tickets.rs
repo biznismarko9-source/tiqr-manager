@@ -26,7 +26,7 @@ const LIST_CAP: i64 = 5000;
 // orders.rs's fetch_sales_summary and events.rs's stats query.
 const BASE_SQL: &str = "
     SELECT t.id, t.code, t.event_id, e.name as event_name, t.order_id, o.code as order_code,
-      t.section, t.row_label, t.seat, t.ticket_type,
+      t.section, t.row_label, t.tier, t.seat, t.ticket_type,
       t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents,
       t.listing_price_cents, t.currency, t.status, t.resale_status, t.delivery_status,
       t.notes, t.is_demo,
@@ -60,6 +60,7 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         order_code: row.get("order_code")?,
         section: row.get("section")?,
         row_label: row.get("row_label")?,
+        tier: row.get("tier")?,
         seat: row.get("seat")?,
         ticket_type: row.get("ticket_type")?,
         purchase_cost_cents,
@@ -217,13 +218,14 @@ pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdat
     let next_status = input.status.clone().unwrap_or(current_status);
 
     conn.execute(
-        "UPDATE tickets SET section=?1, row_label=?2, seat=?3, ticket_type=?4,
-         listing_price_cents=?5, status=?6, resale_status=?7, delivery_status=?8, notes=?9,
+        "UPDATE tickets SET section=?1, row_label=?2, tier=?3, seat=?4, ticket_type=?5,
+         listing_price_cents=?6, status=?7, resale_status=?8, delivery_status=?9, notes=?10,
          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?10",
+         WHERE id=?11",
         params![
             input.section,
             input.row_label,
+            input.tier,
             input.seat,
             input.ticket_type,
             input.listing_price_cents,
@@ -743,6 +745,7 @@ mod tests {
             ticket_type: None,
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id = insert_order_with_tickets(conn, &input, false).unwrap();
@@ -770,6 +773,7 @@ mod tests {
             ticket_type: ticket_type.map(|s| s.to_string()),
             section: None,
             row_label: None,
+            tier: None,
             seats: None,
         };
         let order_id = insert_order_with_tickets(conn, &input, is_demo).unwrap();
@@ -819,6 +823,69 @@ mod tests {
         seed_ticket_with_type(&conn, Some("   "), false);
         let names = known_ticket_type_names(&conn).unwrap();
         assert_eq!(names, vec!["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"]);
+    }
+
+    /// 2.2.7: marko's own "create/update ticket s tier/section/row" test
+    /// requirement - the per-ticket edit path (`TicketEditModal` ->
+    /// `update_ticket`/`update_ticket_impl`), as opposed to
+    /// `bulk_update_tickets_impl` below (which deliberately does NOT offer
+    /// tier bulk-editing at all - out of scope for this task, see
+    /// `BulkTicketField`'s own doc comment).
+    #[test]
+    fn update_ticket_impl_sets_tier_section_and_row_together() {
+        let conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        update_ticket_impl(
+            &conn,
+            ticket_id,
+            &TicketUpdateInput {
+                section: Some("A1".to_string()),
+                row_label: Some("7".to_string()),
+                tier: Some("VIP".to_string()),
+                seat: None,
+                ticket_type: None,
+                listing_price_cents: None,
+                status: None,
+                resale_status: None,
+                delivery_status: None,
+                notes: None,
+            },
+        )
+        .unwrap();
+
+        let (section, row_label, tier): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row("SELECT section, row_label, tier FROM tickets WHERE id=?1", [ticket_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(section, Some("A1".to_string()));
+        assert_eq!(row_label, Some("7".to_string()));
+        assert_eq!(tier, Some("VIP".to_string()), "tier must be set independently of ticket_type");
+    }
+
+    #[test]
+    fn update_ticket_impl_can_clear_a_previously_set_tier() {
+        // Same "None clears the field" behavior every other optional text
+        // field on TicketUpdateInput already has (section/row_label/seat/...).
+        let conn = test_conn();
+        let ticket_id = seed_one_ticket(&conn);
+        let blank = || TicketUpdateInput {
+            section: None,
+            row_label: None,
+            tier: None,
+            seat: None,
+            ticket_type: None,
+            listing_price_cents: None,
+            status: None,
+            resale_status: None,
+            delivery_status: None,
+            notes: None,
+        };
+        update_ticket_impl(&conn, ticket_id, &TicketUpdateInput { tier: Some("VIP".to_string()), ..blank() }).unwrap();
+        update_ticket_impl(&conn, ticket_id, &TicketUpdateInput { tier: None, ..blank() }).unwrap();
+        let tier: Option<String> =
+            conn.query_row("SELECT tier FROM tickets WHERE id=?1", [ticket_id], |r| r.get(0)).unwrap();
+        assert_eq!(tier, None);
     }
 
     /// BUG #1 fix, ticket-view half: once a ticket can carry both a

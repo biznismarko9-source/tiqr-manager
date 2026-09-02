@@ -21,15 +21,16 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.6**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.2.8**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
-are more places than the obvious 3 files. (Briefly shipped as an
-un-bumped, code-labeled-only "2.2.6" first - marko's closing checklist for
+are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
+un-bumped, code-labeled-only build first - marko's closing checklist for
 that task didn't ask for a version bump - then bumped for real, same
 session, once he confirmed he wanted the usual release file too. See
-`PROTECTED_AREAS.md`'s "2.2.6" entry.)
+`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 and 2.2.8's own closing
+checklists both asked for the full cadence up front, no ambiguity.)
 
 ## Stack / layout
 
@@ -50,7 +51,9 @@ session, once he confirmed he wanted the usual release file too. See
   all-or-nothing bulk commands - status/price/delete - see "Current focus"
   below), inventory_intelligence (2.2.6 - one read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
-  sales, event_categories, pulls (+ `pulls_received`,
+  attention_center (2.2.8 - one read-only command backing the Dashboard's
+  global, cross-event "Attention Center" block, see "Current focus"
+  below), sales, event_categories, pulls (+ `pulls_received`,
   `pulls_sheet_sync`), finance_accounts/finance_entries (2.2.1: entries can
   optionally link to an Order via `order_id`)/finance_recurring/
   finance_forecast, price_checker (CRUD/marketplaces + saved-check
@@ -65,8 +68,8 @@ session, once he confirmed he wanted the usual release file too. See
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **023_add_seatriks_marketplace.sql**. Migrations run
-  automatically at startup, forward-only.
+  currently through **024_ticket_tier.sql**. Migrations run automatically
+  at startup, forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
   version in 3 files, commits, tags, and pushes - the tag push triggers
@@ -75,6 +78,44 @@ session, once he confirmed he wanted the usual release file too. See
   logs, etc).
 
 ## Current focus / most recent work
+
+**Dashboard gained a global "Attention Center" (2.2.8).** A new compact
+block on the Dashboard's Activity tab, above the existing "Attention"
+cards/alert bell (2.0.75/2.0.76/2.0.79 - untouched), backed by one new
+read-only command (`get_attention_center`, `commands/attention_center.rs`)
+that lists INDIVIDUAL things needing a look across EVERY event, not just
+counts:
+- **Four of its five categories are the exact per-event Inventory
+  Intelligence "Attention" rules (2.2.6) reused as-is**, just flattened
+  into per-ticket rows instead of per-event counts: event within 2 days
+  with unsold tickets (one row per EVENT, not per ticket - see the
+  module's own doc comment for why), unsold ticket with no listing price,
+  unsold ticket with no active listing, and unsold ticket priced 20%+ off
+  the market average (only ever shown when this event already has real
+  Price Checker data - never invented). Nothing here can drift from the
+  Event Workspace's own Inventory Intelligence block, since it's the same
+  function call, not a second implementation.
+- **A new fifth category: sold, delivery not marked complete.** Reuses the
+  exact `delivery_status = 'Delivered'` convention the 2.0.66 "Completed"
+  indicator already established (`orders.rs`/`sales.rs`'s own
+  `delivered_count`) - a refund reverts a ticket's status back to
+  `available`, so a refunded ticket drops out automatically, never a guess.
+- **Priority grouping**: Critical / Attention / Info (a new concept - see
+  `PROTECTED_AREAS.md`'s "2.2.8" entry for the exact category-to-tier
+  mapping and why). Sorted by priority, then soonest event.
+- **Navigation**: a row with a ticket links to the existing Tickets `?code=`
+  deep link (the one cross-page ticket link this app already has); an
+  event-level row (event-soon) links to that event's own Event Workspace.
+  No new route, no new navigation mechanism.
+- **Display**: grouped by priority, each group capped at a preview count
+  with the same "Show N more" toggle the Activity tab's Recent cards
+  already use - the backend itself never truncates, so "Show all" never
+  loses data.
+- No new migration, no new dependency, no automatic pricing/repricing -
+  every value shown is a value that already exists verbatim on the ticket.
+See `PROTECTED_AREAS.md`'s new "2.2.8" entry before touching this again,
+in particular the priority-tier mapping and the event-level-vs-ticket-level
+granularity judgment calls.
 
 **Event Workspace (2.2.2, revised 2.2.3, 2.2.4 and 2.2.5).**
 `EventDetail.tsx` is a tabbed "Event Workspace" (`TabSwitcher`, same
@@ -135,6 +176,44 @@ Finance folded into Sales this round):
   "Open in Sales"/"Open in Price Checker"/"Open in Finance" still link out
   to the real, standalone sections for anything more than a glance.
 
+**Ticket metadata: Tier / Level (2.2.7).** Every ticket can now optionally
+carry a `tier`/level value (e.g. "VIP", "Lower Bowl", "Level 200"), a new
+nullable `tickets.tier TEXT` column (`migrations/024_ticket_tier.sql`,
+forward-only, no backfill - every existing ticket got NULL). Deliberately
+a SEPARATE field from `ticket_type` (a DELIVERY method - E-ticket/PDF/
+Mobile transfer/Physical/Will call - not a price tier; this exact
+confusion was already flagged twice before, see `PROTECTED_AREAS.md`'s
+"2.2.0" and "2.2.6" entries, now resolved for good by this task's own
+"2.2.7" entry there).
+- **Entry points**: since this app has no standalone "Add Ticket" flow
+  (tickets are only ever created via an Order), `tier` is set at order
+  creation (`OrderFormModal`, copied onto every generated ticket, same as
+  `section`/`row_label`) and editable afterward per-ticket
+  (`TicketEditModal`). Both are small, plain text fields - no redesign.
+- **CSV**: import accepts a `tier` column (or `level` as a synonym);
+  entirely absent from an older CSV imports exactly as before (no
+  separate "old format" code path needed). Export (tickets, sales, and the
+  downloadable order-import template) all include `tier`, positioned
+  right after `row` in every header.
+- **Inventory Intelligence** (2.2.6, above) gained a real "By tier"
+  breakdown - see that section's own updated bullet below. Clicking a
+  tier group filters the Tickets table exactly like the section/
+  marketplace breakdowns already do.
+- **Deliberately NOT done this round** (marko's own "prepare the data,
+  don't wire it in yet" instruction): Market Analysis / Repricing
+  (`price_checker_analysis.rs`'s `YourTicketGroup.tier`) still always
+  reports `None` - the real column exists now, but nothing reads it there
+  yet. No bulk-tier-edit action. No tier column added to any list/table
+  view (Tickets/OrderDetail/Sales/SaleDetail - section/row aren't shown
+  as columns there either, so this is consistent). Google Sheets Order
+  sync is not wired to `tier` - no sheet column exists for it.
+  Refund/resell, `batch_id`, money/cents logic, Orders/Sales/Finance core
+  logic, Listings, and Price Checker scraping are all completely
+  untouched.
+See `PROTECTED_AREAS.md`'s "2.2.7" entry before touching this column
+again, in particular the column-order convention and the CSV-export test
+index-shift trap.
+
 **Overview gained an "Inventory Intelligence" block (2.2.6).** A compact
 block rendered above the Orders/Tickets
 tables on the Overview tab, backed by one new read-only command
@@ -159,12 +238,11 @@ reuses existing definitions rather than inventing new money logic:
   function Sales' own "Market vs. mine" card calls) and is explicitly
   `available: false` (not a fake zero) when this event has no Price
   Checker data yet.
-- **Breakdown** by section (unsold tickets) and by marketplace (active
-  listings). **No "by tier" breakdown** - `tickets` has no tier/level
-  column anywhere in this schema (`ticket_type` is a delivery method, not
-  a price tier - the same gap PROTECTED_AREAS.md's 2.2.0 entry already
-  flagged); the UI says so in plain text rather than inventing one. See
-  `PROTECTED_AREAS.md`'s new entry for the smallest proposed fix.
+- **Breakdown** by tier, by section, and by marketplace (the first two
+  scoped to unsold tickets, the last to active listings). Tier grouping
+  was added in 2.2.7 (`tickets.tier`, see above) - blank/null groups as
+  "Unknown", deliberately different wording from the section breakdown's
+  own "No section".
 - **Every KPI/aging/attention/breakdown row is clickable** - filters
   Overview's own already-rendered Tickets table down to just those ticket
   ids (backend returns `ticketIds`/`unsoldTicketIds`/`soldTicketIds` lists,
@@ -278,8 +356,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 112 of
-them as of 2.2.6. These are not read by default under this protocol; only
+`*-REPORT.md` file at the repo root (Slovak, written for marko) - 114 of
+them as of 2.2.8. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

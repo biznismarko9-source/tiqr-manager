@@ -190,6 +190,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "023_add_seatriks_marketplace",
         include_str!("../migrations/023_add_seatriks_marketplace.sql"),
     ),
+    (
+        "024_ticket_tier",
+        include_str!("../migrations/024_ticket_tier.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -754,8 +758,6 @@ mod perf_smoke {
 #[cfg(test)]
 mod migration_004_tests {
     use super::*;
-    use crate::commands::orders::insert_order_with_tickets;
-    use crate::models::OrderInput;
 
     #[test]
     fn migration_004_preserves_existing_data_and_fixes_refund_resell_on_upgrade() {
@@ -785,36 +787,36 @@ mod migration_004_tests {
 
         // Seed real-shaped pre-existing data under the OLD schema (where
         // ticket_id UNIQUE still covers every row, refunded or not).
+        //
+        // 2.2.7: seeded via plain SQL against exactly the migrations[..3]
+        // schema above, NOT via `insert_order_with_tickets`/`OrderInput` -
+        // that is the CURRENT production insert path, and its SQL now also
+        // references `tickets.tier` (migration 024, twenty-one migrations
+        // after this one). Calling it here would fail against this
+        // deliberately-partial pre-004 schema, which has no such column yet.
+        // This test is about the `sales` table rebuild (migration 004), not
+        // ticket creation, so a plain INSERT is both simpler and immune to
+        // whatever columns later migrations add to `tickets`.
         conn.execute("INSERT INTO events (name) VALUES ('Old Event')", [])
             .unwrap();
         let event_id = conn.last_insert_rowid();
-        let order_input = OrderInput {
-            event_id,
-            supplier_id: None,
-            platform_id: None,
-            purchase_date: "2026-01-01".to_string(),
-            quantity: 3,
-            unit_price_cents: 1000,
-            fees_cents: 0,
-            other_costs_cents: 0,
-            currency: "EUR".to_string(),
-            payment_status: Some("paid".to_string()),
-            notes: None,
-            ticket_type: None,
-            section: None,
-            row_label: None,
-            seats: None,
-        };
-        let order_id = insert_order_with_tickets(&conn, &order_input, false).unwrap();
-        let tickets: Vec<i64> = {
-            let mut stmt = conn
-                .prepare("SELECT id FROM tickets WHERE order_id=?1 ORDER BY id")
-                .unwrap();
-            stmt.query_map([order_id], |r| r.get::<_, i64>(0))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, unit_price_cents, currency, payment_status)
+             VALUES ('ORD-000001', ?1, '2026-01-01', 3, 1000, 'EUR', 'paid')",
+            [event_id],
+        )
+        .unwrap();
+        let order_id = conn.last_insert_rowid();
+        let mut tickets: Vec<i64> = Vec::new();
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO tickets (code, event_id, order_id, purchase_cost_cents, currency, status)
+                 VALUES (?1, ?2, ?3, 1000, 'EUR', 'available')",
+                rusqlite::params![format!("TKT-{:06}", i + 1), event_id, order_id],
+            )
+            .unwrap();
+            tickets.push(conn.last_insert_rowid());
+        }
 
         // Ticket 0: sold, still active.
         conn.execute(
@@ -944,8 +946,6 @@ mod migration_004_tests {
 #[cfg(test)]
 mod migration_007_tests {
     use super::*;
-    use crate::commands::orders::insert_order_with_tickets;
-    use crate::models::OrderInput;
 
     #[test]
     fn migration_007_preserves_existing_data_and_creates_a_usable_empty_ledger_on_upgrade() {
@@ -974,27 +974,28 @@ mod migration_007_tests {
         // Seed real pre-existing data under the pre-payments-ledger schema:
         // an order and a sale, exactly as any real installation would have
         // right up until the moment it upgrades.
+        //
+        // 2.2.7: seeded via plain SQL against exactly the migrations[..6]
+        // schema above, NOT via `insert_order_with_tickets`/`OrderInput` -
+        // see migration_004_tests' own seeding above for why (its SQL now
+        // also references `tickets.tier`, migration 024, eighteen
+        // migrations after this one).
         conn.execute("INSERT INTO events (name) VALUES ('Old Event')", [])
             .unwrap();
         let event_id = conn.last_insert_rowid();
-        let order_input = OrderInput {
-            event_id,
-            supplier_id: None,
-            platform_id: None,
-            purchase_date: "2026-01-01".to_string(),
-            quantity: 1,
-            unit_price_cents: 1000,
-            fees_cents: 0,
-            other_costs_cents: 0,
-            currency: "EUR".to_string(),
-            payment_status: Some("paid".to_string()),
-            notes: None,
-            ticket_type: None,
-            section: None,
-            row_label: None,
-            seats: None,
-        };
-        let order_id = insert_order_with_tickets(&conn, &order_input, false).unwrap();
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, unit_price_cents, currency, payment_status)
+             VALUES ('ORD-000001', ?1, '2026-01-01', 1, 1000, 'EUR', 'paid')",
+            [event_id],
+        )
+        .unwrap();
+        let order_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO tickets (code, event_id, order_id, purchase_cost_cents, currency, status)
+             VALUES ('TKT-000001', ?1, ?2, 1000, 'EUR', 'available')",
+            rusqlite::params![event_id, order_id],
+        )
+        .unwrap();
         let ticket_id: i64 = conn
             .query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| r.get(0))
             .unwrap();
@@ -1158,5 +1159,127 @@ mod migration_008_tests {
             [],
         );
         assert!(dup.is_err(), "a local record must never be linked to two different sheet rows at once");
+    }
+}
+
+/// 2.2.7: `024_ticket_tier` - marko's own explicit requirement ("migration
+/// upgrade z existujucej DB") for the new nullable `tickets.tier` column.
+/// Same template as `migration_008_tests` above: apply everything through
+/// 023 exactly as a real pre-2.2.7 install has it on disk, seed a real
+/// ticket under the OLD schema (no `tier` column exists yet at that point -
+/// this INSERT would fail to compile against today's schema if it tried to
+/// reference one), then run just migration 024 and confirm the ticket
+/// survives completely unchanged AND its new `tier` column reads back NULL -
+/// never an invented value, per marko's explicit "existujuce tikety dostanu
+/// NULL/empty hodnotu".
+#[cfg(test)]
+mod migration_024_tests {
+    use super::*;
+
+    #[test]
+    fn migration_024_preserves_existing_tickets_and_adds_a_null_tier_column() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("enable foreign keys");
+
+        // Apply exactly what every existing 2.2.6 install already has on
+        // disk today: migrations 001-023, nothing more.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        for (version, sql) in &MIGRATIONS[..23] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [version],
+            )
+            .unwrap();
+        }
+
+        // Seed a real pre-existing event/order/ticket under the pre-024
+        // schema - deliberately raw SQL naming only columns that already
+        // exist at this point, so this genuinely exercises "a ticket row
+        // that predates the `tier` column", not one created by today's
+        // tier-aware Rust code.
+        conn.execute("INSERT INTO events (name) VALUES ('Pre-existing Event')", [])
+            .unwrap();
+        let event_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, currency)
+             VALUES ('ORD-PRE-024', ?1, '2026-01-01', 1, 'EUR')",
+            [event_id],
+        )
+        .unwrap();
+        let order_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO tickets (code, event_id, order_id, section, row_label, seat, currency)
+             VALUES ('TKT-PRE-024', ?1, ?2, 'A1', '12', '5', 'EUR')",
+            rusqlite::params![event_id, order_id],
+        )
+        .unwrap();
+        let ticket_before: (String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT code, section, row_label, seat FROM tickets WHERE code = 'TKT-PRE-024'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+
+        // The real upgrade moment: run_migrations sees 001-023 already
+        // recorded, so it applies ONLY 024 - exactly like a real upgrade.
+        run_migrations(&conn).expect("migration 024 must apply cleanly on top of real pre-existing data");
+
+        let ticket_after: (String, Option<String>, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT code, section, row_label, seat, tier FROM tickets WHERE code = 'TKT-PRE-024'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (ticket_after.0.clone(), ticket_after.1.clone(), ticket_after.2.clone(), ticket_after.3.clone()),
+            ticket_before,
+            "every pre-existing ticket field must survive the upgrade completely unchanged"
+        );
+        assert_eq!(ticket_after.4, None, "a ticket that predates this migration must read tier as NULL, never an invented value");
+
+        // The new column is immediately usable via plain SQL.
+        conn.execute("UPDATE tickets SET tier = 'VIP' WHERE code = 'TKT-PRE-024'", [])
+            .expect("the new tier column must be usable right after the upgrade");
+        let tier_now: Option<String> = conn
+            .query_row("SELECT tier FROM tickets WHERE code = 'TKT-PRE-024'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier_now, Some("VIP".to_string()));
+
+        let violations: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert!(violations.is_empty(), "foreign_key_check must be clean after the upgrade, found: {violations:?}");
+    }
+
+    #[test]
+    fn migration_024_on_a_completely_fresh_database_every_ticket_starts_with_no_tier() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO events (name) VALUES ('Fresh Event')", []).unwrap();
+        let event_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, currency) VALUES ('ORD-FRESH-024', ?1, '2026-01-01', 1, 'EUR')",
+            [event_id],
+        )
+        .unwrap();
+        let order_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO tickets (code, event_id, order_id, currency) VALUES ('TKT-FRESH-024', ?1, ?2, 'EUR')",
+            rusqlite::params![event_id, order_id],
+        )
+        .unwrap();
+        let tier: Option<String> = conn
+            .query_row("SELECT tier FROM tickets WHERE code = 'TKT-FRESH-024'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier, None, "a ticket inserted with no tier value must read back NULL, not an empty string or a default");
     }
 }

@@ -21,6 +21,199 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.2.8 - Dashboard global "Attention Center"
+
+Focused task adding one new, GLOBAL (every event) Dashboard block listing
+individual things needing a look, built almost entirely by reusing
+already-shipped logic (`commands/attention_center.rs`, new file; one new
+read-only command `get_attention_center`; no migration, no dependency).
+Things worth knowing before touching this again:
+
+- **This is a SEPARATE, ADDITIONAL feature from the Dashboard's existing
+  `DashboardAlerts` (the alert bell + Activity tab's own "Attention" cards,
+  2.0.75/2.0.76/2.0.79) - it does NOT replace or merge with it, and that
+  existing feature is completely untouched.** The two overlap on exactly
+  one thing - unsold tickets with no listing price - computed the same way
+  in both (ticket-scoped, `status IN ('available','listed') AND
+  listing_price_cents IS NULL`) but surfaced differently: `DashboardAlerts`
+  counts it per ORDER (feeds a glanceable card + the outbound-notifications
+  feature), this new block lists it per TICKET (an actionable inbox row).
+  Don't "simplify" these into one code path without checking both
+  consumers still get what they need - they were kept separate on purpose,
+  not by oversight.
+- **Four of the five categories are a byte-for-byte reuse of
+  `inventory_intelligence::get_inventory_intelligence_impl`'s own
+  `attention` list (2.2.6)** - this module calls that function once per
+  event that has at least one unsold ticket (a plain performance
+  pre-filter via `events_with_unsold`, never a correctness one - an event
+  with zero unsold tickets could never produce any of these 4 anyway) and
+  flattens the result into individual rows. A future change to
+  `EVENT_SOON_DAYS`/`OUTSIDE_MARKET_THRESHOLD_PCT` or either predicate in
+  that module automatically applies here too - there is nothing duplicated
+  that could quietly drift out of sync. The one visibility change this
+  task made to that file: `EVENT_SOON_DAYS` went from private to
+  `pub(crate)` so this module could reuse it directly - zero behavior
+  change.
+- **`event_soon` is deliberately ONE ROW PER EVENT, not one per unsold
+  ticket - the other 4 categories are per-ticket.** Marko's own spec listed
+  "Ticket/code" as optional ("ak je relevantný"), and an event with e.g. 40
+  unsold tickets 1 day out would otherwise flood the list with 40
+  near-identical rows, directly against his own "UI musí zostať
+  prehľadné". Mirrors how the Dashboard's own existing "Upcoming events"
+  list already shows one row per event, not one per ticket. If a future
+  ask specifically wants per-ticket event-soon rows, that's a deliberate
+  reversal of this call, not a bug fix.
+- **The fifth category (`sold_undelivered`) is a NEW alert this task adds,
+  and it IS reliably computable - it was not omitted.** It reuses the
+  exact `tickets.delivery_status = 'Delivered'` convention the 2.0.66
+  "Completed" indicator already established (`orders.rs`/`sales.rs`'s own
+  `delivered_count` - see migration 010's own doc comment for why
+  `delivery_status` is free text with no CHECK enum: despite that, the
+  app's OWN bulk-update commands and the 2.0.66 indicator already treat it
+  as an effective two-value field, "Delivered" vs. everything else). Scoped
+  directly to `tickets.status = 'sold'` - a refund reverts that column back
+  to `'available'` (`refund_sale_impl`), so a refunded ticket drops out on
+  its own with no extra join needed. Independent of the
+  `events_with_unsold` pre-filter above on purpose - a fully sold-out event
+  can still have an undelivered sold ticket (covered by its own regression
+  test).
+- **Priority mapping (Critical / Attention / Info) is a brand-new judgment
+  call this task makes - marko named the 3 tiers but not which category
+  goes where:** `event_soon` is always Critical (irreversible if missed -
+  can't sell a ticket after the event has passed). `missing_listing_price`
+  and `no_active_listing` are Attention (real, actionable gaps in your own
+  process). `outside_market_price` is Info, not Attention - deliberately,
+  since marko was explicit this task must never recommend or imply a price
+  action ("žiadne automatické určovanie ani navrhovanie ceny"); it's a
+  pricing OBSERVATION, not a gap to fill in. `sold_undelivered` is Critical
+  when the event is within `EVENT_SOON_DAYS` of today OR already in the
+  past (reusing that exact constant rather than a new threshold - same
+  "no lower bound, never exempt a past event" reasoning `dashboard.rs`'s
+  own `PULLS_WARNING_WINDOW_DAYS` check already documents), Attention
+  otherwise, and Attention (never a guessed Critical) when the event has no
+  `event_date` at all. Revisit this mapping only if marko explicitly says
+  a category feels mis-prioritized - it's one small match statement in
+  `attention_center.rs`.
+- **Click-to-navigate reuses the ONLY cross-page ticket deep link this app
+  already has**: `Tickets.tsx`'s own `?code=` query param (prefills the
+  search box - see the 2.2.6 entry below for why no richer cross-page
+  ticket filtering exists anywhere in this app yet). Event-level rows
+  (`event_soon`) link to that event's own Event Workspace (`/events/:id`).
+  No new route, no new navigation mechanism was added - if a future ask
+  wants Tickets.tsx to actually auto-open one ticket's edit modal instead
+  of just pre-filling search, that's a real, separate change to
+  `Tickets.tsx` itself, not something to bolt onto this block.
+- **"Reasonable limit + Show all" reuses the Activity tab's existing
+  `ShowMoreToggle` component and `RECENT_LIST_PREVIEW_COUNT` constant
+  verbatim, applied per priority group** - the backend command itself never
+  truncates or paginates; `get_attention_center_impl` always returns the
+  complete list, exactly like `inventory_intelligence.rs`'s own ticket-id
+  lists do. If this list ever grows large enough that returning everything
+  becomes a real cost, that's a backend pagination change to make
+  deliberately, not something to silently cap without telling marko.
+- **No table/list in this app shows tier/section/row as a pricing input,
+  and this task doesn't start now** - `outside_market_price`'s "value" is
+  always the ticket's own already-entered `listing_price_cents`, never a
+  computed/suggested figure, and the market-average comparison itself is
+  entirely inside the already-shipped, unmodified
+  `get_price_checker_summary_impl`.
+
+## 2.2.7 - Ticket metadata: Tier / Level (Section / Row confirmed unchanged)
+
+Focused task, fully resolving the recurring "tickets have no tier/level
+column" gap the "2.2.6" and "2.2.0" entries below both found and flagged as
+checked-not-missing. `tickets.tier` (new nullable `TEXT` column,
+`migrations/024_ticket_tier.sql`) now exists for real - **the 2.2.0/2.2.6
+entries below describing its absence are now historical only**, kept for
+context (they explain WHY it didn't exist yet and what the smallest fix
+would look like, which is exactly what got built here). Things worth
+knowing before touching this column again:
+
+- **`tier` is a separate field from `ticket_type` - this is now the THIRD
+  time this exact mix-up has been flagged in this file** (see "2.2.0" and
+  "2.2.6" entries below). `ticket_type` is a DELIVERY method (E-ticket/PDF/
+  Mobile transfer/Physical/Will call, `TICKET_TYPES` in Orders.tsx); `tier`
+  is a seating/pricing category (VIP/Lower Bowl/Level 200/...), free text,
+  no CHECK enum (same reasoning as migration 010's resale_status/
+  delivery_status - marko's own vocabulary, not a closed set this app
+  should validate). Never conflate the two again.
+- **No standalone "Add Ticket" flow exists anywhere in this app - tickets
+  are only ever created via Order creation.** `tier` is therefore entered
+  in exactly the same two places `section`/`row_label` already are:
+  `OrderFormModal` (order-level, copied onto every ticket the order
+  generates via `insert_order_with_tickets`) and `TicketEditModal`
+  (per-ticket edit afterward, `update_ticket_impl`). If a real
+  per-ticket-at-creation-time flow is ever built, `tier` needs wiring
+  there too - this task only touched the two entry points that already
+  existed for section/row.
+- **Existing tickets got NULL, never a guessed/inferred value** - marko's
+  own explicit instruction ("nevymýšľaj automatické hodnoty tier/section/
+  row pre existujúce tikety"). The migration is a plain `ALTER TABLE ADD
+  COLUMN tier TEXT`, no backfill of any kind.
+- **Column order convention for this task: `tier` sits immediately after
+  `row`/`row_label` everywhere it appears** - Rust struct fields, SQL
+  SELECTs (see below), CSV headers (both the import template and the
+  Settings description text), and both UI forms. Keep new order/ticket
+  fields grouped this way if more get added later; don't scatter them
+  alphabetically or tack them onto the end just because that's less
+  typing.
+- **`csv_export.rs`'s existing "append new SQL columns at the end, read
+  back BY NAME" convention was followed for `tier` too** - the SELECTs in
+  `export_tickets_inner`/`write_sales_csv` got `t.tier` appended at the
+  very end, never inserted where "tier" sits in the human-facing header,
+  so none of the pre-existing POSITIONAL `row.get(i)` indices in either
+  function shifted. Several existing tests in that file DID still need
+  their hardcoded column-index assertions bumped by one, though, because
+  the human-facing CSV header/`write_record` array order (which those
+  tests read back with `csv::Reader`) is intentionally independent from
+  the SQL SELECT order. Re-check every `rows[0][N]`-style assertion in a
+  test file after adding a column there, not just the SQL/struct code -
+  this cost real time this round (5 pre-existing sales-export tests had
+  silently-wrong indices after the insertion, all caught by `cargo test`,
+  none by `cargo check`).
+- **Migration-upgrade tests that seed "pre-existing data" via the CURRENT
+  production `insert_order_with_tickets`/`OrderInput` break the moment
+  that function's SQL references a column added by a LATER migration than
+  the one under test.** `db.rs`'s `migration_004_tests`/`migration_007_tests`
+  both did exactly this (seeding via `insert_order_with_tickets` against a
+  deliberately-partial `MIGRATIONS[..3]`/`MIGRATIONS[..6]` schema) and
+  broke as soon as `tier` (migration 024) was added to that function's
+  INSERT - fixed by seeding those two tests with plain SQL matching their
+  OWN historical schema instead (same pattern `migration_024_tests`
+  already used for its own seeding). If a future column ever gets added
+  to `insert_order_with_tickets`'s INSERT, grep `db.rs`'s migration test
+  modules for `insert_order_with_tickets`/`OrderInput` first and check
+  whether they still apply fewer migrations than exist at the time.
+- **`inventory_intelligence.rs`'s breakdown-by-tier uses "Unknown" for
+  blank/null - deliberately DIFFERENT wording from the section
+  breakdown's own "No section"**, per marko's own explicit instruction for
+  this one field specifically. Don't "harmonize" the two labels later
+  without checking this was intentional.
+- **No bulk-tier-edit was added** - `BulkTicketField`/
+  `BulkTicketUpdateInput` (`tickets.rs`/`models.rs`) deliberately still
+  only cover Section/RowLabel/Seat/ListingPriceCents. Not an oversight;
+  bulk-editing tier wasn't asked for, and adding it means deliberately
+  extending that closed enum, not doing so by default.
+- **No tier column was added to any list/table display** (Tickets.tsx's
+  list, OrderDetail.tsx's ticket table, Sales.tsx, SaleDetail.tsx) -
+  checked first: section/row aren't shown as table columns in any of
+  those today either, so leaving tier out too is consistent, not a gap.
+- **Google Sheets Order sync (`orders_sheet_sync.rs`) is deliberately NOT
+  wired to `tier`** - no sheet column exists for it, and adding one is a
+  separate, out-of-scope decision (which column, what header text, does
+  marko even want it in the sheet at all). The one call site that
+  constructs an `OrderInput` from sheet data sets `tier: None` with a
+  comment explaining this is deliberate, not a bug.
+- **`price_checker_analysis.rs`'s `YourTicketGroup.tier` is STILL always
+  `None` - this is now the second time this exact field has been
+  deliberately left unwired** (see "2.2.0" entry below for the first). The
+  real column now exists, but wiring it into Market Analysis grouping is
+  explicitly a NOT-YET-DONE follow-up per marko's own "pripravit data,
+  nepouzivat este" instruction this round - don't wire it in without him
+  asking for that specific next step, and don't be surprised the data is
+  sitting right there unused if you're reading this before that ask
+  happens.
+
 ## 2.2.6 - Inventory Intelligence block on Overview
 
 Focused, explicitly-scoped task on top of 2.2.5: a compact "Inventory
@@ -54,16 +247,21 @@ worth knowing before touching this again:
   in this app - unifying them was not asked for and would make one of them
   disagree with a number marko already trusts on another tab. Don't merge
   these into one "listing price" concept without asking first.
-- **No "by tier" breakdown - checked, not missing, same gap 2.2.0's own
-  entry above already found.** `tickets` has no tier/level column anywhere
-  in the schema; `ticket_type` is a delivery method (E-ticket/PDF/Mobile
-  transfer/Physical/Will call), not a price tier. Per marko's own explicit
-  instruction this round ("ak niektorý údaj už databáza spoľahlivo nevie
-  vyrátať, nevymýšľaj fallback dáta"), this breakdown is simply omitted,
-  with a plain-text note in the UI saying so. Smallest fix if marko wants
-  it for real: a new nullable `tickets.tier` column plus UI to set it
-  (Add/Edit ticket forms, CSV import mapping) - a real migration + several
-  small UI touch points, not a quick add.
+- **HISTORICAL, superseded by 2.2.7 above: "No 'by tier' breakdown" is no
+  longer true.** `tickets.tier` exists now (migration 024) and the
+  breakdown shows it for real - see 2.2.7's own entry above. The original
+  note is kept below for context (it correctly predicted the smallest fix,
+  which is exactly what 2.2.7 built). Original text: checked, not missing,
+  same gap 2.2.0's own entry above already found. `tickets` has no
+  tier/level column anywhere in the schema; `ticket_type` is a delivery
+  method (E-ticket/PDF/Mobile transfer/Physical/Will call), not a price
+  tier. Per marko's own explicit instruction that round ("ak niektorý údaj
+  už databáza spoľahlivo nevie vyrátať, nevymýšľaj fallback dáta"), this
+  breakdown was simply omitted, with a plain-text note in the UI saying
+  so. Smallest fix if marko wants it for real: a new nullable
+  `tickets.tier` column plus UI to set it (Add/Edit ticket forms, CSV
+  import mapping) - a real migration + several small UI touch points, not
+  a quick add.
 - **Two numeric judgment calls, neither given an exact number by marko -
   both easy to tune, both isolated to one `const` each in
   `inventory_intelligence.rs`:** `EVENT_SOON_DAYS = 2` (marko said "48h";
@@ -427,7 +625,11 @@ few things worth knowing before touching this area again:
   "Mobile transfer"/"Physical"/"Will call" - see `TICKET_TYPES`,
   Orders.tsx). Do not wire `ticket_type` in as a tier source without
   first adding a REAL tier/level column to `tickets` - it would silently
-  produce nonsense groupings.
+  produce nonsense groupings. **Update, 2.2.7: that real column now
+  exists (`tickets.tier`, migration 024) - but this field is STILL
+  deliberately `None`, unwired on purpose per marko's own "prepare, don't
+  use yet" instruction. See 2.2.7's own entry above before changing
+  this.**
 - **`compute_market_analysis` is the first command that needs both
   `AppState::price_scanner_sessions` and `AppState::db` - it locks
   `price_scanner_sessions` just long enough to clone the session's

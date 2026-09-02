@@ -34,13 +34,18 @@
 //!   (`market_average_price_cents.is_some()`), matching marko's own explicit
 //!   "iba ak uz existuju data z Price Checker/Market Analysis".
 //!
-//! Deliberately NOT included: a breakdown "by tier". `tickets` has no tier/
-//! level column anywhere in this schema (confirmed - see PROTECTED_AREAS.md's
-//! "2.2.0" entry and `YourTicketGroup.tier`'s own doc comment in models.rs,
-//! which hit this exact gap before) - inventing one from `section` or
-//! `ticket_type` (a DELIVERY method, not a price tier) would silently produce
-//! nonsense groupings. The frontend says so in plain text rather than showing
-//! a fake/empty breakdown - see `InventoryIntelligence`'s own doc comment.
+//! 2.2.7: also includes a breakdown "by tier/level", where until now
+//! `tickets` had no tier/level column anywhere in this schema (see
+//! PROTECTED_AREAS.md's "2.2.0" entry and `YourTicketGroup.tier`'s own doc
+//! comment in models.rs, which hit this exact gap before marko's 2.2.7
+//! "Ticket metadata: Tier / Level" task added `tickets.tier`, migration
+//! 024). Grouped exactly like the section breakdown below, over that same
+//! real, already-stored value - never inferred from `section` or
+//! `ticket_type` (a DELIVERY method, not a price tier - see migration 024's
+//! own doc comment for that recurring mix-up). Blank/NULL groups as
+//! "Unknown", deliberately different wording from the section breakdown's
+//! own "No section" - marko's explicit instruction for this one field. See
+//! `InventoryIntelligence`'s own doc comment (models.rs).
 
 use crate::commands::price_checker::get_price_checker_summary_impl;
 use crate::db::AppState;
@@ -59,7 +64,11 @@ use tauri::State;
 /// `UPCOMING_WARNING_WINDOW_DAYS` already use for event urgency, rather than
 /// inventing hour-level precision the schema doesn't have. Flagged in
 /// REDESIGN-2.2.6-REPORT.md as an interpretation, not a data gap.
-const EVENT_SOON_DAYS: i64 = 2;
+// 2.2.8: `pub(crate)` (was private) so the new global Attention Center
+// (commands::attention_center) can reuse this EXACT constant instead of
+// defining a second one that could drift - see that module's own doc
+// comment. No behavior change here.
+pub(crate) const EVENT_SOON_DAYS: i64 = 2;
 
 /// How far a ticket's own listing price may sit from `market_average_price_
 /// cents` before it counts as "significantly outside market price" - a
@@ -72,6 +81,9 @@ struct TicketRow {
     id: i64,
     status: String,
     section: Option<String>,
+    /// 2.2.7: `tickets.tier` (migration 024) - see this module's doc
+    /// comment.
+    tier: Option<String>,
     currency: String,
     total_cost_cents: i64,
     listing_price_cents: Option<i64>,
@@ -94,6 +106,11 @@ fn map_ticket_row(row: &Row) -> rusqlite::Result<TicketRow> {
         total_cost_cents: row.get(4)?,
         listing_price_cents: row.get(5)?,
         purchase_date: row.get(6)?,
+        // Appended at the end (index 7) rather than inserted alongside
+        // `section` above, so none of the existing positional indices 0-6
+        // shift - same convention csv_export.rs documents explicitly for
+        // its own new-column additions.
+        tier: row.get(7)?,
     })
 }
 
@@ -191,7 +208,7 @@ pub(crate) fn get_inventory_intelligence_impl(
         let mut stmt = conn.prepare(
             "SELECT t.id, t.status, t.section, t.currency,
                     t.purchase_cost_cents + t.purchase_fees_cents + t.other_costs_cents,
-                    t.listing_price_cents, o.purchase_date
+                    t.listing_price_cents, o.purchase_date, t.tier
              FROM tickets t
              JOIN orders o ON o.id = t.order_id
              WHERE t.event_id = ?1",
@@ -337,6 +354,25 @@ pub(crate) fn get_inventory_intelligence_impl(
         },
     ];
 
+    // ---- Breakdown by tier/level (unsold tickets) -----------------------------
+    // 2.2.7: `tickets.tier` (migration 024) - see this module's doc comment.
+    // "Unknown" (NOT "No section"'s wording) for blank/null - marko's own
+    // explicit instruction for this one field.
+    let breakdown_by_tier = group_rows(
+        &unsold,
+        |t| {
+            t.tier
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Unknown")
+                .to_string()
+        },
+        |t| t.id,
+        |t| t.total_cost_cents,
+        |t| t.currency.as_str(),
+    );
+
     // ---- Breakdown by section (unsold tickets) --------------------------------
     let breakdown_by_section = group_rows(
         &unsold,
@@ -366,6 +402,7 @@ pub(crate) fn get_inventory_intelligence_impl(
         kpis,
         aging,
         attention,
+        breakdown_by_tier,
         breakdown_by_section,
         breakdown_by_marketplace,
         unsold_ticket_ids,
@@ -444,6 +481,40 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Same as `seed_ticket` above, plus a `tier` value - a separate helper
+    /// rather than a new parameter on `seed_ticket` itself, so every existing
+    /// call site (which has nothing to do with tier) stays untouched.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_ticket_with_tier(
+        conn: &Connection,
+        event_id: i64,
+        order_id: i64,
+        section: Option<&str>,
+        tier: Option<&str>,
+        status: &str,
+        purchase_cost_cents: i64,
+        listing_price_cents: Option<i64>,
+        currency: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO tickets (code, event_id, order_id, section, tier, purchase_cost_cents, listing_price_cents, currency, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                next_code("TKT"),
+                event_id,
+                order_id,
+                section,
+                tier,
+                purchase_cost_cents,
+                listing_price_cents,
+                currency,
+                status
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
     // `test_conn()` runs every real migration, including 014_price_checker's
     // own seeded rows ("Vivid Seats", "Ticombo", ...) - so a test asking for
     // one of those familiar names by name must reuse the existing row
@@ -475,6 +546,7 @@ mod tests {
         assert_eq!(result.kpis.current_listed_value_cents, 0);
         assert!(result.aging.iter().all(|b| b.ticket_count == 0));
         assert!(result.attention.iter().all(|a| a.count == 0));
+        assert!(result.breakdown_by_tier.is_empty());
         assert!(result.breakdown_by_section.is_empty());
         assert!(result.breakdown_by_marketplace.is_empty());
     }
@@ -669,6 +741,30 @@ mod tests {
         assert_eq!(a1.total_cents, 3000);
         let none_group = result.breakdown_by_section.iter().find(|g| g.label == "No section").unwrap();
         assert_eq!(none_group.ticket_count, 1);
+    }
+
+    #[test]
+    fn breakdown_by_tier_groups_unsold_tickets_and_labels_blanks_as_unknown() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, None);
+        let order_id = seed_order(&conn, event_id, "2026-01-01");
+        seed_ticket_with_tier(&conn, event_id, order_id, None, Some("VIP"), "available", 1000, None, "EUR");
+        seed_ticket_with_tier(&conn, event_id, order_id, None, Some("VIP"), "listed", 2000, None, "EUR");
+        seed_ticket_with_tier(&conn, event_id, order_id, None, None, "available", 500, None, "EUR");
+        seed_ticket_with_tier(&conn, event_id, order_id, None, Some("  "), "available", 300, None, "EUR"); // whitespace-only -> Unknown too
+        seed_ticket_with_tier(&conn, event_id, order_id, None, Some("VIP"), "sold", 999, None, "EUR"); // excluded (sold)
+
+        let result = get_inventory_intelligence_impl(&conn, event_id, NaiveDate::from_ymd_opt(2026, 1, 10).unwrap()).unwrap();
+        let vip = result.breakdown_by_tier.iter().find(|g| g.label == "VIP").unwrap();
+        assert_eq!(vip.ticket_count, 2);
+        assert_eq!(vip.total_cents, 3000);
+        let unknown_group = result.breakdown_by_tier.iter().find(|g| g.label == "Unknown").unwrap();
+        assert_eq!(unknown_group.ticket_count, 2, "both the NULL tier and the whitespace-only tier land here");
+        assert_eq!(
+            result.breakdown_by_section.iter().find(|g| g.label == "No section").unwrap().ticket_count,
+            4,
+            "the tier and section breakdowns are independent - all 4 unsold tickets here have no section"
+        );
     }
 
     #[test]

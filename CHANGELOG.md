@@ -16,6 +16,82 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.2.8 - Dashboard global "Attention Center"
+
+Focused task on top of 2.2.6/2.2.7: a new compact Dashboard block (Activity
+tab) listing individual things across EVERY event that currently need a
+look, grouped by priority (Critical/Attention/Info) and sorted by priority
+then soonest event. See `REDESIGN-2.2.8-REPORT.md` for the full report
+(Slovak) and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.8" entry for the
+judgment calls behind it.
+
+- **New backend command**: `get_attention_center`
+  (`commands/attention_center.rs`, new file) - no migration, no new
+  dependency.
+- **Four of five categories reuse 2.2.6's exact per-event Inventory
+  Intelligence "Attention" rules** (event within 2 days with unsold
+  tickets, unsold ticket with no listing price, unsold ticket with no
+  active listing, unsold ticket priced 20%+ off market average - only with
+  real Price Checker data), flattened into individual clickable rows.
+- **New fifth category**: sold ticket whose `delivery_status` isn't
+  literally `"Delivered"` yet - reuses the exact convention 2.0.66's
+  "Completed" indicator already established; a refund excludes itself
+  automatically (ticket reverts to `available`).
+- **Navigation**: reuses `Tickets.tsx`'s existing `?code=` deep link for
+  ticket-level rows, and `/events/:id` for the one event-level category
+  (`event_soon`) - no new route/navigation mechanism.
+- **Display**: reuses the Activity tab's existing `ShowMoreToggle`/
+  `RECENT_LIST_PREVIEW_COUNT` pattern per priority group - the backend
+  never truncates.
+- Deliberately does NOT touch the existing Dashboard alert bell/"Attention"
+  cards (pulls/pending sales/missing listing price by order/upcoming
+  events) - a separate, additional block, not a replacement.
+- No automatic pricing/repricing anywhere; `tier`/`section`/`row` are never
+  used as a pricing factor.
+- **+10 new Rust unit tests** (event-soon in/out of window, unsold ticket
+  without active listing, unsold ticket without listing price, market
+  alert only with real Price Checker data, sold-undelivered fires/excludes
+  delivered/excludes refunded, sold-undelivered priority window, sold-out
+  event still flags undelivered tickets, same ticket under 2 categories
+  never twice under 1, priority+date sort order). Full suite: 995 passed /
+  0 failed / 3 ignored.
+
+## 2.2.7 - Ticket metadata: Tier / Level
+
+Focused task on top of 2.2.6: every ticket can now optionally carry a
+tier/level value (e.g. "VIP", "Lower Bowl", "Level 200"), kept strictly
+separate from `ticket_type` (a delivery method, not a price tier - the
+same mix-up flagged twice before, now resolved for good). See
+`REDESIGN-2.2.7-REPORT.md` for the full report (Slovak) and
+`PROJECT_STATE/PROTECTED_AREAS.md`'s "2.2.7" entry for the judgment calls
+behind it.
+
+- **New column**: `tickets.tier TEXT`, nullable (`migrations/
+  024_ticket_tier.sql`, forward-only). Every existing ticket got NULL - no
+  guessed/inferred values, per marko's own explicit instruction.
+- **Entry points**: set at order creation (`OrderFormModal`, copied onto
+  every generated ticket, same as section/row) and editable per-ticket
+  afterward (`TicketEditModal`) - both small, plain text fields, no
+  redesign.
+- **CSV**: import accepts `tier` (or `level` as a synonym); fully backward
+  compatible with CSVs that predate this column. Export (tickets, sales,
+  and the downloadable order-import template) all include `tier`, right
+  after `row`.
+- **Inventory Intelligence** (2.2.6) gained a real "By tier" breakdown -
+  blank/null shows as "Unknown"; clicking a tier group filters the Tickets
+  table exactly like the section/marketplace breakdowns already do.
+- **Deliberately not wired up this round** (prepare-the-data, not
+  wire-it-in-yet): Market Analysis / Repricing's `YourTicketGroup.tier`
+  still always reports `None`; no bulk-tier-edit action; no tier column
+  added to any list/table view; Google Sheets Order sync not wired to
+  `tier`. Zero changes to refund/resell, `batch_id`, money/cents logic,
+  Orders/Sales/Finance core logic, Listings, or Price Checker scraping.
+- Tests: +13 new Rust unit tests (migration upgrade/fresh-db, ticket
+  create/update with tier, CSV import old/new format + the `level`
+  synonym, CSV export tier presence for tickets/sales/template, Inventory
+  Intelligence tier grouping). Full suite: 985 passed / 0 failed / 3
+  ignored. `tsc -b` and `npm run build` both clean.
+
 ## 2.2.6 - Inventory Intelligence for Event Workspace
 
 Focused task on top of 2.2.5: a compact "Inventory Intelligence" block

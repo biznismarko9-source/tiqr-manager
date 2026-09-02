@@ -774,6 +774,7 @@ function OrderFormModal({
   const [customTicketType, setCustomTicketType] = useState(false);
   const [section, setSection] = useState("");
   const [rowLabel, setRowLabel] = useState("");
+  const [tier, setTier] = useState("");
   const [seatsRaw, setSeatsRaw] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -808,6 +809,7 @@ function OrderFormModal({
     setCustomTicketType(false);
     setSection("");
     setRowLabel("");
+    setTier("");
     setSeatsRaw("");
     setNotes("");
     setError(null);
@@ -976,6 +978,7 @@ function OrderFormModal({
       ticketType: ticketType.trim() || null,
       section: section || null,
       rowLabel: rowLabel || null,
+      tier: tier || null,
       seats: seats.length > 0 ? seats : null,
     };
 
@@ -1085,6 +1088,9 @@ function OrderFormModal({
           </Field>
           <Field label="Row">
             <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
+          </Field>
+          <Field label="Tier / Level">
+            <Input value={tier} onChange={(e) => setTier(e.target.value)} />
           </Field>
 
           <div className="col-span-2">

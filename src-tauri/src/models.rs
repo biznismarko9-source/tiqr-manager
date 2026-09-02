@@ -391,6 +391,14 @@ pub struct OrderInput {
     pub ticket_type: Option<String>,
     pub section: Option<String>,
     pub row_label: Option<String>,
+    /// 2.2.7: seating/pricing tier/level - see `Ticket::tier`'s own doc
+    /// comment (models.rs) for why this is a separate field from
+    /// `ticket_type` above. Set once here, copied onto every ticket this
+    /// order generates - same "set once at creation, editable per-ticket
+    /// afterwards via TicketUpdateInput" convention already established by
+    /// `ticket_type`/`section`/`row_label` above. There is no separate "Add
+    /// Ticket" flow in this app; tickets only ever come from an order.
+    pub tier: Option<String>,
     /// Individual seat labels, one per generated ticket, in order. When
     /// provided (non-empty) its length must equal `quantity` - each ticket
     /// gets `seats[i]`. Leave empty/absent to generate tickets without a
@@ -487,6 +495,14 @@ pub struct Ticket {
     pub order_code: String,
     pub section: Option<String>,
     pub row_label: Option<String>,
+    /// 2.2.7: seating/pricing TIER or LEVEL (e.g. "VIP", "Lower Bowl",
+    /// "Level 200", "Category 1") - free text, deliberately a SEPARATE field
+    /// from `ticket_type` below, which is a DELIVERY method (E-ticket/PDF/
+    /// Mobile transfer/Physical/Will call) and has nothing to do with
+    /// seating/pricing category. See migration 024's own doc comment for the
+    /// full reasoning and the two prior places this exact mix-up was already
+    /// flagged before this column existed.
+    pub tier: Option<String>,
     pub seat: Option<String>,
     pub ticket_type: Option<String>,
     pub purchase_cost_cents: i64,
@@ -528,6 +544,8 @@ pub struct Ticket {
 pub struct TicketUpdateInput {
     pub section: Option<String>,
     pub row_label: Option<String>,
+    /// 2.2.7 - see `Ticket::tier`'s own doc comment.
+    pub tier: Option<String>,
     pub seat: Option<String>,
     pub ticket_type: Option<String>,
     pub listing_price_cents: Option<i64>,
@@ -1999,19 +2017,28 @@ pub struct ComparableReferenceInput {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct YourTicketGroup {
-    /// Always `None` today, deliberately - checked against the real
-    /// `tickets` schema before writing this (marko's own spec, point #18:
-    /// investigate first, never invent a field that doesn't exist).
-    /// `tickets` has `section`/`row_label`/`seat`, but no tier/level column
-    /// at all; the one field that could be mistaken for it, `ticket_type`,
-    /// is actually a DELIVERY method (`TICKET_TYPES` in Orders.tsx:
-    /// "E-ticket"/"PDF"/"Mobile transfer"/"Physical"/"Will call"), not a
-    /// seating tier - grouping "Your Tickets" by it would silently produce
-    /// nonsense groups. Kept as `Option<String>` (matching `NormalizedListing
-    /// ::tier` and `ComparableReferenceInput::tier`) so a real tier source
-    /// can be wired in later without a breaking shape change, not because
-    /// one exists today - see PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md's
-    /// UNAVAILABLE DATA section.
+    /// Still always `None` as of 2.2.7 - unchanged by this field's own
+    /// original reasoning below, which no longer fully holds: `tickets` DOES
+    /// now have a real `tier` column (migration 024, `Ticket::tier`), added
+    /// for the Event Workspace/Inventory Intelligence task, not for Market
+    /// Analysis. Wiring that real, already-stored value into "Your Tickets"
+    /// grouping here is a deliberate, NOT-YET-DONE follow-up (marko's own
+    /// 2.2.7 instruction: "pripravit data tak, aby ich neskor vedel pouzivat
+    /// Market Analysis" - prepare the data, don't wire it in yet) - out of
+    /// scope for a ticket-metadata task that explicitly excluded this
+    /// module. Original reasoning, kept for context: checked against the
+    /// real `tickets` schema before writing this (marko's own spec, point
+    /// #18: investigate first, never invent a field that doesn't exist) -
+    /// `tickets` had `section`/`row_label`/`seat` but no tier/level column at
+    /// all; the one field that could be mistaken for it, `ticket_type`, is
+    /// actually a DELIVERY method (`TICKET_TYPES` in Orders.tsx: "E-ticket"/
+    /// "PDF"/"Mobile transfer"/"Physical"/"Will call"), not a seating tier -
+    /// grouping "Your Tickets" by it would silently produce nonsense groups.
+    /// Kept as `Option<String>` (matching `NormalizedListing::tier` and
+    /// `ComparableReferenceInput::tier`) so a real tier source could be wired
+    /// in later without a breaking shape change - see
+    /// PRICE-CHECKER-MARKET-ANALYSIS-2.2-REPORT.md's UNAVAILABLE DATA
+    /// section.
     pub tier: Option<String>,
     pub section: Option<String>,
     pub row: Option<String>,
@@ -2636,19 +2663,25 @@ pub struct InventoryBreakdownGroup {
 /// needs, in one round trip. See commands::inventory_intelligence's module
 /// doc comment for the full design.
 ///
-/// Deliberately does NOT include a "by tier" breakdown - `tickets` has no
-/// tier/level column anywhere in this schema (confirmed - see
-/// PROTECTED_AREAS.md's "2.2.0" entry, `YourTicketGroup.tier`'s own doc
-/// comment, and this module's own doc comment), so it cannot be computed
-/// without inventing data. The frontend says so in plain text next to the
-/// section/marketplace breakdowns rather than showing a fake/empty one -
-/// same "say plainly it isn't tracked yet" precedent as 2.2.3's Listings tab.
+/// 2.2.7: now includes a "by tier" breakdown - `tickets.tier` (migration
+/// 024) fixed the gap this struct's own doc comment used to describe here
+/// (no tier/level column anywhere in this schema). Same shape/clickability
+/// as `breakdown_by_section`, grouping unsold tickets by their real, already-
+/// stored `tier` value (blank/NULL -> "Unknown", per marko's own explicit
+/// instruction - deliberately a DIFFERENT label from section's own "No
+/// section", since he asked for "Unknown" specifically here). No fallback/
+/// invented data either way: before 2.2.7 the field didn't exist and this
+/// breakdown was omitted entirely (a plain-text UI note said so); now it
+/// exists and groups by whatever marko has actually entered - a ticket
+/// nobody has tiered yet lands in "Unknown", it does not disappear or get
+/// guessed at.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InventoryIntelligence {
     pub kpis: InventoryIntelligenceKpis,
     pub aging: Vec<AgingBucket>,
     pub attention: Vec<AttentionItem>,
+    pub breakdown_by_tier: Vec<InventoryBreakdownGroup>,
     pub breakdown_by_section: Vec<InventoryBreakdownGroup>,
     pub breakdown_by_marketplace: Vec<InventoryBreakdownGroup>,
     /// Every unsold (available+listed) ticket id - the click target for
@@ -2657,4 +2690,53 @@ pub struct InventoryIntelligence {
     pub unsold_ticket_ids: Vec<i64>,
     /// Every sold ticket id - the click target for "Sell-through %".
     pub sold_ticket_ids: Vec<i64>,
+}
+
+/// One row in the Dashboard's global "Attention Center" (2.2.8) - see
+/// `commands::attention_center`'s module doc comment for the full design.
+/// Unlike `AttentionItem` above (per-event, always exactly 4 rows even at
+/// count 0), this is a flat list of INDIVIDUAL things needing a look across
+/// EVERY event - only present when they actually apply. An empty `Vec` from
+/// the command means genuinely nothing needs attention right now, not a
+/// hidden zero.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionCenterItem {
+    /// Stable dedup id: `"{category}:{eventId}"` for the one event-level
+    /// category (`event_soon`), `"{category}:{ticketId}"` for the 4
+    /// ticket-level ones. Never reused across categories, so the same
+    /// ticket can legitimately appear more than once under DIFFERENT
+    /// reasons (marko's own explicit allowance - "rôzne dôvody môžu byť
+    /// samostatné položky") while never appearing twice under the SAME one.
+    pub key: String,
+    /// One of: "event_soon", "missing_listing_price", "no_active_listing",
+    /// "outside_market_price", "sold_undelivered" - same "backend sends a
+    /// stable key, frontend owns the display copy" split `AttentionItem.key`
+    /// already uses.
+    pub category: String,
+    /// One of "critical" / "attention" / "info" - see
+    /// `commands::attention_center`'s module doc comment for the exact
+    /// mapping (a new judgment call this task makes, marko's spec named the
+    /// 3 tiers but not which category goes where) and why.
+    pub priority: String,
+    pub event_id: i64,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    /// `None` only for "event_soon", which is deliberately aggregated per
+    /// EVENT rather than per ticket (one row per soon-event, not one per
+    /// unsold ticket on it) - see this module's doc comment for why. Real
+    /// for the other 4 categories, which are inherently per-ticket.
+    pub ticket_id: Option<i64>,
+    pub ticket_code: Option<String>,
+    /// Human-readable, backend-owned (unlike `AttentionItem.key`, this one
+    /// has no fixed enum of frontend copy to select from - the exact count/
+    /// wording varies per row, e.g. "3 unsold tickets - event date
+    /// approaching").
+    pub reason: String,
+    /// A basic supporting value, where one exists and is already real data -
+    /// currently only populated for "outside_market_price" (that ticket's
+    /// own, already-entered listing price - never a suggested/computed one).
+    /// `None` for every other category rather than a fabricated number.
+    pub amount_cents: Option<i64>,
+    pub currency: Option<String>,
 }

@@ -1,0 +1,39 @@
+-- 024_ticket_tier
+-- 2.2.7: marko's "Ticket metadata: Tier / Level" task. Adds ONE new nullable
+-- column - no data rewrite, no default value beyond SQLite's own implicit
+-- NULL for an ADD COLUMN with no DEFAULT clause, so every ticket that exists
+-- before this migration runs simply reads back `tier = NULL` afterwards.
+-- Forward-only, same as every other migration in this app; nothing here
+-- touches existing rows.
+--
+-- `tier`, a new column - NOT `ticket_type` (which already exists on this
+-- table since migration 001). marko was explicit that these must never be
+-- confused: `ticket_type` is a DELIVERY method (E-ticket/PDF/Mobile
+-- transfer/Physical/Will call - see TICKET_TYPES, Orders.tsx), completely
+-- unrelated to seating/pricing category. This exact mix-up was already
+-- flagged twice before this migration existed - once in
+-- PROTECTED_AREAS.md's "2.2.0" entry (Price Checker Market Analysis) and
+-- again in the "2.2.6" entry (Inventory Intelligence) - both times the
+-- conclusion was "don't invent a tier from ticket_type, add a real column
+-- instead." This migration is that real column.
+--
+-- Free text, deliberately not a CHECK-constrained enum: a "tier" label is
+-- whatever the venue/marketplace calls it ("VIP", "Lower Bowl", "Level 200",
+-- "Category 1", ...) - there is no fixed vocabulary to validate against, same
+-- reasoning migration 010 already gave for `resale_status`/`delivery_status`
+-- staying plain TEXT.
+--
+-- Lives on `tickets`, alongside `section`/`row_label`/`seat` - all four
+-- describe the physical/pricing placement of one ticket, and (like those
+-- three) a value entered once at order-creation time is copied onto every
+-- ticket that order generates, then independently editable per-ticket
+-- afterwards via the existing single-ticket edit flow. See
+-- `OrderInput.tier`/`TicketUpdateInput.tier` (models.rs) for both entry
+-- points - no separate "Add Ticket" screen exists in this app; tickets are
+-- always created as part of an order.
+--
+-- No automatic backfill, no AI/stadium mapping, no derivation from `section`
+-- or `ticket_type` - marko's own explicit instruction ("nevymýšľaj
+-- automatické hodnoty"). Existing tickets simply have no tier until someone
+-- (or a future CSV re-import) sets one by hand.
+ALTER TABLE tickets ADD COLUMN tier TEXT;

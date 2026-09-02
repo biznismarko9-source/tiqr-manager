@@ -553,7 +553,7 @@ export default function Settings() {
                   <p>
                     <span className="font-medium text-slate-500 dark:text-slate-400">Required format:</span> event,
                     purchase_date, supplier, platform, quantity, unit_price, fees, other_costs, currency,
-                    payment_status, ticket_type, section, row, seats, notes.
+                    payment_status, ticket_type, section, row, tier, seats, notes.
                   </p>
                   <p>
                     "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it out to import

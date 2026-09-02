@@ -127,6 +127,13 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
         let ticket_type = field(&header_map, &record, &["ticket_type"]);
         let section = field(&header_map, &record, &["section"]);
         let row_label = field(&header_map, &record, &["row", "row_label"]);
+        // 2.2.7: optional, new - accepts either header name since marko
+        // calls this field "tier / level" interchangeably. Absent entirely
+        // from an older CSV (any file written before this column existed),
+        // `field()` simply returns `None` here exactly like every other
+        // optional column already does - no version detection, no separate
+        // "old format" code path needed for backward compatibility.
+        let tier = field(&header_map, &record, &["tier", "level"]);
         let seats_raw = field(&header_map, &record, &["seats", "seat"]);
         let supplier_name = field(&header_map, &record, &["supplier"]);
         let platform_name = field(&header_map, &record, &["platform"]);
@@ -255,6 +262,7 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
                 ticket_type: ticket_type.map(|s| s.to_string()),
                 section: section.map(|s| s.to_string()),
                 row_label: row_label.map(|s| s.to_string()),
+                tier: tier.map(|s| s.to_string()),
                 seats: seats.filter(|s| !s.is_empty()),
             })
         } else {
@@ -467,6 +475,70 @@ mod tests {
         let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
         assert!(result.errors.is_empty());
         assert_eq!(result.imported_tickets, 2);
+    }
+
+    #[test]
+    fn old_format_csv_without_a_tier_column_still_imports_with_tier_left_null() {
+        // 2.2.7: an old CSV, exported/hand-written before `tier` existed,
+        // must keep importing exactly as it always has - `field()` simply
+        // returns `None` for a header that isn't in the file at all, so no
+        // separate "old format" branch is needed anywhere in this module.
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price,section,row\n\
+             Concert A,2026-01-01,2,15.00,A,12\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.imported_tickets, 2);
+
+        let tiers: Vec<Option<String>> = conn
+            .prepare("SELECT tier FROM tickets ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tiers, vec![None, None], "no tier column in the CSV at all - never fabricated, always NULL");
+    }
+
+    #[test]
+    fn new_format_csv_with_a_tier_column_imports_the_real_value_onto_every_generated_ticket() {
+        // 2.2.7: the new column - every ticket this order generates gets the
+        // SAME tier value, same "set once at order creation, copied onto
+        // every generated ticket" convention section/row/ticket_type already
+        // use.
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv = write_csv(
+            "event,purchase_date,quantity,unit_price,section,row,tier\n\
+             Concert A,2026-01-01,2,15.00,A,12,VIP\n",
+        );
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        assert_eq!(result.imported_tickets, 2);
+
+        let tiers: Vec<Option<String>> = conn
+            .prepare("SELECT tier FROM tickets ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tiers, vec![Some("VIP".to_string()), Some("VIP".to_string())]);
+    }
+
+    #[test]
+    fn tier_column_also_accepts_the_level_header_synonym() {
+        let mut conn = test_conn();
+        seed_event(&conn, "Concert A");
+        let csv =
+            write_csv("event,purchase_date,quantity,unit_price,level\nConcert A,2026-01-01,1,15.00,Lower Bowl\n");
+        let result = import_orders_csv_impl(&mut conn, csv.path().to_str().unwrap()).unwrap();
+        assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+        let tier: Option<String> = conn.query_row("SELECT tier FROM tickets LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(tier, Some("Lower Bowl".to_string()));
     }
 
     #[test]

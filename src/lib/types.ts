@@ -376,6 +376,11 @@ export interface OrderInput {
   ticketType?: string | null;
   section?: string | null;
   rowLabel?: string | null;
+  /** 2.2.7: seating/pricing tier/level (e.g. "VIP", "Lower Bowl", "Level
+   * 200") - free text, separate from `ticketType` above (a DELIVERY method,
+   * not a price tier). Set once here, copied onto every ticket this order
+   * generates - editable per-ticket afterwards via `TicketUpdateInput`. */
+  tier?: string | null;
   /** One seat label per generated ticket, in order. Length must equal quantity if provided. */
   seats?: string[] | null;
 }
@@ -418,6 +423,10 @@ export interface Ticket {
   orderCode: string;
   section: string | null;
   rowLabel: string | null;
+  /** 2.2.7: seating/pricing tier/level - separate from `ticketType` below
+   * (a DELIVERY method, not a price tier). See migration 024's own doc
+   * comment (backend) for the full reasoning. */
+  tier: string | null;
   seat: string | null;
   ticketType: string | null;
   purchaseCostCents: number;
@@ -452,6 +461,8 @@ export interface Ticket {
 export interface TicketUpdateInput {
   section?: string | null;
   rowLabel?: string | null;
+  /** 2.2.7 - see `Ticket.tier`'s own doc comment above. */
+  tier?: string | null;
   seat?: string | null;
   ticketType?: string | null;
   listingPriceCents?: number | null;
@@ -1424,18 +1435,51 @@ export interface InventoryBreakdownGroup {
   currency: string | null;
 }
 
-/** No "by tier" breakdown - tickets have no tier/level field anywhere in
- * this app (only section/row/seat) - see commands/inventory_intelligence.rs's
- * own doc comment. The UI says so in plain text rather than showing a fake
- * one. */
+/** 2.2.7: now includes a "by tier" breakdown - `tickets.tier` (migration
+ * 024) fixed the gap this doc comment used to describe here (no tier/level
+ * column anywhere in this schema). Same shape/clickability as
+ * `breakdownBySection`, grouping unsold tickets by their real, already-
+ * stored `tier` value (blank/null -> "Unknown", deliberately a DIFFERENT
+ * label from section's own "No section" - see commands/
+ * inventory_intelligence.rs's own doc comment). */
 export interface InventoryIntelligence {
   kpis: InventoryIntelligenceKpis;
   aging: AgingBucket[];
   attention: AttentionItem[];
+  breakdownByTier: InventoryBreakdownGroup[];
   breakdownBySection: InventoryBreakdownGroup[];
   breakdownByMarketplace: InventoryBreakdownGroup[];
   unsoldTicketIds: number[];
   soldTicketIds: number[];
+}
+
+/** One row in the Dashboard's global "Attention Center" (2.2.8) - see
+ * commands::attention_center's module doc comment (Rust) for the full
+ * design. Unlike AttentionItem above (per-event, always exactly 4 rows even
+ * at count 0), this is a flat list of INDIVIDUAL things needing a look
+ * across EVERY event - only present when they actually apply. An empty
+ * array means genuinely nothing needs attention right now. */
+export interface AttentionCenterItem {
+  /** Stable dedup id - never reused across categories, so the same ticket
+   * can legitimately appear more than once under DIFFERENT reasons, but
+   * never twice under the SAME one. */
+  key: string;
+  category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered";
+  priority: "critical" | "attention" | "info";
+  eventId: number;
+  eventName: string;
+  eventDate: string | null;
+  /** `null` only for "event_soon", which is deliberately aggregated per
+   * EVENT rather than per ticket - see the Rust module's doc comment. Real
+   * for the other 4 categories. */
+  ticketId: number | null;
+  ticketCode: string | null;
+  /** Backend-owned human text (unlike AttentionItem.key, there's no fixed
+   * per-category copy to select from here - the wording/counts vary per
+   * row). */
+  reason: string;
+  amountCents: number | null;
+  currency: string | null;
 }
 
 /** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
