@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.2.12**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.3.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -29,17 +29,22 @@ are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
 un-bumped, code-labeled-only build first - marko's closing checklist for
 that task didn't ask for a version bump - then bumped for real, same
 session, once he confirmed he wanted the usual release file too. See
-`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 through 2.2.12's own closing
+`PROTECTED_AREAS.md`'s "2.2.6" entry. 2.2.7 through 2.3.0's own closing
 checklists all asked for the full cadence up front, no ambiguity.)
 
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
-  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2-2.2.5:
-  tabbed "Event Workspace" - Overview/Listings/Sales (Finance folded into
-  Sales in 2.2.5), see "Current focus" below and `PROTECTED_AREAS.md`'s
-  "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before adding more event-level
-  functionality anywhere else), Orders,
+  Pages under `src/pages/`: Dashboard, Events (2.3.0: each row's Status
+  badge now also shows a derived lifecycle-phase pill, plus a "Lifecycle
+  phase" filter dropdown - see "Current focus" below), EventDetail
+  (2.2.2-2.2.5: tabbed "Event Workspace" - Overview/Listings/Sales (Finance
+  folded into Sales in 2.2.5), see "Current focus" below and
+  `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
+  adding more event-level functionality anywhere else; 2.3.0: Overview
+  gained an "Event Lifecycle" block above the existing stat cards - current
+  phase, a simple progress indicator, an operational summary line, and a
+  "Next Actions" list - see "Current focus" below), Orders,
   OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail,
   FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
   data, see "Current focus" below), Pulls
@@ -88,6 +93,74 @@ checklists all asked for the full cadence up front, no ambiguity.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**Event Lifecycle / Event Operations (2.3.0).** Marko's own next task after
+2.2.11/2.2.12: "chcem, aby každý event mal jasne čitateľný lifecycle /
+operational status podľa reálnych dát v appke" - one consistent, derived
+"what stage is this event at" phase, with zero new manually-set status field,
+zero migration, and zero backend change of any kind (confirmed by
+`cargo test --lib` below - byte-for-byte the same pass count as 2.2.12).
+
+- **6 phases, not the 7 he sketched as an example** - `UPCOMING -> INVENTORY
+  -> LISTED -> SELLING -> EVENT DAY -> COMPLETED`
+  (`EventLifecyclePhase`/`EVENT_LIFECYCLE_PHASES`/`computeEventLifecyclePhase`,
+  all in `Events.tsx`, imported from there by `EventDetail.tsx` - same
+  "first-named page owns it" convention `FulfillmentCenter.tsx` already
+  established for `isSaleGroupDone`). His proposed `BUYING / INVENTORY` is
+  just `INVENTORY` here (matches this table's own existing
+  Available/Listed/Sold ticket-status vocabulary); his proposed `POST EVENT`
+  is folded into `COMPLETED` - see `PROTECTED_AREAS.md`'s new "2.3.0" entry
+  for exactly why (his own literal COMPLETED rule leaves no gap to place it
+  in without inventing an ungrounded grace-period threshold), and why
+  `CANCELLED` isn't a distinct phase either (it already has its own
+  always-visible Status badge right next to this one).
+- **Pure function of `EventWithStats` alone** - the same DTO `list_events`
+  (Events overview) and `get_event` (Event Workspace) already return, so
+  computing a phase for every row in the Events list costs zero extra
+  IPC/network calls. Order matters, first match wins: done
+  (`isEventLifecycleDone` - status completed/cancelled OR date strictly
+  passed, word-for-word `Orders.tsx`'s own `isEventDone`) -> `event_date ===
+  today` -> `soldTickets > 0` -> `listedTickets > 0` -> `purchasedTickets >
+  0` -> else `upcoming`.
+- **Events overview**: the lifecycle phase renders as a small dot+label pill
+  stacked under the existing Status badge (`EventLifecyclePhaseBadge`) - no
+  new table column, no colgroup change, no redesign. A new "Lifecycle
+  phase" `<Select>` filter sits next to the existing Category/Date/Sort
+  filters, applied client-side, ANDed with (not replacing) the existing
+  Upcoming/Completed tab - the two can legitimately disagree (a still-
+  "upcoming"-status event whose date quietly passed shows COMPLETED phase
+  while still under the Upcoming tab), which is useful signal, not a bug.
+- **Event Workspace (Overview tab)**: a new `EventLifecycleBlock` card at
+  the very top, above the existing stat cards - current phase (color dot +
+  label), a simple 6-segment progress strip (highlights the current phase
+  only, does not claim the event passed through every earlier one - it can
+  jump straight from UPCOMING to COMPLETED), an operational summary line
+  ("N tickets · N listed · N sold · N pending fulfillment"), and a "Next
+  Actions" list. Two small, already-existing endpoints back it, both called
+  the same "fetch independently, keyed on eventId" way
+  `InventoryIntelligenceBlock` already does: `list_sale_groups` (its
+  existing `eventId` filter, already used by `Sales.tsx`/
+  `FulfillmentCenter.tsx`) for the pending-fulfillment count (exactly
+  Fulfillment Center's own `isSaleGroupDone`-based "Pending Sales"
+  definition, scoped to this one event), and `get_attention_center` (the
+  Dashboard's own global Attention Center, filtered client-side to this
+  event's `eventId`) for Next Actions - reusing its existing 5 categories
+  and backend-owned `reason` text rather than inventing any new predicate or
+  copy. Pending fulfillment and "sold, not delivered" are shown regardless
+  of phase, COMPLETED included - the same "never gated by event done" choice
+  `attention_center.rs`'s own `sold_undelivered` category already makes.
+- **Verification**: no `.rs` file touched, so `cargo test --lib` is
+  byte-for-byte unchanged (1006 passed, 0 failed, 3 ignored). Frontend-only
+  logic verified the same way established since 2.2.12 - `tsc -b` +
+  `npm run build` + code-reading, plus a disposable esbuild-bundled Node
+  script (built and run once, then deleted, never part of the repo) that
+  imported the REAL `computeEventLifecyclePhase`/`EVENT_LIFECYCLE_PHASES`/
+  `isSaleGroupDone` and asserted every scenario from marko's own test list
+  (upcoming with/without inventory, with listings, with sales, event day,
+  date passed, completed/cancelled, phase precedence, filter-by-phase, the
+  pending-fulfillment count, and the Next Actions ticket-count aggregation)
+  - 25/25 passed. See `REDESIGN-2.3.0-REPORT.md` and `PROTECTED_AREAS.md`'s
+  new "2.3.0" entry for the full reasoning and every judgment call.
 
 **Fulfillment Center - a new page for post-sale work (2.2.12).** Marko's
 own ČASŤ C, shipped as its own release right after 2.2.11 (same message,

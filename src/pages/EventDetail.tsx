@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
+  AttentionCenterItem,
   EventWithStats,
   FinanceEntry,
   InventoryIntelligence,
@@ -53,8 +54,14 @@ import {
   IconX,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
-import { EventFormModal } from "./Events";
+import {
+  computeEventLifecyclePhase,
+  EVENT_LIFECYCLE_PHASES,
+  EventFormModal,
+  LIFECYCLE_PHASE_DOT,
+} from "./Events";
 import { CURRENCIES } from "./Orders";
+import { isSaleGroupDone } from "./Sales";
 
 // 2.2.4: marko's second follow-up on the Event Workspace. Two independent
 // changes bundled into one release:
@@ -265,6 +272,8 @@ function OverviewTab({
 
   return (
     <div>
+      <EventLifecycleBlock event={event} onSwitchTab={onSwitchTab} />
+
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Tickets" value={String(s.purchasedTickets)} />
         <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
@@ -408,6 +417,156 @@ function OverviewTab({
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Event Lifecycle (2.3.0) - "what stage is this event at", shown at the very
+// top of Overview per marko's own request ("Current phase, jednoduchý
+// progress/lifecycle indicator, základný operational summary"). The phase
+// itself (computeEventLifecyclePhase) is a pure function of `event` alone -
+// see Events.tsx for the full rule and why POST EVENT was folded into
+// COMPLETED - so it costs nothing extra to compute here. This block's own
+// two fetches are for the two numbers that pure function deliberately does
+// NOT fold in (pending fulfillment, Next Actions) - both reuse existing,
+// already-shipped endpoints, called the same "fetch independently, keyed on
+// eventId" way InventoryIntelligenceBlock below already does:
+//   - list_sale_groups, with its existing eventId filter (Sales.tsx/
+//     FulfillmentCenter.tsx already call this exact command) - counts this
+//     event's own sale batches that Fulfillment Center's own isSaleGroupDone
+//     would call NOT done yet ("pending fulfillment").
+//   - get_attention_center, the Dashboard's own GLOBAL Attention Center,
+//     filtered client-side to this one event's items. 2.2.9 removed this
+//     block's OWN per-event attention list in favor of that global view
+//     ("fully superseded... which already covers every one of these same
+//     categories") - this is not a reversal of that call: NEXT ACTIONS below
+//     is a compact, lifecycle-scoped restatement (per marko's explicit new
+//     instruction: "Použi už existujúce Attention Center... dáta"), not a
+//     second copy of the Dashboard's own fuller per-order rows, and nothing
+//     is computed here that get_attention_center doesn't already compute.
+// No new business logic anywhere in this block - every predicate (is a sale
+// group done, does an attention item belong to this event) already existed
+// before 2.3.0.
+// ---------------------------------------------------------------------------
+
+// 2.3.0: fixed per-category presentation for the 4 ticket-grouped Attention
+// Center categories - a short noun phrase plus which tab "fix this" points
+// to. Deliberately excludes event_soon (shown separately below via its own
+// already-correct `reason` text - it has no ticketIds to count, and Overview
+// is already the page it would point back to). This is presentation only
+// (labels + tab targets), not a new rule for WHEN something needs attention -
+// that determination is still made entirely by attention_center.rs.
+const NEXT_ACTION_CONFIG: { category: AttentionCenterItem["category"]; noun: (n: number) => string; tab: WorkspaceTab }[] = [
+  { category: "no_active_listing", noun: (n) => `${n} ticket${n === 1 ? "" : "s"} not listed`, tab: "listings" },
+  { category: "missing_listing_price", noun: (n) => `${n} ticket${n === 1 ? "" : "s"} missing a listing price`, tab: "listings" },
+  { category: "sold_undelivered", noun: (n) => `${n} sold ticket${n === 1 ? "" : "s"} not delivered`, tab: "sales" },
+  { category: "outside_market_price", noun: (n) => `${n} ticket${n === 1 ? "" : "s"} priced outside the market range`, tab: "sales" },
+];
+
+function EventLifecycleBlock({ event, onSwitchTab }: { event: EventWithStats; onSwitchTab: (tab: WorkspaceTab) => void }) {
+  const toast = useToast();
+  const [saleGroups, setSaleGroups] = useState<SaleGroup[] | null>(null);
+  const [attentionItems, setAttentionItems] = useState<AttentionCenterItem[] | null>(null);
+
+  useEffect(() => {
+    setSaleGroups(null);
+    setAttentionItems(null);
+    api.listSaleGroups({ eventId: event.id }).then(setSaleGroups).catch((e) => toast.error(errMsg(e)));
+    api.getAttentionCenter().then(setAttentionItems).catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event.id]);
+
+  const phase = computeEventLifecyclePhase(event);
+  const phaseLabel = EVENT_LIFECYCLE_PHASES.find((p) => p.key === phase)?.label ?? phase;
+  const s = event.stats;
+
+  // 2.3.0: this event's own sale batches not yet fully paid+delivered+
+  // completed - exactly Fulfillment Center's "Pending Sales" definition
+  // (isSaleGroupDone, imported from Sales.tsx), scoped to this one event.
+  // Deliberately NOT gated by this event's own phase - a COMPLETED event can
+  // still have pending fulfillment, same reasoning sold_undelivered below
+  // already applies globally (see this block's own doc comment above).
+  const pendingFulfillment = saleGroups ? saleGroups.filter((g) => !isSaleGroupDone(g)).length : null;
+
+  const eventAttentionItems = (attentionItems ?? []).filter((i) => i.eventId === event.id);
+  const eventSoon = eventAttentionItems.find((i) => i.category === "event_soon") ?? null;
+  const nextActions: { key: string; label: string; onClick: (() => void) | null }[] = [];
+  if (eventSoon) {
+    // Already exactly the right granularity (one per event) and already
+    // correctly worded by the backend - shown verbatim, same as Dashboard's
+    // own AttentionCenterRow does for every category's `reason` text.
+    nextActions.push({ key: "event_soon", label: eventSoon.reason, onClick: null });
+  }
+  NEXT_ACTION_CONFIG.forEach(({ category, noun, tab }) => {
+    const ticketCount = eventAttentionItems
+      .filter((i) => i.category === category)
+      .reduce((sum, i) => sum + i.ticketIds.length, 0);
+    if (ticketCount > 0) {
+      nextActions.push({ key: category, label: noun(ticketCount), onClick: () => onSwitchTab(tab) });
+    }
+  });
+
+  const loading = saleGroups === null || attentionItems === null;
+
+  return (
+    <Card className="mb-6 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Event Lifecycle</p>
+        <div className="flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 rounded-full ${LIFECYCLE_PHASE_DOT[phase]}`} />
+          <span className="text-base font-semibold text-slate-900 dark:text-slate-100">{phaseLabel}</span>
+        </div>
+      </div>
+
+      {/* Simple progress indicator - shows WHICH stage this event is
+          currently at among the fixed sequence, not a claim that it passed
+          through every earlier one (an event can jump straight from
+          UPCOMING to COMPLETED - e.g. cancelled on day one with nothing
+          ever bought). See computeEventLifecyclePhase's own comment. */}
+      <div className="mb-4 flex items-center gap-1">
+        {EVENT_LIFECYCLE_PHASES.map((p) => (
+          <div
+            key={p.key}
+            title={p.label}
+            className={`h-1.5 flex-1 rounded-full ${p.key === phase ? LIFECYCLE_PHASE_DOT[phase] : "bg-slate-200 dark:bg-slate-700"}`}
+          />
+        ))}
+      </div>
+
+      <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">
+        <span className="tabular-nums">{s.purchasedTickets}</span> tickets &middot; <span className="tabular-nums">{s.listedTickets}</span>{" "}
+        listed &middot; <span className="tabular-nums">{s.soldTickets}</span> sold &middot;{" "}
+        {pendingFulfillment === null ? (
+          <Spinner className="inline-block h-3 w-3" />
+        ) : (
+          <span className="tabular-nums">{pendingFulfillment}</span>
+        )}{" "}
+        pending fulfillment
+      </p>
+
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Next Actions</p>
+      {loading ? (
+        <LoadingBlock />
+      ) : nextActions.length === 0 ? (
+        <p className="text-sm text-slate-400 dark:text-slate-500">Nothing needs attention for this event right now.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {nextActions.map((a) =>
+            a.onClick ? (
+              <li key={a.key}>
+                <button type="button" onClick={a.onClick} className="text-sm text-brand-600 hover:underline dark:text-brand-400">
+                  {a.label}
+                </button>
+              </li>
+            ) : (
+              <li key={a.key} className="text-sm text-slate-600 dark:text-slate-300">
+                {a.label}
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+    </Card>
   );
 }
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
+import { formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -67,6 +67,123 @@ const EVENT_SORT_LABELS: Record<string, string> = {
   furthest: "Furthest first",
 };
 
+// ---------------------------------------------------------------------------
+// Event Lifecycle (2.3.0) - a single, consistent "what stage is this event
+// at" phase, derived entirely from data the app already has (event.status,
+// event.eventDate, event.stats.*) - no new column, no manually-set status,
+// no new backend command. marko's own message proposed 7 stages (UPCOMING ->
+// BUYING/INVENTORY -> LISTED -> SELLING -> EVENT DAY -> POST EVENT ->
+// COMPLETED); this ships 6 - see computeEventLifecyclePhase below for
+// exactly why POST EVENT was folded into COMPLETED, and
+// REDESIGN-2.3.0-REPORT.md for the full writeup. Lives here (not in a new
+// lib/ file) and is imported by EventDetail.tsx - the same "first-named
+// page owns it, others import it" convention FulfillmentCenter.tsx already
+// established by importing isSaleGroupDone from Sales.tsx.
+export type EventLifecyclePhase = "upcoming" | "inventory" | "listed" | "selling" | "event_day" | "completed";
+
+export const EVENT_LIFECYCLE_PHASES: { key: EventLifecyclePhase; label: string }[] = [
+  { key: "upcoming", label: "Upcoming" },
+  { key: "inventory", label: "Inventory" },
+  { key: "listed", label: "Listed" },
+  { key: "selling", label: "Selling" },
+  { key: "event_day", label: "Event Day" },
+  { key: "completed", label: "Completed" },
+];
+
+// 2.3.0: "is this event over" - word-for-word the same rule Orders.tsx's own
+// isEventDone (and attention_center.rs's independent Rust twin,
+// event_is_done) already use: status is completed/cancelled, OR its date has
+// strictly passed (today itself is NOT over yet - "event_day" below needs
+// that exact distinction). Kept as its own copy here rather than importing
+// Orders.tsx's version - the same reasoning attention_center.rs documents
+// for keeping its own Rust copy instead of depending on frontend code: this
+// is a one-line, extremely stable rule, and Events.tsx has no other reason
+// to depend on Orders.tsx. If this rule ever changes, it has to change in
+// Orders.tsx, attention_center.rs, AND here, identically.
+function isEventLifecycleDone(ev: { status: EventStatus; eventDate: string | null }): boolean {
+  return ev.status === "completed" || ev.status === "cancelled" || (ev.eventDate !== null && ev.eventDate < todayIso());
+}
+
+// 2.3.0: the one function this whole feature is built on. Deliberately a
+// pure function of EventWithStats alone (event + its existing finance/ticket
+// stats) - already returned by both list_events (Events overview) and
+// get_event (Event Workspace), so computing a phase for every event in the
+// list costs zero extra network/IPC calls. Order matters - first match wins:
+//
+// 1. COMPLETED - isEventLifecycleDone(ev). This is marko's own literal
+//    COMPLETED rule (event date passed OR status completed/cancelled), and
+//    it also absorbs his proposed POST EVENT stage: that rule is purely
+//    date/status based, so the day after an event it is already COMPLETED -
+//    there is no real gap left to place a distinct "just happened, cleanup
+//    still pending" phase without inventing a new, arbitrary grace-period
+//    threshold nothing else in this app is grounded in. Per his own "can't
+//    reliably distinguish it -> merge with the nearest usable phase, say
+//    why" instruction, POST EVENT is merged into COMPLETED here. This does
+//    NOT lose the "pending fulfillment" signal he wants surfaced for it -
+//    EventDetail.tsx's EventLifecycleBlock shows a pending-fulfillment count
+//    and a "sold, not delivered" Next Action for ANY phase, COMPLETED
+//    included - the exact same "never gated by event_is_done" choice
+//    attention_center.rs's own sold_undelivered category already makes, for
+//    the same reason (an undelivered sale is just as real a problem once
+//    the event is over).
+// 2. EVENT_DAY - event.eventDate === today, checked before any ticket-count
+//    phase. Whole-day only - no event time exists anywhere in this app, so
+//    no hour-level math is attempted, per marko's own explicit instruction.
+// 3. SELLING - at least one sold ticket.
+// 4. LISTED - zero sold, at least one currently listed (ticket status =
+//    'listed' - the same field this table's own "Available" column already
+//    breaks out as a sub-line).
+// 5. INVENTORY - zero sold, zero listed, at least one ticket purchased.
+//    marko's message proposed "BUYING / INVENTORY" for this stage - it's
+//    named INVENTORY here, matching the ticket-status vocabulary this exact
+//    table already uses (Available/Listed/Sold), since "buying" reads like
+//    an in-progress action this app has no way to observe, while
+//    "inventory" describes the actual, observable state (tickets bought,
+//    sitting unsold and unlisted).
+// 6. UPCOMING - nothing purchased yet.
+//
+// CANCELLED is not a distinct 8th phase - it already has its own dedicated,
+// always-visible Status badge right next to this one (both on this table
+// and on the Event Workspace header), so folding it into COMPLETED here
+// doesn't hide anything; it just avoids this new badge re-stating what the
+// existing one already says.
+export function computeEventLifecyclePhase(ev: EventWithStats): EventLifecyclePhase {
+  if (isEventLifecycleDone(ev)) return "completed";
+  if (ev.eventDate === todayIso()) return "event_day";
+  if (ev.stats.soldTickets > 0) return "selling";
+  if (ev.stats.listedTickets > 0) return "listed";
+  if (ev.stats.purchasedTickets > 0) return "inventory";
+  return "upcoming";
+}
+
+// 2.3.0: same small "colored dot + label" idiom Dashboard.tsx's Attention
+// Center already uses for priority (PRIORITY_DOT_CLASS) - not a new visual
+// language, just a new color map keyed by phase instead of priority.
+// Exported so EventDetail.tsx's own, larger current-phase display can reuse
+// the exact same colors rather than defining a second map.
+export const LIFECYCLE_PHASE_DOT: Record<EventLifecyclePhase, string> = {
+  upcoming: "bg-slate-400 dark:bg-slate-500",
+  inventory: "bg-sky-500",
+  listed: "bg-indigo-500",
+  selling: "bg-amber-500",
+  event_day: "bg-red-500",
+  completed: "bg-emerald-500",
+};
+
+/** Small "phase" pill - dot + label, deliberately not built on ui.tsx's
+ * Badge/STATUS_TONES (those are keyed by literal status/payment/delivery
+ * strings this new concept doesn't share). Used by this page's own table
+ * below and by EventDetail.tsx's Overview tab (imported from here). */
+export function EventLifecyclePhaseBadge({ phase, className }: { phase: EventLifecyclePhase; className?: string }) {
+  const label = EVENT_LIFECYCLE_PHASES.find((p) => p.key === phase)?.label ?? phase;
+  return (
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-slate-600 dark:text-slate-300 ${className ?? ""}`}>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${LIFECYCLE_PHASE_DOT[phase]}`} />
+      {label}
+    </span>
+  );
+}
+
 export default function Events() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -90,6 +207,16 @@ export default function Events() {
   // visits either, so a new sort control shouldn't be the one filter here
   // that suddenly persists.
   const [sortBy, setSortBy] = useState("");
+  // 2.3.0: lifecycle phase filter (marko's request - "FILTER: umožni
+  // filtrovanie eventov podľa lifecycle phase"). Client-side only, same
+  // reasoning as sortBy above - no session memory for this file's filters.
+  // Applied ON TOP of the Upcoming/Completed tab below (AND, not instead
+  // of) - that tab is about the manually-set `status` field; this filter is
+  // about the new derived phase, and the two can legitimately disagree
+  // (e.g. a still-"upcoming"-status event whose date has quietly passed
+  // shows as COMPLETED phase while still under the Upcoming tab) - that's
+  // useful signal, not a bug, so nothing here forces them to agree.
+  const [lifecyclePhase, setLifecyclePhase] = useState<EventLifecyclePhase | "">("");
   // 2.0.59: see EVENT_TABS above.
   const [tab, setTab] = useListTab("eventsTab", ["upcoming", "completed"] as const);
   const [modalOpen, setModalOpen] = useState(false);
@@ -162,8 +289,11 @@ export default function Events() {
   // already fetched - no new backend query, same "filter what's already in
   // memory" approach the sort above already uses.
   const visibleEvents = useMemo(
-    () => sortedEvents.filter((ev) => (tab === "upcoming" ? ev.status === "upcoming" : ev.status !== "upcoming")),
-    [sortedEvents, tab],
+    () =>
+      sortedEvents
+        .filter((ev) => (tab === "upcoming" ? ev.status === "upcoming" : ev.status !== "upcoming"))
+        .filter((ev) => !lifecyclePhase || computeEventLifecyclePhase(ev) === lifecyclePhase),
+    [sortedEvents, tab, lifecyclePhase],
   );
 
   const exitSelectionMode = () => {
@@ -308,6 +438,21 @@ export default function Events() {
         <div className="w-36">
           <span className="label">To</span>
           <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
+        <div className="w-44">
+          <span className="label">Lifecycle phase</span>
+          <Select
+            value={lifecyclePhase}
+            onChange={(e) => setLifecyclePhase(e.target.value as EventLifecyclePhase | "")}
+            aria-label="Filter by lifecycle phase"
+          >
+            <option value="">All phases</option>
+            {EVENT_LIFECYCLE_PHASES.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </Select>
         </div>
         <div className="w-44">
           <span className="label">Sort</span>
@@ -507,6 +652,14 @@ export default function Events() {
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(ev.eventDate)}</td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={ev.status}>{ev.status}</Badge>
+                    {/* 2.3.0: lifecycle phase - stacked under the existing
+                        Status badge, same "second line under the primary
+                        one" idiom the Event cell already uses (name +
+                        venue/city). Keeps this column's colgroup width
+                        completely unchanged - no new column, no redesign. */}
+                    <div className="mt-1">
+                      <EventLifecyclePhaseBadge phase={computeEventLifecyclePhase(ev)} />
+                    </div>
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.availableTickets}</td>

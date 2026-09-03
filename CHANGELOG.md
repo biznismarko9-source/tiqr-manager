@@ -16,6 +16,39 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.3.0 - Event Lifecycle / Event Operations
+
+Marko's next task after 2.2.11/2.2.12: one consistent, derived "what stage
+is this event at" lifecycle phase - no new manually-set status, no
+migration, no backend change at all (`cargo test --lib` byte-for-byte
+unchanged from 2.2.12). See `REDESIGN-2.3.0-REPORT.md` (Slovak) and
+`PROJECT_STATE/PROTECTED_AREAS.md`'s "2.3.0" entry.
+
+- **6 phases** - UPCOMING -> INVENTORY -> LISTED -> SELLING -> EVENT DAY ->
+  COMPLETED (`computeEventLifecyclePhase`, `Events.tsx`) - a pure function
+  of the already-returned `EventWithStats`, zero extra IPC calls. His
+  proposed POST EVENT is folded into COMPLETED (his own literal COMPLETED
+  rule leaves no gap to place it in); CANCELLED stays inside COMPLETED too
+  (it already has its own Status badge). Both judgment calls explained in
+  `PROTECTED_AREAS.md`.
+- **Events overview**: lifecycle phase shown as a small pill stacked under
+  the existing Status badge (no new column/colgroup change), plus a new
+  "Lifecycle phase" filter dropdown, ANDed with the existing Upcoming/
+  Completed tab.
+- **Event Workspace (Overview tab)**: new `EventLifecycleBlock` at the top -
+  current phase, a simple progress strip, an operational summary line
+  (tickets/listed/sold/pending fulfillment), and a "Next Actions" list -
+  sourced entirely from already-existing `list_sale_groups` (per-event
+  `isSaleGroupDone`) and `get_attention_center` (global, filtered to this
+  event) data, no new business logic.
+- **Tests**: 25/25 on a disposable esbuild+Node script exercising marko's
+  full scenario list (upcoming with/without inventory, listings, sales,
+  event day, date passed, completed/cancelled, phase precedence,
+  filter-by-phase, pending fulfillment, Next Actions aggregation) against
+  the real exported functions. `cargo test --lib`: 1006 passed, 0 failed, 3
+  ignored - unchanged, no `.rs` file touched. `tsc -b`/`npm run build`: 0
+  errors.
+
 ## 2.2.12 - Fulfillment Center
 
 Marko's ČASŤ C, shipped as its own release right after 2.2.11 (same
