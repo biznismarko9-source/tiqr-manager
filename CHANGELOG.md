@@ -16,6 +16,40 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.3.5 - Sync/push redesign: self-healing push, real sync diff, no more UI freeze
+
+Marko came back after 2.3.4 with one detailed message re-explaining the
+whole intended sync/push design from scratch, using Pulls as the reference -
+the narrow bug fixes so far hadn't matched his actual mental model. Three
+fixes, all covered in depth in `PROTECTED_AREAS.md`'s new "2.3.5" entry:
+
+1. **UI freeze fixed.** Every sync/push button froze the whole app until its
+   network call finished (marko: "ked zapnem alebo kliknem na cokolvvek...
+   apka zamrzne"). All 11 sheet-sync commands were plain synchronous `fn`,
+   which Tauri runs on its single main/IPC thread - converted to `async fn`
+   + `spawn_blocking`, same pattern already proven for Google sign-in
+   (2.0.12->2.0.13). Zero changes to the underlying sync/push logic.
+2. **Order/Sales sync now updates an already-linked row when the sheet
+   changed it**, matching Pulls sync - previously every marked row was
+   skipped unconditionally, no comparison at all. Tracks platform/date/
+   currency/email/Order ID; deliberately never quantity/price (tickets
+   already have exact-cent costs allocated against those - same "ask before
+   touching" boundary as the 2.0.53 currency-push feature).
+3. **Push Orders is now self-healing** - marko, twice: if he deletes an
+   order's row from the sheet by hand and pushes again, it must notice and
+   add it back, using the same code. Push Sales needed no changes at all for
+   this: it never creates rows, so once Push Orders restores the row, Push
+   Sales's existing "fill in blank cells" behavior already re-populates the
+   sales columns on the next run - proved with a dedicated test chaining
+   both functions. This also resolves the row-426 order that went
+   permanently invisible after 2.3.4 (see that entry below).
+
+9 new/updated sync-diff tests, 3 push self-healing tests, 1 cross-function
+integration test. Full suite 1020/1020 passed, 0 failed; `tsc -b`/
+`npm run build` clean. No frontend changes needed - the sync/push buttons'
+busy-state/spinner UI already existed, it was just neutered by the backend
+freeze.
+
 ## 2.3.4 - Sheets push: row placement fixed properly this time
 
 2.3.3's fix wasn't enough - marko sent a screenshot proving it. Revenue (P)

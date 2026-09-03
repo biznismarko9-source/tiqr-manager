@@ -62,7 +62,7 @@ use crate::money::{format_cents_for_sheet, parse_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::State;
+use tauri::Manager;
 
 /// The header this module appends to the sheet (once) to hold its own
 /// generated Pull code (e.g. "PULL-000001") per row - see
@@ -1047,10 +1047,26 @@ fn sync_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
 /// Manual "Sync now" button (Settings -> Integrations, Pulls card). Never
 /// runs on its own.
+///
+/// `async fn` + `spawn_blocking`, not a plain synchronous command - this
+/// hits the network (via `sync_pulls_impl` -> Google Sheets), and a plain
+/// `#[tauri::command] fn` runs on Tauri's single main/IPC thread, freezing
+/// the whole app's UI until it returns. Same fix already proven for
+/// `start_google_sign_in` (google_auth.rs, 2.0.12 -> 2.0.13) and documented
+/// in `commands/notifications.rs`'s module doc comment. `State<AppState>`
+/// can't be moved into a `'static` spawn_blocking closure (`AppState::db`
+/// is a bare `Mutex`, not `Arc`-wrapped), so this takes `AppHandle` instead
+/// and re-derives the same managed state inside the closure via
+/// `app.state::<AppState>()` - zero change to `sync_pulls_impl` itself.
 #[tauri::command]
-pub fn sync_pulls(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    sync_pulls_impl(&conn)
+pub async fn sync_pulls(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        sync_pulls_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the pull sync task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,10 +1199,18 @@ fn push_pulls_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 /// "Push to sheet" button (Settings -> Integrations, Pulls card) - the new
 /// sibling of "Sync now" (marko's own choice of two separate buttons rather
 /// than merging the two directions into one). Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_pulls`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn push_pulls(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    push_pulls_impl(&conn)
+pub async fn push_pulls(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        push_pulls_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the pull push task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,10 +1334,18 @@ fn create_pulls_sheet_impl(conn: &Connection, email: &str, currency: &str) -> Ap
 /// "Create a new sheet for me" button (Settings -> Integrations, Pulls card)
 /// - sits right next to the existing paste-a-URL form as a second way to
 /// connect, not a replacement for it. Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_pulls`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn create_pulls_sheet(state: State<AppState>, email: String, currency: String) -> AppResult<CreatedSheetResult> {
-    let conn = state.db.lock().unwrap();
-    create_pulls_sheet_impl(&conn, &email, &currency)
+pub async fn create_pulls_sheet(app: tauri::AppHandle, email: String, currency: String) -> AppResult<CreatedSheetResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        create_pulls_sheet_impl(&conn, &email, &currency)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the create-sheet task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,10 +1719,18 @@ fn setup_pulls_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 /// "Update sheet" button (Settings -> Integrations, Pulls card) - sits next
 /// to "Sync now"/"Push to sheet", for the already-connected sheet rather than
 /// the separate "Create a new sheet for me" flow. Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_pulls`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn setup_pulls_sheet(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    setup_pulls_sheet_impl(&conn)
+pub async fn setup_pulls_sheet(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        setup_pulls_sheet_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the update-sheet task did not complete cleanly: {e}")))?
 }
 
 #[cfg(test)]

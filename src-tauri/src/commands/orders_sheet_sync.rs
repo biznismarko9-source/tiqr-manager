@@ -20,16 +20,27 @@
 //! further down. Settings -> Integrations shows both as two buttons - "Order
 //! sync" / "Sales sync" - on the one "Orders & Sales" card.
 //!
-//! **Creation-only in this pass, deliberately** - unlike Pulls sync
-//! (commands::pulls_sheet_sync), which also updates an already-linked row
-//! when the sheet changes it. A row here that already carries a "TIQR ID"
-//! marker is simply left alone - nothing on it is even parsed again (see
-//! `apply_order_rows`). Editing an order's purchase-side numbers after
-//! tickets already exist would touch `insert_order_with_tickets`'s exact-cent
-//! cost allocation across those tickets - exactly the kind of protected
+//! **Order sync (`sync_orders`/`apply_order_rows`) is creation-only ONLY for
+//! `quantity`/`Price Per Ticket`/`Total Purchase Price`/currency-as-an-amount
+//! - 2.3.5 update, see `OrderRowSnapshot`'s own doc comment (right above
+//! `apply_order_rows`) for the full story.** Through 2.3.4 this matched
+//! Pulls sync's OWN v1 scope-cut exactly - a row that already carried a
+//! "TIQR ID" marker was simply left alone, nothing on it even parsed again.
+//! marko's own explicit, re-explained-from-scratch request changed that:
+//! order/sales sync must notice a sheet-side difference on an already-linked
+//! row and correct it, mirroring what Pulls sync (commands::pulls_sheet_sync)
+//! already did. What's still creation-only, and why, is narrower now:
+//! editing an order's `quantity`/`unit_price_cents` after tickets already
+//! exist would touch `insert_order_with_tickets`'s exact-cent cost
+//! allocation across those tickets - exactly the kind of protected
 //! financial/data-integrity logic this project's house rules say not to
-//! touch without asking first. Out of scope for v1, the same scope-cut marko
-//! already accepted for Pulls sync's own v1.
+//! touch without asking first - so those fields (and `Total Purchase Price`,
+//! which only ever exists to cross-check them) are simply never compared or
+//! written back to on an already-linked row, exactly as before. Every other
+//! column this batch reads (`platform`, the date, `currency` as a plain
+//! label, `Order ID`, `Email (used)`) carries no such risk - each is already
+//! safely editable after the fact via the manual "Edit order" form - and is
+//! now diffed and corrected same as Pulls.
 //!
 //! ## Column mapping (first batch only - see module doc comment above)
 //!
@@ -116,7 +127,7 @@
 //! `create_sales_batch_impl` is all-or-nothing).
 
 use crate::commands::csv_import::resolve_or_create_platform;
-use crate::commands::orders::insert_order_with_tickets;
+use crate::commands::orders::{insert_order_with_tickets, update_order_impl};
 use crate::commands::pulls_received;
 use crate::commands::pulls_sheet_sync::parse_sheet_serial_date;
 use crate::commands::sales::create_sales_batch_impl;
@@ -127,12 +138,14 @@ use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_sheets;
 use crate::models::{
-    CreatedSheetResult, OrderInput, PullReceivedInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue, SheetSyncResult,
+    CreatedSheetResult, OrderEditInput, OrderInput, PullReceivedInput, SaleBatchInput, SaleBatchLineInput, SheetSyncIssue,
+    SheetSyncResult,
 };
 use crate::money::{format_cents, format_cents_for_sheet, parse_decimal_to_cents, round_decimal_to_cents};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use tauri::Manager;
 
 const MARKER_HEADER: &str = "TIQR ID";
 
@@ -550,6 +563,78 @@ fn reconcile_order_pricing(unit_price_raw: &str, total_raw: Option<&str>, quanti
 /// destructuring `apply_order_rows`'s result as a plain 2-tuple unchanged -
 /// only the handful that actually inspect `.markers` needed updating for
 /// 2.0.42's new `price_corrections` field.
+// ---------------------------------------------------------------------------
+// 2.3.5 (marko's own explicit request, re-explained from scratch after
+// 2.3.4: "order a sales sync premietne info z tabulky do dashboardu, ked je
+// tam nejaka zmena, tak tiez to kukne a opravi popripade updatne" - order
+// sync must notice a difference on an already-marked row and correct it, not
+// just skip every marked row unconditionally as it did through 2.3.4).
+// Mirrors pulls_sheet_sync.rs's own PullRowSnapshot/SyncLink/load_sync_link
+// exactly in spirit (see that module's doc comments for the general
+// design), with one deliberate, narrower scope: `quantity`/`unit_price_cents`
+// /`total_price_cents` are NOT part of this snapshot at all, so a sheet-side
+// change to any of them is never compared, never flagged, never applied -
+// exactly today's (2.3.4 and earlier) behavior for those three, unchanged.
+// That is not an oversight - `insert_order_with_tickets` allocates each
+// ticket's exact-cent purchase cost from those numbers at creation time
+// (`allocate_cents`), and this module's own currency-push section above
+// already documents why re-touching that math after tickets exist is
+// "protected financial logic this project's house rules say not to touch
+// without asking first". `currency`, `platform`, `purchase_date` (the
+// sheet's own "Date (DD/MM/YYYY)"), `notes` (the Email cell) and
+// `external_reference` (Order ID) carry no such risk - every one of them is
+// already safely editable after the fact via the manual "Edit order" form's
+// own `OrderEditInput`/`update_order_impl` (external_reference is the one
+// exception - not part of that form, but always a plain, cost-free UPDATE,
+// exactly like this same module's own create path already performs), so
+// this reuses that exact function rather than inventing a second, competing
+// way to mutate an order.
+// ---------------------------------------------------------------------------
+
+/// The comparable shape of one Order sync row - see this section's own doc
+/// comment above for exactly which fields, and why quantity/price/currency-
+/// amount are deliberately excluded. `#[serde(default)]` at the container
+/// level (not needed before 2.3.5, since no update path ever read one of
+/// these back) means the legacy `'{}'` placeholder every already-linked
+/// order's `sheet_sync_links` row was created with through 2.3.4 parses
+/// cleanly as `OrderRowSnapshot::default()` - which then simply looks
+/// "different" from that row's real current values on its very next sync,
+/// triggering exactly one harmless backfill-via-update pass (never an
+/// "unreadable snapshot" error) that brings its stored snapshot up to date
+/// for every sync after that. No separate one-time migration step needed.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct OrderRowSnapshot {
+    platform_name: Option<String>,
+    purchase_date: String,
+    currency: String,
+    notes: Option<String>,
+    external_reference: Option<String>,
+}
+
+struct OrderSyncLink {
+    local_id: i64,
+    last_synced_snapshot: String,
+    last_synced_at: String,
+}
+
+/// The sync (sheet -> app) direction's lookup - mirrors
+/// `pulls_sheet_sync::load_sync_link` exactly, scoped to `data_source =
+/// 'orders'`. `sheet_marker` isn't selected here (unlike Pulls' own copy of
+/// this function) - Order push (`apply_order_push`, below) always uses the
+/// order's own `code` as its marker and never stores a different value, so
+/// nothing on the sync side has ever needed to read it back out.
+fn load_order_sync_link(conn: &Connection, marker: &str) -> AppResult<Option<OrderSyncLink>> {
+    Ok(conn
+        .query_row(
+            "SELECT local_id, last_synced_snapshot, last_synced_at FROM sheet_sync_links
+             WHERE data_source = 'orders' AND sheet_marker = ?1",
+            params![marker],
+            |r| Ok(OrderSyncLink { local_id: r.get(0)?, last_synced_snapshot: r.get(1)?, last_synced_at: r.get(2)? }),
+        )
+        .optional()?)
+}
+
 #[derive(Debug, Default)]
 struct RowWriteBacks {
     /// (0-based data row index, "TIQR ID" marker value to write) - created
@@ -611,12 +696,154 @@ fn apply_order_rows(
     for (i, raw_row) in data_rows.iter().enumerate() {
         let row_number = (i + 2) as i64; // header is sheet row 1
 
-        // A row that already carries a marker was already synced once - v1
-        // never updates it, so it's left alone before anything on it is even
-        // parsed (no point auto-creating a platform/event for a row whose
-        // values will never be used).
-        if cell(raw_row, Some(marker_col_index)).is_some() {
-            result.unchanged += 1;
+        // 2.3.5: a row that already carries a marker is no longer skipped
+        // unconditionally - see this function's own "2.3.5" doc comment
+        // section above (right before `OrderRowSnapshot`) for exactly what
+        // is (and deliberately isn't) compared/updated here.
+        if let Some(marker_value) = cell(raw_row, Some(marker_col_index)) {
+            let Some(link) = load_order_sync_link(conn, &marker_value)? else {
+                result.errors.push(SheetSyncIssue {
+                    row_number,
+                    message: format!(
+                        "column \"{MARKER_HEADER}\" has an unrecognized value '{marker_value}' - clear the cell if this should become a new order"
+                    ),
+                });
+                continue;
+            };
+            // Container-level `#[serde(default)]` means this can only fail
+            // on genuinely corrupt (non-JSON) data - see `OrderRowSnapshot`'s
+            // own doc comment for why the legacy '{}' placeholder itself
+            // parses cleanly instead of hitting this branch.
+            let Ok(stored_snapshot) = serde_json::from_str::<OrderRowSnapshot>(&link.last_synced_snapshot) else {
+                result.errors.push(SheetSyncIssue {
+                    row_number,
+                    message: "this row's saved sync data is unreadable - disconnect and reconnect the sheet to reset it".to_string(),
+                });
+                continue;
+            };
+
+            let mut row_errors: Vec<String> = vec![];
+
+            let event_date: Option<String> = match cell(raw_row, date_col).as_deref().map(parse_order_date) {
+                Some(Ok(d)) => Some(d),
+                Some(Err(e)) => {
+                    row_errors.push(format!("'{DATE_HEADER_LABEL}': {e}"));
+                    None
+                }
+                None => {
+                    row_errors.push(format!("missing '{DATE_HEADER_LABEL}' value"));
+                    None
+                }
+            };
+            // Same currency resolution as the create path below, just with
+            // its own local `row_errors` rather than a shared helper - kept
+            // deliberately duplicated (a handful of lines) rather than
+            // factored out, so the already-tested create path can never be
+            // affected by a change made for this branch.
+            let currency = match cell(raw_row, currency_col) {
+                Some(c) => {
+                    let upper = c.trim().to_uppercase();
+                    if ALLOWED_CURRENCIES.contains(&upper.as_str()) {
+                        upper
+                    } else {
+                        row_errors.push(format!("'currency' must be one of {} - got '{c}'", ALLOWED_CURRENCIES.join(", ")));
+                        connection_currency.to_string()
+                    }
+                }
+                None => connection_currency.to_string(),
+            };
+            let platform_name = cell(raw_row, platform_col);
+            let platform_id = match &platform_name {
+                Some(name) => match resolve_or_create_platform(conn, name) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        row_errors.push(format!("platform '{name}': {e}"));
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            if !row_errors.is_empty() {
+                result.errors.push(SheetSyncIssue { row_number, message: row_errors.join("; ") });
+                continue;
+            }
+
+            let current_snapshot = OrderRowSnapshot {
+                platform_name,
+                purchase_date: event_date.unwrap_or_default(),
+                currency,
+                notes: cell(raw_row, email_col),
+                external_reference: cell(raw_row, order_ref_col),
+            };
+
+            if current_snapshot == stored_snapshot {
+                result.unchanged += 1;
+                continue;
+            }
+
+            let existing: Option<(Option<i64>, String, String)> = conn
+                .query_row(
+                    "SELECT supplier_id, payment_status, updated_at FROM orders WHERE id = ?1",
+                    [link.local_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((supplier_id, payment_status, updated_at)) = existing else {
+                result.errors.push(SheetSyncIssue {
+                    row_number,
+                    message: format!("linked order #{} no longer exists in the app", link.local_id),
+                });
+                continue;
+            };
+            // Same two-sided-edit protection as Pulls sync - see
+            // `pulls_sheet_sync::apply_pull_rows`'s identical check for why
+            // this exists: a more-recent in-app edit (e.g. marko fixing the
+            // platform by hand from Order Detail) must never be silently
+            // clobbered by a now-stale sheet value.
+            if updated_at > link.last_synced_at {
+                result.conflicts.push(SheetSyncIssue {
+                    row_number,
+                    message: "both the sheet and the app changed this order since the last sync - resolve manually, then sync again"
+                        .to_string(),
+                });
+                continue;
+            }
+
+            let edit = OrderEditInput {
+                supplier_id,
+                platform_id,
+                purchase_date: current_snapshot.purchase_date.clone(),
+                currency: current_snapshot.currency.clone(),
+                payment_status,
+                notes: current_snapshot.notes.clone(),
+            };
+            match update_order_impl(conn, link.local_id, &edit) {
+                Ok(_) => {
+                    if let Err(e) = conn.execute(
+                        "UPDATE orders SET external_reference = ?1 WHERE id = ?2",
+                        params![current_snapshot.external_reference, link.local_id],
+                    ) {
+                        result.errors.push(SheetSyncIssue {
+                            row_number,
+                            message: format!("order updated, but its Order ID could not be saved: {e}"),
+                        });
+                        continue;
+                    }
+                    let snapshot_json =
+                        serde_json::to_string(&current_snapshot).map_err(|e| AppError::Other(e.to_string()))?;
+                    let now = now_iso(conn)?;
+                    conn.execute(
+                        "UPDATE sheet_sync_links SET last_synced_snapshot = ?1, last_synced_at = ?2
+                         WHERE data_source = 'orders' AND local_id = ?3",
+                        params![snapshot_json, now, link.local_id],
+                    )?;
+                    result.updated += 1;
+                }
+                Err(e) => {
+                    result.errors.push(SheetSyncIssue { row_number, message: e.to_string() });
+                }
+            }
             continue;
         }
 
@@ -827,7 +1054,8 @@ fn apply_order_rows(
                         continue;
                     }
                 };
-                if let Some(reference) = cell(raw_row, order_ref_col) {
+                let external_reference_value = cell(raw_row, order_ref_col);
+                if let Some(reference) = &external_reference_value {
                     if let Err(e) =
                         conn.execute("UPDATE orders SET external_reference = ?1 WHERE id = ?2", params![reference, order_id])
                     {
@@ -837,16 +1065,24 @@ fn apply_order_rows(
                         });
                     }
                 }
-                // No real snapshot to store yet - v1 never compares against
-                // one (no update path exists), so '{}' is just a valid-JSON
-                // placeholder. A future update-aware version of this sync
-                // would replace it with a real one, same shape as Pulls
-                // sync's own PullRowSnapshot.
+                // 2.3.5: a real snapshot from the moment of creation (used to
+                // be the placeholder '{}', back when nothing ever compared
+                // against it) - see `OrderRowSnapshot`'s own doc comment for
+                // why an already-linked row now needs a real one to diff
+                // against on its very next sync.
+                let snapshot = OrderRowSnapshot {
+                    platform_name: platform_name.clone(),
+                    purchase_date: input.purchase_date.clone(),
+                    currency: input.currency.clone(),
+                    notes: input.notes.clone(),
+                    external_reference: external_reference_value,
+                };
+                let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| AppError::Other(e.to_string()))?;
                 let now = now_iso(conn)?;
                 conn.execute(
                     "INSERT INTO sheet_sync_links (data_source, local_id, sheet_marker, last_synced_snapshot, last_synced_at)
-                     VALUES ('orders', ?1, ?2, '{}', ?3)",
-                    params![order_id, code, now],
+                     VALUES ('orders', ?1, ?2, ?3, ?4)",
+                    params![order_id, code, snapshot_json, now],
                 )?;
                 result.created += 1;
                 writes.markers.push((i, code));
@@ -944,26 +1180,45 @@ fn sync_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
 /// Manual "Sync now" button (Settings -> Integrations, Orders & Sales
 /// card). Never runs on its own.
+///
+/// `async fn` + `spawn_blocking`, not a plain synchronous command - this
+/// hits the network (via `sync_orders_impl` -> Google Sheets), and a plain
+/// `#[tauri::command] fn` runs on Tauri's single main/IPC thread, freezing
+/// the whole app's UI until it returns. Same fix already proven for
+/// `start_google_sign_in` (google_auth.rs, 2.0.12 -> 2.0.13) and documented
+/// in `commands/notifications.rs`'s module doc comment. `State<AppState>`
+/// can't be moved into a `'static` spawn_blocking closure (`AppState::db`
+/// is a bare `Mutex`, not `Arc`-wrapped), so this takes `AppHandle` instead
+/// and re-derives the same managed state inside the closure via
+/// `app.state::<AppState>()` - zero change to `sync_orders_impl` itself.
 #[tauri::command]
-pub fn sync_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    sync_orders_impl(&conn)
+pub async fn sync_orders(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        sync_orders_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the order sync task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
-// Push (app -> sheet), 2.0.18 - the Order-sync half. Deliberately
-// APPEND-ONLY: an order that already carries a "TIQR ID" (i.e. already has a
-// `sheet_sync_links` row - whether it got there via Order sync above or via
-// this very push, on an earlier run) is never revisited here, full stop, no
-// comparison, no update path at all - see this module's own "Creation-only
-// in this pass, deliberately" doc comment above for exactly why: editing an
-// order's purchase-side numbers after tickets exist would touch
-// `insert_order_with_tickets`'s exact-cent cost allocation, which is
+// Push (app -> sheet), 2.0.18 - the Order-sync half. Still APPEND-ONLY in
+// the sense that matters most: this never rewrites a single cell of an
+// already-linked row that's still sitting in the sheet, whatever it now
+// says - no comparison, no update path, for exactly the reason this
+// module's own "2.3.5" doc comment (above `OrderRowSnapshot`) explains in
+// full: editing an order's purchase-side numbers after tickets exist would
+// touch `insert_order_with_tickets`'s exact-cent cost allocation, which is
 // protected financial logic this project's house rules say not to touch
-// without asking first. Only a brand-new, never-linked local order becomes
-// a new sheet row. Unlike Pulls push, there is therefore no snapshot/
-// conflict machinery needed at all here - "never linked yet" is the only
-// case this handles.
+// without asking first. 2.3.5 adds exactly one new case on top of "brand-new,
+// never-linked local order becomes a new sheet row": an ALREADY-linked order
+// whose marker has gone missing from the sheet's current data also becomes
+// a new sheet row, re-appended with its existing code - see `apply_order_
+// push`'s own doc comment for marko's explicit request and why this is safe.
+// Still no snapshot/conflict machinery for cell-level values, unlike Pulls
+// push - only "does this order's row exist in the sheet at all" is now a
+// question this asks; "what does the row say" still never is.
 // ---------------------------------------------------------------------------
 
 /// Just enough of one order to build its pushed sheet row - a dedicated,
@@ -1078,13 +1333,52 @@ fn build_order_append_row(
 }
 
 /// The push direction's own core for Order sync - see this section's own
-/// doc comment above for the append-only scope. Every non-demo, never-linked
-/// order becomes one appended row; a `sheet_sync_links` row is inserted
-/// immediately (marker = the order's own `code`, already generated at
-/// creation - same placeholder `'{}'` snapshot `apply_order_rows`'s own
-/// create path already uses, since there is no update path here to ever
-/// compare it against).
-/// 2.2.10: now returns the (order_id, code) pairs it prepared as a THIRD
+/// doc comment above for the append-only scope (still true: an already-
+/// linked order whose row is still present in the sheet is never rewritten
+/// here, whatever it now says - only whether the row exists at all is this
+/// function's concern). Two cases now produce an appended row:
+///
+/// - never linked yet - the original, always-supported case;
+/// - linked, but its marker (the order's own `code`) is nowhere in the
+///   sheet's current data - 2.3.5, marko's own explicit, twice-repeated
+///   request: "ked nejake ID chyba ktore nieje v tabulke doplni ho, aj ked
+///   ho ja manualne odstranit a zas dam push, tak musi vediet ze zmizlo a
+///   doplnit ho tam" (when some ID is missing that isn't in the table, add
+///   it - even if I manually remove it and push again, it must know it
+///   disappeared and add it back). The row was deleted from the sheet since
+///   linking (on purpose or by accident) - this re-appends it using the
+///   SAME `sheet_sync_links` row and the SAME code it already has, never a
+///   new one, so nothing about the link itself needs to change, only the
+///   sheet's own copy of the row.
+///
+/// This deliberately diverges from `pulls_sheet_sync::apply_pull_push`'s own
+/// choice for the identical situation (that function reports an error
+/// instead - see its own doc comment, "never silently re-appended (would
+/// create a duplicate)"). Re-appending here cannot create a duplicate the
+/// way it could there: this scans the sheet's own already-fetched data for
+/// the exact marker before deciding to append (never blind), and Pulls'
+/// caution was about a marker that might still be *somewhere* sync hadn't
+/// looked hard enough for - not a reason to override marko's explicit,
+/// concretely-tested request for Orders/Sales specifically. Pulls push
+/// itself is unchanged - marko described it as already correct and asked
+/// specifically to move on to Orders/Sales.
+///
+/// Sales sync/push need no equivalent change: `push_sales`/`force_push_sales`
+/// never create rows of their own (see `apply_sales_push_internal`'s own doc
+/// comment) - they only ever fill in the Sales-sync columns of a row that
+/// already exists. Once THIS function restores a deleted order's row (its
+/// Sales-sync columns necessarily blank again on the fresh row), the very
+/// next "Push sales" already fills them back in through its existing
+/// "write only when every target cell is still blank" rule - no extra
+/// self-healing logic needed there at all.
+///
+/// `sheet_sync_links` is inserted immediately only for the never-linked
+/// case (marker = the order's own `code`, already generated at creation -
+/// same placeholder `'{}'` snapshot `apply_order_rows`'s own create path
+/// used through 2.3.4); the re-append case already has a perfectly good
+/// link row (nothing about the link was ever wrong, only the sheet's copy
+/// of the row), so nothing new is inserted for it.
+/// 2.2.10: returns the (order_id, code) pairs it prepared as a THIRD
 /// element instead of writing their `sheet_sync_links` rows itself - see
 /// `push_orders_impl`'s own doc comment (2.2.10) for why that link must
 /// never be recorded before the sheet write it describes is confirmed to
@@ -1092,6 +1386,7 @@ fn build_order_append_row(
 fn apply_order_push(
     conn: &Connection,
     headers: &[String],
+    data_rows: &[Vec<String>],
     marker_col_index: usize,
 ) -> AppResult<(SheetSyncResult, Vec<Vec<String>>, Vec<(i64, String)>)> {
     let map = build_header_map(headers);
@@ -1102,36 +1397,51 @@ fn apply_order_push(
     let mut append_rows = vec![];
     let mut pending_links: Vec<(i64, String)> = vec![];
 
-    let orders: Vec<OrderForPush> = {
+    // 2.3.5: every marker currently present anywhere in the sheet's already-
+    // fetched data - the self-healing check below is exactly "is this
+    // already-linked order's own code in this set".
+    let present_markers: HashSet<String> =
+        data_rows.iter().filter_map(|row| cell(row, Some(marker_col_index))).collect();
+
+    let orders: Vec<(OrderForPush, bool)> = {
         let mut stmt = conn.prepare(
-            "SELECT o.id, o.code, e.name, o.purchase_date, p.name, o.quantity, o.unit_price_cents, o.currency, o.notes, o.external_reference
+            "SELECT o.id, o.code, e.name, o.purchase_date, p.name, o.quantity, o.unit_price_cents, o.currency, o.notes, o.external_reference,
+                    EXISTS (SELECT 1 FROM sheet_sync_links l WHERE l.data_source = 'orders' AND l.local_id = o.id)
              FROM orders o
              JOIN events e ON e.id = o.event_id
              LEFT JOIN platforms p ON p.id = o.platform_id
              WHERE o.is_demo = 0
-               AND NOT EXISTS (SELECT 1 FROM sheet_sync_links l WHERE l.data_source = 'orders' AND l.local_id = o.id)
              ORDER BY o.id",
         )?;
         let rows = stmt
             .query_map([], |r| {
-                Ok(OrderForPush {
-                    id: r.get(0)?,
-                    code: r.get(1)?,
-                    event_name: r.get(2)?,
-                    purchase_date: r.get(3)?,
-                    platform_name: r.get(4)?,
-                    quantity: r.get(5)?,
-                    unit_price_cents: r.get(6)?,
-                    currency: r.get(7)?,
-                    notes: r.get(8)?,
-                    external_reference: r.get(9)?,
-                })
+                Ok((
+                    OrderForPush {
+                        id: r.get(0)?,
+                        code: r.get(1)?,
+                        event_name: r.get(2)?,
+                        purchase_date: r.get(3)?,
+                        platform_name: r.get(4)?,
+                        quantity: r.get(5)?,
+                        unit_price_cents: r.get(6)?,
+                        currency: r.get(7)?,
+                        notes: r.get(8)?,
+                        external_reference: r.get(9)?,
+                    },
+                    r.get::<_, bool>(10)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows
     };
 
-    for order in orders {
+    for (order, already_linked) in orders {
+        let is_self_heal = already_linked && !present_markers.contains(&order.code);
+        if already_linked && !is_self_heal {
+            result.unchanged += 1;
+            continue;
+        }
+
         let tickets: Vec<TicketForPush> = {
             let mut stmt = conn.prepare("SELECT section, row_label, ticket_type, seat FROM tickets WHERE order_id = ?1 ORDER BY id")?;
             let rows = stmt
@@ -1144,7 +1454,17 @@ fn apply_order_push(
 
         let row = build_order_append_row(&map, marker_col_index, headers.len(), &order, &tickets);
         append_rows.push(row);
-        pending_links.push((order.id, order.code));
+        if is_self_heal {
+            result.corrected.push(SheetSyncIssue {
+                row_number: 0,
+                message: format!(
+                    "order {}: its row was missing from the sheet (deleted since the last sync?) - added it back",
+                    order.code
+                ),
+            });
+        } else {
+            pending_links.push((order.id, order.code));
+        }
         result.created += 1;
     }
 
@@ -1233,7 +1553,7 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
     // this used to live) because `next_append_range` below now needs it too.
     let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
 
-    let (mut result, append_rows, pending_links) = apply_order_push(conn, &headers, marker_col_index)?;
+    let (mut result, append_rows, pending_links) = apply_order_push(conn, &headers, data_rows, marker_col_index)?;
 
     if !append_rows.is_empty() {
         let new_count = append_rows.len();
@@ -1327,10 +1647,18 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
 /// "Push orders" button (Settings -> Integrations, Orders & Sales card) -
 /// the new sibling of "Order sync". Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment just
+/// above for why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn push_orders(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    push_orders_impl(&conn)
+pub async fn push_orders(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        push_orders_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the order push task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1937,10 +2265,18 @@ fn sync_sales_impl(conn: &mut Connection) -> AppResult<SheetSyncResult> {
 /// Manual "Sales sync" button (Settings -> Integrations, Orders & Sales
 /// card) - sits next to "Order sync" on the same card, same connection.
 /// Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn sync_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let mut conn = state.db.lock().unwrap();
-    sync_sales_impl(&mut conn)
+pub async fn sync_sales(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut conn = state.db.lock().unwrap();
+        sync_sales_impl(&mut conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the sales sync task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -2411,10 +2747,18 @@ fn push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
 /// "Push sales" button (Settings -> Integrations, Orders & Sales card) -
 /// the new sibling of "Sales sync". Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    push_sales_impl(&conn)
+pub async fn push_sales(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        push_sales_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the sales push task did not complete cleanly: {e}")))?
 }
 
 /// "Fix sync" (2.0.60, narrowed in 2.0.61) - marko's own request after a
@@ -2504,10 +2848,18 @@ fn force_push_sales_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 /// "Fix sync" button (Settings -> Integrations, Orders & Sales card) - see
 /// `force_push_sales_impl`'s own doc comment for exactly how this differs
 /// from "Push sales" right above it on the same card.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn force_push_sales(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    force_push_sales_impl(&conn)
+pub async fn force_push_sales(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        force_push_sales_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the fix-sync task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -2606,10 +2958,18 @@ fn create_orders_sheet_impl(conn: &Connection, email: &str, currency: &str) -> A
 /// "Create a new sheet for me" button (Settings -> Integrations, Orders &
 /// Tickets card) - sits right next to the existing paste-a-URL form as a
 /// second way to connect, not a replacement for it. Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn create_orders_sheet(state: State<AppState>, email: String, currency: String) -> AppResult<CreatedSheetResult> {
-    let conn = state.db.lock().unwrap();
-    create_orders_sheet_impl(&conn, &email, &currency)
+pub async fn create_orders_sheet(app: tauri::AppHandle, email: String, currency: String) -> AppResult<CreatedSheetResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        create_orders_sheet_impl(&conn, &email, &currency)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the create-sheet task did not complete cleanly: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -3307,10 +3667,18 @@ fn setup_orders_sheet_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 /// sits next to "Order sync"/"Sales sync"/"Push orders"/"Push sales", for the
 /// already-connected sheet rather than the separate "Create a new sheet for
 /// me" flow. Never runs on its own.
+///
+/// `async fn` + `spawn_blocking` - see `sync_orders`'s doc comment above for
+/// why (network I/O on Tauri's main thread freezes the UI).
 #[tauri::command]
-pub fn setup_orders_sheet(state: State<AppState>) -> AppResult<SheetSyncResult> {
-    let conn = state.db.lock().unwrap();
-    setup_orders_sheet_impl(&conn)
+pub async fn setup_orders_sheet(app: tauri::AppHandle) -> AppResult<SheetSyncResult> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        setup_orders_sheet_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the update-sheet task did not complete cleanly: {e}")))?
 }
 
 #[cfg(test)]
@@ -3882,27 +4250,42 @@ mod tests {
         assert_eq!(result.errors[0].row_number, 2, "row 2 is the first data row (row 1 is the header)");
     }
 
-    // ---- apply_order_rows: an already-linked row is left fully alone -------
+    // ---- apply_order_rows: a marker with no matching link is never silently
+    // treated as "already synced" ---------------------------------------------
+    //
+    // 2.3.5: through 2.3.4, ANY non-empty "TIQR ID" cell short-circuited a row
+    // to `unchanged` with zero validation, whether or not the app actually
+    // recognized that value - there was no update path, so the distinction
+    // never mattered. Now that a recognized marker is looked up and diffed
+    // (see the "2.3.5 diff-and-update" section above), a value the app has
+    // NEVER linked (never typed by this sync/push, e.g. hand-typed, copied
+    // from a different sheet, or simply corrupted) is a real, reportable
+    // problem instead - mirroring `pulls_sheet_sync::apply_pull_rows`'s
+    // identical "unrecognized value" error for the exact same situation.
+    // These two tests still confirm the one thing that hasn't changed: such a
+    // row is never turned into a new order, and never side-effects a
+    // platform/event auto-create either.
 
     #[test]
-    fn a_row_that_already_has_a_marker_is_left_alone_and_counted_unchanged() {
+    fn a_row_with_an_unrecognized_marker_is_reported_not_silently_treated_as_synced() {
         let conn = test_conn();
         let (result, writes) = apply_order_rows(&conn, &full_headers(), &[sample_row("ORD-000001")], "EUR", MARKER_COL).unwrap();
         assert_eq!(result.created, 0);
-        assert_eq!(result.unchanged, 1);
-        assert_eq!(result.errors.len(), 0);
+        assert_eq!(result.unchanged, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("unrecognized value"), "{}", result.errors[0].message);
         assert!(writes.markers.is_empty());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 0, "a row that already carries a marker must never be created again - v1 is creation-only");
+        assert_eq!(count, 0, "a row whose marker the app has never linked must never be created as a new order either");
     }
 
     #[test]
-    fn a_row_that_already_has_a_marker_never_triggers_platform_or_event_auto_create() {
+    fn a_row_with_an_unrecognized_marker_never_triggers_platform_or_event_auto_create() {
         let conn = test_conn();
         apply_order_rows(&conn, &full_headers(), &[sample_row("ORD-000001")], "EUR", MARKER_COL).unwrap();
         let platform_count: i64 = conn.query_row("SELECT COUNT(*) FROM platforms", [], |r| r.get(0)).unwrap();
         let event_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
-        assert_eq!(platform_count, 0, "an already-synced row must do nothing at all, not even side-effect auto-creates");
+        assert_eq!(platform_count, 0, "an unrecognized marker is reported and left alone, never side-effect auto-creates");
         assert_eq!(event_count, 0);
     }
 
@@ -4086,6 +4469,158 @@ mod tests {
         let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [order_code], |r| r.get(0)).unwrap();
         let mut stmt = conn.prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id").unwrap();
         stmt.query_map([order_id], |r| r.get(0)).unwrap().collect::<Result<Vec<i64>, _>>().unwrap()
+    }
+
+    /// The exact row shape `seed_order_with_quantity` creates an order from,
+    /// reconstructed with its real marker attached - lets a test build "the
+    /// same row, synced again" or "the same row with exactly one thing
+    /// different" without duplicating the whole cell layout at every call
+    /// site.
+    fn seeded_order_row(code: &str, quantity: i64) -> Vec<String> {
+        let mut cells = row(&[
+            "Coldplay Arena Show",
+            "15/09/2026",
+            "ticketmaster",
+            "410",
+            "25",
+            "",
+            "TM-88213",
+            "",
+            "",
+            "50.00",
+            "EUR",
+            "buyer@example.com",
+            "e-ticket",
+        ]);
+        cells[8] = quantity.to_string();
+        cells.push(code.to_string());
+        cells
+    }
+
+    fn order_platform_name(conn: &Connection, code: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT p.name FROM orders o LEFT JOIN platforms p ON p.id = o.platform_id WHERE o.code = ?1",
+            [code],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn order_quantity_and_unit_price_cents(conn: &Connection, code: &str) -> (i64, i64) {
+        conn.query_row("SELECT quantity, unit_price_cents FROM orders WHERE code = ?1", [code], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+    }
+
+    // ---- sync_orders: 2.3.5 diff-and-update on an already-linked row ---------
+
+    #[test]
+    fn an_unchanged_marked_row_is_skipped_as_unchanged_and_the_order_is_not_touched() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+
+        let (result, writes) =
+            apply_order_rows(&conn, &full_headers(), &[seeded_order_row(&code, 1)], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.updated, 0);
+        assert!(result.errors.is_empty());
+        assert!(writes.markers.is_empty(), "an unchanged row never asks for a fresh marker write");
+    }
+
+    #[test]
+    fn a_changed_platform_on_a_marked_row_updates_the_local_order() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        assert_eq!(order_platform_name(&conn, &code).as_deref(), Some("ticketmaster"));
+
+        let mut changed = seeded_order_row(&code, 1);
+        changed[2] = "stubhub".to_string(); // platform column
+        let (result, _) = apply_order_rows(&conn, &full_headers(), &[changed], "EUR", MARKER_COL).unwrap();
+
+        assert_eq!(result.updated, 1, "{:?}", result.errors);
+        assert_eq!(order_platform_name(&conn, &code).as_deref(), Some("stubhub"));
+    }
+
+    #[test]
+    fn a_changed_quantity_or_price_on_a_marked_row_is_never_applied() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        assert_eq!(order_quantity_and_unit_price_cents(&conn, &code), (1, 5000));
+
+        let mut changed = seeded_order_row(&code, 1);
+        changed[8] = "5".to_string(); // Number of Tickets
+        changed[9] = "99.00".to_string(); // Price Per Ticket
+        let (result, _) = apply_order_rows(&conn, &full_headers(), &[changed], "EUR", MARKER_COL).unwrap();
+
+        // Quantity/price are deliberately outside OrderRowSnapshot's tracked
+        // fields (see that struct's own doc comment) - a sheet-side change to
+        // either is invisible to this comparison, so the row reads as
+        // "nothing changed" even though these two cells plainly differ from
+        // what was recorded. That is the point: nothing here ever touches
+        // insert_order_with_tickets's exact-cent cost allocation after the
+        // fact.
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.updated, 0);
+        assert_eq!(
+            order_quantity_and_unit_price_cents(&conn, &code),
+            (1, 5000),
+            "quantity/unit_price_cents must never be touched by sync on an already-linked order"
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_marker_value_is_reported_as_an_error() {
+        let conn = test_conn();
+        let row_with_bogus_marker = seeded_order_row("ORD-999999", 1);
+        let (result, _) = apply_order_rows(&conn, &full_headers(), &[row_with_bogus_marker], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("unrecognized value"), "{}", result.errors[0].message);
+    }
+
+    #[test]
+    fn a_legacy_placeholder_snapshot_is_backfilled_on_its_first_post_2_3_5_sync() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        // Simulates an order linked before 2.3.5 - back when '{}' was always
+        // written and nothing ever read it back (see OrderRowSnapshot's own
+        // doc comment). seed_order_with_quantity now writes a real snapshot
+        // via the very code under test, so it's reset to the old literal
+        // here specifically to reproduce what an upgrade actually finds.
+        conn.execute(
+            "UPDATE sheet_sync_links SET last_synced_snapshot = '{}' WHERE data_source = 'orders' AND sheet_marker = ?1",
+            [&code],
+        )
+        .unwrap();
+
+        // The exact same row this order was created from - nothing on the
+        // sheet has actually changed, only the stored snapshot is stale.
+        let row_matching_current_values = seeded_order_row(&code, 1);
+        let (result, _) =
+            apply_order_rows(&conn, &full_headers(), &[row_matching_current_values.clone()], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result.updated, 1, "the legacy '{{}}' snapshot must look 'different' once, not error out: {:?}", result.errors);
+        assert!(result.errors.is_empty());
+
+        // The backfill must be real - a second, identical sync now sees no
+        // further difference.
+        let (result2, _) = apply_order_rows(&conn, &full_headers(), &[row_matching_current_values], "EUR", MARKER_COL).unwrap();
+        assert_eq!(result2.unchanged, 1);
+        assert_eq!(result2.updated, 0);
+    }
+
+    #[test]
+    fn a_sheet_change_is_reported_as_a_conflict_when_the_app_edited_the_same_order_more_recently() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1);
+        // Simulate "the app also touched this order" after the last sync -
+        // far enough in the future that this can never flake on timing.
+        conn.execute("UPDATE orders SET updated_at = '2099-01-01T00:00:00.000Z' WHERE code = ?1", [&code]).unwrap();
+
+        let mut changed = seeded_order_row(&code, 1);
+        changed[2] = "stubhub".to_string();
+        let (result, _) = apply_order_rows(&conn, &full_headers(), &[changed], "EUR", MARKER_COL).unwrap();
+
+        assert_eq!(result.conflicts.len(), 1, "{:?}", result.errors);
+        assert_eq!(result.updated, 0);
+        assert_eq!(order_platform_name(&conn, &code).as_deref(), Some("ticketmaster"), "a real conflict must never be silently applied");
     }
 
     #[test]
@@ -4683,7 +5218,7 @@ mod tests {
         let event_id = seed_event(&conn);
         let order_id = insert_order_with_tickets(&conn, &local_order_input(event_id, 2), false).unwrap();
 
-        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &[], MARKER_COL).unwrap();
         assert_eq!(result.created, 1);
         assert_eq!(result.errors.len(), 0);
         assert_eq!(rows.len(), 1);
@@ -4708,21 +5243,131 @@ mod tests {
         let event_id = seed_event(&conn);
         insert_order_with_tickets(&conn, &local_order_input(event_id, 1), true).unwrap(); // is_demo = true
 
-        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &[], MARKER_COL).unwrap();
         assert_eq!(result.created, 0);
         assert!(rows.is_empty());
         assert!(pending_links.is_empty());
     }
 
     #[test]
-    fn an_already_linked_order_is_never_touched_by_push() {
+    fn an_already_linked_order_still_present_in_the_sheet_is_never_touched_by_push() {
         let conn = test_conn();
-        seed_order_with_quantity(&conn, 1); // via apply_order_rows -> already linked
+        let code = seed_order_with_quantity(&conn, 1); // via apply_order_rows -> already linked
+        let data_rows = vec![sample_row(&code)]; // its row is still there, marker and all
 
-        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
-        assert_eq!(result.created, 0, "an order that already has a TIQR ID must never be re-appended");
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &data_rows, MARKER_COL).unwrap();
+        assert_eq!(result.created, 0, "an order that already has a TIQR ID, still present in the sheet, must never be re-appended");
+        assert_eq!(result.unchanged, 1);
+        assert!(result.corrected.is_empty());
         assert!(rows.is_empty());
         assert!(pending_links.is_empty());
+    }
+
+    // ---- push_orders: 2.3.5 self-healing (apply_order_push) ------------------
+
+    #[test]
+    fn a_linked_order_whose_marker_vanished_from_the_sheet_is_re_appended_with_its_existing_code() {
+        let conn = test_conn();
+        let code = seed_order_with_quantity(&conn, 1); // via apply_order_rows -> already linked
+        // The sheet no longer has this order's row at all (marko deleted it,
+        // by his own account, then pushed again) - `data_rows` reflects that
+        // directly, no other row carries this (or any) marker.
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &[], MARKER_COL).unwrap();
+
+        assert_eq!(result.created, 1, "marko's explicit request: a missing marker must be noticed and added back");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][MARKER_COL], code, "re-appended with the SAME code, never a freshly generated one");
+        assert!(pending_links.is_empty(), "the existing sheet_sync_links row is already correct - nothing new to insert");
+        assert_eq!(result.corrected.len(), 1, "marko's own words: the app must show it noticed the row had disappeared");
+        assert!(result.corrected[0].message.contains(&code), "{}", result.corrected[0].message);
+    }
+
+    #[test]
+    fn only_the_order_missing_from_the_sheet_is_re_appended_a_still_present_one_is_left_alone() {
+        let conn = test_conn();
+        let still_present_code = seed_order_with_quantity(&conn, 1);
+        let missing_code = {
+            let mut cells = sample_row("");
+            cells[0] = "Different Show".to_string();
+            let (_, writes) = apply_order_rows(&conn, &full_headers(), &[cells], "EUR", MARKER_COL).unwrap();
+            writes.markers[0].1.clone()
+        };
+        let data_rows = vec![sample_row(&still_present_code)]; // only the first order's row is still in the sheet
+
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &data_rows, MARKER_COL).unwrap();
+        assert_eq!(result.created, 1);
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][MARKER_COL], missing_code);
+        assert!(pending_links.is_empty());
+    }
+
+    /// `full_headers()` (order columns, marker last) plus the Sales-sync
+    /// batch of columns right after the marker - the shape of marko's real
+    /// combined "Orders & Sales" sheet (see this module's own doc comment),
+    /// as opposed to `sales_headers()`'s deliberately simplified,
+    /// marker-first stand-in used by every other Sales test in this file.
+    /// Exists for exactly one test: proving the self-healing/quiet-skip
+    /// split between `apply_order_push` and `apply_sales_push` actually
+    /// composes correctly when both read the SAME sheet row, not just in
+    /// each function's own isolated tests.
+    fn combined_order_and_sales_headers() -> Vec<String> {
+        let mut headers = full_headers();
+        headers.push("TIQR ID".to_string());
+        headers.extend(
+            ["Site Listed", "Payout Per Ticket", "Status", "Delivery status", "Payout status", "Date sold", "paid by", "pull", "who pulled", "how much pull"]
+                .into_iter()
+                .map(String::from),
+        );
+        headers
+    }
+
+    #[test]
+    fn deleting_a_fully_sold_orders_entire_row_is_healed_by_order_push_then_sales_push_alone() {
+        let mut conn = test_conn();
+        let headers = combined_order_and_sales_headers();
+
+        // Seed a real order, then sell it, both through the combined layout
+        // so the marker this test uses is exactly the one both push
+        // functions will look for.
+        let (_, order_writes) = apply_order_rows(&conn, &headers, &[sample_row("")], "EUR", MARKER_COL).unwrap();
+        let code = order_writes.markers[0].1.clone();
+        let mut sale_row = sample_row(&code);
+        sale_row.extend(["viagogo", "45.00", "Listed", "Not yet", "paid", "20/09/2026", "buyer@example.com", "", "", ""].map(String::from));
+        apply_sales_rows(&mut conn, &headers, &[sale_row], MARKER_COL).unwrap();
+        assert!(uniform_sale_for_order(&conn, {
+            let order_id: i64 = conn.query_row("SELECT id FROM orders WHERE code = ?1", [&code], |r| r.get(0)).unwrap();
+            order_id
+        })
+        .unwrap()
+        .is_some());
+
+        // marko deletes the entire row (order + sales cells together) and
+        // pushes again - the sheet now has nothing at all for this order.
+        let empty_data_rows: Vec<Vec<String>> = vec![];
+
+        // Step 1: Push orders notices the marker vanished and re-appends the
+        // order-level cells - Sales-sync's own columns are necessarily blank
+        // on this freshly rebuilt row (build_order_append_row never writes
+        // them - see that function's own doc comment).
+        let (order_push_result, appended_rows, _) =
+            apply_order_push(&conn, &headers, &empty_data_rows, MARKER_COL).unwrap();
+        assert_eq!(order_push_result.created, 1);
+        let restored_row = appended_rows.into_iter().next().unwrap();
+        assert_eq!(restored_row[MARKER_COL], code);
+
+        // Step 2: with NO changes of its own, Push sales already fills the
+        // Sales-sync columns back in on that same restored row - proving
+        // apply_sales_push/apply_sales_push_internal need no self-healing
+        // logic of their own for this scenario.
+        let (sales_push_result, writes) = apply_sales_push(&conn, &headers, &[restored_row], MARKER_COL).unwrap();
+        assert_eq!(sales_push_result.updated, 1, "{:?}", sales_push_result.errors);
+        assert_eq!(writes.len(), 1);
+        let as_map: HashMap<usize, String> = writes[0].1.iter().cloned().collect();
+        let site_listed_col = MARKER_COL + 1;
+        let payout_col = MARKER_COL + 2;
+        assert_eq!(as_map.get(&site_listed_col), Some(&"viagogo".to_string()));
+        assert_eq!(as_map.get(&payout_col), Some(&"45,00".to_string()));
     }
 
     #[test]
@@ -4732,7 +5377,7 @@ mod tests {
         insert_order_with_tickets(&conn, &local_order_input(event_id, 1), false).unwrap();
         insert_order_with_tickets(&conn, &local_order_input(event_id, 3), false).unwrap();
 
-        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), MARKER_COL).unwrap();
+        let (result, rows, pending_links) = apply_order_push(&conn, &full_headers(), &[], MARKER_COL).unwrap();
         assert_eq!(result.created, 2);
         assert_eq!(rows.len(), 2);
         assert_eq!(pending_links.len(), 2);
@@ -4742,7 +5387,7 @@ mod tests {
     fn apply_order_push_also_requires_the_first_batch_headers() {
         let conn = test_conn();
         let headers: Vec<String> = vec!["platform".to_string()];
-        let err = apply_order_push(&conn, &headers, 1).unwrap_err();
+        let err = apply_order_push(&conn, &headers, &[], 1).unwrap_err();
         assert!(err.to_string().contains("Event Name"), "{err}");
     }
 

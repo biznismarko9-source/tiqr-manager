@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.3.4**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.3.5**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -41,9 +41,10 @@ dobre"), so this reverted build shipped as **2.3.1** instead. **Lesson for
 future sessions: a revert-to-previous-behavior task still needs a version
 bump FORWARD, never a rollback to a number already used before** - the
 Tauri updater compares version numbers directly and won't offer/accept a
-downgrade or a repeat. **2.3.2** is the next small, additive release right
-after - see "Current focus" below and `CHANGELOG.md`'s own entries for
-both.)
+downgrade or a repeat. 2.3.2 through 2.3.4 were the Dashboard Total-cost
+card and the two-attempt Sheets push row-placement fix. **2.3.5** is next
+- see "Current focus" below and `CHANGELOG.md`'s own entries for all of
+them.)
 
 ## Stack / layout
 
@@ -101,6 +102,95 @@ both.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.3.5 - Sync/push behavioral redesign: self-healing push, real diff-and-
+update sync, and the UI-freeze fix.** After 2.3.4 shipped (row-placement
+fixed and verified), marko came back with one detailed message re-explaining
+the WHOLE intended sync/push design from first principles, using Pulls as
+the reference model, because the narrow bug fixes so far hadn't addressed
+his actual mental model of how this should work. Three separate things,
+all in `orders_sheet_sync.rs`/`pulls_sheet_sync.rs` unless noted:
+
+1. **Push Orders/Push Sales no longer freeze the whole app.** Root cause
+   confirmed via this codebase's own precedent (`google_auth.rs`'s
+   `start_google_sign_in`, 2.0.12->2.0.13, and `commands/notifications.rs`'s
+   own module doc comment): all 11 sheet-sync `#[tauri::command]` functions
+   (`sync_orders`/`push_orders`/`sync_sales`/`push_sales`/`force_push_sales`/
+   `create_orders_sheet`/`setup_orders_sheet`, and Pulls' own 4 equivalents)
+   were plain synchronous `fn`, and since they call blocking
+   `reqwest::blocking` network I/O through Google Sheets, and Tauri runs a
+   non-async command directly on its single main/IPC thread, EVERY click of
+   any sync/push button froze the entire app until the network round-trip
+   finished - marko: "ked zapnem alebo kliknem na cokolvvek ci uz sync alebo
+   push tak apka zamrzne". Fixed by converting all 11 to `async fn` +
+   `tauri::async_runtime::spawn_blocking`, taking `app: tauri::AppHandle`
+   instead of `state: State<AppState>` and re-deriving the same managed
+   state inside the closure via `app.state::<AppState>()` (needed because
+   `AppState::db` is a bare `Mutex`, not `Arc`-wrapped, so `State` itself
+   can't move into a `'static` closure) - zero changes to any `_impl`
+   function's actual logic. The frontend (`Settings.tsx`'s shared sync/push
+   card component) already had a correct per-button `busy` state/spinner/
+   disable from way earlier - it was just neutered by the backend freeze; no
+   frontend changes were needed at all.
+2. **Order/Sales sync now diffs and updates an already-linked row**,
+   matching what Pulls sync already did - marko: "ked je tam nejaka zmena,
+   tak tiez to kukne a opravi poprípade updatne". Through 2.3.4, ANY marked
+   row was skipped unconditionally with zero comparison (v1's original,
+   deliberate creation-only scope-cut). New `OrderRowSnapshot` (mirrors
+   Pulls' own `PullRowSnapshot`/`SyncLink` pattern exactly) tracks exactly 5
+   fields - `platform`, the sheet's date, `currency` (as a label),
+   `Email (used)`, `Order ID` - and on a genuine difference, applies it via
+   the SAME `update_order_impl`/`OrderEditInput` the manual "Edit order" form
+   already uses. **Deliberately excludes `quantity`/`Price Per Ticket`/
+   `Total Purchase Price`** - unlike Pulls, Orders have real Tickets with
+   exact-cent purchase cost allocated at creation time
+   (`insert_order_with_tickets`), and this project's house rules already say
+   not to touch that after the fact without asking first (same boundary the
+   2.0.53 currency-push feature drew). A sheet-side change to any of those 3
+   is simply invisible to this comparison - not flagged, not applied, exactly
+   like before. Same two-sided-edit conflict check as Pulls
+   (`order.updated_at > link.last_synced_at`). The legacy `'{}'` placeholder
+   every already-linked order's `sheet_sync_links` row carried through 2.3.4
+   needs no migration step: `OrderRowSnapshot` derives `Default` with a
+   container-level `#[serde(default)]`, so `'{}'` parses as all-blank, looks
+   "different" from any real row exactly once, and silently backfills a real
+   snapshot via the ordinary update path (never an "unreadable snapshot"
+   error). Sales sync (`apply_sales_rows`) was NOT changed - see point 3.
+3. **Push Orders is now self-healing by marker** - marko, twice, explicitly:
+   "ked nejake ID chyba ktore nieje v tabulke doplni ho, aj ked ho ja
+   manualne odstranit a zas dam push, tak musi vediet ze zmizlo a doplnit ho
+   tam". `apply_order_push`'s selection query used to be purely
+   `sheet_sync_links`-driven (`WHERE NOT EXISTS (...)`) - completely blind to
+   whether the sheet still actually had the row. Now every non-demo order is
+   checked against the sheet's CURRENTLY-FETCHED marker set: never-linked ->
+   append (unchanged case); linked AND marker still present -> untouched
+   (unchanged case, still true); **linked but marker now missing anywhere in
+   the sheet -> re-appended using the SAME existing code**, no new
+   `sheet_sync_links` row (the old one was never wrong), reported via
+   `result.corrected` so marko can see the app noticed. This is a deliberate,
+   documented DIVERGENCE from `pulls_sheet_sync::apply_pull_push`'s own
+   choice for the identical situation (Pulls reports an error instead,
+   explicitly to avoid a possible duplicate) - marko's explicit, twice-stated
+   words for Orders/Sales were treated as authoritative rather than
+   re-asking, and Pulls itself was left untouched since he described it as
+   already correct and asked specifically to move on to Orders/Sales. **Push
+   Sales needed NO code change at all** for this - it never creates rows to
+   begin with (`apply_sales_push_internal` only ever fills blank cells on a
+   row that already exists), so once Push Orders restores a deleted order's
+   row (its Sales-sync columns necessarily blank again), the very next Push
+   Sales already re-fills them through its existing, unchanged "only write a
+   fully blank cell group" rule - proven end-to-end by a dedicated test
+   (`deleting_a_fully_sold_orders_entire_row_is_healed_by_order_push_then_
+   sales_push_alone`) that chains both functions against one shared sheet
+   row. This also resolves the dangling row-426 data-integrity gap
+   `PROTECTED_AREAS.md`'s "2.3.2-2.3.4" entry flagged as needing a
+   deliberate fix - see that entry, now marked resolved.
+
+9 new/updated unit tests for the sync diff logic, 3 for push self-healing
+plus the cross-function integration test above; full suite 1020/1020
+passed, 0 failed; `tsc -b`/`npm run build` clean. See `PROTECTED_AREAS.md`'s
+new "2.3.5" entry for the full reasoning, including the Pulls-divergence
+call and what was deliberately left out of scope.
 
 **Orders/Sales sheet push - row placement now based on the marker column,
 not raw row count (2.3.4, supersedes 2.3.3's first attempt).** Marko's own

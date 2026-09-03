@@ -21,6 +21,123 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.3.5 - Sync/push behavioral redesign (self-healing push, real sync diff, async commands)
+
+**Read this before touching `orders_sheet_sync.rs`'s sync/push functions, or
+either module's `#[tauri::command]` wrappers, again.**
+
+**1. All 11 sheet-sync commands are now `async fn` + `spawn_blocking` -
+never add a new one as a plain synchronous `fn`.** `orders_sheet_sync.rs`
+(`sync_orders`, `push_orders`, `sync_sales`, `push_sales`, `force_push_sales`,
+`create_orders_sheet`, `setup_orders_sheet`) and `pulls_sheet_sync.rs`
+(`sync_pulls`, `push_pulls`, `create_pulls_sheet`, `setup_pulls_sheet`) all
+follow the exact pattern `google_auth.rs`'s `start_google_sign_in` set in
+2.0.13, and that `commands/notifications.rs`'s own module doc comment
+already names explicitly:
+```rust
+#[tauri::command]
+pub async fn NAME(app: tauri::AppHandle) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        NAME_impl(&conn)
+    })
+    .await
+    .map_err(|e| AppError::External(format!("the ... task did not complete cleanly: {e}")))?
+}
+```
+Takes `AppHandle`, not `State<AppState>`, ON PURPOSE - `AppState::db` is a
+bare `Mutex<Connection>`, not `Arc`-wrapped, so `State<'_, AppState>` cannot
+be moved into a `'static` `spawn_blocking` closure (a real Rust lifetime
+constraint, not a style choice); `app.state::<AppState>()` (the `tauri::
+Manager` trait - both files needed a fresh `use tauri::Manager;`, `State`
+was removed from both since nothing else in either file still used it)
+re-derives the identical managed state from inside the closure instead. Only
+the `_impl` functions changed callers, never their own internal logic - the
+whole point was zero risk to the sync/push logic itself while fixing the
+freeze. Before this, EVERY click of any sync/push button froze the entire
+app - Tauri dispatches a non-async command straight onto its single main/
+IPC thread, and these commands all do blocking `reqwest::blocking` network
+I/O through Google Sheets. Confirmed via the exact same bug class this
+codebase already hit and fixed once for Google sign-in (2.0.12->2.0.13).
+**A new sheet-sync command (or any command doing real network I/O) must be
+written this way from the start - a plain `fn` here is a regression, not a
+style nit.**
+
+**2. Order sync (`apply_order_rows`) now diffs and updates an already-linked
+row - but ONLY 5 specific fields, and this boundary is load-bearing, not
+arbitrary.** `OrderRowSnapshot` (right above `apply_order_rows`) tracks
+`platform_name`, `purchase_date` (the sheet's "Date (DD/MM/YYYY)"),
+`currency`, `notes` (Email), `external_reference` (Order ID) - and nothing
+else. **`quantity`/`unit_price_cents`/`Total Purchase Price` are
+deliberately NOT in this snapshot, full stop - never add them without
+asking marko first.** `insert_order_with_tickets` allocates each ticket's
+exact-cent purchase cost from those 3 numbers at creation time
+(`allocate_cents`); silently re-deriving/rewriting that allocation from a
+later sheet edit is exactly the "protected financial logic, don't touch
+without asking" territory the 2.0.53 currency-push feature already drew a
+line around for the PUSH direction - this is the same line, drawn for the
+SYNC (pull) direction instead. A sheet-side change to any of those 3 fields
+on an already-linked row is simply invisible to `OrderRowSnapshot` - not
+flagged, not applied, not even validated - exactly today's (pre-2.3.5)
+behavior for them, unchanged. The 5 tracked fields carry no such risk (all
+5 are already safely editable after the fact via `update_order_impl`/the
+manual "Edit order" form; `external_reference` is the one exception - not
+part of that form, but always a plain, cost-free UPDATE, same as this
+module's own create path already performs). Legacy `'{}'` snapshots (every
+order linked before 2.3.5) need no migration: `OrderRowSnapshot` derives
+`Default` with container-level `#[serde(default)]`, so `'{}'` parses as
+all-blank fields, looks "different" from any real row on its very next
+sync, and silently backfills a real snapshot through the ordinary update
+path - never hits the "unreadable snapshot" error branch. Same two-sided
+conflict check as Pulls (`order.updated_at > link.last_synced_at`) before
+applying anything. **Sales sync (`apply_sales_rows`) was deliberately NOT
+given equivalent diff-and-update logic this round** - its own "already
+fully sold" branch only ever (idempotently) retries the pull-info link, and
+marko's complaint was scoped to Orders/Sales sync/push as a pair described
+at a high level, never specifically to Sales' own resale_status/delivery_
+status/payout fields on an already-sold row. If he reports that gap
+specifically, port the same snapshot-diff pattern there, still never
+touching `Sale.sale_price_cents`/an already-booked sale's amount for the
+same cost-allocation-adjacent reason as above.
+
+**3. Push Orders is self-healing by marker; Push Sales deliberately is
+not (and doesn't need to be) - do not "fix" Sales to match.**
+`apply_order_push` now treats an already-linked order as needing a fresh
+append when its marker (the order's own `code`) is missing from the sheet's
+CURRENTLY-FETCHED data, not just when it was never linked at all - re-using
+the existing code, never generating a new one, and never re-inserting the
+`sheet_sync_links` row (the old one was never wrong). **This is a
+deliberate, permanent divergence from `pulls_sheet_sync::apply_pull_push`**,
+which treats the identical situation (linked, marker missing) as an ERROR
+instead, explicitly to avoid a possible duplicate - see that function's own
+doc comment. marko asked for Orders/Sales self-healing twice, explicitly,
+concretely (including the literal repro: delete a row by hand, push again,
+it must come back) - his words were treated as the authoritative, considered
+design choice for Orders/Sales specifically, not generalized to Pulls, which
+he separately described as already working correctly and asked to move past.
+**If Pulls ever gets the same complaint for real, this is the entry to
+re-read and the design tension to re-resolve (probably by asking him
+directly, since the two data sources now deliberately disagree) - don't
+assume porting 2.3.5's Orders behavior over is automatically correct for
+Pulls too.** `apply_sales_push`/`apply_sales_push_internal` needed, and got,
+ZERO code changes for this: neither ever creates a sheet row (`push_sales`
+only ever fills Sales-sync columns of a row that already exists) - once
+`apply_order_push` restores a deleted order's row (Sales-sync columns
+necessarily blank again on the fresh row), the very next Push Sales already
+re-fills them through its existing, unchanged "only write when every target
+cell is still blank" rule. Proved end-to-end, not just by inference, in
+`deleting_a_fully_sold_orders_entire_row_is_healed_by_order_push_then_sales_
+push_alone` (chains `apply_order_push` -> `apply_sales_push` against one
+shared, marker-linked sheet row built from a combined Orders+Sales header
+layout - `combined_order_and_sales_headers()`, a closer stand-in for
+marko's real one-sheet layout than `full_headers()`/`sales_headers()` are
+individually). **This resolves the row-426 data-integrity gap the
+"2.3.2-2.3.4" entry below flagged as needing a deliberate fix** - the next
+Push Orders after 2.3.5 ships will notice that order's marker is missing
+and re-add it automatically; see that entry, now marked resolved, for the
+original incident.
+
 ## 2.3.2-2.3.4 - Dashboard Total cost card, and a Google Sheets push bug that took two tries
 
 **Two `totalCostCents` fields on the Dashboard now, don't merge them.**
@@ -115,24 +232,24 @@ likely shared cause of both symptoms instead of two unrelated bugs.
   wrong row" report ever comes in for Pulls, this entry (both attempts,
   not just 2.3.4's) is what to port over.
 
-- **New, marko-caused data-integrity gap, NOT fixed - the order that used
-  to be at row 426 is now permanently "invisible" to this app.** While
-  testing between 2.3.3 and 2.3.4, marko deleted that row's content
+- **RESOLVED in 2.3.5 (see that entry, point 3, above this one) - the order
+  that used to be at row 426 was permanently "invisible" to this app.**
+  While testing between 2.3.3 and 2.3.4, marko deleted that row's content
   directly in the sheet (not through the app), then ran Order/Sales sync
   again and saw no change - expected, not a bug: `apply_order_rows`
   (the PULL/sync direction, a different code path from push) treats a
   fully blank row as just a gap and silently skips it (see that function's
-  own "v1 never updates" / "just a gap" comments) - sync was never going to
-  notice or repair a deletion either way, push or pull. The real, lingering
-  problem: that order's `sheet_sync_links` row (written back when it was
-  first pushed, per the 2.2.10 fix) still exists in this app's own local
-  database, so `apply_order_push`'s `WHERE NOT EXISTS (SELECT 1 FROM
-  sheet_sync_links ...)` filter will never offer to push it again - the
-  app still believes it is already synced. **If marko wants that specific
-  order's data back in the sheet, it needs a deliberate fix (e.g. deleting
-  its one `sheet_sync_links` row so the next push re-adds it) - not
-  something to build or guess at speculatively; ask him first whether he
-  even wants it back, since he may have deleted it on purpose.**
+  own "just a gap" comment) - sync was never going to notice or repair a
+  deletion either way, push or pull. The real, lingering problem was that
+  order's `sheet_sync_links` row (written back when it was first pushed,
+  per the 2.2.10 fix) still existing in this app's own local database, so
+  `apply_order_push`'s old `WHERE NOT EXISTS (SELECT 1 FROM
+  sheet_sync_links ...)` filter would never offer to push it again - the
+  app kept believing it was already synced forever. 2.3.5's self-healing
+  push (checks the linked marker against the sheet's CURRENT data, not just
+  whether a link row exists) fixes this generically, for this order and any
+  future one like it - no manual `sheet_sync_links` surgery needed. The
+  next "Push orders" after upgrading to 2.3.5 re-adds it automatically.
 
 - **Believed fixed as a side effect of 2.3.4 above, NOT independently
   verified - Revenue/Profit formulas missing on many rows**, still missing
