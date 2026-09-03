@@ -16,6 +16,37 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.3.4 - Sheets push: row placement fixed properly this time
+
+2.3.3's fix wasn't enough - marko sent a screenshot proving it. Revenue (P)
+and Profit (Q) in his real sheet had live formulas filled all the way to
+row 425, even though only ~16 rows have real order data. Somewhere in this
+sheet's history, `plan_sheet_structure_updates` had written formulas that
+far down, and a formula is non-empty content too - so the raw `"A1:AZ"`
+row count 2.3.3 anchored on was never actually small in his sheet, it
+already agreed with Google's own confused auto-detection. Same bug,
+different disguise.
+
+Fixed properly: `next_append_row`/`next_append_range`
+(`orders_sheet_sync.rs`) now scan for the LAST row whose **marker cell**
+(TIQR ID) is non-empty - the one column only this app ever writes, and
+only for a row holding a real order - and target the row right after it,
+ignoring any stray formula residue further down. 5 unit tests added,
+including the literal shape of marko's real sheet (16 real rows + 408
+stray-formula rows still targets row 18) and a deliberate "never reuse a
+gap in the middle" case. Full suite 1011/1011 passed, 0 failed; `tsc -b`/
+`npm run build` clean.
+
+Also found and documented (not fixed, not asked for): marko deleted the
+row-426 order's content directly in the sheet while testing between
+versions, which this app's own bookkeeping now can't see - that order
+won't automatically come back. See `PROTECTED_AREAS.md`'s "2.3.2-2.3.4"
+entry before doing anything about it.
+
+Revenue/Profit formulas being missing on older rows is still believed to
+be the same root cause, not independently fixed - marko needs to confirm
+on his real sheet after this update. Not marked resolved yet.
+
 ## 2.3.3 - Sheets push: row placement fixed at the source
 
 Follow-up to 2.3.2's investigation (see `PROTECTED_AREAS.md`'s "2.3.2/2.3.3"

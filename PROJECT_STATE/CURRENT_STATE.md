@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.3.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.3.4**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -102,39 +102,45 @@ both.)
 
 ## Current focus / most recent work
 
-**Orders/Sales sheet push - row placement fixed, formula gap likely fixed
-as a side effect (2.3.3).** Marko's own report, investigated properly
-before touching anything (see `PROTECTED_AREAS.md`'s "2.3.2" entry for the
-full investigation trail and the questions he was asked before this was
-written): Push Orders landed a new row at 426 instead of at row 18 (the
-sheet's real next empty row - he confirmed rows 18-425 are genuinely
-empty). Root cause: `push_orders_impl` (`orders_sheet_sync.rs`) called
-`google_sheets::append_values` at a bare `"A1"` anchor, handing row
-placement entirely to Google's own opaque table auto-detection instead of
-anything this app tracks itself. Fixed by computing the target row
-explicitly via a new pure `next_append_range` (unit-tested against
-marko's own numbers: 17 existing rows -> targets row 18) from the same
-`"A1:AZ"` read this function already trusts for its header/marker-column
-lookup, and writing with `update_values` (exact-range overwrite) instead
-of the ambiguous `append_values`. **Known, deliberate limitation:** this
-does not retroactively move the order a past, buggy push already stranded
-at row 426 in marko's real sheet - only he can safely do that himself in
-the sheet, since it means touching live data this app cannot see full
-context for.
+**Orders/Sales sheet push - row placement now based on the marker column,
+not raw row count (2.3.4, supersedes 2.3.3's first attempt).** Marko's own
+report, investigated properly before touching anything, twice (see
+`PROTECTED_AREAS.md`'s "2.3.2-2.3.4" entry for the full investigation
+trail, both rounds of questions he was asked, and why the first fix wasn't
+enough): Push Orders landed a new row at 426 instead of at row 18. 2.3.3's
+first fix computed the target row from the raw `"A1:AZ"` read's length -
+marko then sent a screenshot proving that wasn't enough: Revenue/Profit in
+his real sheet were filled with live formulas all the way to row 425, even
+though only ~16 rows have real order data - `plan_sheet_structure_updates`
+had, at some point in the past, written formulas that far down, and since a
+formula is non-empty content too, every subsequent raw row-count read
+(the app's own, and Google's `append_values` auto-detection) agreed the
+table was ~425 rows long. 2.3.3's fix trusted that same contaminated
+number, so it reproduced the exact bug it was meant to close.
 
-His separate complaint (Revenue/Profit formulas missing on many rows, even
-after retrying the push) was NOT independently fixed - `plan_sheet_structure_
-updates` already writes one formula per row across the sheet's CURRENT full
-extent every time structure-refresh runs, not just for new rows, so this
-is very likely the SAME root cause: real new rows kept landing far outside
-the range earlier pushes' formula-refresh had reason to expect, and/or a
-subtlety in exactly when that refresh re-reads the sheet. This fix should
-make future pushes self-heal it (see `PROTECTED_AREAS.md`'s "2.3.2" entry
-for the full reasoning and the concrete next step - re-running Push
-Orders/Push Sales once after installing this update). **Not marked
-resolved until marko confirms** - if formulas are still missing after that,
-this needs a fresh, more specific report (which exact row, and whether the
-push results panel showed any red error).
+2.3.4 fixes this properly: `next_append_row`/`next_append_range`
+(`orders_sheet_sync.rs`) now scan the sheet's own data for the LAST row
+whose **marker cell** (TIQR ID) is non-empty - the one column only this
+app ever writes, and only for a row holding a real pushed order - and
+target the row right after it, completely ignoring any stray formula
+residue further down. 5 unit tests cover this directly, including the
+literal "16 real rows then 408 stray-formula rows" shape of marko's real
+sheet. Two things this does NOT do, on purpose: it does not retroactively
+move the order a past push stranded at row 426 (marko already deleted that
+row's content himself while testing - see `PROTECTED_AREAS.md` for what
+that means for that one order's sync state), and it does not clear the
+stray formula residue in rows 18-425 (harmless, cosmetic, and only he
+should decide whether to clean up live sheet content) - only he can safely
+do either directly in the sheet.
+
+The separate-sounding Revenue/Profit-formula complaint was very likely
+never an independent bug - `plan_sheet_structure_updates` already
+recomputes formulas across the sheet's entire current extent on every
+push, and that extent has apparently included row 18 all along (thanks to
+the very same formula contamination that caused the placement bug) - so
+once a real order lands at row 18, the same push that places it there
+should already give it a working formula too. **Still not marked resolved
+until marko confirms on his real sheet.**
 
 **Dashboard: all-time "Total cost" StatCard (2.3.2).** Marko's own request,
 folded in alongside investigating two Google Sheets sync complaints (see

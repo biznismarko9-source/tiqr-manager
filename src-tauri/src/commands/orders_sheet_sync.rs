@@ -1151,18 +1151,51 @@ fn apply_order_push(
     Ok((result, append_rows, pending_links))
 }
 
-/// 2.3.3: the exact `A{row}:AZ{row}` range a fresh batch of `new_row_count`
-/// order rows should be written to, given `existing_row_count` - the length
-/// of the plain `"A1:AZ"` read `push_orders_impl` already performs for its
-/// own header/marker-column lookup (header row included, so `1` means "only
-/// a header, no data rows yet" and the first new row is row 2). Pulled out
-/// as its own pure function purely so this arithmetic - the entire fix for
-/// marko's "push landed at row 426 instead of row 18" report - has a direct
-/// unit test, rather than living inline in `push_orders_impl`'s untestable
-/// network-calling shell. See that function's own 2.3.3 comment for why
-/// this replaced a bare `"A1"` `append_values` anchor.
-fn next_append_range(sheet_tab: &str, existing_row_count: usize, new_row_count: usize) -> String {
-    let next_row = existing_row_count + 1;
+/// 2.3.4 (superseding 2.3.3's first attempt - see that version's own
+/// PROTECTED_AREAS.md entry for why it wasn't enough): the row to start a
+/// fresh batch of new order rows at, found by scanning `data_rows` (the
+/// plain `"A1:AZ"` read `push_orders_impl` already performs) for the LAST
+/// row whose MARKER cell (TIQR ID) is non-empty, and returning the row
+/// right after it.
+///
+/// 2.3.3 computed this from the raw row count instead
+/// (`data_rows.len() + 2`) and that was not enough: in marko's real sheet,
+/// `plan_sheet_structure_updates` had at some point written Revenue/Profit
+/// FORMULAS far past his real order data (rows 18-425, all genuinely empty
+/// of order data, still show a live formula in Revenue/Profit evaluating to
+/// 0 - marko's own screenshot). A formula is non-empty content too, and
+/// nothing in this codebase ever clears one once written, so it keeps every
+/// future raw `"A1:AZ"` read - and Google's own `append_values` table
+/// auto-detection - permanently believing the table is ~425 rows long. Raw
+/// row count can never distinguish "a row with a real order" from "a row
+/// whose only content is a leftover formula", so 2.3.3's fix reproduced the
+/// exact bug it was meant to close.
+///
+/// The marker column is the one column in this sheet that ONLY this app
+/// ever writes, and ONLY for a row that holds a real pushed order
+/// (`build_order_append_row` always sets it; `plan_sheet_structure_updates`
+/// never touches it) - so its last non-empty row is a reliable "how far
+/// does real data actually go" signal no matter what formula residue sits
+/// further down. Deliberately scans for the LAST marked row rather than
+/// trusting `data_rows.len()` or any single row in isolation, so one
+/// cleared-out row in the middle (e.g. an order deleted straight from the
+/// sheet) never causes a new push to reuse that row and silently merge two
+/// orders together.
+fn next_append_row(data_rows: &[Vec<String>], marker_col_index: usize) -> usize {
+    data_rows
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, row)| cell(row, Some(marker_col_index)).is_some())
+        .map(|(i, _)| i + 3) // data_rows[i] is sheet row i+2 (header=row 1); next row is one more
+        .unwrap_or(2) // no marked row anywhere yet - first data row
+}
+
+/// The exact `A{row}:AZ{row}` range a fresh batch of `new_row_count` order
+/// rows should be written to - see `next_append_row`'s own doc comment for
+/// how the starting row is chosen.
+fn next_append_range(data_rows: &[Vec<String>], marker_col_index: usize, sheet_tab: &str, new_row_count: usize) -> String {
+    let next_row = next_append_row(data_rows, marker_col_index);
     let end_row = next_row + new_row_count - 1;
     google_sheets::a1_range(sheet_tab, &format!("A{next_row}:AZ{end_row}"))
 }
@@ -1190,34 +1223,49 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
         google_sheets::update_values(token, &connection.spreadsheet_id, &header_range, &[vec![MARKER_HEADER.to_string()]])?;
     }
 
+    // Pre-append snapshot - any row(s) about to be appended below land past
+    // whatever this covers, so they get their own Revenue/Profit formula/
+    // dropdowns on the NEXT sync/push instead of this one (all four
+    // commands in this module refresh the structure, so that is never more
+    // than one click away) rather than a second full-sheet re-fetch on
+    // every single push just to cover this run's own appends a few seconds
+    // sooner. Bound up here (rather than only after the append block, where
+    // this used to live) because `next_append_range` below now needs it too.
+    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
+
     let (mut result, append_rows, pending_links) = apply_order_push(conn, &headers, marker_col_index)?;
 
     if !append_rows.is_empty() {
         let new_count = append_rows.len();
-        // 2.3.3 (marko's report): this used to call `append_values` at a
-        // bare "A1" anchor with insertDataOption=INSERT_ROWS, which hands
-        // row placement entirely to Google's own table auto-detection - and
-        // that does not always agree with what this app itself considers
-        // the sheet's real extent. marko saw a push land at row 426 when
-        // the real next empty row was 18, with rows 18-425 all confirmed
-        // empty on his side - i.e. something Google's own detection treats
-        // as "the table" extends further than what this app (or a human
-        // glancing at the sheet) sees as real data. Rather than keep
-        // trusting that opaque heuristic, the target is now computed
-        // explicitly from `value_range.values.len()` - the exact same
-        // "A1:AZ" read already used a few lines up for the header/
-        // marker-column lookup, so this can never disagree with what the
-        // rest of this same function already treats as the sheet's current
-        // extent. `update_values` (a plain, exact-range overwrite this
-        // codebase already uses elsewhere - see its own doc comment) is
-        // used instead of `append_values`, so this is a deterministic write
-        // to a freshly-computed, believed-empty range rather than another
-        // auto-detected insert. Known limitation, deliberately not handled
-        // here: this does not retroactively move any row a past, buggy
-        // push already stranded far down the sheet - only marko can safely
-        // do that in the sheet itself, since it means editing live data
-        // this app cannot see the full context of.
-        let append_range = next_append_range(&connection.sheet_tab, value_range.values.len(), new_count);
+        // 2.3.4 (marko's report; supersedes 2.3.3's first attempt - see
+        // that version's own PROTECTED_AREAS.md entry): this used to call
+        // `append_values` at a bare "A1" anchor with
+        // insertDataOption=INSERT_ROWS, which hands row placement entirely
+        // to Google's own table auto-detection - and that does not always
+        // agree with what this app itself considers the sheet's real
+        // extent. marko saw a push land at row 426 when the real next
+        // empty row was 18. 2.3.3 first tried anchoring on the raw row
+        // count instead, which was not enough: marko's own sheet had
+        // Revenue/Profit formulas sitting all the way out to row 425 (a
+        // formula is non-empty content too, and nothing here ever clears
+        // one once written), so a raw row count reads exactly as "long" as
+        // Google's own confused auto-detection - both see the same
+        // formula residue. `next_append_range` now scans specifically for
+        // the marker column's (TIQR ID) last non-empty row instead - the
+        // one column in this sheet only this app ever writes, and only for
+        // a row that holds a real pushed order - so leftover formulas
+        // further down can never influence where a new row lands.
+        // `update_values` (a plain, exact-range overwrite this codebase
+        // already uses elsewhere) is used instead of `append_values`, so
+        // this is a deterministic write to an explicitly-computed range
+        // rather than another auto-detected insert. Known limitation,
+        // deliberately not handled here: this does not retroactively move
+        // any row a past, buggy push already stranded far down the sheet,
+        // nor does it clear the stray formula residue those old pushes
+        // left behind - only marko can safely do either in the sheet
+        // itself, since both mean editing live data this app cannot see
+        // the full context of.
+        let append_range = next_append_range(data_rows, marker_col_index, &connection.sheet_tab, new_count);
         match google_sheets::update_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
             // 2.2.10: the `sheet_sync_links` rows are only written here, now
             // that the append above is confirmed to have actually reached
@@ -1251,15 +1299,6 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
             }
         }
     }
-
-    // Pre-append snapshot - any row(s) `append_rows` above just added land
-    // one row past whatever this covers, so they get their own Revenue/
-    // Profit formula/dropdowns on the NEXT sync/push instead of this one
-    // (all four commands in this module refresh the structure, so that is
-    // never more than one click away) rather than a second full-sheet
-    // re-fetch on every single push just to cover this run's own appends a
-    // few seconds sooner.
-    let data_rows: &[Vec<String>] = if value_range.values.len() > 1 { &value_range.values[1..] } else { &[] };
 
     // 2.0.54: catch up any order whose currency drifted from the sheet -
     // see reconcile_order_currencies' own doc comment for why this exists.
@@ -4707,28 +4746,77 @@ mod tests {
         assert!(err.to_string().contains("Event Name"), "{err}");
     }
 
-    // ---- push_orders: next_append_range (2.3.3 row-placement fix) ------------
+    // ---- push_orders: next_append_row/next_append_range (2.3.4 row-placement fix) --
+
+    /// A data row with `marker` in the TIQR ID column and nothing else -
+    /// enough to represent "a row this app has pushed a real order into"
+    /// for these tests.
+    fn marked_row(marker: &str) -> Vec<String> {
+        let mut row = vec![String::new(); MARKER_COL + 1];
+        row[MARKER_COL] = marker.to_string();
+        row
+    }
+
+    /// A data row with NO marker but a non-empty value in some other
+    /// column - mirrors marko's real sheet, where
+    /// `plan_sheet_structure_updates` had at some point written a Revenue/
+    /// Profit formula far past his real order data. The marker column
+    /// (the only thing `next_append_row` looks at) stays blank, exactly
+    /// like a row this app never pushed anything into.
+    fn stray_formula_row() -> Vec<String> {
+        let mut row = vec![String::new(); MARKER_COL + 1];
+        row[8] = "0".to_string(); // arbitrary non-marker column
+        row
+    }
+
+    fn blank_row() -> Vec<String> {
+        vec![String::new(); MARKER_COL + 1]
+    }
 
     #[test]
-    fn next_append_range_targets_the_row_right_after_marko_s_real_case() {
-        // marko's own numbers: 17 rows already read (header + 16 real
-        // orders) - one fresh order should target row 18, exactly where he
-        // expected it, not wherever Google's own append auto-detection
-        // might otherwise land it.
-        assert_eq!(next_append_range("Orders", 17, 1), "'Orders'!A18:AZ18");
+    fn next_append_row_targets_the_row_right_after_the_last_marked_one() {
+        // marko's own numbers: 16 real, marked orders (sheet rows 2-17) -
+        // one fresh order should target row 18, exactly where he expected
+        // it, not wherever Google's own append auto-detection might
+        // otherwise land it.
+        let data_rows: Vec<Vec<String>> = (0..16).map(|i| marked_row(&format!("ORD-{i}"))).collect();
+        assert_eq!(next_append_row(&data_rows, MARKER_COL), 18);
+    }
+
+    #[test]
+    fn next_append_row_ignores_stray_formula_rows_past_the_real_data() {
+        // THE regression case: 16 real marked orders, then a long stretch
+        // of rows that carry no marker but do carry other non-empty
+        // content (marko's actual sheet - Revenue/Profit formulas written
+        // out to row 425 with nothing real behind them). 2.3.3's first fix
+        // (raw row count) would have targeted row 426 here, reproducing
+        // the exact bug it was meant to close - this must still target 18.
+        let mut data_rows: Vec<Vec<String>> = (0..16).map(|i| marked_row(&format!("ORD-{i}"))).collect();
+        data_rows.extend((0..408).map(|_| stray_formula_row())); // rows 18-425
+        assert_eq!(next_append_row(&data_rows, MARKER_COL), 18);
+    }
+
+    #[test]
+    fn next_append_row_never_reuses_a_gap_left_by_a_row_cleared_in_the_middle() {
+        // A marked row can be cleared straight in the sheet (marko did
+        // exactly this to the order that had landed at row 426) without
+        // this app ever finding out - deliberately scans for the LAST
+        // marked row, not the first empty one, so a new push can never
+        // land on top of a gap and risk being confused with whatever used
+        // to be there.
+        let data_rows = vec![marked_row("ORD-1"), marked_row("ORD-2"), blank_row(), marked_row("ORD-4")];
+        assert_eq!(next_append_row(&data_rows, MARKER_COL), 6, "must go right after row 5 (ORD-4), not reuse row 4's gap");
+    }
+
+    #[test]
+    fn next_append_row_targets_row_two_when_no_data_rows_exist_yet() {
+        assert_eq!(next_append_row(&[], MARKER_COL), 2, "the very first order ever pushed must land at row 2, never row 1 (the header)");
     }
 
     #[test]
     fn next_append_range_spans_multiple_rows_for_a_multi_order_batch() {
-        assert_eq!(next_append_range("Orders", 17, 3), "'Orders'!A18:AZ20");
-    }
-
-    #[test]
-    fn next_append_range_targets_row_two_when_only_a_header_exists() {
-        // existing_row_count=1 means the "A1:AZ" read saw only the header
-        // row - the very first order ever pushed must land at row 2, never
-        // row 1 (which would overwrite the header).
-        assert_eq!(next_append_range("Orders", 1, 1), "'Orders'!A2:AZ2");
+        let data_rows: Vec<Vec<String>> = (0..16).map(|i| marked_row(&format!("ORD-{i}"))).collect();
+        assert_eq!(next_append_range(&data_rows, MARKER_COL, "Orders", 3), "'Orders'!A18:AZ20");
     }
 
     // ---- push_sales: apply_sales_push ----------------------------------------

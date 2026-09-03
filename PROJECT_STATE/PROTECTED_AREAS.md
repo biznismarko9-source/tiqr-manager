@@ -21,7 +21,7 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.3.2/2.3.3 - Dashboard Total cost card, and two Google Sheets sync bugs
+## 2.3.2-2.3.4 - Dashboard Total cost card, and a Google Sheets push bug that took two tries
 
 **Two `totalCostCents` fields on the Dashboard now, don't merge them.**
 `data.period.totalCostCents` (Overview tab, "Purchase cost") is
@@ -48,45 +48,109 @@ formulas, and they were still missing. That last answer is what unblocked
 `orders_sheet_sync.rs`), and pointed at the row-placement bug as the more
 likely shared cause of both symptoms instead of two unrelated bugs.
 
-- **FIXED in 2.3.3 - Push Orders landed a new row at 426 instead of ~18**
-  (marko: "no mala to dat do 18, tam kde je posledny vynechany riadok").
-  Root cause: `push_orders_impl` (`orders_sheet_sync.rs`) called
+- **FIXED in 2.3.4 (2.3.3's first attempt was NOT enough - read this
+  before trusting raw row/cell counts against this sheet again) - Push
+  Orders landed a new row at 426 instead of ~18** (marko: "no mala to dat
+  do 18, tam kde je posledny vynechany riadok"). Root cause:
+  `push_orders_impl` (`orders_sheet_sync.rs`) called
   `google_sheets::append_values` with a bare `"A1"` range anchor and
   `insertDataOption=INSERT_ROWS` - this delegated row placement ENTIRELY to
-  Google's own table auto-detection (whatever it decides is the sheet's
-  current data extent, evidently wider/different than what a plain
-  `"A1:AZ"` values.get - or a human - sees), not to anything this app
-  tracks itself. `apply_order_push` never had any gap-scanning/row-reuse
-  logic of its own to begin with. Fix: a new pure `next_append_range`
-  (unit-tested directly against marko's own numbers - 17 existing rows read
-  -> targets row 18) computes an EXPLICIT target from the same `"A1:AZ"`
-  read this function already trusts for header/marker-column detection,
-  and the write itself now goes through `update_values` (exact-range
-  overwrite, already used elsewhere in this file) instead of the ambiguous
-  `append_values`. **Deliberately does NOT retroactively move the order a
-  past push already stranded at row 426 in marko's real sheet** - only he
-  can safely do that himself in the Sheet UI; this app doesn't have enough
-  context about that live row to move it unattended. `pulls_sheet_sync.rs`
-  (`push_pulls_impl`) still uses the same bare-anchor `append_values`
-  pattern this fixes here - NOT touched, since marko never reported this
-  symptom for Pulls and there is no confirmed evidence its sheet has the
-  same phantom-content issue. If a similar "landed in the wrong row"
-  report ever comes in for Pulls, this entry is the fix to port over, not
-  a reason to assume it's already broken there too.
-- **Believed fixed as a side effect of the above, NOT independently
+  Google's own table auto-detection, not to anything this app tracks
+  itself. `apply_order_push` never had any gap-scanning/row-reuse logic of
+  its own to begin with.
+
+  **2.3.3's first fix** computed the target explicitly from
+  `data_rows.len()` (the same `"A1:AZ"` read this function already trusts
+  for header/marker-column detection) instead of trusting Google's opaque
+  auto-detect - sound in isolation, verified wrong in practice: marko sent
+  a screenshot showing Revenue (P) and Profit (Q) filled with live formulas
+  all the way to row 425, despite confirming rows 18-425 have no real order
+  data. **A formula is non-empty content too** - `plan_sheet_structure_
+  updates` had, at some point in this sheet's history (before this bug was
+  ever investigated - the trigger is not known and not worth chasing
+  further), written Revenue/Profit formulas that far down, and once
+  written, nothing in this codebase ever clears them. That means `data_rows.
+  len()` was NEVER a small, honest "how many real orders" number in marko's
+  sheet - it already agreed with Google's own confused auto-detection,
+  because both were reading the same formula residue as "the table". 2.3.3
+  trusted that same contaminated count, so it reproduced the exact bug it
+  was meant to close. **Lesson: raw row/cell count from a plain values.get
+  is not a reliable "where does real data end" signal once a sheet has ever
+  had formulas written past its real data - which, given the paragraph
+  above, this app itself can cause.**
+
+  **2.3.4's fix**: `next_append_row`/`next_append_range` now scan `data_
+  rows` for the LAST row whose **marker cell** (TIQR ID column) is
+  non-empty, and target the row right after it - completely ignoring
+  anything else in the row, including stray formulas.  The marker column is
+  the one column in this sheet ONLY this app ever writes, and ONLY for a
+  row that holds a real pushed order; `plan_sheet_structure_updates` never
+  touches it. 5 unit tests cover this, including
+  `next_append_row_ignores_stray_formula_rows_past_the_real_data` (the
+  literal "16 real + 408 stray-formula rows" shape of marko's actual sheet)
+  and `next_append_row_never_reuses_a_gap_left_by_a_row_cleared_in_the_
+  middle` (deliberately scans for the LAST marked row, not the first empty
+  one - a row cleared out of order, e.g. an order deleted straight in the
+  sheet, must never look like "the next free slot" to a future push - see
+  the next bullet for exactly this happening for real). The write itself
+  goes through `update_values` (exact-range overwrite, already used
+  elsewhere in this file) instead of `append_values`.
+
+  **Still does NOT retroactively clean up marko's actual sheet** - two
+  things left exactly as they are, on purpose, because both mean editing
+  live data this app cannot see the full context of, and neither blocks
+  correct behavior going forward:
+  - The stray Revenue/Profit formula residue in rows 18-425 stays (cosmetic
+    only - harmless zeros, not wrong data). `ensure_orders_sheet_structure`
+    will keep re-writing/re-confirming that same residue on every future
+    push too (it still computes `data_row_count` from raw `data_rows.len()`,
+    unchanged by this fix) - this is expected, not a regression.
+  - The order that was at row 426 - marko deleted its content directly in
+    the sheet while testing this (see the very next bullet).
+
+  `pulls_sheet_sync.rs` (`push_pulls_impl`) still uses the same bare-anchor
+  `append_values` pattern this fixes here - NOT touched, since marko never
+  reported this symptom for Pulls and there is no confirmed evidence its
+  sheet has the same formula-residue issue. If a similar "landed in the
+  wrong row" report ever comes in for Pulls, this entry (both attempts,
+  not just 2.3.4's) is what to port over.
+
+- **New, marko-caused data-integrity gap, NOT fixed - the order that used
+  to be at row 426 is now permanently "invisible" to this app.** While
+  testing between 2.3.3 and 2.3.4, marko deleted that row's content
+  directly in the sheet (not through the app), then ran Order/Sales sync
+  again and saw no change - expected, not a bug: `apply_order_rows`
+  (the PULL/sync direction, a different code path from push) treats a
+  fully blank row as just a gap and silently skips it (see that function's
+  own "v1 never updates" / "just a gap" comments) - sync was never going to
+  notice or repair a deletion either way, push or pull. The real, lingering
+  problem: that order's `sheet_sync_links` row (written back when it was
+  first pushed, per the 2.2.10 fix) still exists in this app's own local
+  database, so `apply_order_push`'s `WHERE NOT EXISTS (SELECT 1 FROM
+  sheet_sync_links ...)` filter will never offer to push it again - the
+  app still believes it is already synced. **If marko wants that specific
+  order's data back in the sheet, it needs a deliberate fix (e.g. deleting
+  its one `sheet_sync_links` row so the next push re-adds it) - not
+  something to build or guess at speculatively; ask him first whether he
+  even wants it back, since he may have deleted it on purpose.**
+
+- **Believed fixed as a side effect of 2.3.4 above, NOT independently
   verified - Revenue/Profit formulas missing on many rows**, still missing
-  even after marko retried the push once (ruling out the ordinary
-  "next-push" lag as the full explanation). `plan_sheet_structure_updates`
-  already writes one formula per row across the sheet's CURRENT full
-  extent every time structure-refresh runs (`0..data_row_count`, recomputed
-  from a fresh `"A1:AZ"` read on every push) - not just for newly-appended
-  rows - so the leading theory is that this was never a second, independent
-  bug: real rows kept landing far outside the range earlier pushes'
-  structure-refresh had reason to expect, which the 2.3.3 fix above
-  resolves going forward. **Ask marko to click Push Orders/Push Sales (or
-  Settings' "Update sheet") once after updating to 2.3.3** - if formulas
-  are still missing after that, this needs a fresh report with the EXACT
-  row number(s) still affected and whether the push-results panel
+  even after marko retried the push once before 2.3.4 shipped (ruling out
+  the ordinary "next-push" lag as the full explanation - see that lag's own
+  doc comment in `orders_sheet_sync.rs`). `plan_sheet_structure_updates`
+  already writes one formula per row across the sheet's CURRENT full extent
+  on every push (`0..data_row_count`, recomputed from a fresh `"A1:AZ"`
+  read each time) - and per the formula-residue discovery above, that
+  extent already reaches row 425 regardless of whether anything real is
+  there. That means once 2.3.4 correctly places a new order at its real
+  next row (e.g. 18), THAT SAME PUSH's own structure-refresh should already
+  cover it with a formula too, with no second push needed this time - the
+  residue that caused the placement bug happens to make formula coverage
+  generous enough to include it immediately. **Ask marko to click Push
+  Orders/Push Sales once on 2.3.4 and confirm** - if formulas are still
+  missing after that, this needs a fresh report with the EXACT row
+  number(s) still affected and whether the push-results panel
   (`SyncResultView`, `Settings.tsx`) showed any red error text (structure-
   refresh failures land there as "Row 0: the sheet's dropdowns/Revenue/
   Profit formulas could not be refreshed this time: ..." -
