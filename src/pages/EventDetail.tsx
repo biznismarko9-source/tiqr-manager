@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, errMsg } from "../lib/api";
 import type {
+  EventOnlineSource,
   EventWithStats,
   FinanceEntry,
   InventoryIntelligence,
+  LiveEventSource,
+  LiveIntelCapturePayload,
+  LiveIntelWindowClosedPayload,
+  LiveIntelWindowErrorPayload,
+  LiveIntelWindowOpenedPayload,
   Marketplace,
   OrderRecord,
   PriceCheckerSummary,
@@ -13,6 +21,7 @@ import type {
   TicketListing,
   TicketListingInput,
 } from "../lib/types";
+import { LIVE_EVENT_SOURCES } from "../lib/types";
 import {
   centsToDecimalString,
   decimalStringToCents,
@@ -44,10 +53,12 @@ import {
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
 import {
   IconArrowLeft,
+  IconCheck,
   IconChevronDown,
   IconLink,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconSearch,
   IconTrash,
   IconX,
@@ -295,6 +306,8 @@ function OverviewTab({
         </Card>
       )}
 
+      <LiveEventIntelligenceBlock eventId={event.id} eventName={event.name} eventCity={event.city} />
+
       <InventoryIntelligenceBlock eventId={event.id} onSwitchTab={onSwitchTab} onHighlight={applyHighlight} />
 
       <div className="mb-3 flex items-center justify-between">
@@ -408,6 +421,480 @@ function OverviewTab({
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live Event Intelligence (2.4.0) - marko's "Live Event Intelligence
+// Foundation" spec: a compact block, above Inventory Intelligence, showing
+// whether this event is connected to a confirmed online source on exactly 3
+// marketplaces (Viagogo/Vivid Seats/Ticombo - see LIVE_EVENT_SOURCES,
+// types.ts). See src-tauri/src/commands/live_event_intelligence.rs's module
+// doc comment for the full backend design. Nothing here feeds Price
+// Checker or any pricing decision - foundation work only.
+//
+// Always renders exactly 3 rows, one per supported source, regardless of
+// whether marko has connected anything yet - same "show every option as a
+// place to add data, not just the ones already filled in" convention
+// `price_checker::get_price_checker_summary_impl`'s own marketplace cards
+// already established (PriceChecker.tsx's `MarketplaceCard`).
+//
+// Every network-touching action (Find Online Event / Refresh) opens a
+// real, visible browser window via `LiveIntelWindowModal` below - marko
+// looks at/searches the actual page himself, then explicitly captures and
+// confirms it. Nothing here ever auto-fills a form, auto-submits, or reads
+// page content beyond a title + URL - see that modal's own doc comment.
+// ---------------------------------------------------------------------------
+
+function sourceLabel(key: LiveEventSource): string {
+  return LIVE_EVENT_SOURCES.find((s) => s.key === key)?.label ?? key;
+}
+
+/** Best-effort search URLs, built entirely on the FRONTEND - the backend
+ * never constructs or even knows about these (see commands::
+ * live_event_intelligence's own module doc comment.) These patterns were
+ * checked against each site while building this feature but are NOT
+ * guaranteed to stay exact forever - marketplaces change their own query
+ * parameters without notice. That's fine by design: "Find Online Event"
+ * opens a REAL, fully interactive browser window, so an imperfect guess
+ * just means marko finishes the search himself from there, exactly like
+ * typing into any normal browser tab. This function is never used for
+ * anything beyond giving that window somewhere useful to start. */
+function buildSearchUrl(source: LiveEventSource, eventName: string, city: string | null): string {
+  const q = encodeURIComponent([eventName, city].filter(Boolean).join(" ").trim());
+  switch (source) {
+    case "viagogo":
+      return `https://www.viagogo.com/Search?q=${q}`;
+    case "vivid_seats":
+      return `https://www.vividseats.com/search?searchTerm=${q}`;
+    case "ticombo":
+      return `https://www.ticombo.com/en/search?q=${q}`;
+    default:
+      return `https://www.google.com/search?q=${q}`;
+  }
+}
+
+function LiveEventIntelligenceBlock({ eventId, eventName, eventCity }: { eventId: number; eventName: string; eventCity: string | null }) {
+  const toast = useToast();
+  const [sources, setSources] = useState<EventOnlineSource[] | null>(null);
+  const [windowModal, setWindowModal] = useState<{ source: LiveEventSource; mode: "discover" | "refresh"; url: string } | null>(null);
+  const [manualModal, setManualModal] = useState<{ source: LiveEventSource; existingUrl: string } | null>(null);
+
+  const load = useCallback(() => {
+    api.listEventOnlineSources(eventId).then(setSources).catch((e) => toast.error(errMsg(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (sources === null) {
+    return (
+      <Card className="mb-6 p-4">
+        <LoadingBlock />
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="mb-6 p-4">
+      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Live Event Intelligence</p>
+      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        {LIVE_EVENT_SOURCES.map(({ key, label }) => {
+          const row = sources.find((s) => s.source === key && s.active) ?? null;
+          const disconnected = sources.find((s) => s.source === key && !s.active) ?? null;
+          return (
+            <SourceRow
+              key={key}
+              sourceKey={key}
+              label={label}
+              row={row}
+              disconnected={disconnected}
+              onFind={() => setWindowModal({ source: key, mode: "discover", url: buildSearchUrl(key, eventName, eventCity) })}
+              onRefresh={(url) => setWindowModal({ source: key, mode: "refresh", url })}
+              onManual={() => setManualModal({ source: key, existingUrl: disconnected?.url ?? "" })}
+              onChanged={load}
+            />
+          );
+        })}
+      </ul>
+
+      {windowModal && (
+        <LiveIntelWindowModal
+          eventId={eventId}
+          source={windowModal.source}
+          sourceLabel={sourceLabel(windowModal.source)}
+          mode={windowModal.mode}
+          initialUrl={windowModal.url}
+          onClose={() => setWindowModal(null)}
+          onConfirmed={() => {
+            setWindowModal(null);
+            load();
+          }}
+        />
+      )}
+      {manualModal && (
+        <ConnectManuallyModal
+          eventId={eventId}
+          source={manualModal.source}
+          sourceLabel={sourceLabel(manualModal.source)}
+          existingUrl={manualModal.existingUrl}
+          onClose={() => setManualModal(null)}
+          onSaved={() => {
+            setManualModal(null);
+            load();
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+function SourceRow({
+  sourceKey,
+  label,
+  row,
+  disconnected,
+  onFind,
+  onRefresh,
+  onManual,
+  onChanged,
+}: {
+  sourceKey: LiveEventSource;
+  label: string;
+  row: EventOnlineSource | null;
+  disconnected: EventOnlineSource | null;
+  onFind: () => void;
+  onRefresh: (url: string) => void;
+  onManual: () => void;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const setActive = async (eventId: number, active: boolean) => {
+    setBusy(true);
+    try {
+      await api.setOnlineSourceActive({ eventId, source: sourceKey, active });
+      onChanged();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!row && !disconnected) {
+    return (
+      <li className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+        <span className="text-sm text-slate-500 dark:text-slate-400">
+          {label} <span className="text-slate-400 dark:text-slate-500">- not connected</span>
+        </span>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onFind}>
+            <IconSearch className="h-4 w-4" /> Find Online Event
+          </Button>
+          <Button variant="secondary" onClick={onManual}>
+            <IconLink className="h-4 w-4" /> Connect manually
+          </Button>
+        </div>
+      </li>
+    );
+  }
+
+  if (!row && disconnected) {
+    return (
+      <li className="flex flex-wrap items-center justify-between gap-2 py-2.5 opacity-70">
+        <div className="min-w-0">
+          <span className="text-sm text-slate-500 dark:text-slate-400">
+            {label} <span className="text-slate-400 dark:text-slate-500">- disconnected</span>
+          </span>
+          <p className="truncate text-xs text-slate-400 dark:text-slate-500">{disconnected.url}</p>
+        </div>
+        <Button variant="secondary" onClick={() => setActive(disconnected.eventId, true)} disabled={busy}>
+          {busy ? <Spinner className="h-4 w-4" /> : "Reconnect"}
+        </Button>
+      </li>
+    );
+  }
+
+  const r = row as EventOnlineSource;
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-slate-800 dark:text-slate-200">{label}</span>
+          {r.verified ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-900">
+              <IconCheck className="h-3 w-3" /> Verified
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:ring-amber-900">
+              Not verified
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 truncate text-xs text-slate-400 dark:text-slate-500">{r.url}</p>
+        <p className="text-xs text-slate-400 dark:text-slate-500">
+          {r.lastCheckedAt ? `Last checked ${formatDateTime(r.lastCheckedAt)}` : "Never checked"}
+          {r.lastCheckedTitle ? ` - "${r.lastCheckedTitle}"` : ""}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" onClick={() => onRefresh(r.url)}>
+          <IconRefresh className="h-4 w-4" /> Refresh
+        </Button>
+        <Button variant="secondary" onClick={() => openUrl(r.url).catch(() => toast.error("Could not open the link"))}>
+          <IconLink className="h-4 w-4" /> Open source
+        </Button>
+        <Button variant="secondary" onClick={() => setActive(r.eventId, false)} disabled={busy}>
+          {busy ? <Spinner className="h-4 w-4" /> : "Disconnect"}
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** "Find Online Event" and "Refresh" both open one of these - see this
+ * module section's own doc comment above. Opens a real, visible browser
+ * window (`openLiveEventWindow`) on `initialUrl`, lets marko look at/search
+ * it himself, and offers "Capture this page" (`captureLiveEventPage`) to
+ * read the CURRENTLY loaded page's title + URL, once, as one candidate -
+ * never anything more (no prices, no listings, no scraping). Capturing
+ * again after navigating adds another candidate; "Use this one" on any of
+ * them calls `saveConfirmedOnlineSource`, the only call that ever marks a
+ * source verified. `mode` only changes the copy shown - the mechanism is
+ * identical for "Find Online Event" (a fresh search) and "Refresh" (the
+ * already-saved URL, reloaded) on purpose, see live_event_intelligence.rs's
+ * own `save_confirmed_online_source_impl` doc comment for why.
+ *
+ * Scope decision for this foundation release: this modal owns its window's
+ * whole lifecycle - closing the modal (in any way) also closes the real
+ * browser window, unlike the Price Checker Visible Scanner's own cards,
+ * which deliberately let a window outlive the page. Live Event
+ * Intelligence's window use is a short, single-purpose "find and confirm"
+ * or "refresh and confirm" interaction rather than an ongoing monitoring
+ * session, so there is no need to keep a window alive after marko is done
+ * with this dialog. */
+let liveIntelRequestSeq = 0;
+
+function LiveIntelWindowModal({
+  eventId,
+  source,
+  sourceLabel: label,
+  mode,
+  initialUrl,
+  onClose,
+  onConfirmed,
+}: {
+  eventId: number;
+  source: LiveEventSource;
+  sourceLabel: string;
+  mode: "discover" | "refresh";
+  initialUrl: string;
+  onClose: () => void;
+  onConfirmed: () => void;
+}) {
+  const toast = useToast();
+  const [requestId] = useState(() => ++liveIntelRequestSeq);
+  const [opening, setOpening] = useState(true);
+  const [capturing, setCapturing] = useState(false);
+  const [candidates, setCandidates] = useState<{ title: string; url: string }[]>([]);
+  const [confirmingUrl, setConfirmingUrl] = useState<string | null>(null);
+  const windowIsOpenRef = useRef(false);
+
+  useEffect(() => {
+    let unlistenOpened: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    let unlistenResult: (() => void) | undefined;
+    let unlistenClosed: (() => void) | undefined;
+    let disposed = false;
+
+    listen<LiveIntelWindowOpenedPayload>("live-intel-window-opened", (e) => {
+      if (e.payload.requestId !== requestId) return;
+      windowIsOpenRef.current = true;
+      setOpening(false);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenOpened = fn;
+    });
+
+    listen<LiveIntelWindowErrorPayload>("live-intel-window-error", (e) => {
+      if (e.payload.requestId !== requestId) return;
+      toast.error(e.payload.message);
+      setOpening(false);
+      setCapturing(false);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenError = fn;
+    });
+
+    listen<LiveIntelCapturePayload>("live-intel-capture-result", (e) => {
+      if (e.payload.requestId !== requestId) return;
+      setCapturing(false);
+      setCandidates((prev) => (prev.some((c) => c.url === e.payload.url) ? prev : [...prev, { title: e.payload.title, url: e.payload.url }]));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenResult = fn;
+    });
+
+    listen<LiveIntelWindowClosedPayload>("live-intel-window-closed", (e) => {
+      if (e.payload.requestId !== requestId) return;
+      windowIsOpenRef.current = false;
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenClosed = fn;
+    });
+
+    api.openLiveEventWindow(requestId, eventId, source, initialUrl).catch((e) => {
+      toast.error(errMsg(e));
+      setOpening(false);
+    });
+
+    return () => {
+      disposed = true;
+      unlistenOpened?.();
+      unlistenError?.();
+      unlistenResult?.();
+      unlistenClosed?.();
+      // This modal owns its window's whole lifecycle (see this function's
+      // own doc comment above) - closing for ANY reason also closes the
+      // real browser window. Not awaited; we're unmounting regardless.
+      if (windowIsOpenRef.current) api.closeLiveEventWindow(requestId, true).catch(() => undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const capture = () => {
+    setCapturing(true);
+    api.captureLiveEventPage(requestId).catch((e) => {
+      toast.error(errMsg(e));
+      setCapturing(false);
+    });
+  };
+
+  const useCandidate = async (c: { title: string; url: string }) => {
+    setConfirmingUrl(c.url);
+    try {
+      await api.saveConfirmedOnlineSource({ eventId, source, url: c.url, title: c.title || null });
+      toast.success(`${label} connected`);
+      onConfirmed();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setConfirmingUrl(null);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title={mode === "discover" ? `Find ${label} online` : `Refresh ${label}`}>
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          {mode === "discover"
+            ? `A real browser window opened with a ${label} search for this event. Find the right event page yourself - search, scroll, navigate however you like - then click "Capture this page" below to add it as a candidate.`
+            : `A real browser window opened on the saved ${label} link. Take a look - if it still shows the right event, click "Capture this page" to confirm it.`}
+        </p>
+        {opening && <LoadingBlock label="Opening window..." />}
+        <div>
+          <Button variant="secondary" onClick={capture} disabled={opening || capturing}>
+            {capturing ? <Spinner className="h-4 w-4" /> : <IconSearch className="h-4 w-4" />} Capture this page
+          </Button>
+        </div>
+
+        {candidates.length > 0 ? (
+          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            {candidates.map((c) => (
+              <li key={c.url} className="flex items-center justify-between gap-3 p-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{c.title || "(untitled page)"}</p>
+                  <p className="truncate text-xs text-slate-400 dark:text-slate-500">{c.url}</p>
+                </div>
+                <Button variant="primary" onClick={() => useCandidate(c)} disabled={confirmingUrl !== null}>
+                  {confirmingUrl === c.url ? <Spinner className="h-4 w-4" /> : "Use this one"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          !opening && (
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Nothing captured yet - find the right page in the opened window, then click &quot;Capture this page&quot;.
+            </p>
+          )
+        )}
+      </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+/** "Connect manually" - skips the window entirely, for when marko already
+ * has the URL or a reliable search isn't working out. Always saves
+ * `verified: false` - see EventOnlineSource's own doc comment (types.ts). */
+function ConnectManuallyModal({
+  eventId,
+  source,
+  sourceLabel: label,
+  existingUrl,
+  onClose,
+  onSaved,
+}: {
+  eventId: number;
+  source: LiveEventSource;
+  sourceLabel: string;
+  existingUrl: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [url, setUrl] = useState(existingUrl);
+  const [externalId, setExternalId] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!url.trim()) {
+      toast.error("Enter a URL first");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.connectOnlineSourceManually({ eventId, source, url: url.trim(), externalEventId: externalId.trim() || null });
+      toast.success(`${label} connected`);
+      onSaved();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title={`Connect ${label} manually`}>
+      <div className="flex flex-col gap-4">
+        <Field label="Event page URL" required>
+          <Input autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..." />
+        </Field>
+        <Field label="External event ID" hint="Optional - only if you already have one from the marketplace's own dashboard.">
+          <Input value={externalId} onChange={(e) => setExternalId(e.target.value)} />
+        </Field>
+        <p className="text-xs text-slate-400 dark:text-slate-500">
+          Saved as "Not verified" - TIQR Manager hasn&apos;t looked at this page itself yet. Use Refresh afterward to confirm it.
+        </p>
+      </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={save} disabled={saving}>
+          {saving ? <Spinner className="h-4 w-4" /> : "Save"}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }
 

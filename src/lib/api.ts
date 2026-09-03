@@ -29,6 +29,10 @@ import type {
   EventInput,
   EventMarketplaceLink,
   EventMarketplaceLinkInput,
+  EventOnlineSource,
+  EventOnlineSourceActiveInput,
+  EventOnlineSourceConfirmInput,
+  EventOnlineSourceManualInput,
   EventRecord,
   EventWithStats,
   FinanceCategory,
@@ -37,6 +41,7 @@ import type {
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
   InventoryIntelligence,
+  LiveEventSource,
   MarketAnalysisResult,
   Marketplace,
   NotificationConfigInput,
@@ -608,6 +613,33 @@ export const api = {
    * safe to call repeatedly as marko edits the reference fields. */
   computeComparableMarket: (input: ComparableReferenceInput) =>
     invoke<RankedComparable[]>("compute_comparable_market", { input }),
+
+  // Live Event Intelligence (2.4.0) - an event's optional confirmed online
+  // identity on exactly 3 marketplaces (Viagogo/Vivid Seats/Ticombo). See
+  // commands/live_event_intelligence.rs's module doc comment (Rust) for the
+  // full design. The 3 window commands mirror the Visible Scanner's own
+  // "returns fast, the real result follows as an event" contract - listen
+  // for `live-intel-window-opened`/`live-intel-window-error`/
+  // `live-intel-capture-result`/`live-intel-window-closed`.
+  /** Every online source ever saved for this event (active or disconnected) - never filtered/hidden here, the UI decides how to group them. */
+  listEventOnlineSources: (eventId: number) => invoke<EventOnlineSource[]>("list_event_online_sources", { eventId }),
+  /** "Connect manually" - always saves `verified: false`; a later Refresh is what can confirm it. Upserts on (eventId, source). */
+  connectOnlineSourceManually: (input: EventOnlineSourceManualInput) =>
+    invoke<EventOnlineSource>("connect_online_source_manually", { input }),
+  /** The one call that ever sets `verified: true` - used after a live capture from either "Find Online Event" (confirming a candidate) or "Refresh" (re-confirming a saved source). */
+  saveConfirmedOnlineSource: (input: EventOnlineSourceConfirmInput) =>
+    invoke<EventOnlineSource>("save_confirmed_online_source", { input }),
+  /** "Disconnect"/"Reconnect" - a soft flag flip, never deletes the row or its verified state/history. */
+  setOnlineSourceActive: (input: EventOnlineSourceActiveInput) =>
+    invoke<EventOnlineSource>("set_online_source_active", { input }),
+  /** Opens a real, visible browser window on `url` - a freshly constructed search-results page for "Find Online Event", or the already-saved source url for "Refresh". `requestId` is minted by the caller, same convention as `openPriceScanner`. */
+  openLiveEventWindow: (requestId: number, eventId: number, source: LiveEventSource, url: string) =>
+    invoke<void>("open_live_event_window", { requestId, eventId, source, url }),
+  /** Reads whatever's CURRENTLY rendered in the window - title + current URL only, once. Never scrapes prices/listings. */
+  captureLiveEventPage: (requestId: number) => invoke<void>("capture_live_event_page", { requestId }),
+  /** Ends a window session - "Close" in the UI. `closeWindow: true` also closes the real browser window; `false` only forgets TIQR Manager's own bookkeeping. Safe to call on an already-closed session. */
+  closeLiveEventWindow: (requestId: number, closeWindow: boolean) =>
+    invoke<void>("close_live_event_window", { requestId, closeWindow }),
 };
 
 export function errMsg(e: unknown): string {

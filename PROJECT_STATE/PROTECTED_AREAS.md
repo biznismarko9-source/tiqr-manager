@@ -21,6 +21,133 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.4.0 - Live Event Intelligence Foundation (new online-source concept, visible-window reuse without shared state)
+
+**Read this before touching `commands/live_event_intelligence.rs`,
+`event_online_sources`, or before adding a 4th supported marketplace to
+this specific feature.**
+
+**1. `event_online_sources` is deliberately a standalone table - never fold
+it into `events` or the general `marketplaces` table.** marko's spec was
+explicit that existing event data must not change or be backfilled by this
+feature, and a separate table (rather than new nullable columns on
+`events`) is the reading of that instruction that keeps every existing
+`Event`/`EventWithStats` struct, query, and test completely untouched - see
+`migrations/026_live_event_intelligence.sql`'s own doc comment for the full
+column-by-column reasoning. Just as important: this table has **no foreign
+key onto `marketplaces`** (the general, marko-managed lookup Price
+Checker/Listings share, which still includes retired StubHub/Seatriks -
+`017_price_checker_viagogo.sql`/`025_deactivate_seatriks_price_checker.sql`).
+`source` is instead a plain `TEXT` column with its own `CHECK (source IN
+('viagogo', 'vivid_seats', 'ticombo'))`, validated a second time in Rust by
+`commands::live_event_intelligence::SUPPORTED_SOURCES`/`validate_source`.
+This means deleting a row from `marketplaces` has **zero** effect on
+`event_online_sources`, and vice versa - a future session that expects
+`delete_marketplace_impl`'s existing "count every table with a
+marketplace_id column" guard to also cover this table will be surprised:
+it doesn't, on purpose, because there is no `marketplace_id` column here at
+all. This is the correct, deliberate reading of marko's own two
+instructions in the same spec: "keep marketplaces data-driven" (that
+principle still fully applies to the general `marketplaces` table, which
+this feature never touches) versus "support ONLY these 3 marketplaces, do
+NOT add StubHub/Seatriks/anything else" (a fixed, code-defined scope for
+THIS feature specifically). Adding a genuine 4th Live Event Intelligence
+source later means extending BOTH the CHECK constraint (a new forward-only
+migration) AND `SUPPORTED_SOURCES` AND the frontend's `LIVE_EVENT_SOURCES`/
+`buildSearchUrl` (`EventDetail.tsx`) together - none of the existing 3
+sources' own code or data needs to change for that.
+
+**2. `verified` and `active` are two independent flags - do not collapse
+them into one status.** `verified` means a human has actually looked at
+`url` in a real, visible window and explicitly confirmed it; `active`
+means "still connected" (a soft retire, same convention as
+`Marketplace.active`/`TicketListing.status == 'removed'` - "Disconnect"
+flips it off without losing the row, its `verified` state, or
+`last_checked_*` history; "Reconnect" flips it back). The **only** function
+that ever writes `verified = true` is
+`save_confirmed_online_source_impl` - never `connect_online_source_
+manually_impl` (always `verified = false`, since the app never looked at a
+manually-typed URL) and never `set_online_source_active_impl` (a
+disconnect/reconnect never touches `verified` either direction). If a
+future change adds another way to persist a row, default it to
+`verified = false` and make it go through a real capture-and-confirm to
+become `true` - never infer verification from anything else (a successful
+window open, a non-empty URL, etc.).
+
+**3. `save_confirmed_online_source` deliberately backs BOTH "Find Online
+Event" (confirming a discovery candidate) and "Refresh" (re-confirming an
+already-saved source) - do not split it into two functions.** Both are the
+same real-world action: marko just looked at a specific URL in the visible
+window and says it's right. Sharing one function is also what makes
+"Refresh" double as "verify a manually-connected source" with no separate
+UI action needed - a `verified = false` manual entry becomes `true` the
+first time a Refresh capture is confirmed. Both paths upsert on
+`(event_id, source)` (`ON CONFLICT DO UPDATE`, same convention as
+`price_checker::save_event_marketplace_link_impl`) rather than ever
+allowing a second row for the same marketplace.
+
+**4. The visible-window mechanism is intentionally DUPLICATED from
+`price_checker_scanner.rs`, not shared, extracted, or imported from it.**
+`commands::live_event_intelligence` reimplements the same hard-won pattern
+(`WebviewWindowBuilder` built off a plain `std::thread::spawn` - building on
+the command's own calling thread deadlocks on Windows, exactly the
+constraint that shaped the 2.1.9 Scanner rewrite - plus `eval_with_callback`
+with a bounded `recv_timeout`) against its **own** state:
+`db::LiveIntelSession` in `AppState::live_intel_sessions`, a completely
+separate `HashMap` from `AppState::price_scanner_sessions`/
+`db::ScannerSession`. This was a deliberate choice, not an oversight: this
+task's own instructions explicitly protect the existing Price Checker
+scanner logic from any changes, and sharing session state (or refactoring
+a common helper out of the protected file) would create exactly the kind
+of coupling where a future Scanner change could silently affect Live Event
+Intelligence, or vice versa. The two features' event names are also
+disjoint on purpose (`live-intel-*` vs `price-scanner-*`) and their payload
+types are separate Rust structs/TS interfaces even though several are
+field-for-field identical in shape.
+
+What Live Event Intelligence reads off a page is deliberately much smaller
+than the Scanner's own extraction: `capture_live_event_page` reads only
+`document.title` + `location.href` (joined with the ASCII unit separator,
+`String.fromCharCode(31)` - same convention `models::SeatEntry::
+parse_aggregate` already uses) - never prices, never listing counts, never
+anything selector-based. There is exactly ONE JSON-encoding layer to
+unwrap here (`parse_capture_result`), unlike `price_checker_scan.js`'s
+payload, because the injected script returns a plain JS string rather than
+an object it `JSON.stringify`s itself - see `CAPTURE_SCRIPT`'s own doc
+comment before changing what this script returns.
+
+**5. No backend HTTP client call to Viagogo/Vivid Seats/Ticombo exists
+anywhere in this feature, on purpose - do not add one, even for something
+as small as an HTTP HEAD "is this link still alive" check.** The ONLY
+networking `commands::live_event_intelligence` ever does is opening a
+real, visible browser window a human drives - the exact same safety
+envelope `price_checker_scanner.rs` already established, and the same one
+this project applied when marko separately asked, this same release cycle,
+about an auto-listing bot for Ticketmaster and was told no (CFAA/DMCA/BOTS
+Act exposure - see that conversation's own reasoning if resurrected later).
+"Refresh" therefore does NOT make a raw `reqwest` request at all - it opens
+the saved URL in the same kind of visible window "Find Online Event" uses
+and asks marko to explicitly capture-and-confirm what he sees, exactly
+like a fresh discovery. Keep it that way: any future temptation to "just
+ping the URL in the background to check it's still up" would be a new,
+different kind of automated backend request to these exact 3 marketplaces
+that doesn't exist anywhere else in this codebase, and would break the
+"a network hiccup must never freeze the app" guarantee for a much weaker
+reason than the window mechanism already provides for free (the window
+commands never block Tauri's IPC thread - the build/eval happen on a
+spawned OS thread and the command returns immediately, same as the
+Scanner's own `open_price_scanner`/`scan_visible_prices`).
+
+**6. This feature never reads from or writes to Price Checker, its
+scanner, or anything pricing-related - and nothing here should ever start
+doing so without a real, separate design conversation.** Section/Row/Seat
+are never referenced anywhere in `live_event_intelligence.rs`,
+`event_online_sources` is never joined against in
+`price_checker.rs`/`price_checker_analysis.rs`, and vice versa. If a later
+task wants Price Checker to use a Live Event Intelligence source's URL as
+its own scanner's starting point, that is new, explicit scope - not
+something to infer from these two modules simply existing in the same app.
+
 ## 2.3.5 - Sync/push behavioral redesign (self-healing push, real sync diff, async commands)
 
 **Read this before touching `orders_sheet_sync.rs`'s sync/push functions, or

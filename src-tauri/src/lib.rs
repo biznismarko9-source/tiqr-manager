@@ -65,6 +65,7 @@ pub fn run() {
                 oauth_cancel_flag: Mutex::new(None),
                 firebase_oauth_cancel_flag: Mutex::new(None),
                 price_scanner_sessions: Mutex::new(HashMap::new()),
+                live_intel_sessions: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -231,6 +232,13 @@ pub fn run() {
             commands::price_checker_scanner::close_price_scanner,
             commands::price_checker_analysis::compute_market_analysis,
             commands::price_checker_analysis::compute_comparable_market,
+            commands::live_event_intelligence::list_event_online_sources,
+            commands::live_event_intelligence::connect_online_source_manually,
+            commands::live_event_intelligence::save_confirmed_online_source,
+            commands::live_event_intelligence::set_online_source_active,
+            commands::live_event_intelligence::open_live_event_window,
+            commands::live_event_intelligence::capture_live_event_page,
+            commands::live_event_intelligence::close_live_event_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

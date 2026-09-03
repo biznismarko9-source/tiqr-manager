@@ -16,6 +16,41 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.4.0 - Live Event Intelligence Foundation
+
+marko's next spec after 2.3.5: an Event can now optionally carry a
+CONFIRMED online identity on exactly 3 marketplaces - Viagogo, Vivid Seats,
+Ticombo. Foundation work only - no pricing logic, no changes to the
+existing Price Checker or its scanner. Full reasoning in
+`PROTECTED_AREAS.md`'s new "2.4.0" entry.
+
+1. **New table `event_online_sources`** (migration
+   `026_live_event_intelligence.sql`) - a standalone table, not a new
+   column on `events` and not a foreign key onto the general, marko-managed
+   `marketplaces` lookup. `UNIQUE(event_id, source)` enforces "at most once
+   per marketplace per event"; `verified`/`active` are two independent
+   flags (confirmed-by-a-human vs. still-connected).
+2. **Discovery, always human-confirmed.** "Find Online Event" opens a real,
+   visible browser window (reusing the Visible Scanner's technique, never
+   its code/state) on a best-effort search URL; marko searches himself;
+   "Capture this page" reads only the current page's title+URL as one
+   candidate; "Use this one" is the only action that ever saves a source as
+   verified. "Refresh" is the identical flow against an already-saved URL -
+   also how a manually-connected source becomes verified. "Connect
+   manually" skips the window for when marko already has the URL.
+3. **New compact "Live Event Intelligence" block** on EventDetail's
+   Overview tab (above Inventory Intelligence) - always exactly 3 rows,
+   Find Online Event / Connect manually / Refresh / Open source /
+   Disconnect-Reconnect.
+4. **No new networking primitive at all** - the only network access this
+   feature ever performs is opening a real, visible window a human drives;
+   no backend HTTP calls to any of the 3 marketplaces, ever.
+
+19 new backend unit tests + 3 new migration-upgrade tests (existing events
+untouched, CHECK constraint enforced on an upgraded database, cascade
+delete verified). `cargo test --lib` (1042 passed), `npx tsc -b`, `npm run
+build` all green.
+
 ## 2.3.5 - Sync/push redesign: self-healing push, real sync diff, no more UI freeze
 
 Marko came back after 2.3.4 with one detailed message re-explaining the

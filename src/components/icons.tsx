@@ -228,3 +228,13 @@ export const IconGoogle = (p: SVGProps<SVGSVGElement>) => (
     <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.6 4.59 1.79l3.44-3.44C17.94 1.19 15.24 0 12 0A12 12 0 0 0 .97 6.51l4.1 3.09A7.16 7.16 0 0 1 12 4.77Z" />
   </svg>
 );
+// 2.4.0: "Refresh" on Live Event Intelligence's per-source rows
+// (EventDetail.tsx) - a plain two-arrow refresh glyph, no icon library
+// needed for one more glyph, same reasoning as this file's own header
+// comment.
+export const IconRefresh = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16M3 21v-5h5" />
+  </Svg>
+);

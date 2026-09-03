@@ -2774,3 +2774,129 @@ pub struct AttentionCenterItem {
     pub amount_cents: Option<i64>,
     pub currency: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Live Event Intelligence (2.4.0) - see commands::live_event_intelligence's
+// own module doc comment and migrations/026_live_event_intelligence.sql for
+// the full design. Foundation work: an Event can optionally carry a
+// confirmed online identity on exactly 3 marketplaces (Viagogo/Vivid Seats/
+// Ticombo). Nothing here is read by Price Checker or used for pricing.
+// ---------------------------------------------------------------------------
+
+/// One (event, marketplace) online source connection - at most one row per
+/// `source` per event (see the migration's `UNIQUE(event_id, source)`).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventOnlineSource {
+    pub id: i64,
+    pub event_id: i64,
+    /// "viagogo" | "vivid_seats" | "ticombo" - see the migration's CHECK
+    /// constraint. A plain String, not a Rust enum - this struct is a dumb
+    /// DB mirror, same convention as `TicketListing::status`. See
+    /// `commands::live_event_intelligence::SUPPORTED_SOURCES` for the one
+    /// place that actually enumerates/validates these.
+    pub source: String,
+    pub url: String,
+    pub external_event_id: Option<String>,
+    /// True only once a human has looked at `url` in a real, visible window
+    /// and confirmed it - see `save_confirmed_online_source_impl`. Never set
+    /// any other way. A freshly manually-connected source starts `false`.
+    pub verified: bool,
+    /// False after "Disconnect" - a soft retire, same convention as
+    /// `Marketplace::active`/`TicketListing::status == "removed"`: the row
+    /// (and its history) stays, it just stops counting as "connected" in the
+    /// compact summary. "Reconnect" flips it back without losing anything.
+    pub active: bool,
+    /// Both `None` until the first successful "Refresh" (or the discovery
+    /// capture that created this row) - never guessed/backfilled.
+    pub last_checked_at: Option<String>,
+    /// Exactly what was read from the page's own `document.title` at
+    /// `last_checked_at` - never parsed or interpreted, just shown as a
+    /// quick human sanity check.
+    pub last_checked_title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Input for `connect_online_source_manually` - "Connect manually" in the
+/// UI, for when reliable discovery isn't possible or marko already has the
+/// URL. Always saves with `verified = false` (see `EventOnlineSource::
+/// verified`'s own doc comment) - a later "Refresh" is what confirms it, if
+/// he chooses to run one. Upserts on the (event_id, source) unique pair,
+/// same "re-saving the same marketplace updates it in place" convention as
+/// `EventMarketplaceLinkInput`/`save_event_marketplace_link_impl`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventOnlineSourceManualInput {
+    pub event_id: i64,
+    pub source: String,
+    pub url: String,
+    /// Optional - marko may not have/want to type one in. Never derived or
+    /// guessed by this app.
+    pub external_event_id: Option<String>,
+}
+
+/// Input for `save_confirmed_online_source` - the ONE function that ever
+/// writes `verified = true`. Shared by both flows that involve a human
+/// actually looking at a live page in the visible window: "Find Online
+/// Event" (confirming a captured search candidate) and "Refresh" (re-
+/// confirming an already-saved source) - see commands::
+/// live_event_intelligence's module doc comment for why one function
+/// covers both. `title` is whatever `capture_live_event_page` last read off
+/// the page - optional only because a caller could theoretically skip
+/// straight to confirming a URL without a live capture, though neither
+/// shipped UI flow currently does that.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventOnlineSourceConfirmInput {
+    pub event_id: i64,
+    pub source: String,
+    pub url: String,
+    pub title: Option<String>,
+}
+
+/// Input for `set_online_source_active` - "Disconnect"/"Reconnect".
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EventOnlineSourceActiveInput {
+    pub event_id: i64,
+    pub source: String,
+    pub active: bool,
+}
+
+// -- Live Event Intelligence visible-window events (2.4.0) - mirrors the
+// Price Checker Visible Scanner's own Scanner*Payload structs field-for-
+// field in spirit, but are their own distinct types/event names so the two
+// features share no wire format, same as they share no backend state
+// (db::LiveIntelSession vs db::ScannerSession). ---------------------------
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveIntelWindowOpenedPayload {
+    pub request_id: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveIntelWindowErrorPayload {
+    pub request_id: u64,
+    pub message: String,
+}
+
+/// Emitted after a `capture_live_event_page` call reads whatever's
+/// currently rendered in the window - title + URL only, exactly what
+/// `document.title`/`location.href` returned, never anything parsed out of
+/// the page's own content (no prices, no listings, no scraping).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveIntelCapturePayload {
+    pub request_id: u64,
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveIntelWindowClosedPayload {
+    pub request_id: u64,
+}

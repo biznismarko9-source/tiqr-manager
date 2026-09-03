@@ -1897,3 +1897,102 @@ export interface MarketAnalysisResult {
   uncurrenciedListingCount: number;
   yourTickets: YourTicketGroup[];
 }
+
+// ---------------------------------------------------------------------------
+// Live Event Intelligence (2.4.0) - see src-tauri/src/commands/
+// live_event_intelligence.rs's module doc comment for the full design.
+// Foundation work: an event can optionally carry a confirmed online
+// identity on exactly 3 marketplaces. Mirrors models.rs's own section
+// field-for-field (serde's rename_all = "camelCase").
+// ---------------------------------------------------------------------------
+
+/** The only 3 marketplaces this feature ever supports - matches the
+ * migration's CHECK constraint exactly. Deliberately NOT drawn from the
+ * general `Marketplace` lookup (Price Checker/Listings) - see this file's
+ * module comment above and PROTECTED_AREAS.md's "2.4.0" entry for why. */
+export type LiveEventSource = "viagogo" | "vivid_seats" | "ticombo";
+
+/** Display order + labels for `LiveEventSource` - the ONE place in the
+ * frontend that knows these 3 exist, so adding a genuine 4th source later
+ * touches this list, its search-URL builder below, and the backend CHECK
+ * constraint, and nothing else. */
+export const LIVE_EVENT_SOURCES: { key: LiveEventSource; label: string }[] = [
+  { key: "viagogo", label: "Viagogo" },
+  { key: "vivid_seats", label: "Vivid Seats" },
+  { key: "ticombo", label: "Ticombo" },
+];
+
+/** One (event, marketplace) online source connection. */
+export interface EventOnlineSource {
+  id: number;
+  eventId: number;
+  source: LiveEventSource;
+  url: string;
+  externalEventId: string | null;
+  /** True only once a human has looked at `url` in a real, visible window
+   * and confirmed it - see the backend's own `save_confirmed_online_source`
+   * doc comment. A freshly manually-connected source starts `false`. */
+  verified: boolean;
+  /** False after "Disconnect" - a soft retire, same idea as
+   * `Marketplace.active`. "Reconnect" flips it back without losing
+   * `verified`/history. */
+  active: boolean;
+  /** Both `null` until the first successful "Refresh" (or the discovery
+   * capture that created this row) - never guessed/backfilled. */
+  lastCheckedAt: string | null;
+  /** Exactly what `document.title` showed at `lastCheckedAt` - never parsed
+   * or interpreted, just a quick human sanity check. */
+  lastCheckedTitle: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Input for `connectOnlineSourceManually` - "Connect manually". Always
+ * saves with `verified = false`; a later "Refresh" is what confirms it. */
+export interface EventOnlineSourceManualInput {
+  eventId: number;
+  source: LiveEventSource;
+  url: string;
+  externalEventId: string | null;
+}
+
+/** Input for `saveConfirmedOnlineSource` - the one call that ever sets
+ * `verified = true`. Used after a live capture from either "Find Online
+ * Event" (confirming a candidate) or "Refresh" (re-confirming a saved
+ * source). */
+export interface EventOnlineSourceConfirmInput {
+  eventId: number;
+  source: LiveEventSource;
+  url: string;
+  title: string | null;
+}
+
+/** Input for `setOnlineSourceActive` - "Disconnect"/"Reconnect". */
+export interface EventOnlineSourceActiveInput {
+  eventId: number;
+  source: LiveEventSource;
+  active: boolean;
+}
+
+// -- Live Event Intelligence visible-window events (2.4.0) - payloads for
+// the 4 Tauri events the backend emits; see live_event_intelligence.rs's
+// EVENT_* constants, which must match these names exactly (no shared source
+// of truth, same as the Price Checker scanner's own 4 event names). --------
+
+export interface LiveIntelWindowOpenedPayload {
+  requestId: number;
+}
+export interface LiveIntelWindowErrorPayload {
+  requestId: number;
+  message: string;
+}
+/** Title + current URL of whatever's rendered in the window right now -
+ * never anything parsed out of the page's own content. */
+export interface LiveIntelCapturePayload {
+  requestId: number;
+  title: string;
+  url: string;
+}
+export interface LiveIntelWindowClosedPayload {
+  requestId: number;
+}
