@@ -21,142 +21,26 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.3.0 - Event Lifecycle / Event Operations
+## 2.3.0 - Event Lifecycle - BUILT THEN FULLY REVERTED, same session
 
-Marko's own next task after 2.2.11/2.2.12: "Chcem, aby každý event mal
-jasne čitateľný lifecycle / operational status podľa reálnych dát v appke...
-NECHCEM nový komplikovaný status systém, ktorý budem ručne vypĺňať." See
-`REDESIGN-2.3.0-REPORT.md` (Slovak) for the full report.
-
-- **Why POST EVENT (from his own 7-phase sketch) was merged into
-  COMPLETED, not shipped as its own phase.** His message gave an exact,
-  literal rule for COMPLETED: "event date passed alebo event status
-  completed/cancelled" - i.e. word-for-word `isEventDone`/`event_is_done`,
-  the rule already shared by `Orders.tsx` (frontend) and
-  `attention_center.rs` (backend). That rule is purely date/status based,
-  so the very first day after an event it is ALREADY completed by his own
-  definition - there is no remaining gap in which a distinct "just
-  happened, cleanup still pending" phase could sit without inventing a new,
-  arbitrary grace-period threshold (how many days? based on what existing
-  field?) that nothing else in this app is grounded in. His own message
-  explicitly pre-authorized exactly this call: "Ak zistíš, že niektorú fázu
-  nemožno spoľahlivo rozlíšiť: zlúč ju s najbližšou použiteľnou fázou, uveď
-  v reporte prečo." **This does not silently drop the "pending fulfillment"
-  signal he wanted POST EVENT to carry** - see the Next Actions/pending-
-  fulfillment bullet below: both are shown for EVERY phase, COMPLETED
-  included, not gated by lifecycle phase at all.
-- **Why CANCELLED isn't an 8th phase.** It's the one status value his
-  message didn't ask to be foldable ("event status completed/cancelled" -
-  both named together, in the SAME COMPLETED rule, by him). A cancelled
-  event already has its own always-visible Status `Badge` right next to
-  where the new lifecycle pill now sits (both on the Events table and the
-  Event Workspace header) - a second badge just to re-say "cancelled" a
-  different way would be noise, not new information, and 2.2.11's own
-  wording ("EVENT COMING SOON... doesn't fire for a cancelled event") is
-  the established precedent for status-cancelled already being handled
-  elsewhere, not re-litigated per feature.
-- **The phase rule is a PURE function of `EventWithStats` alone - verify
-  this stays true before ever adding a phase that needs more.**
-  `computeEventLifecyclePhase` (`Events.tsx`) reads only `event.status`,
-  `event.eventDate`, and `event.stats.{purchasedTickets,listedTickets,
-  soldTickets}` - all already present on the DTO `list_events` (Events
-  overview, N events) and `get_event` (Event Workspace, 1 event) already
-  return. This is WHY the Events overview can show + filter by phase for
-  every row with zero extra IPC calls - if a future phase needs data not on
-  `EventWithStats`, that N+1 cost has to be paid deliberately (e.g. a single
-  extra list-level fetch grouped client-side by `eventId`, the same
-  technique used below for pending fulfillment, never a per-row fetch).
-- **Order of the 6 checks is precedence, not a claim of linear
-  progression.** `isEventLifecycleDone` is checked FIRST, unconditionally -
-  an event cancelled on day one with zero tickets ever bought goes straight
-  from what WOULD be UPCOMING to COMPLETED; it never visits INVENTORY/
-  LISTED/SELLING/EVENT_DAY on the way. The progress strip on
-  `EventLifecycleBlock` (`EventDetail.tsx`) is deliberately just "which
-  segment is current," not a filled/traversed bar - it must never be
-  redesigned into one without re-checking this.
-- **`isEventLifecycleDone` is a THIRD independent copy of the same
-  one-line rule** (`Orders.tsx`'s `isEventDone`, `attention_center.rs`'s
-  Rust `event_is_done`, now also `Events.tsx`). Deliberately not imported
-  from `Orders.tsx` - Events.tsx previously had zero dependency on
-  Orders.tsx and this is a one-line, extremely stable rule, the same
-  reasoning `attention_center.rs`'s own doc comment already gives for its
-  independent Rust copy. **If this rule ever changes, it must change in
-  all three places identically** - `Orders.tsx`, `attention_center.rs`, AND
-  `Events.tsx` - or Orders/Attention Center and the new lifecycle phase can
-  disagree about which events are "done."
-- **Next Actions and the "pending fulfillment" count reuse two DIFFERENT
-  already-existing sources on purpose, per his own "Attention Center A
-  Fulfillment dáta" (both named).** Pending fulfillment
-  (`EventLifecycleBlock`'s own `pendingFulfillment`) = `list_sale_groups`
-  with its existing `eventId` filter, counted via `isSaleGroupDone`
-  (imported from `Sales.tsx`, unchanged) - exactly Fulfillment Center's own
-  "Pending Sales" definition, scoped to one event. Next Actions = a single
-  `get_attention_center()` call (the Dashboard's own GLOBAL Attention
-  Center - unchanged, `attention_center.rs` was not opened for edits this
-  release), filtered client-side to `item.eventId === event.id`, grouped
-  into one line per category by summing `ticketIds.length` across however
-  many order-grouped rows that category has for this event (a pure
-  aggregation - no new predicate for WHEN something needs attention, which
-  is still decided entirely by `attention_center.rs`). This is deliberately
-  NOT a reversal of 2.2.9's "removed this block's own per-event Attention
-  list... fully superseded by the Dashboard's GLOBAL Attention Center" -
-  that removal was about a full per-order attention list duplicating the
-  Dashboard; Next Actions here is a compact, lifecycle-scoped restatement
-  marko explicitly asked for this round, computing nothing
-  `get_attention_center` doesn't already compute.
-- **Why `sold_undelivered` ("2 sold tickets not delivered" in his own
-  example) comes from `get_attention_center`, not from summing
-  `SaleGroup.deliveredCount` locally.** Both numbers plausibly measure a
-  similar thing, but `sold_undelivered` (`attention_center.rs`) keys off
-  `tickets.delivery_status = 'Delivered'` directly (ticket-granularity),
-  while `SaleGroup.deliveredCount` is `sales.rs`'s own separate aggregation
-  - reconstructing an equivalent number locally would risk quietly
-  disagreeing with the Dashboard's own count for the exact same tickets.
-  Using `get_attention_center` for this one guarantees it never can.
-- **Pending fulfillment and Next Actions' `sold_undelivered` line are
-  deliberately NOT gated by this event's own lifecycle phase** - a
-  COMPLETED event can still show both. Same reasoning
-  `attention_center.rs`'s own doc comment already gives for never gating
-  `sold_undelivered` by `event_is_done`: "an already-sold, undelivered
-  ticket stays just as relevant - if anything MORE relevant - once its
-  event is over."
-- **The new "Lifecycle phase" filter (Events.tsx) is ANDed with, not a
-  replacement for, the existing status-based Upcoming/Completed tab** - the
-  two are allowed to disagree (an "upcoming"-status event whose date has
-  quietly passed shows COMPLETED phase while still sitting under the
-  Upcoming tab) and that disagreement is exactly the kind of thing marko
-  would want surfaced, not hidden by forcing the two concepts to agree.
-  Verified explicitly with a 4-check fixture (see the disposable test
-  script below) rather than assumed.
-- **Every DÔLEŽITÉ constraint from marko's message was checked, not
-  assumed:** no refund/resell logic was touched (`isSaleGroupDone` is
-  imported unchanged, `refund_sale_impl` never opened); no `batch_id` logic
-  anywhere in the new code; no money/cents arithmetic added (the
-  Operational Summary line shows plain ticket COUNTS, not currency amounts,
-  and `pendingFulfillment` is a `.filter().length`, not a sum of cents);
-  Listings/Sales-core/Finance/Fulfillment/Price-Checker/pricing were not
-  modified - `ticket_listings.rs`, `sales.rs`, `finance.rs`,
-  `price_checker*.rs` were read for context only, never edited this
-  release; Attention Center rules were not modified -
-  `attention_center.rs` and `inventory_intelligence.rs` are BYTE-FOR-BYTE
-  unchanged, only safely READ via their existing, unmodified commands
-  (`get_attention_center`, and NOT even `get_inventory_intelligence` in the
-  end - see the sourcing bullet above); `tier`/`section`/`row` are not
-  referenced anywhere in the new code, let alone as a pricing factor - this
-  feature has nothing to do with pricing at all. **Zero `.rs` files were
-  changed this release** - confirmed by `cargo test --lib` reporting the
-  exact same 1006 passed/0 failed/3 ignored as 2.2.12.
-- **Testing, same disposable-script convention 2.2.12 established:** an
-  esbuild-bundled Node script (built outside `src/`, deleted after the run,
-  never part of the repo or the shipped zip) imported the REAL
-  `computeEventLifecyclePhase`/`EVENT_LIFECYCLE_PHASES` (from `Events.tsx`)
-  and `isSaleGroupDone` (from `Sales.tsx`) and asserted every scenario from
-  marko's own test list against fabricated `EventWithStats`/`SaleGroup`/
-  `AttentionCenterItem` fixtures - 25/25 passed. UI/navigation behavior (the
-  new Select filter, the Next Actions `onSwitchTab` click targets) was
-  instead verified by reading the actual JSX/route-target code, the same
-  code-reading-based verification every prior frontend-only release in this
-  sandbox has relied on (no display here to run the real Tauri app).
+Designed and shipped in full (derived `EventLifecyclePhase` on Events.tsx/
+EventDetail.tsx, zero backend change), then marko asked to remove it
+entirely and go back to the previous version after reviewing the delivered
+build - no specific complaint given beyond not liking it in place. Both
+files were reverted edit-for-edit to their exact pre-2.3.0 (= 2.2.12)
+content; this entry's detailed design notes (phase rule, precedence, Next
+Actions/pending-fulfillment sourcing, every DÔLEŽITÉ constraint check) were
+removed since they described protections for code that no longer exists in
+this codebase - see `CHANGELOG.md`'s "2.3.0" entry for the full original
+design if it's ever useful as a reference. **If a similar event-status/
+phase feature is requested again, ask what specifically didn't work about
+this one first** - no concrete reason was captured this time, so
+re-proposing the identical shape blind is a real risk. **Separately: the
+version number was NOT rolled back to 2.2.12 even though the code was** -
+marko caught this himself, reusing an old version number breaks the
+auto-updater for anyone already offered a newer one - so the reverted code
+shipped as version 2.3.1. See `CURRENT_STATE.md`'s "## Version" section for
+the lesson this leaves for future sessions.
 
 ## 2.2.12 - Fulfillment Center
 

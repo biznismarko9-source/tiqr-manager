@@ -16,7 +16,28 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
-## 2.3.0 - Event Lifecycle / Event Operations
+## 2.3.1 - Event Lifecycle removed (revert of 2.3.0)
+
+Marko reviewed the 2.3.0 build below (delivered as a zip + Slovak report,
+never actually published via `1-CLICK-UPDATE.bat`) and asked to remove it
+entirely and go back to the previous version - no specific complaint beyond
+not liking it in place ("mi tam nieje sympaticky"). `Events.tsx`/
+`EventDetail.tsx` were reverted edit-for-edit to their exact pre-2.3.0
+content (verified with `tsc -b`/`npm run build`/`cargo test --lib`, all
+clean). The version was NOT rolled back to 2.2.12, even though the code
+was - marko himself caught this right after asking for the revert: reusing
+an old version number breaks the auto-updater for anyone already offered a
+newer one ("ked dam stary tak to nefunguje potom dobre"). So this reverted
+build ships as **2.3.1** instead (all 9 locations) - a version bump
+forward that happens to contain strictly less than the 2.3.0 it follows.
+**Lesson for future sessions:** a revert-to-previous-behavior task still
+needs a version bump forward, never a rollback to a number already used
+before - the updater compares versions directly. The entry right below is
+kept as real history (this file is append-only), not deleted - see
+`PROJECT_STATE/CURRENT_STATE.md`'s matching note for what to do if a similar
+feature is requested again.
+
+## 2.3.0 - Event Lifecycle / Event Operations (reverted - see entry above)
 
 Marko's next task after 2.2.11/2.2.12: one consistent, derived "what stage
 is this event at" lifecycle phase - no new manually-set status, no
