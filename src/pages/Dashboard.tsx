@@ -471,11 +471,29 @@ export default function Dashboard() {
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                 Current inventory (all time)
               </p>
-              <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
                 <StatCard label="Available" value={String(data.inventory.availableTickets)} />
                 <StatCard label="Listed" value={String(data.inventory.listedTickets)} />
                 <StatCard label="Sold (total)" value={String(data.inventory.soldTickets)} />
                 <StatCard label="Purchased (total)" value={String(data.inventory.purchasedTickets)} />
+                {/* 2.3.1 (marko's request): all-time total spend across every
+                    ticket ever bought, regardless of status - the exact same
+                    total_cost_cents this section's sibling counts already come
+                    from (finance::compute_summary in dashboard.rs), just not
+                    previously surfaced on the Dashboard itself. Zero backend
+                    change - data.inventory.totalCostCents/.currency were
+                    already computed and sent every load, just unread by the
+                    frontend until now. Placed here rather than Cashflow/
+                    Inventory & Potential Profit below since those are each
+                    scoped to a SUBSET of tickets (sold-only, unsold-only) -
+                    this is the one "all tickets, no filter" total, so it
+                    belongs next to the "all time" inventory counts it shares
+                    that exact scope with. */}
+                <StatCard
+                  label="Total cost"
+                  value={formatMoneyOrMixed(data.inventory.totalCostCents, data.inventory.currency)}
+                  sub="Every ticket ever bought"
+                />
               </div>
 
               {/* Cashflow (1.9.0): what's been sold vs. what's actually been

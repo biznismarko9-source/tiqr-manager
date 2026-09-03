@@ -16,6 +16,58 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.3.3 - Sheets push: row placement fixed at the source
+
+Follow-up to 2.3.2's investigation (see `PROTECTED_AREAS.md`'s "2.3.2/2.3.3"
+entry for the full trail). Marko confirmed row 18 and rows 19-425 in his
+real sheet are genuinely empty, and that retrying the push already once did
+NOT bring back the missing Revenue/Profit formulas - which pointed at one
+shared root cause rather than two separate bugs.
+
+Fixed: `push_orders_impl` no longer hands row placement to Google's own
+`append_values` table auto-detection (a bare `"A1"` anchor, which was
+landing new rows at 426 instead of 18). It now computes the exact target
+row itself, via a new pure, unit-tested `next_append_range` function, from
+the same `"A1:AZ"` read this function already trusts for its header/
+marker-column lookup, and writes with `update_values` instead. 3 new tests
+added (`next_append_range_*`), all passing; full suite 1009/1009 passed, 0
+failed. `tsc -b`/`npm run build` also clean (frontend untouched this
+release).
+
+Not independently touched, believed fixed as a side effect: the missing
+Revenue/Profit formulas. `plan_sheet_structure_updates` already recomputes
+formulas for the sheet's entire current extent on every push, so once new
+rows land in the right place, the very next push should backfill formulas
+correctly again. **Marko needs to click Push Orders/Push Sales once more
+after this update and confirm** - not marked resolved until he does; see
+`PROTECTED_AREAS.md` for exactly what to report back if it isn't.
+
+Known, deliberate limitation: this does not move the order a past, buggy
+push already stranded at row 426 in marko's real sheet - that needs a
+manual fix in the sheet itself if he wants it back in the contiguous block,
+since this app can't safely edit that live row unattended.
+
+## 2.3.2 - Dashboard: all-time Total cost
+
+Marko's request: a place on the Dashboard to see total cost across every
+ticket he owns. Added a "Total cost" StatCard to the Financials tab's
+existing "Current inventory (all time)" section, next to
+Available/Listed/Sold (total)/Purchased (total) - zero backend change,
+`data.inventory.totalCostCents`/`.currency` (a `FinanceSummary`) were
+already computed and sent to the frontend every load, just never rendered
+anywhere. Verified with `tsc -b`/`npm run build`/`cargo test --lib` (1006
+passed, 0 failed, unaffected since no `.rs` file changed).
+
+Also investigated (not yet fixed - see `PROTECTED_AREAS.md`'s "2.3.2"
+entry) two Google Sheets sync complaints from the same message: Push
+Orders/Sales landing a new row at 426 instead of at row 18 (the sheet's
+real next empty row), and Revenue/Profit formulas missing on many rows.
+Root-caused enough to have a credible fix shape for the first, but stopped
+short of writing it - this touches marko's live, real-money Google Sheet,
+and the fix's correctness depends on what's actually sitting in rows
+19-425 of his real sheet, which cannot be verified from here. Asked marko
+directly rather than guess. No Sheets-sync code was changed this release.
+
 ## 2.3.1 - Event Lifecycle removed (revert of 2.3.0)
 
 Marko reviewed the 2.3.0 build below (delivered as a zip + Slovak report,

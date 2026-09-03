@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.3.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.3.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -37,12 +37,13 @@ published it - the CODE went back to exactly the 2.2.12 feature set, but
 the version number did NOT go back to 2.2.12 - marko himself pointed out
 that reusing an old version number breaks the auto-updater for anyone
 already offered a newer one ("ked dam stary tak to nefunguje potom
-dobre"), so this reverted build ships as **2.3.1** instead. See the
-"Current focus" entry right below and `CHANGELOG.md`'s own entry for the
-full revert story. **Lesson for future sessions: a revert-to-previous-
-behavior task still needs a version bump FORWARD, never a rollback to a
-number already used before** - the Tauri updater compares version numbers
-directly and won't offer/accept a downgrade or a repeat.)
+dobre"), so this reverted build shipped as **2.3.1** instead. **Lesson for
+future sessions: a revert-to-previous-behavior task still needs a version
+bump FORWARD, never a rollback to a number already used before** - the
+Tauri updater compares version numbers directly and won't offer/accept a
+downgrade or a repeat. **2.3.2** is the next small, additive release right
+after - see "Current focus" below and `CHANGELOG.md`'s own entries for
+both.)
 
 ## Stack / layout
 
@@ -100,6 +101,63 @@ directly and won't offer/accept a downgrade or a repeat.)
   logs, etc).
 
 ## Current focus / most recent work
+
+**Orders/Sales sheet push - row placement fixed, formula gap likely fixed
+as a side effect (2.3.3).** Marko's own report, investigated properly
+before touching anything (see `PROTECTED_AREAS.md`'s "2.3.2" entry for the
+full investigation trail and the questions he was asked before this was
+written): Push Orders landed a new row at 426 instead of at row 18 (the
+sheet's real next empty row - he confirmed rows 18-425 are genuinely
+empty). Root cause: `push_orders_impl` (`orders_sheet_sync.rs`) called
+`google_sheets::append_values` at a bare `"A1"` anchor, handing row
+placement entirely to Google's own opaque table auto-detection instead of
+anything this app tracks itself. Fixed by computing the target row
+explicitly via a new pure `next_append_range` (unit-tested against
+marko's own numbers: 17 existing rows -> targets row 18) from the same
+`"A1:AZ"` read this function already trusts for its header/marker-column
+lookup, and writing with `update_values` (exact-range overwrite) instead
+of the ambiguous `append_values`. **Known, deliberate limitation:** this
+does not retroactively move the order a past, buggy push already stranded
+at row 426 in marko's real sheet - only he can safely do that himself in
+the sheet, since it means touching live data this app cannot see full
+context for.
+
+His separate complaint (Revenue/Profit formulas missing on many rows, even
+after retrying the push) was NOT independently fixed - `plan_sheet_structure_
+updates` already writes one formula per row across the sheet's CURRENT full
+extent every time structure-refresh runs, not just for new rows, so this
+is very likely the SAME root cause: real new rows kept landing far outside
+the range earlier pushes' formula-refresh had reason to expect, and/or a
+subtlety in exactly when that refresh re-reads the sheet. This fix should
+make future pushes self-heal it (see `PROTECTED_AREAS.md`'s "2.3.2" entry
+for the full reasoning and the concrete next step - re-running Push
+Orders/Push Sales once after installing this update). **Not marked
+resolved until marko confirms** - if formulas are still missing after that,
+this needs a fresh, more specific report (which exact row, and whether the
+push results panel showed any red error).
+
+**Dashboard: all-time "Total cost" StatCard (2.3.2).** Marko's own request,
+folded in alongside investigating two Google Sheets sync complaints (see
+`PROTECTED_AREAS.md`'s "2.3.2" entry for those - still open, waiting on his
+answer, no code changed for them yet): "aby som si vedel kuknut total cost
+za vsetky listky ktore mam" (to be able to see total cost across all
+tickets I have). Zero backend change - `DashboardData.inventory` (a
+`FinanceSummary`) already carried `totalCostCents`/`currency` for the
+Financials tab's existing "Current inventory (all time)" counts
+(Available/Listed/Sold/Purchased), just never rendered. Added a 5th
+StatCard right there ("Total cost", `formatMoneyOrMixed`), same section,
+same all-time scope, grid widened `sm:grid-cols-4` -> `sm:grid-cols-3
+lg:grid-cols-5` to fit it. **Do not confuse this with the Overview tab's
+"Purchase cost" StatCard (`data.period.totalCostCents`)** - that one is
+period-filtered AND scoped to sold-tickets-only cost (`cogs_cents`, per the
+2.0.68 fix documented above `period_activity_summary` in `dashboard.rs` -
+it exists so Revenue - Purchase cost = Profit reconciles for that period).
+`data.inventory.totalCostCents` (this new card) is the opposite on both
+axes: never period-filtered, and covers EVERY ticket regardless of status
+(available/listed/sold/cancelled) - the true "everything I've ever spent"
+figure. Two same-shaped fields, two deliberately different scopes - see
+`PROTECTED_AREAS.md`'s "2.3.2" entry before ever "simplifying" these into
+one.
 
 **Event Lifecycle (2.3.0) was built, then fully reverted the same session -
 read this before touching Events.tsx/EventDetail.tsx again.** Marko's

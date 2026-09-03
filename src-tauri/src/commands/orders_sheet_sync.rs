@@ -1151,6 +1151,22 @@ fn apply_order_push(
     Ok((result, append_rows, pending_links))
 }
 
+/// 2.3.3: the exact `A{row}:AZ{row}` range a fresh batch of `new_row_count`
+/// order rows should be written to, given `existing_row_count` - the length
+/// of the plain `"A1:AZ"` read `push_orders_impl` already performs for its
+/// own header/marker-column lookup (header row included, so `1` means "only
+/// a header, no data rows yet" and the first new row is row 2). Pulled out
+/// as its own pure function purely so this arithmetic - the entire fix for
+/// marko's "push landed at row 426 instead of row 18" report - has a direct
+/// unit test, rather than living inline in `push_orders_impl`'s untestable
+/// network-calling shell. See that function's own 2.3.3 comment for why
+/// this replaced a bare `"A1"` `append_values` anchor.
+fn next_append_range(sheet_tab: &str, existing_row_count: usize, new_row_count: usize) -> String {
+    let next_row = existing_row_count + 1;
+    let end_row = next_row + new_row_count - 1;
+    google_sheets::a1_range(sheet_tab, &format!("A{next_row}:AZ{end_row}"))
+}
+
 /// The push direction's own network-calling shell for Order sync - same
 /// split as `sync_orders_impl` above (fetch the sheet once, hand its parsed
 /// shape to the pure core, then perform whatever writes it asked for).
@@ -1178,8 +1194,31 @@ fn push_orders_impl(conn: &Connection) -> AppResult<SheetSyncResult> {
 
     if !append_rows.is_empty() {
         let new_count = append_rows.len();
-        let append_range = google_sheets::a1_range(&connection.sheet_tab, "A1");
-        match google_sheets::append_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
+        // 2.3.3 (marko's report): this used to call `append_values` at a
+        // bare "A1" anchor with insertDataOption=INSERT_ROWS, which hands
+        // row placement entirely to Google's own table auto-detection - and
+        // that does not always agree with what this app itself considers
+        // the sheet's real extent. marko saw a push land at row 426 when
+        // the real next empty row was 18, with rows 18-425 all confirmed
+        // empty on his side - i.e. something Google's own detection treats
+        // as "the table" extends further than what this app (or a human
+        // glancing at the sheet) sees as real data. Rather than keep
+        // trusting that opaque heuristic, the target is now computed
+        // explicitly from `value_range.values.len()` - the exact same
+        // "A1:AZ" read already used a few lines up for the header/
+        // marker-column lookup, so this can never disagree with what the
+        // rest of this same function already treats as the sheet's current
+        // extent. `update_values` (a plain, exact-range overwrite this
+        // codebase already uses elsewhere - see its own doc comment) is
+        // used instead of `append_values`, so this is a deterministic write
+        // to a freshly-computed, believed-empty range rather than another
+        // auto-detected insert. Known limitation, deliberately not handled
+        // here: this does not retroactively move any row a past, buggy
+        // push already stranded far down the sheet - only marko can safely
+        // do that in the sheet itself, since it means editing live data
+        // this app cannot see the full context of.
+        let append_range = next_append_range(&connection.sheet_tab, value_range.values.len(), new_count);
+        match google_sheets::update_values(token, &connection.spreadsheet_id, &append_range, &append_rows) {
             // 2.2.10: the `sheet_sync_links` rows are only written here, now
             // that the append above is confirmed to have actually reached
             // the sheet - see `apply_order_push`'s own doc comment (2.2.10)
@@ -4666,6 +4705,30 @@ mod tests {
         let headers: Vec<String> = vec!["platform".to_string()];
         let err = apply_order_push(&conn, &headers, 1).unwrap_err();
         assert!(err.to_string().contains("Event Name"), "{err}");
+    }
+
+    // ---- push_orders: next_append_range (2.3.3 row-placement fix) ------------
+
+    #[test]
+    fn next_append_range_targets_the_row_right_after_marko_s_real_case() {
+        // marko's own numbers: 17 rows already read (header + 16 real
+        // orders) - one fresh order should target row 18, exactly where he
+        // expected it, not wherever Google's own append auto-detection
+        // might otherwise land it.
+        assert_eq!(next_append_range("Orders", 17, 1), "'Orders'!A18:AZ18");
+    }
+
+    #[test]
+    fn next_append_range_spans_multiple_rows_for_a_multi_order_batch() {
+        assert_eq!(next_append_range("Orders", 17, 3), "'Orders'!A18:AZ20");
+    }
+
+    #[test]
+    fn next_append_range_targets_row_two_when_only_a_header_exists() {
+        // existing_row_count=1 means the "A1:AZ" read saw only the header
+        // row - the very first order ever pushed must land at row 2, never
+        // row 1 (which would overwrite the header).
+        assert_eq!(next_append_range("Orders", 1, 1), "'Orders'!A2:AZ2");
     }
 
     // ---- push_sales: apply_sales_push ----------------------------------------
