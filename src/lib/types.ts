@@ -1477,7 +1477,7 @@ export interface AttentionCenterItem {
    * ticket) can legitimately appear more than once under DIFFERENT reasons,
    * but never twice under the SAME one. */
   key: string;
-  category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered" | "market_alert";
+  category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered";
   priority: "critical" | "attention" | "info";
   eventId: number;
   eventName: string;
@@ -1501,20 +1501,10 @@ export interface AttentionCenterItem {
   reason: string;
   /** Populated for a single-ticket "outside_market_price" row (that ticket's
    * own listing price) - `null` for every multi-ticket group, where "one
-   * amount" wouldn't mean anything specific. 2.4.0: also populated for a
-   * "market_alert" row whose alert has a current price (market_drop/
-   * market_rise) - the Live Market Monitor's own `MarketAlert.
-   * currentPriceCents` passed straight through; `null` for a supply/failure
-   * alert, which has no single price to show here. `null` for every other
+   * amount" wouldn't mean anything specific. `null` for every other
    * category. */
   amountCents: number | null;
   currency: string | null;
-  /** 2.4.0: `null` for every category except "market_alert" - which
-   * marketplace, on Price Checker's own Live Market Monitor, this row is
-   * about. Route a click there (event + marketplace), never a new backend
-   * lookup. */
-  marketplaceId: number | null;
-  marketplaceName: string | null;
 }
 
 /** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
@@ -1908,99 +1898,3 @@ export interface MarketAnalysisResult {
   yourTickets: YourTicketGroup[];
 }
 
-// --- Price Checker Live Market Monitor (2.4.1) ------------------------------
-// marko's replacement for the cancelled "Live Event Intelligence" direction -
-// see commands::price_checker_monitor's own module doc comment (Rust) for
-// the full design. Entirely additive alongside the Price Checker types
-// above - PriceCheck/PriceCheckerSummary/MarketAnalysisResult and everything
-// they feed stay completely unchanged.
-
-/** One tier's breakdown within one `MarketSnapshot` - same "Unclassified"
- * fallback convention as `TierBreakdown` above. */
-export interface MarketSnapshotTier {
-  tier: string;
-  lowestPriceCents: number;
-  medianPriceCents: number;
-  listingCount: number;
-}
-
-/** One automatic, permanent record of a completed scan (marko's own "##
- * Snapshots") - written after every scan the Visible Scanner completes with
- * real data. Deliberately separate from `PriceCheck` - this is automatic
- * and unreviewed; `PriceCheck` stays marko's own manually-curated,
- * explicitly-saved history, exactly as before. */
-export interface MarketSnapshot {
-  id: number;
-  eventId: number;
-  marketplaceId: number;
-  checkedAt: string;
-  /** "success" | "partial" - the scan's own status at the moment this
-   * snapshot was taken. */
-  scanStatus: string;
-  listingCount: number;
-  lowestPriceCents: number;
-  medianPriceCents: number;
-  averagePriceCents: number;
-  highestPriceCents: number;
-  currency: string;
-  tiers: MarketSnapshotTier[];
-}
-
-/** One entry in the permanent Market Alerts log - marko's own MARKET DROP /
- * MARKET RISE / NEW SUPPLY / SUPPLY DROP / SOURCE FAILURE. `message` is the
- * one field ever shown directly - fully pre-formatted, human-readable text,
- * never reconstructed from the raw previous/current columns. `tier` is
- * `null` for a whole-market (overall) alert, a real tier name for one
- * tier's own change. */
-export interface MarketAlert {
-  id: number;
-  eventId: number;
-  marketplaceId: number;
-  marketplaceName: string;
-  alertType: "market_drop" | "market_rise" | "new_supply" | "supply_drop" | "source_failure";
-  tier: string | null;
-  message: string;
-  previousPriceCents: number | null;
-  currentPriceCents: number | null;
-  previousListingCount: number | null;
-  currentListingCount: number | null;
-  currency: string | null;
-  createdAt: string;
-}
-
-/** "not_connected" | "connected" | "success" | "failed" - deliberately never
- * "scanning": the backend has no business computing that live-session
- * state, the frontend overlays it itself from its own open scanner
- * sessions (the same "backend gives durable facts, frontend adds ephemeral
- * live state on top" split the Visible Scanner cards already use). */
-export type MarketSourceStatus = "not_connected" | "connected" | "success" | "failed";
-
-/** One marketplace's card on the Live Market Monitor - URL/status/last
- * successful scan/latest snapshot/recent alerts, for one event. */
-export interface MarketMonitorMarketplaceView {
-  marketplaceId: number;
-  marketplaceName: string;
-  marketplaceActive: boolean;
-  link: EventMarketplaceLink | null;
-  status: MarketSourceStatus;
-  lastScanAt: string | null;
-  /** Only ever ADVANCED by a real success - a run of failures afterward can
-   * never make this look stale or disappear (marko's own cache/offline
-   * requirement). */
-  lastSuccessfulScanAt: string | null;
-  /** Short and human-readable only, `null` exactly when the last scan
-   * attempt succeeded - never a stack trace. */
-  lastErrorMessage: string | null;
-  latestSnapshot: MarketSnapshot | null;
-  /** Newest first, capped to a small fixed count - the full history lives in
-   * `listMarketSnapshots` instead. */
-  recentAlerts: MarketAlert[];
-}
-
-/** The whole Live Market Monitor page for one event, in one round trip -
- * same convention as `PriceCheckerSummary`, which this is entirely separate
- * from (never merged into it). */
-export interface MarketMonitorSummary {
-  eventId: number;
-  marketplaces: MarketMonitorMarketplaceView[];
-}

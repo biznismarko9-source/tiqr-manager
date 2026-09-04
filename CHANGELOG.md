@@ -16,6 +16,52 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.4.2 - Live Market Monitor removed; Price Checker back to a manual tool
+
+marko decided he does not want the 2.4.1 "Live Market Monitor" feature in
+the app at all (*"TÚTO FUNKCIU NECHCEM V APLIKÁCII VÔBEC"*) and asked for
+it removed entirely - no background/scheduled scanning, no automatic
+monitoring, ever - with Price Checker returned to a purely manual tool.
+Full reasoning in `PROTECTED_AREAS.md`'s new "2.4.2" entry.
+
+1. **Removed entirely**: backend module `price_checker_monitor.rs` and its
+   2 commands (`get_market_monitor_summary`, `list_market_snapshots`); both
+   scan-result hooks into it from `price_checker_scanner.rs`; the
+   `market_alert` Attention Center category (`attention_center.rs`'s
+   `push_item` reverted to its original 2-shape key, Dashboard's 6th box
+   and grid column removed); Auto Monitor (ON/OFF + 15m/30m/1h/3h/6h
+   interval) and "Scan All" from `PriceChecker.tsx`; the Live Market
+   Monitor panel and the Market History view/modal; every related Rust
+   struct (`models.rs`) and TypeScript type (`types.ts`/`api.ts`).
+2. **Price Checker unchanged**: event selection, marketplace URLs/source
+   handling, the manual Visible Scanner, Market Analysis, tier/section
+   grouping, price history, Your Tickets comparison - all pre-existing
+   functionality, untouched. No redesign.
+3. **Database**: migration `026_price_checker_market_monitor.sql` and its 4
+   tables (`market_snapshots`, `market_snapshot_tiers`, `market_source_
+   status`, `market_alerts`) were **kept in the schema, not deleted** - 2.4.1
+   already shipped and marko's own local DB has already run this migration,
+   so this codebase's forward-only migration rule means it can never be
+   safely deleted or renumbered. Only the application code that read/wrote
+   these tables was removed; no user data was touched. The next new
+   migration is **027**, not a reused "026".
+4. Two small judgment calls, flagged per this codebase's own "smallest
+   consistent solution, flag on ambiguity" convention: "Scan All" was
+   removed as in-scope (it existed purely to complement Auto Monitor, no
+   standalone purpose without it); `price_checker_analysis.rs`'s
+   `group_by_tier` was left `pub(crate)` rather than reverted to private
+   (bumped in 2.4.1 for the now-deleted module to reuse - harmless residual,
+   not worth an extra touch to that protected file for zero functional
+   gain).
+
+Full backend suite green: `cargo test --lib` (1026 passed, -32 removed with
+the feature, 0 failed, 3 ignored), `npx tsc -b`, `npm run build` all clean.
+Version bumped **2.4.1 -> 2.4.2** - removing a shipped feature still bumps
+the version forward, never back to a number already used (same precedent as
+2.3.0's revert shipping as 2.3.1) - see `PROJECT_STATE/CURRENT_STATE.md`'s
+"## Version" section. See `PROTECTED_AREAS.md`'s new "2.4.2" entry before
+ever touching migration 026, `group_by_tier`, or migration numbering again.
+
 ## 2.4.1 - Price Checker Live Market Monitor
 
 Marko cancelled the "Live Event Intelligence" direction below outright

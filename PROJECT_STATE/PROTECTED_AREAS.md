@@ -21,138 +21,85 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.4.1 - Price Checker Live Market Monitor
+## 2.4.2 - Live Market Monitor removed; Price Checker back to manual-only
 
-**Read this before touching `commands/price_checker_monitor.rs`,
-`price_checker_scanner.rs`'s success/failure hooks, `attention_center.rs`'s
-`market_alert` category, or `PriceChecker.tsx`'s Live Market Monitor panel
-again.** This is what actually shipped as **2.4.1** (briefly planned as a
-reused 2.4.0, until redelivering the report/zip under filenames already
-used once before in this same chat for the cancelled direction forced one
-more version bump - see `PROJECT_STATE/CURRENT_STATE.md`'s "## Version"
-note for the full story), replacing the cancelled "Live Event Intelligence"
-direction below (that entry stays as history - read it first for why the
-two are related). Marko's own instruction:
-*"Predchádzajúci nápad 'Live Event Intelligence' RUŠÍME ÚPLNE"* - every
-online/live-market capability lives directly inside Price Checker instead
-of a separate feature: EVENT -> MARKETPLACE SOURCES -> SCAN -> SNAPSHOT ->
-HISTORY -> CHANGE DETECTION -> MARKET ALERTS, built entirely on top of the
-already-shipped Visible Scanner (2.1.9) and Market Analysis (2.2.0) rather
-than a new scraping surface.
+**Read this before touching migration `026_price_checker_market_monitor.sql`,
+`price_checker_analysis.rs`'s `group_by_tier`, or before ever creating a new
+migration file.** marko decided he does not want the 2.4.1 Live Market
+Monitor feature in the app at all
+(*"TÚTO FUNKCIU NECHCEM V APLIKÁCII VÔBEC"*) and asked for it removed
+entirely, with Price Checker returned to a purely manual tool - no
+background/scheduled scanning, no automatic monitoring, ever. Everything
+2.4.1 added was deleted: backend module `price_checker_monitor.rs` and its
+2 commands, both scan-result hooks in `price_checker_scanner.rs`, the
+`market_alert` Attention Center category (`push_item` reverted to its
+original 2-shape key), Auto Monitor, "Scan All", the Live Market Monitor
+panel, the Market History view, and every related Rust struct/TS type. See
+the "2.4.1" entry directly below (trimmed to history only) for what used to
+be here, `CHANGELOG.md`'s "2.4.2" entry for the removal itself, and
+`REDESIGN-2.4.2-REPORT.md` for the full file-by-file report. Price Checker's
+own pre-existing functionality (event selection, marketplace links, the
+Visible Scanner, Market Analysis, tier/section grouping, price history, Your
+Tickets comparison) is unchanged - no redesign.
 
-- **Hard constraint (marko's Section 4): no CAPTCHA bypass, no proxy
-  rotation, no anti-bot workaround, ever.** Every new command in
-  `price_checker_monitor.rs` only ever reads data the Visible Scanner
-  already produced from an already-open, human-opened window
-  (`ScanResultPayload`) - nothing here opens a window, navigates, or reads a
-  page itself. Auto Monitor (the frontend interval in `MarketplaceCard`,
-  `PriceChecker.tsx`) is the same boundary applied to automation: it only
-  ever calls the exact same `scanVisiblePrices`/`onScanVisible` the manual
-  button calls, on a `window.setInterval` schedule, guarded against
-  overlapping an in-flight scan or a still-opening window
-  (`sessionRef.current.opening || .scanning`) - it can never open a window
-  on its own, and turns itself off the moment the session closes.
-- **Hard constraint (marko's Section 7): Tier/Level is the mandatory market
-  grouping; Section/Row/Seat are metadata only, NEVER a pricing factor.**
-  `detect_and_record_changes` groups a snapshot's listings by tier via
-  `price_checker_analysis::group_by_tier` (bumped `pub(crate)` this release,
-  zero behavior change) - the exact same case-insensitive-collapse +
-  `UNCLASSIFIED_TIER` fallback convention Market Analysis already uses, not
-  a second tier-grouping rule. No automatic repricing exists anywhere in
-  this module - `record_scan_attempt_impl` only ever detects and records a
-  change, it never writes back to `ticket_listings` or any price field.
-- **Naming collision: marko's spec literally called this feature's
-  Attention Center box "MARKET ATTENTION" too - that title was already
-  taken.** `outside_market_price` (2.2.11) owns "MARKET ATTENTION" on the
-  frontend already and is a different feature (your OWN listing prices vs.
-  the market, not a live scan alert). The new 6th category
-  (`AttentionCenterItem.category === "market_alert"`) is titled **"LIVE
-  MARKET ALERTS"** instead so the two are never confused - extends 2.2.11's
-  "box title <-> category mapping" note above with: LIVE MARKET ALERTS =
-  `market_alert`. 2.2.11 itself already warned "if a 6th category is ever
-  added to `attention_center.rs`, it will silently show 0 boxes for it
-  unless `ATTENTION_CENTER_CATEGORIES` is also updated" - this release is
-  that 6th category, and `Dashboard.tsx`'s array (now 6 entries) plus its
-  grid (`lg:grid-cols-5` -> `lg:grid-cols-6`) were both updated together;
-  don't add a 7th without doing the same.
-- **`market_alert` is a third `push_item` key shape, not a variant of the
-  other two.** The existing shapes are `{category}:order:{oid}` (order-
-  grouped) and `{category}:{event_id}` (event_soon, one per event). A
-  market alert has neither an order nor a "one per event" cardinality (one
-  event can have several marketplaces each alerting) - its key is
-  `{category}:market:{event_id}:{marketplace_id}`, collision-safe because
-  `latest_active_alerts_impl` itself guarantees at most one alert per
-  (event, marketplace) pair. `push_item` gained two trailing `Option`
-  params (`marketplace_id`, `marketplace_name`) for this - every one of the
-  5 pre-existing call sites was updated to pass `None, None` explicitly,
-  not left to a default, so a future 7th category can't silently inherit
-  the wrong shape.
-- **Transition-only source-failure alerting - never fires on the very first
-  failure, and never fires again on a run of consecutive failures.**
-  `record_scan_attempt_impl` reads `market_source_status.last_scan_ok`
-  BEFORE overwriting it; a `source_failure` alert is only pushed when that
-  PREVIOUS value was `Some(true)` (a real, observed success -> failure
-  transition). A marketplace that has never succeeded, or has failed 10
-  times in a row, produces exactly one alert (the first transition) and
-  then goes quiet - covered by 2 dedicated tests
-  (`first_ever_failure_never_alerts`,
-  `transition_only_failure_alerting_first_failure_alerts_second_doesnt`).
-  Don't "simplify" this to "alert on every failure" - that's the aggressive-
-  polling-adjacent noise marko's Section 16 explicitly warns against.
-- **Thresholds reused, not invented.**
-  `MARKET_PRICE_CHANGE_THRESHOLD_PCT` (5%) mirrors
-  `price_checker::RECOMMENDED_PRICE_UNDERCUT_PCT`;
-  `MARKET_SUPPLY_CHANGE_THRESHOLD_PCT` (20%) mirrors
-  `inventory_intelligence::OUTSIDE_MARKET_THRESHOLD_PCT`. If either existing
-  constant ever changes for its own feature, decide deliberately whether
-  this module should follow - they are copied values, not a shared
-  `const`, so they will NOT move together automatically.
-- **Cache/offline (marko's Section 12): `last_successful_scan_at` /
-  `last_successful_listing_count` are only ever ADVANCED by a real success.**
-  `upsert_source_status_failure`'s `ON CONFLICT DO UPDATE` deliberately never
-  touches those two columns - a run of failures can change `status` to
-  `"failed"` and add `last_error_message`, but the UI's "Last successful
-  scan" line and the last real snapshot/alerts never disappear or go stale
-  because of it. Covered by `source_status_failure_never_disturbs_last_
-  success` (Rust) - don't "clean up" the failure upsert to also clear these
-  without re-reading this constraint.
-- **Migration `026_price_checker_market_monitor.sql` reuses the number
-  "026"** - see the "pre-release direction" entry directly below for why
-  this specific reuse (unlike a version-number reuse) was verified safe
-  first: that migration was deleted before any build shipped, so no install
-  anywhere has ever recorded a migration literally named `026_live_event_
-  intelligence`.
-- **Attention Center integration is a pure read - zero new market-
-  calculation logic in `attention_center.rs` itself (marko's Section 15).**
-  The 6th category's loop only calls `latest_active_alerts_impl` (already
-  fully decided by `price_checker_monitor.rs`) and maps `alert_type` to a
-  `Priority` (`source_failure`/`market_drop` -> Attention, everything else
-  -> Info - a judgment call, not specified by marko, flagged here the same
-  way the other 4 categories' priority judgment calls already are further
-  down this file). It skips a done/cancelled event exactly like the 3
-  "still sellable" categories already do.
-- **Click-through routes to Price Checker, not a new page (marko's Section
-  11: "no new separate dashboard").** `AttentionCenterRow` (`Dashboard.tsx`)
-  routes a `marketplaceId`-carrying row to `/price-checker` via the same
-  `presetEventId` router-state convention every other "jump to Price
-  Checker" button already uses, plus a new `presetMarketplaceId` alongside
-  it. `PriceChecker.tsx`'s mount effect reads both back out, and a small
-  scroll-into-view + 2.5s highlight ring (`highlightMarketplaceId` state,
-  keyed off a plain `id="marketplace-card-{id}"` on each card's wrapper
-  `div`) brings the right card into view - not a new shared pattern, just
-  `scrollIntoView` (same idea as `EventDetail.tsx`'s `ticketsAnchorRef`).
-- **Tests**: 27 in `price_checker_monitor.rs` (thresholds, tier grouping
-  reuse, mixed-currency splitting, snapshot accumulation, transition-only
-  failure alerting, offline-cache, marketplace independence, summary/history
-  queries) + 5 in `attention_center.rs` (market_alert surfacing, amount/
-  currency passthrough, done-event exclusion, cross-marketplace key
-  collision-safety, source-failure priority). Full suite green: `cargo test
-  --lib` (1058 passed, 0 failed, 3 ignored), `npx tsc -b`, `npm run build`.
-- **Preserves ALL existing Price Checker functionality untouched (marko's
-  Section 14)** - the Visible Scanner, Market Analysis, and manual price-
-  check history are extended (two new hooks into the scanner's own success/
-  failure paths, both `let _ = ...`-swallowed so a monitor-recording failure
-  can never affect the scan result marko actually sees) never rewritten.
+This removal leaves two invariants behind that the deleted feature's own
+entry can no longer explain, since the code it was protecting is gone:
+
+- **Migration `026_price_checker_market_monitor.sql` and its 4 tables
+  (`market_snapshots`, `market_snapshot_tiers`, `market_source_status`,
+  `market_alerts`) are now permanently orphaned - NOT deleted, and never to
+  be deleted.** Unlike the "2.4.0 (pre-release direction)" entry below,
+  where reusing migration number "026" was verified safe because that
+  migration had never shipped to anyone, **this 026 migration DID ship** -
+  it was part of the real, released 2.4.1 build, so marko's own installed
+  copy has already run it and may hold real snapshot/alert history in these
+  tables. This codebase's forward-only migration rule means an
+  already-applied migration is never deleted, edited, or renumbered, even
+  once every table it created becomes unused - so the migration file and
+  its 4 tables stay in the schema forever, unused by any application code
+  from 2.4.2 onward. **Never delete this migration file or these tables,
+  and never reuse the number "026" for anything. The next new migration is
+  027.**
+- **`price_checker_analysis.rs`'s `group_by_tier` stayed `pub(crate)`,
+  deliberately not reverted to private.** 2.4.1 bumped its visibility so
+  `price_checker_monitor.rs` could reuse it; that module is gone, so
+  nothing outside `price_checker_analysis.rs` needs the wider visibility
+  anymore, but this cleanup left it as-is rather than make a cosmetic-only
+  touch to this protected Market Analysis file for zero functional gain.
+  Harmless - noted here so a future session doesn't wonder what still
+  depends on it.
+
+**Verification**: `cargo test --lib` (1026 passed, -32 removed with the
+feature, 0 failed, 3 ignored), `npx tsc -b`, `npm run build` all clean.
+
+## 2.4.1 - Price Checker Live Market Monitor - REMOVED in 2.4.2, kept as history only
+
+Built and shipped as **2.4.1** (briefly planned as a reused 2.4.0, until
+redelivering the report/zip under filenames already used once before in
+this same chat for the cancelled direction forced one more version bump -
+see `CURRENT_STATE.md`'s "## Version" note): every online/live-market
+capability folded directly into Price Checker instead of a separate
+feature - EVENT -> MARKETPLACE SOURCES -> SCAN -> SNAPSHOT -> HISTORY ->
+CHANGE DETECTION -> MARKET ALERTS, built entirely on top of the
+already-shipped Visible Scanner (2.1.9) and Market Analysis (2.2.0):
+backend module `price_checker_monitor.rs` (migration
+`026_price_checker_market_monitor.sql`), an Auto Monitor ON/OFF toggle plus
+"Scan All", a Live Market Monitor panel and Market History view per
+marketplace card, and a 6th Attention Center category ("LIVE MARKET
+ALERTS" / `market_alert`, titled differently from marko's own spec wording
+"MARKET ATTENTION" because that title was already taken by the existing
+`outside_market_price` box - see the 2.2.11 entry's "box title <->
+category mapping" note).
+
+marko reviewed this in production and asked for it to be removed entirely
+- see the "2.4.2" entry above for what that removal did and the two
+invariants (orphaned migration 026, `group_by_tier` staying `pub(crate)`)
+it left behind. **None of the code, commands, structs, types, routes, or UI
+this feature added still exist in this codebase.** If the detailed original
+design (thresholds, transition-only failure alerting, the third `push_item`
+key shape, the offline-cache guarantee, etc.) is ever useful as a reference
+for a differently-shaped future feature, see `CHANGELOG.md`'s "2.4.1" entry
+or `REDESIGN-2.4.1-REPORT.md` - do not assume any of it still applies here.
 
 ## 2.4.0 (pre-release direction) - "Live Event Intelligence Foundation" - BUILT THEN FULLY REVERTED, never shipped
 

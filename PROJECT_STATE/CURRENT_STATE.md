@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.4.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.4.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -62,16 +62,42 @@ same chat for the cancelled direction (`REDESIGN-2.4.0-REPORT.md`,
 so the whole thing (app version plus every release file) was bumped one
 more step to **2.4.1** before delivery - a plain filename-collision fix,
 not an auto-updater concern, and it does not change any of the reasoning
-above. **2.4.1** is now the real, shipped release - "Price Checker Live
-Market Monitor," all online/live-market functionality folded directly
-into Price Checker instead of a separate feature - see "Current focus"
-below and `CHANGELOG.md`'s own entries for all of them.)
+above. **2.4.1** shipped as "Price Checker Live Market Monitor," all
+online/live-market functionality folded directly into Price Checker
+instead of a separate feature - see "Current focus" below and
+`CHANGELOG.md`'s own entries for all of them.)
+
+**2.4.2** removes 2.4.1's "Price Checker Live Market Monitor" entirely, at
+marko's explicit request ("TÚTO FUNKCIU NECHCEM V APLIKÁCII VÔBEC" - "I
+don't want this feature in the app at all"): Auto Monitor, Scan All, the
+Live Market Monitor panel, the Market History view, the `market_alert`
+Attention Center category, and the backend `price_checker_monitor` module
+and its 2 commands are all gone - Price Checker goes back to being a
+purely manual tool (event selection, manual Visible Scanner, Market
+Analysis, tier/section grouping, price history, Your Tickets comparison),
+exactly as it worked before 2.4.1. Same precedent as the 2.3.0->2.3.1
+revert above: removing a shipped feature still bumps the version FORWARD,
+never back to a number already used - the resulting code is functionally
+equivalent to 2.3.5 (the last version before 2.4.0/2.4.1), but the version
+is **2.4.2**, not 2.3.5. Unlike the 2.3.0 case, this revert could NOT
+delete migration `026_price_checker_market_monitor.sql` or its 4 tables:
+2.4.1 was a real shipped release marko already has installed, so that
+migration has already run against his real local DB, and this codebase's
+forward-only migration rule means an already-applied migration is never
+deleted or renumbered, even when every table it created becomes unused.
+The migration file and its 4 tables (`market_snapshots`,
+`market_snapshot_tiers`, `market_source_status`, `market_alerts`) stay in
+the schema, orphaned but untouched, from 2.4.2 onward - see
+`PROTECTED_AREAS.md`'s new "2.4.2" entry before ever touching migration
+numbering or that schema again. **The next new migration is 027, not a
+reused 026.**
 
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
-  Pages under `src/pages/`: Dashboard (2.4.1: Attention Center gained a 6th
-  box, "LIVE MARKET ALERTS" - see "Current focus" below), Events, EventDetail
+  Pages under `src/pages/`: Dashboard (2.4.1 briefly added a 6th Attention
+  Center box, "LIVE MARKET ALERTS" - removed again in 2.4.2, back to 5
+  boxes - see "Current focus" below), Events, EventDetail
   (2.2.2-2.2.5: tabbed "Event Workspace" - Overview/Listings/Sales (Finance
   folded into Sales in 2.2.5), see "Current focus" below and
   `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
@@ -80,9 +106,10 @@ below and `CHANGELOG.md`'s own entries for all of them.)
   FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
   data, see "Current focus" below), Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
-  PriceChecker (2.4.1: gained a Live Market Monitor panel per marketplace
-  card - see "Current focus" below and `PROTECTED_AREAS.md`'s "2.4.1 - Price
-  Checker Live Market Monitor" entry), Settings, Welcome (auth),
+  PriceChecker (2.4.1 briefly gained a Live Market Monitor panel per
+  marketplace card; removed entirely in 2.4.2, back to the original manual
+  tool - see "Current focus" below and `PROTECTED_AREAS.md`'s "2.4.2"
+  entry), Settings, Welcome (auth),
   PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
@@ -99,10 +126,9 @@ below and `CHANGELOG.md`'s own entries for all of them.)
   2.2.10 fixed its sort tie-break and excluded done events from 3 of its 5
   categories; 2.2.11 changed only how the FRONTEND groups/displays these
   same items - 5 clickable category boxes instead of a priority-grouped
-  feed; 2.4.1 added a real 6th category, "market_alert" - a pure read of
-  `price_checker_monitor`'s own already-decided alerts, zero new market-
-  calculation logic in this module itself, see "Current focus" below),
-  sales, event_categories, pulls
+  feed; 2.4.1 briefly added a real 6th category, "market_alert", removed
+  again in 2.4.2 - back to the same 5 categories as 2.2.11, see "Current
+  focus" below), sales, event_categories, pulls
   (+ `pulls_received`, `pulls_sheet_sync` - 2.2.10: push direction's
   `sheet_sync_links` bookkeeping now only committed after a confirmed
   network write, see "Current focus" below), finance_accounts/finance_entries (2.2.1: entries can
@@ -113,28 +139,36 @@ below and `CHANGELOG.md`'s own entries for all of them.)
   price_checker_analysis (2.2.0 - Market Analysis: tier/section stats,
   comparable-ticket ranking, Your Tickets recommendations, all computed
   from a scanner session's already-accumulated listings, never a separate
-  read) + price_checker_monitor (2.4.1 - Live Market Monitor: permanent
-  snapshots after every successful scan, per-tier change detection, MARKET
-  DROP/RISE/NEW SUPPLY/SUPPLY DROP/SOURCE FAILURE alerts at reused,
-  transparent thresholds - hooked into the Visible Scanner's own success/
-  failure paths, never a new automation surface; see "Current focus" below
-  and `PROTECTED_AREAS.md`'s "2.4.1 - Price Checker Live Market Monitor"
-  entry. A separate "Live Event Intelligence" module was built first and
-  briefly labeled 2.4.0 too, before this feature moved on to 2.4.1 - then
-  fully reverted before ever shipping - see that same `PROTECTED_AREAS.md`
-  section and the "## Version" note above),
-  settings, backup, csv_import/csv_export, notifications,
+  read), settings, backup, csv_import/csv_export, notifications,
   dashboard, currency, lookups, database, app_info, google_auth,
   firebase_google_auth. Shared modules at `src-tauri/src/`: `db.rs`
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
+  A `price_checker_monitor` module (2.4.1 - Live Market Monitor: permanent
+  snapshots after every successful scan, per-tier change detection, MARKET
+  DROP/RISE/NEW SUPPLY/SUPPLY DROP/SOURCE FAILURE alerts) existed briefly
+  and was deleted again in its entirety in 2.4.2 at marko's explicit
+  request - it is NOT in this codebase anymore, do not assume any file/
+  command/struct it describes still exists; see "Current focus" below and
+  `PROTECTED_AREAS.md`'s "2.4.2" entry. (A separate "Live Event
+  Intelligence" module was built even earlier and briefly labeled 2.4.0
+  too, before that direction moved on to become 2.4.1's Live Market
+  Monitor instead - then fully reverted before ever shipping - see
+  `PROTECTED_AREAS.md`'s "2.4.0 (pre-release direction)" entry and the
+  "## Version" note above. Neither module exists in this codebase today.)
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
   currently through **026_price_checker_market_monitor.sql** (a first
   `026_live_event_intelligence.sql` was deleted before ever shipping when
   that direction was reverted - see `PROTECTED_AREAS.md`'s "2.4.0
   (pre-release direction)" entry for why reusing "026" for the real
   migration was verified safe). Migrations run automatically at startup,
-  forward-only.
+  forward-only. **As of 2.4.2, migration 026's 4 tables (`market_snapshots`,
+  `market_snapshot_tiers`, `market_source_status`, `market_alerts`) are
+  orphaned** - the migration already shipped in 2.4.1 and stays applied
+  forever per the forward-only rule, but no application code reads or
+  writes them anymore. Do not reuse "026" for anything and do not delete
+  that migration file; the next new migration is **027**. See
+  `PROTECTED_AREAS.md`'s "2.4.2" entry.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
   version in 3 files, commits, tags, and pushes - the tag push triggers
@@ -144,7 +178,57 @@ below and `CHANGELOG.md`'s own entries for all of them.)
 
 ## Current focus / most recent work
 
-**2.4.1 - Price Checker Live Market Monitor.** marko's next spec after
+**2.4.2 - Live Market Monitor removed; Price Checker back to manual-only.**
+marko decided he does not want this feature in the app at all
+("TÚTO FUNKCIU NECHCEM V APLIKÁCII VÔBEC") and asked for a full cleanup
+back to a clean Price Checker with no background/scheduled/automatic
+monitoring layer. Scope was identified from `CURRENT_STATE.md` and
+`PROTECTED_AREAS.md` alone (no full repo scan), confirming "Live Event
+Intelligence" needed zero further changes - it was already fully reverted
+before 2.4.1 ever shipped, see the 2.4.1 section below - so this task's
+entire footprint was 2.4.1's Live Market Monitor.
+
+- **Removed entirely**: backend module `commands/price_checker_monitor.rs`
+  (both its `#[tauri::command]`s and both scan-result hook call sites in
+  `price_checker_scanner.rs`); the `market_alert` Attention Center category
+  (`attention_center.rs` - reverted `push_item` to its original 2-shape key,
+  Dashboard's 6th box and its "LIVE MARKET ALERTS" entry); Auto Monitor
+  (ON/OFF + interval) and "Scan All" from `PriceChecker.tsx`; the Live
+  Market Monitor panel and the Market History view/modal; every related
+  Rust struct (`models.rs`) and TypeScript type (`types.ts`/`api.ts`).
+- **Price Checker unchanged**: event selection, marketplace URLs/source
+  handling, manual Visible Scanner, Market Analysis, tier/section grouping,
+  price history (pre-existing, price-checker-session-scoped - never part of
+  the deleted monitor), Your Tickets comparison. No redesign, no new
+  features.
+- **DB**: migration `026_price_checker_market_monitor.sql` and its 4 tables
+  were **kept, not deleted** - already shipped in 2.4.1, forward-only
+  migration rule, marko's own explicit instruction to never delete existing
+  user data or invent a rollback. Only the application code that read/wrote
+  them was removed. See `PROTECTED_AREAS.md`'s "2.4.2" entry and the
+  "## Version" section above - next new migration is 027.
+- **Two flagged judgment calls** (smallest-consistent-solution per
+  ambiguity, no explicit spec either way): "Scan All" was removed as
+  in-scope (built in 2.4.1 purely to complement Auto Monitor, no standalone
+  purpose without it); `price_checker_analysis.rs`'s `group_by_tier` was
+  left `pub(crate)` (bumped from private in 2.4.1 for the monitor module to
+  reuse) rather than reverted to private, judged harmless residual visibility
+  and not worth an extra touch to that protected file.
+- **Tests**: full backend suite green at `cargo test --lib` (1026 passed,
+  -32 removed with the feature, 0 failed, 3 ignored, same as before minus
+  exactly the deleted tests), `npx tsc -b`, `npm run build` all clean.
+- Version bumped **2.4.1 -> 2.4.2** (forward-only revert precedent, see
+  "## Version" above - the resulting code is functionally the 2.3.5 feature
+  set, but the version does not go back to 2.3.5).
+
+See `PROTECTED_AREAS.md`'s new "2.4.2" entry and `CHANGELOG.md`'s matching
+entry for the full reasoning. The 2.4.1 write-up below is kept as-is for
+history (it explains why migration 026 and its tables exist) - **none of
+the module/command/UI/struct/type names it describes exist in this
+codebase anymore.**
+
+**2.4.1 - Price Checker Live Market Monitor (REMOVED in 2.4.2 - kept below
+for history only; see the 2.4.2 entry above).** marko's next spec after
 2.3.5 went through two directions. The first, "Live Event Intelligence" (an
 Event's own confirmed online identity on Viagogo/Vivid Seats/Ticombo, as a
 brand-new standalone feature/module), was designed and built in full, then
@@ -214,12 +298,15 @@ visible window.
   open window; no automatic repricing anywhere; no new marketplace beyond
   the existing Viagogo/Vivid Seats/Ticombo three.
 
-See `PROTECTED_AREAS.md`'s new "2.4.1 - Price Checker Live Market Monitor"
-entry for the full set of deliberate design decisions (the naming
-collision, transition-only failure alerting, the third `push_item` key
-shape, why reusing the migration number "026" was verified safe, and why
-the app version itself ultimately moved to 2.4.1 instead of staying on the
-also-verified-safe reused 2.4.0) before extending this feature further.
+See `PROTECTED_AREAS.md`'s "2.4.1 - Price Checker Live Market Monitor"
+entry for the full set of deliberate design decisions this feature was
+originally built with (the naming collision, transition-only failure
+alerting, the third `push_item` key shape, why reusing the migration
+number "026" was verified safe, and why the app version itself ultimately
+moved to 2.4.1 instead of staying on the also-verified-safe reused 2.4.0).
+**This entire feature was removed again in 2.4.2** - see the 2.4.2 entry
+above and `PROTECTED_AREAS.md`'s "2.4.2" entry; nothing described in this
+2.4.1 section should be extended or built upon, it no longer exists.
 
 **2.3.5 - Sync/push behavioral redesign: self-healing push, real diff-and-
 update sync, and the UI-freeze fix.** After 2.3.4 shipped (row-placement

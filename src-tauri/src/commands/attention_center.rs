@@ -72,20 +72,6 @@
 //! already exists verbatim on the ticket (its own listing price), never a
 //! suggested or computed one.
 //!
-//! 2.4.1: a sixth category, `market_alert` - Price Checker's own Live Market
-//! Monitor (`commands::price_checker_monitor`) surfacing its single most
-//! recent alert per (event, marketplace) pair here too, via
-//! `latest_active_alerts_impl`. Exactly the same "reuse existing logic, no
-//! new rules engine" philosophy as the other 5: this module never decides
-//! WHETHER something is a market alert or what it says (Price Checker's own
-//! `record_scan_attempt_impl` already did that, and remains the sole source
-//! of truth per marko's explicit Section 15) - it only maps an already-
-//! decided alert onto a Priority and a row. The frontend title is "LIVE
-//! MARKET ALERTS", not the "MARKET ATTENTION" wording marko's own spec used
-//! for this - that literal title was already taken by the pre-existing
-//! `outside_market_price` box (2.2.11), so this uses a distinct one instead
-//! of ambiguously reusing the same label for two different features.
-//!
 //! 2.2.10: two follow-ups from marko's own review of the 2.2.9 shape (a real
 //! screenshot: the same handful of orders, scattered apart, each appearing
 //! twice under two different reasons - "je to mixed", his words):
@@ -116,7 +102,6 @@
 //!   cancelled half of the check is a realistic guard there).
 
 use crate::commands::inventory_intelligence::{get_inventory_intelligence_impl, EVENT_SOON_DAYS};
-use crate::commands::price_checker_monitor::latest_active_alerts_impl;
 use crate::db::AppState;
 use crate::error::AppResult;
 use crate::models::AttentionCenterItem;
@@ -224,18 +209,10 @@ fn push_item(
     reason: String,
     amount_cents: Option<i64>,
     currency: Option<&str>,
-    marketplace_id: Option<i64>,
-    marketplace_name: Option<&str>,
 ) {
-    // 2.4.0: a third shape for the new "market_alert" category - neither
-    // order-grouped nor a single per-event row, but at most one per (event,
-    // marketplace) pair (guaranteed by `latest_active_alerts_impl` itself),
-    // so keying on both together is exactly as collision-safe as the other
-    // two shapes below.
-    let key = match (order_id, marketplace_id) {
-        (Some(oid), _) => format!("{category}:order:{oid}"),
-        (None, Some(mid)) => format!("{category}:market:{event_id}:{mid}"),
-        (None, None) => format!("{category}:{event_id}"),
+    let key = match order_id {
+        Some(oid) => format!("{category}:order:{oid}"),
+        None => format!("{category}:{event_id}"),
     };
     items.push(AttentionCenterItem {
         key,
@@ -251,8 +228,6 @@ fn push_item(
         reason,
         amount_cents,
         currency: currency.map(|s| s.to_string()),
-        marketplace_id,
-        marketplace_name: marketplace_name.map(|s| s.to_string()),
     });
 }
 
@@ -375,8 +350,6 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             ),
                             None,
                             None,
-                            None,
-                            None,
                         );
                     }
                 }
@@ -398,8 +371,6 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             "No listing price set".to_string(),
                             None,
                             None,
-                            None,
-                            None,
                         );
                     }
                 }
@@ -419,8 +390,6 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                             ticket_ids,
                             ticket_codes,
                             "No active listing on any marketplace".to_string(),
-                            None,
-                            None,
                             None,
                             None,
                         );
@@ -472,8 +441,6 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
                                 "Listing price is significantly outside the market average".to_string(),
                                 amount_cents,
                                 currency,
-                                None,
-                                None,
                             );
                         }
                     }
@@ -532,54 +499,6 @@ pub(crate) fn get_attention_center_impl(conn: &Connection, today: NaiveDate) -> 
             "Sold, but delivery isn't marked complete yet".to_string(),
             None,
             None,
-            None,
-            None,
-        );
-    }
-
-    // ---- category 6: Live Market Monitor alerts (2.4.0) --------------------
-    // marko's own Section 11: "Attention Center MAY show a market alert
-    // under 'MARKET ATTENTION'" (renamed "market_alert"/"LIVE MARKET ALERTS"
-    // on the frontend - that literal title was already taken by the
-    // existing `outside_market_price` box, see this module's doc comment).
-    // A plain pass-through of whatever `commands::price_checker_monitor::
-    // latest_active_alerts_impl` already decided (the single most recent
-    // alert per event/marketplace pair) - zero new market-calculation logic
-    // here, per marko's own explicit Section 15 requirement. Skips a done/
-    // cancelled event, same as the 3 "still sellable" listing categories
-    // above: once nothing more will be scanned or sold for that event, a
-    // market movement or a broken scan no longer needs flagging here either.
-    for alert in latest_active_alerts_impl(conn)? {
-        let Some((event_name, event_date, event_status)) = events_by_id.get(&alert.event_id) else { continue };
-        if event_is_done(event_status, event_date.as_deref(), today) {
-            continue;
-        }
-        // A judgment call (marko's spec named the 3 priority tiers but not
-        // which alert type goes where, same situation this module's own doc
-        // comment already notes for the other categories): a broken scan or
-        // a price drop is worth flagging as Attention (something changed, or
-        // needs fixing); a price rise or a supply move is Info (a market
-        // observation, never an instruction to act).
-        let priority = match alert.alert_type.as_str() {
-            "source_failure" | "market_drop" => Priority::Attention,
-            _ => Priority::Info,
-        };
-        push_item(
-            &mut items,
-            "market_alert",
-            priority,
-            alert.event_id,
-            event_name,
-            event_date.as_deref(),
-            None,
-            None,
-            Vec::new(),
-            Vec::new(),
-            alert.message.clone(),
-            alert.current_price_cents,
-            alert.currency.as_deref(),
-            Some(alert.marketplace_id),
-            Some(alert.marketplace_name.as_str()),
         );
     }
 
@@ -1126,112 +1045,4 @@ mod tests {
         assert!(find_event_level(&items, "event_soon", event_id).is_none());
     }
 
-    // -- 2.4.0: market_alert (Live Market Monitor) ---------------------------
-
-    use crate::commands::price_checker_monitor::record_scan_attempt_impl;
-    use crate::models::NormalizedListing;
-
-    fn nl(price_cents: i64, tier: &str) -> NormalizedListing {
-        NormalizedListing {
-            price_cents,
-            currency: Some("EUR".to_string()),
-            section: None,
-            row: None,
-            tier: Some(tier.to_string()),
-            quantity: None,
-            listing_id: None,
-            marketplace: "generic".to_string(),
-        }
-    }
-
-    fn find_market_alert<'a>(items: &'a [AttentionCenterItem], event_id: i64, marketplace_id: i64) -> Option<&'a AttentionCenterItem> {
-        items.iter().find(|i| i.category == "market_alert" && i.event_id == event_id && i.marketplace_id == Some(marketplace_id))
-    }
-
-    #[test]
-    fn market_alert_surfaces_the_latest_price_checker_monitor_alert() {
-        let conn = test_conn();
-        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
-        let event_id = seed_event(&conn, None);
-        let vivid = marketplace_id(&conn, "Vivid Seats");
-
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(1000, "A")], "success", None, "2026-01-01T00:00:00.000Z").unwrap();
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(900, "A")], "success", None, "2026-01-02T00:00:00.000Z").unwrap(); // -10%, a real market_drop
-
-        let items = get_attention_center_impl(&conn, today).unwrap();
-        let item = find_market_alert(&items, event_id, vivid).expect("a market_alert row for this event/marketplace");
-        assert_eq!(item.priority, "attention", "market_drop is an Attention-level alert type");
-        assert_eq!(item.marketplace_name.as_deref(), Some("Vivid Seats"));
-        assert_eq!(item.order_id, None, "market_alert is never order-scoped");
-        assert!(item.ticket_ids.is_empty());
-    }
-
-    #[test]
-    fn market_alert_reuses_amount_cents_and_currency_for_a_price_alert() {
-        let conn = test_conn();
-        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
-        let event_id = seed_event(&conn, None);
-        let vivid = marketplace_id(&conn, "Vivid Seats");
-
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(1000, "A")], "success", None, "2026-01-01T00:00:00.000Z").unwrap();
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(900, "A")], "success", None, "2026-01-02T00:00:00.000Z").unwrap();
-
-        let items = get_attention_center_impl(&conn, today).unwrap();
-        let item = find_market_alert(&items, event_id, vivid).unwrap();
-        assert_eq!(item.amount_cents, Some(900), "the new (current) price, same field outside_market_price already uses for a supporting value");
-        assert_eq!(item.currency.as_deref(), Some("EUR"));
-        assert!(item.reason.contains("dropped"), "reason must be the alert's own pre-formatted message");
-    }
-
-    #[test]
-    fn market_alert_is_skipped_for_a_done_event() {
-        let conn = test_conn();
-        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
-        let event_id = seed_event(&conn, Some("2026-05-20")); // already happened
-        let vivid = marketplace_id(&conn, "Vivid Seats");
-
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(1000, "A")], "success", None, "2026-01-01T00:00:00.000Z").unwrap();
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(900, "A")], "success", None, "2026-01-02T00:00:00.000Z").unwrap();
-
-        let items = get_attention_center_impl(&conn, today).unwrap();
-        assert!(find_market_alert(&items, event_id, vivid).is_none(), "a done event's market alert must not nag any more, same rule as the 3 listing categories");
-    }
-
-    #[test]
-    fn market_alert_keys_never_collide_across_two_marketplaces_on_the_same_event() {
-        let conn = test_conn();
-        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
-        let event_id = seed_event(&conn, None);
-        let vivid = marketplace_id(&conn, "Vivid Seats");
-        let ticombo = marketplace_id(&conn, "Ticombo");
-
-        for mp in [vivid, ticombo] {
-            record_scan_attempt_impl(&conn, event_id, mp, &[nl(1000, "A")], "success", None, "2026-01-01T00:00:00.000Z").unwrap();
-            record_scan_attempt_impl(&conn, event_id, mp, &[nl(900, "A")], "success", None, "2026-01-02T00:00:00.000Z").unwrap();
-        }
-
-        let items = get_attention_center_impl(&conn, today).unwrap();
-        let rows: Vec<&AttentionCenterItem> = items.iter().filter(|i| i.category == "market_alert" && i.event_id == event_id).collect();
-        assert_eq!(rows.len(), 2, "both marketplaces' alerts must show up as separate rows under the same event");
-        let mut keys: Vec<&str> = rows.iter().map(|i| i.key.as_str()).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        assert_eq!(keys.len(), 2, "the two rows must never share a key");
-    }
-
-    #[test]
-    fn market_alert_fires_a_source_failure_row_at_attention_priority() {
-        let conn = test_conn();
-        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
-        let event_id = seed_event(&conn, None);
-        let vivid = marketplace_id(&conn, "Vivid Seats");
-
-        record_scan_attempt_impl(&conn, event_id, vivid, &[nl(1000, "A")], "success", None, "2026-01-01T00:00:00.000Z").unwrap();
-        record_scan_attempt_impl(&conn, event_id, vivid, &[], "error", Some("Blocked."), "2026-01-02T00:00:00.000Z").unwrap();
-
-        let items = get_attention_center_impl(&conn, today).unwrap();
-        let item = find_market_alert(&items, event_id, vivid).unwrap();
-        assert_eq!(item.priority, "attention");
-        assert!(item.reason.contains("Blocked"));
-    }
 }

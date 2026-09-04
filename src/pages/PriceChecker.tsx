@@ -29,13 +29,8 @@ import type {
   CurrencyMarketAnalysis,
   DataQuality,
   EventWithStats,
-  MarketAlert,
   MarketAnalysisResult,
-  MarketMonitorMarketplaceView,
-  MarketMonitorSummary,
   MarketplacePriceView,
-  MarketSnapshot,
-  MarketSourceStatus,
   NormalizedListing,
   PriceCheck,
   PriceCheckerSummary,
@@ -52,7 +47,6 @@ import { centsToDecimalString, decimalStringToCents, formatDateTime, formatMoney
 import {
   Button,
   Card,
-  CHECKBOX_CLASS,
   EmptyState,
   Field,
   Input,
@@ -65,7 +59,7 @@ import {
   StatCard,
   Textarea,
 } from "../components/ui";
-import { IconAlertTriangle, IconLink, IconRefresh, IconTag, IconTrendingDown, IconTrendingUp, IconX } from "../components/icons";
+import { IconAlertTriangle, IconLink, IconTag, IconTrendingDown, IconTrendingUp, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { CURRENCIES } from "./Orders";
 import { extractPricesFromText } from "../lib/priceParse";
@@ -94,52 +88,6 @@ const SCANNER_STATUS_META: Record<ScannerStatus, { label: string; className: str
   blocked: { label: "Blocked", className: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
   error: { label: "Error", className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
 };
-
-// ---------------------------------------------------------------------------
-// Live Market Monitor (2.4.1) - marko's replacement for the cancelled "Live
-// Event Intelligence" direction: every online/live-market capability lives
-// directly inside Price Checker instead of a separate section. Built
-// entirely on top of the Visible Scanner above - every scan it completes is
-// recorded automatically on the backend (see commands/price_checker_
-// monitor.rs's module doc comment, Rust); nothing here opens a window, reads
-// a page, or bypasses any CAPTCHA/anti-bot check - marko's own explicit "no
-// automation beyond reading whatever's already on screen" boundary applies
-// here exactly as it does to the manual scanner above.
-// ---------------------------------------------------------------------------
-
-const MARKET_SOURCE_STATUS_META: Record<MarketSourceStatus, { label: string; className: string }> = {
-  not_connected: { label: "Not connected", className: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
-  connected: { label: "Connected", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
-  success: { label: "Success", className: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
-  failed: { label: "Failed", className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
-};
-
-/** "market_drop"/"source_failure" read as amber/red (something changed, or
- * something needs fixing); the other 3 are plain market observations, never
- * an instruction to act - same Attention/Info split
- * commands::attention_center's own market_alert priority mapping already
- * uses (Rust), kept visually consistent here rather than a third opinion. */
-const MARKET_ALERT_META: Record<MarketAlert["alertType"], { label: string; className: string }> = {
-  market_drop: { label: "Market drop", className: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
-  market_rise: { label: "Market rise", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
-  new_supply: { label: "New supply", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
-  supply_drop: { label: "Supply drop", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
-  source_failure: { label: "Source failure", className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
-};
-
-/** marko's own Section 5: interval-based, never aggressive polling - the
- * shortest option is 15 minutes. Auto Monitor is a plain frontend timer
- * over an already-open, human-opened scanner window (see MarketplaceCard's
- * own doc comment on its auto-monitor effect below) - it reuses the exact
- * same "Scan Visible Prices" call the button makes, on a schedule, nothing
- * more. */
-const AUTO_MONITOR_INTERVALS: { label: string; minutes: number }[] = [
-  { label: "Every 15 min", minutes: 15 },
-  { label: "Every 30 min", minutes: 30 },
-  { label: "Every hour", minutes: 60 },
-  { label: "Every 3 hours", minutes: 180 },
-  { label: "Every 6 hours", minutes: 360 },
-];
 
 // ---------------------------------------------------------------------------
 // Market Analysis (2.2.0) - built entirely on top of the Visible Scanner
@@ -614,7 +562,6 @@ function ComparableMarketTool({ requestId, currencies }: { requestId: number; cu
 function MarketplaceCard({
   eventId,
   view,
-  monitor,
   onLinkSaved,
   onCheckPrices,
   session,
@@ -626,10 +573,6 @@ function MarketplaceCard({
 }: {
   eventId: number;
   view: MarketplacePriceView;
-  /** This card's Live Market Monitor data (2.4.0) - undefined only for the
-   *  brief moment `PriceChecker`'s own `monitor` summary hasn't loaded yet;
-   *  the section below simply doesn't render until it has. */
-  monitor: MarketMonitorMarketplaceView | undefined;
   onLinkSaved: () => void;
   onCheckPrices: () => void;
   /** This card's live Visible Scanner session, if one is open - undefined
@@ -644,64 +587,6 @@ function MarketplaceCard({
   const toast = useToast();
   const [url, setUrl] = useState(view.link?.url ?? "");
   const [savingLink, setSavingLink] = useState(false);
-
-  // ---- Live Market Monitor: Auto Monitor + Market History (2.4.0) --------
-
-  const [autoMonitorEnabled, setAutoMonitorEnabled] = useState(false);
-  const [autoMonitorMinutes, setAutoMonitorMinutes] = useState(30);
-  // Mirrors `session` for the interval callback below - same "ref mirrors
-  // state for a long-lived subscription" idea this file already uses for
-  // scannerSessionsRef, needed here because the effect's own dependency
-  // array deliberately does NOT include the whole `session` object (see
-  // that effect's own comment for why).
-  const sessionRef = useRef(session);
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
-
-  // Auto Monitor never opens a window, navigates, or reads anything the
-  // manual "Scan Visible Prices" button couldn't already read - it's the
-  // exact same onScanVisible call as that button, fired on a schedule
-  // instead of a click (marko's own Section 4/5: "no CAPTCHA bypass, no
-  // proxy rotation, no anti-bot workaround" - this never crosses that line
-  // because it never touches the page itself, only asks the backend to read
-  // whatever's currently rendered). Deliberately keyed on `session?.
-  // requestId`, not the whole `session` object, so a scan settling (which
-  // replaces `session` with a new object every time) doesn't tear down and
-  // rebuild this interval on every single tick - only turning the toggle or
-  // the interval on/off, or a genuinely NEW session (new requestId), does.
-  useEffect(() => {
-    if (!autoMonitorEnabled || !session) return;
-    const intervalMs = autoMonitorMinutes * 60_000;
-    const id = window.setInterval(() => {
-      const current = sessionRef.current;
-      // Never overlap a scan already in flight, and never fire into a
-      // window that's still opening.
-      if (!current || current.opening || current.scanning) return;
-      onScanVisible(eventId, view.marketplaceId);
-    }, intervalMs);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoMonitorEnabled, autoMonitorMinutes, session?.requestId, eventId, view.marketplaceId]);
-
-  // Nothing left to auto-scan once the window closes - leaving the toggle
-  // "on" with no session would be misleading, not just inert.
-  useEffect(() => {
-    if (!session) setAutoMonitorEnabled(false);
-  }, [session]);
-
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyRows, setHistoryRows] = useState<MarketSnapshot[] | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const openHistory = () => {
-    setHistoryOpen(true);
-    setHistoryLoading(true);
-    api
-      .listMarketSnapshots(eventId, view.marketplaceId, 30)
-      .then(setHistoryRows)
-      .catch((e) => toast.error(errMsg(e)))
-      .finally(() => setHistoryLoading(false));
-  };
 
   // 2.2.0: Market Analysis for this card's OWN session - tier/section
   // pricing + Your Tickets recommendations, built entirely on top of
@@ -968,172 +853,6 @@ function MarketplaceCard({
           )}
         </div>
       )}
-
-      {/* Live Market Monitor (2.4.0) - built entirely on top of the Visible
-       *  Scanner above: Auto Monitor just fires the same "Scan Visible
-       *  Prices" call on a schedule, and every scan (from either) already
-       *  recorded its own snapshot/alerts on the backend (see this file's
-       *  own module doc comment, and commands/price_checker_monitor.rs's,
-       *  Rust). `monitor` is undefined only for the brief moment the page's
-       *  own summary hasn't loaded yet. */}
-      {view.marketplaceActive && monitor && (
-        <div className="mb-4 rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Live Market Monitor</p>
-            <span
-              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                session?.scanning ? SCANNER_STATUS_META.scanning.className : MARKET_SOURCE_STATUS_META[monitor.status].className
-              }`}
-            >
-              {session?.scanning ? "Scanning..." : MARKET_SOURCE_STATUS_META[monitor.status].label}
-            </span>
-          </div>
-
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">
-            Last successful scan &middot; {monitor.lastSuccessfulScanAt ? formatDateTime(monitor.lastSuccessfulScanAt) : "Never"}
-          </p>
-          {/* Cache/offline (marko's own Section 12): a run of failures never
-           *  clears the last success above, it only adds this short,
-           *  human-readable line alongside it - see MarketSourceStatus's own
-           *  doc comment (types.ts). */}
-          {monitor.lastErrorMessage && (
-            <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-              <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              {monitor.lastErrorMessage}
-            </p>
-          )}
-
-          {monitor.latestSnapshot && (
-            <div className="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
-              <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Listings</p>
-                <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{monitor.latestSnapshot.listingCount}</p>
-              </div>
-              <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Lowest</p>
-                <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                  {formatMoney(monitor.latestSnapshot.lowestPriceCents, monitor.latestSnapshot.currency)}
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Median</p>
-                <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                  {formatMoney(monitor.latestSnapshot.medianPriceCents, monitor.latestSnapshot.currency)}
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Average</p>
-                <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                  {formatMoney(monitor.latestSnapshot.averagePriceCents, monitor.latestSnapshot.currency)}
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Highest</p>
-                <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                  {formatMoney(monitor.latestSnapshot.highestPriceCents, monitor.latestSnapshot.currency)}
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            {/* marko's own Section 5: interval-based, ON/OFF, never
-             *  aggressive - disabled entirely without an open scanner
-             *  session, since there's nothing for it to read yet (see
-             *  the auto-disable-on-close effect above). */}
-            <label
-              className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"
-              title={!session ? "Open & Scan above first - Auto Monitor reschedules the same scan, it can't open a window itself." : undefined}
-            >
-              <input
-                type="checkbox"
-                className={CHECKBOX_CLASS}
-                checked={autoMonitorEnabled}
-                disabled={!session}
-                onChange={(e) => setAutoMonitorEnabled(e.target.checked)}
-              />
-              Auto Monitor
-            </label>
-            <div className="w-36">
-              <Select
-                value={String(autoMonitorMinutes)}
-                onChange={(e) => setAutoMonitorMinutes(Number(e.target.value))}
-                disabled={!session || !autoMonitorEnabled}
-              >
-                {AUTO_MONITOR_INTERVALS.map((opt) => (
-                  <option key={opt.minutes} value={opt.minutes}>
-                    {opt.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <Button variant="secondary" onClick={openHistory}>
-              History
-            </Button>
-          </div>
-
-          {monitor.recentAlerts.length > 0 && (
-            <div className="mt-3 space-y-1.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market Alerts</p>
-              {monitor.recentAlerts.map((a) => (
-                <div key={a.id} className="flex items-start gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <span
-                    className={`mt-0.5 inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${MARKET_ALERT_META[a.alertType].className}`}
-                  >
-                    {MARKET_ALERT_META[a.alertType].label}
-                  </span>
-                  <span>{a.message}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Market History (2.4.0) - every successful scan's permanent
-       *  snapshot, oldest scans falling off only past `listMarketSnapshots`'s
-       *  own fixed limit, never overwritten (marko's own Section 6). */}
-      <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title={`${view.marketplaceName} - Market History`} width="max-w-3xl">
-        {historyLoading ? (
-          <LoadingBlock />
-        ) : !historyRows || historyRows.length === 0 ? (
-          <EmptyState title="No snapshots yet" description="A snapshot is saved automatically after every successful scan." />
-        ) : (
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-            <table className="w-full border-collapse">
-              <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
-                <tr>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Checked</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Result</th>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lowest</th>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Median</th>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Avg</th>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Highest</th>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Listings</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {historyRows.map((snap) => (
-                  <tr key={snap.id}>
-                    <td className="px-2 py-1 text-[11px] text-slate-500 dark:text-slate-400">{formatDateTime(snap.checkedAt)}</td>
-                    <td className="px-2 py-1 text-[11px] text-slate-500 dark:text-slate-400">{snap.scanStatus}</td>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(snap.lowestPriceCents, snap.currency)}</td>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(snap.medianPriceCents, snap.currency)}</td>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(snap.averagePriceCents, snap.currency)}</td>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(snap.highestPriceCents, snap.currency)}</td>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{snap.listingCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <ModalFooter>
-          <Button variant="secondary" onClick={() => setHistoryOpen(false)}>
-            Close
-          </Button>
-        </ModalFooter>
-      </Modal>
 
       {!latest ? (
         <p className="text-xs text-slate-400 dark:text-slate-500">No price checks recorded yet.</p>
@@ -1512,36 +1231,6 @@ export default function PriceChecker() {
   // back on every event" convention).
   const requestIdRef = useRef(0);
 
-  // Live Market Monitor (2.4.0) - one summary per event covering every
-  // marketplace's URL/status/last successful scan/latest snapshot/recent
-  // alerts, refreshed on event switch below and again after every scan
-  // result (via loadMonitorRef, read from inside the long-lived
-  // SCAN_RESULT_EVENT listener further down - same "ref mirrors a callback
-  // for a long-lived subscription" idea scannerSessionsRef already uses) -
-  // see this file's own module doc comment, and commands/price_checker_
-  // monitor.rs's (Rust), for the full design. Entirely separate from
-  // `summary`/`load` above - this never touches PriceCheckerSummary or
-  // marko's own manually-saved price_checks history, only reads it.
-  const [monitor, setMonitor] = useState<MarketMonitorSummary | null>(null);
-  const loadMonitor = useCallback(() => {
-    if (eventId === "") {
-      setMonitor(null);
-      return;
-    }
-    api
-      .getMarketMonitorSummary(eventId)
-      .then(setMonitor)
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
-  const loadMonitorRef = useRef(loadMonitor);
-  useEffect(() => {
-    loadMonitorRef.current = loadMonitor;
-  }, [loadMonitor]);
-  useEffect(() => {
-    loadMonitor();
-  }, [loadMonitor]);
-
   useEffect(() => {
     // 2.2.2: only events still ahead of you are worth a market check - once
     // marko marks one "completed" (or it's "cancelled"), checking live
@@ -1556,30 +1245,10 @@ export default function PriceChecker() {
     // Mirrors Orders.tsx's own presetEventId pattern - EventDetail's "Check
     // prices" button navigates here with the event already chosen, so marko
     // never has to find it again in the dropdown.
-    const preset = location.state as { presetEventId?: number; presetMarketplaceId?: number } | null;
+    const preset = location.state as { presetEventId?: number } | null;
     if (preset?.presetEventId) setEventId(preset.presetEventId);
-    // 2.4.0: Attention Center's "LIVE MARKET ALERTS" rows carry a
-    // marketplaceId too (marko's own Section 11 - "clicking opens Price
-    // Checker at that event/marketplace") - scrolled to and briefly
-    // highlighted once this event's cards render, see the effect below.
-    if (preset?.presetMarketplaceId) setHighlightMarketplaceId(preset.presetMarketplaceId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Scrolls the targeted marketplace card into view and highlights it
-  // briefly, then clears itself - a plain, self-contained effect, not a new
-  // shared pattern (see ticketsAnchorRef's own scrollIntoView in
-  // EventDetail.tsx for the closest existing precedent). Waits for `summary`
-  // itself (not just `events`) since the card doesn't exist in the DOM until
-  // then.
-  const [highlightMarketplaceId, setHighlightMarketplaceId] = useState<number | null>(null);
-  useEffect(() => {
-    if (!summary || highlightMarketplaceId == null) return;
-    const el = document.getElementById(`marketplace-card-${highlightMarketplaceId}`);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-    const t = window.setTimeout(() => setHighlightMarketplaceId(null), 2500);
-    return () => window.clearTimeout(t);
-  }, [summary, highlightMarketplaceId]);
 
   // 2.1.9: the four Visible Scanner lifecycle events - see
   // commands/price_checker_scanner.rs's module doc comment (Rust) for the
@@ -1650,12 +1319,6 @@ export default function PriceChecker() {
           },
         };
       });
-      // 2.4.0: this exact scan already recorded its own snapshot/alerts on
-      // the backend (see commands/price_checker_scanner.rs's record_scan_
-      // attempt_impl hook, Rust) by the time this event fires - refresh the
-      // Live Market Monitor summary so the panel/History reflect it without
-      // marko having to switch events and back.
-      loadMonitorRef.current();
     }).then((fn) => {
       if (disposed) fn();
       else unlistenResult = fn;
@@ -1770,26 +1433,6 @@ export default function PriceChecker() {
     },
     [toast],
   );
-
-  // "Scan All" (2.4.0) - fires the exact same scanVisible call above, once
-  // per marketplace on THIS event that currently has an open scanner window,
-  // skipping any that's still opening or already mid-scan (same overlap
-  // guard Auto Monitor's own interval uses). A marketplace with no window
-  // open is skipped, not opened on its own - marko's own Section 4 boundary
-  // ("no automation beyond reading whatever's already open") applies here
-  // exactly as it does to a single card's own button.
-  const scanAll = useCallback(() => {
-    if (summary === null) return;
-    const prefix = `${summary.eventId}:`;
-    const targets = Object.entries(scannerSessionsRef.current)
-      .filter(([key, s]) => key.startsWith(prefix) && !s.opening && !s.scanning)
-      .map(([key]) => Number(key.slice(prefix.length)));
-    if (targets.length === 0) {
-      toast.error("Open a scanner window on at least one marketplace first (see Open & Scan below).");
-      return;
-    }
-    targets.forEach((marketplaceId) => scanVisible(summary.eventId, marketplaceId));
-  }, [summary, scanVisible, toast]);
 
   // "Stop scanning" - interrupts the in-flight scan (if the backend catches
   // it in time) and, either way, immediately clears the local `scanning`
@@ -1944,41 +1587,26 @@ export default function PriceChecker() {
             )}
           </Card>
 
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Marketplaces</p>
-            {/* 2.4.0: scans every marketplace with a window already open on
-             *  this event - see scanAll's own doc comment above. */}
-            <Button variant="secondary" onClick={scanAll}>
-              <IconRefresh className="h-4 w-4" /> Scan All
-            </Button>
-          </div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Marketplaces</p>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {summary.marketplaces.map((view) => (
-              <div
+              <MarketplaceCard
                 key={view.marketplaceId}
-                id={`marketplace-card-${view.marketplaceId}`}
-                className={`rounded-xl transition-shadow duration-300 ${
-                  highlightMarketplaceId === view.marketplaceId ? "ring-2 ring-brand-400 dark:ring-brand-500" : ""
-                }`}
-              >
-                <MarketplaceCard
-                  eventId={summary.eventId}
-                  view={view}
-                  monitor={monitor?.marketplaces.find((m) => m.marketplaceId === view.marketplaceId)}
-                  onLinkSaved={load}
-                  onCheckPrices={() => {
-                    setCheckModalPrefill(null);
-                    setCheckModalFor(view);
-                  }}
-                  session={scannerSessions[sessionKey(summary.eventId, view.marketplaceId)]}
-                  onOpenScanner={openScanner}
-                  onScanVisible={scanVisible}
-                  onStopScan={stopScan}
-                  onCloseScanner={closeScanner}
-                  onSaveScanToHistory={saveScanToHistory}
-                />
-              </div>
+                eventId={summary.eventId}
+                view={view}
+                onLinkSaved={load}
+                onCheckPrices={() => {
+                  setCheckModalPrefill(null);
+                  setCheckModalFor(view);
+                }}
+                session={scannerSessions[sessionKey(summary.eventId, view.marketplaceId)]}
+                onOpenScanner={openScanner}
+                onScanVisible={scanVisible}
+                onStopScan={stopScan}
+                onCloseScanner={closeScanner}
+                onSaveScanToHistory={saveScanToHistory}
+              />
             ))}
           </div>
 

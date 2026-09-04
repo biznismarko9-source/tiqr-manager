@@ -39,8 +39,6 @@ import type {
   InventoryIntelligence,
   MarketAnalysisResult,
   Marketplace,
-  MarketMonitorSummary,
-  MarketSnapshot,
   NotificationConfigInput,
   NotificationStatus,
   NotificationTestResult,
@@ -616,18 +614,6 @@ export const api = {
    * safe to call repeatedly as marko edits the reference fields. */
   computeComparableMarket: (input: ComparableReferenceInput) =>
     invoke<RankedComparable[]>("compute_comparable_market", { input }),
-  // Live Market Monitor (2.4.1) - marko's replacement for the cancelled
-  // "Live Event Intelligence" direction. Built entirely on top of the
-  // Visible Scanner above (every scan it completes is recorded here
-  // automatically) - see commands/price_checker_monitor.rs's module doc
-  // comment (Rust) for the full design.
-  /** The whole Live Market Monitor page for one event - per marketplace,
-   * URL/status/last successful scan/latest snapshot/recent alerts, in one
-   * round trip. */
-  getMarketMonitorSummary: (eventId: number) => invoke<MarketMonitorSummary>("get_market_monitor_summary", { eventId }),
-  /** Paged Market History for one (event, marketplace), newest first. */
-  listMarketSnapshots: (eventId: number, marketplaceId: number, limit: number) =>
-    invoke<MarketSnapshot[]>("list_market_snapshots", { eventId, marketplaceId, limit }),
 };
 
 export function errMsg(e: unknown): string {

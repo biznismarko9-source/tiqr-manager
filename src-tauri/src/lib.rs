@@ -232,8 +232,6 @@ pub fn run() {
             commands::price_checker_scanner::close_price_scanner,
             commands::price_checker_analysis::compute_market_analysis,
             commands::price_checker_analysis::compute_comparable_market,
-            commands::price_checker_monitor::get_market_monitor_summary,
-            commands::price_checker_monitor::list_market_snapshots,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
