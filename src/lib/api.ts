@@ -29,10 +29,6 @@ import type {
   EventInput,
   EventMarketplaceLink,
   EventMarketplaceLinkInput,
-  EventOnlineSource,
-  EventOnlineSourceActiveInput,
-  EventOnlineSourceConfirmInput,
-  EventOnlineSourceManualInput,
   EventRecord,
   EventWithStats,
   FinanceCategory,
@@ -41,9 +37,10 @@ import type {
   FirebaseGoogleSignInResult,
   GoogleSignInStatus,
   InventoryIntelligence,
-  LiveEventSource,
   MarketAnalysisResult,
   Marketplace,
+  MarketMonitorSummary,
+  MarketSnapshot,
   NotificationConfigInput,
   NotificationStatus,
   NotificationTestResult,
@@ -319,6 +316,12 @@ export const api = {
   createAccount: (input: AccountInput) => invoke<Account>("create_account", { input }),
   updateAccount: (id: number, input: AccountInput) => invoke<Account>("update_account", { id, input }),
   deleteAccount: (id: number) => invoke<void>("delete_account", { id }),
+  /** 2.4.0: books the difference between this account's current computed
+   * balance and `newBalanceCents` as one reconciliation Finance entry - see
+   * `set_account_balance_impl`'s own doc comment (Rust) for why this can't
+   * be a plain field update. A no-op (no entry created) when
+   * `newBalanceCents` already matches. */
+  setAccountBalance: (id: number, newBalanceCents: number) => invoke<Account>("set_account_balance", { id, newBalanceCents }),
   listTransfers: () => invoke<Transfer[]>("list_transfers"),
   createTransfer: (input: TransferInput) => invoke<Transfer>("create_transfer", { input }),
   deleteTransfer: (id: number) => invoke<void>("delete_transfer", { id }),
@@ -613,33 +616,18 @@ export const api = {
    * safe to call repeatedly as marko edits the reference fields. */
   computeComparableMarket: (input: ComparableReferenceInput) =>
     invoke<RankedComparable[]>("compute_comparable_market", { input }),
-
-  // Live Event Intelligence (2.4.0) - an event's optional confirmed online
-  // identity on exactly 3 marketplaces (Viagogo/Vivid Seats/Ticombo). See
-  // commands/live_event_intelligence.rs's module doc comment (Rust) for the
-  // full design. The 3 window commands mirror the Visible Scanner's own
-  // "returns fast, the real result follows as an event" contract - listen
-  // for `live-intel-window-opened`/`live-intel-window-error`/
-  // `live-intel-capture-result`/`live-intel-window-closed`.
-  /** Every online source ever saved for this event (active or disconnected) - never filtered/hidden here, the UI decides how to group them. */
-  listEventOnlineSources: (eventId: number) => invoke<EventOnlineSource[]>("list_event_online_sources", { eventId }),
-  /** "Connect manually" - always saves `verified: false`; a later Refresh is what can confirm it. Upserts on (eventId, source). */
-  connectOnlineSourceManually: (input: EventOnlineSourceManualInput) =>
-    invoke<EventOnlineSource>("connect_online_source_manually", { input }),
-  /** The one call that ever sets `verified: true` - used after a live capture from either "Find Online Event" (confirming a candidate) or "Refresh" (re-confirming a saved source). */
-  saveConfirmedOnlineSource: (input: EventOnlineSourceConfirmInput) =>
-    invoke<EventOnlineSource>("save_confirmed_online_source", { input }),
-  /** "Disconnect"/"Reconnect" - a soft flag flip, never deletes the row or its verified state/history. */
-  setOnlineSourceActive: (input: EventOnlineSourceActiveInput) =>
-    invoke<EventOnlineSource>("set_online_source_active", { input }),
-  /** Opens a real, visible browser window on `url` - a freshly constructed search-results page for "Find Online Event", or the already-saved source url for "Refresh". `requestId` is minted by the caller, same convention as `openPriceScanner`. */
-  openLiveEventWindow: (requestId: number, eventId: number, source: LiveEventSource, url: string) =>
-    invoke<void>("open_live_event_window", { requestId, eventId, source, url }),
-  /** Reads whatever's CURRENTLY rendered in the window - title + current URL only, once. Never scrapes prices/listings. */
-  captureLiveEventPage: (requestId: number) => invoke<void>("capture_live_event_page", { requestId }),
-  /** Ends a window session - "Close" in the UI. `closeWindow: true` also closes the real browser window; `false` only forgets TIQR Manager's own bookkeeping. Safe to call on an already-closed session. */
-  closeLiveEventWindow: (requestId: number, closeWindow: boolean) =>
-    invoke<void>("close_live_event_window", { requestId, closeWindow }),
+  // Live Market Monitor (2.4.1) - marko's replacement for the cancelled
+  // "Live Event Intelligence" direction. Built entirely on top of the
+  // Visible Scanner above (every scan it completes is recorded here
+  // automatically) - see commands/price_checker_monitor.rs's module doc
+  // comment (Rust) for the full design.
+  /** The whole Live Market Monitor page for one event - per marketplace,
+   * URL/status/last successful scan/latest snapshot/recent alerts, in one
+   * round trip. */
+  getMarketMonitorSummary: (eventId: number) => invoke<MarketMonitorSummary>("get_market_monitor_summary", { eventId }),
+  /** Paged Market History for one (event, marketplace), newest first. */
+  listMarketSnapshots: (eventId: number, marketplaceId: number, limit: number) =>
+    invoke<MarketSnapshot[]>("list_market_snapshots", { eventId, marketplaceId, limit }),
 };
 
 export function errMsg(e: unknown): string {

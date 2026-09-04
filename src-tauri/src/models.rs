@@ -2162,6 +2162,145 @@ pub struct TierBreakdownInput {
     pub listing_count: i64,
 }
 
+// --- Price Checker Live Market Monitor (2.4.1) ------------------------------
+// marko's replacement for the cancelled "Live Event Intelligence" direction -
+// see migrations/026_price_checker_market_monitor.sql's own doc comment and
+// commands::price_checker_monitor's module doc comment for the full design.
+// Entirely additive alongside the existing Price Checker structs above -
+// PriceCheck/PriceCheckerSummary/MarketAnalysisResult and everything they
+// feed stay completely unchanged.
+
+/// One tier's breakdown within one `MarketSnapshot` - mirrors
+/// `market_snapshot_tiers` field-for-field. Same "Unclassified" fallback
+/// convention as `TierBreakdown` (price_checker_analysis.rs) for a listing
+/// with no confidently-detected tier.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSnapshotTier {
+    pub tier: String,
+    pub lowest_price_cents: i64,
+    pub median_price_cents: i64,
+    pub listing_count: i64,
+}
+
+/// One automatic, append-only record of a completed scan (marko's own
+/// Section 6 "Snapshots") - written by `commands::price_checker_monitor::
+/// record_scan_attempt_impl` after every scan the Visible Scanner completes
+/// with real data (`scan_status` "success" or "partial" - never "error"/
+/// "blocked"/"unable_to_read", which never produce a snapshot at all, see
+/// that function's own doc comment). Deliberately separate from `PriceCheck`
+/// - this is automatic and unreviewed, `PriceCheck` stays marko's own
+/// manually-curated, explicitly-saved history, exactly as before.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSnapshot {
+    pub id: i64,
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    pub checked_at: String,
+    /// "success" | "partial" - the scan's own `ScannerStatus` at the moment
+    /// this snapshot was taken (see commands::price_checker_scanner's own
+    /// module doc comment for what each means).
+    pub scan_status: String,
+    pub listing_count: i64,
+    pub lowest_price_cents: i64,
+    pub median_price_cents: i64,
+    pub average_price_cents: i64,
+    pub highest_price_cents: i64,
+    pub currency: String,
+    /// Empty when every listing in this snapshot's currency group had no
+    /// confidently-detected tier at all (every one folded into a single
+    /// "Unclassified" row instead - see `MarketSnapshotTier`'s own doc
+    /// comment), never omitted/absent as a distinct case.
+    pub tiers: Vec<MarketSnapshotTier>,
+}
+
+/// One entry in the append-only `market_alerts` log - marko's own Section
+/// 9/10: MARKET DROP, MARKET RISE, NEW SUPPLY, SUPPLY DROP, SOURCE FAILURE.
+/// `message` is the one field the UI ever displays directly - fully
+/// pre-formatted, human-readable text built once at creation time (see
+/// `commands::price_checker_monitor`'s `format_cents_plain`/alert-building
+/// functions) so the frontend never has to reconstruct meaning from the raw
+/// previous/current columns itself. `tier` is `None` for a whole-market
+/// (overall) alert, `Some(tier name)` for one tier's own change.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketAlert {
+    pub id: i64,
+    pub event_id: i64,
+    pub marketplace_id: i64,
+    /// Denormalized from a JOIN, same "id + name together, no second round
+    /// trip" convention as `FinanceEntry::account_name`.
+    pub marketplace_name: String,
+    /// "market_drop" | "market_rise" | "new_supply" | "supply_drop" |
+    /// "source_failure" - a plain string, not a Rust enum, same "dumb DB
+    /// mirror" convention as `TicketListing::status`.
+    pub alert_type: String,
+    pub tier: Option<String>,
+    pub message: String,
+    /// Populated only for "market_drop"/"market_rise" - `None` for every
+    /// other alert type.
+    pub previous_price_cents: Option<i64>,
+    pub current_price_cents: Option<i64>,
+    /// Populated only for "new_supply"/"supply_drop" - `None` for every
+    /// other alert type.
+    pub previous_listing_count: Option<i64>,
+    pub current_listing_count: Option<i64>,
+    /// `None` only for "source_failure" (no price/currency involved at all).
+    pub currency: Option<String>,
+    pub created_at: String,
+}
+
+/// One marketplace's row in `MarketMonitorSummary` - marko's own Section 3 +
+/// 13: URL/status/last successful scan/last scan result/listings-found
+/// count, per marketplace, for one event.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMonitorMarketplaceView {
+    pub marketplace_id: i64,
+    pub marketplace_name: String,
+    pub marketplace_active: bool,
+    /// Reuses the EXISTING `EventMarketplaceLink` - marko's own Section 3
+    /// requirement ("URL sa nezadáva znova pri každom scane") is already
+    /// fully satisfied by this table from 2.0.81 onward; nothing new was
+    /// needed to persist it.
+    pub link: Option<EventMarketplaceLink>,
+    /// "not_connected" | "connected" | "success" | "failed" - see
+    /// commands::price_checker_monitor::derive_source_status's own doc
+    /// comment for exactly how each is derived. Deliberately NEVER
+    /// "scanning" - the backend has no business computing that (it would
+    /// need `AppState::price_scanner_sessions`, a different lock entirely,
+    /// for data the frontend already tracks live); the frontend overlays
+    /// "scanning" itself from its own open scanner session state, the same
+    /// "backend gives durable facts, frontend adds ephemeral live state on
+    /// top" split this page already uses for the Visible Scanner cards.
+    pub status: String,
+    pub last_scan_at: Option<String>,
+    /// Only ever ADVANCED by a real success - marko's own Section 12 "always
+    /// show Last successful scan": a run of failures afterward can never
+    /// make this look stale in a misleading way or disappear.
+    pub last_successful_scan_at: Option<String>,
+    /// Short and human-readable only, `None` exactly when the last scan
+    /// attempt succeeded - marko's own Section 13 "no technical stack
+    /// traces in the UI".
+    pub last_error_message: Option<String>,
+    pub latest_snapshot: Option<MarketSnapshot>,
+    /// Newest first, capped - see `commands::price_checker_monitor::
+    /// RECENT_ALERTS_PER_MARKETPLACE`.
+    pub recent_alerts: Vec<MarketAlert>,
+}
+
+/// The whole Live Market Monitor page for one event, in a single round trip
+/// - same "assemble everything the page needs in one call" convention as
+/// `PriceCheckerSummary` itself, which this is entirely separate from (never
+/// merged into it - see this section's own header comment).
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMonitorSummary {
+    pub event_id: i64,
+    pub marketplaces: Vec<MarketMonitorMarketplaceView>,
+}
+
 // --- Finance (2.0.83) -------------------------------------------------------
 // marko's personal + business money tracker - see
 // migrations/015_finance.sql's doc comment for the full design rationale.
@@ -2773,130 +2912,15 @@ pub struct AttentionCenterItem {
     /// `None` for every other case rather than a fabricated number.
     pub amount_cents: Option<i64>,
     pub currency: Option<String>,
+    /// 2.4.0: `Some` only for the new "market_alert" category (Live Market
+    /// Monitor) - which marketplace, on Price Checker's own page, this row
+    /// is about. `None` for every other category. Lets the frontend route a
+    /// click straight to that event/marketplace on Price Checker (marko's
+    /// own Section 11) without Attention Center computing anything new
+    /// itself - the id is simply carried through from the alert `commands::
+    /// price_checker_monitor::record_scan_attempt_impl` already decided
+    /// (Section 15's explicit "no new market-calculation logic here").
+    pub marketplace_id: Option<i64>,
+    pub marketplace_name: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Live Event Intelligence (2.4.0) - see commands::live_event_intelligence's
-// own module doc comment and migrations/026_live_event_intelligence.sql for
-// the full design. Foundation work: an Event can optionally carry a
-// confirmed online identity on exactly 3 marketplaces (Viagogo/Vivid Seats/
-// Ticombo). Nothing here is read by Price Checker or used for pricing.
-// ---------------------------------------------------------------------------
-
-/// One (event, marketplace) online source connection - at most one row per
-/// `source` per event (see the migration's `UNIQUE(event_id, source)`).
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct EventOnlineSource {
-    pub id: i64,
-    pub event_id: i64,
-    /// "viagogo" | "vivid_seats" | "ticombo" - see the migration's CHECK
-    /// constraint. A plain String, not a Rust enum - this struct is a dumb
-    /// DB mirror, same convention as `TicketListing::status`. See
-    /// `commands::live_event_intelligence::SUPPORTED_SOURCES` for the one
-    /// place that actually enumerates/validates these.
-    pub source: String,
-    pub url: String,
-    pub external_event_id: Option<String>,
-    /// True only once a human has looked at `url` in a real, visible window
-    /// and confirmed it - see `save_confirmed_online_source_impl`. Never set
-    /// any other way. A freshly manually-connected source starts `false`.
-    pub verified: bool,
-    /// False after "Disconnect" - a soft retire, same convention as
-    /// `Marketplace::active`/`TicketListing::status == "removed"`: the row
-    /// (and its history) stays, it just stops counting as "connected" in the
-    /// compact summary. "Reconnect" flips it back without losing anything.
-    pub active: bool,
-    /// Both `None` until the first successful "Refresh" (or the discovery
-    /// capture that created this row) - never guessed/backfilled.
-    pub last_checked_at: Option<String>,
-    /// Exactly what was read from the page's own `document.title` at
-    /// `last_checked_at` - never parsed or interpreted, just shown as a
-    /// quick human sanity check.
-    pub last_checked_title: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Input for `connect_online_source_manually` - "Connect manually" in the
-/// UI, for when reliable discovery isn't possible or marko already has the
-/// URL. Always saves with `verified = false` (see `EventOnlineSource::
-/// verified`'s own doc comment) - a later "Refresh" is what confirms it, if
-/// he chooses to run one. Upserts on the (event_id, source) unique pair,
-/// same "re-saving the same marketplace updates it in place" convention as
-/// `EventMarketplaceLinkInput`/`save_event_marketplace_link_impl`.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct EventOnlineSourceManualInput {
-    pub event_id: i64,
-    pub source: String,
-    pub url: String,
-    /// Optional - marko may not have/want to type one in. Never derived or
-    /// guessed by this app.
-    pub external_event_id: Option<String>,
-}
-
-/// Input for `save_confirmed_online_source` - the ONE function that ever
-/// writes `verified = true`. Shared by both flows that involve a human
-/// actually looking at a live page in the visible window: "Find Online
-/// Event" (confirming a captured search candidate) and "Refresh" (re-
-/// confirming an already-saved source) - see commands::
-/// live_event_intelligence's module doc comment for why one function
-/// covers both. `title` is whatever `capture_live_event_page` last read off
-/// the page - optional only because a caller could theoretically skip
-/// straight to confirming a URL without a live capture, though neither
-/// shipped UI flow currently does that.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct EventOnlineSourceConfirmInput {
-    pub event_id: i64,
-    pub source: String,
-    pub url: String,
-    pub title: Option<String>,
-}
-
-/// Input for `set_online_source_active` - "Disconnect"/"Reconnect".
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct EventOnlineSourceActiveInput {
-    pub event_id: i64,
-    pub source: String,
-    pub active: bool,
-}
-
-// -- Live Event Intelligence visible-window events (2.4.0) - mirrors the
-// Price Checker Visible Scanner's own Scanner*Payload structs field-for-
-// field in spirit, but are their own distinct types/event names so the two
-// features share no wire format, same as they share no backend state
-// (db::LiveIntelSession vs db::ScannerSession). ---------------------------
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LiveIntelWindowOpenedPayload {
-    pub request_id: u64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LiveIntelWindowErrorPayload {
-    pub request_id: u64,
-    pub message: String,
-}
-
-/// Emitted after a `capture_live_event_page` call reads whatever's
-/// currently rendered in the window - title + URL only, exactly what
-/// `document.title`/`location.href` returned, never anything parsed out of
-/// the page's own content (no prices, no listings, no scraping).
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LiveIntelCapturePayload {
-    pub request_id: u64,
-    pub title: String,
-    pub url: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LiveIntelWindowClosedPayload {
-    pub request_id: u64,
-}

@@ -503,6 +503,8 @@ fn emit_scan_error(app: &AppHandle, request_id: u64, message: &str) {
         let mut sessions = st.price_scanner_sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(&request_id) {
             session.status = "error".to_string();
+            let event_id = session.event_id;
+            let marketplace_id = session.marketplace_id;
             let (lowest, median, average, highest, currency) = compute_scan_stats(&session.listings);
             let payload = ScanResultPayload {
                 request_id,
@@ -519,6 +521,30 @@ fn emit_scan_error(app: &AppHandle, request_id: u64, message: &str) {
                 message: Some(message.to_string()),
             };
             drop(sessions);
+
+            // 2.4.0 (Live Market Monitor): record this as a FAILED scan
+            // attempt - `market_source_status`, and a `source_failure`
+            // Market Alert if this marketplace was previously working (see
+            // commands::price_checker_monitor::record_scan_attempt_impl's
+            // own doc comment for the full transition-only contract).
+            // Completely separate `state.db` lock, taken only AFTER the
+            // sessions lock above is released, and silently swallowed on
+            // error - a Market Monitor bug must never affect the scan
+            // result marko is about to see below.
+            if let Some(st2) = app.try_state::<AppState>() {
+                let conn = st2.db.lock().unwrap();
+                let now = now_iso8601();
+                let _ = crate::commands::price_checker_monitor::record_scan_attempt_impl(
+                    &conn,
+                    event_id,
+                    marketplace_id,
+                    &[],
+                    "error",
+                    Some(message),
+                    &now,
+                );
+            }
+
             let _ = app.emit(EVENT_SCAN_RESULT, payload);
         }
     }
@@ -660,8 +686,36 @@ pub fn scan_visible_prices(app: AppHandle, state: State<AppState>, request_id: u
         if let Some(st) = handle.try_state::<AppState>() {
             let mut sessions = st.price_scanner_sessions.lock().unwrap();
             if let Some(session) = sessions.get_mut(&request_id) {
+                let event_id = session.event_id;
+                let marketplace_id = session.marketplace_id;
                 let payload = merge_scan_into_session(session, request_id, &js);
                 drop(sessions);
+
+                // 2.4.0 (Live Market Monitor): record this completed scan
+                // attempt - snapshot + change detection on success/partial,
+                // source-status + possible source_failure alert on
+                // blocked/unable_to_read (see
+                // commands::price_checker_monitor::record_scan_attempt_impl's
+                // own doc comment for why every non-success/partial status
+                // is treated as a failed ATTEMPT here). Read BEFORE emitting
+                // so `payload` isn't moved out from under this first, but on
+                // its own `state.db` lock taken only after the sessions lock
+                // above is released, and always swallowed - this must never
+                // affect what marko sees from the scan itself.
+                if let Some(st2) = handle.try_state::<AppState>() {
+                    let conn = st2.db.lock().unwrap();
+                    let now = now_iso8601();
+                    let _ = crate::commands::price_checker_monitor::record_scan_attempt_impl(
+                        &conn,
+                        event_id,
+                        marketplace_id,
+                        &payload.listings,
+                        &payload.status,
+                        payload.message.as_deref(),
+                        &now,
+                    );
+                }
+
                 let _ = handle.emit(EVENT_SCAN_RESULT, payload);
             }
         }

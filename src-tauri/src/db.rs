@@ -54,17 +54,6 @@ pub struct AppState {
     /// marketplace's window misbehaving can never affect another's (marko's
     /// own explicit spec requirement).
     pub price_scanner_sessions: Mutex<HashMap<u64, ScannerSession>>,
-    /// 2.4.0: every currently-open Live Event Intelligence visible window
-    /// (`commands::live_event_intelligence`'s "Find Online Event"/"Refresh"
-    /// flows), keyed the same way `price_scanner_sessions` is - a frontend-
-    /// minted request id. Deliberately its OWN map, never sharing
-    /// `price_scanner_sessions` or `ScannerSession` itself, even though the
-    /// window-management technique is the same: this feature must never be
-    /// able to affect - or be affected by - a live Price Checker scan, and a
-    /// `ScannerSession` carries fields (marketplace_id, listings,
-    /// fingerprints, cancel_flag) this feature has no use for. See
-    /// `LiveIntelSession` below and that module's own doc comment.
-    pub live_intel_sessions: Mutex<HashMap<u64, LiveIntelSession>>,
 }
 
 /// One open Visible Scanner window's live state (2.1.9). Lives here, next to
@@ -106,27 +95,6 @@ pub struct ScannerSession {
     pub fingerprints: HashSet<String>,
     pub scan_count: u32,
     pub last_scan_at: Option<String>,
-}
-
-/// One open Live Event Intelligence window (2.4.0) - the "Find Online Event"
-/// search flow and the "Refresh" flow both open one of these (a real,
-/// visible `WebviewWindow`, same technique as `ScannerSession` above) and
-/// both read it back via the same tiny `capture_live_event_page` command
-/// (title + current URL only - never prices, never listings, never anything
-/// parsed out of the page's own content). Far smaller than `ScannerSession`
-/// on purpose: there is no accumulated result to merge scan-over-scan here,
-/// no cancellable long-running scan, and no per-marketplace identity to
-/// track on the session itself - `event_id` exists purely so the frontend
-/// can route a capture result back to the right event's UI card, and
-/// `source` (which of the 3 supported marketplaces this window was opened
-/// for) so it can route it to the right ROW within that card.
-#[derive(Debug)]
-pub struct LiveIntelSession {
-    /// Tauri window label - same "look the real handle up fresh by label,
-    /// never store it" convention as `ScannerSession::window_label`.
-    pub window_label: String,
-    pub event_id: i64,
-    pub source: String,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -231,8 +199,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/025_deactivate_seatriks_price_checker.sql"),
     ),
     (
-        "026_live_event_intelligence",
-        include_str!("../migrations/026_live_event_intelligence.sql"),
+        "026_price_checker_market_monitor",
+        include_str!("../migrations/026_price_checker_market_monitor.sql"),
     ),
 ];
 
@@ -1321,121 +1289,5 @@ mod migration_024_tests {
             .query_row("SELECT tier FROM tickets WHERE code = 'TKT-FRESH-024'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(tier, None, "a ticket inserted with no tier value must read back NULL, not an empty string or a default");
-    }
-}
-
-/// Regression coverage for migration 026 (`event_online_sources`, 2.4.0
-/// Live Event Intelligence). Same "simulate a real existing install"
-/// approach as migration_007_tests/migration_024_tests above: apply
-/// migrations 001-025 exactly as any already-installed 2.3.5 build has
-/// them, seed a real pre-existing event under that schema, then let
-/// `run_migrations` apply ONLY 026 - a real upgrade, not a fresh install.
-/// Existing event data must come through completely unchanged (marko's own
-/// explicit requirement - "existujuce udaje o evente sa nesmu menit ani
-/// spatne dopĺňať", existing event data must not be changed or backfilled).
-#[cfg(test)]
-mod migration_026_tests {
-    use super::*;
-
-    #[test]
-    fn migration_026_leaves_existing_events_untouched_and_adds_a_usable_empty_sources_table() {
-        let conn = Connection::open_in_memory().expect("open in-memory db");
-        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("enable foreign keys");
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL
-             );",
-        )
-        .unwrap();
-        for (version, sql) in &MIGRATIONS[..25] {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                [version],
-            )
-            .unwrap();
-        }
-
-        // Real pre-existing data under the pre-2.4.0 schema - exactly what
-        // any real installation has right up until it upgrades.
-        conn.execute("INSERT INTO events (name, city, event_date) VALUES ('Old Event', 'Vienna', '2026-05-01')", [])
-            .unwrap();
-        let event_id = conn.last_insert_rowid();
-
-        let events_before: Vec<(i64, String, Option<String>, Option<String>)> = {
-            let mut stmt = conn.prepare("SELECT id, name, city, event_date FROM events ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
-        };
-
-        // The real upgrade moment: 001-025 are already recorded, so this
-        // applies ONLY 026.
-        run_migrations(&conn).expect("migration 026 must apply cleanly on top of real pre-existing data");
-
-        let events_after: Vec<(i64, String, Option<String>, Option<String>)> = {
-            let mut stmt = conn.prepare("SELECT id, name, city, event_date FROM events ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
-        };
-        assert_eq!(events_before, events_after, "every pre-existing event must survive the upgrade completely unchanged - 026 must never backfill or alter it");
-
-        // Brand new table, immediately usable, correctly empty for an event
-        // that predates this feature entirely.
-        let existing_sources: i64 = conn
-            .query_row("SELECT COUNT(*) FROM event_online_sources WHERE event_id = ?1", [event_id], |r| r.get(0))
-            .unwrap();
-        assert_eq!(existing_sources, 0, "an event that predates Live Event Intelligence must start with zero sources, never an invented one");
-
-        conn.execute(
-            "INSERT INTO event_online_sources(event_id, source, url, verified, active) VALUES (?1, 'viagogo', 'https://www.viagogo.com/x', 1, 1)",
-            [event_id],
-        )
-        .expect("the new table must be usable right after the upgrade");
-
-        // The CHECK constraint must already be enforced on an upgraded db,
-        // not just a freshly created one - marko's fixed 3-source rule must
-        // hold immediately, with no separate "activate the rule" step.
-        let rejected = conn.execute(
-            "INSERT INTO event_online_sources(event_id, source, url) VALUES (?1, 'stubhub', 'https://stubhub.com/x')",
-            [event_id],
-        );
-        assert!(rejected.is_err(), "the CHECK constraint must reject an unsupported source even on an upgraded (not freshly created) table");
-
-        let violations: Vec<String> = {
-            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
-            stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
-        };
-        assert!(violations.is_empty(), "foreign_key_check must be clean after the upgrade, found: {violations:?}");
-    }
-
-    #[test]
-    fn migration_026_on_a_completely_fresh_database_every_event_starts_with_no_online_sources() {
-        let conn = test_conn();
-        conn.execute("INSERT INTO events (name) VALUES ('Fresh Event')", []).unwrap();
-        let event_id = conn.last_insert_rowid();
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM event_online_sources WHERE event_id = ?1", [event_id], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn deleting_an_event_cascades_away_its_online_sources() {
-        // event_id is ON DELETE CASCADE (see the migration's own doc
-        // comment) - same rule as price_checks/event_marketplace_links.
-        let conn = test_conn();
-        conn.execute("INSERT INTO events (name) VALUES ('Deletable Event')", []).unwrap();
-        let event_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO event_online_sources(event_id, source, url) VALUES (?1, 'viagogo', 'https://www.viagogo.com/x')",
-            [event_id],
-        )
-        .unwrap();
-
-        conn.execute("DELETE FROM events WHERE id = ?1", [event_id]).unwrap();
-
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM event_online_sources", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 0, "deleting an event must cascade away its online sources, never leave an orphan row");
     }
 }

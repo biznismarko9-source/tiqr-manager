@@ -317,7 +317,7 @@ pub(crate) fn group_by_tier(listings: &[NormalizedListing]) -> Vec<TierBreakdown
 /// single-currency. A listing with a price but no detected currency
 /// contributes to neither map entry - counted separately (never guessed
 /// into a currency it never reported).
-fn partition_by_currency(listings: &[NormalizedListing]) -> (HashMap<String, Vec<NormalizedListing>>, i64) {
+pub(crate) fn partition_by_currency(listings: &[NormalizedListing]) -> (HashMap<String, Vec<NormalizedListing>>, i64) {
     let mut by_currency: HashMap<String, Vec<NormalizedListing>> = HashMap::new();
     let mut uncurrencied = 0i64;
     for l in listings {

@@ -16,13 +16,89 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
-## 2.4.0 - Live Event Intelligence Foundation
+## 2.4.1 - Price Checker Live Market Monitor
+
+Marko cancelled the "Live Event Intelligence" direction below outright
+("Predchádzajúci nápad 'Live Event Intelligence' RUŠÍME ÚPLNE") and asked
+for all online/live-market functionality to live directly inside Price
+Checker instead: EVENT -> MARKETPLACE SOURCES -> SCAN -> SNAPSHOT -> HISTORY
+-> CHANGE DETECTION -> MARKET ALERTS, built entirely on the already-shipped
+Visible Scanner (2.1.9) and Market Analysis (2.2.0) - no CAPTCHA bypass, no
+proxy rotation, no anti-bot workaround, and no automation beyond reading
+whatever a human already has open in a real, visible window. Full reasoning
+in `PROTECTED_AREAS.md`'s new "2.4.1 - Price Checker Live Market Monitor"
+entry.
+
+1. **New backend module `price_checker_monitor.rs`** - records a permanent,
+   never-overwritten snapshot after every successful/partial scan
+   (`market_snapshots`/`market_snapshot_tiers`, migration `026_price_
+   checker_market_monitor.sql`), tracks each marketplace's connection status
+   (`market_source_status`: not_connected/connected/success/failed), and
+   diffs each new snapshot against the previous one - overall and per tier
+   (never per section/row/seat) - to raise MARKET DROP / MARKET RISE / NEW
+   SUPPLY / SUPPLY DROP alerts (`market_alerts`) at transparent, reused
+   thresholds (5% price, 20% supply - the same constants Price Checker's own
+   recommended-price and Inventory Intelligence's own outside-market logic
+   already use elsewhere). A SOURCE FAILURE alert fires only on a genuine
+   success-to-failure transition, never on the first-ever failure or on
+   repeated consecutive ones - keeps this quiet instead of noisy.
+2. **Auto Monitor** - an ON/OFF toggle with a 15m/30m/1h/3h/6h interval,
+   scoped to one already-open Visible Scanner window per marketplace card;
+   it is the identical "Scan Visible Prices" call the button already makes,
+   fired on a schedule, never opening a window or reading a page on its own,
+   and it turns itself off the moment that window closes. "Scan All" fires
+   the same call once for every marketplace on the current event that
+   already has a window open.
+3. **Price Checker UI**: each marketplace card gained a Live Market Monitor
+   panel - connection status, last successful scan (never cleared by a
+   later failure - the app stays useful on cached data even fully offline),
+   the latest snapshot's stats, Auto Monitor controls, and its recent Market
+   Alerts; plus a "Market History" view of every saved snapshot.
+4. **Dashboard Attention Center gained a 6th box, "LIVE MARKET ALERTS"**
+   (`market_alert` category, the single most recent alert per event/
+   marketplace) - named differently from marko's own literal spec wording
+   ("MARKET ATTENTION") because that title was already taken by the
+   existing `outside_market_price` box (2.2.11, an unrelated feature: your
+   OWN listing prices vs. the market). Clicking a row jumps straight to
+   Price Checker at that event and marketplace (scrolled into view and
+   briefly highlighted) - no new separate dashboard.
+
+32 new backend unit tests (27 in `price_checker_monitor.rs`, 5 in
+`attention_center.rs`). Full suite green: `cargo test --lib` (1058 passed, 0
+failed, 3 ignored), `npx tsc -b`, `npm run build`. See `PROTECTED_AREAS.md`'s
+new "2.4.1 - Price Checker Live Market Monitor" entry before touching any of
+this again, and the entry directly below for why reusing the version number
+"2.4.0" was verified safe before this release ultimately moved one step
+further to **2.4.1** instead (a plain filename-collision reason, not an
+auto-updater one - see `PROJECT_STATE/CURRENT_STATE.md`'s "## Version"
+section for the full story).
+
+## 2.4.0 (pre-release direction, never shipped) - Live Event Intelligence Foundation - REVERTED, see entry above
 
 marko's next spec after 2.3.5: an Event can now optionally carry a
 CONFIRMED online identity on exactly 3 marketplaces - Viagogo, Vivid Seats,
 Ticombo. Foundation work only - no pricing logic, no changes to the
 existing Price Checker or its scanner. Full reasoning in
-`PROTECTED_AREAS.md`'s new "2.4.0" entry.
+`PROTECTED_AREAS.md`'s new "2.4.0 (pre-release direction)" entry.
+
+**Kept as history only (this file is append-only) - marko reviewed this
+build and cancelled the whole direction outright** ("Predchádzajúci nápad
+'Live Event Intelligence' RUŠÍME ÚPLNE") in favor of putting all online/
+live-market functionality directly inside Price Checker instead - see the
+real "2.4.1 - Price Checker Live Market Monitor" entry above. Unlike 2.3.0
+(reverted as **2.3.1**, a version bump forward, because that build had
+already been offered as a real release), this direction was never released -
+only handed over as a review package - so no install anywhere ever recorded
+it, and the version number "2.4.0" was safe to reuse for the real feature
+that replaced it - though that real feature's own version ultimately moved
+one more step forward, to **2.4.1**, for the separate and unrelated
+practical reason explained in the entry above and in
+`PROJECT_STATE/CURRENT_STATE.md`'s "## Version" section. See that section
+and `PROJECT_STATE/PROTECTED_AREAS.md`'s "2.4.0 (pre-release direction)"
+entry for the full reasoning, and re-verify that same fact (was anything
+with this version/migration number ever actually installed anywhere?)
+before assuming a THIRD reverted direction can reuse its number too - it
+depends entirely on that, not on precedent alone.
 
 1. **New table `event_online_sources`** (migration
    `026_live_event_intelligence.sql`) - a standalone table, not a new

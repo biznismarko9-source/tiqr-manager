@@ -1,4 +1,18 @@
-# TIQR Manager 2.4.0 — Live Event Intelligence Foundation
+> **POZNÁMKA (pridané dodatočne):** Tento report opisuje smer "Live Event
+> Intelligence", ktorý marko po prezretí tohto reportu úplne zrušil
+> ("Predchádzajúci nápad 'Live Event Intelligence' RUŠÍME ÚPLNE") skôr, než
+> bol kedy reálne vydaný — v appke dnes neexistuje nič z toho, čo je nižšie
+> opísané (tabuľka, migrácia, modul, UI). Súbor je premenovaný a ponechaný
+> len ako história/referencia pre prípad, že podobná funkcia bude niekedy
+> nanovo navrhnutá. Číslo "2.4.0" bolo krátko aj číslom tejto nahrádzajúcej
+> funkcie, kým sa pri doručovaní súborov v tomto rozhovore neukázalo, že
+> rovnaké názvy súborov (`REDESIGN-2.4.0-REPORT.md`,
+> `tiqr-manager-2.4.0.zip`) už raz použité pre TENTO zrušený smer robia
+> súbor nesťahovateľný — appka aj všetky súbory preto dnes reálne nesú
+> **2.4.1**. Pozri `REDESIGN-2.4.1-REPORT.md` (Price Checker Live Market
+> Monitor) pre to, čo v appke reálne je.
+
+# TIQR Manager 2.4.0 — Live Event Intelligence Foundation (ZRUŠENÉ, nikdy nevydané)
 
 Dostal som tvoj podrobný zadávací list na novú vrstvu "Live Event Intelligence" —
 event už nemá byť len lokálny záznam, ale môže mať pripojenú online identitu na presne

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.4.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.4.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -44,24 +44,46 @@ Tauri updater compares version numbers directly and won't offer/accept a
 downgrade or a repeat. 2.3.2 through 2.3.4 were the Dashboard Total-cost
 card and the two-attempt Sheets push row-placement fix. 2.3.5 was the
 sync/push behavioral redesign (self-healing push, real diff-and-update
-sync, UI-freeze fix). **2.4.0** is next - see "Current focus" below and
-`CHANGELOG.md`'s own entries for all of them.)
+sync, UI-freeze fix). A first "2.4.0" direction, "Live Event Intelligence
+Foundation," was designed and built in full, then marko reviewed the
+package and cancelled the whole direction outright ("Predchádzajúci nápad
+'Live Event Intelligence' RUŠÍME ÚPLNE") before it was ever run through
+`release.ps1`/`1-CLICK-UPDATE.bat` - so, unlike the 2.3.0 case above, **no
+install anywhere ever recorded a "2.4.0" build**, and reusing the version
+number for the real replacement feature was verified safe rather than
+assumed (see `PROTECTED_AREAS.md`'s "2.4.0 (pre-release direction)" entry
+for the exact reasoning, and re-verify the same fact yourself before ever
+reusing a number a third time). Reusing "2.4.0" for the real replacement
+was briefly the plan and was verified safe from the auto-updater's own
+point of view - but before that build was ever handed over, redelivering
+the report and zip under the exact filenames already used once in this
+same chat for the cancelled direction (`REDESIGN-2.4.0-REPORT.md`,
+`tiqr-manager-2.4.0.zip`) caused a practical download problem for marko,
+so the whole thing (app version plus every release file) was bumped one
+more step to **2.4.1** before delivery - a plain filename-collision fix,
+not an auto-updater concern, and it does not change any of the reasoning
+above. **2.4.1** is now the real, shipped release - "Price Checker Live
+Market Monitor," all online/live-market functionality folded directly
+into Price Checker instead of a separate feature - see "Current focus"
+below and `CHANGELOG.md`'s own entries for all of them.)
 
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
-  Pages under `src/pages/`: Dashboard, Events, EventDetail (2.2.2-2.2.5:
-  tabbed "Event Workspace" - Overview/Listings/Sales (Finance folded into
-  Sales in 2.2.5), see "Current focus" below and `PROTECTED_AREAS.md`'s
-  "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before adding more event-level
-  functionality anywhere else; 2.4.0 added a compact "Live Event
-  Intelligence" block to Overview, above Inventory Intelligence - see
-  "Current focus" below and `PROTECTED_AREAS.md`'s "2.4.0" entry), Orders,
+  Pages under `src/pages/`: Dashboard (2.4.1: Attention Center gained a 6th
+  box, "LIVE MARKET ALERTS" - see "Current focus" below), Events, EventDetail
+  (2.2.2-2.2.5: tabbed "Event Workspace" - Overview/Listings/Sales (Finance
+  folded into Sales in 2.2.5), see "Current focus" below and
+  `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
+  adding more event-level functionality anywhere else), Orders,
   OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail,
   FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
   data, see "Current focus" below), Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
-  PriceChecker, Settings, Welcome (auth), PendingApproval, DatabaseError.
+  PriceChecker (2.4.1: gained a Live Market Monitor panel per marketplace
+  card - see "Current focus" below and `PROTECTED_AREAS.md`'s "2.4.1 - Price
+  Checker Live Market Monitor" entry), Settings, Welcome (auth),
+  PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
@@ -77,8 +99,10 @@ sync, UI-freeze fix). **2.4.0** is next - see "Current focus" below and
   2.2.10 fixed its sort tie-break and excluded done events from 3 of its 5
   categories; 2.2.11 changed only how the FRONTEND groups/displays these
   same items - 5 clickable category boxes instead of a priority-grouped
-  feed, see "Current focus" below - this module itself is byte-for-byte
-  unchanged), sales, event_categories, pulls
+  feed; 2.4.1 added a real 6th category, "market_alert" - a pure read of
+  `price_checker_monitor`'s own already-decided alerts, zero new market-
+  calculation logic in this module itself, see "Current focus" below),
+  sales, event_categories, pulls
   (+ `pulls_received`, `pulls_sheet_sync` - 2.2.10: push direction's
   `sheet_sync_links` bookkeeping now only committed after a confirmed
   network write, see "Current focus" below), finance_accounts/finance_entries (2.2.1: entries can
@@ -89,19 +113,28 @@ sync, UI-freeze fix). **2.4.0** is next - see "Current focus" below and
   price_checker_analysis (2.2.0 - Market Analysis: tier/section stats,
   comparable-ticket ranking, Your Tickets recommendations, all computed
   from a scanner session's already-accumulated listings, never a separate
-  read), live_event_intelligence (2.4.0 - an event's optional confirmed
-  online identity on exactly Viagogo/Vivid Seats/Ticombo: `event_online_
-  sources` CRUD plus its own visible-window session commands, reusing the
-  Visible Scanner's WebviewWindowBuilder TECHNIQUE without sharing any of
-  its code/state - see "Current focus" below and `PROTECTED_AREAS.md`'s
-  "2.4.0" entry), settings, backup, csv_import/csv_export, notifications,
+  read) + price_checker_monitor (2.4.1 - Live Market Monitor: permanent
+  snapshots after every successful scan, per-tier change detection, MARKET
+  DROP/RISE/NEW SUPPLY/SUPPLY DROP/SOURCE FAILURE alerts at reused,
+  transparent thresholds - hooked into the Visible Scanner's own success/
+  failure paths, never a new automation surface; see "Current focus" below
+  and `PROTECTED_AREAS.md`'s "2.4.1 - Price Checker Live Market Monitor"
+  entry. A separate "Live Event Intelligence" module was built first and
+  briefly labeled 2.4.0 too, before this feature moved on to 2.4.1 - then
+  fully reverted before ever shipping - see that same `PROTECTED_AREAS.md`
+  section and the "## Version" note above),
+  settings, backup, csv_import/csv_export, notifications,
   dashboard, currency, lookups, database, app_info, google_auth,
   firebase_google_auth. Shared modules at `src-tauri/src/`: `db.rs`
   (connection + migration runner), `models.rs`, `money.rs`, `finance.rs`,
   `fx.rs`, `google_oauth.rs`, `google_sheets.rs`.
 - **DB**: SQLite via `rusqlite`, migrations in `src-tauri/migrations/`,
-  currently through **026_live_event_intelligence.sql**. Migrations
-  run automatically at startup, forward-only.
+  currently through **026_price_checker_market_monitor.sql** (a first
+  `026_live_event_intelligence.sql` was deleted before ever shipping when
+  that direction was reverted - see `PROTECTED_AREAS.md`'s "2.4.0
+  (pre-release direction)" entry for why reusing "026" for the real
+  migration was verified safe). Migrations run automatically at startup,
+  forward-only.
 - **Packaging**: `release.ps1` (invoked via `1-CLICK-UPDATE.bat`) mirrors
   this folder into a fresh clone of the real GitHub repo, cross-checks the
   version in 3 files, commits, tags, and pushes - the tag push triggers
@@ -111,82 +144,82 @@ sync, UI-freeze fix). **2.4.0** is next - see "Current focus" below and
 
 ## Current focus / most recent work
 
-**2.4.0 - Live Event Intelligence Foundation.** marko's next spec after
-2.3.5: start a new layer where an Event can optionally carry a CONFIRMED
-online identity on exactly 3 marketplaces - Viagogo, Vivid Seats, Ticombo
-("Podporuj LEN tieto 3... NEPRIDÁVAJ StubHub, Seatriks ani ine"). Explicitly
-foundation work: no pricing logic, no changes to the existing Price
-Checker/its scanner, and Section/Row/Seat are never a pricing factor
-anywhere in it (unchanged - this task didn't touch pricing at all).
+**2.4.1 - Price Checker Live Market Monitor.** marko's next spec after
+2.3.5 went through two directions. The first, "Live Event Intelligence" (an
+Event's own confirmed online identity on Viagogo/Vivid Seats/Ticombo, as a
+brand-new standalone feature/module), was designed and built in full, then
+marko reviewed the package and cancelled it outright ("Predchádzajúci nápad
+'Live Event Intelligence' RUŠÍME ÚPLNE") before it ever shipped - every
+trace of it (table, migration, backend module, TS types, EventDetail UI
+block) was removed again. See `PROTECTED_AREAS.md`'s "2.4.0 (pre-release
+direction)" entry and `CHANGELOG.md`'s matching entry if that original
+design is ever useful as a reference for a differently-shaped future
+feature - it is NOT in this codebase anymore, do not assume any file/table/
+command it describes still exists.
 
-- **New standalone table** `event_online_sources` (migration
-  `026_live_event_intelligence.sql`) - `event_id` (ON DELETE CASCADE),
-  `source` (CHECK IN 'viagogo'/'vivid_seats'/'ticombo'), `url`,
-  `external_event_id`, `verified`, `active`, `last_checked_at`,
-  `last_checked_title`, timestamps, `UNIQUE(event_id, source)`. Deliberately
-  NOT a new column on `events` (existing event data/queries/tests stay
-  100% untouched) and NOT a foreign key onto the existing, marko-managed
-  `marketplaces` table (Price Checker/Listings' own general lookup, which
-  still includes retired StubHub/Seatriks) - see `PROTECTED_AREAS.md`'s
-  "2.4.0" entry for the full reasoning behind keeping these two concepts
-  fully decoupled.
-- **New backend module** `commands/live_event_intelligence.rs` - DB CRUD
-  (`list_event_online_sources`, `connect_online_source_manually`,
-  `save_confirmed_online_source` - the ONE function that ever sets
-  `verified = true`, `set_online_source_active`) plus 3 visible-window
-  session commands (`open_live_event_window`, `capture_live_event_page`,
-  `close_live_event_window`) that reuse the Price Checker Visible Scanner's
-  hard-won TECHNIQUE (a real, visible `WebviewWindow` built off a plain OS
-  thread, `eval_with_callback` with a bounded timeout) against its own,
-  completely separate session state (`db::LiveIntelSession` /
-  `AppState::live_intel_sessions`) - the two features share no code and
-  cannot affect each other. What's read off a page is deliberately tiny:
-  only `document.title` + `location.href`, never prices/listings/anything
-  selector-based - no new scraping surface at all.
-- **Discovery flow, always human-confirmed.** "Find Online Event" opens a
-  real window on a best-effort search URL (built on the FRONTEND from the
-  event's own name/city - the backend never knows about search URLs);
-  marko searches/navigates himself; "Capture this page" reads the
-  currently-loaded page's title+URL as one candidate; he can capture again
-  after navigating to add more candidates; "Use this one" is the only thing
-  that ever saves a row as verified. "Refresh" on an already-connected
-  source is the exact same window+capture+confirm sequence, just opened at
-  the saved URL instead of a fresh search - this is also how a manually-
-  connected (unverified) source becomes verified, with no separate "mark
-  verified" action needed. "Connect manually" skips the window entirely for
-  when marko already has the URL - always saves `verified = false`.
-- **UI**: a new compact "Live Event Intelligence" `Card` on EventDetail's
-  Overview tab (above Inventory Intelligence) - always exactly 3 rows (one
-  per supported source), each showing connected/not-connected, Verified/Not
-  verified, last checked, and the 4 buttons above plus Disconnect/Reconnect
-  (a soft flag flip, never deletes the row or its history).
-- **Fully offline-safe by construction**: every DB command is a plain local
-  read/write with zero network; the only 3 commands that ever touch a
-  network are the window ones, and even those never block Tauri's IPC
-  thread (same plain-`fn`-plus-spawned-OS-thread trick as the Scanner) - a
-  slow/unreachable window, a timed-out capture, or simply never clicking
-  Refresh all leave the app fully responsive on last-saved/cached data.
-- **Tests**: 19 new unit tests in `live_event_intelligence.rs` (empty/one/
-  multiple sources, duplicate-prevention/upsert, manual connect, discovery
-  confirmation, unverified-until-refreshed, disconnect/reconnect, capture-
-  parsing edge cases, URL-scheme validation) + 3 new migration-upgrade
-  tests in `db.rs` (`migration_026_tests` - existing events survive an
-  upgrade byte-for-byte, the new table is immediately usable, the CHECK
-  constraint already rejects StubHub/Seatriks on an UPGRADED, not just
-  fresh, database, and `ON DELETE CASCADE` is verified directly). Full
-  suite green: `cargo test --lib` (1042 passed), `npx tsc -b`, `npm run
-  build`.
-- Not implemented, deliberately, per marko's own explicit scope: any real
-  API/scraping integration with Viagogo/Vivid Seats/Ticombo beyond opening
-  a page in a real browser window a human drives; any automatic candidate
-  selection or event creation; any pricing logic, market data, or hook from
-  this feature into Price Checker; StubHub/Seatriks/any other marketplace
-  as a Live Event Intelligence source.
+What actually shipped as **2.4.1** instead (a brief reused-"2.4.0" stopover,
+and why it moved one more step before delivery, is explained in "## Version"
+above): marko's replacement instruction was to fold ALL online/live-market
+functionality directly into Price Checker -
+EVENT -> MARKETPLACE SOURCES -> SCAN -> SNAPSHOT -> HISTORY -> CHANGE
+DETECTION -> MARKET ALERTS - built entirely on the already-shipped Visible
+Scanner (2.1.9) and Market Analysis (2.2.0), never a new scraping surface:
+no CAPTCHA bypass, no proxy rotation, no anti-bot workaround, and no
+automation beyond reading whatever a human already has open in a real,
+visible window.
 
-See `PROTECTED_AREAS.md`'s new "2.4.0" entry for the full set of deliberate
-design decisions (why a standalone table, why `verified`/`active` are two
-independent flags, why the window mechanism is duplicated rather than
-shared with the Scanner) before extending this feature further.
+- **New backend module** `commands/price_checker_monitor.rs` (migration
+  `026_price_checker_market_monitor.sql` - 4 tables: `market_snapshots`,
+  `market_snapshot_tiers`, `market_source_status`, `market_alerts`) - hooks
+  into the Visible Scanner's own success/failure paths
+  (`price_checker_scanner.rs`'s `record_scan_attempt_impl` call, both
+  outcomes `let _ = ...`-swallowed so this can never affect the scan result
+  marko actually sees). Every successful/partial scan writes one permanent,
+  never-overwritten snapshot (overall + per tier, reusing
+  `price_checker_analysis::group_by_tier` - Section/Row/Seat are metadata
+  only, never a pricing factor, same hard constraint as everywhere else in
+  Price Checker), then diffs it against the previous snapshot to raise
+  MARKET DROP / MARKET RISE / NEW SUPPLY / SUPPLY DROP alerts at reused,
+  transparent thresholds (5% price, 20% supply - the same constants Price
+  Checker's own recommended-price and Inventory Intelligence's own
+  outside-market logic already use). A SOURCE FAILURE alert fires only on a
+  genuine success-to-failure transition, never on the first-ever failure or
+  on repeated consecutive ones.
+- **Auto Monitor + Scan All** (`PriceChecker.tsx`) - a per-marketplace ON/OFF
+  toggle with a 15m/30m/1h/3h/6h interval that fires the exact same "Scan
+  Visible Prices" call the button already makes, on a schedule, only against
+  an already-open window it never opens itself; "Scan All" does the same
+  once per marketplace that currently has a window open on the current
+  event.
+- **UI**: each marketplace card gained a Live Market Monitor panel
+  (connection status, last successful scan - never cleared by a later
+  failure, so the app stays useful fully offline on cached data - latest
+  snapshot stats, Auto Monitor controls, recent Market Alerts) plus a
+  "Market History" view of every saved snapshot.
+- **Dashboard Attention Center gained a real 6th box, "LIVE MARKET ALERTS"**
+  (`market_alert` category - a pure read of this module's own already-
+  decided alerts, zero new market-calculation logic in `attention_center.rs`
+  itself). Named differently from marko's own literal spec wording ("MARKET
+  ATTENTION") because that title was already taken by the existing
+  `outside_market_price` box (2.2.11, an unrelated feature) - see
+  `PROTECTED_AREAS.md`'s "2.2.11" entry for that box's own "box title <->
+  category mapping" note, now extended with this 6th one. Clicking a row
+  jumps to Price Checker at that event/marketplace (scrolled into view and
+  briefly highlighted) - no new separate dashboard.
+- **Tests**: 32 new backend unit tests (27 in `price_checker_monitor.rs`, 5
+  in `attention_center.rs`). Full suite green: `cargo test --lib` (1058
+  passed, 0 failed, 3 ignored), `npx tsc -b`, `npm run build`.
+- Not implemented, deliberately, per marko's own explicit scope: no new
+  scraping/API integration with any marketplace beyond reading an already-
+  open window; no automatic repricing anywhere; no new marketplace beyond
+  the existing Viagogo/Vivid Seats/Ticombo three.
+
+See `PROTECTED_AREAS.md`'s new "2.4.1 - Price Checker Live Market Monitor"
+entry for the full set of deliberate design decisions (the naming
+collision, transition-only failure alerting, the third `push_item` key
+shape, why reusing the migration number "026" was verified safe, and why
+the app version itself ultimately moved to 2.4.1 instead of staying on the
+also-verified-safe reused 2.4.0) before extending this feature further.
 
 **2.3.5 - Sync/push behavioral redesign: self-healing push, real diff-and-
 update sync, and the UI-freeze fix.** After 2.3.4 shipped (row-placement

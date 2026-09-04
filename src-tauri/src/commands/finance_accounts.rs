@@ -150,6 +150,73 @@ pub fn update_account(state: State<AppState>, id: i64, input: AccountInput) -> A
     update_account_impl(&conn, id, &input)
 }
 
+/// 2.4.0: marko's own request - "pri accounts pri tom edite vediet dat aj
+/// opening balance ale aj new balance, keby nahodou zabudnes niektore
+/// tranzakcie tak si to tam vies dat" (when editing an account, be able to
+/// set a new balance too, in case some transactions were forgotten). This
+/// module's own doc comment already establishes WHY `current_balance_cents`
+/// can never be a plain column write: it isn't stored anywhere, it's
+/// computed fresh from `opening_balance_cents` plus every entry/transfer
+/// against this account. "Setting" a new balance therefore can't mean
+/// overwriting a column - it means booking whatever real-world money marko
+/// forgot to log, exactly as he'd do it by hand, just with the subtraction
+/// done for him: this reads today's real computed balance, takes the
+/// difference against the balance marko says is actually correct, and books
+/// that difference as one ordinary reconciliation `finance_entries` row
+/// (income if the real balance is higher than what's on record, expense if
+/// lower) - never by mutating `opening_balance_cents` itself, which would
+/// silently misdate every entry recorded before today (it would look like
+/// the account always had this balance, back to its very first day, rather
+/// than a correction made today).
+///
+/// Uses `create_finance_entry_impl` as-is - no separate write path, so this
+/// reconciliation entry is a completely ordinary entry afterward: it shows
+/// up in Transactions, counts in Reports, and can be edited or deleted by
+/// marko like any other row, identified by its own `note` text below rather
+/// than a new special-cased "kind" of entry. `account_id` is always this
+/// account's own id, so `validate_account`'s existing currency-match guard
+/// applies unchanged - the entry is always booked in the account's own
+/// currency, never a fabricated conversion. Deliberately uncategorized
+/// (`category_id: None`) and `scope: "personal"` - accounts themselves carry
+/// no scope of their own to copy, and picking one on marko's behalf either
+/// way is a judgment call (flagged in the release report); either is a
+/// one-line change later, and the entry is freely re-editable in
+/// Transactions if he wants it filed differently. A `new_balance_cents`
+/// that already matches today's computed balance books NO entry at all
+/// (delta = 0) - never a fabricated zero-amount row, same "don't invent
+/// data" spirit as `normalize_optional` elsewhere in this module family.
+pub(crate) fn set_account_balance_impl(conn: &Connection, id: i64, new_balance_cents: i64, today: &str) -> AppResult<Account> {
+    let select_sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
+    let current = conn
+        .query_row(&select_sql, [id], map_account)
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Account #{id} not found")))?;
+    let delta = new_balance_cents - current.current_balance_cents;
+    if delta != 0 {
+        let reconciliation = crate::models::FinanceEntryInput {
+            entry_type: if delta > 0 { "income" } else { "expense" }.to_string(),
+            entry_date: today.to_string(),
+            amount_cents: delta.abs(),
+            currency: current.currency.clone(),
+            scope: "personal".to_string(),
+            category_id: None,
+            account_id: Some(id),
+            order_id: None,
+            place: None,
+            note: Some("Balance adjustment (set from Edit account)".to_string()),
+        };
+        crate::commands::finance_entries::create_finance_entry_impl(conn, &reconciliation)?;
+    }
+    Ok(conn.query_row(&select_sql, [id], map_account)?)
+}
+
+#[tauri::command]
+pub fn set_account_balance(state: State<AppState>, id: i64, new_balance_cents: i64) -> AppResult<Account> {
+    let conn = state.db.lock().unwrap();
+    let today = chrono::Local::now().date_naive().to_string();
+    set_account_balance_impl(&conn, id, new_balance_cents, &today)
+}
+
 /// Plain blind delete, same as `finance_entries::delete_finance_category`.
 /// Unlike that category delete, this one CAN be rejected by the database:
 /// `finance_entries.account_id`/`recurring_expenses.account_id` are
@@ -518,5 +585,95 @@ mod tests {
 
         let err = update_account_impl(&conn, 999_999, &sample_account("X", "EUR", 0)).unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    // --- set_account_balance_impl (2.4.0) ---------------------------------
+
+    #[test]
+    fn set_account_balance_books_an_income_entry_when_the_real_balance_is_higher() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Cash", "EUR", 10000)).unwrap();
+        // Computed balance is 10000 (no transactions yet) - marko says the
+        // real balance is 15000 (he forgot to log a 5000 income).
+        let updated = set_account_balance_impl(&conn, account.id, 15000, "2026-08-20").unwrap();
+        assert_eq!(updated.current_balance_cents, 15000);
+
+        let entry_count: i64 = conn.query_row("SELECT COUNT(*) FROM finance_entries WHERE account_id = ?1", [account.id], |r| r.get(0)).unwrap();
+        assert_eq!(entry_count, 1, "must book exactly one reconciliation entry");
+        let (entry_type, amount, currency): (String, i64, String) = conn
+            .query_row("SELECT entry_type, amount_cents, currency FROM finance_entries WHERE account_id = ?1", [account.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(entry_type, "income", "the real balance went up, so the gap is income, not expense");
+        assert_eq!(amount, 5000);
+        assert_eq!(currency, "EUR", "must be booked in the account's own currency");
+    }
+
+    #[test]
+    fn set_account_balance_books_an_expense_entry_when_the_real_balance_is_lower() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Cash", "EUR", 10000)).unwrap();
+        let updated = set_account_balance_impl(&conn, account.id, 6000, "2026-08-20").unwrap();
+        assert_eq!(updated.current_balance_cents, 6000);
+
+        let (entry_type, amount): (String, i64) = conn
+            .query_row("SELECT entry_type, amount_cents FROM finance_entries WHERE account_id = ?1", [account.id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(entry_type, "expense", "the real balance went down, so the gap is an expense");
+        assert_eq!(amount, 4000);
+    }
+
+    #[test]
+    fn set_account_balance_books_nothing_when_it_already_matches() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Cash", "EUR", 10000)).unwrap();
+        let updated = set_account_balance_impl(&conn, account.id, 10000, "2026-08-20").unwrap();
+        assert_eq!(updated.current_balance_cents, 10000);
+
+        let entry_count: i64 = conn.query_row("SELECT COUNT(*) FROM finance_entries", [], |r| r.get(0)).unwrap();
+        assert_eq!(entry_count, 0, "a balance that already matches must never create a fabricated zero-amount entry");
+    }
+
+    #[test]
+    fn set_account_balance_accounts_for_existing_transactions_before_computing_the_gap() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Bank", "EUR", 10000)).unwrap();
+        // Computed balance is already 10000 + 2000 = 12000 before the fix.
+        crate::commands::finance_entries::create_finance_entry_impl(&conn, &income_entry(account.id, 2000, "EUR")).unwrap();
+        // Marko says the real balance is 20000 (a further 8000 was missed).
+        let updated = set_account_balance_impl(&conn, account.id, 20000, "2026-08-20").unwrap();
+        assert_eq!(updated.current_balance_cents, 20000);
+
+        let amount: i64 = conn
+            .query_row("SELECT amount_cents FROM finance_entries WHERE account_id = ?1 AND note IS NOT NULL", [account.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(amount, 8000, "the reconciliation must be against the ALREADY-computed balance, not just the opening balance");
+    }
+
+    #[test]
+    fn set_account_balance_rejects_a_missing_account() {
+        let conn = test_conn();
+        let err = set_account_balance_impl(&conn, 999_999, 5000, "2026-08-20").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn set_account_balance_reconciliation_entry_is_a_completely_ordinary_editable_entry_afterward() {
+        // No special-cased "kind" of entry exists for this - it must behave
+        // exactly like any other finance_entries row (editable, deletable,
+        // counted in the same balance aggregate every other entry feeds).
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Cash", "EUR", 0)).unwrap();
+        set_account_balance_impl(&conn, account.id, 3000, "2026-08-20").unwrap();
+        let entry_id: i64 = conn.query_row("SELECT id FROM finance_entries WHERE account_id = ?1", [account.id], |r| r.get(0)).unwrap();
+
+        let mut edited = income_entry(account.id, 3000, "EUR");
+        edited.note = Some("Renamed by marko".to_string());
+        crate::commands::finance_entries::update_finance_entry_impl(&conn, entry_id, &edited).unwrap();
+
+        let reloaded = list_accounts_for_test(&conn);
+        let account_reloaded = reloaded.iter().find(|a| a.id == account.id).unwrap();
+        assert_eq!(account_reloaded.current_balance_cents, 3000, "editing the entry's note must not disturb the balance it still represents");
     }
 }

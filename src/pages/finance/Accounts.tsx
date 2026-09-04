@@ -509,6 +509,13 @@ export function AccountFormModal({ open, onClose, onSaved, initial }: { open: bo
   const [currency, setCurrency] = useState("EUR");
   const [openingBalance, setOpeningBalance] = useState("0");
   const [isActive, setIsActive] = useState(true);
+  // 2.4.0: marko's own request - "keby nahodou zabudnes niektore
+  // tranzakcie tak si to tam vies dat" (in case you forgot to log some
+  // transactions, be able to set it here). Blank = "leave the balance as
+  // computed" - only ever shown/used when editing an existing account (a
+  // brand new account has no computed balance yet to correct). See
+  // api.setAccountBalance's own doc comment for the mechanism.
+  const [newBalance, setNewBalance] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -519,6 +526,7 @@ export function AccountFormModal({ open, onClose, onSaved, initial }: { open: bo
     setCurrency(initial?.currency ?? "EUR");
     setOpeningBalance(initial ? centsToDecimalString(initial.openingBalanceCents) : "0");
     setIsActive(initial?.isActive ?? true);
+    setNewBalance("");
     setError(null);
   }, [open, initial]);
 
@@ -532,12 +540,28 @@ export function AccountFormModal({ open, onClose, onSaved, initial }: { open: bo
       setError("Enter a valid opening balance (0 is fine).");
       return;
     }
+    // Optional, edit-only - see the field's own hint text below.
+    let newBalanceCents: number | null = null;
+    if (initial && newBalance.trim() !== "") {
+      newBalanceCents = decimalStringToCents(newBalance);
+      if (newBalanceCents === null) {
+        setError("Enter a valid new balance, or leave it blank to leave the balance as it is.");
+        return;
+      }
+    }
     setSaving(true);
     setError(null);
     const input: AccountInput = { name: name.trim(), accountType, currency, openingBalanceCents: cents, isActive };
     try {
       if (initial) {
         await api.updateAccount(initial.id, input);
+        // Deliberately a second, independent call - see
+        // set_account_balance_impl's own doc comment (Rust) for why fixing
+        // the balance is a reconciliation entry, not a field on this same
+        // update. Only fired when marko actually typed something in.
+        if (newBalanceCents !== null) {
+          await api.setAccountBalance(initial.id, newBalanceCents);
+        }
         toast.success("Account updated.");
       } else {
         await api.createAccount(input);
@@ -591,6 +615,15 @@ export function AccountFormModal({ open, onClose, onSaved, initial }: { open: bo
         <Field label="Opening balance" hint="How much is in this account right now, before anything you log here.">
           <Input inputMode="decimal" placeholder="0.00" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} />
         </Field>
+
+        {initial && (
+          <Field
+            label="New balance"
+            hint={`Current balance: ${formatMoney(initial.currentBalanceCents, initial.currency)}. Fill this in only to correct it - e.g. you forgot to log a transaction - and leave it blank otherwise. The difference is booked as one income/expense entry dated today, editable afterward in Transactions like any other entry.`}
+          >
+            <Input inputMode="decimal" placeholder="Leave blank to keep as-is" value={newBalance} onChange={(e) => setNewBalance(e.target.value)} />
+          </Field>
+        )}
 
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" className={CHECKBOX_CLASS} checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />

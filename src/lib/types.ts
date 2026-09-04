@@ -1477,7 +1477,7 @@ export interface AttentionCenterItem {
    * ticket) can legitimately appear more than once under DIFFERENT reasons,
    * but never twice under the SAME one. */
   key: string;
-  category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered";
+  category: "event_soon" | "missing_listing_price" | "no_active_listing" | "outside_market_price" | "sold_undelivered" | "market_alert";
   priority: "critical" | "attention" | "info";
   eventId: number;
   eventName: string;
@@ -1499,12 +1499,22 @@ export interface AttentionCenterItem {
    * it back out of this string (unlike AttentionItem.key, there's no fixed
    * per-category copy to select from here - the wording varies per row). */
   reason: string;
-  /** Only ever populated for a single-ticket "outside_market_price" row
-   * (that ticket's own listing price) - `null` for every multi-ticket group,
-   * where "one amount" wouldn't mean anything specific, and for every other
+  /** Populated for a single-ticket "outside_market_price" row (that ticket's
+   * own listing price) - `null` for every multi-ticket group, where "one
+   * amount" wouldn't mean anything specific. 2.4.0: also populated for a
+   * "market_alert" row whose alert has a current price (market_drop/
+   * market_rise) - the Live Market Monitor's own `MarketAlert.
+   * currentPriceCents` passed straight through; `null` for a supply/failure
+   * alert, which has no single price to show here. `null` for every other
    * category. */
   amountCents: number | null;
   currency: string | null;
+  /** 2.4.0: `null` for every category except "market_alert" - which
+   * marketplace, on Price Checker's own Live Market Monitor, this row is
+   * about. Route a click there (event + marketplace), never a new backend
+   * lookup. */
+  marketplaceId: number | null;
+  marketplaceName: string | null;
 }
 
 /** Input for `saveEventMarketplaceLink` - a blank/whitespace `url` clears
@@ -1898,101 +1908,99 @@ export interface MarketAnalysisResult {
   yourTickets: YourTicketGroup[];
 }
 
-// ---------------------------------------------------------------------------
-// Live Event Intelligence (2.4.0) - see src-tauri/src/commands/
-// live_event_intelligence.rs's module doc comment for the full design.
-// Foundation work: an event can optionally carry a confirmed online
-// identity on exactly 3 marketplaces. Mirrors models.rs's own section
-// field-for-field (serde's rename_all = "camelCase").
-// ---------------------------------------------------------------------------
+// --- Price Checker Live Market Monitor (2.4.1) ------------------------------
+// marko's replacement for the cancelled "Live Event Intelligence" direction -
+// see commands::price_checker_monitor's own module doc comment (Rust) for
+// the full design. Entirely additive alongside the Price Checker types
+// above - PriceCheck/PriceCheckerSummary/MarketAnalysisResult and everything
+// they feed stay completely unchanged.
 
-/** The only 3 marketplaces this feature ever supports - matches the
- * migration's CHECK constraint exactly. Deliberately NOT drawn from the
- * general `Marketplace` lookup (Price Checker/Listings) - see this file's
- * module comment above and PROTECTED_AREAS.md's "2.4.0" entry for why. */
-export type LiveEventSource = "viagogo" | "vivid_seats" | "ticombo";
+/** One tier's breakdown within one `MarketSnapshot` - same "Unclassified"
+ * fallback convention as `TierBreakdown` above. */
+export interface MarketSnapshotTier {
+  tier: string;
+  lowestPriceCents: number;
+  medianPriceCents: number;
+  listingCount: number;
+}
 
-/** Display order + labels for `LiveEventSource` - the ONE place in the
- * frontend that knows these 3 exist, so adding a genuine 4th source later
- * touches this list, its search-URL builder below, and the backend CHECK
- * constraint, and nothing else. */
-export const LIVE_EVENT_SOURCES: { key: LiveEventSource; label: string }[] = [
-  { key: "viagogo", label: "Viagogo" },
-  { key: "vivid_seats", label: "Vivid Seats" },
-  { key: "ticombo", label: "Ticombo" },
-];
-
-/** One (event, marketplace) online source connection. */
-export interface EventOnlineSource {
+/** One automatic, permanent record of a completed scan (marko's own "##
+ * Snapshots") - written after every scan the Visible Scanner completes with
+ * real data. Deliberately separate from `PriceCheck` - this is automatic
+ * and unreviewed; `PriceCheck` stays marko's own manually-curated,
+ * explicitly-saved history, exactly as before. */
+export interface MarketSnapshot {
   id: number;
   eventId: number;
-  source: LiveEventSource;
-  url: string;
-  externalEventId: string | null;
-  /** True only once a human has looked at `url` in a real, visible window
-   * and confirmed it - see the backend's own `save_confirmed_online_source`
-   * doc comment. A freshly manually-connected source starts `false`. */
-  verified: boolean;
-  /** False after "Disconnect" - a soft retire, same idea as
-   * `Marketplace.active`. "Reconnect" flips it back without losing
-   * `verified`/history. */
-  active: boolean;
-  /** Both `null` until the first successful "Refresh" (or the discovery
-   * capture that created this row) - never guessed/backfilled. */
-  lastCheckedAt: string | null;
-  /** Exactly what `document.title` showed at `lastCheckedAt` - never parsed
-   * or interpreted, just a quick human sanity check. */
-  lastCheckedTitle: string | null;
-  createdAt: string;
-  updatedAt: string;
+  marketplaceId: number;
+  checkedAt: string;
+  /** "success" | "partial" - the scan's own status at the moment this
+   * snapshot was taken. */
+  scanStatus: string;
+  listingCount: number;
+  lowestPriceCents: number;
+  medianPriceCents: number;
+  averagePriceCents: number;
+  highestPriceCents: number;
+  currency: string;
+  tiers: MarketSnapshotTier[];
 }
 
-/** Input for `connectOnlineSourceManually` - "Connect manually". Always
- * saves with `verified = false`; a later "Refresh" is what confirms it. */
-export interface EventOnlineSourceManualInput {
+/** One entry in the permanent Market Alerts log - marko's own MARKET DROP /
+ * MARKET RISE / NEW SUPPLY / SUPPLY DROP / SOURCE FAILURE. `message` is the
+ * one field ever shown directly - fully pre-formatted, human-readable text,
+ * never reconstructed from the raw previous/current columns. `tier` is
+ * `null` for a whole-market (overall) alert, a real tier name for one
+ * tier's own change. */
+export interface MarketAlert {
+  id: number;
   eventId: number;
-  source: LiveEventSource;
-  url: string;
-  externalEventId: string | null;
-}
-
-/** Input for `saveConfirmedOnlineSource` - the one call that ever sets
- * `verified = true`. Used after a live capture from either "Find Online
- * Event" (confirming a candidate) or "Refresh" (re-confirming a saved
- * source). */
-export interface EventOnlineSourceConfirmInput {
-  eventId: number;
-  source: LiveEventSource;
-  url: string;
-  title: string | null;
-}
-
-/** Input for `setOnlineSourceActive` - "Disconnect"/"Reconnect". */
-export interface EventOnlineSourceActiveInput {
-  eventId: number;
-  source: LiveEventSource;
-  active: boolean;
-}
-
-// -- Live Event Intelligence visible-window events (2.4.0) - payloads for
-// the 4 Tauri events the backend emits; see live_event_intelligence.rs's
-// EVENT_* constants, which must match these names exactly (no shared source
-// of truth, same as the Price Checker scanner's own 4 event names). --------
-
-export interface LiveIntelWindowOpenedPayload {
-  requestId: number;
-}
-export interface LiveIntelWindowErrorPayload {
-  requestId: number;
+  marketplaceId: number;
+  marketplaceName: string;
+  alertType: "market_drop" | "market_rise" | "new_supply" | "supply_drop" | "source_failure";
+  tier: string | null;
   message: string;
+  previousPriceCents: number | null;
+  currentPriceCents: number | null;
+  previousListingCount: number | null;
+  currentListingCount: number | null;
+  currency: string | null;
+  createdAt: string;
 }
-/** Title + current URL of whatever's rendered in the window right now -
- * never anything parsed out of the page's own content. */
-export interface LiveIntelCapturePayload {
-  requestId: number;
-  title: string;
-  url: string;
+
+/** "not_connected" | "connected" | "success" | "failed" - deliberately never
+ * "scanning": the backend has no business computing that live-session
+ * state, the frontend overlays it itself from its own open scanner
+ * sessions (the same "backend gives durable facts, frontend adds ephemeral
+ * live state on top" split the Visible Scanner cards already use). */
+export type MarketSourceStatus = "not_connected" | "connected" | "success" | "failed";
+
+/** One marketplace's card on the Live Market Monitor - URL/status/last
+ * successful scan/latest snapshot/recent alerts, for one event. */
+export interface MarketMonitorMarketplaceView {
+  marketplaceId: number;
+  marketplaceName: string;
+  marketplaceActive: boolean;
+  link: EventMarketplaceLink | null;
+  status: MarketSourceStatus;
+  lastScanAt: string | null;
+  /** Only ever ADVANCED by a real success - a run of failures afterward can
+   * never make this look stale or disappear (marko's own cache/offline
+   * requirement). */
+  lastSuccessfulScanAt: string | null;
+  /** Short and human-readable only, `null` exactly when the last scan
+   * attempt succeeded - never a stack trace. */
+  lastErrorMessage: string | null;
+  latestSnapshot: MarketSnapshot | null;
+  /** Newest first, capped to a small fixed count - the full history lives in
+   * `listMarketSnapshots` instead. */
+  recentAlerts: MarketAlert[];
 }
-export interface LiveIntelWindowClosedPayload {
-  requestId: number;
+
+/** The whole Live Market Monitor page for one event, in one round trip -
+ * same convention as `PriceCheckerSummary`, which this is entirely separate
+ * from (never merged into it). */
+export interface MarketMonitorSummary {
+  eventId: number;
+  marketplaces: MarketMonitorMarketplaceView[];
 }

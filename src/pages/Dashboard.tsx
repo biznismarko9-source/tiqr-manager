@@ -193,10 +193,11 @@ export default function Dashboard() {
   const [salesExpanded, setSalesExpanded] = useState(false);
   // 2.2.8: Dashboard's global "Attention Center" (Activity tab) - its own
   // independent fetch, deliberately NOT tied to `period`/`from`/`to` (unlike
-  // `data` below) since none of its 5 categories are period-filtered - see
-  // commands/attention_center.rs's own doc comment. Fetched once on mount;
-  // `null` while loading, so the block renders nothing until real data
-  // exists rather than briefly flashing "nothing needs attention".
+  // `data` below) since none of its categories (6 as of 2.4.0) are
+  // period-filtered - see commands/attention_center.rs's own doc comment.
+  // Fetched once on mount; `null` while loading, so the block renders
+  // nothing until real data exists rather than briefly flashing "nothing
+  // needs attention".
   const [attentionCenter, setAttentionCenter] = useState<AttentionCenterItem[] | null>(null);
   // BUG (Custom date filter): Custom with both From/To empty must not
   // silently behave like "All time" (see period_bounds() fallback in
@@ -1062,6 +1063,10 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
 // new business-logic rule. `subtext` is a short, static description of what
 // the category means, not a dynamically computed figure - kept simple on
 // purpose ("žiadne zbytočné karty/animácie, žiadny veľký redesign").
+// 2.4.0 added a 6th box ("market_alert"/"LIVE MARKET ALERTS", appended at
+// the end) - see that entry's own comment below for why its title differs
+// from marko's literal spec wording, and AttentionCenterBlock's grid below
+// for the matching lg:grid-cols-6.
 const ATTENTION_CENTER_CATEGORIES: {
   key: AttentionCenterItem["category"];
   title: string;
@@ -1082,6 +1087,20 @@ const ATTENTION_CENTER_CATEGORIES: {
     // anywhere in that module. This box can legitimately stay at 0 forever
     // for a business that never opened Price Checker on any event.
     subtext: "Listings priced well outside real Price Checker market data",
+  },
+  {
+    key: "market_alert",
+    // 2.4.0: titled differently from the box just above on purpose - marko's
+    // own spec literally called this "MARKET ATTENTION" too, but that title
+    // was already taken by outside_market_price (2.2.11, unrelated: your OWN
+    // listing prices vs. the market). Named "LIVE MARKET ALERTS" instead so
+    // the two are never confused - see commands/attention_center.rs's own
+    // module doc comment (Rust) for the same naming note. Sourced from the
+    // Live Market Monitor's own market_drop/market_rise/new_supply/
+    // supply_drop/source_failure alerts, one row per event/marketplace, at
+    // most (see latest_active_alerts_impl).
+    title: "LIVE MARKET ALERTS",
+    subtext: "Market price/supply changes and source failures from Price Checker's Live Market Monitor",
   },
 ];
 
@@ -1159,14 +1178,27 @@ function AttentionCategoryCard({
  * has no single order (see the Rust module's doc comment) and keeps going
  * to the event's own Event Workspace, unchanged from 2.2.8. */
 function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
-  const href = item.orderId != null ? `/orders/${item.orderId}` : `/events/${item.eventId}`;
+  // 2.4.0: a "market_alert" row carries a marketplaceId instead of an
+  // orderId - routes to Price Checker at that event/marketplace instead
+  // (marko's own Section 11: "clicking opens Price Checker at that
+  // event/marketplace"), via the same presetEventId router-state convention
+  // OrderDetail.tsx/SaleDetail.tsx/EventDetail.tsx's own "Check market
+  // prices" buttons already use - PriceChecker.tsx's own mount effect reads
+  // presetMarketplaceId back out to scroll to and briefly highlight that one
+  // card.
+  const href = item.marketplaceId != null ? "/price-checker" : item.orderId != null ? `/orders/${item.orderId}` : `/events/${item.eventId}`;
+  const linkState = item.marketplaceId != null ? { presetEventId: item.eventId, presetMarketplaceId: item.marketplaceId } : undefined;
   const ticketCount = item.ticketIds.length;
   const daysLeft = item.eventDate ? daysUntil(item.eventDate) : null;
   const urgent = daysLeft !== null && daysLeft <= UPCOMING_WARNING_WINDOW_DAYS;
   const critical = daysLeft !== null && daysLeft <= 0;
   return (
     <li>
-      <Link to={href} className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60">
+      <Link
+        to={href}
+        state={linkState}
+        className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+      >
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
             {item.eventName}
@@ -1176,6 +1208,12 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
                 · Order {item.orderCode}
                 {ticketCount > 1 && ` · ${ticketCount} tickets`}
               </span>
+            )}
+            {/* 2.4.0: a market_alert row has no order - names which
+             *  marketplace this is about instead, same spot orderCode uses
+             *  above. */}
+            {item.marketplaceName && (
+              <span className="font-normal text-slate-400 dark:text-slate-500"> · {item.marketplaceName}</span>
             )}
           </p>
           <p className="truncate text-xs text-slate-400 dark:text-slate-500">{item.reason}</p>
@@ -1223,7 +1261,12 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
  * by reading attention_center.rs's own module doc comment, which already
  * guarantees the MARKET ATTENTION constraints from marko's 2.2.11 request:
  * Price-Checker-gated, no automatic pricing, section/row/tier never a
- * pricing factor). */
+ * pricing factor).
+ *
+ * 2.4.0: a 6th box, "LIVE MARKET ALERTS" (market_alert), same treatment as
+ * the other 5 - see ATTENTION_CENTER_CATEGORIES' own entry for it and
+ * AttentionCenterRow's href logic, which routes its rows to Price Checker
+ * (event + marketplace) instead of an order/event page. */
 function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
   const [selected, setSelected] = useState<AttentionCenterItem["category"] | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -1247,7 +1290,7 @@ function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
       <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
         <IconAlertTriangle className="h-3.5 w-3.5" /> Attention Center
       </p>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         {ATTENTION_CENTER_CATEGORIES.map((c) => (
           <AttentionCategoryCard
             key={c.key}

@@ -116,7 +116,6 @@ mod tests {
             oauth_cancel_flag: Mutex::new(None),
             firebase_oauth_cancel_flag: Mutex::new(None),
             price_scanner_sessions: Mutex::new(std::collections::HashMap::new()),
-            live_intel_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -185,12 +184,20 @@ mod tests {
         // 2.2.7: bumped from 23 to 24 - migrations/024_ticket_tier.sql.
         // 2.2.9: bumped from 24 to 25 -
         // migrations/025_deactivate_seatriks_price_checker.sql.
-        // 2.4.0: bumped from 25 to 26 -
-        // migrations/026_live_event_intelligence.sql. This is a deliberate
-        // canary: it must be bumped by exactly the number of new migrations
-        // any time one is added, so a forgotten MIGRATIONS registration
-        // (see db.rs) fails loudly here instead of silently shipping an
-        // unmigrated fresh install.
+        // 2.4.0: the "Live Event Intelligence Foundation" build briefly
+        // bumped this to 26 (migrations/026_live_event_intelligence.sql) -
+        // that direction was cancelled outright before ever being released
+        // (see PROTECTED_AREAS.md's "2.4.0 (pre-release direction)" entry)
+        // and its migration file was deleted, bringing this back to 25 for
+        // a moment. The real 2.4.1 release (briefly also planned as a
+        // reused 2.4.0 - see CURRENT_STATE.md's "## Version" note) reuses
+        // "026" for the Live Market Monitor's own migration instead
+        // (migrations/026_price_checker_market_monitor.sql) - see that
+        // entry for why reusing the number is safe (nothing on 026 was
+        // ever shipped). This is a deliberate canary: it must be bumped by
+        // exactly the number of new migrations any time one is added, so a
+        // forgotten MIGRATIONS registration (see db.rs) fails loudly here
+        // instead of silently shipping an unmigrated fresh install.
         assert_eq!(migration_count, 26, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }

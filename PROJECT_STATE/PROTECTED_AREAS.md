@@ -21,132 +21,191 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.4.0 - Live Event Intelligence Foundation (new online-source concept, visible-window reuse without shared state)
+## 2.4.1 - Price Checker Live Market Monitor
 
-**Read this before touching `commands/live_event_intelligence.rs`,
-`event_online_sources`, or before adding a 4th supported marketplace to
-this specific feature.**
+**Read this before touching `commands/price_checker_monitor.rs`,
+`price_checker_scanner.rs`'s success/failure hooks, `attention_center.rs`'s
+`market_alert` category, or `PriceChecker.tsx`'s Live Market Monitor panel
+again.** This is what actually shipped as **2.4.1** (briefly planned as a
+reused 2.4.0, until redelivering the report/zip under filenames already
+used once before in this same chat for the cancelled direction forced one
+more version bump - see `PROJECT_STATE/CURRENT_STATE.md`'s "## Version"
+note for the full story), replacing the cancelled "Live Event Intelligence"
+direction below (that entry stays as history - read it first for why the
+two are related). Marko's own instruction:
+*"Predchádzajúci nápad 'Live Event Intelligence' RUŠÍME ÚPLNE"* - every
+online/live-market capability lives directly inside Price Checker instead
+of a separate feature: EVENT -> MARKETPLACE SOURCES -> SCAN -> SNAPSHOT ->
+HISTORY -> CHANGE DETECTION -> MARKET ALERTS, built entirely on top of the
+already-shipped Visible Scanner (2.1.9) and Market Analysis (2.2.0) rather
+than a new scraping surface.
 
-**1. `event_online_sources` is deliberately a standalone table - never fold
-it into `events` or the general `marketplaces` table.** marko's spec was
-explicit that existing event data must not change or be backfilled by this
-feature, and a separate table (rather than new nullable columns on
-`events`) is the reading of that instruction that keeps every existing
-`Event`/`EventWithStats` struct, query, and test completely untouched - see
-`migrations/026_live_event_intelligence.sql`'s own doc comment for the full
-column-by-column reasoning. Just as important: this table has **no foreign
-key onto `marketplaces`** (the general, marko-managed lookup Price
-Checker/Listings share, which still includes retired StubHub/Seatriks -
-`017_price_checker_viagogo.sql`/`025_deactivate_seatriks_price_checker.sql`).
-`source` is instead a plain `TEXT` column with its own `CHECK (source IN
-('viagogo', 'vivid_seats', 'ticombo'))`, validated a second time in Rust by
-`commands::live_event_intelligence::SUPPORTED_SOURCES`/`validate_source`.
-This means deleting a row from `marketplaces` has **zero** effect on
-`event_online_sources`, and vice versa - a future session that expects
-`delete_marketplace_impl`'s existing "count every table with a
-marketplace_id column" guard to also cover this table will be surprised:
-it doesn't, on purpose, because there is no `marketplace_id` column here at
-all. This is the correct, deliberate reading of marko's own two
-instructions in the same spec: "keep marketplaces data-driven" (that
-principle still fully applies to the general `marketplaces` table, which
-this feature never touches) versus "support ONLY these 3 marketplaces, do
-NOT add StubHub/Seatriks/anything else" (a fixed, code-defined scope for
-THIS feature specifically). Adding a genuine 4th Live Event Intelligence
-source later means extending BOTH the CHECK constraint (a new forward-only
-migration) AND `SUPPORTED_SOURCES` AND the frontend's `LIVE_EVENT_SOURCES`/
-`buildSearchUrl` (`EventDetail.tsx`) together - none of the existing 3
-sources' own code or data needs to change for that.
+- **Hard constraint (marko's Section 4): no CAPTCHA bypass, no proxy
+  rotation, no anti-bot workaround, ever.** Every new command in
+  `price_checker_monitor.rs` only ever reads data the Visible Scanner
+  already produced from an already-open, human-opened window
+  (`ScanResultPayload`) - nothing here opens a window, navigates, or reads a
+  page itself. Auto Monitor (the frontend interval in `MarketplaceCard`,
+  `PriceChecker.tsx`) is the same boundary applied to automation: it only
+  ever calls the exact same `scanVisiblePrices`/`onScanVisible` the manual
+  button calls, on a `window.setInterval` schedule, guarded against
+  overlapping an in-flight scan or a still-opening window
+  (`sessionRef.current.opening || .scanning`) - it can never open a window
+  on its own, and turns itself off the moment the session closes.
+- **Hard constraint (marko's Section 7): Tier/Level is the mandatory market
+  grouping; Section/Row/Seat are metadata only, NEVER a pricing factor.**
+  `detect_and_record_changes` groups a snapshot's listings by tier via
+  `price_checker_analysis::group_by_tier` (bumped `pub(crate)` this release,
+  zero behavior change) - the exact same case-insensitive-collapse +
+  `UNCLASSIFIED_TIER` fallback convention Market Analysis already uses, not
+  a second tier-grouping rule. No automatic repricing exists anywhere in
+  this module - `record_scan_attempt_impl` only ever detects and records a
+  change, it never writes back to `ticket_listings` or any price field.
+- **Naming collision: marko's spec literally called this feature's
+  Attention Center box "MARKET ATTENTION" too - that title was already
+  taken.** `outside_market_price` (2.2.11) owns "MARKET ATTENTION" on the
+  frontend already and is a different feature (your OWN listing prices vs.
+  the market, not a live scan alert). The new 6th category
+  (`AttentionCenterItem.category === "market_alert"`) is titled **"LIVE
+  MARKET ALERTS"** instead so the two are never confused - extends 2.2.11's
+  "box title <-> category mapping" note above with: LIVE MARKET ALERTS =
+  `market_alert`. 2.2.11 itself already warned "if a 6th category is ever
+  added to `attention_center.rs`, it will silently show 0 boxes for it
+  unless `ATTENTION_CENTER_CATEGORIES` is also updated" - this release is
+  that 6th category, and `Dashboard.tsx`'s array (now 6 entries) plus its
+  grid (`lg:grid-cols-5` -> `lg:grid-cols-6`) were both updated together;
+  don't add a 7th without doing the same.
+- **`market_alert` is a third `push_item` key shape, not a variant of the
+  other two.** The existing shapes are `{category}:order:{oid}` (order-
+  grouped) and `{category}:{event_id}` (event_soon, one per event). A
+  market alert has neither an order nor a "one per event" cardinality (one
+  event can have several marketplaces each alerting) - its key is
+  `{category}:market:{event_id}:{marketplace_id}`, collision-safe because
+  `latest_active_alerts_impl` itself guarantees at most one alert per
+  (event, marketplace) pair. `push_item` gained two trailing `Option`
+  params (`marketplace_id`, `marketplace_name`) for this - every one of the
+  5 pre-existing call sites was updated to pass `None, None` explicitly,
+  not left to a default, so a future 7th category can't silently inherit
+  the wrong shape.
+- **Transition-only source-failure alerting - never fires on the very first
+  failure, and never fires again on a run of consecutive failures.**
+  `record_scan_attempt_impl` reads `market_source_status.last_scan_ok`
+  BEFORE overwriting it; a `source_failure` alert is only pushed when that
+  PREVIOUS value was `Some(true)` (a real, observed success -> failure
+  transition). A marketplace that has never succeeded, or has failed 10
+  times in a row, produces exactly one alert (the first transition) and
+  then goes quiet - covered by 2 dedicated tests
+  (`first_ever_failure_never_alerts`,
+  `transition_only_failure_alerting_first_failure_alerts_second_doesnt`).
+  Don't "simplify" this to "alert on every failure" - that's the aggressive-
+  polling-adjacent noise marko's Section 16 explicitly warns against.
+- **Thresholds reused, not invented.**
+  `MARKET_PRICE_CHANGE_THRESHOLD_PCT` (5%) mirrors
+  `price_checker::RECOMMENDED_PRICE_UNDERCUT_PCT`;
+  `MARKET_SUPPLY_CHANGE_THRESHOLD_PCT` (20%) mirrors
+  `inventory_intelligence::OUTSIDE_MARKET_THRESHOLD_PCT`. If either existing
+  constant ever changes for its own feature, decide deliberately whether
+  this module should follow - they are copied values, not a shared
+  `const`, so they will NOT move together automatically.
+- **Cache/offline (marko's Section 12): `last_successful_scan_at` /
+  `last_successful_listing_count` are only ever ADVANCED by a real success.**
+  `upsert_source_status_failure`'s `ON CONFLICT DO UPDATE` deliberately never
+  touches those two columns - a run of failures can change `status` to
+  `"failed"` and add `last_error_message`, but the UI's "Last successful
+  scan" line and the last real snapshot/alerts never disappear or go stale
+  because of it. Covered by `source_status_failure_never_disturbs_last_
+  success` (Rust) - don't "clean up" the failure upsert to also clear these
+  without re-reading this constraint.
+- **Migration `026_price_checker_market_monitor.sql` reuses the number
+  "026"** - see the "pre-release direction" entry directly below for why
+  this specific reuse (unlike a version-number reuse) was verified safe
+  first: that migration was deleted before any build shipped, so no install
+  anywhere has ever recorded a migration literally named `026_live_event_
+  intelligence`.
+- **Attention Center integration is a pure read - zero new market-
+  calculation logic in `attention_center.rs` itself (marko's Section 15).**
+  The 6th category's loop only calls `latest_active_alerts_impl` (already
+  fully decided by `price_checker_monitor.rs`) and maps `alert_type` to a
+  `Priority` (`source_failure`/`market_drop` -> Attention, everything else
+  -> Info - a judgment call, not specified by marko, flagged here the same
+  way the other 4 categories' priority judgment calls already are further
+  down this file). It skips a done/cancelled event exactly like the 3
+  "still sellable" categories already do.
+- **Click-through routes to Price Checker, not a new page (marko's Section
+  11: "no new separate dashboard").** `AttentionCenterRow` (`Dashboard.tsx`)
+  routes a `marketplaceId`-carrying row to `/price-checker` via the same
+  `presetEventId` router-state convention every other "jump to Price
+  Checker" button already uses, plus a new `presetMarketplaceId` alongside
+  it. `PriceChecker.tsx`'s mount effect reads both back out, and a small
+  scroll-into-view + 2.5s highlight ring (`highlightMarketplaceId` state,
+  keyed off a plain `id="marketplace-card-{id}"` on each card's wrapper
+  `div`) brings the right card into view - not a new shared pattern, just
+  `scrollIntoView` (same idea as `EventDetail.tsx`'s `ticketsAnchorRef`).
+- **Tests**: 27 in `price_checker_monitor.rs` (thresholds, tier grouping
+  reuse, mixed-currency splitting, snapshot accumulation, transition-only
+  failure alerting, offline-cache, marketplace independence, summary/history
+  queries) + 5 in `attention_center.rs` (market_alert surfacing, amount/
+  currency passthrough, done-event exclusion, cross-marketplace key
+  collision-safety, source-failure priority). Full suite green: `cargo test
+  --lib` (1058 passed, 0 failed, 3 ignored), `npx tsc -b`, `npm run build`.
+- **Preserves ALL existing Price Checker functionality untouched (marko's
+  Section 14)** - the Visible Scanner, Market Analysis, and manual price-
+  check history are extended (two new hooks into the scanner's own success/
+  failure paths, both `let _ = ...`-swallowed so a monitor-recording failure
+  can never affect the scan result marko actually sees) never rewritten.
 
-**2. `verified` and `active` are two independent flags - do not collapse
-them into one status.** `verified` means a human has actually looked at
-`url` in a real, visible window and explicitly confirmed it; `active`
-means "still connected" (a soft retire, same convention as
-`Marketplace.active`/`TicketListing.status == 'removed'` - "Disconnect"
-flips it off without losing the row, its `verified` state, or
-`last_checked_*` history; "Reconnect" flips it back). The **only** function
-that ever writes `verified = true` is
-`save_confirmed_online_source_impl` - never `connect_online_source_
-manually_impl` (always `verified = false`, since the app never looked at a
-manually-typed URL) and never `set_online_source_active_impl` (a
-disconnect/reconnect never touches `verified` either direction). If a
-future change adds another way to persist a row, default it to
-`verified = false` and make it go through a real capture-and-confirm to
-become `true` - never infer verification from anything else (a successful
-window open, a non-empty URL, etc.).
+## 2.4.0 (pre-release direction) - "Live Event Intelligence Foundation" - BUILT THEN FULLY REVERTED, never shipped
 
-**3. `save_confirmed_online_source` deliberately backs BOTH "Find Online
-Event" (confirming a discovery candidate) and "Refresh" (re-confirming an
-already-saved source) - do not split it into two functions.** Both are the
-same real-world action: marko just looked at a specific URL in the visible
-window and says it's right. Sharing one function is also what makes
-"Refresh" double as "verify a manually-connected source" with no separate
-UI action needed - a `verified = false` manual entry becomes `true` the
-first time a Refresh capture is confirmed. Both paths upsert on
-`(event_id, source)` (`ON CONFLICT DO UPDATE`, same convention as
-`price_checker::save_event_marketplace_link_impl`) rather than ever
-allowing a second row for the same marketplace.
+Designed and built in full within the same release cycle that ultimately
+shipped as 2.4.1 - briefly also labeled 2.4.0 (a new
+`event_online_sources` table + `migrations/026_live_event_intelligence.sql`,
+the whole `commands/live_event_intelligence.rs` module and its 7 commands,
+`db::LiveIntelSession`/`AppState::live_intel_sessions`, a matching
+`EventOnlineSource*`/`LiveEventSource`/`LiveIntel*` family in `models.rs`/
+`types.ts`/`api.ts`, and an `EventDetail.tsx` UI block above Inventory
+Intelligence) - but never released to marko as a real build, only handed
+over as a review package. After reviewing it, marko cancelled the whole
+direction outright ("Predchádzajúci nápad 'Live Event Intelligence'
+RUŠÍME ÚPLNE") in favor of putting all online/live-market functionality
+directly inside Price Checker instead - see this file's own "2.4.1 - Price
+Checker Live Market Monitor" entry (below the "Long-standing invariants"
+section is the wrong place to look - new entries go at the top of this
+file, so the real entry sits above this one) for what actually shipped as
+2.4.1.
 
-**4. The visible-window mechanism is intentionally DUPLICATED from
-`price_checker_scanner.rs`, not shared, extracted, or imported from it.**
-`commands::live_event_intelligence` reimplements the same hard-won pattern
-(`WebviewWindowBuilder` built off a plain `std::thread::spawn` - building on
-the command's own calling thread deadlocks on Windows, exactly the
-constraint that shaped the 2.1.9 Scanner rewrite - plus `eval_with_callback`
-with a bounded `recv_timeout`) against its **own** state:
-`db::LiveIntelSession` in `AppState::live_intel_sessions`, a completely
-separate `HashMap` from `AppState::price_scanner_sessions`/
-`db::ScannerSession`. This was a deliberate choice, not an oversight: this
-task's own instructions explicitly protect the existing Price Checker
-scanner logic from any changes, and sharing session state (or refactoring
-a common helper out of the protected file) would create exactly the kind
-of coupling where a future Scanner change could silently affect Live Event
-Intelligence, or vice versa. The two features' event names are also
-disjoint on purpose (`live-intel-*` vs `price-scanner-*`) and their payload
-types are separate Rust structs/TS interfaces even though several are
-field-for-field identical in shape.
+Every trace was removed, not just hidden: the migration file itself, the
+`event_online_sources` table, both session-state additions in `db.rs`, the
+entire `live_event_intelligence.rs` module and its `mod.rs`/`lib.rs`
+registrations, every matching struct/interface/wrapper on both the Rust and
+TypeScript sides, and the complete `LiveEventIntelligenceBlock`/`SourceRow`/
+`LiveIntelWindowModal`/`ConnectManuallyModal` section of `EventDetail.tsx`
+plus its call site and now-unused imports (`listen`, `openUrl`, `IconCheck`,
+`IconRefresh` - the latter two confirmed unused anywhere else in that file
+before removal). This file's own detailed design notes for that build (the
+standalone-table rationale, the verified/active flag split, the duplicated-
+window-mechanism reasoning, the no-backend-HTTP-call rule, the no-Price-
+Checker-coupling rule) were removed along with the code, since keeping
+"read this before touching `commands/live_event_intelligence.rs`" style
+guidance for a file that no longer exists would only mislead a future
+session - see `CHANGELOG.md`'s own "2.4.0 (pre-release direction, never
+shipped) - Live Event Intelligence Foundation" entry (kept, additive, per
+this file's own "Process/packaging invariants" section below) if that
+original design is ever useful as a reference for a differently-shaped
+future feature.
 
-What Live Event Intelligence reads off a page is deliberately much smaller
-than the Scanner's own extraction: `capture_live_event_page` reads only
-`document.title` + `location.href` (joined with the ASCII unit separator,
-`String.fromCharCode(31)` - same convention `models::SeatEntry::
-parse_aggregate` already uses) - never prices, never listing counts, never
-anything selector-based. There is exactly ONE JSON-encoding layer to
-unwrap here (`parse_capture_result`), unlike `price_checker_scan.js`'s
-payload, because the injected script returns a plain JS string rather than
-an object it `JSON.stringify`s itself - see `CAPTURE_SCRIPT`'s own doc
-comment before changing what this script returns.
-
-**5. No backend HTTP client call to Viagogo/Vivid Seats/Ticombo exists
-anywhere in this feature, on purpose - do not add one, even for something
-as small as an HTTP HEAD "is this link still alive" check.** The ONLY
-networking `commands::live_event_intelligence` ever does is opening a
-real, visible browser window a human drives - the exact same safety
-envelope `price_checker_scanner.rs` already established, and the same one
-this project applied when marko separately asked, this same release cycle,
-about an auto-listing bot for Ticketmaster and was told no (CFAA/DMCA/BOTS
-Act exposure - see that conversation's own reasoning if resurrected later).
-"Refresh" therefore does NOT make a raw `reqwest` request at all - it opens
-the saved URL in the same kind of visible window "Find Online Event" uses
-and asks marko to explicitly capture-and-confirm what he sees, exactly
-like a fresh discovery. Keep it that way: any future temptation to "just
-ping the URL in the background to check it's still up" would be a new,
-different kind of automated backend request to these exact 3 marketplaces
-that doesn't exist anywhere else in this codebase, and would break the
-"a network hiccup must never freeze the app" guarantee for a much weaker
-reason than the window mechanism already provides for free (the window
-commands never block Tauri's IPC thread - the build/eval happen on a
-spawned OS thread and the command returns immediately, same as the
-Scanner's own `open_price_scanner`/`scan_visible_prices`).
-
-**6. This feature never reads from or writes to Price Checker, its
-scanner, or anything pricing-related - and nothing here should ever start
-doing so without a real, separate design conversation.** Section/Row/Seat
-are never referenced anywhere in `live_event_intelligence.rs`,
-`event_online_sources` is never joined against in
-`price_checker.rs`/`price_checker_analysis.rs`, and vice versa. If a later
-task wants Price Checker to use a Live Event Intelligence source's URL as
-its own scanner's starting point, that is new, explicit scope - not
-something to infer from these two modules simply existing in the same app.
+**Migration number "026" was reused, not permanently retired - this is a
+narrower, different case from 2.3.0's below, not the same rule.** 2.3.0 had
+to move the version number forward after a revert because the auto-updater
+had already offered a real build to real installs; this Live Event
+Intelligence direction never shipped ANY build - reviewed only - so no
+install anywhere has ever recorded a migration literally named
+`026_live_event_intelligence`, and the file was deleted outright rather
+than left as a permanently-skipped number. The real 2.4.1 release's own new
+migration(s) start at `026_` again. If a THIRD direction is ever built and
+reverted before release, re-check this same fact (has anything with that
+migration number actually been installed anywhere?) before deciding whether
+reusing the number is safe - it depends entirely on that, not on how the
+version number itself was handled.
 
 ## 2.3.5 - Sync/push behavioral redesign (self-healing push, real sync diff, async commands)
 
