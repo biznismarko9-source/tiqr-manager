@@ -238,3 +238,16 @@ export const IconRefresh = (p: SVGProps<SVGSVGElement>) => (
     <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16M3 21v-5h5" />
   </Svg>
 );
+// 2.4.3: "Ticket Control Center" sidebar entry (Layout.tsx) - a plain 2x2
+// grid glyph, same "no icon library needed for one more glyph" reasoning as
+// this file's own header comment. No existing icon fit a dense multi-panel
+// "control center" well enough to reuse without being confusing next to its
+// own, differently-shaped source page's icon.
+export const IconLayoutGrid = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="8" height="8" rx="1.5" />
+    <rect x="13" y="3" width="8" height="8" rx="1.5" />
+    <rect x="3" y="13" width="8" height="8" rx="1.5" />
+    <rect x="13" y="13" width="8" height="8" rx="1.5" />
+  </Svg>
+);

@@ -571,11 +571,21 @@ pub struct TicketUpdateInput {
 /// enum rather than a free-form column-name string means there is no code
 /// path that could ever compile a bulk UPDATE against a column outside this
 /// list, in particular never against `tickets.status`.
+///
+/// 2.4.3: `Tier` added - the "2.2.7" entry in `PROTECTED_AREAS.md` explains
+/// this was left out on purpose when `tickets.tier` was first introduced
+/// ("bulk-editing tier wasn't asked for"), not a safety concern. marko's own
+/// Ticket Control Center spec explicitly lists "change tier" as a safe bulk
+/// candidate, so it's added now as a plain 5th text field, same shape as
+/// Section/RowLabel/Seat. Placed immediately after `RowLabel` - same "tier
+/// sits right after row" ordering convention that entry already established
+/// for SQL SELECTs/CSV headers/struct fields.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BulkTicketField {
     Section,
     RowLabel,
+    Tier,
     Seat,
     ListingPriceCents,
 }
@@ -2773,5 +2783,143 @@ pub struct AttentionCenterItem {
     /// `None` for every other case rather than a fabricated number.
     pub amount_cents: Option<i64>,
     pub currency: Option<String>,
+}
+
+// --- Ticket Control Center (2.4.3) ------------------------------------------
+// marko's own spec: one dense work view over EXISTING tickets data across
+// every event - not a new parallel ticket system. See
+// `commands::ticket_control_center`'s own module doc comment for the full
+// query design (which tables it joins, and why every WRITE it triggers
+// delegates to a command that already existed before this task).
+
+/// Filters for `list_control_center_tickets` - every field optional/AND'd
+/// together, same "build WHERE 1=1 then append" shape
+/// `tickets::list_tickets_impl` already uses (see that function for the
+/// precedent this one extends). `ticket_status`/`listing_status`/
+/// `sale_status`/`payment_status`/`delivery_status` each accept a single
+/// value or a comma-separated list, exactly like `list_tickets_impl`'s own
+/// `status` parameter already does - the frontend's Quick Filters are
+/// presets that set these same fields, not a second parallel filter system.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlCenterFilters {
+    /// Matches ticket code, order code, event name, section, row label,
+    /// marketplace name, listing id, or listing URL - see the impl's own
+    /// doc comment for the exact column list.
+    pub search: Option<String>,
+    pub event_id: Option<i64>,
+    /// Compared against `events.event_date` (a plain ISO `YYYY-MM-DD` string
+    /// column, no time component - same comparison style
+    /// `orders`/`sales` list filters already use for their own date ranges).
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    /// Substring match (case-insensitive), same `LIKE` convention `search`
+    /// above already uses for free-text ticket metadata - there is no fixed
+    /// vocabulary for tier/section/row to match exactly against.
+    pub tier: Option<String>,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    /// `tickets.status` - available/listed/sold/cancelled.
+    pub ticket_status: Option<String>,
+    /// `ticket_listings.status` - active/sold/removed. A ticket with no
+    /// listing at all never matches a non-empty filter here (there is
+    /// nothing to compare against), same as filtering by any other
+    /// listing-only column.
+    pub listing_status: Option<String>,
+    /// `tickets.resale_status` (marko's "Sale status" column) -
+    /// Listed/Unlisted/Sold, free text (see migration 010's own doc
+    /// comment) - not validated against a closed list here, same as every
+    /// other read path for this column.
+    pub sale_status: Option<String>,
+    /// The active sale's `payment_status` - pending/paid/refunded. Note this
+    /// can never itself read "refunded" for the row it's attached to (the
+    /// join only ever carries the ACTIVE, non-refunded sale - see the impl's
+    /// own doc comment) - use `refunded_only` below for that case.
+    pub payment_status: Option<String>,
+    pub delivery_status: Option<String>,
+    /// `ticket_listings.marketplace_id` - same non-match behavior as
+    /// `listing_status` above for a ticket with no listing.
+    pub marketplace_id: Option<i64>,
+    /// The "Refunded" quick filter. `true` keeps only tickets with at least
+    /// one refunded `sales` row (regardless of whether they've since been
+    /// resold) - see the impl's own doc comment for why this needs its own
+    /// additive signal rather than reusing `payment_status`.
+    pub refunded_only: Option<bool>,
+}
+
+/// One row of `list_control_center_tickets` - one ticket, OR one (ticket,
+/// marketplace listing) pair when a ticket carries more than one active
+/// `ticket_listings` row (same fan-out `ticket_listings::
+/// list_ticket_listings_for_event_impl` already produces for its own,
+/// listings-only view - a ticket posted on 2 marketplaces appears as 2 rows
+/// here too, each showing that ONE listing's own marketplace/price/status
+/// alongside the ticket's own, repeated, fields). A ticket with zero
+/// listings still appears exactly once, with every `listing_*`/
+/// `marketplace_*` field `None` - see the impl's own doc comment for the
+/// exact join shape.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlCenterTicket {
+    pub id: i64,
+    pub code: String,
+    pub event_id: i64,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub order_id: i64,
+    pub order_code: String,
+    pub section: Option<String>,
+    pub row_label: Option<String>,
+    pub tier: Option<String>,
+    pub seat: Option<String>,
+    /// marko's "Purchase price" column - reuses `Ticket.total_cost_cents`'s
+    /// own definition (purchase cost + fees + other costs) rather than
+    /// inventing a second "what did this cost" number.
+    pub total_cost_cents: i64,
+    /// marko's "Listing price" column - the ticket's real per-marketplace
+    /// `ticket_listings.price_cents` for THIS row's listing when one exists,
+    /// falling back to the legacy `tickets.listing_price_cents` for a ticket
+    /// with no real listing row yet - see the impl's own doc comment. Never
+    /// itself written by anything in this module.
+    pub listing_price_cents: Option<i64>,
+    pub currency: String,
+    /// `tickets.status` - marko's "Overall status" column. Never bulk-set by
+    /// anything reachable from this view (see the impl's own doc comment).
+    pub status: String,
+    /// `tickets.resale_status` - marko's "Sale status" column.
+    pub resale_status: Option<String>,
+    /// `tickets.delivery_status` - marko's "Delivery status" column.
+    pub delivery_status: Option<String>,
+    /// The active (non-refunded) sale's id, if any - lets the frontend route
+    /// a row's click straight to Sale Detail when one exists.
+    pub sale_id: Option<i64>,
+    /// The active sale's `payment_status` - marko's "Payment status" column.
+    /// `None` for a never-sold ticket AND for one whose only sale was
+    /// refunded - see `is_refunded` below for telling those two apart.
+    pub sale_payment_status: Option<String>,
+    /// Additive, read-only signal for the "Refunded" quick filter - `true`
+    /// when this ticket has at least one refunded `sales` row, independent
+    /// of whether it currently has an active sale, a listing, or is plain
+    /// available again. See the impl's own doc comment for why
+    /// `sale_payment_status` alone can't answer this.
+    pub is_refunded: bool,
+    /// This row's own `ticket_listings.id`, when this row represents a real
+    /// listing - the id the "change listing status" bulk action needs
+    /// (`bulk_update_ticket_listings_status` operates on listing ids, never
+    /// ticket ids). `None` for a ticket with no listing.
+    pub listing_row_id: Option<i64>,
+    pub marketplace_id: Option<i64>,
+    /// marko's "Listing status" column shows this alongside the status badge
+    /// (see TicketControlCenter.tsx) - without it, a ticket listed on 2
+    /// marketplaces would render as 2 visually-identical rows.
+    pub marketplace_name: Option<String>,
+    /// The marketplace's own id/text for this listing, if entered - part of
+    /// marko's "listing ID/URL, ak existuje" search target, not shown as its
+    /// own column.
+    pub listing_external_id: Option<String>,
+    pub listing_url: Option<String>,
+    /// `ticket_listings.status` (active/sold/removed) for THIS row's
+    /// listing - `None` for a ticket with no listing.
+    pub listing_status: Option<String>,
+    pub is_demo: bool,
 }
 

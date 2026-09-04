@@ -11,6 +11,11 @@ export { CHECKBOX_CLASS };
 const FIELD_OPTIONS: { value: BulkTicketField; label: string; kind: "text" | "money" }[] = [
   { value: "section", label: "Section", kind: "text" },
   { value: "rowLabel", label: "Row", kind: "text" },
+  // 2.4.3: added for the Ticket Control Center's "change tier" bulk action
+  // (marko's own explicit request) - benefits Sale Detail/Order Detail too,
+  // same as every other option here. See `BulkTicketField`'s own doc
+  // comment (models.rs) for why this was left out on purpose until now.
+  { value: "tier", label: "Tier / Level", kind: "text" },
   { value: "seat", label: "Seat", kind: "text" },
   { value: "listingPriceCents", label: "Listing price", kind: "money" },
 ];

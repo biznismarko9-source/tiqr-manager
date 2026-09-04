@@ -95,6 +95,7 @@ pub fn run() {
             commands::tickets::bulk_update_ticket_delivery_status,
             commands::tickets::bulk_update_ticket_resale_status,
             commands::tickets::list_ticket_types,
+            commands::ticket_control_center::list_control_center_tickets,
             commands::ticket_listings::list_ticket_listings_for_event,
             commands::ticket_listings::create_ticket_listing,
             commands::ticket_listings::update_ticket_listing,

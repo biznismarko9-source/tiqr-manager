@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.4.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.4.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -90,7 +90,14 @@ The migration file and its 4 tables (`market_snapshots`,
 the schema, orphaned but untouched, from 2.4.2 onward - see
 `PROTECTED_AREAS.md`'s new "2.4.2" entry before ever touching migration
 numbering or that schema again. **The next new migration is 027, not a
-reused 026.**
+reused 026** (still true as of 2.4.3 below - that release added no
+migration at all).
+
+**2.4.3** adds the "Ticket Control Center" (`/control-center`) - one dense
+work screen over the EXISTING tickets/listings/sales data across every
+event, marko's own explicit request. No schema change. See "Current focus"
+below and `PROTECTED_AREAS.md`'s new "2.4.3" entry for the full design and
+the traps worth knowing before touching it again.
 
 ## Stack / layout
 
@@ -102,7 +109,9 @@ reused 026.**
   folded into Sales in 2.2.5), see "Current focus" below and
   `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
   adding more event-level functionality anywhere else), Orders,
-  OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail,
+  OrderDetail, Tickets (Inventory), TicketControlCenter (2.4.3 - new,
+  `/control-center`; a dense, cross-event work-view over tickets' own
+  data, see "Current focus" below), Inventory, Sales, SaleDetail,
   FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
   data, see "Current focus" below), Pulls
   (given/received), Finance (own `finance/` subfolder, 4-tab layout),
@@ -118,7 +127,9 @@ reused 026.**
   push-bookkeeping-ordering fix as `pulls_sheet_sync` below), tickets,
   ticket_listings (2.2.4 - real per-marketplace listings; 2.2.5 added 3
   all-or-nothing bulk commands - status/price/delete - see "Current focus"
-  below), inventory_intelligence (2.2.6 - one read-only command backing
+  below), ticket_control_center (2.4.3 - new; one read-only command,
+  `list_control_center_tickets`, backing the Ticket Control Center page -
+  see "Current focus" below), inventory_intelligence (2.2.6 - one read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
   attention_center (2.2.8 - one read-only command backing the Dashboard's
   global, cross-event "Attention Center" block; 2.2.9 reworked its 4
@@ -177,6 +188,62 @@ reused 026.**
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.4.3 - Ticket Control Center.** marko's own focused-task spec: one
+central work screen ("Ticket Control Center", `/control-center`) to manage
+and check tickets across EVERY event at once - explicitly NOT a new
+parallel ticket system, one convenient work view over EXISTING tickets
+data. Scope was identified from `CURRENT_STATE.md`/`PROTECTED_AREAS.md` plus
+the relevant Tickets/Orders/Listings/Sales/Inventory code and existing
+filter/search/bulk logic only (no full repo scan, no old reports read),
+per marko's own explicit efficiency instruction.
+
+- **New backend module** `commands/ticket_control_center.rs` - ONE new
+  read-only query, `list_control_center_tickets`, joining
+  tickets->events->orders->(active) sales->(all) ticket_listings->
+  marketplaces, following this codebase's own "each view aggregator writes
+  its own SELECT" convention (`attention_center`/`inventory_intelligence`/
+  `ticket_listings` already do this) rather than reshaping
+  `tickets::list_tickets_impl`'s result. No new tables, no migration -
+  purely additive reads, including one new signal (`isRefunded`, an
+  `EXISTS` subquery) needed for the "Refunded" quick filter that no
+  existing query could answer. See `PROTECTED_AREAS.md`'s new "2.4.3" entry
+  for the full query design and every judgment call.
+- **New frontend page** `src/pages/TicketControlCenter.tsx` - sticky
+  filters/quick-filters/search above a dense table that owns its own
+  scroll (first page in this app built that way), covering every column,
+  filter, quick filter and search target marko's spec listed. Row click
+  opens the existing Sale Detail (if sold) or Order Detail (otherwise) -
+  no new detail page.
+- **Bulk actions - 100% existing mechanisms, one small authorized
+  extension**: generic field edit (Section/Row/**Tier**/Seat/Listing price)
+  reuses the existing shared `BulkTicketEditBar`/`bulkUpdateTickets`,
+  extended with a new `Tier` option marko explicitly asked for this round
+  (`BulkTicketField::Tier`, models.rs/tickets.rs - previously left out on
+  purpose, see `PROTECTED_AREAS.md`'s "2.2.7" and new "2.4.3" entries);
+  "change listing status" reuses the existing, untouched
+  `bulkUpdateTicketListingsStatus`; "export selected" reuses the existing,
+  untouched `exportTicketsCsvSelected`. Refund/resell bulk actions were
+  explicitly NOT added, per marko's own instruction.
+- **Untouched, per marko's explicit "DÔLEŽITÉ" list**: refund/resell logic,
+  `batch_id`, every money/cents column, Listings/Sales/Finance/Orders core.
+  Section/Row/Seat remain metadata-only; Tier/Level remains a separate
+  field - neither assumption was relaxed anywhere in this task.
+- **Tests**: 12 new backend unit tests (11 for the new query - correct
+  loading, the marketplace fan-out, refund/resell regression replaying
+  BUG #1's own shape, the new `isRefunded` signal, and each filter/search
+  dimension at least once; 1 for the new `Tier` bulk-edit arm). Full suite
+  green: `cargo test --lib` (1038 passed, +12 over 2.4.2's 1026, 0 failed,
+  3 ignored, same as before), `cargo clippy --lib` clean of new warnings
+  (verified by exact line-context inspection of every touched/new file),
+  `npx tsc -b` and `npm run build` both clean.
+- Version bumped **2.4.2 -> 2.4.3**. No new migration (still 027 next).
+
+See `PROTECTED_AREAS.md`'s new "2.4.3" entry for the full list of judgment
+calls (the Payment-status filter's deliberate lack of a "Refunded" option,
+the Listing-price coalesce, the combined Event/date cell, which columns
+hide in narrow mode and why, the un-measured 68vh table height) and
+`CHANGELOG.md`'s matching entry for a shorter summary.
 
 **2.4.2 - Live Market Monitor removed; Price Checker back to manual-only.**
 marko decided he does not want this feature in the app at all

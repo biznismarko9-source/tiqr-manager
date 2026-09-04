@@ -483,8 +483,11 @@ export interface TicketUpdateInput {
  *
  * 1.9.1: "ticketType" was removed from this set - it's now a one-time choice
  * made when creating the order instead (see `OrderInput.ticketType`), still
- * editable per-ticket afterwards via `TicketUpdateInput` if needed. */
-export type BulkTicketField = "section" | "rowLabel" | "seat" | "listingPriceCents";
+ * editable per-ticket afterwards via `TicketUpdateInput` if needed.
+ *
+ * 2.4.3: "tier" added - see `BulkTicketField::Tier`'s own doc comment
+ * (models.rs) for why this was left out on purpose until now. */
+export type BulkTicketField = "section" | "rowLabel" | "tier" | "seat" | "listingPriceCents";
 
 /** Input for `bulkUpdateTickets` (1.8.3) - set one field to one value across
  * many tickets in a single all-or-nothing transaction. `textValue` is used
@@ -1896,5 +1899,115 @@ export interface MarketAnalysisResult {
   mixedCurrencies: boolean;
   uncurrenciedListingCount: number;
   yourTickets: YourTicketGroup[];
+}
+
+// ---------------------------------------------------------------------------
+// Ticket Control Center (2.4.3) - one dense work view over EXISTING tickets
+// data across every event, not a new parallel ticket system. See
+// `commands::ticket_control_center`'s own module doc comment (Rust) for the
+// full query design - every WRITE this view can trigger
+// (`bulkUpdateTickets`, `bulkUpdateTicketListingsStatus`,
+// `exportTicketsCsvSelected`) is a command that already existed before this
+// feature.
+// ---------------------------------------------------------------------------
+
+/** Filters for `listControlCenterTickets` - every field optional, AND'd
+ * together server-side. `ticketStatus`/`listingStatus`/`saleStatus`/
+ * `paymentStatus`/`deliveryStatus` each accept a single value or a
+ * comma-separated list, same convention `listTickets`'s own `status` param
+ * already uses - TicketControlCenter.tsx's Quick Filters are presets that
+ * set these same fields, not a second parallel filter system. */
+export interface ControlCenterFilters {
+  /** Matches ticket code, order code, event name, section, row label,
+   * marketplace name, or listing id/URL. */
+  search?: string;
+  eventId?: number;
+  /** Compared against the event's own date (`YYYY-MM-DD`, no time). */
+  dateFrom?: string;
+  dateTo?: string;
+  /** Substring match, same as `search` above - tier/section/row have no
+   * fixed vocabulary to match exactly against. */
+  tier?: string;
+  section?: string;
+  rowLabel?: string;
+  /** `Ticket.status` - marko's "Overall status". */
+  ticketStatus?: string;
+  /** `TicketListing.status` (active/sold/removed) - marko's "Listing
+   * status". A ticket with no listing never matches a non-empty filter here. */
+  listingStatus?: string;
+  /** `Ticket.resaleStatus` - marko's "Sale status". */
+  saleStatus?: string;
+  /** The active sale's payment status - marko's "Payment status". Can never
+   * itself be "refunded" for the row it's attached to - see `refundedOnly`. */
+  paymentStatus?: string;
+  deliveryStatus?: string;
+  marketplaceId?: number;
+  /** The "Refunded" quick filter - keeps only tickets with at least one
+   * refunded sale in their history, regardless of whether they've since
+   * been resold. See `ControlCenterTicket.isRefunded`'s own doc comment. */
+  refundedOnly?: boolean;
+}
+
+/** One row of `listControlCenterTickets` - normally one ticket, but one
+ * (ticket, marketplace listing) PAIR when a ticket is currently listed on
+ * more than one marketplace at once (same fan-out `listTicketListingsForEvent`
+ * already produces for its own, listings-only view - see the Rust module's
+ * own doc comment for the exact join shape). A ticket with zero listings
+ * still appears exactly once, with every `listing*`/`marketplace*` field
+ * `null`. */
+export interface ControlCenterTicket {
+  id: number;
+  code: string;
+  eventId: number;
+  eventName: string;
+  eventDate: string | null;
+  orderId: number;
+  orderCode: string;
+  section: string | null;
+  rowLabel: string | null;
+  tier: string | null;
+  seat: string | null;
+  /** "Purchase price" - same definition as `Ticket.totalCostCents` (purchase
+   * cost + fees + other costs). */
+  totalCostCents: number;
+  /** "Listing price" - this row's own real per-marketplace
+   * `TicketListing.priceCents` when it has a listing, else the ticket's
+   * legacy `Ticket.listingPriceCents` - same "two listing-price systems,
+   * both real" precedent as Inventory Intelligence's own Overview cards. */
+  listingPriceCents: number | null;
+  currency: string;
+  /** "Overall status". Never bulk-changeable from this view - see
+   * `BulkTicketEditBar`'s own doc comment for why. */
+  status: TicketStatus;
+  /** "Sale status". */
+  resaleStatus: string | null;
+  /** "Delivery status". */
+  deliveryStatus: string | null;
+  /** The active (non-refunded) sale's id, if any - lets a row click route
+   * straight to Sale Detail when one exists. */
+  saleId: number | null;
+  /** "Payment status" - the active sale's own payment status. `null` for a
+   * never-sold ticket AND for one whose only sale was refunded - see
+   * `isRefunded` below for telling those two apart. */
+  salePaymentStatus: SalePaymentStatus | null;
+  /** `true` when this ticket has at least one refunded sale in its history,
+   * independent of whether it's since been resold, listed again, or is
+   * plain available. Powers the "Refunded" quick filter and the Payment
+   * status column's own badge for this otherwise-invisible case. */
+  isRefunded: boolean;
+  /** This row's own `TicketListing.id`, when it represents a real listing -
+   * the id `bulkUpdateTicketListingsStatus` needs (a LISTING id, never a
+   * ticket id). `null` for a ticket with no listing. */
+  listingRowId: number | null;
+  marketplaceId: number | null;
+  /** Shown alongside the Listing status badge - without it, a ticket listed
+   * on 2 marketplaces would render as 2 visually identical rows. */
+  marketplaceName: string | null;
+  listingExternalId: string | null;
+  listingUrl: string | null;
+  /** `TicketListing.status` for THIS row's own listing - `null` for a
+   * ticket with no listing. */
+  listingStatus: "active" | "sold" | "removed" | null;
+  isDemo: boolean;
 }
 

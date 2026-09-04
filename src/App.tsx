@@ -13,6 +13,7 @@ import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
 import Tickets from "./pages/Tickets";
+import TicketControlCenter from "./pages/TicketControlCenter";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
@@ -79,6 +80,10 @@ export default function App() {
               <Route path="orders" element={<Orders />} />
               <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="tickets" element={<Tickets />} />
+              {/* 2.4.3: Ticket Control Center - a dense work view over the
+                  same tickets data, see Layout.tsx's NAV entry and this
+                  page's own doc comment. */}
+              <Route path="control-center" element={<TicketControlCenter />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />

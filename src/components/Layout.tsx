@@ -6,6 +6,7 @@ import {
   IconCheck,
   IconChevronUp,
   IconGauge,
+  IconLayoutGrid,
   IconLogOut,
   IconPackage,
   IconReceipt,
@@ -38,6 +39,12 @@ const NAV = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
   { to: "/orders", label: "Orders", icon: IconPackage },
   { to: "/tickets", label: "Tickets", icon: IconTicket },
+  // 2.4.3: marko's own request for one dense work view over tickets across
+  // every event at once - placed right after Tickets (the data it reads),
+  // same "a narrower view sits near its own data source" placement
+  // Fulfillment Center's own 2.2.12 entry above already established for
+  // Sales.
+  { to: "/control-center", label: "Control Center", icon: IconLayoutGrid },
   { to: "/sales", label: "Sales", icon: IconReceipt },
   // 2.2.12: marko's own request for one dedicated place to see everything
   // sold that still needs finishing (payment/delivery/both) - placed right

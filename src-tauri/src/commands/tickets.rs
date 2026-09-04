@@ -13,7 +13,12 @@ use tauri::State;
 // unfiltered inventories so the UI never has to serialize/render an
 // unbounded number of rows in one go. Results are already ordered, so a
 // capped result is simply "the most relevant N", not an arbitrary cut.
-const LIST_CAP: i64 = 5000;
+//
+// 2.4.3: `pub(crate)` (was private) so `commands::ticket_control_center`'s
+// own list query - a second, cross-event ticket view with the same
+// unbounded-result-set shape - reuses this exact cap instead of a second
+// hardcoded "5000" living in a different file.
+pub(crate) const LIST_CAP: i64 = 5000;
 
 // The `sa.payment_status != 'refunded'` join guard matters as of migration
 // 004: a ticket can now legitimately have more than one `sales` row over its
@@ -294,6 +299,11 @@ pub(crate) fn bulk_update_tickets_impl(
     let column: &'static str = match input.field {
         BulkTicketField::Section => "section",
         BulkTicketField::RowLabel => "row_label",
+        // 2.4.3: added alongside the new `BulkTicketField::Tier` variant -
+        // see that variant's own doc comment (models.rs) for why this was
+        // deliberately left out when `tier` was first introduced (2.2.7) and
+        // why it's safe to add now.
+        BulkTicketField::Tier => "tier",
         BulkTicketField::Seat => "seat",
         BulkTicketField::ListingPriceCents => "listing_price_cents",
     };
@@ -355,14 +365,15 @@ pub(crate) fn bulk_update_tickets_impl(
     Ok(ids)
 }
 
-/// Bulk-edit one field (section, row, seat or listing price) across many
-/// tickets at once - e.g. correcting the section label for a
+/// Bulk-edit one field (section, row, tier, seat or listing price) across
+/// many tickets at once - e.g. correcting the section label for a
 /// whole block of seats in one action instead of one ticket at a time.
-/// Shared by Sale Detail and Order Detail's bulk-selection UI (one command,
-/// one implementation - see `BulkTicketEditBar.tsx`). Deliberately does NOT
-/// support ticket status - see `bulk_update_tickets_impl`'s doc comment.
-/// Returns every updated ticket, refetched in a single query (not one query
-/// per id) so this stays cheap even for a large selection.
+/// Shared by Sale Detail, Order Detail and (2.4.3) the Ticket Control
+/// Center's bulk-selection UI (one command, one implementation - see
+/// `BulkTicketEditBar.tsx`). Deliberately does NOT support ticket status -
+/// see `bulk_update_tickets_impl`'s doc comment. Returns every updated
+/// ticket, refetched in a single query (not one query per id) so this stays
+/// cheap even for a large selection.
 #[tauri::command]
 pub fn bulk_update_tickets(state: State<AppState>, input: BulkTicketUpdateInput) -> AppResult<Vec<Ticket>> {
     let mut conn = state.db.lock().unwrap();
@@ -1011,6 +1022,32 @@ mod tests {
             .query_row("SELECT section FROM tickets WHERE id=?1", [untouched], |r| r.get(0))
             .unwrap();
         assert_eq!(untouched_section, None, "the 4th ticket was never selected, so it must stay untouched");
+    }
+
+    /// 2.4.3: `BulkTicketField::Tier` - same shape as the Section coverage
+    /// above, added for the Ticket Control Center's "change tier" bulk
+    /// action (marko's own explicit request - see that variant's doc comment
+    /// in models.rs for why this was previously left out on purpose).
+    #[test]
+    fn bulk_update_tickets_impl_sets_tier_across_many_tickets() {
+        let mut conn = test_conn();
+        let id1 = seed_one_ticket(&conn);
+        let id2 = seed_one_ticket(&conn);
+
+        let input = BulkTicketUpdateInput {
+            ticket_ids: vec![id1, id2],
+            field: BulkTicketField::Tier,
+            text_value: Some("VIP".to_string()),
+            cents_value: None,
+        };
+        let updated_ids = bulk_update_tickets_impl(&mut conn, &input).unwrap();
+        assert_eq!(updated_ids.len(), 2);
+
+        for id in [id1, id2] {
+            let tier: Option<String> =
+                conn.query_row("SELECT tier FROM tickets WHERE id=?1", [id], |r| r.get(0)).unwrap();
+            assert_eq!(tier.as_deref(), Some("VIP"));
+        }
     }
 
     /// PRIORITA #1 (1.8.3 brief, section 2/3): bulk-editing a safe field must

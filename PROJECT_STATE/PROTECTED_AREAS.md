@@ -21,6 +21,111 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.4.3 - Ticket Control Center (new page, 1 new backend module, no schema change)
+
+marko's own spec: one dense work screen ("Ticket Control Center",
+`/control-center`) to manage/check tickets across EVERY event at once,
+built entirely on the EXISTING `tickets`/`ticket_listings`/`sales` data -
+explicitly NOT a new parallel ticket system. New files:
+`src-tauri/src/commands/ticket_control_center.rs` (one read-only list query,
+`list_control_center_tickets`) and `src/pages/TicketControlCenter.tsx`. See
+`commands::ticket_control_center`'s own module doc comment (Rust) for the
+full query design. Things worth knowing before touching any of this again:
+
+- **A ticket currently listed on more than one marketplace at once produces
+  more than one row in this view - one per (ticket, listing) pair, same
+  fan-out `ticket_listings::list_ticket_listings_for_event_impl` already
+  produces for its own, listings-only view.** A ticket with zero listings
+  still appears exactly once (`LEFT JOIN`). `TicketControlCenter.tsx`'s
+  `rowKey()` (the listing's own id, or a NEGATED ticket id when there is no
+  listing) is what gives each such row a stable, unique selection key even
+  though `ControlCenterTicket.id` repeats across a ticket's own rows - bulk
+  actions dedupe back down to distinct ticket ids (or listing ids) before
+  calling anything, so selecting both of one ticket's rows never double-
+  submits it.
+- **New additive, read-only signal: `ControlCenterTicket.isRefunded`.** The
+  active-sale join this view uses (`LEFT JOIN sales sa ON sa.ticket_id=t.id
+  AND sa.payment_status != 'refunded'`) is the SAME guarded shape
+  `tickets::BASE_SQL` already uses (migration 004, BUG #1) - untouched,
+  still the correct join for `sale_id`/`sale_payment_status`. But that guard
+  structurally means a refunded-and-not-yet-resold ticket's
+  `sale_payment_status` reads identically to a never-sold ticket's (both
+  `None`) - there was no existing way to tell them apart. `isRefunded` is a
+  new, purely additive `EXISTS (SELECT 1 FROM sales WHERE ticket_id=t.id AND
+  payment_status='refunded')` correlated subquery added ONLY to this new
+  query - it does not touch, and is not read by, `tickets.rs`,
+  `ticket_listings.rs`, or any refund/resell logic anywhere. It exists
+  solely so the "Refunded" Quick Filter and the Payment status column's own
+  badge can surface this case. **The manual "Payment status" filter dropdown
+  deliberately has no "Refunded" option** - filtering the active-sale-only
+  join for `payment_status='refunded'` would always return zero rows;
+  "Refunded" is reachable only via the Quick Filter, which uses
+  `refundedOnly`/`isRefunded` instead. Don't add a "Refunded" option to that
+  dropdown without changing what it filters against.
+- **"Listing price" coalesces two different columns, on purpose - same
+  precedent as Inventory Intelligence's own Overview cards ("2.2.6" entry
+  below).** `COALESCE(tl.price_cents, t.listing_price_cents)`: the ticket's
+  real per-marketplace `ticket_listings.price_cents` for THIS row's own
+  listing when one exists, else the legacy single `tickets.listing_price_
+  cents`. Not unified into one concept elsewhere in the app - don't "clean
+  this up" without checking both are still meant to stay separate systems.
+- **`BulkTicketField::Tier` (models.rs) added - supersedes the "2.2.7" entry
+  below's "No bulk-tier-edit was added" note.** marko's own Control Center
+  spec explicitly asked for a "change tier" bulk action, so
+  `bulk_update_tickets_impl` (tickets.rs) now has a 5th column arm
+  (`Tier => "tier"`) and `BulkTicketEditBar.tsx`'s shared `FIELD_OPTIONS`
+  has a 4th entry ("Tier / Level") - this benefits Sale Detail/Order Detail
+  too, not just the Control Center, since all three share that one
+  component. Still no bulk `status` support anywhere - that guard is
+  unrelated and untouched.
+- **`tickets::LIST_CAP` (was private) is now `pub(crate)`** so this new
+  module's own list query reuses the exact same 5000-row safety cap instead
+  of a second hardcoded number. Purely a visibility change - the constant's
+  value and `list_tickets_impl`'s own behavior are untouched.
+- **"Change listing status" and "Export selected" call existing, unmodified
+  commands directly** (`bulk_update_ticket_listings_status`,
+  `export_tickets_csv_selected`) - neither `ticket_listings.rs` nor
+  `csv_export.rs` was touched by this task. The Control Center's own
+  selection already happened in its own table, so "Export selected" skips
+  `ExportPickerModal`'s search-driven picker UI entirely and just reuses its
+  same save-dialog-then-export shape directly.
+- **No Sort control** - marko's spec listed ZOBRAZENIE/FILTERS/QUICK
+  FILTERS/SEARCH/BULK, not a sort, so the backend applies one fixed order
+  (soonest event date first, nulls last, then ticket id) and the page has no
+  sort dropdown. Don't add one without checking marko actually wants it -
+  this was a deliberate "don't add UI surface nobody asked for" call, not an
+  oversight.
+- **First page in this app where a table owns its own scroll (`max-h-[68vh]
+  overflow-y-auto` with a sticky `<thead>`/`<th>` inside it) instead of
+  letting the whole page grow past the window.** marko's own "žiadny
+  zbytočný page scroll (tabuľka môže mať vlastný scroll)". `sticky` is
+  applied per-`<th>`, not on `<thead>` itself (more reliable across engines
+  once a table also uses `border-collapse`, which every table in this app
+  does). The filters/quick-filters row above the table is ALSO `sticky
+  top-0` inside `main`'s own scroll, independently. `68vh` is a plain,
+  un-measured constant (unlike `useNarrowTables`' own 1649px breakpoint,
+  which WAS measured against real rendered content) - safe to tune in one
+  place if marko wants the table taller/shorter.
+- **Column set was trimmed from marko's literal 12-field list for density**:
+  Event name and Event date render as one combined cell (name + date
+  subtext), not two table columns - same pattern Orders.tsx/ExportPickerModal
+  already use for pairing a name with a date. Marketplace has no column of
+  its own either - its name renders as a small subtext line inside the
+  Listing status cell instead, since without it two of one ticket's own rows
+  (one per marketplace) would otherwise look visually identical. Flagged
+  here as a "smallest consistent solution" judgment call, not an oversight -
+  revisit if marko wants Event date or Marketplace broken out as their own
+  columns.
+- **Order, Tier, and Purchase price hide below the shared `useNarrowTables()`
+  breakpoint** (same 1649px breakpoint every other table uses) - a plain,
+  un-measured judgment call about which of the 12 columns are least critical
+  to keep, NOT verified against real rendered content/locales the way
+  Tickets.tsx's own narrow-mode column set was (see that page's own 2.0.37/
+  2.0.38 entries) - there was no Playwright/browser check available for this
+  task. Revisit the exact hidden-column set or the widths in
+  `TicketControlCenter.tsx`'s two `<colgroup>`s if marko reports anything
+  cramped.
+
 ## 2.4.2 - Live Market Monitor removed; Price Checker back to manual-only
 
 **Read this before touching migration `026_price_checker_market_monitor.sql`,
@@ -1168,11 +1273,17 @@ knowing before touching this column again:
   breakdown's own "No section"**, per marko's own explicit instruction for
   this one field specifically. Don't "harmonize" the two labels later
   without checking this was intentional.
-- **No bulk-tier-edit was added** - `BulkTicketField`/
-  `BulkTicketUpdateInput` (`tickets.rs`/`models.rs`) deliberately still
-  only cover Section/RowLabel/Seat/ListingPriceCents. Not an oversight;
-  bulk-editing tier wasn't asked for, and adding it means deliberately
-  extending that closed enum, not doing so by default.
+- **HISTORICAL, superseded by "2.4.3" above: bulk-tier-edit now exists.**
+  `BulkTicketField` gained a `Tier` variant once marko's Control Center spec
+  explicitly asked for a "change tier" bulk action - see that entry. Kept
+  here for context: the original decision NOT to add it (below) was a plain
+  "wasn't asked for" scope call, not a safety concern, which is exactly why
+  it was safe to add later without revisiting anything else. Original text:
+  no bulk-tier-edit was added - `BulkTicketField`/`BulkTicketUpdateInput`
+  (`tickets.rs`/`models.rs`) deliberately still only cover Section/RowLabel/
+  Seat/ListingPriceCents. Not an oversight; bulk-editing tier wasn't asked
+  for, and adding it means deliberately extending that closed enum, not
+  doing so by default.
 - **No tier column was added to any list/table display** (Tickets.tsx's
   list, OrderDetail.tsx's ticket table, Sales.tsx, SaleDetail.tsx) -
   checked first: section/row aren't shown as table columns in any of

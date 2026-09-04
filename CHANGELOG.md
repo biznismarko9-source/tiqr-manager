@@ -16,6 +16,41 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.4.3 - Ticket Control Center
+
+marko's own focused-task request: one central work screen to manage and
+check tickets across every event at once, built entirely on top of the
+existing tickets/listings/sales data - explicitly not a new parallel ticket
+system.
+
+1. **New**: `/control-center` page - sticky filters (Event, Date range,
+   Tier/Level, Section, Row, Ticket status, Listing status, Sale status,
+   Payment status, Delivery status, Marketplace), 8 quick filters (All/
+   Unsold/Unlisted/Listed/Sold/Pending payment/Pending delivery/Refunded),
+   search across ticket/order/event/section/row/marketplace/listing id-url,
+   and a dense table (first in this app to own its own scroll instead of
+   growing the whole page) over one new backend query,
+   `list_control_center_tickets` (`commands/ticket_control_center.rs`). Row
+   click opens the existing Sale Detail or Order Detail, whichever applies.
+2. **Bulk actions - all existing mechanisms**: Section/Row/Tier/Seat/Listing
+   price via the shared `BulkTicketEditBar` (now with a new Tier option,
+   also benefiting Sale Detail/Order Detail); listing status via the
+   existing `bulkUpdateTicketListingsStatus`; CSV export of the selection
+   via the existing `exportTicketsCsvSelected`. No refund/resell bulk
+   actions, per marko's explicit instruction.
+3. **New, purely additive read signal**: `isRefunded` (an `EXISTS` check
+   against `sales`) - lets the "Refunded" quick filter surface a
+   refunded-and-not-yet-resold ticket, which the existing active-sale-only
+   join can't otherwise distinguish from a never-sold one. Reads only; no
+   refund/resell/money logic touched.
+4. **Untouched**: refund/resell logic, `batch_id`, every money/cents column,
+   Listings/Sales/Finance/Orders core - per marko's explicit "DÔLEŽITÉ" list.
+   No new migration.
+
+Full backend suite green: `cargo test --lib` (1038 passed, +12 over 2.4.2,
+0 failed, 3 ignored), `cargo clippy --lib` clean of new warnings, `npx tsc
+-b`, `npm run build` all clean. Version bumped **2.4.2 -> 2.4.3**.
+
 ## 2.4.2 - Live Market Monitor removed; Price Checker back to a manual tool
 
 marko decided he does not want the 2.4.1 "Live Market Monitor" feature in

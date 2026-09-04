@@ -18,6 +18,8 @@ import type {
   CashflowForecast,
   CategoryDetectionResult,
   ComparableReferenceInput,
+  ControlCenterFilters,
+  ControlCenterTicket,
   CreatedSheetResult,
   CreateFromRecurringResult,
   CsvImportResult,
@@ -173,6 +175,12 @@ export const api = {
    * "Other..." in the app, or synced in from a sheet cell). Powers the "New
    * order" form's Ticket Type field - was a hardcoded array before 2.0.19. */
   listTicketTypes: () => invoke<string[]>("list_ticket_types"),
+
+  // Ticket Control Center (2.4.3) - one dense work view over EXISTING
+  // tickets data across every event. See commands::ticket_control_center's
+  // own module doc comment (Rust) for the query design.
+  listControlCenterTickets: (filters: ControlCenterFilters) =>
+    invoke<ControlCenterTicket[]>("list_control_center_tickets", { filters }),
 
   // Ticket Listings (2.2.4) - real per-marketplace listings for a ticket
   // (Event Workspace -> Listings). One ticket can have several at once, one
