@@ -14,6 +14,7 @@ use db::AppState;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -42,11 +43,37 @@ pub fn run() {
         // 2.0.5: opens the system browser for "Sign in with Google" - see
         // google_oauth.rs's module doc comment.
         .plugin(tauri_plugin_opener::init())
+        // 2.5.2: registers this app's `tiqrmanager://` URL scheme for the new
+        // "Forgot password?" flow - see lib/firebase.ts's
+        // PASSWORD_RESET_ACTION_CODE_SETTINGS (frontend) for why a deep link
+        // exists at all, and Cargo.toml's own comment on this same
+        // dependency for why tauri-plugin-single-instance above needed its
+        // `deep-link` feature turned on for this to reach an already-running
+        // instance on Windows. The actual URL is parsed entirely on the
+        // frontend (App.tsx, via @tauri-apps/plugin-deep-link's
+        // getCurrent/onOpenUrl) - nothing Rust-side needs to read it.
+        .plugin(tauri_plugin_deep_link::init())
         // 2.0.76: desktop notifications for the new outbound-notification
         // feature (commands/notifications.rs) - no ordering constraint
         // against the other plugins here (unlike single-instance above).
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // 2.5.2: a `cargo tauri dev` build has no installer to have
+            // registered `tiqrmanager://` with the OS - tauri-plugin-deep-
+            // link's own documented Windows/Linux limitation is that deep
+            // links only trigger for installed applications otherwise.
+            // register_all() registers this build's configured schemes
+            // (tauri.conf.json's `plugins.deep-link.desktop.schemes`)
+            // against THIS running executable instead, purely so the
+            // "Forgot password?" flow can be clicked through end to end on
+            // a dev build too. Release builds get the real registration for
+            // free from the NSIS installer and don't need this - best-
+            // effort (`let _ =`) since a dev build failing to self-register
+            // should never stop the app from starting.
+            #[cfg(all(desktop, debug_assertions))]
+            {
+                let _ = app.deep_link().register_all();
+            }
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
             let conn = db::open_connection(&db_path).map_err(|e| e.to_string())?;

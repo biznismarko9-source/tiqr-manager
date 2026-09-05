@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.5.1"
+version = "2.5.2"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -31,7 +31,21 @@ tauri-plugin-updater = "2"
 # open_connection. Registered first in the Builder chain (see lib.rs) per
 # the plugin's own documented requirement - it needs to run before anything
 # else initializes, including this app's own .setup() that opens the DB.
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+# 2.5.2: "Forgot password?" - see lib/firebase.ts's
+# PASSWORD_RESET_ACTION_CODE_SETTINGS (frontend) for the full mechanism this
+# is one piece of. Registers this app's own `tiqrmanager://` URL scheme (see
+# tauri.conf.json's `plugins.deep-link`) so Windows can hand the app a
+# password-reset link's oobCode directly, instead of opening it in a
+# browser. The `features = ["deep-link"]` added to tauri-plugin-single-
+# instance above is this plugin's own documented requirement for Windows/
+# Linux: without it, clicking a tiqrmanager:// link while the app is already
+# running would launch a second process (see that dependency's 2.0.52
+# comment on why a second process is a real problem here, not just a UI
+# nuisance) instead of reaching the one already-running instance. No change
+# needed to the single-instance callback itself in lib.rs - the feature flag
+# makes this plugin's own event firing there automatic.
+tauri-plugin-deep-link = "2"
 # 2.0.5: opens the user's default system browser to Google's real sign-in
 # page for the new "Sign in with Google" flow (google_oauth.rs) - the app has
 # no other way to launch an external browser from Rust. Not needed by (and

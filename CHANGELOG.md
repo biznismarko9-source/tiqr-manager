@@ -16,14 +16,39 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.5.2 - "Forgot password?" via a deep link into the app; Discord sign-in deferred
+
+marko's own follow-up request after 2.5.1. No schema changes. Discord
+sign-in was asked for too but is NOT built - see `PROTECTED_AREAS.md`'s
+"2.5.2" entry for why (needs a Cloud Function + Firebase's paid Blaze plan,
+which marko chose against for now).
+
+1. **Added**: a real "Forgot password?" flow from Welcome.tsx's login form,
+   using Firebase's own `sendPasswordResetEmail`/`verifyPasswordResetCode`/
+   `confirmPasswordReset` - no new backend, no Cloud Functions, no Blaze
+   plan.
+2. **Added**: the emailed reset link now opens TIQR Manager directly
+   (`handleCodeInApp: true` + a new `tiqrmanager://` custom URL scheme via
+   `tauri-plugin-deep-link`) instead of a browser tab - marko's first choice
+   (a typed short code) would have needed the same paid infrastructure as
+   Discord above, so this was worked out with him directly as the
+   alternative.
+3. **Added**: `docs/reset-redirect.html`, a static hand-off page on the same
+   GitHub Pages site `docs/privacy.html` already uses, forwarding Firebase's
+   link into the app.
+4. **Added**: `src/pages/ResetPassword.tsx` - verifies the incoming reset
+   code and sets the new password.
+5. **Needs one manual step**: add `biznismarko9-source.github.io` to Firebase
+   Console -> Authentication -> Settings -> Authorized domains before this
+   works end to end.
+
 ## 2.5.1 - Ticket Center rebuilt around orders, sidebar reorder, Calendar visual refresh
 
 marko's own direct follow-up on the 2.5.0 release below, delivered as its
-own round. No backend/schema changes. No standalone
-`REDESIGN-2.5.1-REPORT.md`/zip was produced for this round by itself -
-marko signaled more feedback was coming right after, so packaging was
-deferred rather than built and immediately superseded (see
-`PROTECTED_AREAS.md`'s "2.5.1" entry).
+own round. No backend/schema changes. Packaging
+(`REDESIGN-2.5.1-REPORT.md` + zip) was deferred past this round - marko
+signaled more feedback was coming right after - and built once he
+separately asked ("zabal to"; see `PROTECTED_AREAS.md`'s "2.5.1" entry).
 
 1. **Changed**: Ticket Center moved out of Finance (was a subtab there for
    one version, 2.4.4) back to its own top-level page/route

@@ -1,0 +1,541 @@
+<title>TIQR Roadmap</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #f7f8fc;
+    --bg-raised: #ffffff;
+    --bg-sunken: #eef0f8;
+    --ink: #14172b;
+    --ink-soft: #4b5170;
+    --ink-faint: #868ca8;
+    --line: #e2e4f0;
+    --line-soft: #edeef7;
+    --brand: #4a68f7;
+    --brand-ink: #213fe9;
+    --brand-wash: #eef4ff;
+    --new: #0f8b6c;
+    --new-wash: #e6f6f1;
+    --improve: #4a68f7;
+    --improve-wash: #eef4ff;
+    --claude: #b5502e;
+    --claude-wash: #fbece3;
+    --eff-hi: #c2410c;
+    --imp-hi: #0f8b6c;
+    --shadow: 0 1px 2px rgba(20,23,43,.04), 0 8px 24px -12px rgba(20,23,43,.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1120;
+      --bg-raised: #171a2e;
+      --bg-sunken: #0a0b16;
+      --ink: #eef0fb;
+      --ink-soft: #b0b4d1;
+      --ink-faint: #767ba0;
+      --line: #2a2e4a;
+      --line-soft: #21243c;
+      --brand: #7f9cfb;
+      --brand-ink: #a9bcff;
+      --brand-wash: #1a2040;
+      --new: #4fd0a6;
+      --new-wash: #12261f;
+      --improve: #7f9cfb;
+      --improve-wash: #1a2040;
+      --claude: #f0a074;
+      --claude-wash: #2c1c14;
+      --eff-hi: #f0a074;
+      --imp-hi: #4fd0a6;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1120;
+    --bg-raised: #171a2e;
+    --bg-sunken: #0a0b16;
+    --ink: #eef0fb;
+    --ink-soft: #b0b4d1;
+    --ink-faint: #767ba0;
+    --line: #2a2e4a;
+    --line-soft: #21243c;
+    --brand: #7f9cfb;
+    --brand-ink: #a9bcff;
+    --brand-wash: #1a2040;
+    --new: #4fd0a6;
+    --new-wash: #12261f;
+    --improve: #7f9cfb;
+    --improve-wash: #1a2040;
+    --claude: #f0a074;
+    --claude-wash: #2c1c14;
+    --eff-hi: #f0a074;
+    --imp-hi: #4fd0a6;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--brand-ink);
+    font-weight: 600;
+  }
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(32px, 5vw, 46px);
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    margin: 10px 0 16px;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .lede {
+    font-size: 16.5px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 8px 18px;
+    margin-top: 20px; font-size: 13px; color: var(--ink-faint);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .callout {
+    margin: 36px 0 40px;
+    padding: 20px 22px;
+    border-radius: 14px;
+    background: var(--claude-wash);
+    border: 1px solid color-mix(in srgb, var(--claude) 30%, transparent);
+  }
+  .callout h3 {
+    margin: 0 0 8px; font-size: 14.5px; font-weight: 700; color: var(--claude);
+    font-family: 'Inter', sans-serif;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .callout p { margin: 0; font-size: 14.5px; color: var(--ink-soft); max-width: 68ch; }
+  .callout p + p { margin-top: 8px; }
+
+  h2.section-title {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    font-size: 22px;
+    margin: 56px 0 4px;
+    color: var(--ink);
+  }
+  .section-sub { color: var(--ink-faint); font-size: 13.5px; margin: 0 0 22px; }
+
+  /* at-a-glance table */
+  .glance {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--bg-raised);
+    box-shadow: var(--shadow);
+  }
+  .glance-row {
+    display: grid;
+    grid-template-columns: 28px 1fr auto auto;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 13.5px;
+  }
+  .glance-row:last-child { border-bottom: none; }
+  .glance-row.head {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ink-faint);
+    background: var(--bg-sunken);
+  }
+  .glance-num { color: var(--ink-faint); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .glance-name { font-weight: 600; color: var(--ink); }
+  .glance-name a { color: inherit; text-decoration: none; }
+  .glance-name a:hover { color: var(--brand-ink); }
+  .dots { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 1px; white-space: nowrap; }
+  .dots .on { color: var(--ink); }
+  .dots .off { color: var(--line); }
+  .glance-tags { display: flex; gap: 12px; }
+
+  .tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 3px 8px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .tag.new { background: var(--new-wash); color: var(--new); }
+  .tag.improve { background: var(--improve-wash); color: var(--improve); }
+  .tag.claude { background: var(--claude-wash); color: var(--claude); }
+  .tag::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  /* item cards */
+  .item {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--bg-raised);
+    box-shadow: var(--shadow);
+    padding: 26px 28px 24px;
+    margin-bottom: 20px;
+  }
+  .item-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .item-title-row { display: flex; align-items: baseline; gap: 12px; }
+  .item-num {
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 15px;
+    color: var(--ink-faint);
+  }
+  .item h3 {
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 20px;
+    margin: 0; color: var(--ink); text-wrap: balance;
+  }
+  .item-scores {
+    display: flex; gap: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-faint);
+  }
+  .item-scores b { color: var(--ink-soft); font-weight: 600; }
+  .item p { margin: 10px 0; font-size: 14.5px; color: var(--ink-soft); }
+  .item p.body-main { color: var(--ink); }
+  .item .why {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--bg-sunken);
+    font-size: 13.5px;
+    color: var(--ink-soft);
+  }
+  .item .why b { color: var(--ink); font-weight: 600; }
+
+  .closing {
+    margin-top: 56px;
+    padding-top: 32px;
+    border-top: 1px solid var(--line);
+  }
+  .closing h2 { margin-top: 0; }
+  .closing ol { padding-left: 22px; color: var(--ink-soft); font-size: 14.5px; }
+  .closing li { margin-bottom: 8px; }
+  .closing li b { color: var(--ink); }
+
+  .sources {
+    margin-top: 40px;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+  .sources summary {
+    cursor: pointer; font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase; letter-spacing: .07em; font-size: 11px;
+    color: var(--ink-faint); font-weight: 600;
+  }
+  .sources ul { margin: 12px 0 0; padding-left: 18px; }
+  .sources a { color: var(--ink-faint); }
+  .sources li { margin-bottom: 4px; }
+
+  @media (max-width: 620px) {
+    .glance-row { grid-template-columns: 20px 1fr; row-gap: 6px; }
+    .glance-row .dots, .glance-row .glance-tags { grid-column: 2; }
+    .glance-row.head { display: none; }
+    .item-head { flex-direction: column; }
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">TIQR Manager · prieskum a odporúčania</p>
+  <h1>10 vecí, ktoré by TIQR mohol získať ďalej</h1>
+  <p class="lede">
+    Prešiel som, čo TIQR dnes reálne robí (<code>CURRENT_STATE.md</code>,
+    <code>KNOWN_BUGS.md</code>, kód samotný), a k tomu trh - softvér, ktorý
+    používajú iní ticket brokeri (SkyBox, Ticket Utils, Stage Front) a kam sa
+    posúva AI v ticketingu. Výsledok je desať konkrétnych vecí nižšie - časť
+    sú funkcie, ktoré konkurencia má a my nie, časť sú vylepšenia toho, čo už
+    máme, a časť sú miesta, kde by reálne pomohlo Claude API.
+  </p>
+  <div class="meta-row">
+    <span>September 2026</span>
+    <span>TIQR Manager v2.5.1</span>
+  </div>
+
+  <div class="callout">
+    <h3>⚠ Pred Claude položkami - jedna vec na zváženie</h3>
+    <p>
+      TIQR je dnes <b style="color:var(--ink)">local-first</b> - žiadny cloud,
+      žiadny účet, všetko beží len na tvojom počítači. Každá funkcia, ktorá
+      použije Claude API, nutne pošle NIEČO z tých dát preč z počítača pri
+      tom jednom volaní (napr. text objednávky, alebo otázka na dáta).
+    </p>
+    <p>
+      To nie je dôvod to nerobiť - len dôvod robiť to premyslene: nech je to
+      vždy zapnuté dobrovoľne (nie automaticky pri inštalácii), nech používa
+      tvoj vlastný API kľúč (Settings, podobne ako Google Sheets integrácia
+      dnes), a nech je pri každej funkcii jasné, čo presne sa posiela von.
+      Štyri Claude nápady nižšie sú označené farebne.
+    </p>
+  </div>
+
+  <h2 class="section-title">Na prvý pohľad</h2>
+  <p class="section-sub">Náročnosť / dopad: ●●● vysoký · ●●○ stredný · ●○○ nízky</p>
+  <div class="glance">
+    <div class="glance-row head">
+      <span>#</span><span>Čo</span><span>Typ</span><span>Náročnosť · Dopad</span>
+    </div>
+    <div class="glance-row"><span class="glance-num">01</span><span class="glance-name"><a href="#item-1">Predaj naprieč trhmi automaticky</a></span><span class="glance-tags"><span class="tag new">Nové</span></span><span class="dots"><span class="on">●●●</span> <span class="on">●●●</span></span></div>
+    <div class="glance-row"><span class="glance-num">02</span><span class="glance-name"><a href="#item-2">Objednávka z fotky/PDF potvrdenia</a></span><span class="glance-tags"><span class="tag claude">Claude API</span></span><span class="dots"><span class="on">●●○</span> <span class="on">●●●</span></span></div>
+    <div class="glance-row"><span class="glance-num">03</span><span class="glance-name"><a href="#item-3">Notifikácie aj keď je appka zavretá</a></span><span class="glance-tags"><span class="tag improve">Vylepšenie</span></span><span class="dots"><span class="on">●●○</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">04</span><span class="glance-name"><a href="#item-4">Opýtaj sa vlastných dát</a></span><span class="glance-tags"><span class="tag claude">Claude API</span></span><span class="dots"><span class="on">●●●</span> <span class="on">●●●</span></span></div>
+    <div class="glance-row"><span class="glance-num">05</span><span class="glance-name"><a href="#item-5">Kto odo mňa kupuje opakovane</a></span><span class="glance-tags"><span class="tag new">Nové</span></span><span class="dots"><span class="on">●●○</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">06</span><span class="glance-name"><a href="#item-6">Ziskovosť podľa dodávateľa</a></span><span class="glance-tags"><span class="tag improve">Vylepšenie</span></span><span class="dots"><span class="on">●○○</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">07</span><span class="glance-name"><a href="#item-7">Tichý strážca pred uložením</a></span><span class="glance-tags"><span class="tag claude">Claude API</span></span><span class="dots"><span class="on">●●○</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">08</span><span class="glance-name"><a href="#item-8">Skutočný súbor lístka pri zázname</a></span><span class="glance-tags"><span class="tag new">Nové</span></span><span class="dots"><span class="on">●●○</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">09</span><span class="glance-name"><a href="#item-9">Kedy zľaviť - predpoveď z histórie</a></span><span class="glance-tags"><span class="tag new">Nové</span></span><span class="dots"><span class="on">●●●</span> <span class="on">●●○</span></span></div>
+    <div class="glance-row"><span class="glance-num">10</span><span class="glance-name"><a href="#item-10">Denný brief namiesto prezerania appky</a></span><span class="glance-tags"><span class="tag claude">Claude API</span></span><span class="dots"><span class="on">●○○</span> <span class="on">●●○</span></span></div>
+  </div>
+
+  <h2 class="section-title">Podrobne</h2>
+  <p class="section-sub">Každá položka hovorí, čo presne dnes chýba a prečo si myslím, že sa to oplatí.</p>
+
+  <div class="item" id="item-1">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">01</span><h3>Predaj naprieč trhmi automaticky</h3></div>
+      <span class="tag new">Nové</span>
+    </div>
+    <p class="body-main">
+      Priame API napojenie na StubHub/Vivid Seats/SeatGeek/TickPick - vystavíš
+      lístok raz v TIQR a appka ho pošle na všetky naraz; keď sa predá na
+      jednom, hneď zmizne aj z ostatných.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> presne toto je jadro nástrojov ako Stage Front a SkyBox -
+      "nahraj raz, appka to rozposle a stiahne, keď sa predá inde". TIQR dnes
+      má Price Checker (kontrola cien na trhu) a Ticket Center/Fulfillment,
+      ale nikde som nenašiel priame API vystavovanie na marketplace. Toto je
+      najväčší rozdiel oproti konkurencii - ale aj najnáročnejšie: prístup k
+      API väčšiny marketplace-ov je viazaný na partnerstvo/objem predaja, nie
+      len na technickú integráciu. Reálne na to, čo pár mesiacov dopredu.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>vysoká</b></span><span>Dopad: <b>veľmi vysoký</b></span></div>
+  </div>
+
+  <div class="item" id="item-2">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">02</span><h3>Objednávka z fotky/PDF potvrdenia</h3></div>
+      <span class="tag claude">Claude API</span>
+    </div>
+    <p class="body-main">
+      Vložíš screenshot e-mailu od predajcu alebo PDF lístka - Claude prečíta
+      event, dátum, sektor/rad/sedadlo, cenu, menu - a predvyplní formulár
+      "New Order". Ty už len skontroluješ a potvrdíš.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> v celej appke som nenašiel žiadnu formu OCR/extrakcie -
+      všetko sa zadáva ručne alebo cez CSV import. Claude vie čítať obrázky aj
+      PDF priamo (vision), takže toto je jasne ohraničená funkcia: jedno
+      volanie API, štruktúrovaný výstup, žiadny zásah do zvyšku appky. Šetrí
+      čas pri úplne každej objednávke, nie len pri veľkých.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná</b></span><span>Dopad: <b>vysoký</b></span></div>
+  </div>
+
+  <div class="item" id="item-3">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">03</span><h3>Notifikácie aj keď je appka zavretá</h3></div>
+      <span class="tag improve">Vylepšenie</span>
+    </div>
+    <p class="body-main">
+      Tray ikonka + spustenie na pozadí, aby upozornenia (platba, doručenie,
+      blížiaci sa event) chodili aj keď appku práve nemáš otvorenú.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> toto nie je môj odhad - je to priamo zapísané v
+      <code>KNOWN_BUGS.md</code> ako známa, zámerná limitácia ("notifikácie
+      bežia len kým appka reálne beží, žiadna tray ikonka, žiadny
+      launch-on-startup"). Už je to na zozname ako "chcené, len ešte
+      nepostavené" - jasný kandidát.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná</b></span><span>Dopad: <b>stredný</b></span></div>
+  </div>
+
+  <div class="item" id="item-4">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">04</span><h3>Opýtaj sa vlastných dát</h3></div>
+      <span class="tag claude">Claude API</span>
+    </div>
+    <p class="body-main">
+      Jedno políčko kdekoľvek v appke: "Koľko som zarobil na Coldplay minulý
+      mesiac?", "Ktoré objednávky ešte čakajú na platbu od kupujúceho?" -
+      Claude to prevedie na už existujúce, bezpečné dopyty (rovnaké, aké dnes
+      volá Dashboard/Ticket Center/Calendar) a odpovie v texte, nie v tabuľke.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> namiesto prehľadávania Orders/Sales/Finance filtrami pri
+      každej otázke. Dôležitý detail nasadenia: Claude by nemal písať surové
+      SQL proti živej databáze - mal by si vyberať len spomedzi vopred
+      pripravených, bezpečných dopytov (rovnaký princíp, aký appka už
+      používa - "každý pohľad má svoj vlastný, kontrolovaný dopyt").
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná-vysoká</b></span><span>Dopad: <b>vysoký</b></span></div>
+  </div>
+
+  <div class="item" id="item-5">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">05</span><h3>Kto odo mňa kupuje opakovane</h3></div>
+      <span class="tag new">Nové</span>
+    </div>
+    <p class="body-main">
+      Voliteľné meno/kontakt kupujúceho pri predaji, a z toho jednoduchý
+      pohľad "tento človek odo mňa kúpil 5×, minul $X, preferuje sektor Y".
+    </p>
+    <div class="why">
+      <b>Prečo:</b> overil som si to priamo v kóde - Sales dnes nemá VÔBEC
+      žiadne pole pre meno alebo kontakt kupujúceho (jediné "buyer_name" v
+      appke patrí Pulls - to je človek, ktorý TEBE zohnal lístky, opačný
+      smer). Takže "kto odo mňa kupuje opakovane" sa dnes nedá zistiť ani
+      ručne. Bežná vec v POS/CRM nástrojoch pre brokerov, tu chýba úplne od
+      základu - najprv by pribudlo pole, až potom prehľad nad ním.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná</b></span><span>Dopad: <b>stredný</b></span></div>
+  </div>
+
+  <div class="item" id="item-6">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">06</span><h3>Ziskovosť podľa dodávateľa</h3></div>
+      <span class="tag improve">Vylepšenie</span>
+    </div>
+    <p class="body-main">
+      Prehľad "z ktorého dodávateľa/platformy nákupu mi nákup vychádza
+      najziskovejšie" - Dashboard dnes ukazuje predaj podľa platformy, ale nie
+      nákup podľa dodávateľa.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> dáta na to už existujú - každá objednávka má
+      <code>supplier_id</code> aj meno dodávateľa - len som nenašiel žiadny
+      report, ktorý by to agregoval a zoradil podľa zisku. Keďže dáta aj
+      výpočet zisku (profit) už appka počíta inde (Order Detail), toto je
+      len nový pohľad nad existujúcimi číslami - žiadna nová schéma.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>nízka</b></span><span>Dopad: <b>stredný</b></span></div>
+  </div>
+
+  <div class="item" id="item-7">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">07</span><h3>Tichý strážca pred uložením</h3></div>
+      <span class="tag claude">Claude API</span>
+    </div>
+    <p class="body-main">
+      Pri nezvyčajnej transakcii (cena výrazne mimo bežného rozsahu pre daný
+      event/sektor, alebo platba nesediaca s očakávanou sumou) appka
+      ukáže jemné upozornenie v ľudskej reči ešte pred uložením - nie blok,
+      len otázku navyše.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> ticketing má podľa prieskumu nadpriemerne vysoký podiel
+      chargebackov a podvodov v porovnaní s bežným e-commerce. Appka už má
+      dáta na porovnanie (históriu cien z Price Checkera, vlastné predaje) -
+      Claude by len sformuloval, prečo je niečo nezvyčajné, namiesto tvrdého
+      pravidla, ktoré by falošne blokovalo legitímne prípady.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná</b></span><span>Dopad: <b>stredný-vysoký</b></span></div>
+  </div>
+
+  <div class="item" id="item-8">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">08</span><h3>Skutočný súbor lístka pri zázname</h3></div>
+      <span class="tag new">Nové</span>
+    </div>
+    <p class="body-main">
+      Možnosť priložiť skutočný PDF/barcode súbor priamo k lístku v appke,
+      nielen textový status "Delivered / Not delivered".
+    </p>
+    <div class="why">
+      <b>Prečo:</b> appka dnes trackuje len STAV doručenia, nie samotný
+      súbor. Pri spore s kupujúcim ("poslal si mi to vôbec?") by bolo
+      užitočné mať dôkaz priamo pri zázname. Keďže je appka local-first,
+      súbory by ostali len na tvojom disku - sedí to s filozofiou appky,
+      ale je to väčší zásah (treba miesto na ukladanie súborov, nie len
+      textové polia).
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>stredná-vysoká</b></span><span>Dopad: <b>stredný</b></span></div>
+  </div>
+
+  <div class="item" id="item-9">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">09</span><h3>Kedy zľaviť - predpoveď z histórie</h3></div>
+      <span class="tag new">Nové</span>
+    </div>
+    <p class="body-main">
+      Na základe histórie predajov (kedy sa podobné eventy vypredali, ako
+      rýchlo) appka odporučí "tento typ eventu sa zvyčajne predáva pomaly -
+      zváž zľavu X dní vopred".
+    </p>
+    <div class="why">
+      <b>Prečo:</b> konkurencia (napr. Stage Front's EventVue) toto ponúka
+      ako "demand tracking". Dôležité upozornenie - appka má zásadu
+      "nevymýšľaj dáta, ktoré neexistujú" (rovnaká, akú si dal aj pri
+      Kalendári) - takže toto dáva zmysel až keď je v appke dosť histórie
+      predajov na jeden typ/kategóriu eventu. Skôr cieľ na neskôr než na
+      teraz.
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>vysoká</b></span><span>Dopad: <b>stredný (zatiaľ)</b></span></div>
+  </div>
+
+  <div class="item" id="item-10">
+    <div class="item-head">
+      <div class="item-title-row"><span class="item-num">10</span><h3>Denný brief namiesto prezerania appky</h3></div>
+      <span class="tag claude">Claude API</span>
+    </div>
+    <p class="body-main">
+      Raz denne/týždenne appka poskladá krátke zhrnutie v bežnej reči z toho,
+      čo už počíta (Attention Center, Calendar "Dnes a najbližších 7 dní",
+      Dashboard čísla) - "toto je dôležité tento týždeň" namiesto
+      prechádzania čísel.
+    </p>
+    <div class="why">
+      <b>Prečo:</b> najlacnejší z Claude nápadov - žiadne nové dáta, len
+      textové zhrnutie toho, čo appka už agreguje. Pekne nadväzuje na
+      existujúce desktop notifikácie (rovnaký kanál, len raz denne namiesto
+      priebežne).
+    </div>
+    <div class="item-scores"><span>Náročnosť: <b>nízka</b></span><span>Dopad: <b>stredný</b></span></div>
+  </div>
+
+  <div class="closing">
+    <h2 class="section-title" style="margin-top:0">Kde by som začal</h2>
+    <ol>
+      <li><b>Najlacnejšie na vyskúšanie:</b> #6 (ziskovosť podľa dodávateľa - dáta už existujú), #10 (denný brief) a #3 (tray/notifikácie) - žiadne z nich nemení dátový model.</li>
+      <li><b>Najväčší reálny prínos na hodinu práce:</b> #2 (objednávka z potvrdenia) - dotýka sa každej jednej objednávky, ktorú kedy zadáš.</li>
+      <li><b>Najväčší strategický skok, ale aj najdlhší:</b> #1 (predaj naprieč trhmi) - stojí za to začať zisťovať podmienky API prístupu už teraz, aj keby sa stavalo až neskôr.</li>
+      <li><b>Počkal by som na viac dát:</b> #9 (predpoveď dopytu) - kým appka nenazbiera dosť histórie predajov, odhad by bol viac hádanie ako predikcia.</li>
+    </ol>
+  </div>
+
+  <details class="sources">
+    <summary>Zdroje z internetu, ktoré som použil</summary>
+    <ul>
+      <li><a href="https://stagefront.com/news/what-software-do-ticket-brokers-use" target="_blank" rel="noopener">Stage Front - What Software Do Ticket Brokers Use?</a></li>
+      <li><a href="https://stagefront.com/news/how-to-list-across-multiple-marketplaces" target="_blank" rel="noopener">Stage Front - Listing Across Multiple Marketplaces</a></li>
+      <li><a href="https://www.saasworthy.com/product/skybox-from-vivid-seats" target="_blank" rel="noopener">SaaSworthy - SkyBox from Vivid Seats</a></li>
+      <li><a href="https://softjourn.com/insights/how-ai-is-transforming-the-ticketing-industry" target="_blank" rel="noopener">Softjourn - How AI Is Transforming the Ticketing Industry</a></li>
+      <li><a href="https://softjourn.com/insights/top-event-ticketing-industry-trends" target="_blank" rel="noopener">Softjourn - Top Event Ticketing Industry Trends 2026</a></li>
+      <li><a href="https://underpricedai.com/blog/ai-pricing-tools-for-resellers" target="_blank" rel="noopener">Underpriced AI - AI Pricing Tools for Resellers 2026</a></li>
+      <li><a href="https://redwerk.com/blog/claude-api-examples-business-automation/" target="_blank" rel="noopener">Redwerk - Claude API Examples for Business Automation</a></li>
+      <li><a href="https://www.clear.sale/blog/online-fraud-risk-profile-for-the-ticketing-industry" target="_blank" rel="noopener">ClearSale - Online Fraud Risk Profile for the Ticketing Industry</a></li>
+      <li><a href="https://www.researchandmarkets.com/reports/5666482/secondary-tickets-market-global-forecast-2026" target="_blank" rel="noopener">Research and Markets - Secondary Tickets Market Forecast 2026-2032</a></li>
+    </ul>
+  </details>
+
+</div>

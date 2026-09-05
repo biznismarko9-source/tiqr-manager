@@ -135,6 +135,18 @@ top, no change to any hook, API call, or navigation target. See "Current
 focus" below and `PROTECTED_AREAS.md`'s new "2.5.1" entry (the one thing
 this leaves orphaned: `ticket_control_center.rs`'s backend command).
 
+**2.5.2** adds a real "Forgot password?" flow (marko's own request, alongside
+a Discord sign-in ask that's deliberately deferred - see
+`PROTECTED_AREAS.md`'s new "2.5.2" entry for why) - built entirely on
+Firebase's existing client-side password-reset APIs
+(`sendPasswordResetEmail`/`verifyPasswordResetCode`/`confirmPasswordReset`),
+no new backend, no Cloud Functions, no Firebase Blaze billing plan. The one
+new piece of infrastructure is a `tiqrmanager://` custom URL scheme
+(`tauri-plugin-deep-link`) so the emailed reset link opens TIQR Manager
+itself instead of a browser tab, landing on a new `src/pages/
+ResetPassword.tsx`. See "Current focus" below for the full mechanism and the
+one manual Firebase Console step this needs before it actually works.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -260,6 +272,78 @@ this leaves orphaned: `ticket_control_center.rs`'s backend command).
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.5.2 - "Forgot password?" via a deep link back into the app; Discord
+sign-in deferred.** marko asked for two things after 2.5.1: a working
+password-reset flow, and Discord as a third sign-in option alongside email/
+Google. Both surfaced a real architectural fork, worked through with marko
+directly via clarifying questions rather than guessed at - this entry covers
+what actually got built.
+
+- **Discord sign-in - deferred, not built.** Unlike Google, Firebase has no
+  native Discord provider - keeping Discord accounts in the same
+  Firebase-backed identity/approval-gate/per-account-database system as
+  Google/email would need a new Cloud Function (Firebase Admin SDK to mint a
+  custom token), which requires upgrading this project to Firebase's paid
+  "Blaze" plan (a billing card on the project - real usage would stay inside
+  the free quota, but the card itself is the cost marko weighed). marko chose
+  to skip this for now rather than pay that cost. Nothing was built for this
+  - see `PROTECTED_AREAS.md`'s "2.5.2" entry if picking this back up later.
+- **Password reset - marko's first choice (a typed 6-digit code) turned out
+  to need the exact same Cloud Function + Blaze plan as Discord**, since
+  Firebase's client SDK can only send its own link-based reset email, never a
+  custom short code, and can't change a password for a signed-out person
+  without either that link's own oobCode or a trusted backend. This was
+  surfaced back to marko directly rather than silently building the
+  expensive version he'd just said no to for Discord, or silently
+  downgrading to something else without telling him why - he picked a third
+  option: keep Firebase's own link, but make it open TIQR Manager directly
+  instead of a browser tab.
+- **How the reset link reaches the app**: `sendPasswordResetEmail` now passes
+  `handleCodeInApp: true` plus a `url` pointing at a new
+  `docs/reset-redirect.html` (see `lib/firebase.ts`'s
+  `PASSWORD_RESET_ACTION_CODE_SETTINGS` for the full chain) - published via
+  the exact same GitHub Pages site `docs/privacy.html` already uses
+  (`https://biznismarko9-source.github.io/tiqr-manager/`), so no new hosting
+  concept was introduced. That static page immediately forwards its query
+  string to `tiqrmanager://reset-password?...`, a new custom URL scheme
+  registered via `tauri-plugin-deep-link` (`Cargo.toml`/`tauri.conf.json`/
+  `capabilities/default.json`/`lib.rs` all touched - see `Cargo.toml`'s own
+  comment on why `tauri-plugin-single-instance` needed its `deep-link`
+  feature turned on too, so a link clicked while the app is already running
+  reaches that instance instead of launching a second one). App.tsx's new
+  `PasswordResetDeepLinkBridge` catches the incoming URL (both the cold-start
+  case via `getCurrent()` and the already-running case via `onOpenUrl`),
+  pulls out the `oobCode`, and navigates to a new `/reset-password` route.
+- **New `src/pages/ResetPassword.tsx`** (outside `RequireAuth`, same as
+  Welcome) verifies the incoming code (`verifyPasswordResetCode`), shows a
+  "set a new password for X" form once it's confirmed valid, and finishes
+  with `confirmPasswordReset` - all three calls are plain Firebase Auth
+  client SDK, no backend involved anywhere in this feature.
+- **Welcome.tsx gained a third, non-peer mode**: "Forgot password?" under the
+  password field (login mode only) switches the whole card to a "forgot"
+  mode (email field + send button + a confirmation message), with "Back to
+  log in" as the only way out - it isn't a tab alongside Log in/Sign up the
+  way those two are peers of each other.
+- **One manual step this needs before it actually works**: add
+  `biznismarko9-source.github.io` to Firebase Console -> Authentication ->
+  Settings -> Authorized domains. GitHub Pages itself is very likely already
+  on (it was required for the Google Sheets OAuth consent screen back in
+  2.0.5 - see `REDESIGN-2.0.5-REPORT.md`) - worth confirming
+  `docs/reset-redirect.html` actually loads before relying on this.
+- **Judgment calls, none asked about directly**: the exact custom scheme name
+  (`tiqrmanager`); keeping the redirector page mode-agnostic (forwards
+  whatever `mode`/`oobCode` Firebase sends rather than hardcoding
+  `resetPassword`, so a future email-verification feature could reuse the
+  same page); reusing `docs/`'s existing GitHub Pages site rather than
+  introducing Firebase Hosting (this repo deliberately has no Firebase CLI
+  project wired up - see `firestore.rules`'s own comment - so a new deploy
+  mechanism would have been a bigger, less consistent change than one more
+  file on a site that already exists for exactly this kind of thing).
+
+Verified: `npx tsc -b`, `npm run build`, `cargo check --lib` all clean;
+`cargo test --lib` still green, full suite 1052 passed, 0 failed, 3 ignored
+(unchanged - no new Rust logic worth unit-testing, only plugin wiring).
 
 **2.5.1 - Ticket Center rebuilt around orders, sidebar reorder, Calendar
 visual refresh.** marko's own direct feedback on the 2.5.0 release above,

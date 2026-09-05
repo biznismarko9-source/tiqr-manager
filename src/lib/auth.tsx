@@ -1,17 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  confirmPasswordReset as firebaseConfirmPasswordReset,
   createUserWithEmailAndPassword,
   getAdditionalUserInfo,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithCredential,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
+  verifyPasswordResetCode as firebaseVerifyPasswordResetCode,
   type User,
 } from "firebase/auth";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
-import { auth, db } from "./firebase";
+import { auth, db, PASSWORD_RESET_ACTION_CODE_SETTINGS } from "./firebase";
 import { api, errMsg } from "./api";
 
 // 2.0.45: real Firebase email/password auth - replaces 2.0.44's localStorage
@@ -32,6 +35,17 @@ import { api, errMsg } from "./api";
 // the Firebase side of the sign-in here (`GoogleAuthProvider.credential` +
 // `signInWithCredential`) - Firebase never sees a password, a popup, or
 // anything running inside this app's own window.
+//
+// 2.5.2: "Forgot password?" - see lib/firebase.ts's
+// PASSWORD_RESET_ACTION_CODE_SETTINGS for the full mechanism (why it's a
+// deep link back into this app rather than a typed code or a browser tab).
+// The three functions below are deliberately thin - each one wraps exactly
+// one Firebase Auth call and nothing else, same shape as login()/register()
+// above. None of them touch `user`/`approved`/`dbReady` state: a password
+// reset happens to someone who, by definition, cannot currently sign in, so
+// there is no session here to update - Welcome.tsx sends the person to
+// actually log in (with their new password) once confirmPasswordReset below
+// resolves, exactly like it already does after a normal login() call.
 
 export interface AuthUser {
   name: string;
@@ -63,6 +77,21 @@ interface AuthContextValue {
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   updateName: (name: string) => Promise<void>;
+  /** 2.5.2: sends the reset email - see firebase.ts's
+   * PASSWORD_RESET_ACTION_CODE_SETTINGS for where its link actually points. */
+  requestPasswordReset: (email: string) => Promise<void>;
+  /** 2.5.2: checks a reset link's oobCode is still valid (not already used,
+   * not expired) and returns the email it belongs to, so ResetPassword.tsx
+   * can show "Set a new password for X" before asking for one - and so an
+   * expired/reused link is caught before the person types a whole new
+   * password only to have the submit fail. */
+  verifyPasswordResetCode: (oobCode: string) => Promise<string>;
+  /** 2.5.2: actually sets the new password. Only meaningful after
+   * verifyPasswordResetCode above has already resolved for the same
+   * oobCode - Firebase re-validates it here too, so this still fails
+   * cleanly (expired/invalid) if the link died in the gap between the two
+   * calls. */
+  confirmPasswordReset: (oobCode: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -260,9 +289,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(toAuthUser(auth.currentUser));
   }, []);
 
+  // 2.5.2: see this file's own 2.5.2 doc comment (top) and firebase.ts's
+  // PASSWORD_RESET_ACTION_CODE_SETTINGS for the full "why" behind these
+  // three. Deliberately does not swallow or reshape any error the way
+  // register()'s Firestore write does above - Welcome.tsx/ResetPassword.tsx
+  // need the real Firebase `.code` (auth/user-not-found,
+  // auth/expired-action-code, ...) to show the right message via
+  // firebaseAuthErrorMessage.
+  const requestPasswordReset = useCallback(async (email: string) => {
+    await sendPasswordResetEmail(auth, email, PASSWORD_RESET_ACTION_CODE_SETTINGS);
+  }, []);
+
+  const verifyPasswordResetCode = useCallback(async (oobCode: string): Promise<string> => {
+    return firebaseVerifyPasswordResetCode(auth, oobCode);
+  }, []);
+
+  const confirmPasswordReset = useCallback(async (oobCode: string, newPassword: string) => {
+    await firebaseConfirmPasswordReset(auth, oobCode, newPassword);
+  }, []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, approved, dbReady, dbError, login, register, loginWithGoogle, logout, updateName }),
-    [user, loading, approved, dbReady, dbError, login, register, loginWithGoogle, logout, updateName],
+    () => ({
+      user,
+      loading,
+      approved,
+      dbReady,
+      dbError,
+      login,
+      register,
+      loginWithGoogle,
+      logout,
+      updateName,
+      requestPasswordReset,
+      verifyPasswordResetCode,
+      confirmPasswordReset,
+    }),
+    [
+      user,
+      loading,
+      approved,
+      dbReady,
+      dbError,
+      login,
+      register,
+      loginWithGoogle,
+      logout,
+      updateName,
+      requestPasswordReset,
+      verifyPasswordResetCode,
+      confirmPasswordReset,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

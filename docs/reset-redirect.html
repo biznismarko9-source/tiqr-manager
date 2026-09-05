@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TIQR Manager - Continue password reset</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; line-height: 1.6; color: #1e293b; text-align: center; }
+  h1 { font-size: 1.25rem; margin-bottom: 0.5em; }
+  p { color: #475569; }
+  .button { display: inline-block; margin-top: 1.5em; padding: 0.7em 1.4em; border-radius: 8px; background: #4a68f7; color: #fff; text-decoration: none; font-weight: 600; }
+  .fineprint { margin-top: 2.5em; font-size: 0.85em; color: #94a3b8; }
+  code { background: #f1f5f9; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Opening TIQR Manager&hellip;</h1>
+<p id="message">This link is for TIQR Manager's password reset. If nothing happens in a few seconds, make sure TIQR Manager is installed on this computer, then click the button below.</p>
+<a class="button" id="open-link" href="#">Open TIQR Manager</a>
+<p class="fineprint">If you weren't expecting this, you can safely close this page - your password hasn't changed yet.</p>
+
+<script>
+  // TIQR Manager - password reset hand-off page.
+  //
+  // This page has exactly one job: take whatever query string Firebase put
+  // on ITS link to this page (mode, oobCode, apiKey, ...) and hand it
+  // straight to TIQR Manager's own custom URL scheme, unchanged. It does
+  // NOT interpret, validate, or act on any of those values itself - that
+  // all happens inside the app (src/pages/ResetPassword.tsx), using
+  // Firebase's own client SDK, once the app receives them. See
+  // src/lib/firebase.ts's PASSWORD_RESET_ACTION_CODE_SETTINGS comment for
+  // why this hand-off exists at all instead of a plain Firebase-hosted page.
+  //
+  // Deliberately generic (forwards `mode` as-is rather than assuming it's
+  // always "resetPassword") - if this app ever adds another Firebase email
+  // action (email verification, email change confirmation, ...), this same
+  // page and the same tiqrmanager:// scheme can carry those too without
+  // needing a second redirector page.
+  var appUrl = "tiqrmanager://reset-password" + window.location.search;
+  document.getElementById("open-link").href = appUrl;
+  window.location.replace(appUrl);
+</script>
+
+</body>
+</html>

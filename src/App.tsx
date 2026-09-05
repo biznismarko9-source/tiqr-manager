@@ -1,10 +1,12 @@
-import { type ReactNode } from "react";
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, type ReactNode } from "react";
+import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./lib/toast";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { useTheme } from "./lib/theme";
 import Welcome from "./pages/Welcome";
+import ResetPassword from "./pages/ResetPassword";
 import PendingApproval from "./pages/PendingApproval";
 import DatabaseError from "./pages/DatabaseError";
 import Dashboard from "./pages/Dashboard";
@@ -56,6 +58,64 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// 2.5.2: the receiving end of "Forgot password?" - see lib/firebase.ts's
+// PASSWORD_RESET_ACTION_CODE_SETTINGS for how a link in an email turns into
+// an OS-level open of this app via the `tiqrmanager://` scheme. Mounted
+// once, unconditionally, alongside <Routes> rather than inside any one
+// route or behind RequireAuth - the whole point of a password reset is that
+// it has to work while signed out, and the link can arrive at any time
+// (app already open on some other page, or a cold start).
+//
+// Two separate cases from @tauri-apps/plugin-deep-link, both needed:
+// `getCurrent()` covers a cold start (app wasn't running - the OS launched
+// it because of this link), `onOpenUrl` covers the app already running
+// (single-instance + the `deep-link` Cargo feature on it - see Cargo.toml's
+// own comment - route it here as an event instead of a second launch).
+// Only ever acts on a URL that actually carries an `oobCode` - anything
+// else (there is no other kind of tiqrmanager:// link yet, but this stays
+// defensive rather than assuming) is silently ignored.
+function PasswordResetDeepLinkBridge() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    function handleUrls(urls: string[] | null) {
+      const oobCode = extractOobCode(urls);
+      if (oobCode) navigate("/reset-password", { state: { oobCode } });
+    }
+
+    let cancelled = false;
+    getCurrent()
+      .then((urls) => {
+        if (!cancelled) handleUrls(urls);
+      })
+      .catch(() => {
+        // No deep-link support in this build/platform, or nothing to read -
+        // not an error worth surfacing, the app works fine either way.
+      });
+
+    const unlistenPromise = onOpenUrl((urls) => handleUrls(urls));
+    return () => {
+      cancelled = true;
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [navigate]);
+
+  return null;
+}
+
+function extractOobCode(urls: string[] | null): string | null {
+  if (!urls) return null;
+  for (const raw of urls) {
+    try {
+      const oobCode = new URL(raw).searchParams.get("oobCode");
+      if (oobCode) return oobCode;
+    } catch {
+      // Not a parseable URL - ignore rather than throw, this is best-effort.
+    }
+  }
+  return null;
+}
+
 export default function App() {
   // Applies the saved theme (light/dark/system) to <html> as early as
   // possible on launch. The Settings page owns the interactive toggle.
@@ -65,8 +125,13 @@ export default function App() {
     <AuthProvider>
       <ToastProvider>
         <HashRouter>
+          <PasswordResetDeepLinkBridge />
           <Routes>
             <Route path="/welcome" element={<Welcome />} />
+            {/* 2.5.2: outside RequireAuth, same reasoning as /welcome - see
+                PasswordResetDeepLinkBridge above for how you actually get
+                here (never a link you'd type by hand). */}
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route
               element={
                 <RequireAuth>

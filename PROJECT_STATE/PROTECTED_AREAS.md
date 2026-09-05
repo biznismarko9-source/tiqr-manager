@@ -21,6 +21,57 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.5.2 - "Forgot password?" deep-link flow; Discord sign-in deferred (frontend + new tauri-plugin-deep-link, no schema change)
+
+marko asked for both after 2.5.1; this section covers what to know before
+touching either area again.
+
+- **Discord sign-in was NOT built.** If picking this up later: Firebase has
+  no native Discord provider (unlike Google) - it needs a Cloud Function
+  (Firebase Admin SDK, `createCustomToken`) to bridge Discord's OAuth into
+  the same Firebase-backed identity/approval-gate/per-account-database
+  system Google/email already use, which requires this project's first Cloud
+  Function ever (none exist - no `firebase.json`/`.firebaserc` anywhere in
+  this repo, confirmed before writing this) and upgrading to Firebase's paid
+  Blaze plan (a billing card on the project - marko chose against this for
+  now, same reasoning as below).
+- **The password-reset link deliberately does NOT use a typed short code**,
+  even though that was marko's own first request - a real short-code flow
+  needs exactly the same Cloud Function + Blaze plan as Discord above
+  (Firebase's client SDK can only send its own link-based reset email;
+  changing a signed-out person's password needs either that link's own
+  oobCode or a trusted backend). This was surfaced back to marko directly
+  (not silently built or silently downgraded) - he chose a deep link into the
+  app instead. Don't "simplify" this to a typed code later without
+  re-confirming he still wants to pay for that infrastructure.
+- **`PASSWORD_RESET_ACTION_CODE_SETTINGS` (`lib/firebase.ts`) and
+  `docs/reset-redirect.html` are a matched pair - changing one without the
+  other breaks the flow silently.** The `url` in the former must always match
+  wherever the latter is actually published; if the GitHub Pages site or file
+  path ever moves, both need updating together, and the new URL needs
+  re-adding to Firebase Console -> Authentication -> Settings -> Authorized
+  domains (the old one doesn't need removing, but a stale one left behind is
+  a dangling authorization worth cleaning up).
+- **`tauri-plugin-single-instance`'s `features = ["deep-link"]` (Cargo.toml)
+  is load-bearing, not decoration.** Without it, clicking a
+  `tiqrmanager://` link while TIQR is already running launches a second
+  process instead of reaching the running one - see that dependency's
+  existing 2.0.52 comment for why a second process touching the same SQLite
+  file is a real corruption risk here, not just a UI nuisance. Don't remove
+  this feature flag even if nothing seems to obviously depend on it.
+- **Deep links only fire for an INSTALLED app on Windows**
+  (tauri-plugin-deep-link's own documented limitation) - a `cargo tauri dev`
+  build needs `lib.rs`'s debug-only `register_all()` call (see its own
+  comment) to test this flow at all; don't mistake "doesn't work in dev" for
+  "broken" without checking that first.
+- **This repo still has no Firebase CLI project wired up, on purpose** (see
+  `firestore.rules`'s own comment, unchanged by this round) -
+  `docs/reset-redirect.html` was deliberately added to the EXISTING GitHub
+  Pages site (`docs/` folder, same one `docs/privacy.html` already uses)
+  rather than standing up Firebase Hosting, to avoid introducing a second,
+  inconsistent deploy mechanism. Follow the same reasoning if a future
+  feature needs one more static page.
+
 ## 2.5.1 - Ticket Center rebuilt around orders (frontend-only, no schema change)
 
 marko's own direct follow-up on the 2.5.0 release above: Ticket Center
@@ -67,14 +118,12 @@ any of this again:
   "consistency" or alphabetical order in a future change without checking
   with him first; this exact order was the one thing he corrected out of
   the whole 2.5.0 delivery.
-- **No new zip/release report was built for 2.5.1 by itself** - marko's own
-  message signaled more feedback was coming right after ("zatial toto a
-  potom pojdeme dalej"), so packaging was deliberately deferred rather than
-  produced and then immediately superseded. If a future session picks this
-  up assuming a 2.5.1 build was delivered and tested standalone, it wasn't
-  - verify against what was actually built/tested (`tsc -b` + `npm run
-  build` + this file's own record) rather than assuming a shipped release
-  exists just because `CURRENT_STATE.md`/`CHANGELOG.md` mention the version.
+- **A zip/release report for 2.5.1 was built and delivered, but only after a
+  separate "zabal to" (package it) request** - marko's own message right
+  after this round's code changes signaled more feedback was coming
+  ("zatial toto a potom pojdeme dalej"), so packaging was deliberately
+  deferred rather than produced and immediately superseded;
+  `REDESIGN-2.5.1-REPORT.md` and the zip were built once he actually asked.
 
 ## 2.5.0 - TIQR Operations Calendar (new read-only aggregation page, no schema change)
 

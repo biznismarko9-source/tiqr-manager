@@ -34,6 +34,12 @@ const MESSAGES: Record<string, string> = {
   // Means the Email/Password (or Google) provider hasn't been turned on yet
   // in the Firebase console's Authentication -> Sign-in method tab.
   "auth/operation-not-allowed": "This sign-in method isn't turned on yet in Firebase - check Authentication -> Sign-in method in the Firebase console.",
+  // 2.5.2: ResetPassword.tsx's verifyPasswordResetCode/confirmPasswordReset -
+  // a reset link Firebase already used once, or that was ever a stale/wrong
+  // oobCode (never valid to begin with, e.g. a manually mangled URL).
+  "auth/invalid-action-code": "This reset link has already been used or isn't valid. Request a new one.",
+  // 2.5.2: same two call sites - Firebase reset links expire after 1 hour.
+  "auth/expired-action-code": "This reset link has expired. Request a new one.",
 };
 
 export function firebaseAuthErrorMessage(err: unknown): string {
