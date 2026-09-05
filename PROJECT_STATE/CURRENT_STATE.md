@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.4.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.5.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -99,37 +99,80 @@ event, marko's own explicit request. No schema change. See "Current focus"
 below and `PROTECTED_AREAS.md`'s new "2.4.3" entry for the full design and
 the traps worth knowing before touching it again.
 
+**2.4.4** is a pure frontend/UX round, no backend or schema changes at all:
+Ticket Control Center (2.4.3) and Fulfillment Center (2.2.12) merged from
+two standalone top-level routes into one "Ticket Center" tab under Finance
+(two subtabs); the sidebar regrouped Events/Orders/Tickets/Sales/Inventory
+under one collapsible "Tickets" entry; a one-click light/dark toggle moved
+out of Settings -> Appearance to sit above the sidebar's profile widget;
+and a sticky-header dark-mode transparency bug on Ticket Control Center's
+table got fixed. See "Current focus" below and `PROTECTED_AREAS.md`'s new
+"2.4.4" entry for the full breakdown.
+
+**2.5.0** adds the "TIQR Operations Calendar" (`/calendar`) - one new
+top-level Month/Week calendar page aggregating every part of the app that
+has a real date (events, orders, sales, pulls, attention items) into one
+read-only, cross-domain view. New backend module `commands/calendar.rs`
+(one command, `get_calendar`) and new models `CalendarFilters`/
+`CalendarEntry` - no new migration, no new table. Of marko's 8 originally
+named candidate categories, 3 (payouts, payments, fulfillment) do NOT exist
+as real, reliably-dated data anywhere in this app and are deliberately
+absent from the calendar rather than invented - see "Current focus" below
+and `PROTECTED_AREAS.md`'s new "2.5.0" entry before ever trying to add one
+of those 3 back in.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
   Pages under `src/pages/`: Dashboard (2.4.1 briefly added a 6th Attention
   Center box, "LIVE MARKET ALERTS" - removed again in 2.4.2, back to 5
-  boxes - see "Current focus" below), Events, EventDetail
+  boxes - see "Current focus" below), Calendar (2.5.0 - new, the "TIQR
+  Operations Calendar" - Month/Week grid, Day Detail modal, a Today/next-7-
+  days summary card, and a client-side Filters row over 5 real categories
+  (event/order/sale/pull/attention) - see "Current focus" below), Events, EventDetail
   (2.2.2-2.2.5: tabbed "Event Workspace" - Overview/Listings/Sales (Finance
   folded into Sales in 2.2.5), see "Current focus" below and
   `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
   adding more event-level functionality anywhere else), Orders,
-  OrderDetail, Tickets (Inventory), TicketControlCenter (2.4.3 - new,
-  `/control-center`; a dense, cross-event work-view over tickets' own
-  data, see "Current focus" below), Inventory, Sales, SaleDetail,
-  FulfillmentCenter (2.2.12 - new; a narrower work-view over Sales' own
-  data, see "Current focus" below), Pulls
-  (given/received), Finance (own `finance/` subfolder, 4-tab layout),
-  PriceChecker (2.4.1 briefly gained a Live Market Monitor panel per
-  marketplace card; removed entirely in 2.4.2, back to the original manual
-  tool - see "Current focus" below and `PROTECTED_AREAS.md`'s "2.4.2"
-  entry), Settings, Welcome (auth),
-  PendingApproval, DatabaseError.
+  OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail, Pulls
+  (given/received), Finance (own `finance/` subfolder, 5-tab layout as of
+  2.4.4 - Overview/Transactions/Accounts/Reports/**Ticket Center**; the
+  last one is new in 2.4.4 and just hosts TicketControlCenter (2.4.3) and
+  FulfillmentCenter (2.2.12) as two subtabs, `finance/TicketCenter.tsx` -
+  both are no longer standalone top-level routes/sidebar entries, see
+  "Current focus" below), PriceChecker (2.4.1 briefly gained a Live Market
+  Monitor panel per marketplace card; removed entirely in 2.4.2, back to
+  the original manual tool - see "Current focus" below and
+  `PROTECTED_AREAS.md`'s "2.4.2" entry), Settings (2.4.4: its old
+  Appearance section is gone - moved to the sidebar itself, see Layout.tsx
+  below, not duplicated), Welcome (auth), PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
+  **Layout** (`src/components/Layout.tsx`, the sidebar): 2.4.4 grouped
+  Events/Orders/Tickets/Sales/Inventory under one collapsible "Tickets"
+  entry (session-only expand state, defaults open - the 5 routes
+  themselves are unchanged), and added a one-click light/dark toggle above
+  the profile widget, reusing the same `lib/theme.ts` `useTheme()` hook
+  Settings' old Appearance section used to call. 2.5.0 added a new flat
+  "Calendar" entry right below Dashboard (same level, not nested under
+  "Tickets" - it's cross-domain, not ticket-specific).
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
-  under `commands/`: events, orders (+ `orders_sheet_sync` - 2.2.10: same
+  under `commands/`: calendar (2.5.0 - new; one read-only command,
+  `get_calendar`, backing the Calendar page - reuses
+  `attention_center::get_attention_center_impl` directly (both for its own
+  "attention" entries and to decide an "event" entry's severity) and
+  `sales::GROUP_KEY_EXPR` for grouping sale batches; writes its own SELECT
+  for events/orders/pulls, same "each view aggregator writes its own query"
+  convention as `attention_center`/`ticket_control_center` - see "Current
+  focus" below), events, orders (+ `orders_sheet_sync` - 2.2.10: same
   push-bookkeeping-ordering fix as `pulls_sheet_sync` below), tickets,
   ticket_listings (2.2.4 - real per-marketplace listings; 2.2.5 added 3
   all-or-nothing bulk commands - status/price/delete - see "Current focus"
   below), ticket_control_center (2.4.3 - new; one read-only command,
   `list_control_center_tickets`, backing the Ticket Control Center page -
-  see "Current focus" below), inventory_intelligence (2.2.6 - one read-only command backing
+  now a Finance > Ticket Center subtab as of 2.4.4, a frontend-only routing
+  change, this command itself is untouched - see "Current focus" below),
+  inventory_intelligence (2.2.6 - one read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
   attention_center (2.2.8 - one read-only command backing the Dashboard's
   global, cross-event "Attention Center" block; 2.2.9 reworked its 4
@@ -188,6 +231,116 @@ the traps worth knowing before touching it again.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.5.0 - TIQR Operations Calendar.** marko's own spec for a new
+cross-domain calendar page - delivered directly after the 2.4.4 UI/UX round
+above, both shipped together in this same release (see "## Version" note
+under 2.4.4/2.5.0 - no separate 2.4.4 zip was ever built).
+
+- **Research first, per marko's own explicit instruction.** Before writing
+  any code, all 8 of marko's named candidate categories were checked
+  against the real schema AND the real, currently-shipping Rust command
+  code (not just column names). Only 5 are backed by real, reliably-
+  existing dates: **events** (`events.event_date`), **orders/purchases**
+  (`orders.purchase_date`), **sales** (`sales.sale_date`), **pulls**
+  (`pulls.event_date` - NOT the deprecated `pulls.transfer_deadline`
+  column, unwritten since 1.9.8, see models.rs's own doc comment), and
+  **attention** (`AttentionCenterItem.event_date`). The other 3 do NOT
+  exist and are deliberately absent from the calendar rather than
+  invented: **payouts** (no distinct entity/date anywhere - "Payout" is
+  purely Google Sheets column-header text aliasing `Sale.sale_price_cents`/
+  `Sale.payment_status`), **payments** (migration 007's `payments` table
+  exists in the schema but has ZERO live Rust command code reading or
+  writing it - the same schema-present-but-functionally-dead shape as
+  migration 026's now-orphaned tables), **fulfillment** (`delivery_status`
+  is a plain free-text enum with no associated date column at all). See
+  `PROTECTED_AREAS.md`'s new "2.5.0" entry for the full detail.
+- **Backend**: new `commands/calendar.rs` - one read-only command
+  (`get_calendar`), taking an inclusive `dateFrom`/`dateTo` range (always
+  the exact span of days the Month/Week grid has on screen) and returning
+  a flat list of `CalendarEntry` (one per event/order/sale-batch/pull/
+  attention-item, each with a title/subtitle, a severity, and a navigation
+  target). Reuses `attention_center::get_attention_center_impl` directly
+  (not re-derived) both for the "attention" entries themselves and to
+  decide an "event" entry's own severity (critical exactly when that event
+  is also in the SAME call's `event_soon` category - one threshold, one
+  place). Sale entries are grouped by `sales::GROUP_KEY_EXPR` (one entry
+  per batch, never one per ticket) with a simplified, safe "never blend
+  currencies" amount (omitted whenever a batch's lines don't all share one
+  `sales.currency` - same rule `SaleGroup` already follows, just without
+  its extra profit/margin machinery, which a calendar card has no use
+  for). No new migration, no new index - reuses the existing
+  `idx_events_date`/`idx_orders_date`/`idx_sales_date` indexes; deliberately
+  did NOT add one for `pulls.event_date` (none exists today either, and
+  `pulls::list_pulls_impl`'s own already-shipping date filter has never
+  needed one - marko's own "don't add an index without a reason").
+- **Frontend**: new `src/pages/Calendar.tsx` + new `/calendar` route
+  (`App.tsx`) + new flat sidebar entry right below Dashboard
+  (`Layout.tsx`). Month view (a padded, Monday-first grid always covering
+  full weeks) and Week view, with Today/Previous/Next controls - toggling
+  either only refetches the calendar's own data for the new range, never a
+  page reload. Each day cell shows up to a few entries (capped, Month: 3,
+  Week: 6) plus a "+X more" that opens a Day Detail modal (reuses the
+  existing shared `Modal` component) listing everything for that day.
+  Filters row toggles the 5 real categories client-side (no extra network
+  round trip per toggle - the whole visible range's data is already
+  local). A "Today & next 7 days" summary card issues one extra,
+  independent `get_calendar` call for that fixed range - same command, same
+  data, never a duplicate computation. Every entry's click navigates
+  straight to an EXISTING page (`/events/:id`, `/orders/:id`, `/sales/:id`,
+  or the `/pulls` list - pulls has no per-record detail route today, same
+  as before this task) - no new detail view was built or is needed.
+- `cargo test --lib`: 14 new tests in `commands/calendar.rs` (range
+  filtering incl. inclusive boundaries, sale-batch grouping/mixed-events/
+  mixed-currency, event severity reusing Attention Center's own
+  `event_soon`, pull severity mirroring Pulls.tsx's own warning window,
+  attention navigation targets, multiple kinds on one day, empty state);
+  full suite (1052 tests) green. `npx tsc -b` and `npm run build` both
+  clean.
+
+**2.4.4 - Ticket Center consolidation, sidebar regroup, theme toggle.**
+marko's own request, a pure frontend/UX round - no backend, schema, or
+migration changes at all.
+
+- **Ticket Control Center (2.4.3) + Fulfillment Center (2.2.12) merged**
+  into one "Ticket Center" tab under Finance, with two subtabs (Control
+  Center, Fulfillment) - new thin shell `src/pages/finance/TicketCenter.tsx`
+  mirrors Finance.tsx's own existing tab-shell pattern. Both components are
+  reused completely unchanged internally (aside from Control Center's own
+  fixes below) - no duplicate business logic, no new data loading. The
+  `/control-center` and `/fulfillment` top-level routes and their sidebar
+  entries are gone; neither is linked from anywhere else in the app (see
+  `PROTECTED_AREAS.md`'s new "2.4.4" entry for the grep that confirmed
+  this before the move).
+- **Sidebar (`Layout.tsx`) regrouped**: Events/Orders/Tickets/Sales/
+  Inventory now sit under one collapsible "Tickets" entry instead of 5 flat
+  rows - the 5 routes themselves are unchanged, this is purely a nav
+  grouping change. Judgment call: read as a sidebar accordion (keep every
+  existing route as-is), not as "consolidate these 5 pages into one hub
+  page with tabs" (the much bigger, riskier reading - see
+  `PROTECTED_AREAS.md`'s new "2.4.4" entry).
+- **One-click light/dark toggle** added above the sidebar's profile widget,
+  reusing the existing `lib/theme.ts` `useTheme()` hook. Settings ->
+  Appearance (the old 3-way Light/System/Dark picker) is now gone - moved,
+  not duplicated. The new toggle is deliberately binary (system mode is
+  still what a fresh install starts in, just not reachable from this
+  control once you click it).
+- **Ticket Control Center fixes** (same file, still nested under Finance
+  now): (1) sticky header dark-mode background was `dark:bg-slate-800/60`
+  (60% opacity, copied from this app's normal non-sticky `<thead>`
+  convention) - fully opaque now, fixing scrolled row text bleeding through
+  the sticky header while scrolling (marko's screenshot); (2) "Ticket /
+  Seats" column renamed to "Seats", now shows only the seat location (the
+  ticket code moved to a hover tooltip, still visible everywhere else -
+  Order/Sale Detail); (3) the Order cell now independently opens Order
+  Detail on click (`stopPropagation`), regardless of where the row's own
+  click goes (Sale Detail for a sold ticket).
+- **Dashboard's "Sales by platform" internal scrollbar removed** (marko's
+  own request) - converted to the same slice + "Show N more" pattern the
+  three Activity-tab Recent cards already use, rather than either an
+  unbounded list or a nested scrollbar.
+- `cargo test --lib` untouched/unaffected (no Rust changed this round);
+  `npx tsc -b` and `npm run build` both clean.
 
 **2.4.3 - Ticket Control Center.** marko's own focused-task spec: one
 central work screen ("Ticket Control Center", `/control-center`) to manage

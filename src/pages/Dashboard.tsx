@@ -191,6 +191,12 @@ export default function Dashboard() {
   const [eventsExpanded, setEventsExpanded] = useState(false);
   const [ordersExpanded, setOrdersExpanded] = useState(false);
   const [salesExpanded, setSalesExpanded] = useState(false);
+  // 2.4.4: replaces "Sales by platform"'s own internal max-h-72/overflow-y-
+  // auto scrollbar (2.2.11) - marko's own request to remove that nested
+  // scroll entirely. Same slice + "Show N more" pattern as the three
+  // Activity-tab Recent cards above, just applied to this Overview-tab card
+  // too now - not a new UI pattern.
+  const [platformsExpanded, setPlatformsExpanded] = useState(false);
   // 2.2.8: Dashboard's global "Attention Center" (Activity tab) - its own
   // independent fetch, deliberately NOT tied to `period`/`from`/`to` (unlike
   // `data` below) since none of its categories (6 as of 2.4.0) are
@@ -461,7 +467,11 @@ export default function Dashboard() {
                     it gets grouped and shown as "which platform actually
                     earns the most" (Eventbrite's "Sales by Source" - see
                     REDESIGN-2.0.47-REPORT.md). */}
-                <SalesByPlatformCard data={data} />
+                <SalesByPlatformCard
+                  data={data}
+                  expanded={platformsExpanded}
+                  onToggle={() => setPlatformsExpanded((v) => !v)}
+                />
                 </>
               )}
             </>
@@ -895,21 +905,37 @@ function ShowMoreToggle({
  * let marko pick or free-type any platform name), so a business with a
  * dozen platforms would previously push the whole Overview tab, and the
  * page's own scrollbar, further down for every additional one - exactly the
- * "unnecessary full-page scroll" marko asked to remove. Capped at
- * `max-h-72` (~5 rows) with its own `overflow-y-auto` instead: a typical
- * handful of platforms (marko's own screenshot shows 4) still shows in full
- * with no scrollbar at all, and only a genuinely long list gets an internal
- * scrollbar of its own - never the page's. */
-function SalesByPlatformCard({ data }: { data: DashboardData }) {
+ * "unnecessary full-page scroll" marko asked to remove.
+ *
+ * 2.4.4: that 2.2.11 fix (a `max-h-72 overflow-y-auto` internal scrollbar)
+ * is itself what marko asked to remove this round ("taky mini scroll... aby
+ * sa tam nedalo scrollovat") - some OS/browser combinations render a
+ * persistent scrollbar gutter on an `overflow-y-auto` element even at 4
+ * rows (his own screenshot), reading as stray UI chrome. Replaced with the
+ * exact same slice + "Show N more" pattern the three Activity-tab Recent
+ * cards above already use (RECENT_LIST_PREVIEW_COUNT, ShowMoreToggle) -
+ * still no nested scrollbar, but also still bounded, unlike simply deleting
+ * the cap outright would have been. */
+function SalesByPlatformCard({
+  data,
+  expanded,
+  onToggle,
+}: {
+  data: DashboardData;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const rows = data.salesByPlatform;
+  const visibleRows = expanded ? rows : rows.slice(0, RECENT_LIST_PREVIEW_COUNT);
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
   return (
     <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="mb-8">
       {rows.length === 0 ? (
         <EmptyRow text="No sales in this period yet" />
       ) : (
-        <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
-          {rows.map((r) => (
+        <>
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {visibleRows.map((r) => (
             <li key={r.platformId ?? "none"} className="px-4 py-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -931,6 +957,8 @@ function SalesByPlatformCard({ data }: { data: DashboardData }) {
             </li>
           ))}
         </ul>
+        <ShowMoreToggle expanded={expanded} onToggle={onToggle} hiddenCount={rows.length - RECENT_LIST_PREVIEW_COUNT} />
+        </>
       )}
     </RecentCard>
   );

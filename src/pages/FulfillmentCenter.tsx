@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { SaleGroup } from "../lib/types";
 import { formatMoneyOrMixed, formatSeatsSummary } from "../lib/format";
-import { Badge, Card, EmptyState, LoadingBlock, PageHeader } from "../components/ui";
+import { Badge, Card, EmptyState, LoadingBlock } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { isSaleGroupDone } from "./Sales";
 import { useToast } from "../lib/toast";
@@ -166,11 +166,11 @@ export default function FulfillmentCenter() {
 
   return (
     <div>
-      <PageHeader
-        title="Fulfillment Center"
-        subtitle="Everything sold that still needs finishing - payment, delivery, or both."
-      />
-
+      {/* 2.4.4: own PageHeader removed - no longer a standalone top-level
+          route, now mounted inside Finance's "Ticket Center" tab as the
+          "Fulfillment" subtab (see finance/TicketCenter.tsx), which already
+          labels it - same reasoning as TicketControlCenter's own 2.4.4
+          comment. */}
       {!pending || !counts ? (
         <LoadingBlock label="Loading fulfillment center..." />
       ) : (

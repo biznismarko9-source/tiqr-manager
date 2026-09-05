@@ -42,6 +42,18 @@ export const IconChevronUp = (p: SVGProps<SVGSVGElement>) => (
     <path d="m18 15-6-6-6 6" />
   </Svg>
 );
+// 2.5.0: Calendar's Previous/Next controls - same chevron shape as
+// IconChevronDown/Up above, just rotated 90 degrees.
+export const IconChevronLeft = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m15 18-6-6 6-6" />
+  </Svg>
+);
+export const IconChevronRight = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m9 18 6-6-6-6" />
+  </Svg>
+);
 export const IconTrash = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
     <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
@@ -162,6 +174,15 @@ export const IconSun = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="4" />
     <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+  </Svg>
+);
+// 2.4.4: paired with IconSun above for the sidebar's new one-click light/
+// dark toggle (Layout.tsx) - replaces Settings -> Appearance's old 3-way
+// Light/System/Dark picker there, marko's own request to move this control
+// up next to the profile widget.
+export const IconMoon = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
   </Svg>
 );
 // 1.9.7: Pulls nav/empty-state icon - two people, for "buying on someone

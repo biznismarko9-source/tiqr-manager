@@ -2923,3 +2923,102 @@ pub struct ControlCenterTicket {
     pub is_demo: bool,
 }
 
+// --- Calendar (2.5.0) -------------------------------------------------------
+// "TIQR Operations Calendar" - marko's own request for one cross-domain
+// calendar (Month/Week) over every part of the app that has a real date,
+// instead of five separate places to check what's happening when. See
+// `commands::calendar`'s own module doc comment for the full research/design
+// rationale - in particular, WHY only 5 of marko's 8 candidate categories
+// (events, orders, sales, pulls, attention) are represented here at all.
+// Read-only aggregation only, same as `attention_center`/`inventory_
+// intelligence` - this module never writes anything, and reuses each
+// domain's own existing columns/logic rather than adding a parallel
+// calendar-specific data model.
+
+/// Input for `get_calendar` - always a concrete, closed range (never an
+/// open-ended "everything") because the frontend always has one: the exact
+/// span of days the Month or Week grid currently has on screen (Month view
+/// pads a few leading/trailing days from the neighboring month so the grid
+/// has no empty cells - see Calendar.tsx). Same plain inclusive "YYYY-MM-DD"
+/// comparison every other date-range filter in this codebase already uses
+/// (e.g. `ControlCenterFilters::date_from`/`date_to`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarFilters {
+    pub date_from: String,
+    pub date_to: String,
+}
+
+/// One card on the calendar grid (or one row in its Day Detail view). Every
+/// `kind` below maps onto data that already exists elsewhere in the app -
+/// this struct only ever repackages it for display, it never computes a new
+/// business fact.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarEntry {
+    /// Unique within one response - "{kind}:{id}" (each kind has its own id
+    /// namespace, e.g. an event and a pull can both be database id 7 without
+    /// their calendar keys colliding). Stable for the same underlying record
+    /// across calls, not a random id, so the frontend can key list rendering
+    /// off it directly.
+    pub key: String,
+    /// "event" | "order" | "sale" | "pull" | "attention" - the business
+    /// category, used for the Filters row and for grouping in Day Detail.
+    /// Deliberately NOT the same enum as `link_kind` below - an `attention`
+    /// entry, for instance, still navigates to the underlying order or
+    /// event, not to a page called "attention".
+    pub kind: String,
+    /// The date this entry is placed on, "YYYY-MM-DD" - always a real,
+    /// already-populated column value (`events.event_date`,
+    /// `orders.purchase_date`, `sales.sale_date`, `pulls.event_date`, or
+    /// `AttentionCenterItem.event_date`), never computed or invented. See
+    /// this module's own section doc comment for the 3 candidate categories
+    /// (payouts/payments/fulfillment) that have NO such column and so are
+    /// simply absent from every `get_calendar` response, not represented
+    /// with a guessed date.
+    pub date: String,
+    pub title: String,
+    /// Plain descriptive text only (counts, names, codes) - deliberately
+    /// never includes a formatted money amount (see `amount_cents`/
+    /// `currency` below for why that stays a separate, raw pair instead of
+    /// being baked into this string).
+    pub subtitle: Option<String>,
+    /// "critical" | "attention" | "info" | "neutral" - drives the entry's
+    /// color dot on the grid. For `kind = "attention"` this is
+    /// `AttentionCenterItem.priority` passed through verbatim (already one
+    /// of these 3 values); for `kind = "event"` it's "critical" exactly when
+    /// that event is also present in the SAME `get_attention_center_impl`
+    /// call's `event_soon` category (see commands::calendar - never a
+    /// second, possibly-drifting copy of that threshold); for `kind =
+    /// "pull"` it mirrors Pulls.tsx's own WARNING_WINDOW_DAYS warning
+    /// (kept independently here in Rust, deliberately the same rule - same
+    /// "same rule, not the same code" precedent this codebase already uses
+    /// for `attention_center::event_is_done` mirroring Orders.tsx's
+    /// `isOrderDone`). "order"/"sale" are always "neutral" - a purchase or a
+    /// sale that already happened has no ongoing urgency of its own.
+    pub severity: String,
+    /// Which existing page a click on this entry should open - "event" |
+    /// "order" | "sale" | "pulls". Never a new route: reuses exactly the
+    /// same navigation targets Attention Center/Ticket Control Center/
+    /// Fulfillment Center already use for the same underlying records. Pulls
+    /// has no per-record detail route today (unlike event/order/sale) - see
+    /// this module's own section doc comment - so a `pull` entry always
+    /// links to the Pulls LIST page and carries no `link_id`.
+    pub link_kind: String,
+    /// The id to route with, interpreted according to `link_kind` - `None`
+    /// only for `link_kind = "pulls"` (see its own doc comment above).
+    pub link_id: Option<i64>,
+    /// A single, already-safe-to-show amount for this entry, when one
+    /// exists: an order's own `total_cost_cents` (always one real currency -
+    /// an order can never be mixed-currency), a sale GROUP's total ONLY when
+    /// every line in it shares one currency (`None` otherwise - same
+    /// never-blend-currencies rule `SaleGroup`'s own revenue fields already
+    /// follow, just without that struct's extra profit/margin machinery,
+    /// which this view has no use for), a pull's own `price_cents`, or an
+    /// attention item's own `amount_cents` (already `None` for a multi-
+    /// ticket group - see `AttentionCenterItem::amount_cents`). `None` for
+    /// every `event` entry - an event has no single amount of its own.
+    pub amount_cents: Option<i64>,
+    pub currency: Option<String>,
+}
+

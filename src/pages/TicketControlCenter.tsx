@@ -4,7 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
 import type { ControlCenterFilters, ControlCenterTicket, EventWithStats, Marketplace } from "../lib/types";
 import { formatDateNumeric, formatMoney, formatSeatLocation, todayIso } from "../lib/format";
-import { Badge, Button, CHECKBOX_CLASS, EmptyState, Field, Input, LoadingBlock, Modal, ModalFooter, PageHeader, Select } from "../components/ui";
+import { Badge, Button, CHECKBOX_CLASS, EmptyState, Field, Input, LoadingBlock, Modal, ModalFooter, Select } from "../components/ui";
 import { IconSearch } from "../components/icons";
 import { BulkTicketEditBar } from "../components/BulkTicketEditBar";
 import { DELIVERY_STATUS_OPTIONS, RESALE_STATUS_OPTIONS } from "./Tickets";
@@ -320,11 +320,26 @@ export default function TicketControlCenter() {
 
   const thCls = isNarrow ? "th-c-narrow" : "th-c";
   const tdCls = isNarrow ? "td-c-narrow" : "td-c";
-  const stickyTh = "sticky top-0 z-10 bg-slate-50 dark:bg-slate-800/60";
+  // 2.4.4 fix: dark mode was `dark:bg-slate-800/60` - a translucent 60%
+  // opacity copied from this app's normal (non-sticky) table header
+  // convention (e.g. FulfillmentCenter's <thead>), where it's harmless
+  // because nothing ever scrolls underneath a non-sticky header. Here the
+  // header IS sticky above actively scrolling rows, so that translucency let
+  // scrolled-past row text show straight through it - marko's screenshot
+  // ("zavadza" - misleading). A fully opaque dark background is required for
+  // a sticky header to actually mask what's scrolled beneath it.
+  const stickyTh = "sticky top-0 z-10 bg-slate-50 dark:bg-slate-800";
 
   return (
     <div>
-      <PageHeader title="Ticket Control Center" subtitle="Manage and check tickets across every event, in one place." />
+      {/* 2.4.4: own PageHeader removed - this page is no longer a standalone
+          top-level route, it's mounted inside Finance's new "Ticket Center"
+          tab (see finance/TicketCenter.tsx) right below that tab's own
+          "Control Center" subtab pill, which already labels it. Matches
+          Finance's own existing 4 tabs (Overview/Transactions/Accounts/
+          Reports), none of which repeat their own title as a second header
+          either - one less redundant header, one less row eating into
+          marko's "no unnecessary page scroll" table space below. */}
 
       {/* Sticky filters/quick filters/search - stays visible while the table
           below scrolls (see the table wrapper's own comment for the other
@@ -562,7 +577,11 @@ export default function TicketControlCenter() {
                 </th>
                 <th className={`${thCls} ${stickyTh}`}>Event</th>
                 {!isNarrow && <th className={`${thCls} ${stickyTh}`}>Order</th>}
-                <th className={`${thCls} ${stickyTh}`}>Ticket / Seats</th>
+                {/* 2.4.4: renamed from "Ticket / Seats" - marko's own request
+                    to show only seats here (the cell below no longer shows
+                    the ticket code at all, just its seat location - see that
+                    cell's own comment). */}
+                <th className={`${thCls} ${stickyTh}`}>Seats</th>
                 {!isNarrow && <th className={`${thCls} ${stickyTh}`}>Tier</th>}
                 {!isNarrow && <th className={`${thCls} ${stickyTh} text-right`}>Purchase price</th>}
                 <th className={`${thCls} ${stickyTh} text-right`}>Listing price</th>
@@ -593,13 +612,34 @@ export default function TicketControlCenter() {
                       {t.eventDate && <div className="text-xs text-slate-400 dark:text-slate-500">{formatDateNumeric(t.eventDate)}</div>}
                     </td>
                     {!isNarrow && (
-                      <td className={`${tdCls} truncate`} title={t.orderCode}>
-                        {t.orderCode}
+                      // 2.4.4: marko's own request - the Order cell now opens
+                      // Order Detail directly and independently of the row's
+                      // own click (which goes to Sale Detail instead, for a
+                      // sold ticket - see openDetail above), the same
+                      // stopPropagation pattern FulfillmentCenter's own "Open"
+                      // link already uses on its row.
+                      <td className={`${tdCls} truncate`} title={t.orderCode} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/orders/${t.orderId}`)}
+                          className="truncate text-brand-700 hover:underline dark:text-brand-400"
+                        >
+                          {t.orderCode}
+                        </button>
                       </td>
                     )}
-                    <td className={`${tdCls} truncate`} title={seats || t.code}>
-                      <div className="truncate font-medium text-slate-900 dark:text-slate-100">{t.code}</div>
-                      {seats && <div className="truncate text-xs text-slate-400 dark:text-slate-500">{seats}</div>}
+                    {/* 2.4.4: renamed to Seats-only (was "Ticket / Seats",
+                        showing the ticket code as the primary line) - marko's
+                        own request. The ticket code is still available on
+                        hover (title) and wasn't dropped from the app anywhere
+                        else - Order Detail/Sale Detail (this row's own click
+                        target) both still show it. */}
+                    <td className={`${tdCls} truncate`} title={t.code}>
+                      {seats ? (
+                        <div className="truncate font-medium text-slate-900 dark:text-slate-100">{seats}</div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
                     </td>
                     {!isNarrow && <td className={tdCls}>{t.tier ?? "-"}</td>}
                     {!isNarrow && <td className={`${tdCls} text-right tabular-nums whitespace-nowrap`}>{formatMoney(t.totalCostCents, t.currency)}</td>}

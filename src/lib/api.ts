@@ -15,6 +15,8 @@ import type {
   BulkTicketResaleStatusInput,
   BulkTicketStatusInput,
   BulkTicketUpdateInput,
+  CalendarEntry,
+  CalendarFilters,
   CashflowForecast,
   CategoryDetectionResult,
   ComparableReferenceInput,
@@ -350,6 +352,11 @@ export const api = {
     eventId?: number;
     platformId?: number;
   }) => invoke<DashboardData>("get_dashboard", params),
+
+  // Calendar (2.5.0) - "TIQR Operations Calendar", see commands/calendar.rs's
+  // own module doc comment. `filters` is always a concrete range - the exact
+  // span of days the Month/Week grid currently has on screen.
+  getCalendar: (filters: CalendarFilters) => invoke<CalendarEntry[]>("get_calendar", { filters }),
 
   // CSV import
   previewOrdersCsv: (path: string) => invoke<CsvPreview>("preview_orders_csv", { path }),

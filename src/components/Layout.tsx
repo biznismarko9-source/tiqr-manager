@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconBoxes,
   IconCalendarDays,
-  IconCheck,
+  IconChevronDown,
   IconChevronUp,
   IconGauge,
-  IconLayoutGrid,
   IconLogOut,
+  IconMoon,
   IconPackage,
   IconReceipt,
   IconSettings,
+  IconSun,
   IconTag,
   IconTicket,
   IconUsers,
@@ -20,6 +21,7 @@ import { checkForUpdate } from "../lib/updater";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
+import { useTheme } from "../lib/theme";
 import logo from "../assets/logo.png";
 
 // 2.0.44: initials shown in the profile widget's avatar circle - up to 2,
@@ -34,26 +36,39 @@ function initialsFor(name: string): string {
     .join("");
 }
 
-const NAV = [
-  { to: "/", label: "Dashboard", icon: IconGauge, end: true },
+// 2.4.4: marko's own request to group Events/Orders/Tickets/Sales/Inventory
+// under one collapsible "Tickets" sidebar entry instead of 5 flat top-level
+// rows - none of these 5 routes themselves changed (still /events, /orders,
+// etc., unchanged everywhere else that links to them), this only changes
+// how the sidebar GROUPS the links to them. Control Center (2.4.3) and
+// Fulfillment Center (2.2.12) are no longer sidebar entries at all - both
+// merged under Finance's new "Ticket Center" tab instead (see Finance.tsx
+// and finance/TicketCenter.tsx).
+// Explicit discriminated union (rather than letting TS infer one from the
+// NAV array literal below) so the "children" in item check in the render
+// below narrows cleanly - a plain inferred type here widens to one merged
+// shape with every field optional instead of a real A | B union.
+type NavChild = { to: string; label: string; icon: typeof IconGauge };
+type NavItem =
+  | { to: string; label: string; icon: typeof IconGauge; end?: boolean }
+  | { group: string; icon: typeof IconGauge; children: NavChild[] };
+
+const TICKETS_GROUP_CHILDREN: NavChild[] = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
   { to: "/orders", label: "Orders", icon: IconPackage },
   { to: "/tickets", label: "Tickets", icon: IconTicket },
-  // 2.4.3: marko's own request for one dense work view over tickets across
-  // every event at once - placed right after Tickets (the data it reads),
-  // same "a narrower view sits near its own data source" placement
-  // Fulfillment Center's own 2.2.12 entry above already established for
-  // Sales.
-  { to: "/control-center", label: "Control Center", icon: IconLayoutGrid },
   { to: "/sales", label: "Sales", icon: IconReceipt },
-  // 2.2.12: marko's own request for one dedicated place to see everything
-  // sold that still needs finishing (payment/delivery/both) - placed right
-  // after Sales (not standalone-top-level like Price Checker/Finance below)
-  // since it's a specialized, narrower view OVER Sales' own data, not an
-  // independent feature of its own. Reuses IconCheck (already defined, used
-  // elsewhere for a plain checkmark) rather than adding a new icon.
-  { to: "/fulfillment", label: "Fulfillment Center", icon: IconCheck },
   { to: "/inventory", label: "Inventory", icon: IconBoxes },
+];
+
+const NAV: NavItem[] = [
+  { to: "/", label: "Dashboard", icon: IconGauge, end: true },
+  // 2.5.0: "TIQR Operations Calendar" - a cross-domain overview page (every
+  // event/order/sale/pull/attention item with a real date), same level as
+  // Dashboard rather than nested under Tickets - see commands/calendar.rs's
+  // own module doc comment and Calendar.tsx.
+  { to: "/calendar", label: "Calendar", icon: IconCalendarDays },
+  { group: "Tickets", icon: IconTicket, children: TICKETS_GROUP_CHILDREN },
   { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
   // v sidebar" (must be its own standalone sidebar section), not folded
@@ -66,11 +81,43 @@ const NAV = [
   { to: "/finance", label: "Finance", icon: IconWallet },
 ];
 
+// Shared by every actual NavLink below (both the flat top-level items and
+// the Tickets group's own children) so the active/hover look can never
+// drift between the two - only the group HEADER button (not a real
+// NavLink, since "Tickets" has no single route of its own) computes its own
+// equivalent class inline, from `ticketsGroupActive` below.
+const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+    isActive
+      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
+      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+  }`;
+
 export default function Layout() {
   const toast = useToast();
   const { user, logout } = useAuth();
+  const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+  // 2.4.4: Tickets group starts expanded (matches every other nav item
+  // already always being visible) - purely local, session-only UI state,
+  // same convention as e.g. Dashboard's own eventsExpanded/ordersExpanded
+  // (not persisted to disk either).
+  const [ticketsOpen, setTicketsOpen] = useState(true);
+  const ticketsGroupActive = TICKETS_GROUP_CHILDREN.some(
+    (c) => location.pathname === c.to || location.pathname.startsWith(`${c.to}/`),
+  );
+  // 2.4.4: one-click light/dark toggle above the profile widget - replaces
+  // Settings -> Appearance's old 3-way Light/System/Dark picker (marko's own
+  // request). Reuses the exact same lib/theme.ts useTheme() hook that picker
+  // used to call - only the UI moved, not the underlying preference
+  // mechanism. `isDark` resolves "system" mode to whatever it's currently
+  // actually rendering (same OS media query theme.ts's own applyMode already
+  // checks) so the toggle's icon/label always matches reality, and clicking
+  // it always sets an explicit light/dark mode - "system" isn't a state this
+  // control ever sets, only one it can start from.
+  const [themeMode, setThemeMode] = useTheme();
+  const isDark = themeMode === "dark" || (themeMode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 
   // 2.0.44: click-outside-to-close for the profile dropdown - it's a small
   // anchored menu, not a full-screen Modal (which already has its own
@@ -131,24 +178,55 @@ export default function Layout() {
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-                }`
-              }
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </NavLink>
-          ))}
+          {NAV.map((item) =>
+            "children" in item ? (
+              <div key="tickets-group">
+                <button
+                  type="button"
+                  onClick={() => setTicketsOpen((o) => !o)}
+                  aria-expanded={ticketsOpen}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                    ticketsGroupActive
+                      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
+                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                  }`}
+                >
+                  <item.icon className="h-4 w-4" />
+                  <span className="flex-1 text-left">{item.group}</span>
+                  <IconChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${ticketsOpen ? "" : "-rotate-90"}`} />
+                </button>
+                {ticketsOpen && (
+                  <div className="ml-3 mt-0.5 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-700">
+                    {item.children.map((child) => (
+                      <NavLink key={child.to} to={child.to} className={navLinkClass}>
+                        <child.icon className="h-4 w-4" />
+                        {child.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </NavLink>
+            ),
+          )}
         </nav>
+        {/* 2.4.4: one-click light/dark toggle - see the isDark/setThemeMode
+            comment above. Sits in its own bordered row directly above the
+            profile widget, exactly where marko asked for it. */}
+        <div className="border-t border-slate-100 px-2 py-2 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={() => setThemeMode(isDark ? "light" : "dark")}
+            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            {isDark ? <IconMoon className="h-4 w-4" /> : <IconSun className="h-4 w-4" />}
+            {isDark ? "Dark mode" : "Light mode"}
+          </button>
+        </div>
         {/* 2.0.44: profile widget - marko's own screenshot pointed at this
             exact spot (previously just the tagline below on its own). The
             dropdown opens UPWARD (bottom-full) since this sits at the very

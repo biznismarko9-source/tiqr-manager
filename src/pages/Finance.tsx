@@ -7,6 +7,7 @@ import Overview from "./finance/Overview";
 import Transactions from "./finance/Transactions";
 import Accounts from "./finance/Accounts";
 import Reports from "./finance/Reports";
+import TicketCenter from "./finance/TicketCenter";
 
 // 2.1.0: marko's own "FINANCE 2.1" request - Finance is now 4 simple tabs
 // (Overview/Transactions/Accounts/Reports, Overview shown by default) rather
@@ -24,13 +25,18 @@ import Reports from "./finance/Reports";
 // in this file, just moved. See PROTECTED-AREAS-NOTES.md's 2.1.0 section
 // for the full file-by-file breakdown.
 
-type FinanceTab = "overview" | "transactions" | "accounts" | "reports";
+type FinanceTab = "overview" | "transactions" | "accounts" | "reports" | "ticketCenter";
 
 const TABS: { key: FinanceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "transactions", label: "Transactions" },
   { key: "accounts", label: "Accounts" },
   { key: "reports", label: "Reports" },
+  // 2.4.4: marko's own request - Ticket Control Center + Fulfillment Center
+  // merged here as one tab with 2 subtabs (see finance/TicketCenter.tsx).
+  // Unlike the 4 tabs above, this one doesn't read `tabProps`/`FinanceData`
+  // at all - both subtabs already do their own independent data fetching.
+  { key: "ticketCenter", label: "Ticket Center" },
 ];
 
 export default function Finance() {
@@ -88,6 +94,7 @@ export default function Finance() {
       {tab === "transactions" && <Transactions {...tabProps} />}
       {tab === "accounts" && <Accounts {...tabProps} />}
       {tab === "reports" && <Reports {...tabProps} />}
+      {tab === "ticketCenter" && <TicketCenter />}
     </div>
   );
 }

@@ -21,6 +21,173 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.5.0 - TIQR Operations Calendar (new read-only aggregation page, no schema change)
+
+marko's own spec for a cross-domain Month/Week calendar, delivered directly
+after the 2.4.4 round above (see that entry - both shipped together).
+Things worth knowing before touching any of this again:
+
+- **Only 5 of marko's 8 originally-named candidate categories are real -
+  do not add the other 3 back without genuinely new underlying data.**
+  `commands/calendar.rs` supports event/order/sale/pull/attention only.
+  **Payouts**: there is no distinct "payout" entity, table, or date
+  anywhere in this app - "Payout" exists ONLY as Google Sheets
+  column-header text (`orders_sheet_sync.rs`'s "Payout Per Ticket"/"Payout
+  status"), aliasing `Sale.sale_price_cents`/`Sale.payment_status` 1:1.
+  **Payments**: migration 007's `payments` table exists in the schema
+  (readable, migrated) but has ZERO live Rust command code anywhere that
+  reads or writes it - the `payments.rs` its own migration comment
+  references was never built. This is now a SECOND confirmed instance of
+  the "schema-present-but-functionally-dead" shape this codebase already
+  has once (migration 026's `price_checker_monitor` tables, orphaned since
+  2.4.2 for a different reason - a shipped-then-removed feature, kept per
+  the forward-only migration rule) - `payments` was more likely laid down
+  ahead of a feature that was never actually built at all, not
+  shipped-then-removed, but the practical result for anyone reading this
+  schema is the same: a table existing is NOT proof a feature exists.
+  **Fulfillment**: `tickets.delivery_status` is a plain free-text enum
+  ("Delivered"/"Not delivered"/etc, see `Ticket::delivery_status`'s own doc
+  comment) with NO associated date column anywhere - no `delivery_date`/
+  `delivered_at`/`delivery_deadline` exists. If any of these 3 ever gains a
+  real, written-to date column in a future task, re-derive this list from
+  the actual schema + command code again rather than assuming this note is
+  still exhaustive.
+- **`pulls.transfer_deadline` is NOT the pull calendar date - use
+  `pulls.event_date`.** This is the SAME deprecated column
+  `PROTECTED_AREAS.md`'s `models.rs` doc comment already flags (1.9.8
+  replaced it with a client-side "N days before the event" warning
+  computed from `event_date`) - confirmed again here since it's exactly
+  the kind of trap marko's "don't invent a date" instruction is guarding
+  against. `commands/calendar.rs`'s pull severity mirrors Pulls.tsx's own
+  `WARNING_WINDOW_DAYS`/`daysUntil` logic independently in Rust
+  (`PULL_WARNING_WINDOW_DAYS = 3`) rather than importing across a
+  page-file boundary - same "same rule, not the same code" precedent
+  `attention_center::event_is_done` already set for mirroring Orders.tsx's
+  `isOrderDone`. If Pulls.tsx's own warning window ever changes, update
+  `PULL_WARNING_WINDOW_DAYS` in `commands/calendar.rs` to match, or the two
+  will silently disagree.
+- **Pulls has no per-record detail route.** A calendar "pull" entry's
+  `linkKind` is `"pulls"` with `linkId: null`, and always navigates to the
+  Pulls LIST page (`/pulls`), not a per-pull page - there isn't one
+  (`PullEditModal` opens straight off the list; no `/pulls/:id` route
+  exists in `App.tsx`). If a pull detail route is ever added, revisit
+  `pulls_in_range` in `commands/calendar.rs` (and `CalendarEntry.linkKind`'s
+  own doc comment in `models.rs`) to link there directly instead.
+  Event/order/sale entries all link to their existing, unchanged detail
+  routes exactly as Attention Center/Ticket Control Center/Fulfillment
+  Center already do for the same records - no new detail view was added.
+- **Read-only aggregation only, like Attention Center/Inventory
+  Intelligence - `calendar.rs` must never become a second place that
+  writes to Orders/Tickets/Sales/Pulls/Attention/Finance.** It also
+  deliberately does NOT call into `orders::list_orders_impl`/
+  `sales::list_sale_groups_impl`/`pulls::list_pulls_impl` and reshape their
+  results - each kind gets its own small, purpose-built SELECT (same "each
+  view aggregator writes its own query" convention `ticket_control_center`'s
+  own doc comment already explains), reusing only `sales::GROUP_KEY_EXPR`
+  (grouping) and `attention_center::get_attention_center_impl` (the
+  "attention" entries + event severity) directly. A sale batch's shown
+  amount is a deliberately SIMPLER variant of `SaleGroup`'s own
+  revenue-currency rule (`None` whenever the batch's lines don't all share
+  one `sales.currency`, without SaleGroup's extra profit/margin/ROI
+  machinery) - if a future task needs Calendar to show real profit/margin
+  for a sale entry, reuse `SaleGroup`'s own fields properly rather than
+  extending this simplified version ad hoc.
+- **No new index was added for `pulls.event_date`, on purpose.** Every
+  other date column Calendar reads already has one from earlier migrations
+  (`idx_events_date`, `idx_orders_date`, `idx_sales_date` - migration 001).
+  `pulls.event_date` does not, but neither does `pulls::list_pulls_impl`'s
+  own already-shipping `date_from`/`date_to` filter - adding one now would
+  be an index added without a genuinely new reason, which marko was
+  explicit not to do. Revisit only if pulls' own list ever needs one for
+  an unrelated, real performance reason.
+
+## 2.4.4 - Ticket Center consolidation, sidebar regroup, theme toggle (frontend-only, no schema/backend change)
+
+marko's own request, delivered as one combined UI/UX round before his
+separate 2.5.0 Calendar spec (see that version's own entry once it lands).
+Things worth knowing before touching any of this again:
+
+- **Ticket Control Center (2.4.3) and Fulfillment Center (2.2.12) are no
+  longer standalone routes.** `/control-center` and `/fulfillment` are
+  gone from `App.tsx`, and both lost their own sidebar entries in
+  `Layout.tsx`. Before removing them, both were grepped across all of
+  `src/` for any OTHER internal `Link`/`navigate` reference (there were
+  none - each was only ever reached via its own now-removed sidebar entry)
+  and for their own named exports (`isReadyToComplete`,
+  `matchesFulfillmentCategory`, `FulfillmentCategoryKey` - all local to
+  `FulfillmentCenter.tsx` itself, nothing else imports them). Both
+  components are now mounted by `src/pages/finance/TicketCenter.tsx`
+  instead, as two subtabs under Finance's own tab strip (5th tab, "Ticket
+  Center") - completely unchanged internally except the 3 Control Center
+  fixes below, and each dropped its own `<PageHeader>` (the outer Finance
+  tab pill + this subtab pill already label it - matches Finance's other 4
+  tabs, none of which repeat their own title as a second header either).
+  **If either page ever needs a standalone route/sidebar entry again,
+  that's a real routing change, not just re-adding a `NAV` entry** - it
+  would need its own `<Route>` in `App.tsx` again too.
+- **Sidebar "Tickets" group is an accordion, not a hub page.** marko's
+  spec said "tickets, ktorý si vieš naň kliknúť a zobrazia sa ti events,
+  orders tickets sales inventory" - two readings existed: (a) a sidebar
+  disclosure revealing 5 existing, unchanged routes as nested links, or
+  (b) consolidating those 5 pages into one hub page with internal tabs
+  (the same treatment Ticket Center just got above). Went with (a) -
+  `TICKETS_GROUP_CHILDREN`/`NavItem` in `Layout.tsx` - since (b) would mean
+  re-architecting 5 large, independently-stateful pages (Events, Orders,
+  Tickets, Sales, Inventory) that are deep-linked from all over the app
+  (`/orders/:id` links from Dashboard, Attention Center, etc.) into a
+  shared tab shell - a much bigger, riskier "new parallel system" than
+  marko's own "reuse existing, no redesign" instructions would suggest he
+  wanted from one sidebar-wording line. **If marko actually wants reading
+  (b), that's a separate, much larger task - flag it back to him rather
+  than assuming.** Every one of the 5 routes (`/events`, `/orders`,
+  `/tickets`, `/sales`, `/inventory`) is 100% unchanged either way.
+- **Settings -> Appearance is gone, not duplicated.** The old 3-way Light/
+  System/Dark picker (`THEME_OPTIONS` in `Settings.tsx`) was deleted along
+  with its `SECTIONS` entry; the sidebar's new one-click toggle
+  (`Layout.tsx`) is the only theme control left, and it calls the exact
+  same `lib/theme.ts` `useTheme()` hook the old picker used to - the
+  persisted `app_settings` key (`"theme"`) and its values
+  (`"light"|"dark"|"system"`) are unchanged, so an existing install's
+  saved preference still applies correctly on next launch. The new toggle
+  is binary by design (marko's own "jedným klikom zmeniť medzi bielym/
+  čiernym") - clicking it always writes an explicit `"light"` or `"dark"`,
+  never `"system"`. A fresh install still defaults to `"system"`
+  (`useTheme`'s own initial state, untouched) - there is just no UI left
+  that writes `"system"` explicitly once you've clicked the toggle once.
+- **Sticky header dark-mode bug, and where else to check for it.** Ticket
+  Control Center's sticky `<th>` background was `dark:bg-slate-800/60` -
+  translucent, copied from this app's ordinary (non-sticky) `<thead
+  className="... dark:bg-slate-800/60">` convention used elsewhere (e.g.
+  `FulfillmentCenter.tsx`), where 60% opacity is harmless because nothing
+  ever scrolls underneath a non-sticky header. It is NOT harmless on a
+  `position: sticky` header actively covering scrolling rows - marko's
+  screenshot showed scrolled-past row text visibly bleeding through the
+  header. Fixed to a fully opaque `dark:bg-slate-800` for this one sticky
+  use. **This table is still the only sticky-header table in the app** (see
+  its own 2.4.3 entry above) - if another one is ever added, give its
+  sticky background full opacity from the start rather than copying the
+  translucent non-sticky convention.
+- **"Ticket / Seats" column is now "Seats"-only** (Control Center) - the
+  ticket code no longer renders in that cell at all (still in its `title`
+  tooltip, and still shown on Order Detail/Sale Detail, which is what the
+  row's own click already opens). Don't reintroduce the code into this
+  cell without checking marko still wants Seats-only.
+- **Order cell is independently clickable** (Control Center) - opens Order
+  Detail directly (`stopPropagation`) regardless of what the row's own
+  click does (Sale Detail for a sold ticket, Order Detail otherwise - see
+  `openDetail`). Same pattern `FulfillmentCenter.tsx`'s own row-level
+  "Open" link already used.
+- **Dashboard's "Sales by platform" no longer has its own
+  `overflow-y-auto`/`max-h-72`.** marko's own request to remove that
+  nested scrollbar entirely (some OS/browser combinations render a
+  persistent scrollbar gutter on it even at 4 rows, his own screenshot).
+  Replaced with the exact same slice + "Show N more" `ShowMoreToggle`
+  pattern the 3 Activity-tab Recent cards already use
+  (`RECENT_LIST_PREVIEW_COUNT`) - a new `platformsExpanded` state, not a
+  new component. If a business's own distinct-platform count ever gets
+  very large, this card can now grow tall rather than scroll internally -
+  same tradeoff the Recent cards already accept.
+
 ## 2.4.3 - Ticket Control Center (new page, 1 new backend module, no schema change)
 
 marko's own spec: one dense work screen ("Ticket Control Center",

@@ -16,6 +16,60 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.5.0 - TIQR Operations Calendar
+
+marko's own spec for a new cross-domain Month/Week calendar page, delivered
+together with the 2.4.4 round below in this same release.
+
+1. **New**: `/calendar` page - a Month/Week calendar aggregating every part
+   of the app with a real date: events, orders, sales (grouped by batch,
+   never one row per ticket), pulls, and Attention Center items. Today/
+   Previous/Next navigation, a Day Detail view (click any day or its
+   "+X more"), a client-side Filters row, and a "Today & next 7 days"
+   summary card.
+2. **New backend**: `commands/calendar.rs` (`get_calendar`, one command) +
+   `CalendarFilters`/`CalendarEntry` models. No new migration, no new
+   table - reuses `attention_center::get_attention_center_impl` and
+   `sales::GROUP_KEY_EXPR` directly rather than re-deriving either.
+3. **Deliberately NOT implemented**: payout, payment, and fulfillment
+   calendar entries - none of the 3 has a real, reliably-existing date
+   anywhere in this app today (see `PROTECTED_AREAS.md`'s new "2.5.0"
+   entry for the full research). Nothing was invented to fill these in.
+4. **New sidebar entry**: "Calendar", directly below Dashboard.
+5. 14 new Rust tests (`commands/calendar.rs`), full suite green (1052
+   tests); `npx tsc -b` and `npm run build` both clean.
+
+## 2.4.4 - Ticket Center consolidation, sidebar regroup, theme toggle
+
+marko's own request, a pure frontend/UX round (no backend, schema, or
+migration changes at all) delivered before his separate 2.5.0 Calendar
+spec.
+
+1. **Merged**: Ticket Control Center (2.4.3) + Fulfillment Center (2.2.12),
+   previously two standalone top-level sidebar pages, now live under
+   Finance as one "Ticket Center" tab with two subtabs (Control Center,
+   Fulfillment) - new `finance/TicketCenter.tsx`. `/control-center` and
+   `/fulfillment` routes removed; both components reused unchanged
+   internally aside from Control Center's own fixes below.
+2. **Sidebar regrouped**: Events/Orders/Tickets/Sales/Inventory now sit
+   under one collapsible "Tickets" entry instead of 5 flat rows - all 5
+   routes themselves unchanged.
+3. **New**: one-click light/dark toggle above the sidebar's profile widget,
+   reusing the existing `useTheme()` hook. Settings -> Appearance (the old
+   3-way Light/System/Dark picker) removed - moved, not duplicated.
+4. **Fixed**: Ticket Control Center's sticky header had a translucent
+   dark-mode background (`dark:bg-slate-800/60`) letting scrolled row text
+   bleed through while scrolling - now fully opaque.
+5. **Changed** (Ticket Control Center): "Ticket / Seats" column renamed to
+   "Seats", now shows only the seat location (ticket code moved to a hover
+   tooltip); Order cell now independently opens Order Detail on click.
+6. **Changed** (Dashboard): "Sales by platform"'s internal scrollbar
+   removed, replaced with the same slice + "Show N more" pattern the
+   Activity tab's Recent cards already use.
+
+`npx tsc -b` and `npm run build` both clean; no Rust changed, so
+`cargo test --lib` is unaffected. Version bumped **2.4.3 -> 2.4.4**.
+
 ## 2.4.3 - Ticket Control Center
 
 marko's own focused-task request: one central work screen to manage and

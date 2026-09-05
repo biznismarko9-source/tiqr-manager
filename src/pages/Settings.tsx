@@ -56,7 +56,6 @@ import {
   IconLink,
   IconLogOut,
   IconPlus,
-  IconSun,
   IconTag,
   IconTicket,
   IconTrash,
@@ -67,15 +66,8 @@ import {
 import { useToast } from "../lib/toast";
 import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { UpdateOverlay } from "../components/UpdateOverlay";
-import { useTheme, type ThemeMode } from "../lib/theme";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
-
-const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
-  { key: "light", label: "Light" },
-  { key: "system", label: "System" },
-  { key: "dark", label: "Dark" },
-];
 
 // 1.8.2: Settings Home - one card per category, each a real route
 // (settings/:section, added in App.tsx) rather than a scroll-to-anchor, so
@@ -109,7 +101,10 @@ const SECTIONS = [
   // marko's own request; 2.0.78 switched the mobile-push channel from
   // Pushover to ntfy - see NotificationsCard's own doc comment.
   { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts for the things that need your attention.", icon: IconBell },
-  { key: "appearance", title: "Appearance", description: "Light, system or dark theme.", icon: IconSun },
+  // 2.4.4: the old "Appearance" section (Light/System/Dark) moved out of
+  // Settings entirely - marko's own request for a one-click light/dark
+  // toggle right above the sidebar's profile widget instead (Layout.tsx,
+  // reusing the same lib/theme.ts useTheme() hook this used to call here).
   { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
   // 2.0.44: your name/email/sign-in + Log out - see the profile widget at
   // the bottom of the sidebar (Layout.tsx), whose "Account settings" item
@@ -131,7 +126,6 @@ export default function Settings() {
   }, [user?.name]);
   const [savingName, setSavingName] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [themeMode, setThemeMode] = useTheme();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   // 2.0.27: managed event categories (marko's request - "like Platforms").
   const [categories, setCategories] = useState<EventCategory[]>([]);
@@ -386,29 +380,6 @@ export default function Settings() {
               category per route instead of one long scrolling page - see
               REDESIGN-1.8.2-REPORT.md section 5. Nothing below this point
               in each branch is new functionality. */}
-          {section === "appearance" && (
-            <Card className="p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Theme</h3>
-                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5">
-                  {THEME_OPTIONS.map((o) => (
-                    <button
-                      key={o.key}
-                      onClick={() => setThemeMode(o.key)}
-                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                        themeMode === o.key
-                          ? "bg-brand-600 text-white"
-                          : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
-                      }`}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </Card>
-          )}
-
           {/* 2.2.1: marko's own request - was one long Card with all three
               lists permanently expanded (taking a lot of scroll for
               something he only opens occasionally); now exactly 3 rows,

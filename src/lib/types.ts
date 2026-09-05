@@ -2011,3 +2011,46 @@ export interface ControlCenterTicket {
   isDemo: boolean;
 }
 
+// --- Calendar (2.5.0) -------------------------------------------------------
+// "TIQR Operations Calendar" - one Month/Week view over every part of the
+// app that has a real date. See commands::calendar's own module doc comment
+// (Rust) for the full research behind why only 5 kinds exist here - marko's
+// other 3 candidate categories (payouts/payments/fulfillment) have no real,
+// reliably-existing date anywhere in this app and are never invented.
+
+export interface CalendarFilters {
+  /** Inclusive range, both required - always the exact span of days the
+   * Month or Week grid currently has on screen. */
+  dateFrom: string;
+  dateTo: string;
+}
+
+export type CalendarEntryKind = "event" | "order" | "sale" | "pull" | "attention";
+export type CalendarSeverity = "critical" | "attention" | "info" | "neutral";
+export type CalendarLinkKind = "event" | "order" | "sale" | "pulls";
+
+/** One card on the calendar grid (or one row in Day Detail). Every field
+ * here already exists elsewhere in the app - this is a read-only repackaging
+ * for display, never a new business computation. */
+export interface CalendarEntry {
+  /** Unique within one response - "{kind}:{id}". */
+  key: string;
+  kind: CalendarEntryKind;
+  /** "YYYY-MM-DD" - always a real column value, never computed/invented. */
+  date: string;
+  title: string;
+  /** Plain text only - never a formatted money string, see `amountCents`. */
+  subtitle: string | null;
+  severity: CalendarSeverity;
+  /** Which existing page to open on click - never a new route. "pulls"
+   * carries no `linkId` (there is no per-pull detail route today - see
+   * commands::calendar's own doc comment) and always opens the Pulls list. */
+  linkKind: CalendarLinkKind;
+  linkId: number | null;
+  /** A single already-safe-to-show amount, when this entry has one - `null`
+   * for a mixed-currency sale batch (never blended) and always `null` for
+   * `kind = "event"`. */
+  amountCents: number | null;
+  currency: string | null;
+}
+

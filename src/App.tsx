@@ -8,16 +8,15 @@ import Welcome from "./pages/Welcome";
 import PendingApproval from "./pages/PendingApproval";
 import DatabaseError from "./pages/DatabaseError";
 import Dashboard from "./pages/Dashboard";
+import Calendar from "./pages/Calendar";
 import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
 import Tickets from "./pages/Tickets";
-import TicketControlCenter from "./pages/TicketControlCenter";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
-import FulfillmentCenter from "./pages/FulfillmentCenter";
 import Pulls from "./pages/Pulls";
 import PriceChecker from "./pages/PriceChecker";
 import Finance from "./pages/Finance";
@@ -75,22 +74,26 @@ export default function App() {
               }
             >
               <Route index element={<Dashboard />} />
+              {/* 2.5.0: "TIQR Operations Calendar" - a new cross-domain
+                  overview page, same level as Dashboard (not nested under
+                  Tickets/Finance) - see Layout.tsx's own 2.5.0 comment and
+                  commands/calendar.rs's module doc comment. */}
+              <Route path="calendar" element={<Calendar />} />
               <Route path="events" element={<Events />} />
               <Route path="events/:id" element={<EventDetail />} />
               <Route path="orders" element={<Orders />} />
               <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="tickets" element={<Tickets />} />
-              {/* 2.4.3: Ticket Control Center - a dense work view over the
-                  same tickets data, see Layout.tsx's NAV entry and this
-                  page's own doc comment. */}
-              <Route path="control-center" element={<TicketControlCenter />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
-              {/* 2.2.12: Fulfillment Center - a narrower work-view over the
-                  same Sales data, see Layout.tsx's NAV entry for why it sits
-                  here rather than as a standalone top-level section. */}
-              <Route path="fulfillment" element={<FulfillmentCenter />} />
+              {/* 2.4.4: Ticket Control Center (2.4.3) and Fulfillment Center
+                  (2.2.12) are no longer standalone top-level routes - marko's
+                  own request to merge both under Finance as one "Ticket
+                  Center" tab with two subtabs, rather than two separate
+                  sidebar entries. Both components are unchanged and now
+                  mounted by pages/finance/TicketCenter.tsx instead - see
+                  Finance.tsx and Layout.tsx's own 2.4.4 comments. */}
               <Route path="pulls" element={<Pulls />} />
               <Route path="price-checker" element={<PriceChecker />} />
               <Route path="finance" element={<Finance />} />

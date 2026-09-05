@@ -171,6 +171,7 @@ pub fn run() {
             commands::finance_recurring::create_from_recurring,
             commands::finance_forecast::get_cashflow_forecast,
             commands::dashboard::get_dashboard,
+            commands::calendar::get_calendar,
             commands::csv_import::preview_orders_csv,
             commands::csv_import::import_orders_csv,
             commands::csv_export::export_events_csv,
