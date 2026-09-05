@@ -6,6 +6,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconGauge,
+  IconLayoutGrid,
   IconLogOut,
   IconMoon,
   IconPackage,
@@ -40,10 +41,15 @@ function initialsFor(name: string): string {
 // under one collapsible "Tickets" sidebar entry instead of 5 flat top-level
 // rows - none of these 5 routes themselves changed (still /events, /orders,
 // etc., unchanged everywhere else that links to them), this only changes
-// how the sidebar GROUPS the links to them. Control Center (2.4.3) and
-// Fulfillment Center (2.2.12) are no longer sidebar entries at all - both
-// merged under Finance's new "Ticket Center" tab instead (see Finance.tsx
-// and finance/TicketCenter.tsx).
+// how the sidebar GROUPS the links to them.
+//
+// 2.5.1: marko's own follow-up - Ticket Center (briefly a Finance subtab in
+// 2.4.4, see Finance.tsx's own 2.5.1 comment) is back out as its own
+// top-level entry, and the whole top-level order changed to match his exact
+// list: Dashboard, Tickets, Price Checker, Pulls, Finance, Ticket Center,
+// Calendar. See TicketCenter.tsx's own module doc comment for why it's an
+// ORDERS list now (not the old per-ticket Control Center/Fulfillment Center
+// pages, both removed this version).
 // Explicit discriminated union (rather than letting TS infer one from the
 // NAV array literal below) so the "children" in item check in the render
 // below narrows cleanly - a plain inferred type here widens to one merged
@@ -63,22 +69,24 @@ const TICKETS_GROUP_CHILDREN: NavChild[] = [
 
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: IconGauge, end: true },
-  // 2.5.0: "TIQR Operations Calendar" - a cross-domain overview page (every
-  // event/order/sale/pull/attention item with a real date), same level as
-  // Dashboard rather than nested under Tickets - see commands/calendar.rs's
-  // own module doc comment and Calendar.tsx.
-  { to: "/calendar", label: "Calendar", icon: IconCalendarDays },
   { group: "Tickets", icon: IconTicket, children: TICKETS_GROUP_CHILDREN },
-  { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
   // v sidebar" (must be its own standalone sidebar section), not folded
   // into Events/Settings.
   { to: "/price-checker", label: "Price Checker", icon: IconTag },
+  { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.83: same standalone-top-level-section treatment as Price Checker
   // above (not folded into Settings/Dashboard) - Finance is a big enough
   // feature of its own (personal + business money, separate from the
   // Orders/Sales side of the business) to earn its own sidebar entry.
   { to: "/finance", label: "Finance", icon: IconWallet },
+  // 2.5.1: marko's own explicit order - Ticket Center sits right after
+  // Finance, back out as its own top-level page (see TicketCenter.tsx).
+  { to: "/ticket-center", label: "Ticket Center", icon: IconLayoutGrid },
+  // 2.5.0: "TIQR Operations Calendar" - a cross-domain overview page (every
+  // event/order/sale/pull/attention item with a real date). 2.5.1: moved
+  // from right after Dashboard to last, per marko's own exact ordering.
+  { to: "/calendar", label: "Calendar", icon: IconCalendarDays },
 ];
 
 // Shared by every actual NavLink below (both the flat top-level items and

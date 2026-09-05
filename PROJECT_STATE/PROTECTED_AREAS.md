@@ -21,6 +21,61 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.5.1 - Ticket Center rebuilt around orders (frontend-only, no schema change)
+
+marko's own direct follow-up on the 2.5.0 release above: Ticket Center
+pulled back out of Finance and rebuilt from scratch around orders instead
+of individual tickets/sale-batches. Things worth knowing before touching
+any of this again:
+
+- **`ticket_control_center.rs` (backend) is now fully orphaned.** Its one
+  command, `list_control_center_tickets`, has no frontend caller anymore -
+  `TicketControlCenter.tsx`, the only page that ever called it, is deleted.
+  It was deliberately LEFT IN PLACE rather than removed (same
+  "document, don't necessarily delete" precedent as the `payments` table
+  and migration 026's tables, see the 2.5.0 entry below) - reviving it
+  costs nothing, and ripping out a whole command/impl/its own test module
+  wasn't part of what marko actually asked for this round. If a future task
+  wants to genuinely remove it (command, `generate_handler!` entry,
+  `api.ts`'s `listControlCenterTickets`, `ControlCenterTicket`/
+  `ControlCenterFilters` in `types.ts`), that's a separate, deliberate
+  cleanup task - don't do it as a side effect of an unrelated change.
+- **`FulfillmentCenter.tsx` and its exports are gone - don't resurrect a
+  cross-file import to them.** `isReadyToComplete`/`matchesFulfillmentCategory`/
+  `FulfillmentCategoryKey` no longer exist anywhere; nothing else in the
+  app imported them (confirmed by grep before deleting), so nothing else
+  needed updating when the file went. `TicketCenter.tsx`'s own
+  `matchesCategory` is a fresh, order-grain reimplementation of the same
+  IDEA (payment/delivery completeness), not a port of that code.
+- **`OrderDetail.tsx`'s `backTo` allowlist now includes `/ticket-center`.**
+  If Ticket Center's own route path ever changes, update the allowlist
+  (and `backLabel`'s matching ternary branch) in the same change - the
+  existing "arrived from X, Back goes to X" convention silently degrades to
+  "Back to orders" instead of erroring, so a mismatch here is easy to miss
+  without deliberately testing the click-through.
+- **Ticket Center's own "Completed"/category logic depends on
+  `orderCompletionChecks`/`completionStatus`, imported from `Orders.tsx`.**
+  Don't change what "done" means for an order (the Sold/Delivered/Paid
+  checks) without checking `TicketCenter.tsx`'s own 4 category thresholds
+  (`availableCount`/`paidCount`/`deliveredCount` vs `soldCount`) still make
+  sense against the new definition - they read the same `OrderRecord`
+  fields directly, not through `orderCompletionChecks` itself, so a change
+  to one won't automatically flow through to the other.
+- **The sidebar's top-level order (`Layout.tsx`'s `NAV` array) is now
+  marko's own explicit, named sequence** - Dashboard, Tickets, Price
+  Checker, Pulls, Finance, Ticket Center, Calendar. Don't reshuffle it for
+  "consistency" or alphabetical order in a future change without checking
+  with him first; this exact order was the one thing he corrected out of
+  the whole 2.5.0 delivery.
+- **No new zip/release report was built for 2.5.1 by itself** - marko's own
+  message signaled more feedback was coming right after ("zatial toto a
+  potom pojdeme dalej"), so packaging was deliberately deferred rather than
+  produced and then immediately superseded. If a future session picks this
+  up assuming a 2.5.1 build was delivered and tested standalone, it wasn't
+  - verify against what was actually built/tested (`tsc -b` + `npm run
+  build` + this file's own record) rather than assuming a shipped release
+  exists just because `CURRENT_STATE.md`/`CHANGELOG.md` mention the version.
+
 ## 2.5.0 - TIQR Operations Calendar (new read-only aggregation page, no schema change)
 
 marko's own spec for a cross-domain Month/Week calendar, delivered directly

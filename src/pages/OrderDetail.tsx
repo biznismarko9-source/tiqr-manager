@@ -72,9 +72,19 @@ export default function OrderDetail() {
   // Order-code link on both unconditional - so in practice all three
   // (Orders, Tickets, Inventory) are live entry points again, not just a
   // fallback-labeling relic.
+  // 2.5.1: Ticket Center (rebuilt around orders - see TicketCenter.tsx) is
+  // now a 4th live entry point, same "remember exactly where I came from"
+  // treatment as the other three.
   const cameFrom = (location.state as { from?: string } | null)?.from;
-  const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
-  const backLabel = backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
+  const backTo = cameFrom && ["/tickets", "/inventory", "/orders", "/ticket-center"].includes(cameFrom) ? cameFrom : "/orders";
+  const backLabel =
+    backTo === "/tickets"
+      ? "Back to tickets"
+      : backTo === "/inventory"
+        ? "Back to inventory"
+        : backTo === "/ticket-center"
+          ? "Back to ticket center"
+          : "Back to orders";
   // 1.9.6: marko clarified what he meant by wanting Tickets/Inventory to
   // behave like Event/Order/Sale's own click-through ("more info about that
   // object, not thrown elsewhere") - landing here still FEELS like being

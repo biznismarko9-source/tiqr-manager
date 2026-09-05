@@ -121,6 +121,20 @@ absent from the calendar rather than invented - see "Current focus" below
 and `PROTECTED_AREAS.md`'s new "2.5.0" entry before ever trying to add one
 of those 3 back in.
 
+**2.5.1** is a pure frontend/UX round, no backend or schema changes at all:
+Ticket Center (briefly a Finance subtab in 2.4.4) is back out as its own
+top-level page/route, marko's own explicit request, and rebuilt from
+scratch around ORDERS instead of the old per-ticket Control Center (2.4.3)/
+Fulfillment Center (2.2.12) pages (both deleted); and the whole top-level
+sidebar order changed to his exact list (Dashboard, Tickets, Price Checker,
+Pulls, Finance, Ticket Center, Calendar - Calendar moved from right after
+Dashboard to last). The Calendar page (2.5.0) also got a presentation-only
+visual refresh ("viac moderny, viac prehladny" - marko's own words): a
+consistent color per entry kind plus a severity ring/text-color layered on
+top, no change to any hook, API call, or navigation target. See "Current
+focus" below and `PROTECTED_AREAS.md`'s new "2.5.1" entry (the one thing
+this leaves orphaned: `ticket_control_center.rs`'s backend command).
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -135,12 +149,16 @@ of those 3 back in.
   `PROTECTED_AREAS.md`'s "2.2.2"/"2.2.3"/"2.2.4"/"2.2.5" entries before
   adding more event-level functionality anywhere else), Orders,
   OrderDetail, Tickets (Inventory), Inventory, Sales, SaleDetail, Pulls
-  (given/received), Finance (own `finance/` subfolder, 5-tab layout as of
-  2.4.4 - Overview/Transactions/Accounts/Reports/**Ticket Center**; the
-  last one is new in 2.4.4 and just hosts TicketControlCenter (2.4.3) and
-  FulfillmentCenter (2.2.12) as two subtabs, `finance/TicketCenter.tsx` -
-  both are no longer standalone top-level routes/sidebar entries, see
-  "Current focus" below), PriceChecker (2.4.1 briefly gained a Live Market
+  (given/received), Finance (own `finance/` subfolder, back to its original
+  4-tab layout - Overview/Transactions/Accounts/Reports - as of 2.5.1; briefly
+  grew a 5th "Ticket Center" tab in 2.4.4, moved back out to its own
+  top-level page in 2.5.1, see "Current focus" below), TicketCenter (2.5.1 -
+  new top-level page/route `/ticket-center`, replacing both
+  `finance/TicketCenter.tsx` (deleted) and the two pages it used to host,
+  `TicketControlCenter.tsx`/`FulfillmentCenter.tsx` (both deleted) - lists
+  ORDERS, not individual tickets; reuses `api.listOrders` and Orders.tsx's
+  own `orderCompletionChecks`/`completionStatus`, no new backend at all -
+  see "Current focus" below), PriceChecker (2.4.1 briefly gained a Live Market
   Monitor panel per marketplace card; removed entirely in 2.4.2, back to
   the original manual tool - see "Current focus" below and
   `PROTECTED_AREAS.md`'s "2.4.2" entry), Settings (2.4.4: its old
@@ -154,8 +172,13 @@ of those 3 back in.
   themselves are unchanged), and added a one-click light/dark toggle above
   the profile widget, reusing the same `lib/theme.ts` `useTheme()` hook
   Settings' old Appearance section used to call. 2.5.0 added a new flat
-  "Calendar" entry right below Dashboard (same level, not nested under
-  "Tickets" - it's cross-domain, not ticket-specific).
+  "Calendar" entry right below Dashboard. **2.5.1** changed the top-level
+  order to marko's own exact list - Dashboard, Tickets (group), Price
+  Checker, Pulls, Finance, Ticket Center, Calendar - moving Calendar from
+  right after Dashboard to last, and adding Ticket Center back as its own
+  entry (icon: `IconLayoutGrid`, unused anywhere else in the app - picked
+  specifically to avoid looking like `IconAlertTriangle`'s existing
+  "Attention" association).
 - **Backend** (`src-tauri/src/`): Rust, Tauri 2. One module per domain
   under `commands/`: calendar (2.5.0 - new; one read-only command,
   `get_calendar`, backing the Calendar page - reuses
@@ -168,11 +191,17 @@ of those 3 back in.
   push-bookkeeping-ordering fix as `pulls_sheet_sync` below), tickets,
   ticket_listings (2.2.4 - real per-marketplace listings; 2.2.5 added 3
   all-or-nothing bulk commands - status/price/delete - see "Current focus"
-  below), ticket_control_center (2.4.3 - new; one read-only command,
-  `list_control_center_tickets`, backing the Ticket Control Center page -
-  now a Finance > Ticket Center subtab as of 2.4.4, a frontend-only routing
-  change, this command itself is untouched - see "Current focus" below),
-  inventory_intelligence (2.2.6 - one read-only command backing
+  below), ticket_control_center (2.4.3 - one read-only command,
+  `list_control_center_tickets`, originally backing the Ticket Control
+  Center page. **As of 2.5.1 this command is fully orphaned** - the
+  frontend page that called it was deleted (see TicketCenter's own 2.5.1
+  entry above), and nothing else in the app calls `get_control_center_*`/
+  `listControlCenterTickets`. Left in place deliberately rather than
+  removed, same "document, don't necessarily delete" precedent as the
+  `payments` table (migration 007) and migration 026's orphaned market-
+  monitor tables below - see `PROTECTED_AREAS.md`'s "2.5.1" entry before
+  either reviving or removing it), inventory_intelligence (2.2.6 - one
+  read-only command backing
   Overview's "Inventory Intelligence" block, see "Current focus" below),
   attention_center (2.2.8 - one read-only command backing the Dashboard's
   global, cross-event "Attention Center" block; 2.2.9 reworked its 4
@@ -231,6 +260,70 @@ of those 3 back in.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.5.1 - Ticket Center rebuilt around orders, sidebar reorder, Calendar
+visual refresh.** marko's own direct feedback on the 2.5.0 release above,
+delivered as its own round right after.
+
+- **Ticket Center moved out of Finance.** It was a Finance subtab for
+  exactly one version (2.4.4) - marko's follow-up made clear that wasn't
+  where he wanted it. It's a standalone top-level page/route again
+  (`/ticket-center`), positioned right after Finance in the sidebar.
+- **Ticket Center rebuilt around ORDERS, not individual tickets.** Marko's
+  own words: it should show orders you open to see what needs doing with
+  which tickets, not a flat table of tickets/sale-batches you edit directly
+  (which is what both `TicketControlCenter.tsx` (2.4.3) and
+  `FulfillmentCenter.tsx` (2.2.12) did). Both old pages and the
+  `finance/TicketCenter.tsx` subtab shell are deleted. The new
+  `src/pages/TicketCenter.tsx` is a genuinely different page, not a
+  restyle: it loads `OrderRecord[]` via the exact same `api.listOrders`
+  Orders.tsx already calls (no new backend command, no new query), reuses
+  Orders.tsx's own exported `orderCompletionChecks`/`completionStatus` for
+  its "Completed" badge (so it can never disagree with Orders.tsx/
+  OrderDetail.tsx about what "done" means), and clicking a row navigates
+  straight to the existing `/orders/:id` (OrderDetail), which already lists
+  every ticket in that order with independently-editable Status/Delivery
+  status/Payout status - exactly "what needs to be done with which
+  tickets," with no new detail view built or needed. 4 quick-filter tiles
+  (Needs attention/listing/payment/delivery) fold both old pages' concerns
+  into one set of order-level lenses - see `TicketCenter.tsx`'s own module
+  doc comment for exactly how each is computed from `OrderRecord`'s
+  existing counts. `OrderDetail.tsx`'s `backTo`/`backLabel` "arrived from"
+  logic gained `/ticket-center` as a 4th recognized origin.
+  `ticket_control_center.rs`'s backend command is now fully orphaned as a
+  result (left in place, documented, not deleted - see `PROTECTED_AREAS.md`
+  and the "Backend" bullet above).
+- **Sidebar order changed to marko's exact list**: Dashboard, Tickets,
+  Price Checker, Pulls, Finance, Ticket Center, Calendar - see `Layout.tsx`
+  bullet above. Calendar moved from right after Dashboard (2.5.0) to last.
+- **Calendar (2.5.0) visual refresh only** - "viac moderny, viac prehladny"
+  (more modern, more legible), marko's own words. Every entry KIND (event/
+  order/sale/pull/attention) now has one consistent accent color, used for
+  the month/week grid's entry chips, the filter row (which doubles as the
+  color legend - no separate legend UI needed), the Day Detail modal, and
+  the Today/next-7-days summary. Severity (critical/attention/info/neutral)
+  is now a second, independent channel layered on top (a ring on grid
+  chips, colored/bold text in list views) instead of being the only signal
+  a plain gray/red/amber dot used to carry. Weekend columns get a faint
+  background wash, today's cell gets a soft brand tint (not just the date
+  badge), and the Day Detail title now includes the weekday name. No hook,
+  API call (`get_calendar` params unchanged), or navigation target changed
+  - purely `src/pages/Calendar.tsx`'s own JSX/className, verified by
+  reading the diff rather than a new test (this app has no frontend test
+  runner - see "Testing" below).
+- **Judgment calls, none asked about directly (per marko's own standing
+  "smallest consistent solution, flag it" rule)**: the exact 4 Ticket
+  Center categories and their thresholds (see `TicketCenter.tsx`'s own
+  comment for the reasoning); dropping Control Center's tier/section/row/
+  marketplace filters entirely (they don't apply once the grain is "one row
+  per order"); dropping the old purchase-side `paymentStatus` column from
+  the new table (already visible on Orders.tsx/OrderDetail, kept this page
+  focused on the sell-side); leaving `ticket_control_center.rs` in place
+  rather than deleting it; and building this as its own 2.5.1 round rather
+  than folding it into a same-day 2.5.2/2.5.3 once more feedback lands (no
+  new zip/release report was produced for 2.5.1 alone - marko signaled more
+  changes were coming in the same message, see `CHANGELOG.md`'s own 2.5.1
+  entry).
 
 **2.5.0 - TIQR Operations Calendar.** marko's own spec for a new
 cross-domain calendar page - delivered directly after the 2.4.4 UI/UX round

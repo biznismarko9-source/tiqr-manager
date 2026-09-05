@@ -20,6 +20,7 @@ import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
 import PriceChecker from "./pages/PriceChecker";
 import Finance from "./pages/Finance";
+import TicketCenter from "./pages/TicketCenter";
 import Settings from "./pages/Settings";
 
 // 2.0.44: gates the whole app behind sign-in (see Welcome.tsx + lib/auth.tsx)
@@ -87,16 +88,16 @@ export default function App() {
               <Route path="inventory" element={<Inventory />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
-              {/* 2.4.4: Ticket Control Center (2.4.3) and Fulfillment Center
-                  (2.2.12) are no longer standalone top-level routes - marko's
-                  own request to merge both under Finance as one "Ticket
-                  Center" tab with two subtabs, rather than two separate
-                  sidebar entries. Both components are unchanged and now
-                  mounted by pages/finance/TicketCenter.tsx instead - see
-                  Finance.tsx and Layout.tsx's own 2.4.4 comments. */}
               <Route path="pulls" element={<Pulls />} />
               <Route path="price-checker" element={<PriceChecker />} />
               <Route path="finance" element={<Finance />} />
+              {/* 2.5.1: Ticket Center is a standalone top-level route again -
+                  briefly a Finance subtab in 2.4.4 (see Finance.tsx and
+                  Layout.tsx's own 2.5.1 comments), marko asked for it back
+                  out on its own, and rebuilt around orders rather than the
+                  old per-ticket Control Center/Fulfillment Center pages
+                  (both removed this version - see TicketCenter.tsx). */}
+              <Route path="ticket-center" element={<TicketCenter />} />
               <Route path="settings" element={<Settings />} />
               {/* 1.8.2: Settings Home (above) plus one real route per section -
                   HashRouter makes this refresh-stable with zero extra config,

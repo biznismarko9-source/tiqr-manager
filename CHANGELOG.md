@@ -16,6 +16,37 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.5.1 - Ticket Center rebuilt around orders, sidebar reorder, Calendar visual refresh
+
+marko's own direct follow-up on the 2.5.0 release below, delivered as its
+own round. No backend/schema changes. No standalone
+`REDESIGN-2.5.1-REPORT.md`/zip was produced for this round by itself -
+marko signaled more feedback was coming right after, so packaging was
+deferred rather than built and immediately superseded (see
+`PROTECTED_AREAS.md`'s "2.5.1" entry).
+
+1. **Changed**: Ticket Center moved out of Finance (was a subtab there for
+   one version, 2.4.4) back to its own top-level page/route
+   (`/ticket-center`).
+2. **Rebuilt**: Ticket Center now lists ORDERS (via the same `api.listOrders`
+   Orders.tsx already calls), not individual tickets/sale-batches - click an
+   order to see and edit what's outstanding on each of its tickets on the
+   existing Order Detail page. `TicketControlCenter.tsx` (2.4.3),
+   `FulfillmentCenter.tsx` (2.2.12), and the `finance/TicketCenter.tsx`
+   subtab shell are all deleted; 4 new quick-filter tiles (Needs
+   attention/listing/payment/delivery) replace both pages' old filter/
+   category systems.
+3. **Changed**: sidebar top-level order now matches marko's exact list -
+   Dashboard, Tickets, Price Checker, Pulls, Finance, Ticket Center,
+   Calendar (Calendar moved from right after Dashboard to last).
+4. **Changed**: Order Detail's "arrived from" Back link now also recognizes
+   Ticket Center as an origin (`/ticket-center` -> "Back to ticket center").
+5. **Visual refresh only**: the Calendar page (2.5.0) - a consistent accent
+   color per entry kind across the grid/filters/modal/summary, severity
+   shown as a ring/text-color layered on top instead of the only signal,
+   weekend/today cell shading, and a weekday name in the Day Detail title.
+   No data, hook, or navigation change.
+
 ## 2.5.0 - TIQR Operations Calendar
 
 marko's own spec for a new cross-domain Month/Week calendar page, delivered
