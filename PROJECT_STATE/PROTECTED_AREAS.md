@@ -21,6 +21,58 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.8.0 - Calendar: four views, two new date sources (read-only; no schema change, no migration, no index)
+
+- **The payout/payment/fulfillment question was re-asked and re-answered, and
+  the answer is written down as a TEST this time.** marko asked for all three
+  again in 2.8.0. Re-derived from the live schema and command code (not from
+  the 2.5.0 note): still no payout entity or date anywhere; migration 007's
+  `payments` table still has ZERO live SQL in any command module; and
+  `tickets.delivery_status` still has no date column. `calendar.rs`'s
+  `payouts_payments_and_fulfillment_are_still_absent_from_every_response`
+  test now guards this - if one of them ever becomes real, that test should
+  fail loudly and be updated deliberately rather than the calendar quietly
+  drifting into inventing a date.
+- **What the 2.5.0 pass missed, and 2.8.0 added: Finance.** The 2.5.0
+  research checked marko's three named categories against Orders/Sales/
+  Tickets and never asked whether the Finance module has dates. It does:
+  `finance_entries.entry_date` (a real user-entered date on a real row) and
+  `recurring_expenses.next_date`. Those are now `kind = "finance"` and
+  `kind = "recurring"`. **They are NOT a rebranded payout/payment** - naming
+  them that would have been exactly the invented-data this feature exists to
+  avoid. If a future task is tempted to rename them, the honest names are the
+  point.
+- **`recurring_expenses.next_date` is the ONLY real due date in this app**,
+  and therefore the only thing "Overdue" may ever count. The rule mirrors
+  `finance/Accounts.tsx` exactly - `is_active` AND `next_date < today` - and
+  is kept independently in Rust, the same "same rule, not the same code"
+  precedent `PULL_WARNING_WINDOW_DAYS` already set. **If Accounts.tsx's rule
+  changes, change `recurring_in_range` too or the two silently disagree.**
+  Paused templates are excluded on purpose: their `next_date` is frozen and
+  deliberately not actionable until resumed (see
+  `commands/finance_recurring.rs`'s own module doc comment), so showing one -
+  let alone as overdue - would be showing a deadline that does not exist.
+- **There is no time-of-day axis, and there must not be one until the data
+  has times.** Every date the calendar reads is date-only "YYYY-MM-DD". Week
+  is seven day COLUMNS, not a 24-hour timetable, and Day groups by kind
+  rather than by hour. A future "nicer" week view with hour rows would have
+  to invent positions for data that has none.
+- **Dates stay strings, end to end.** Placement, bucketing and comparison all
+  happen on ISO text; the only `new Date(...)` calls in `Calendar.tsx` are
+  for grid geometry and human labels. This is what keeps an entry on the day
+  it was entered on regardless of the machine's timezone - do not "tidy" this
+  into date arithmetic.
+- **The summary strip's 90-day lookback is a bounded compromise, not an
+  arbitrary number.** It exists only so an overdue recurring item can be
+  counted; `next_date` advances one occurrence at a time, so anything
+  genuinely overdue is at most a few cycles back. Widening it turns a bounded
+  read into a full-history one for no extra correctness.
+- **Quick-add was asked for and deliberately not built.** There is no task,
+  note or reminder table anywhere in this schema (checked), and marko's own
+  spec said not to stand up a new task database for it in this release. If it
+  is ever picked up, it needs its own design pass, not a column bolted onto
+  the calendar.
+
 ## 2.7.0 - AI Import Assistant (new backend module + new panel; no schema change, no migration, no new dependency)
 
 The first feature in this app where a model's output reaches a create form.

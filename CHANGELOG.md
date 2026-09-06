@@ -16,6 +16,62 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.8.0 - Calendar redesign + advanced calendar workflow
+
+marko asked to make the TIQR Operations Calendar one of the app's main work
+screens. **No schema change, no migration (the next new one is still 027), no
+new index, no new dependency.** `commands/calendar.rs` stays what it has
+always been: a read-only aggregator with no write path.
+
+1. **Added**: four views instead of two - **Month, Week, Day, Agenda**. All
+   four share one data path (`get_calendar` over a date range), one filter
+   state and one search box; only the range and the layout differ, so
+   switching period still fetches exactly one window.
+2. **Added**: two genuinely new date sources, **`finance`**
+   (`finance_entries.entry_date`) and **`recurring`**
+   (`recurring_expenses.next_date`). Both were re-derived from the live
+   schema and command code rather than trusting the 2.5.0 note, exactly as
+   `PROTECTED_AREAS.md` instructs.
+3. **Still not added**: payouts, payments, fulfillment. Re-checked this
+   release - there is no payout entity or date anywhere, migration 007's
+   `payments` table still has zero live SQL in any command module, and
+   `tickets.delivery_status` still has no date column. What the 2.5.0 pass
+   never checked was Finance, which is where this app's real dated money
+   lives - so it is added under its own honest name rather than rebranded as
+   a "payout". There is a standing test that fails if an invented category
+   ever reaches the calendar.
+4. **Added**: a real **Overdue** count. `recurring_expenses.next_date` is the
+   only genuine due date in the app; the rule is the same one Finance's own
+   Accounts tab applies (active template, `next_date` before today), and
+   paused templates are excluded because their `next_date` is frozen and not
+   actionable.
+5. **Added**: a Today / Tomorrow / Next 7 days / Overdue summary strip, a Day
+   Detail with a per-kind summary panel, per-day workload bars (three muted
+   segments, deliberately not a color scale), event countdowns derived only
+   from the event's own date, calendar-local search (dims non-matches in the
+   grid, filters the lists, can jump to the first match), and filter chips
+   that only appear for kinds actually present in the loaded range.
+6. **Deliberately not built**: a time-of-day axis. Every date this app stores
+   is date-only, so Week is seven day columns rather than a faked 24-hour
+   timetable, and Day groups by kind rather than by hour.
+7. **Deliberately not built**: quick-add of tasks/reminders/notes. There is
+   no task, note or reminder table anywhere in this schema, and marko was
+   explicit that this release must not stand up a new task database.
+8. **Changed**: the grid and the lists scroll inside themselves rather than
+   growing the page, so the header, filters and summary strip stay put and
+   there is only ever one scrollbar.
+9. **Not changed**: refund/resell, `batch_id`, money/integer cents,
+   Orders/Tickets/Sales/Listings/Finance/Fulfillment/Attention business
+   logic, Price Checker, Google Sheets.
+
+9 new Rust unit tests (23 in `calendar.rs` total).
+
+**Not verified by a build.** Implemented on a machine with no Node.js and no
+Rust toolchain, so `cargo test --lib`, `cargo check --lib`, `npx tsc -b` and
+`npm run build` could NOT be run - marko chose to proceed on static review.
+Run all four before publishing the tag, and regenerate
+`Cargo.lock`/`package-lock.json`.
+
 ## 2.7.0 - AI Import Assistant (screenshot -> pre-filled form, never straight to the database)
 
 marko's own request: drop, paste (Ctrl+V) or upload a screenshot into the New

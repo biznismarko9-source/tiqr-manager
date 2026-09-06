@@ -327,6 +327,144 @@ fn attention_in_range(items: &[AttentionCenterItem], date_from: &str, date_to: &
         .collect()
 }
 
+/// 2.8.0 - the money half of the calendar, and the answer to a question the
+/// 2.5.0 pass never asked.
+///
+/// marko asked again for "payouts", "payments" and "fulfillment" on the
+/// calendar. All three are still genuinely absent (re-derived from the live
+/// schema + command code for this release, exactly as `PROTECTED_AREAS.md`'s
+/// 2.5.0 entry instructs rather than trusting that note to still be
+/// exhaustive):
+///   - **payout**: still no payout entity/table/date anywhere - "Payout" is
+///     only Google Sheets column-header text aliasing `sales.sale_price_cents`
+///     / `sales.payment_status`.
+///   - **payments**: migration 007's `payments` table still has ZERO live SQL
+///     in any command module (re-checked this release), so its `payment_date`
+///     column is dead schema, not data.
+///   - **fulfillment**: `tickets.delivery_status` still has no date column of
+///     any kind.
+/// What the 2.5.0 pass did NOT check is the Finance module, and that is where
+/// the real dated money lives. These two functions add it - not as a
+/// rebranded "payout"/"payment", which would be exactly the invented-data
+/// this file exists to avoid, but under their own honest names.
+///
+/// `finance_entries.entry_date` is a real, user-entered ISO date on a real
+/// row written by `finance_entries.rs` - the same date the Finance
+/// Transactions tab lists by.
+fn finance_in_range(conn: &Connection, date_from: &str, date_to: &str) -> AppResult<Vec<CalendarEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.entry_type, f.entry_date, f.amount_cents, f.currency, f.scope, \
+                c.name AS category_name, f.place, f.note \
+         FROM finance_entries f \
+         LEFT JOIN finance_categories c ON c.id = f.category_id \
+         WHERE f.entry_date >= ?1 AND f.entry_date <= ?2",
+    )?;
+    let rows = stmt.query_map(params![date_from, date_to], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<String>>(7)?,
+            r.get::<_, Option<String>>(8)?,
+        ))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, entry_type, entry_date, amount_cents, currency, scope, category, place, note) = row?;
+        // A finance entry has no name column - the Transactions tab itself
+        // shows category/place/note in that order of preference, so the same
+        // order is used here rather than a second opinion about what
+        // identifies an entry.
+        let title = category
+            .or(place)
+            .or(note)
+            .unwrap_or_else(|| if entry_type == "income" { "Income".to_string() } else { "Expense".to_string() });
+        entries.push(CalendarEntry {
+            key: format!("finance:{id}"),
+            kind: "finance".to_string(),
+            date: entry_date,
+            title,
+            subtitle: Some(format!("{scope} · {entry_type}")),
+            // Money that has already been recorded carries no urgency of its
+            // own, exactly like an order or a sale that already happened.
+            severity: "neutral".to_string(),
+            link_kind: "finance".to_string(),
+            link_id: None,
+            // Always one real currency per entry (no batching, unlike a sale
+            // group) - safe to show directly.
+            amount_cents: Some(amount_cents),
+            currency: Some(currency),
+        });
+    }
+    Ok(entries)
+}
+
+/// `recurring_expenses.next_date` - the ONE genuinely forward-looking,
+/// user-owned due date in this entire app, and therefore the only real source
+/// an "Overdue" count can come from.
+///
+/// The overdue rule is deliberately identical to the one Finance's own
+/// Accounts tab already applies (`finance/Accounts.tsx`: `item.isActive &&
+/// item.nextDate < todayIso()`) - same rule, kept independently here in Rust
+/// rather than shared across the page boundary, the same precedent
+/// `PULL_WARNING_WINDOW_DAYS` and `attention_center::event_is_done` already
+/// set. **If that rule ever changes in Accounts.tsx, change it here too or
+/// the two will silently disagree.**
+///
+/// Paused templates (`is_active = 0`) are excluded entirely: their
+/// `next_date` is frozen and deliberately not actionable until resumed (see
+/// `commands/finance_recurring.rs`'s own module doc comment), so showing one
+/// as a dated obligation - let alone an overdue one - would be showing a
+/// deadline that does not exist.
+fn recurring_in_range(
+    conn: &Connection,
+    date_from: &str,
+    date_to: &str,
+    today: NaiveDate,
+) -> AppResult<Vec<CalendarEntry>> {
+    let today_iso = today.format("%Y-%m-%d").to_string();
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.name, r.next_date, r.amount_cents, r.currency, r.scope, r.frequency \
+         FROM recurring_expenses r \
+         WHERE r.is_active = 1 AND r.next_date >= ?1 AND r.next_date <= ?2",
+    )?;
+    let rows = stmt.query_map(params![date_from, date_to], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+        ))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, name, next_date, amount_cents, currency, scope, frequency) = row?;
+        let severity = if next_date < today_iso { "critical" } else { "info" };
+        entries.push(CalendarEntry {
+            key: format!("recurring:{id}"),
+            kind: "recurring".to_string(),
+            date: next_date,
+            title: name,
+            subtitle: Some(format!("{scope} · {frequency}")),
+            severity: severity.to_string(),
+            link_kind: "finance".to_string(),
+            link_id: None,
+            amount_cents: Some(amount_cents),
+            currency: Some(currency),
+        });
+    }
+    Ok(entries)
+}
+
 /// Split out from the `get_calendar` command (same `_impl`/thin-wrapper
 /// split as every other command in this codebase) so it's directly
 /// unit-testable against a plain `&Connection` with a pinned `today`.
@@ -344,6 +482,10 @@ pub(crate) fn get_calendar_impl(conn: &Connection, filters: &CalendarFilters, to
     entries.extend(sales_in_range(conn, &filters.date_from, &filters.date_to)?);
     entries.extend(pulls_in_range(conn, &filters.date_from, &filters.date_to, today)?);
     entries.extend(attention_in_range(&attention_items, &filters.date_from, &filters.date_to));
+    // 2.8.0 - see finance_in_range's own doc comment for why these two, and
+    // why "payout"/"payment"/"fulfillment" still are not here.
+    entries.extend(finance_in_range(conn, &filters.date_from, &filters.date_to)?);
+    entries.extend(recurring_in_range(conn, &filters.date_from, &filters.date_to, today)?);
 
     // Deterministic order: date first (so the grid can just walk the list
     // top to bottom), then kind/key as stable tie-breakers. Day Detail and
@@ -399,6 +541,42 @@ mod tests {
             "INSERT INTO pulls (code, buyer_name, event_name, event_date, quantity, price_cents, currency, transfer_done) \
              VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
             params![next_code("PULL"), buyer_name, event_name, event_date, price_cents, currency, transfer_done],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    // 2.8.0 seeds ------------------------------------------------------
+
+    fn seed_finance_entry(
+        conn: &Connection,
+        entry_type: &str,
+        entry_date: &str,
+        amount_cents: i64,
+        currency: &str,
+        scope: &str,
+        place: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO finance_entries (entry_type, entry_date, amount_cents, currency, scope, place) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![entry_type, entry_date, amount_cents, currency, scope, place],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn seed_recurring(
+        conn: &Connection,
+        name: &str,
+        next_date: &str,
+        amount_cents: i64,
+        is_active: bool,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO recurring_expenses (name, amount_cents, currency, scope, frequency, start_date, next_date, is_active) \
+             VALUES (?1, ?2, 'EUR', 'business', 'monthly', ?3, ?3, ?4)",
+            params![name, amount_cents, next_date, if is_active { 1 } else { 0 }],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -683,5 +861,152 @@ mod tests {
         let filters = CalendarFilters { date_from: "2026-01-01".into(), date_to: "2026-01-31".into() };
         let entries = get_calendar_impl(&conn, &filters, today).unwrap();
         assert!(entries.is_empty());
+    }
+
+    // -- 2.8.0: finance + recurring -------------------------------------
+
+    fn cal(conn: &Connection, from: &str, to: &str, today: NaiveDate) -> Vec<CalendarEntry> {
+        let filters = CalendarFilters { date_from: from.into(), date_to: to.into() };
+        get_calendar_impl(conn, &filters, today).unwrap()
+    }
+
+    #[test]
+    fn a_finance_entry_lands_on_its_own_entry_date_with_its_own_amount() {
+        let conn = test_conn();
+        seed_finance_entry(&conn, "expense", "2026-03-14", 4500, "EUR", "business", Some("Hosting"));
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let e = cal(&conn, "2026-03-01", "2026-03-31", today);
+        let f: Vec<_> = e.iter().filter(|x| x.kind == "finance").collect();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].date, "2026-03-14");
+        assert_eq!(f[0].title, "Hosting");
+        assert_eq!(f[0].amount_cents, Some(4500));
+        assert_eq!(f[0].currency.as_deref(), Some("EUR"));
+        // Money already recorded carries no urgency, same as an order/sale.
+        assert_eq!(f[0].severity, "neutral");
+        // Finance has no per-entry route - one page, client-side tabs.
+        assert_eq!(f[0].link_kind, "finance");
+        assert_eq!(f[0].link_id, None);
+    }
+
+    #[test]
+    fn a_finance_entry_outside_the_requested_range_is_not_returned() {
+        let conn = test_conn();
+        seed_finance_entry(&conn, "income", "2026-02-27", 1000, "EUR", "personal", Some("Refund"));
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        assert!(cal(&conn, "2026-03-01", "2026-03-31", today).iter().all(|e| e.kind != "finance"));
+    }
+
+    #[test]
+    fn a_finance_entry_with_no_category_or_place_falls_back_to_its_type() {
+        let conn = test_conn();
+        seed_finance_entry(&conn, "income", "2026-03-10", 900, "EUR", "personal", None);
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let e = cal(&conn, "2026-03-01", "2026-03-31", today);
+        let f = e.iter().find(|x| x.kind == "finance").unwrap();
+        // Never a blank title, and never an invented name.
+        assert_eq!(f.title, "Income");
+    }
+
+    #[test]
+    fn a_recurring_due_date_in_the_past_is_critical_and_one_in_the_future_is_not() {
+        // Mirrors finance/Accounts.tsx's own rule exactly: isActive &&
+        // nextDate < today. If that rule changes there, it changes here.
+        let conn = test_conn();
+        seed_recurring(&conn, "Overdue rent", "2026-03-05", 90000, true);
+        seed_recurring(&conn, "Upcoming rent", "2026-03-20", 90000, true);
+        let today = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        let e = cal(&conn, "2026-03-01", "2026-03-31", today);
+        let overdue = e.iter().find(|x| x.title == "Overdue rent").unwrap();
+        let upcoming = e.iter().find(|x| x.title == "Upcoming rent").unwrap();
+        assert_eq!(overdue.kind, "recurring");
+        assert_eq!(overdue.severity, "critical");
+        assert_eq!(upcoming.severity, "info");
+    }
+
+    #[test]
+    fn a_paused_recurring_template_never_appears_at_all() {
+        // Its next_date is frozen and deliberately not actionable until
+        // resumed - showing it (let alone as overdue) would be showing a
+        // deadline that does not exist.
+        let conn = test_conn();
+        seed_recurring(&conn, "Paused subscription", "2026-03-02", 500, false);
+        let today = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        assert!(cal(&conn, "2026-03-01", "2026-03-31", today).iter().all(|e| e.kind != "recurring"));
+    }
+
+    #[test]
+    fn payouts_payments_and_fulfillment_are_still_absent_from_every_response() {
+        // Re-derived for 2.8.0 from the live schema and command code: there
+        // is still no payout entity, migration 007's `payments` table still
+        // has no live SQL anywhere, and tickets.delivery_status still has no
+        // date column. This test is the standing guard on that - if one of
+        // them ever becomes real, it should fail loudly and be updated
+        // deliberately rather than quietly drifting.
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Coldplay", Some("2026-03-15"));
+        seed_order(&conn, event_id, "2026-03-02", "EUR", 12000, 4);
+        seed_finance_entry(&conn, "expense", "2026-03-14", 4500, "EUR", "business", Some("Hosting"));
+        let today = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        for e in cal(&conn, "2026-03-01", "2026-03-31", today) {
+            assert!(
+                !matches!(e.kind.as_str(), "payout" | "payment" | "fulfillment"),
+                "no invented category may reach the calendar, got {}",
+                e.kind
+            );
+        }
+    }
+
+    #[test]
+    fn several_kinds_on_one_day_all_survive_and_stay_sorted_by_date() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Same Day Event", Some("2026-03-14"));
+        seed_order(&conn, event_id, "2026-03-14", "EUR", 12000, 2);
+        seed_finance_entry(&conn, "expense", "2026-03-14", 4500, "EUR", "business", Some("Hosting"));
+        seed_recurring(&conn, "Rent", "2026-03-14", 90000, true);
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let e = cal(&conn, "2026-03-01", "2026-03-31", today);
+        let same_day: Vec<_> = e.iter().filter(|x| x.date == "2026-03-14").collect();
+        let kinds: std::collections::HashSet<&str> = same_day.iter().map(|x| x.kind.as_str()).collect();
+        assert!(kinds.contains("event"));
+        assert!(kinds.contains("order"));
+        assert!(kinds.contains("finance"));
+        assert!(kinds.contains("recurring"));
+        // The baseline order the grid relies on is still date-ascending.
+        let dates: Vec<&str> = e.iter().map(|x| x.date.as_str()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort_unstable();
+        assert_eq!(dates, sorted);
+    }
+
+    #[test]
+    fn every_entry_key_is_unique_within_one_response() {
+        // Two kinds can share a database id; the key namespace is what stops
+        // that from colliding in the frontend's list rendering.
+        let conn = test_conn();
+        let event_id = seed_event(&conn, "Keyed", Some("2026-03-14"));
+        seed_order(&conn, event_id, "2026-03-14", "EUR", 12000, 2);
+        seed_finance_entry(&conn, "expense", "2026-03-14", 4500, "EUR", "business", Some("Hosting"));
+        seed_recurring(&conn, "Rent", "2026-03-14", 90000, true);
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let e = cal(&conn, "2026-03-01", "2026-03-31", today);
+        let mut keys: Vec<&str> = e.iter().map(|x| x.key.as_str()).collect();
+        let total = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), total, "calendar keys must be unique within one response");
+    }
+
+    #[test]
+    fn a_date_only_value_is_returned_exactly_as_stored_with_no_timezone_shift() {
+        // Every date in this app is a date-only ISO string compared as text,
+        // never parsed into a timestamp - which is what keeps an entry on the
+        // day it was entered on regardless of the machine's timezone.
+        let conn = test_conn();
+        seed_finance_entry(&conn, "expense", "2026-01-01", 100, "EUR", "business", Some("New Year"));
+        let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let e = cal(&conn, "2026-01-01", "2026-01-01", today);
+        let f = e.iter().find(|x| x.kind == "finance").unwrap();
+        assert_eq!(f.date, "2026-01-01");
     }
 }

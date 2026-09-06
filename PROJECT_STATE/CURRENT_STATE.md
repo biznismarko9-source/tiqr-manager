@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.7.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.8.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -179,6 +179,20 @@ and no Rust toolchain on the machine this was built on, so `cargo test --lib`,
 `cargo check --lib`, `npx tsc -b` and `npm run build` were NOT run** - and this
 time that includes 28 new, never-executed Rust unit tests.
 
+**2.8.0** turns the Calendar into one of the app's main work screens - marko's
+own request. **Four views** (Month/Week/Day/Agenda) over the same
+range-based `get_calendar` command, plus **two genuinely new date sources**:
+`finance` (`finance_entries.entry_date`) and `recurring`
+(`recurring_expenses.next_date`). marko asked again for payouts/payments/
+fulfillment; all three are still absent because no such date exists in this
+schema - re-derived from the live schema and command code this release, and
+now guarded by a test. **No schema change, no migration (the next new one is
+still 027), no new index, no new dependency**, and `calendar.rs` remains a
+read-only aggregator. See "Current focus" below and `PROTECTED_AREAS.md`'s new
+"2.8.0" entry. **Same caveat as 2.6.0/2.7.0: no Node.js and no Rust toolchain
+on the machine this was built on**, so none of the four build/test commands
+were run.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -210,6 +224,10 @@ time that includes 28 new, never-executed Rust unit tests.
   below, not duplicated), Welcome (auth), PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
+  **Calendar (2.8.0)**: `pages/Calendar.tsx` renders four views (Month/Week/
+  Day/Agenda) over one range-based command. Backed by
+  `commands/calendar.rs`, which gained `finance_in_range` and
+  `recurring_in_range` this release and remains read-only.
   **AI Import Assistant (2.7.0)**: `components/AiImportPanel.tsx` (one shared
   panel, embedded in the New Event/Order/Sale forms) + `lib/aiImport.ts` (image
   prep, clipboard/drop extraction, the per-session duplicate guard). Backed by
@@ -320,6 +338,59 @@ time that includes 28 new, never-executed Rust unit tests.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.8.0 - Calendar redesign + advanced calendar workflow.** marko's own
+request to make the TIQR Operations Calendar a main work screen rather than a
+read-only overview.
+
+- **Four views, one data path.** Month, Week, Day and Agenda all call the same
+  `get_calendar(dateFrom, dateTo)` with a different window and share one
+  filter state and one search box - so switching period fetches exactly one
+  new range and nothing more (marko's section 17 was already satisfied by
+  2.5.0's range-based command; this release only had to use it correctly).
+  Agenda is a fixed forward window (45 days) anchored to today, so its
+  prev/next control is hidden rather than shown doing nothing.
+- **Two new date sources, and three still-refused ones.** `finance` and
+  `recurring` are real columns with live command code behind them. Payouts,
+  payments and fulfillment were re-checked against the live schema this
+  release and are still not real - see `PROTECTED_AREAS.md`'s "2.8.0" entry
+  for the evidence and for the standing test that now guards it. **The thing
+  the 2.5.0 pass missed was Finance**, which is where this app's real dated
+  money lives; it is added under its own name, never rebranded as a payout.
+- **Overdue is real for exactly one reason.** `recurring_expenses.next_date`
+  is the only genuine due date in the app. The rule mirrors
+  `finance/Accounts.tsx` (active template, `next_date < today`), paused
+  templates are excluded, and the strip's Overdue tile is hidden entirely
+  when the count is zero rather than implying this app tracks more deadlines
+  than it does.
+- **No time-of-day axis**, because no date in this app has a time. Week is
+  seven day columns; Day groups by kind. marko's own spec asked not to fake
+  time positions, and this is that.
+- **Everything else the release added** is presentation over data that was
+  already there: a Today/Tomorrow/Next 7 days/Overdue strip, a Day Detail
+  with a per-kind summary panel, per-day workload bars (three muted segments,
+  not a color scale - marko: "NECHCEM farebný chaos"), event countdowns from
+  the event's own date only, calendar-local search (dims non-matches in the
+  grid, filters the lists, jumps to the first match), and filter chips that
+  only render for kinds actually present in the loaded range.
+- **Not built: quick-add.** There is no task/note/reminder table anywhere in
+  this schema (checked), and marko's own spec said not to stand up a new task
+  database for it in this release.
+- **Judgment calls, none asked about directly**: two new kinds rather than one
+  merged "money" kind (only `recurring` can be overdue, and merging would
+  make the Overdue rule ambiguous); teal/fuchsia for the two new kinds (the
+  only hues left that are neither a severity color nor a shade of an existing
+  kind); a 45-day Agenda window and a 90-day overdue lookback (both bounded
+  on purpose - see PROTECTED_AREAS); and search dimming rather than filtering
+  in the grid, so you can still see where a match sits relative to
+  everything else.
+- **NOT verified by a build**, same as 2.6.0/2.7.0. What WAS verified
+  statically: `Calendar.tsx` bracket/JSX balance and zero unresolved, unused
+  or dead symbols; `calendar.rs` bracket balance with strings and comments
+  stripped; all 23 `#[test]` attributes correctly attached to a `fn` (one
+  orphaned attribute was found and fixed this way); every column the two new
+  queries read verified against the real DDL, including their CHECK
+  constraints against the test seeds.
 
 **2.7.0 - AI Import Assistant.** marko's own spec: one shared, compact panel
 inside the three create forms that turns a screenshot into pre-filled fields.

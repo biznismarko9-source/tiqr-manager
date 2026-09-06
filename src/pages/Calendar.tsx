@@ -2,15 +2,16 @@ import { useEffect, useMemo, useState, type SVGProps } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import type { CalendarEntry, CalendarEntryKind, CalendarSeverity } from "../lib/types";
-import { formatDate, formatDateNumeric, formatMoney, todayIso } from "../lib/format";
+import { formatDate, formatDateNumeric, formatMoney } from "../lib/format";
 import {
   Card,
+  EmptyState,
+  Input,
   LoadingBlock,
   Modal,
   PageHeader,
   SEGMENTED_TRACK,
   segmentedItemClass,
-  TabSwitcher,
 } from "../components/ui";
 import {
   IconAlertTriangle,
@@ -19,17 +20,17 @@ import {
   IconChevronRight,
   IconPackage,
   IconReceipt,
+  IconRefresh,
+  IconSearch,
   IconUsers,
+  IconWallet,
 } from "../components/icons";
 
 // 2.5.0: "TIQR Operations Calendar" - marko's own request for one Month/Week
 // view over every part of the app that has a real date, instead of five
 // separate places to go check what's happening when. See
 // commands/calendar.rs's own module doc comment for the full research behind
-// which 5 categories are real (event/order/sale/pull/attention) and which 3
-// of marko's original 8 candidates are NOT (payouts/payments/fulfillment -
-// none of those has a real, reliably-existing date anywhere in this app, so
-// none of them is invented here either).
+// which categories are real and which of marko's original candidates are NOT.
 //
 // Every entry already comes from `get_calendar` fully formed (title,
 // subtitle, severity, navigation target) - this page is a grid/list
@@ -38,36 +39,59 @@ import {
 // Fulfillment Center already send the user to for the same underlying
 // records - no new detail view exists (or is needed) for any of this.
 //
-// 2.5.1: marko's own follow-up - "viac moderny, viac prehladny" (more
-// modern, more legible). Purely a presentation pass: every hook, API call,
-// and navigation target above is untouched. The one real legibility change
-// is giving each entry KIND (event/order/sale/pull/attention) its own
-// consistent color - same "assign a color per category" idea
-// EventCategoryBadge/FinanceCategoryBadge already use elsewhere in this app,
-// just applied to the calendar's own 5 fixed categories instead of a
-// user-defined list. Severity (critical/attention/info/neutral) used to be
-// the ONLY visual signal (a plain dot); it's now a second, independent
-// channel layered on top (a ring on critical/attention chips, colored text
-// in the list views) so a busy day reads as "5 sales, 1 critical order" at a
-// glance instead of 6 identical gray dots. The kind-toggle row doubles as
-// the color legend, so no separate legend UI was needed.
+// 2.5.1: presentation pass - one consistent color per entry KIND, with
+// severity as a second, independent channel layered on top (a ring on grid
+// chips, colored text in list views). The kind-toggle row doubles as the
+// color legend, so no separate legend UI was needed.
+//
+// 2.8.0: marko asked to make this one of TIQR's main work screens. What
+// actually changed, and what deliberately did not:
+//
+//   - **Four views instead of two** - Month, Week, Day, Agenda. All four
+//     share one data path (`get_calendar` over a date range) and one filter/
+//     search state; only the range and the layout differ.
+//   - **Two genuinely new date sources**, `finance` and `recurring` - see
+//     `commands/calendar.rs`'s `finance_in_range` doc comment. marko asked
+//     again for payouts/payments/fulfillment; all three are still absent
+//     because no such date exists in this schema, and inventing one is the
+//     single thing this whole feature must not do.
+//   - **No time-of-day axis anywhere, on purpose.** Every date this app
+//     stores (`events.event_date`, `orders.purchase_date`, `sales.sale_date`,
+//     `pulls.event_date`, `finance_entries.entry_date`,
+//     `recurring_expenses.next_date`) is a plain date-only "YYYY-MM-DD" with
+//     no time component. marko's own spec said not to fake precise time
+//     positions when the data has no time - so Week is seven day COLUMNS,
+//     not a 24-hour timetable, and Day groups by kind rather than by hour.
+//   - **Every date stays a string.** Dates are compared, bucketed and
+//     rendered as ISO text and are never parsed into a `Date` for placement,
+//     so nothing can shift a day across a timezone boundary. The only
+//     `new Date(...)` calls here are for grid geometry (which days are in
+//     this month) and for human labels, never for deciding which cell an
+//     entry belongs in.
 
 const KIND_META: Record<CalendarEntryKind, { label: string; icon: (p: SVGProps<SVGSVGElement>) => JSX.Element }> = {
   event: { label: "Events", icon: IconCalendarDays },
   order: { label: "Orders", icon: IconPackage },
   sale: { label: "Sales", icon: IconReceipt },
+  finance: { label: "Finance", icon: IconWallet },
+  recurring: { label: "Recurring", icon: IconRefresh },
   pull: { label: "Pulls", icon: IconUsers },
   attention: { label: "Attention", icon: IconAlertTriangle },
 };
-const ALL_KINDS: CalendarEntryKind[] = ["event", "order", "sale", "pull", "attention"];
+
+/** Display order for the filter row and for Day Detail's grouping. Not the
+ * same as the backend's sort (which is date-first) - this is purely "which
+ * category do I want to read first". */
+const ALL_KINDS: CalendarEntryKind[] = ["event", "order", "sale", "finance", "recurring", "pull", "attention"];
 
 // 2.5.1: one consistent accent color per KIND - the calendar's own "category
-// palette", same spirit as EventCategoryBadge's colorSlot but a fixed set of
-// 5 rather than user-configurable. Chosen to stay clear of the severity
-// palette below (red/amber/blue) so the two channels never look like the
-// same signal: indigo/sky/emerald/violet for event/order/sale/pull, and
-// attention keeps its own amber since that category IS a severity signal by
-// definition.
+// palette", chosen to stay clear of the severity palette below (red/amber)
+// so the two channels never look like the same signal.
+// 2.8.0 added `finance` (teal) and `recurring` (fuchsia). Teal rather than
+// another green: emerald is already "sale", and money-in-the-ledger must not
+// look like a ticket sale at a glance. Fuchsia is the only remaining hue in
+// this set that is neither a severity color nor within a shade of another
+// kind.
 const KIND_ACCENT: Record<CalendarEntryKind, { dot: string; chip: string; text: string; legend: string }> = {
   event: {
     dot: "bg-indigo-500",
@@ -87,6 +111,18 @@ const KIND_ACCENT: Record<CalendarEntryKind, { dot: string; chip: string; text: 
     text: "text-emerald-700 dark:text-emerald-300",
     legend: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/30",
   },
+  finance: {
+    dot: "bg-teal-500",
+    chip: "bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-300",
+    text: "text-teal-700 dark:text-teal-300",
+    legend: "bg-teal-50 text-teal-700 ring-teal-200 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-500/30",
+  },
+  recurring: {
+    dot: "bg-fuchsia-500",
+    chip: "bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-500/10 dark:text-fuchsia-300",
+    text: "text-fuchsia-700 dark:text-fuchsia-300",
+    legend: "bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200 dark:bg-fuchsia-500/10 dark:text-fuchsia-300 dark:ring-fuchsia-500/30",
+  },
   pull: {
     dot: "bg-violet-500",
     chip: "bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300",
@@ -100,10 +136,7 @@ const KIND_ACCENT: Record<CalendarEntryKind, { dot: string; chip: string; text: 
     legend: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30",
   },
 };
-// 2.5.1: severity's own channel, now just an emphasis ring layered on top of
-// a kind-colored chip (month/week grid) or a text-color override (list
-// views, where there's no chip background to ring). `info`/`neutral` add no
-// extra emphasis - the kind color alone is enough signal for a routine item.
+
 const SEVERITY_RING: Record<CalendarSeverity, string> = {
   critical: "ring-2 ring-inset ring-red-400 dark:ring-red-500/70",
   attention: "ring-1 ring-inset ring-amber-400 dark:ring-amber-500/60",
@@ -120,56 +153,112 @@ const LEGEND_INACTIVE = "bg-white text-slate-400 ring-slate-200 dark:bg-slate-90
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_CELL_CAP = 3;
-const WEEK_CELL_CAP = 6;
+const WEEK_CELL_CAP = 8;
+
+type ViewMode = "month" | "week" | "day" | "agenda";
+
+/** How far ahead Agenda looks. A fixed forward window rather than an
+ * infinite/paged list: marko asked for "chronologický zoznam budúcich
+ * udalostí", and a bounded range is also what keeps this on the same
+ * one-request-per-range footing as every other view. */
+const AGENDA_DAYS_AHEAD = 45;
+
+/** How far BACK the summary strip looks, only so an overdue recurring item
+ * can be counted. `recurring_expenses.next_date` advances one occurrence at
+ * a time, so anything genuinely overdue is at most a few cycles back; 90
+ * days covers weekly and monthly templates comfortably without turning this
+ * into a full-history read. */
+const OVERDUE_LOOKBACK_DAYS = 90;
 
 // ---------------------------------------------------------------------------
 // Plain calendar-day math - Monday-first weeks, no time-of-day component
-// anywhere (matches this app's own `event_date`/`purchase_date`/`sale_date`
-// columns, which are all plain "YYYY-MM-DD" with no time either).
+// anywhere (matches this app's own date columns, which are all plain
+// "YYYY-MM-DD" with no time either).
 // ---------------------------------------------------------------------------
 function pad2(n: number): string {
-  return String(n).padStart(2, "0");
+  return n < 10 ? `0${n}` : String(n);
 }
+
 function isoOf(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
+
 function addDays(d: Date, n: number): Date {
-  const r = new Date(d);
-  r.setDate(r.getDate() + n);
-  return r;
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + n);
+  return copy;
 }
+
 function startOfDay(d: Date): Date {
-  const r = new Date(d);
-  r.setHours(0, 0, 0, 0);
-  return r;
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
 }
+
 function startOfWeek(d: Date): Date {
-  const day = d.getDay(); // 0 = Sunday .. 6 = Saturday
-  const diff = day === 0 ? -6 : 1 - day; // shift so Monday is the start
-  return addDays(startOfDay(d), diff);
+  const copy = startOfDay(d);
+  // JS weeks start on Sunday (0); this app shows Monday-first weeks.
+  const shift = (copy.getDay() + 6) % 7;
+  return addDays(copy, -shift);
 }
+
 function monthGridRange(anchor: Date): { start: Date; end: Date } {
-  const start = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
-  const lastDayOfMonth = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
-  const end = addDays(startOfWeek(lastDayOfMonth), 6);
-  return { start, end };
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const last = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+  return { start: startOfWeek(first), end: addDays(startOfWeek(last), 6) };
 }
+
 function weekGridRange(anchor: Date): { start: Date; end: Date } {
   const start = startOfWeek(anchor);
   return { start, end: addDays(start, 6) };
 }
+
 function daysBetweenInclusive(start: Date, end: Date): Date[] {
-  const days: Date[] = [];
-  for (let d = start; d.getTime() <= end.getTime(); d = addDays(d, 1)) days.push(d);
-  return days;
+  const out: Date[] = [];
+  let cursor = startOfDay(start);
+  const limit = startOfDay(end);
+  while (cursor <= limit) {
+    out.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return out;
 }
-// 2.5.1: Sat/Sun get a faint background wash in both the weekday header and
-// the grid body - a common, quick "which of these are weekend dates" cue for
-// a ticket-event calendar, purely visual (native getDay(), independent of
-// the Monday-first LAYOUT above).
+
 function isWeekend(d: Date): boolean {
   const day = d.getDay();
   return day === 0 || day === 6;
+}
+
+/** Whole days between two ISO date strings, computed at UTC noon so a DST
+ * transition inside the span can never round the result to the wrong day.
+ * Used only for human-facing labels ("In 3 days"), never for placement. */
+function daysBetweenIso(fromIso: string, toIso: string): number {
+  const a = Date.parse(`${fromIso}T12:00:00Z`);
+  const b = Date.parse(`${toIso}T12:00:00Z`);
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** marko's section 11 - a countdown, but only for events, and only ever
+ * derived from the event's own date. Nothing else on this calendar has a
+ * "how long until" that means anything: an order or a finance entry is a
+ * thing that already happened. Past dates return null rather than a
+ * "3 days ago", which would read like a deadline that was missed. */
+function eventCountdown(entryDate: string, today: string): string | null {
+  const diff = daysBetweenIso(today, entryDate);
+  if (diff < 0) return null;
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return `In ${diff} days`;
+}
+
+/** marko's section 12 - "jemný vizuálny signál", explicitly not a color
+ * scale. Three levels, rendered as a small 3-segment bar in one muted color;
+ * how full the bar is carries the signal, not which hue it is. */
+function workloadLevel(count: number): 0 | 1 | 2 | 3 {
+  if (count === 0) return 0;
+  if (count <= 2) return 1;
+  if (count <= 5) return 2;
+  return 3;
 }
 
 function navigateToEntry(navigate: ReturnType<typeof useNavigate>, entry: CalendarEntry) {
@@ -186,23 +275,64 @@ function navigateToEntry(navigate: ReturnType<typeof useNavigate>, entry: Calend
     case "pulls":
       navigate("/pulls");
       break;
+    // 2.8.0: Finance is a single route with client-side tabs and has no
+    // per-entry detail page - same shape as Pulls, so the entry carries no
+    // linkId and this opens the Finance page itself.
+    case "finance":
+      navigate("/finance");
+      break;
   }
 }
 
+function matchesSearch(entry: CalendarEntry, needle: string): boolean {
+  if (!needle) return true;
+  const haystack = `${entry.title} ${entry.subtitle ?? ""}`.toLowerCase();
+  return haystack.includes(needle);
+}
+
+// ---------------------------------------------------------------------------
+
 export default function Calendar() {
   const navigate = useNavigate();
-  const [viewMode, setViewMode] = useState<"month" | "week">("month");
+  const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [entries, setEntries] = useState<CalendarEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeKinds, setActiveKinds] = useState<Set<CalendarEntryKind>>(() => new Set(ALL_KINDS));
   const [dayDetail, setDayDetail] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
-  const { start: gridStart, end: gridEnd } = viewMode === "month" ? monthGridRange(anchor) : weekGridRange(anchor);
-  const dateFrom = isoOf(gridStart);
-  const dateTo = isoOf(gridEnd);
-  const gridDays = useMemo(() => daysBetweenInclusive(gridStart, gridEnd), [dateFrom, dateTo]);
+  const today = isoOf(new Date());
+
+  // One range per view. Every view goes through the SAME `get_calendar`
+  // command with a different window - there is no view here that loads more
+  // than it draws, and switching period refetches only the new window
+  // (marko's section 17).
+  const { rangeStart, rangeEnd } = useMemo(() => {
+    if (viewMode === "month") {
+      const { start, end } = monthGridRange(anchor);
+      return { rangeStart: start, rangeEnd: end };
+    }
+    if (viewMode === "week") {
+      const { start, end } = weekGridRange(anchor);
+      return { rangeStart: start, rangeEnd: end };
+    }
+    if (viewMode === "day") {
+      const d = startOfDay(anchor);
+      return { rangeStart: d, rangeEnd: d };
+    }
+    const start = startOfDay(new Date());
+    return { rangeStart: start, rangeEnd: addDays(start, AGENDA_DAYS_AHEAD) };
+  }, [viewMode, anchor]);
+
+  const dateFrom = isoOf(rangeStart);
+  const dateTo = isoOf(rangeEnd);
+  const gridDays = useMemo(
+    () => (viewMode === "agenda" ? [] : daysBetweenInclusive(rangeStart, rangeEnd)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewMode, dateFrom, dateTo],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -222,10 +352,25 @@ export default function Calendar() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo]);
 
+  const needle = search.trim().toLowerCase();
+
+  // Filters apply in every view (marko's section 5). Search is deliberately
+  // NOT folded in here: the grid still needs to draw a non-matching entry so
+  // you can see where the matches sit relative to everything else - it just
+  // dims it. The list views (Day/Agenda) filter properly, below.
   const visibleEntries = useMemo(() => entries.filter((e) => activeKinds.has(e.kind)), [entries, activeKinds]);
+  const matchCount = useMemo(
+    () => (needle ? visibleEntries.filter((e) => matchesSearch(e, needle)).length : 0),
+    [visibleEntries, needle],
+  );
+  const firstMatchDate = useMemo(() => {
+    if (!needle) return null;
+    const hits = visibleEntries.filter((e) => matchesSearch(e, needle)).map((e) => e.date).sort();
+    return hits[0] ?? null;
+  }, [visibleEntries, needle]);
+
   const entriesByDate = useMemo(() => {
     const map = new Map<string, CalendarEntry[]>();
     for (const e of visibleEntries) {
@@ -236,17 +381,34 @@ export default function Calendar() {
     return map;
   }, [visibleEntries]);
 
-  const today = isoOf(new Date());
+  /** Only kinds that actually occur in the loaded range get a chip - marko's
+   * "Ak niektorý typ reálne neexistuje: nepridávaj prázdny filter", applied
+   * to what is really on screen rather than to a hardcoded list. A kind that
+   * is currently switched OFF still keeps its chip, or there would be no way
+   * to switch it back on. */
+  const availableKinds = useMemo(() => {
+    const present = new Set(entries.map((e) => e.kind));
+    return ALL_KINDS.filter((k) => present.has(k) || !activeKinds.has(k));
+  }, [entries, activeKinds]);
+
   const cellCap = viewMode === "month" ? MONTH_CELL_CAP : WEEK_CELL_CAP;
 
   const rangeLabel =
     viewMode === "month"
       ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
-      : `${formatDateNumeric(isoOf(gridStart))} - ${formatDateNumeric(isoOf(gridEnd))}`;
+      : viewMode === "day"
+        ? `${new Date(`${isoOf(anchor)}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" })}, ${formatDate(isoOf(anchor))}`
+        : viewMode === "week"
+          ? `${formatDateNumeric(dateFrom)} - ${formatDateNumeric(dateTo)}`
+          : `Next ${AGENDA_DAYS_AHEAD} days`;
 
   const goToday = () => setAnchor(startOfDay(new Date()));
-  const goPrev = () => setAnchor((a) => (viewMode === "week" ? addDays(a, -7) : new Date(a.getFullYear(), a.getMonth() - 1, 1)));
-  const goNext = () => setAnchor((a) => (viewMode === "week" ? addDays(a, 7) : new Date(a.getFullYear(), a.getMonth() + 1, 1)));
+  const step = (dir: 1 | -1) =>
+    setAnchor((a) => {
+      if (viewMode === "week") return addDays(a, 7 * dir);
+      if (viewMode === "day") return addDays(a, dir);
+      return new Date(a.getFullYear(), a.getMonth() + dir, 1);
+    });
 
   const toggleKind = (kind: CalendarEntryKind) => {
     setActiveKinds((prev) => {
@@ -257,50 +419,102 @@ export default function Calendar() {
     });
   };
 
+  /** Jumping to a match switches to Day view on that date - the one place
+   * search changes the view, and only because "show me where this is" has no
+   * useful answer in a month grid that may not contain it. */
+  const jumpToFirstMatch = () => {
+    if (!firstMatchDate) return;
+    setAnchor(startOfDay(new Date(`${firstMatchDate}T00:00:00`)));
+    setViewMode("day");
+  };
+
   return (
     <div>
       <PageHeader
         title="Calendar"
-        subtitle="Every event, order, sale, pull, and attention item that has a real date, in one place."
+        subtitle="Every event, order, sale, finance entry, recurring due date, pull and attention item that has a real date."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <TabSwitcher tabs={[{ key: "month", label: "Month" }, { key: "week", label: "Week" }]} active={viewMode} onChange={setViewMode} />
-            {/* 2.6.0: the same segmented track the Month/Week switch beside it
-                uses, so the two controls in this header read as one pair. */}
-            <div className={`${SEGMENTED_TRACK} mb-4`}>
-              <button
-                type="button"
-                onClick={goPrev}
-                aria-label="Previous"
-                className={`${segmentedItemClass(false)} px-1.5`}
-              >
-                <IconChevronLeft className="h-4 w-4" />
-              </button>
-              <button type="button" onClick={goToday} className={segmentedItemClass(false)}>
-                Today
-              </button>
-              <button
-                type="button"
-                onClick={goNext}
-                aria-label="Next"
-                className={`${segmentedItemClass(false)} px-1.5`}
-              >
-                <IconChevronRight className="h-4 w-4" />
-              </button>
+            <div className={SEGMENTED_TRACK}>
+              {(["month", "week", "day", "agenda"] as ViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setViewMode(mode)}
+                  aria-pressed={viewMode === mode}
+                  className={`${segmentedItemClass(viewMode === mode)} capitalize`}
+                >
+                  {mode}
+                </button>
+              ))}
             </div>
+            {/* Agenda is always anchored to today, so stepping it would mean
+                nothing - the control is hidden rather than shown disabled. */}
+            {viewMode !== "agenda" && (
+              <div className={SEGMENTED_TRACK}>
+                <button
+                  type="button"
+                  onClick={() => step(-1)}
+                  aria-label="Previous"
+                  className={`${segmentedItemClass(false)} px-1.5`}
+                >
+                  <IconChevronLeft className="h-4 w-4" />
+                </button>
+                <button type="button" onClick={goToday} className={segmentedItemClass(false)}>
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => step(1)}
+                  aria-label="Next"
+                  className={`${segmentedItemClass(false)} px-1.5`}
+                >
+                  <IconChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
         }
       />
 
-      <UpcomingSummary />
+      <SummaryStrip today={today} onOpenDay={setDayDetail} />
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">{rangeLabel}</p>
-        {/* 2.5.1: this row is both the kind filter AND the calendar's color
-            legend - each pill's dot is the exact color its entries use below,
-            so there's no separate "what does this color mean" key to add. */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex items-center gap-3">
+          <p className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">{rangeLabel}</p>
+          {/* Calendar-local search only - it filters and highlights what is
+              already loaded for the current range, and never queries anything
+              of its own. Deliberately not a global search (marko's own
+              section 15). */}
+          <div className="relative w-48">
+            <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <Input
+              className="h-8 py-0 pl-8 text-xs"
+              placeholder="Search this range..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {needle && (
+            <span className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              {matchCount} match{matchCount === 1 ? "" : "es"}
+              {firstMatchDate && viewMode !== "day" && (
+                <button
+                  type="button"
+                  onClick={jumpToFirstMatch}
+                  className="font-medium text-brand-600 hover:underline dark:text-brand-400"
+                >
+                  Jump to {formatDateNumeric(firstMatchDate)}
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+        {/* This row is both the kind filter AND the calendar's color legend -
+            each pill's dot is the exact color its entries use below, so
+            there's no separate "what does this color mean" key to add. */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {ALL_KINDS.map((kind) => {
+          {availableKinds.map((kind) => {
             const meta = KIND_META[kind];
             const accent = KIND_ACCENT[kind];
             const active = activeKinds.has(kind);
@@ -310,7 +524,7 @@ export default function Calendar() {
                 type="button"
                 onClick={() => toggleKind(kind)}
                 aria-pressed={active}
-                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition ${
                   active ? accent.legend : LEGEND_INACTIVE
                 }`}
               >
@@ -334,167 +548,358 @@ export default function Calendar() {
 
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <Card className="overflow-hidden p-0">
-        <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-800">
-          {WEEKDAY_LABELS.map((label, i) => (
+      {viewMode === "month" || viewMode === "week" ? (
+        <Card className="overflow-hidden p-0">
+          <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-800">
+            {WEEKDAY_LABELS.map((label, i) => (
+              <div
+                key={label}
+                className={`section-title px-2 py-2.5 text-center ${i >= 5 ? "bg-slate-50/70 dark:bg-slate-900/40" : ""}`}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+          {loading ? (
+            <LoadingBlock label="Loading calendar..." />
+          ) : (
+            // The grid itself is the scroll area, not the page (marko's
+            // section 16) - a tall month never pushes the header, filters or
+            // summary strip off screen, and there is only ever one scrollbar.
             <div
-              key={label}
-              className={`section-title px-2 py-2.5 text-center ${
-                i >= 5 ? "bg-slate-50/70 dark:bg-slate-900/40" : ""
-              }`}
+              className="grid grid-cols-7 overflow-y-auto"
+              style={{ maxHeight: "calc(100vh - 22rem)" }}
             >
-              {label}
-            </div>
-          ))}
-        </div>
-        {loading ? (
-          <LoadingBlock label="Loading calendar..." />
-        ) : (
-          <div className="grid grid-cols-7">
-            {gridDays.map((day) => {
-              const iso = isoOf(day);
-              const dayEntries = entriesByDate.get(iso) ?? [];
-              const inCurrentMonth = viewMode === "week" || day.getMonth() === anchor.getMonth();
-              const isToday = iso === today;
-              const weekend = isWeekend(day);
-              return (
-                <div
-                  key={iso}
-                  className={`relative flex flex-col gap-1 border-b border-r border-slate-100 p-2 transition-colors last:border-r-0 dark:border-slate-800/60 ${
-                    viewMode === "week" ? "min-h-[240px]" : "min-h-[104px]"
-                  } ${
-                    isToday
-                      ? "bg-brand-50/60 ring-1 ring-inset ring-brand-500/30 dark:bg-brand-500/[0.08] dark:ring-brand-400/25"
-                      : !inCurrentMonth
-                        ? "bg-slate-50/70 dark:bg-slate-950/40"
-                        : weekend
-                          ? "bg-slate-50/50 dark:bg-slate-950/20"
-                          : ""
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <button
-                      type="button"
-                      onClick={() => dayEntries.length > 0 && setDayDetail(iso)}
-                      disabled={dayEntries.length === 0}
-                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums transition ${
-                        isToday
-                          ? "bg-brand-600 text-white shadow-card"
-                          : inCurrentMonth
-                            ? "text-slate-600 dark:text-slate-300"
-                            : "text-slate-300 dark:text-slate-600"
-                      } ${dayEntries.length > 0 && !isToday ? "cursor-pointer hover:bg-slate-200/80 dark:hover:bg-slate-700/70" : dayEntries.length > 0 ? "cursor-pointer" : "cursor-default"}`}
-                    >
-                      {day.getDate()}
-                    </button>
-                    {dayEntries.length > 0 && (
-                      <span className="text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">{dayEntries.length}</span>
-                    )}
-                  </div>
-                  <div className="flex flex-1 flex-col gap-1 overflow-hidden">
-                    {dayEntries.slice(0, cellCap).map((entry) => {
-                      const accent = KIND_ACCENT[entry.kind];
-                      return (
-                        <button
-                          key={entry.key}
-                          type="button"
-                          onClick={() => navigateToEntry(navigate, entry)}
-                          title={`${entry.title}${entry.subtitle ? ` - ${entry.subtitle}` : ""}`}
-                          className={`flex items-center gap-1 truncate rounded-md px-1.5 py-[3px] text-left text-[11px] font-medium leading-tight transition hover:ring-2 hover:ring-inset hover:ring-slate-900/10 dark:hover:ring-white/15 ${accent.chip} ${SEVERITY_RING[entry.severity]}`}
-                        >
-                          <span className="truncate">{entry.title}</span>
-                        </button>
-                      );
-                    })}
-                    {dayEntries.length > cellCap && (
+              {gridDays.map((day) => {
+                const iso = isoOf(day);
+                const dayEntries = entriesByDate.get(iso) ?? [];
+                const inCurrentMonth = viewMode === "week" || day.getMonth() === anchor.getMonth();
+                const isToday = iso === today;
+                const weekend = isWeekend(day);
+                const load = workloadLevel(dayEntries.length);
+                return (
+                  <div
+                    key={iso}
+                    className={`relative flex flex-col gap-1 border-b border-r border-slate-100 p-2 transition-colors last:border-r-0 dark:border-slate-800/60 ${
+                      viewMode === "week" ? "min-h-[240px]" : "min-h-[104px]"
+                    } ${
+                      isToday
+                        ? "bg-brand-50/60 ring-1 ring-inset ring-brand-500/30 dark:bg-brand-500/[0.08] dark:ring-brand-400/25"
+                        : !inCurrentMonth
+                          ? "bg-slate-50/70 dark:bg-slate-950/40"
+                          : weekend
+                            ? "bg-slate-50/50 dark:bg-slate-950/20"
+                            : ""
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
                       <button
                         type="button"
-                        onClick={() => setDayDetail(iso)}
-                        className="rounded-md px-1.5 py-0.5 text-left text-[11px] font-semibold text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                        onClick={() => dayEntries.length > 0 && setDayDetail(iso)}
+                        disabled={dayEntries.length === 0}
+                        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums transition ${
+                          isToday
+                            ? "bg-brand-600 text-white shadow-card"
+                            : inCurrentMonth
+                              ? "text-slate-600 dark:text-slate-300"
+                              : "text-slate-300 dark:text-slate-600"
+                        } ${dayEntries.length > 0 && !isToday ? "cursor-pointer hover:bg-slate-200/80 dark:hover:bg-slate-700/70" : dayEntries.length > 0 ? "cursor-pointer" : "cursor-default"}`}
                       >
-                        +{dayEntries.length - cellCap} more
+                        {day.getDate()}
                       </button>
-                    )}
+                      {load > 0 && <WorkloadBar level={load} count={dayEntries.length} />}
+                    </div>
+                    <div className="flex flex-1 flex-col gap-1 overflow-hidden">
+                      {dayEntries.slice(0, cellCap).map((entry) => {
+                        const accent = KIND_ACCENT[entry.kind];
+                        const dim = needle.length > 0 && !matchesSearch(entry, needle);
+                        return (
+                          <button
+                            key={entry.key}
+                            type="button"
+                            onClick={() => navigateToEntry(navigate, entry)}
+                            title={`${entry.title}${entry.subtitle ? ` - ${entry.subtitle}` : ""}`}
+                            className={`flex items-center gap-1 truncate rounded-md px-1.5 py-[3px] text-left text-[11px] font-medium leading-tight transition hover:ring-2 hover:ring-inset hover:ring-slate-900/10 dark:hover:ring-white/15 ${accent.chip} ${SEVERITY_RING[entry.severity]} ${dim ? "opacity-25" : ""}`}
+                          >
+                            <span className="truncate">{entry.title}</span>
+                          </button>
+                        );
+                      })}
+                      {dayEntries.length > cellCap && (
+                        <button
+                          type="button"
+                          onClick={() => setDayDetail(iso)}
+                          className="rounded-md px-1.5 py-0.5 text-left text-[11px] font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                        >
+                          +{dayEntries.length - cellCap} more
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      ) : (
+        <ListView
+          mode={viewMode}
+          loading={loading}
+          today={today}
+          needle={needle}
+          entries={visibleEntries}
+          onNavigate={(e) => navigateToEntry(navigate, e)}
+        />
+      )}
 
-      <DayDetailModal iso={dayDetail} entries={dayDetail ? (entriesByDate.get(dayDetail) ?? []) : []} onClose={() => setDayDetail(null)} onNavigate={(e) => navigateToEntry(navigate, e)} />
+      <DayDetailModal
+        iso={dayDetail}
+        today={today}
+        entries={dayDetail ? (entriesByDate.get(dayDetail) ?? []) : []}
+        onClose={() => setDayDetail(null)}
+        onNavigate={(e) => navigateToEntry(navigate, e)}
+      />
     </div>
   );
 }
 
+/** marko's section 12. One muted color, three segments - how full it is
+ * carries the signal. Deliberately not red/amber/green, which would collide
+ * with the severity channel and produce exactly the "farebný chaos" he asked
+ * to avoid. */
+function WorkloadBar({ level, count }: { level: number; count: number }) {
+  return (
+    <span
+      className="flex items-center gap-[2px]"
+      title={`${count} item${count === 1 ? "" : "s"}`}
+      aria-label={`${count} items`}
+    >
+      {[1, 2, 3].map((i) => (
+        <span
+          key={i}
+          className={`h-2.5 w-[3px] rounded-full ${
+            i <= level ? "bg-slate-400 dark:bg-slate-500" : "bg-slate-200 dark:bg-slate-700"
+          }`}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** One entry as a row - shared by Day, Agenda and Day Detail so the three
+ * never drift apart. Shows exactly what marko's section 8 asked for and
+ * nothing more: title, kind, its own date context, one supporting line, and
+ * the amount when the entry really has one. */
+function EntryRow({
+  entry,
+  today,
+  onNavigate,
+}: {
+  entry: CalendarEntry;
+  today: string;
+  onNavigate: (entry: CalendarEntry) => void;
+}) {
+  const meta = KIND_META[entry.kind];
+  const accent = KIND_ACCENT[entry.kind];
+  const countdown = entry.kind === "event" ? eventCountdown(entry.date, today) : null;
+  return (
+    <button
+      type="button"
+      onClick={() => onNavigate(entry)}
+      className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800/60"
+    >
+      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <meta.icon className={`h-3.5 w-3.5 shrink-0 ${accent.text}`} />
+          <p className={`truncate text-sm text-slate-900 dark:text-slate-100 ${SEVERITY_TEXT[entry.severity] || "font-medium"}`}>
+            {entry.title}
+          </p>
+        </div>
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 truncate text-xs text-slate-500 dark:text-slate-400">
+          <span className={accent.text}>{meta.label.replace(/s$/, "")}</span>
+          {entry.subtitle && <span>· {entry.subtitle}</span>}
+          {countdown && <span className="font-medium text-slate-600 dark:text-slate-300">· {countdown}</span>}
+        </p>
+      </div>
+      {entry.amountCents !== null && entry.currency && (
+        <span className="shrink-0 text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300">
+          {formatMoney(entry.amountCents, entry.currency)}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Day and Agenda. Both are chronological lists over the range the page
+ * already loaded - Day groups by kind (one day, so the date adds nothing),
+ * Agenda groups by date (many days, so the date is the whole point). */
+function ListView({
+  mode,
+  loading,
+  today,
+  needle,
+  entries,
+  onNavigate,
+}: {
+  mode: "day" | "agenda";
+  loading: boolean;
+  today: string;
+  needle: string;
+  entries: CalendarEntry[];
+  onNavigate: (entry: CalendarEntry) => void;
+}) {
+  // Unlike the grid, a list has no "where is it relative to everything else"
+  // to preserve - so here search really filters.
+  const shown = useMemo(() => entries.filter((e) => matchesSearch(e, needle)), [entries, needle]);
+
+  const groups = useMemo(() => {
+    if (mode === "day") {
+      return ALL_KINDS.map((kind) => ({
+        key: kind,
+        label: KIND_META[kind].label,
+        items: shown.filter((e) => e.kind === kind),
+      })).filter((g) => g.items.length > 0);
+    }
+    const byDate = new Map<string, CalendarEntry[]>();
+    for (const e of shown) {
+      const list = byDate.get(e.date);
+      if (list) list.push(e);
+      else byDate.set(e.date, [e]);
+    }
+    return [...byDate.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, items]) => ({
+        key: date,
+        label: `${new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" })}, ${formatDate(date)}`,
+        items,
+      }));
+  }, [shown, mode]);
+
+  if (loading) {
+    return (
+      <Card className="p-0">
+        <LoadingBlock label="Loading calendar..." />
+      </Card>
+    );
+  }
+
+  if (groups.length === 0) {
+    return (
+      <EmptyState
+        icon={<IconCalendarDays className="h-5 w-5" />}
+        title={needle ? "Nothing matches that search" : mode === "day" ? "Nothing on this day" : "Nothing coming up"}
+        description={
+          needle
+            ? "Try a shorter search, or clear it to see everything in this range."
+            : mode === "day"
+              ? "No event, order, sale, finance entry, pull or attention item is dated to this day."
+              : `Nothing is dated within the next ${AGENDA_DAYS_AHEAD} days.`
+        }
+      />
+    );
+  }
+
+  return (
+    <Card className="overflow-hidden p-0">
+      <div className="overflow-y-auto" style={{ maxHeight: "calc(100vh - 22rem)" }}>
+        {groups.map((group) => (
+          <div key={group.key}>
+            <p className="section-title sticky top-0 z-10 border-b border-slate-100 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/60">
+              {group.label}
+              <span className="ml-1.5 font-normal normal-case tracking-normal text-slate-400 dark:text-slate-500">
+                {group.items.length}
+              </span>
+            </p>
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {group.items.map((entry) => (
+                <li key={entry.key}>
+                  <EntryRow entry={entry} today={today} onNavigate={onNavigate} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/** marko's section 7 - the day's items on the left, a count-by-kind summary
+ * on the right. The summary is derived from the same `entries` array the list
+ * renders, never a second fetch or a second rule. */
 function DayDetailModal({
   iso,
+  today,
   entries,
   onClose,
   onNavigate,
 }: {
   iso: string | null;
+  today: string;
   entries: CalendarEntry[];
   onClose: () => void;
   onNavigate: (entry: CalendarEntry) => void;
 }) {
-  // 2.5.1: "Monday, Aug 17, 2026" instead of just "Aug 17, 2026" - a small
-  // legibility win for a modal whose whole job is "what's on this day",
-  // where the day-of-week is often the first thing marko actually needs.
-  // formatDate itself is untouched (still used everywhere else as-is).
   const weekday = iso ? new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" }) : "";
+  const counts = ALL_KINDS.map((kind) => ({ kind, count: entries.filter((e) => e.kind === kind).length })).filter(
+    (c) => c.count > 0,
+  );
   return (
-    <Modal open={iso !== null} onClose={onClose} title={iso ? `${weekday}, ${formatDate(iso)}` : ""}>
+    <Modal open={iso !== null} onClose={onClose} title={iso ? `${weekday}, ${formatDate(iso)}` : ""} width="max-w-3xl">
       {entries.length === 0 ? (
         <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">Nothing here.</p>
       ) : (
-        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-          {entries.map((entry) => {
-            const meta = KIND_META[entry.kind];
-            const accent = KIND_ACCENT[entry.kind];
-            return (
-              <li key={entry.key}>
-                <button
-                  type="button"
-                  onClick={() => onNavigate(entry)}
-                  className="flex w-full items-start gap-2.5 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                >
-                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <meta.icon className={`h-3.5 w-3.5 shrink-0 ${accent.text}`} />
-                      <p className={`truncate text-sm text-slate-900 dark:text-slate-100 ${SEVERITY_TEXT[entry.severity] || "font-medium"}`}>{entry.title}</p>
-                    </div>
-                    {entry.subtitle && <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{entry.subtitle}</p>}
-                  </div>
-                  {entry.amountCents !== null && entry.currency && (
-                    <span className="shrink-0 text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300">
-                      {formatMoney(entry.amountCents, entry.currency)}
-                    </span>
-                  )}
-                </button>
+        <div className="flex flex-col gap-4 sm:flex-row">
+          <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {entries.map((entry) => (
+                <li key={entry.key}>
+                  <EntryRow entry={entry} today={today} onNavigate={onNavigate} />
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="shrink-0 sm:w-44">
+            <p className="section-title mb-2">Day summary</p>
+            <ul className="space-y-1.5">
+              {counts.map(({ kind, count }) => (
+                <li key={kind} className="flex items-center gap-2 text-xs">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${KIND_ACCENT[kind].dot}`} />
+                  <span className="flex-1 text-slate-600 dark:text-slate-400">{KIND_META[kind].label}</span>
+                  <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</span>
+                </li>
+              ))}
+              <li className="flex items-center gap-2 border-t border-slate-200 pt-1.5 text-xs dark:border-slate-800">
+                <span className="flex-1 font-medium text-slate-700 dark:text-slate-300">Total</span>
+                <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{entries.length}</span>
               </li>
-            );
-          })}
-        </ul>
+            </ul>
+          </div>
+        </div>
       )}
     </Modal>
   );
 }
 
-/** Today + next 7 days, fetched independently of whatever Month/Week range
- * is currently on screen - same `get_calendar` command, just a different
- * range, so this is never a second, duplicate business computation (marko's
- * own explicit requirement). */
-function UpcomingSummary() {
-  const navigate = useNavigate();
+/** marko's sections 9 + 10. Today / Tomorrow / Next 7 days / Overdue, over
+ * ONE extra `get_calendar` call with its own fixed range - the same command
+ * and therefore the same business rules as the grid, never a duplicate
+ * computation.
+ *
+ * "Overdue" is real here only because exactly one thing in this app has a
+ * real due date: an active `recurring_expenses.next_date` in the past. That
+ * is also precisely how Finance's own Accounts tab defines overdue, and the
+ * backend already marks those entries `critical` - so this counts them
+ * rather than re-deriving the rule a third time. Nothing else is ever
+ * counted as overdue, because nothing else has a deadline to miss. */
+function SummaryStrip({ today, onOpenDay }: { today: string; onOpenDay: (iso: string) => void }) {
   const [entries, setEntries] = useState<CalendarEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const from = todayIso();
-    const to = isoOf(addDays(new Date(), 6));
+    const from = isoOf(addDays(new Date(), -OVERDUE_LOOKBACK_DAYS));
+    const to = isoOf(addDays(new Date(), 7));
     api
       .getCalendar({ dateFrom: from, dateTo: to })
       .then(setEntries)
@@ -504,60 +909,53 @@ function UpcomingSummary() {
 
   if (loading) return null;
 
-  const counts = ALL_KINDS.map((kind) => ({ kind, count: entries.filter((e) => e.kind === kind).length })).filter((c) => c.count > 0);
-  const upNext = [...entries]
-    .sort((a, b) => {
-      const rank: Record<CalendarSeverity, number> = { critical: 0, attention: 1, info: 2, neutral: 3 };
-      return rank[a.severity] - rank[b.severity] || a.date.localeCompare(b.date);
-    })
-    .slice(0, 4);
+  const tomorrow = isoOf(addDays(new Date(), 1));
+  const in7 = isoOf(addDays(new Date(), 7));
+  const todayItems = entries.filter((e) => e.date === today);
+  const tomorrowItems = entries.filter((e) => e.date === tomorrow);
+  const next7 = entries.filter((e) => e.date > today && e.date <= in7);
+  const overdue = entries.filter((e) => e.kind === "recurring" && e.severity === "critical" && e.date < today);
+
+  const tiles: { label: string; count: number; onClick?: () => void; tone?: "danger" }[] = [
+    { label: "Today", count: todayItems.length, onClick: todayItems.length ? () => onOpenDay(today) : undefined },
+    { label: "Tomorrow", count: tomorrowItems.length, onClick: tomorrowItems.length ? () => onOpenDay(tomorrow) : undefined },
+    { label: "Next 7 days", count: next7.length },
+  ];
+  // Only ever shown when there is something real to show - an "Overdue 0"
+  // tile on a calendar whose data mostly has no deadlines would imply this
+  // app tracks more deadlines than it does.
+  if (overdue.length > 0) {
+    tiles.push({
+      label: "Overdue",
+      count: overdue.length,
+      tone: "danger",
+      onClick: () => onOpenDay(overdue.map((e) => e.date).sort()[0]!),
+    });
+  }
 
   return (
-    <Card className="mb-4 overflow-hidden p-0">
-      <p className="section-title border-b border-slate-100 px-4 py-2.5 dark:border-slate-800">
-        Today &amp; next 7 days
-      </p>
-      {entries.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-slate-400 dark:text-slate-500">Nothing coming up in the next 7 days.</p>
-      ) : (
-        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:gap-6">
-          <div className="flex flex-wrap gap-1.5">
-            {counts.map(({ kind, count }) => {
-              const meta = KIND_META[kind];
-              const accent = KIND_ACCENT[kind];
-              return (
-                <span
-                  key={kind}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${accent.chip}`}
-                >
-                  <meta.icon className="h-3.5 w-3.5" />
-                  {count} {meta.label.toLowerCase()}
-                </span>
-              );
-            })}
-          </div>
-          <div className="min-w-0 flex-1 border-t border-slate-100 pt-3 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0 dark:border-slate-800">
-            <ul className="flex flex-col gap-2">
-              {upNext.map((entry) => {
-                const accent = KIND_ACCENT[entry.kind];
-                return (
-                  <li key={entry.key}>
-                    <button
-                      type="button"
-                      onClick={() => navigateToEntry(navigate, entry)}
-                      className="flex w-full items-center gap-2 truncate text-left text-xs text-slate-600 hover:text-brand-700 dark:text-slate-300 dark:hover:text-brand-400"
-                    >
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`} />
-                      <span className="shrink-0 tabular-nums text-slate-400 dark:text-slate-500">{formatDateNumeric(entry.date)}</span>
-                      <span className={`truncate ${SEVERITY_TEXT[entry.severity]}`}>{entry.title}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </div>
-      )}
-    </Card>
+    <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {tiles.map((tile) => (
+        <Card
+          key={tile.label}
+          interactive={Boolean(tile.onClick)}
+          className="p-3"
+          onClick={tile.onClick}
+          role={tile.onClick ? "button" : undefined}
+        >
+          <p className="section-title truncate">{tile.label}</p>
+          <p
+            className={`mt-2 text-[22px] font-semibold leading-none tabular-nums ${
+              tile.tone === "danger" ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-50"
+            }`}
+          >
+            {tile.count}
+          </p>
+          <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">
+            {tile.count === 1 ? "item" : "items"}
+          </p>
+        </Card>
+      ))}
+    </div>
   );
 }

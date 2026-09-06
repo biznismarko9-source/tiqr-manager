@@ -2962,8 +2962,12 @@ pub struct CalendarEntry {
     /// across calls, not a random id, so the frontend can key list rendering
     /// off it directly.
     pub key: String,
-    /// "event" | "order" | "sale" | "pull" | "attention" - the business
-    /// category, used for the Filters row and for grouping in Day Detail.
+    /// "event" | "order" | "sale" | "pull" | "attention" | "finance" |
+    /// "recurring" - the business category, used for the Filters row and for
+    /// grouping in Day Detail. 2.8.0 added the last two, from
+    /// `finance_entries.entry_date` and `recurring_expenses.next_date`; see
+    /// `commands::calendar::finance_in_range`'s doc comment for why those are
+    /// real and "payout"/"payment"/"fulfillment" still are not.
     /// Deliberately NOT the same enum as `link_kind` below - an `attention`
     /// entry, for instance, still navigates to the underlying order or
     /// event, not to a page called "attention".
@@ -2998,7 +3002,7 @@ pub struct CalendarEntry {
     /// sale that already happened has no ongoing urgency of its own.
     pub severity: String,
     /// Which existing page a click on this entry should open - "event" |
-    /// "order" | "sale" | "pulls". Never a new route: reuses exactly the
+    /// "order" | "sale" | "pulls" | "finance". Never a new route: reuses exactly the
     /// same navigation targets Attention Center/Ticket Control Center/
     /// Fulfillment Center already use for the same underlying records. Pulls
     /// has no per-record detail route today (unlike event/order/sale) - see
@@ -3006,7 +3010,9 @@ pub struct CalendarEntry {
     /// links to the Pulls LIST page and carries no `link_id`.
     pub link_kind: String,
     /// The id to route with, interpreted according to `link_kind` - `None`
-    /// only for `link_kind = "pulls"` (see its own doc comment above).
+    /// for `link_kind = "pulls"` and for `"finance"` (see its own doc comment
+    /// above). Finance is a single route with client-side tabs and has no
+    /// per-entry detail page, exactly like Pulls.
     pub link_id: Option<i64>,
     /// A single, already-safe-to-show amount for this entry, when one
     /// exists: an order's own `total_cost_cents` (always one real currency -

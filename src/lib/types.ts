@@ -2025,9 +2025,20 @@ export interface CalendarFilters {
   dateTo: string;
 }
 
-export type CalendarEntryKind = "event" | "order" | "sale" | "pull" | "attention";
+// 2.8.0: "finance" (finance_entries.entry_date) and "recurring"
+// (recurring_expenses.next_date) are the two date sources added this
+// release. "payout"/"payment"/"fulfillment" are deliberately still absent -
+// no such date exists in this schema; see commands/calendar.rs.
+export type CalendarEntryKind =
+  | "event"
+  | "order"
+  | "sale"
+  | "pull"
+  | "attention"
+  | "finance"
+  | "recurring";
 export type CalendarSeverity = "critical" | "attention" | "info" | "neutral";
-export type CalendarLinkKind = "event" | "order" | "sale" | "pulls";
+export type CalendarLinkKind = "event" | "order" | "sale" | "pulls" | "finance";
 
 /** One card on the calendar grid (or one row in Day Detail). Every field
  * here already exists elsewhere in the app - this is a read-only repackaging
