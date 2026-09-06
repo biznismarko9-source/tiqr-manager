@@ -21,6 +21,50 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.10.0 - Price Checker event overview (read-only aggregation; no schema change)
+
+- **There is no persisted "scan failed" state, and a badge for one must not be
+  invented.** `price_checks` has no status column (migration 014), and a row
+  only ever reaches that table through the explicit review-then-save step - so
+  by construction every stored check succeeded. The scanner's own
+  `error`/`blocked`/`unable_to_read` states live in `AppState`'s session map
+  for the lifetime of one scanner window and are gone when it closes. The
+  overview's four filters (All / Needs link / Not scanned / Scanned) are
+  exactly the states real rows can answer. `price_checker.rs`'s
+  `no_marketplace_status_can_ever_report_a_failure_because_none_is_stored`
+  is the standing guard; if a failure ever really becomes persisted, revisit
+  that test deliberately rather than letting a badge appear with nothing
+  behind it.
+- **`list_price_checker_overview_impl` must stay read-only and must not become
+  N calls to `get_price_checker_summary_impl`.** It is four flat queries
+  assembled in memory, regardless of event count - same "each view aggregator
+  writes its own query" convention as `attention_center`/`calendar`. The
+  per-event summary command does real extra work (unsold inventory,
+  recommended pricing, full per-marketplace history) that the list has no use
+  for. There is a test asserting that listing the overview changes nothing in
+  the database.
+- **Two rules are mirrored from elsewhere and must stay mirrored.** Which
+  events: `status = 'upcoming'` only - the same rule PriceChecker.tsx applied
+  client-side from 2.2.2, just moved into SQL. Which marketplaces: every
+  active one, plus any inactive one this specific event already has a link or
+  a check against - the same predicate `get_price_checker_summary_impl` uses,
+  so a retired marketplace keeps showing where it has real data and is never
+  offered on a clean event.
+- **Opening the Price Checker page must never cost a network request.** The
+  overview reads existing rows only. No scan, no marketplace fetch, no
+  polling, no background refresh - marko's own performance constraint, and the
+  same line this feature has held since the hidden auto-check was removed in
+  2.1.9.
+- **"Check selected" is deliberately not a batch runner.** The scanner opens a
+  real, visible browser window per marketplace that marko scrolls himself;
+  there is no architecture for several events at once, and inventing parallel
+  sessions was explicitly out of scope. It opens the first selected event and
+  leaves the selection intact. Do not turn this into a queue, a loop, or
+  anything that opens windows without a click.
+- **"Select all" is scoped to the visible (searched/filtered) rows**, not to
+  every loaded event. Selecting rows the user cannot currently see is how a
+  bulk action becomes dangerous.
+
 ## 2.9.0 - Price Checker scan accuracy (parser + dedup + currency; no schema change)
 
 - **A price must always come from the element the money was actually matched

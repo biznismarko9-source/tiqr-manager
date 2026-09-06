@@ -16,6 +16,49 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.10.0 - Price Checker event overview replaces the event dropdown
+
+marko's own request: see every relevant event at once instead of picking one
+from a dropdown. **UX only** - the scanner, parser, readers, market analysis
+and history are untouched. **No schema change, no migration (next new one is
+still 027), no new dependency.**
+
+1. **Changed**: opening Price Checker now lists every **upcoming** event as a
+   dense card - name, date, venue/city, a per-marketplace row (Linked / No
+   link, plus that marketplace's last check and listing count), and an
+   event-level line with the newest listing count or "Not scanned yet".
+2. **Added**: multi-select with checkboxes, "Select all" (scoped to what is
+   currently visible, so a filtered list can't silently select what you can't
+   see), "Clear selection", and a "Selected: N events" bar.
+3. **Added**: local search over event name, venue and city, and four quick
+   filters - All / Needs link / Not scanned / Scanned.
+4. **Added**: one read-only backend command, `list_price_checker_overview`,
+   answering the whole list in four flat queries instead of calling
+   `get_price_checker_summary` once per event. It writes nothing, triggers no
+   scan and makes no marketplace request.
+5. **Deliberately not added**: a "Scan failed" state. A failed scan is never
+   persisted anywhere in this app - `price_checks` has no status column, and a
+   row only reaches it through the explicit review-then-save step, so by
+   construction every stored check succeeded. The scanner's own error/blocked
+   states live in memory for the life of one scanner window. A "Scan failed"
+   badge would be inventing a state the database does not have.
+6. **Check selected**: opens the first selected event's own flow and keeps the
+   selection, so the rest are one click each. The scanner opens a real visible
+   browser window marko drives himself, so no parallel sessions and no queue
+   automation were invented.
+7. **Added**: an "All events" back link, since the dropdown that used to be
+   the way back is gone.
+8. **Not changed**: parser, readers, DOM scanning, market calculations, tier
+   grouping, section/row metadata, price history, Your Tickets. Tier/Level
+   stays a market grouping; section/row stay metadata. No background
+   monitoring, no polling, no scheduled scanning, no repricing.
+
+8 new Rust unit tests (42 in `price_checker.rs` total).
+
+**Not verified by a build.** No Node.js and no Rust toolchain on the machine
+this was implemented on, so `cargo test --lib`, `cargo check --lib`,
+`npx tsc -b` and `npm run build` could not be run.
+
 ## 2.9.0 - Price Checker accuracy fix, scan report, filters, CSV export
 
 marko reported the scanner reading prices wrong. Diagnosis first, then the

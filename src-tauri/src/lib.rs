@@ -258,6 +258,7 @@ pub fn run() {
             commands::price_checker::save_event_marketplace_link,
             commands::price_checker::save_price_check,
             commands::price_checker::get_price_checker_summary,
+            commands::price_checker::list_price_checker_overview,
             commands::price_checker_scanner::open_price_scanner,
             commands::price_checker_scanner::scan_visible_prices,
             commands::price_checker_scanner::cancel_price_scan,

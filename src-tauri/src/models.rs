@@ -1749,6 +1749,63 @@ pub struct MarketplacePriceView {
 /// (lowest/average/recommended/expected profit/ROI). See
 /// `commands::price_checker::get_price_checker_summary_impl`'s own doc
 /// comment for exactly how each derived field is computed and why.
+/// 2.10.0 - one row per event for Price Checker's new event overview, which
+/// replaced the single "Select an event..." dropdown.
+///
+/// Deliberately NOT a new event model (marko's own constraint): every field
+/// below is either a column already on `events`, or a fact derived from the
+/// `event_marketplace_links` / `price_checks` rows that Price Checker already
+/// owns. Nothing here is stored, and nothing is computed that
+/// `PriceCheckerSummary` could not already answer for a single event - this
+/// exists so the list can answer it for EVERY event in one query instead of
+/// one IPC round trip per card.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCheckerEventOverview {
+    pub event_id: i64,
+    pub event_name: String,
+    pub event_date: Option<String>,
+    pub venue: Option<String>,
+    pub city: Option<String>,
+    /// Same marketplace set, and the same rule for choosing it, that
+    /// `get_price_checker_summary_impl` applies per event: every ACTIVE
+    /// marketplace, plus any inactive one this specific event already has a
+    /// link or a check against.
+    pub marketplaces: Vec<PriceCheckerMarketplaceStatus>,
+    /// Newest `price_checks.checked_at` across every marketplace of this
+    /// event, and the listing count recorded by that same newest check.
+    /// `None` when the event has never been checked - never a zero, which
+    /// would read as "checked, found nothing".
+    pub last_checked_at: Option<String>,
+    pub last_listing_count: Option<i64>,
+    /// How many of `marketplaces` have a saved link, and how many have at
+    /// least one saved check. Both are counts of real rows.
+    pub linked_count: i64,
+    pub checked_count: i64,
+}
+
+/// One marketplace's status for one event on the overview list.
+///
+/// There is deliberately NO "failed" variant here. A failed scan is never
+/// persisted anywhere in this app: `price_checks` has no status column (see
+/// migration 014), and a row only ever reaches it through the explicit
+/// review-then-save step, so by construction every stored check succeeded.
+/// The scanner's own error/blocked/unable_to_read states live in memory for
+/// the lifetime of one scanner window and are gone when it closes. Reporting
+/// a "Scan failed" badge here would mean inventing a state the database does
+/// not have - see `PROTECTED_AREAS.md`'s 2.10.0 entry.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCheckerMarketplaceStatus {
+    pub marketplace_id: i64,
+    pub marketplace_name: String,
+    /// A saved `event_marketplace_links` row exists for this pair.
+    pub linked: bool,
+    /// Newest saved check for this pair, if any.
+    pub last_checked_at: Option<String>,
+    pub last_listing_count: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceCheckerSummary {

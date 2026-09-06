@@ -58,8 +58,10 @@ use crate::error::{AppError, AppResult};
 use crate::finance;
 use crate::models::{
     EventMarketplaceLink, EventMarketplaceLinkInput, Marketplace, MarketplacePriceView, PriceCheck,
-    PriceCheckInput, PriceCheckerSummary, TierBreakdownRecord,
+    PriceCheckInput, PriceCheckerEventOverview, PriceCheckerMarketplaceStatus, PriceCheckerSummary,
+    TierBreakdownRecord,
 };
+use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::State;
 
@@ -589,6 +591,146 @@ pub(crate) fn get_price_checker_summary_impl(conn: &Connection, event_id: i64) -
         expected_profit_cents,
         expected_roi,
     })
+}
+
+/// 2.10.0 - backs Price Checker's event overview list, which replaced the
+/// single "Select an event..." dropdown.
+///
+/// Read-only aggregation, same convention as `attention_center` /
+/// `calendar`: it writes nothing, and it deliberately does NOT call
+/// `get_price_checker_summary_impl` once per event. That command does real
+/// per-event work (marko's unsold inventory, recommended pricing, full check
+/// history per marketplace) which this list has no use for, and calling it N
+/// times would be N round trips for data the page would then throw away.
+/// Four flat queries, assembled in memory, regardless of how many events
+/// exist.
+///
+/// Which events: `status = 'upcoming'` only - the exact same rule
+/// PriceChecker.tsx already applied client-side since 2.2.2 (once an event is
+/// completed or cancelled, checking live prices for it means nothing), just
+/// moved into SQL now that the page lists events instead of filtering a
+/// dropdown.
+pub(crate) fn list_price_checker_overview_impl(conn: &Connection) -> AppResult<Vec<PriceCheckerEventOverview>> {
+    // ---- 1. the events themselves ----------------------------------------
+    let mut stmt = conn.prepare(
+        "SELECT id, name, event_date, venue, city FROM events \
+         WHERE status = 'upcoming' \
+         ORDER BY event_date IS NULL, event_date, name COLLATE NOCASE",
+    )?;
+    let events: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // ---- 2. every saved link, as (event_id, marketplace_id) --------------
+    let mut stmt = conn.prepare("SELECT event_id, marketplace_id FROM event_marketplace_links")?;
+    let links: HashSet<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<HashSet<_>, _>>()?;
+
+    // ---- 3. the NEWEST check per (event, marketplace) --------------------
+    // Ordered newest-first and kept only on first sight, rather than a
+    // GROUP BY/MAX join - same result, one less moving part to get wrong.
+    let mut stmt = conn.prepare(
+        "SELECT event_id, marketplace_id, checked_at, listing_count FROM price_checks \
+         ORDER BY checked_at DESC, id DESC",
+    )?;
+    let mut latest: HashMap<(i64, i64), (String, i64)> = HashMap::new();
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (event_id, marketplace_id, checked_at, listing_count) = row?;
+        latest.entry((event_id, marketplace_id)).or_insert((checked_at, listing_count));
+    }
+
+    // ---- 4. marketplaces ------------------------------------------------
+    // Same rule as `get_price_checker_summary_impl`: active ones always, plus
+    // any inactive one that is already referenced somewhere. Evaluated once
+    // for the whole list here (rather than per event) and then narrowed per
+    // event below, so a retired marketplace still shows on the events that
+    // really have its data and never on the ones that do not.
+    let mut stmt = conn.prepare(
+        "SELECT id, name, active FROM marketplaces \
+         WHERE active = 1 \
+            OR EXISTS(SELECT 1 FROM event_marketplace_links WHERE marketplace_id = marketplaces.id) \
+            OR EXISTS(SELECT 1 FROM price_checks WHERE marketplace_id = marketplaces.id) \
+         ORDER BY name COLLATE NOCASE",
+    )?;
+    let marketplaces: Vec<(i64, String, bool)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // ---- assemble --------------------------------------------------------
+    let mut out = Vec::with_capacity(events.len());
+    for (event_id, event_name, event_date, venue, city) in events {
+        let mut statuses = Vec::new();
+        let mut linked_count = 0i64;
+        let mut checked_count = 0i64;
+        let mut last_checked_at: Option<String> = None;
+        let mut last_listing_count: Option<i64> = None;
+
+        for (marketplace_id, marketplace_name, active) in &marketplaces {
+            let linked = links.contains(&(event_id, *marketplace_id));
+            let check = latest.get(&(event_id, *marketplace_id));
+            // An inactive marketplace only appears on an event that actually
+            // has data for it.
+            if !*active && !linked && check.is_none() {
+                continue;
+            }
+            if linked {
+                linked_count += 1;
+            }
+            if let Some((checked_at, listing_count)) = check {
+                checked_count += 1;
+                // Newest across the whole event. String comparison is safe
+                // here: `checked_at` is an ISO 8601 UTC timestamp, which
+                // sorts identically as text and as time.
+                let is_newer = match last_checked_at.as_deref() {
+                    Some(current) => checked_at.as_str() > current,
+                    None => true,
+                };
+                if is_newer {
+                    last_checked_at = Some(checked_at.clone());
+                    last_listing_count = Some(*listing_count);
+                }
+            }
+            statuses.push(PriceCheckerMarketplaceStatus {
+                marketplace_id: *marketplace_id,
+                marketplace_name: marketplace_name.clone(),
+                linked,
+                last_checked_at: check.map(|(c, _)| c.clone()),
+                last_listing_count: check.map(|(_, n)| *n),
+            });
+        }
+
+        out.push(PriceCheckerEventOverview {
+            event_id,
+            event_name,
+            event_date,
+            venue,
+            city,
+            marketplaces: statuses,
+            last_checked_at,
+            last_listing_count,
+            linked_count,
+            checked_count,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_price_checker_overview(state: State<AppState>) -> AppResult<Vec<PriceCheckerEventOverview>> {
+    let conn = state.db.lock().unwrap();
+    list_price_checker_overview_impl(&conn)
 }
 
 #[tauri::command]
@@ -1405,5 +1547,181 @@ mod tests {
         assert!(delete_marketplace_impl(&conn, id).is_ok());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM marketplaces WHERE id = ?1", [id], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // 2.10.0 - the event overview list that replaced the dropdown.
+    // ---------------------------------------------------------------
+
+    fn seed_event_full(conn: &Connection, name: &str, date: Option<&str>, venue: Option<&str>, city: Option<&str>, status: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO events (name, event_date, venue, city, status) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, date, venue, city, status],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// `price_checks.checked_at` defaults to now, so a test about WHICH check
+    /// is newest has to set it explicitly.
+    fn seed_check_at(conn: &Connection, event_id: i64, marketplace_id: i64, listing_count: i64, checked_at: &str) {
+        conn.execute(
+            "INSERT INTO price_checks
+               (event_id, marketplace_id, lowest_price_cents, average_price_cents, highest_price_cents, listing_count, currency, checked_at)
+             VALUES (?1, ?2, 1000, 1500, 2000, ?3, 'EUR', ?4)",
+            params![event_id, marketplace_id, listing_count, checked_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn overview_lists_every_upcoming_event_and_no_completed_or_cancelled_one() {
+        // Same rule PriceChecker.tsx applied client-side since 2.2.2, just
+        // moved into SQL - checking live prices for a finished event means
+        // nothing.
+        let conn = test_conn();
+        seed_event_full(&conn, "Upcoming A", Some("2026-09-14"), None, None, "upcoming");
+        seed_event_full(&conn, "Done", Some("2026-01-01"), None, None, "completed");
+        seed_event_full(&conn, "Cancelled", Some("2026-02-01"), None, None, "cancelled");
+        seed_event_full(&conn, "Upcoming B", Some("2026-10-01"), None, None, "upcoming");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.event_name.as_str()).collect();
+        assert_eq!(names, vec!["Upcoming A", "Upcoming B"], "sorted by date, completed/cancelled excluded");
+    }
+
+    #[test]
+    fn an_event_with_no_links_and_no_checks_reports_nothing_rather_than_zeroes() {
+        let conn = test_conn();
+        seed_event_full(&conn, "Fresh", Some("2026-09-14"), Some("Allianz Arena"), Some("Munich"), "upcoming");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.venue.as_deref(), Some("Allianz Arena"));
+        assert_eq!(r.city.as_deref(), Some("Munich"));
+        assert_eq!(r.linked_count, 0);
+        assert_eq!(r.checked_count, 0);
+        // Never a 0 listing count, which would read as "checked, found none".
+        assert!(r.last_checked_at.is_none());
+        assert!(r.last_listing_count.is_none());
+        // Every ACTIVE marketplace still appears, so it can be shown as
+        // "No link" rather than being missing from the card entirely.
+        assert!(!r.marketplaces.is_empty());
+        assert!(r.marketplaces.iter().all(|m| !m.linked && m.last_checked_at.is_none()));
+    }
+
+    #[test]
+    fn link_and_check_state_are_reported_per_marketplace() {
+        let conn = test_conn();
+        let event_id = seed_event_full(&conn, "Coldplay", Some("2026-09-14"), None, None, "upcoming");
+        let vivid = marketplace_id_by_name(&conn, "Vivid Seats");
+        let ticombo = marketplace_id_by_name(&conn, "Ticombo");
+        seed_link(&conn, event_id, vivid, "https://example.test/vivid");
+        seed_check_at(&conn, event_id, vivid, 184, "2026-09-01T10:00:00.000Z");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        let r = &rows[0];
+        let v = r.marketplaces.iter().find(|m| m.marketplace_id == vivid).unwrap();
+        let t = r.marketplaces.iter().find(|m| m.marketplace_id == ticombo).unwrap();
+        assert!(v.linked);
+        assert_eq!(v.last_listing_count, Some(184));
+        assert!(!t.linked, "Ticombo has no link on this event");
+        assert!(t.last_checked_at.is_none(), "Ticombo has never been checked on this event");
+        assert_eq!(r.linked_count, 1);
+        assert_eq!(r.checked_count, 1);
+    }
+
+    #[test]
+    fn the_newest_check_across_marketplaces_is_the_one_reported_for_the_event() {
+        let conn = test_conn();
+        let event_id = seed_event_full(&conn, "Coldplay", Some("2026-09-14"), None, None, "upcoming");
+        let vivid = marketplace_id_by_name(&conn, "Vivid Seats");
+        let ticombo = marketplace_id_by_name(&conn, "Ticombo");
+        seed_check_at(&conn, event_id, vivid, 100, "2026-09-01T10:00:00.000Z");
+        seed_check_at(&conn, event_id, ticombo, 250, "2026-09-03T10:00:00.000Z");
+        seed_check_at(&conn, event_id, vivid, 180, "2026-09-02T10:00:00.000Z");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        let r = &rows[0];
+        assert_eq!(r.last_checked_at.as_deref(), Some("2026-09-03T10:00:00.000Z"));
+        assert_eq!(r.last_listing_count, Some(250), "the count must come from that same newest check");
+        // And per marketplace, the newest of ITS own checks - not the event's.
+        let v = r.marketplaces.iter().find(|m| m.marketplace_id == vivid).unwrap();
+        assert_eq!(v.last_listing_count, Some(180));
+        assert_eq!(r.checked_count, 2);
+    }
+
+    #[test]
+    fn one_events_data_never_leaks_onto_another() {
+        let conn = test_conn();
+        let a = seed_event_full(&conn, "A", Some("2026-09-14"), None, None, "upcoming");
+        let b = seed_event_full(&conn, "B", Some("2026-09-15"), None, None, "upcoming");
+        let vivid = marketplace_id_by_name(&conn, "Vivid Seats");
+        seed_link(&conn, a, vivid, "https://example.test/a");
+        seed_check_at(&conn, a, vivid, 42, "2026-09-01T10:00:00.000Z");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        let ra = rows.iter().find(|r| r.event_id == a).unwrap();
+        let rb = rows.iter().find(|r| r.event_id == b).unwrap();
+        assert_eq!(ra.linked_count, 1);
+        assert_eq!(ra.last_listing_count, Some(42));
+        assert_eq!(rb.linked_count, 0);
+        assert!(rb.last_checked_at.is_none());
+    }
+
+    #[test]
+    fn a_retired_marketplace_appears_only_on_events_that_really_have_its_data() {
+        // Same rule get_price_checker_summary_impl already applies per event:
+        // active always, inactive only where it is genuinely referenced.
+        let conn = test_conn();
+        let with_data = seed_event_full(&conn, "Has old data", Some("2026-09-14"), None, None, "upcoming");
+        let without = seed_event_full(&conn, "Clean", Some("2026-09-15"), None, None, "upcoming");
+        let retired = seed_inactive_marketplace(&conn, "RetiredPlace");
+        seed_check_at(&conn, with_data, retired, 7, "2026-08-01T10:00:00.000Z");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        let a = rows.iter().find(|r| r.event_id == with_data).unwrap();
+        let b = rows.iter().find(|r| r.event_id == without).unwrap();
+        assert!(a.marketplaces.iter().any(|m| m.marketplace_id == retired));
+        assert!(
+            !b.marketplaces.iter().any(|m| m.marketplace_id == retired),
+            "a retired marketplace must never be offered on an event with no history for it"
+        );
+    }
+
+    #[test]
+    fn no_marketplace_status_can_ever_report_a_failure_because_none_is_stored() {
+        // Standing guard on the honesty rule: `price_checks` has no status
+        // column, and a row only reaches it through the explicit
+        // review-then-save step - so by construction every stored check
+        // succeeded. If a failure state is ever really persisted, this test
+        // should be revisited deliberately rather than a "Scan failed" badge
+        // quietly appearing with nothing behind it.
+        let conn = test_conn();
+        let event_id = seed_event_full(&conn, "E", Some("2026-09-14"), None, None, "upcoming");
+        let vivid = marketplace_id_by_name(&conn, "Vivid Seats");
+        seed_check_at(&conn, event_id, vivid, 5, "2026-09-01T10:00:00.000Z");
+        let rows = list_price_checker_overview_impl(&conn).unwrap();
+        for m in &rows[0].marketplaces {
+            // Only three states exist, and all three are derivable from real
+            // rows: no link, linked-never-checked, linked-and-checked.
+            if m.last_checked_at.is_some() {
+                assert!(m.last_listing_count.is_some(), "a check always carries its own listing count");
+            }
+        }
+    }
+
+    #[test]
+    fn the_overview_reads_nothing_and_writes_nothing() {
+        // Read-only aggregation, same as attention_center/calendar: calling it
+        // twice must leave the database exactly as it was.
+        let conn = test_conn();
+        let event_id = seed_event_full(&conn, "E", Some("2026-09-14"), None, None, "upcoming");
+        let vivid = marketplace_id_by_name(&conn, "Vivid Seats");
+        seed_link(&conn, event_id, vivid, "https://example.test/v");
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM price_checks", [], |r| r.get(0))
+            .unwrap();
+        let _ = list_price_checker_overview_impl(&conn).unwrap();
+        let _ = list_price_checker_overview_impl(&conn).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM price_checks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after, "listing the overview must never trigger or record a scan");
     }
 }

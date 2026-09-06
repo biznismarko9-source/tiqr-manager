@@ -34,6 +34,7 @@ import type {
   MarketplacePriceView,
   NormalizedListing,
   PriceCheck,
+  PriceCheckerEventOverview,
   PriceCheckerSummary,
   RankedComparable,
   ScannerClosedPayload,
@@ -47,6 +48,7 @@ import type {
 import {
   centsToDecimalString,
   decimalStringToCents,
+  formatDateNumeric,
   formatDateTime,
   formatMoney,
   formatMoneyOrMixed,
@@ -56,6 +58,7 @@ import {
 import {
   Button,
   Card,
+  CHECKBOX_CLASS,
   EmptyState,
   Field,
   Input,
@@ -63,6 +66,8 @@ import {
   Modal,
   ModalFooter,
   PageHeader,
+  SEGMENTED_TRACK,
+  segmentedItemClass,
   Select,
   Spinner,
   StatCard,
@@ -71,7 +76,9 @@ import {
 import {
   IconAlertTriangle,
   IconDownload,
+  IconArrowLeft,
   IconLink,
+  IconSearch,
   IconTag,
   IconTrendingDown,
   IconTrendingUp,
@@ -283,6 +290,293 @@ function TrendNote({ trend, currency }: { trend: Trend; currency: string }) {
  * its own transient sub-state (see ScannerCardState.opening's own doc
  * comment) rendered separately from the settled/scanning states in
  * SCANNER_STATUS_META. */
+/** 2.10.0 - the Price Checker event overview: every upcoming event as a
+ * dense card, replacing the single "Select an event..." dropdown that used to
+ * be the only way in.
+ *
+ * Everything shown here comes from ONE `list_price_checker_overview` call.
+ * The list never triggers a scan, never touches a marketplace, and never
+ * calls `get_price_checker_summary` per row - opening a page must not cost
+ * network requests marko did not ask for (his own Part 13).
+ *
+ * There is deliberately no "Scan failed" filter or badge. A failed scan is
+ * never stored anywhere in this app - see `PriceCheckerMarketplaceStatus`'s
+ * own doc comment - so the four filters below are exactly the states the
+ * database can actually answer for. */
+type OverviewFilter = "all" | "needs_link" | "not_scanned" | "scanned";
+
+const OVERVIEW_FILTERS: { key: OverviewFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "needs_link", label: "Needs link" },
+  { key: "not_scanned", label: "Not scanned" },
+  { key: "scanned", label: "Scanned" },
+];
+
+/** "2h ago" / "3d ago" / "just now" from an ISO timestamp. Relative time is
+ * the thing marko actually asked to see on a card ("Last scan 2h ago"); the
+ * exact timestamp stays available as the element's title. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+function EventOverviewList({
+  rows,
+  loading,
+  onOpen,
+}: {
+  rows: PriceCheckerEventOverview[];
+  loading: boolean;
+  onOpen: (eventId: number) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<OverviewFilter>("all");
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+
+  const needle = search.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      rows.filter((r) => {
+        if (needle) {
+          const haystack = `${r.eventName} ${r.venue ?? ""} ${r.city ?? ""}`.toLowerCase();
+          if (!haystack.includes(needle)) return false;
+        }
+        if (filter === "needs_link") return r.linkedCount === 0;
+        if (filter === "not_scanned") return r.checkedCount === 0;
+        if (filter === "scanned") return r.checkedCount > 0;
+        return true;
+      }),
+    [rows, needle, filter],
+  );
+
+  // Selecting is scoped to what is currently visible - "Select all" on a
+  // filtered list must not quietly also select events you cannot see.
+  const visibleIds = useMemo(() => visible.map((r) => r.eventId), [visible]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+
+  const toggle = (eventId: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(eventId)) next.delete(eventId);
+      else next.add(eventId);
+      return next;
+    });
+
+  const selectAllVisible = () => setSelected((prev) => new Set([...prev, ...visibleIds]));
+  const clearSelection = () => setSelected(new Set());
+
+  if (loading) return <LoadingBlock label="Loading events..." />;
+
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={<IconTag className="h-5 w-5" />}
+        title="No upcoming events"
+        description="Price Checker only lists events that are still upcoming - once an event is completed or cancelled, checking live prices for it no longer means anything."
+      />
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="relative w-64">
+          <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+          <Input
+            className="h-8 py-0 pl-8 text-xs"
+            placeholder="Search event, venue or city..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className={SEGMENTED_TRACK}>
+          {OVERVIEW_FILTERS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFilter(f.key)}
+              aria-pressed={filter === f.key}
+              className={segmentedItemClass(filter === f.key)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+          <span className="tabular-nums">{visible.length}</span> of{" "}
+          <span className="tabular-nums">{rows.length}</span> events
+        </span>
+      </div>
+
+      {/* Selection bar - only present once something is selected, so the
+          default view stays clean (same convention as BulkDeleteBar). */}
+      {selected.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl bg-brand-50 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:bg-brand-500/10 dark:ring-brand-500/25">
+          <span className="font-medium text-brand-800 dark:text-brand-300">
+            Selected: {selected.size} event{selected.size === 1 ? "" : "s"}
+          </span>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              // The scanner opens one real, visible browser window per
+              // marketplace and marko drives it himself - there is no safe
+              // way to run several events at once, and he was explicit that
+              // no parallel sessions may be invented here. So "Check
+              // selected" opens the FIRST selected event's own flow; the
+              // selection stays, so working through the rest is one click
+              // each. No queue, no automation, no background anything.
+              const first = visible.find((r) => selected.has(r.eventId)) ?? null;
+              if (first) onOpen(first.eventId);
+            }}
+          >
+            Check selected
+          </Button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="ml-auto rounded text-xs font-medium text-brand-700 hover:underline dark:text-brand-400"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
+      <div className="mb-2 flex items-center gap-3">
+        <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+          <input
+            type="checkbox"
+            className={CHECKBOX_CLASS}
+            checked={allVisibleSelected}
+            onChange={() => (allVisibleSelected ? clearSelection() : selectAllVisible())}
+            disabled={visibleIds.length === 0}
+          />
+          Select all
+        </label>
+      </div>
+
+      {visible.length === 0 ? (
+        <EmptyState
+          icon={<IconSearch className="h-5 w-5" />}
+          title="No event matches"
+          description="Try a shorter search, or switch the filter back to All."
+        />
+      ) : (
+        <div className="grid gap-2 lg:grid-cols-2">
+          {visible.map((row) => (
+            <EventOverviewCard
+              key={row.eventId}
+              row={row}
+              selected={selected.has(row.eventId)}
+              onToggle={() => toggle(row.eventId)}
+              onOpen={() => onOpen(row.eventId)}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** One event as a dense card - marko asked for compact rows, not cards that
+ * take half the screen. Everything on it is a real stored value; an event
+ * with no data simply shows "No link" / "Not scanned" rather than a zero. */
+function EventOverviewCard({
+  row,
+  selected,
+  onToggle,
+  onOpen,
+}: {
+  row: PriceCheckerEventOverview;
+  selected: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+}) {
+  const place = [row.city, row.venue].filter(Boolean).join(" · ");
+  return (
+    <Card className={`p-3 transition ${selected ? "ring-2 ring-inset ring-brand-500 dark:ring-brand-400" : ""}`}>
+      <div className="flex items-start gap-2.5">
+        <input
+          type="checkbox"
+          className={`${CHECKBOX_CLASS} mt-0.5`}
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${row.eventName}`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <button
+              type="button"
+              onClick={onOpen}
+              className="min-w-0 truncate text-left text-sm font-semibold text-slate-900 hover:text-brand-600 dark:text-slate-100 dark:hover:text-brand-400"
+            >
+              {row.eventName}
+            </button>
+            <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
+              {row.eventDate ? formatDateNumeric(row.eventDate) : "No date"}
+            </span>
+          </div>
+          {place && <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{place}</p>}
+
+          <ul className="mt-2 space-y-1">
+            {row.marketplaces.map((m) => (
+              <li key={m.marketplaceId} className="flex items-center gap-2 text-xs">
+                <span className="w-24 shrink-0 truncate text-slate-600 dark:text-slate-400">{m.marketplaceName}</span>
+                {m.linked ? (
+                  <span className="shrink-0 font-medium text-emerald-600 dark:text-emerald-400">Linked</span>
+                ) : (
+                  <span className="shrink-0 text-slate-400 dark:text-slate-500">No link</span>
+                )}
+                <span className="ml-auto shrink-0 tabular-nums text-slate-500 dark:text-slate-400">
+                  {m.lastCheckedAt ? (
+                    <span title={m.lastCheckedAt}>
+                      {relativeTime(m.lastCheckedAt)}
+                      {m.lastListingCount !== null && ` · ${m.lastListingCount}`}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 dark:text-slate-500">Not scanned</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {row.lastListingCount !== null ? (
+                <>
+                  <span className="font-medium tabular-nums text-slate-700 dark:text-slate-300">
+                    {row.lastListingCount}
+                  </span>{" "}
+                  listings
+                  {row.lastCheckedAt && ` · ${relativeTime(row.lastCheckedAt)}`}
+                </>
+              ) : (
+                "Not scanned yet"
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={onOpen}
+              className="shrink-0 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
+            >
+              Open &rarr;
+            </button>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 /** 2.9.0 - marko's Parts D, K and L in one place: the scan summary, the
  * result filters, the CSV export, and the listings table itself.
  *
@@ -1468,7 +1762,12 @@ function SavePriceCheckModal({
 export default function PriceChecker() {
   const location = useLocation();
   const toast = useToast();
-  const [events, setEvents] = useState<EventWithStats[]>([]);
+  // 2.10.0: the overview list replaced the dropdown, so the page loads one
+  // aggregated row per upcoming event instead of a bare event list. Kept as
+  // its own state (not derived from `summary`) because it describes EVERY
+  // event, while `summary` only ever describes the one that is open.
+  const [overview, setOverview] = useState<PriceCheckerEventOverview[]>([]);
+  const [overviewLoading, setOverviewLoading] = useState(true);
   const [eventId, setEventId] = useState<number | "">("");
   const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1507,10 +1806,15 @@ export default function PriceChecker() {
     // stop showing up here, no manual untracking needed. Reuses the exact
     // same `status` field/value Events.tsx's own Upcoming/Completed tabs
     // already use (2.0.59) rather than inventing a date-based rule.
+    // One call fills the whole overview. The `status === "upcoming"` rule
+    // from 2.2.2 still applies - it just lives in SQL now (see
+    // `list_price_checker_overview_impl`) rather than being filtered here.
+    // This reads existing rows only: no scan, no marketplace request.
     api
-      .listEvents()
-      .then((all) => setEvents(all.filter((ev) => ev.status === "upcoming")))
-      .catch((e) => toast.error(errMsg(e)));
+      .listPriceCheckerOverview()
+      .then(setOverview)
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setOverviewLoading(false));
     // Mirrors Orders.tsx's own presetEventId pattern - EventDetail's "Check
     // prices" button navigates here with the event already chosen, so marko
     // never has to find it again in the dropdown.
@@ -1789,25 +2093,21 @@ export default function PriceChecker() {
     <div>
       <PageHeader title="Price Checker" subtitle="Compare your unsold inventory against Vivid Seats, Ticombo and Viagogo." />
 
-      <Card className="mb-6 max-w-md p-4">
-        <Field label="Event">
-          <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">Select an event...</option>
-            {events.map((ev) => (
-              <option key={ev.id} value={ev.id}>
-                {ev.name} {ev.eventDate ? `(${ev.eventDate})` : ""}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      </Card>
+      {/* 2.10.0: with the dropdown gone, this is the way back to the list -
+          the page is now "overview, then one event", so leaving an event has
+          to be an explicit control rather than re-picking a blank option. */}
+      {eventId !== "" && (
+        <button
+          type="button"
+          onClick={() => setEventId("")}
+          className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+        >
+          <IconArrowLeft className="h-3.5 w-3.5" /> All events
+        </button>
+      )}
 
       {eventId === "" ? (
-        <EmptyState
-          icon={<IconTag className="h-8 w-8" />}
-          title="Pick an event to check its prices"
-          description="Save each marketplace's listings link, then record what you see there to compare it against your own inventory."
-        />
+        <EventOverviewList rows={overview} loading={overviewLoading} onOpen={setEventId} />
       ) : loading || !summary ? (
         <LoadingBlock />
       ) : (

@@ -56,6 +56,7 @@ import type {
   Platform,
   PriceCheck,
   PriceCheckInput,
+  PriceCheckerEventOverview,
   PriceCheckerSummary,
   Pull,
   PullEditInput,
@@ -582,6 +583,10 @@ export const api = {
   savePriceCheck: (input: PriceCheckInput) => invoke<PriceCheck>("save_price_check", { input }),
   /** The whole Price Checker page for one event (every marketplace's link + full history, marko's own unsold-inventory figures, and the derived market comparison) in a single round trip. */
   getPriceCheckerSummary: (eventId: number) => invoke<PriceCheckerSummary>("get_price_checker_summary", { eventId }),
+  /** 2.10.0: one row per upcoming event for the Price Checker overview list -
+   * link status, last check and listing count per marketplace. Read-only
+   * aggregation; it never triggers a scan or a marketplace request. */
+  listPriceCheckerOverview: () => invoke<PriceCheckerEventOverview[]>("list_price_checker_overview"),
   // Visible Scanner (2.1.9) - marko's own full rewrite of price-check
   // automation: a NORMAL, VISIBLE window marko scrolls himself, scanned
   // on-demand - see commands/price_checker_scanner.rs's module doc comment

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.9.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.10.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -210,6 +210,18 @@ plus one more: the injected browser script could not be executed here at all
 sandbox - so every DOM-level fix is reasoned from the code and needs
 confirming against a real listings page.**
 
+**2.10.0** replaces Price Checker's single "Select an event..." dropdown with
+an event overview: every upcoming event as a dense card showing its
+per-marketplace link status, that marketplace's last check and listing count,
+plus multi-select, local search and four quick filters. One new read-only
+command (`list_price_checker_overview`) answers the whole list in four flat
+queries; it writes nothing and triggers no scan or marketplace request. **UX
+only** - scanner, parser, readers, market analysis and history are untouched.
+**No schema change, no migration (next new one is still 027), no new
+dependency.** There is deliberately no "Scan failed" state: a failed scan is
+never persisted in this app. See "Current focus" below and
+`PROTECTED_AREAS.md`'s new "2.10.0" entry. Same build caveat as 2.6.0-2.9.0.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -355,6 +367,47 @@ confirming against a real listings page.**
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.10.0 - Price Checker event overview replaces the dropdown.** marko's own
+request: see every relevant event at once, then pick one (or several), instead
+of hunting through a `<select>`.
+
+- **The list, and what is on a card.** Every UPCOMING event gets a dense card:
+  name, date, venue/city, one row per marketplace (Linked / No link, plus that
+  marketplace's own last check and listing count), and an event-level line
+  with the newest listing count across all marketplaces or "Not scanned yet".
+  Checkbox per card, "Select all" (scoped to the currently visible rows),
+  "Clear selection", a "Selected: N events" bar, local search over
+  name/venue/city, and four quick filters.
+- **One read-only command behind it.** `list_price_checker_overview` answers
+  the whole list in four flat queries and assembles them in memory - it does
+  NOT call `get_price_checker_summary_impl` per event, which would be N round
+  trips for data the list discards. It writes nothing and makes no marketplace
+  request: opening the page costs one database read.
+- **Two rules deliberately mirrored, not reinvented.** Upcoming-only is the
+  same rule PriceChecker.tsx applied client-side from 2.2.2, moved into SQL.
+  The marketplace set uses the same predicate `get_price_checker_summary_impl`
+  already applies (active always; retired only where this event really has a
+  link or check).
+- **No "Scan failed" state, on purpose.** `price_checks` has no status column
+  and a row only lands there via the explicit review-then-save step, so every
+  stored check succeeded by construction; the scanner's own error states are
+  in-memory only. A "Scan failed" badge would be inventing data - the same
+  refusal as payouts/payments on the Calendar. There is a test guarding it.
+- **"Check selected" is not a batch runner.** The scanner opens a real visible
+  browser window marko drives himself, so it opens the FIRST selected event's
+  flow and keeps the selection - the rest are one click each. No queue, no
+  parallel sessions, no automation.
+- **An "All events" back link** was added, since the dropdown that used to be
+  the way back is gone.
+- **Judgment calls, none asked about directly**: dropping the "Scan failed"
+  filter entirely rather than showing an always-empty one; scoping "Select
+  all" to visible rows; showing relative times ("2h ago") on cards with the
+  exact timestamp as a tooltip; and a two-column card grid on wide screens.
+- **NOT verified by a build**, same as 2.6.0-2.9.0. 8 new Rust unit tests (42
+  in `price_checker.rs`), none executed. Statically verified: bracket balance,
+  all `#[test]` attributes attached, every TS import resolving, and no
+  mixed-type array literal of the kind that broke the 2.9.0 build.
 
 **2.9.0 - Price Checker accuracy + scan report, filters, export.** marko
 reported wrong prices coming out of the Visible Scanner. His own instruction

@@ -1614,6 +1614,42 @@ export interface MarketplacePriceView {
   history: PriceCheck[];
 }
 
+/** 2.10.0: one row per event for Price Checker's event overview list, which
+ * replaced the single "Select an event..." dropdown.
+ *
+ * Not a new event model - every field is either a column already on `events`
+ * or a fact derived from the `event_marketplace_links`/`price_checks` rows
+ * Price Checker already owns. One call fills the whole list. */
+export interface PriceCheckerEventOverview {
+  eventId: number;
+  eventName: string;
+  eventDate: string | null;
+  venue: string | null;
+  city: string | null;
+  marketplaces: PriceCheckerMarketplaceStatus[];
+  /** Newest check across every marketplace of this event, and the listing
+   * count from that same check. `null` when never checked - never 0, which
+   * would read as "checked, found nothing". */
+  lastCheckedAt: string | null;
+  lastListingCount: number | null;
+  linkedCount: number;
+  checkedCount: number;
+}
+
+/** One marketplace's state for one event.
+ *
+ * There is deliberately no "failed" variant: a failed scan is never persisted
+ * anywhere in this app (`price_checks` has no status column, and a row only
+ * gets there through the explicit review-then-save step). The three real
+ * states are: no link, linked but never checked, and checked. */
+export interface PriceCheckerMarketplaceStatus {
+  marketplaceId: number;
+  marketplaceName: string;
+  linked: boolean;
+  lastCheckedAt: string | null;
+  lastListingCount: number | null;
+}
+
 /** The whole Price Checker page for one event, in a single round trip. See
  * commands::price_checker::get_price_checker_summary_impl's own doc comment
  * (Rust) for exactly how each field below is computed and why. */
