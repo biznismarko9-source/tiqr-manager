@@ -21,6 +21,27 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.11.1 - An unset GitHub secret is an EMPTY env var, not an absent one
+
+- **Never wire an optional signing variable into a workflow "ready for later".**
+  `env: APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}` with no such
+  secret does NOT leave the variable unset - it defines it as an empty string.
+  The Tauri macOS bundler checks only whether `APPLE_CERTIFICATE` is set, so an
+  empty one makes it try to sign, run `security import` on nothing, and fail
+  the entire build with `failed to import keychain certificate`. This broke
+  2.11.0's macOS leg after the Rust build had already succeeded. The six
+  `APPLE_*` lines now live as a commented block in `release.yml`; uncomment
+  them **only** in the same change that adds the secrets.
+- **The same trap applies to any future optional credential** whose consumer
+  branches on presence rather than on emptiness. The app's own build-time
+  secrets (`ANTHROPIC_API_KEY`, the Google ones) are safe here because
+  `build.rs` treats empty as absent - but that is their choice, not a
+  guarantee the next tool will make.
+- **`universal-apple-darwin` is confirmed working on CI** (built in 3m36s on
+  `macos-latest` during the 2.11.0 run, before signing aborted it). If a
+  future macOS build fails, signing is the first thing to rule out, not the
+  target.
+
 ## 2.11.0 - Release pipeline: macOS added, matrix serialised, manifest verified
 
 - **`.github/workflows/release.yml` and `release.ps1`'s workflow guard must

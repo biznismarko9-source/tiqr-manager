@@ -247,10 +247,24 @@ jobs:
         # "installer still says the old version" symptom this step prevents.
         # continue-on-error covers the normal case where this is the first
         # release ever published under this tag.
-        run: gh release delete "${{ github.ref_name }}" --yes --repo "$GITHUB_REPOSITORY"
+        # 2.11.1: check first instead of letting `gh release delete` fail.
+        # With no release to delete (the normal case on a first attempt) the
+        # bare delete exits non-zero, which `continue-on-error` swallowed but
+        # still surfaced as a red "prepare-release failed" annotation on an
+        # otherwise healthy run - confusing enough to look like the cause of a
+        # later failure. continue-on-error stays as a belt-and-braces.
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Deleting existing release $TAG so its assets cannot survive into this run."
+            gh release delete "$TAG" --yes --repo "$GITHUB_REPOSITORY"
+          else
+            echo "No existing release for $TAG - nothing to delete."
+          fi
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
 
   release:
     needs: prepare-release
@@ -307,19 +321,28 @@ jobs:
           # will refuse them - see RELEASE.md.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing + notarization. ALL OPTIONAL and currently
-          # unset: with none of them present the .dmg is simply unsigned, which
-          # builds and installs fine but shows Gatekeeper's "unidentified
-          # developer" warning on first open. Nothing here invents a
-          # credential - these are the exact variable names the Tauri CLI
-          # reads, wired up so that adding the secrets is the only step left.
-          # See RELEASE.md for what each one is.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS code signing + notarization is NOT configured, and the six
+          # APPLE_* variables are deliberately NOT listed here.
+          #
+          # 2.11.1: listing them was a real bug in 2.11.0 and broke the whole
+          # macOS build. A missing GitHub secret still DEFINES the environment
+          # variable, as an empty string - and the Tauri bundler treats
+          # "APPLE_CERTIFICATE is set" as "sign this", so it ran
+          # `security import` with an empty certificate and failed with
+          # "failed to import keychain certificate". The Rust build itself had
+          # already succeeded; only the signing step blew up.
+          #
+          # To turn signing on once a paid Apple Developer account exists: add
+          # the secrets, then paste these six lines back in. Adding them
+          # WITHOUT the secrets breaks the build again - that is the whole
+          # lesson here.
+          #
+          #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          #   APPLE_ID: ${{ secrets.APPLE_ID }}
+          #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}

@@ -114,11 +114,21 @@ the app reports that feature "isn't available in this build".
 | `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
 | `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | notarization (app-specific password) |
 
-The workflow already passes all six through. Until they exist the `.dmg`
-builds and installs fine but is **unsigned**, so macOS shows an
-"unidentified developer" warning and the user has to right-click → Open the
-first time. Removing that warning requires a paid Apple Developer account —
-there is no way around it, and nothing here fakes one.
+These six are **deliberately NOT set in the workflow.** They sit in
+`release.yml` as a commented block next to the build step.
+
+> **Do not uncomment them until the secrets actually exist.** A missing GitHub
+> secret still *defines* the environment variable as an empty string, and the
+> Tauri bundler reads "`APPLE_CERTIFICATE` is set" as "sign this" — it then
+> runs `security import` on an empty certificate and the whole macOS build
+> fails with `failed to import keychain certificate`. That is exactly what
+> broke the 2.11.0 macOS build.
+
+Until the secrets exist the `.dmg` builds and installs fine but is
+**unsigned**, so macOS shows an "unidentified developer" warning and the user
+has to right-click → Open the first time. Removing that warning requires a
+paid Apple Developer account — there is no way around it, and nothing here
+fakes one.
 
 ### Windows code signing — **not configured today**
 

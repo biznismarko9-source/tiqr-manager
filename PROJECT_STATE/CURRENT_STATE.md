@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.11.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.11.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -237,6 +237,16 @@ update pill, Settings current/latest/last-checked rows, a 6-hour re-check, and
 `RELEASE.md`. **Windows and macOS CODE signing remain unconfigured** (paid
 external credentials); updater signing is configured. See "Current focus"
 below and `PROTECTED_AREAS.md`'s new "2.11.0" entry.
+
+**2.11.1** fixes the macOS build 2.11.0 broke. 2.11.0's Windows release
+published fine; its macOS leg built the universal binary successfully (3m36s)
+and then failed while codesigning. Cause: 2.11.0 wired the six `APPLE_*`
+variables into the release step in advance, and **an unset GitHub secret still
+defines the variable as an empty string** - which the Tauri bundler reads as
+"sign this". They are removed and left commented, with a warning.
+`prepare-release` also no longer paints a red annotation when there is simply
+no old release to delete. See `PROTECTED_AREAS.md`'s new "2.11.1" entry -
+that empty-vs-unset trap is worth not relearning.
 
 ## Stack / layout
 

@@ -16,6 +16,30 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.11.1 - Fix the macOS build broken by 2.11.0
+
+2.11.0 published a working **Windows** release, but its macOS leg failed.
+
+1. **Fixed**: the six `APPLE_*` signing variables are removed from the release
+   build step. 2.11.0 wired them in "ready for the day credentials exist" -
+   but **a missing GitHub secret still defines the environment variable as an
+   empty string**, and the Tauri bundler treats `APPLE_CERTIFICATE` being *set*
+   as a request to sign. It ran `security import` with an empty certificate and
+   aborted with "failed to import keychain certificate". They are now a
+   commented block carrying an explicit warning that pasting them back without
+   the matching secrets breaks the build again.
+2. **Fixed**: `prepare-release` now checks whether a release exists before
+   deleting it, instead of letting `gh release delete` exit non-zero on the
+   normal first-attempt case and paint a red "failed" annotation on an
+   otherwise healthy run.
+
+**What the failed run actually proved**: the Rust `universal-apple-darwin`
+build succeeded in 3m36s and the `.app` was already bundling. The universal
+target works on CI - signing was the only thing that ever failed.
+
+Nothing else changed: no application code, no business logic, no schema, no
+migration (next new one is still 027), no dependency.
+
 ## 2.11.0 - macOS builds, verified updater manifest, in-app update centre
 
 marko asked for a professional installer + auto-updater + release pipeline.
