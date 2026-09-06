@@ -25,9 +25,12 @@ import {
   StatCard,
 } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
+import { getLastUpdateCheck } from "../lib/updater";
 import {
   IconAlertTriangle,
   IconBarChart,
+  IconCheck,
+  IconDownload,
   IconBell,
   IconCalendarDays,
   IconPackage,
@@ -280,6 +283,7 @@ export default function Dashboard() {
                 najdolezitejsie sa ukazu ako nejaka notification alebo
                 warning". Rendered only once real data has loaded (never a
                 bell with stale/fabricated counts). */}
+            <UpdateStatusPill />
             {data && <AlertBell data={data} onShowUpcoming={() => setTab("activity")} />}
           </>
         }
@@ -989,6 +993,55 @@ function EmptyRow({ text }: { text: string }) {
  * default. It only escalates to red once the soonest upcoming event is due
  * today or overdue - same `daysUntil`/threshold `UpcomingEventRow` already
  * uses for its own amber-vs-red split, so the two never disagree either. */
+/** 2.11.0 - marko's "very small update status" on the Dashboard.
+ *
+ * Deliberately does NOT run its own check and does NOT install anything: it
+ * reads whatever the launch-time check in Layout.tsx already found
+ * (`getLastUpdateCheck()`, an in-memory read) and, when there is an update,
+ * links to Settings -> Software, which is the ONE place the download/install
+ * flow and its full-screen UpdateOverlay live. Building a second install path
+ * here would mean two updater UIs with two progress states - exactly what
+ * marko asked not to have. */
+function UpdateStatusPill() {
+  const [{ at, update }, setState] = useState(getLastUpdateCheck);
+
+  // The launch check usually finishes after the Dashboard has already
+  // rendered, so re-read a few times early instead of leaving a stale
+  // "not checked yet". Stops on its own - this never polls the network, it
+  // only re-reads a local variable.
+  useEffect(() => {
+    let ticks = 0;
+    const id = setInterval(() => {
+      setState(getLastUpdateCheck());
+      if (++ticks >= 10) clearInterval(id);
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (at === null) return null;
+
+  if (!update) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500"
+        title={`Last checked ${new Date(at).toLocaleString()}`}
+      >
+        <IconCheck className="h-3.5 w-3.5" /> Up to date
+      </span>
+    );
+  }
+
+  return (
+    <Link
+      to="/settings/software"
+      className="inline-flex items-center gap-1.5 rounded-lg bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200 transition hover:bg-brand-100 dark:bg-brand-500/10 dark:text-brand-300 dark:ring-brand-500/25 dark:hover:bg-brand-500/20"
+    >
+      <IconDownload className="h-3.5 w-3.5" />
+      Update to v{update.version}
+    </Link>
+  );
+}
+
 function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcoming: () => void }) {
   const { alerts } = data;
   const [open, setOpen] = useState(false);

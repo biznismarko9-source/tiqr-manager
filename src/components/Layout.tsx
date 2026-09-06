@@ -18,7 +18,7 @@ import {
   IconUsers,
   IconWallet,
 } from "./icons";
-import { checkForUpdate } from "../lib/updater";
+import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
@@ -155,11 +155,23 @@ export default function Layout() {
     // surfaces an error - if it's offline or GitHub is unreachable, the
     // app just carries on as a fully offline tool. Nothing downloads until
     // the user explicitly approves it from Settings.
-    checkForUpdate()
-      .then((update) => {
-        if (update) toast.info(`TIQR Manager ${update.version} is available - open Settings to install it.`);
-      })
-      .catch(() => {});
+    // 2.11.0: the same one-shot check as before, plus a slow repeat for the
+    // rare session that stays open for days. UPDATE_CHECK_INTERVAL_MS is 6
+    // hours - marko asked explicitly for no aggressive polling, and a desktop
+    // app that gets opened and closed the same day will still only ever check
+    // once. Failures stay silent here (offline is normal for this app); the
+    // only place a check failure is ever surfaced is Settings, where the user
+    // asked for it.
+    const runCheck = () => {
+      checkForUpdate()
+        .then((update) => {
+          if (update) toast.info(`TIQR Manager ${update.version} is available - open Settings to install it.`);
+        })
+        .catch(() => {});
+    };
+    runCheck();
+    const interval = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

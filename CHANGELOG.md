@@ -16,6 +16,55 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.11.0 - macOS builds, verified updater manifest, in-app update centre
+
+marko asked for a professional installer + auto-updater + release pipeline.
+Most of it already existed and was kept; the real gap was macOS. **No business
+logic change, no schema change, no migration (next new one is still 027), no
+new dependency, no new cloud service, no update server.**
+
+1. **Added**: macOS builds. `.github/workflows/build-windows.yml` is renamed
+   to `release.yml` and now builds **both** platforms - the Windows NSIS
+   `.exe` and a **universal** macOS `.dmg` (Apple Silicon + Intel from one
+   download). `release.ps1`'s own "did the workflow survive the mirror" guard
+   was renamed in the same change - those two must always agree.
+2. **Fixed**: the "delete stale GitHub release" step moved into its own job
+   that runs **before** the build matrix. With a matrix, the second runner
+   would otherwise delete the release the first one had just published.
+3. **Changed**: the release matrix runs one platform at a time
+   (`max-parallel: 1`) - both legs publish to the same release and both
+   rewrite `latest.json`, so serialising them removes the race.
+4. **Added**: a `verify-release` job asserting the finished release really has
+   an `.exe`, a `.dmg` and a `latest.json`, that the manifest covers both
+   platform families, and that every entry has a non-empty signature and url.
+   A silently-wrong updater manifest is the failure nobody notices until users
+   stop getting updates.
+5. **Added**: a very small update status on the Dashboard. It reads the
+   launch-time check result and links to Settings → Software; it does not run
+   its own check and does not install anything, so there is still exactly one
+   updater UI and one progress state.
+6. **Added**: Settings → Software now shows Current version / Latest version /
+   Last checked alongside the existing check-and-install flow and release
+   notes.
+7. **Changed**: the launch-time update check now also repeats every 6 hours
+   for sessions that stay open - deliberately slow, no polling. Manual "Check
+   for updates" is unaffected.
+8. **Added**: `RELEASE.md` - the release process, every repository secret and
+   what it does, the artifact list, and both the developer and user
+   checklists. No secret values in it.
+
+**Signing, stated honestly:** updater signing is configured and is what makes
+in-app updates secure. **Windows code signing and macOS code signing/
+notarization are NOT configured** - both need paid external credentials. The
+workflow passes all six Apple variables through so adding the secrets is the
+only remaining step, and nothing here fakes a certificate. Until then the
+`.exe` shows a SmartScreen warning and the `.dmg` needs right-click → Open on
+first launch.
+
+**Not verified by a build.** No Node.js and no Rust toolchain on the machine
+this was implemented on, and no macOS build has ever run - the first tagged
+run of this workflow is itself the test.
+
 ## 2.10.0 - Price Checker event overview replaces the event dropdown
 
 marko's own request: see every relevant event at once instead of picking one

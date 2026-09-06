@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.10.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.11.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -222,6 +222,22 @@ dependency.** There is deliberately no "Scan failed" state: a failed scan is
 never persisted in this app. See "Current focus" below and
 `PROTECTED_AREAS.md`'s new "2.10.0" entry. Same build caveat as 2.6.0-2.9.0.
 
+**2.11.0** is a release/distribution infrastructure round - no business logic,
+no schema, no migration, no new dependency, no new cloud service. Most of what
+marko asked for already existed (Tauri updater plugin with a real public key,
+GitHub Releases `latest.json` endpoint, `createUpdaterArtifacts`, per-user NSIS
+installer with the WebView2 bootstrapper, `tauri-action` on a `v*` tag,
+`release.ps1`/`1-CLICK-UPDATE.bat`, `UpdateOverlay`, the Settings software
+section) and was kept. **The real gap was macOS**: the workflow was
+Windows-only and no `.dmg` had ever been built. `build-windows.yml` is now
+`release.yml` and builds both platforms (universal `.dmg`), the stale-release
+delete moved to its own pre-matrix job, the matrix is serialised, and a new
+`verify-release` job checks the finished `latest.json`. Plus a Dashboard
+update pill, Settings current/latest/last-checked rows, a 6-hour re-check, and
+`RELEASE.md`. **Windows and macOS CODE signing remain unconfigured** (paid
+external credentials); updater signing is configured. See "Current focus"
+below and `PROTECTED_AREAS.md`'s new "2.11.0" entry.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -367,6 +383,48 @@ never persisted in this app. See "Current focus" below and
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.11.0 - Release pipeline: macOS builds, verified updater manifest, in-app
+update centre.** marko asked for a professional installer + auto-updater +
+release pipeline. Phase 0 (mapping what already existed) is most of the story.
+
+- **What already existed and was kept**: the Tauri updater plugin on both
+  sides, a real `plugins.updater.pubkey`, the GitHub Releases `latest.json`
+  endpoint, `createUpdaterArtifacts: true`, the per-user NSIS installer with
+  `webviewInstallMode: downloadBootstrapper`, the two-path GitHub Actions
+  workflow (manual unsigned test build; signed release on a `v*` tag),
+  `release.ps1` + `1-CLICK-UPDATE.bat`, `lib/updater.ts`, `UpdateOverlay.tsx`
+  and Settings' Software section. None of that was rebuilt.
+- **The actual gap: macOS.** The workflow was Windows-only. It is renamed
+  `release.yml` and now builds a universal `.dmg` (Apple Silicon + Intel, one
+  download) alongside the `.exe`. `release.ps1`'s workflow guard was renamed
+  in the same change - see `PROTECTED_AREAS.md` for why those must agree.
+- **Three structural fixes the matrix exposed**: the stale-release delete now
+  runs in its own `prepare-release` job BEFORE the matrix (otherwise the
+  second runner deletes the release the first just published); the matrix runs
+  `max-parallel: 1` (both legs rewrite `latest.json`); and a new
+  `verify-release` job asserts the release really has an `.exe`, a `.dmg` and
+  a `latest.json` covering both platform families with a signature and url on
+  every entry.
+- **In the app**: a small Dashboard update pill that reads the launch-check
+  result and LINKS to Settings rather than installing anything itself (one
+  updater UI, not two); Settings gained Current/Latest/Last checked; and the
+  launch check now repeats every 6 hours - deliberately slow, no polling.
+- **Signing, stated honestly**: updater signing is configured and is what
+  makes an update safe to apply. **Windows code signing and Apple Developer ID
+  / notarization are NOT configured** - both need paid external credentials.
+  The workflow passes all six Apple variables through, so adding the secrets
+  is the only remaining step, and nothing fakes a certificate. Until then the
+  `.exe` shows SmartScreen and the `.dmg` needs right-click → Open once.
+- **`RELEASE.md`** documents the release process, every secret, the artifact
+  list and both checklists - with no secret values in it.
+- **NOT verified by a build, and this round more than most**: no Node.js or
+  Rust toolchain here, and **no macOS build has ever run** - the first tagged
+  run of this workflow is itself the test. What WAS verified: the workflow
+  YAML parses and its job graph is correct (`prepare-release` → `release`
+  matrix → `verify-release`), `release.ps1` has zero stale references to the
+  old workflow filename, and every changed TS file balances and resolves its
+  imports.
 
 **2.10.0 - Price Checker event overview replaces the dropdown.** marko's own
 request: see every relevant event at once, then pick one (or several), instead

@@ -20,12 +20,14 @@ free ways to get the actual installer — pick whichever is easier for you.
    **Run workflow** button.
 3. Wait about 10-15 minutes for the run to go green.
 4. Open the finished run and scroll down to **Artifacts** → download
-   **TIQR-Manager-Setup**. Unzip it — inside is `TIQR-Manager-Setup.exe`.
+   **TIQR-Manager-test-Windows** (or **-macOS**). Unzip it — inside is
+   `TIQR-Manager-Windows-Setup.exe` / `TIQR-Manager-Mac.dmg`.
 
 The workflow file is already in this repo at
-`.github/workflows/build-windows.yml`; nothing else needs to be configured. It
-also re-runs automatically on every future push to `main`, so new versions are
-just as easy.
+`.github/workflows/release.yml`; nothing else needs to be configured. As of
+2.11.0 it builds **both** Windows and macOS, and the button above only ever
+produces unsigned test builds — real, signed releases come from pushing a
+`v*` tag. See `RELEASE.md` for the full release process.
 
 ### Option B — Build directly on a Windows PC
 
@@ -68,6 +70,7 @@ directory, so it survives reinstalls/updates.
 - `src-tauri/` — Rust backend (Tauri commands, SQLite access, migrations)
 - `src-tauri/migrations/` — versioned SQL schema migrations, starting at
   `001_initial_schema.sql`
-- `.github/workflows/build-windows.yml` — CI that produces
-  `TIQR-Manager-Setup.exe`
+- `.github/workflows/release.yml` — CI that builds the Windows `.exe` and the
+  macOS `.dmg`, publishes them to a GitHub Release and verifies the updater
+  manifest (see `RELEASE.md`)
 - `scripts/windows-build.ps1` — local Windows build script (alternative to CI)

@@ -1,5 +1,11 @@
-name: Build Windows Installer
+name: Build & Release
 
+# 2.11.0: this workflow builds BOTH Windows and macOS. It used to be
+# Windows-only (and was named build-windows.yml); the file was renamed to
+# release.yml in the same change, and release.ps1's own "did the workflow file
+# survive the mirror" guard was updated to match - those two must always agree,
+# see that guard's comment for the 2.0.59 incident it exists to prevent.
+#
 # Two ways this fires:
 #
 # 1) Manual test build - Actions tab -> "Build Windows Installer" -> "Run workflow".
@@ -9,9 +15,10 @@ name: Build Windows Installer
 #    main/master do NOT trigger this anymore - only the button does, so an
 #    ordinary "git push" stays quiet and only the tag push below builds anything.
 #
-# 2) Real versioned release - push a tag like "v1.0.1". Builds a SIGNED installer
-#    and publishes it as a GitHub Release, together with the small "latest.json"
-#    file the app checks on startup. This is what existing installs actually see
+# 2) Real versioned release - push a tag like "v1.0.1". Builds a SIGNED
+#    Windows installer AND a macOS .dmg, and publishes both as one GitHub
+#    Release, together with the small "latest.json" file the app checks on
+#    startup. This is what existing installs actually see
 #    when they check for updates, so use this path whenever you want users to be
 #    offered an update.
 #
@@ -107,11 +114,28 @@ on:
 permissions:
   contents: write
 
+# One shared matrix definition would be nice, but GitHub Actions has no YAML
+# anchors - the two matrices below are deliberately identical and must be kept
+# that way. macOS builds a UNIVERSAL binary (one .dmg that runs on both Apple
+# Silicon and Intel) rather than two separate architecture builds, because
+# marko asked for exactly one download per platform.
+
 jobs:
-  # --- Path 1: quick unsigned test build, not tag pushes -------------------
-  build-windows:
+  # --- Path 1: quick unsigned test build, never on tag pushes -------------
+  test-build:
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            label: Windows
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            label: macOS
+    runs-on: ${{ matrix.platform }}
+    name: Test build (${{ matrix.label }})
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -124,6 +148,10 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Apple targets are required for --target universal-apple-darwin;
+          # empty on Windows, where the host target is all that is needed.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -133,7 +161,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app (Windows NSIS installer)
+      - name: Build Tauri app (unsigned)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -153,8 +181,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           tauriScript: npx tauri
+          args: ${{ matrix.args }}
+          # No tagName/releaseId here, so tauri-action only BUILDS - it never
+          # creates a release or touches latest.json. The installer is picked
+          # up and uploaded as a plain workflow artifact below, the same way
+          # this job has always done it (rather than relying on newer
+          # tauri-action inputs this repo has never exercised).
 
-      - name: Locate and rename installer
+      - name: Collect Windows installer
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -Recurse | Select-Object -First 1
@@ -163,21 +198,81 @@ jobs:
             exit 1
           }
           New-Item -ItemType Directory -Force -Path "dist-installer" | Out-Null
-          Copy-Item $installer.FullName "dist-installer/TIQR-Manager-Setup.exe"
+          Copy-Item $installer.FullName "dist-installer/TIQR-Manager-Windows-Setup.exe"
           Write-Host "Found installer: $($installer.FullName)"
           Write-Host "Size: $([math]::Round($installer.Length / 1MB, 1)) MB"
+
+      - name: Collect macOS disk image
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          # Universal builds land under target/universal-apple-darwin/, not
+          # target/release/ - search both so this keeps working if the target
+          # argument ever changes.
+          dmg="$(find src-tauri/target -type f -name '*.dmg' -print -quit)"
+          if [ -z "$dmg" ]; then
+            echo "::error::No .dmg was found under src-tauri/target. Check the build step logs above."
+            exit 1
+          fi
+          mkdir -p dist-installer
+          cp "$dmg" "dist-installer/TIQR-Manager-Mac.dmg"
+          echo "Found disk image: $dmg"
+          ls -lh dist-installer/TIQR-Manager-Mac.dmg
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TIQR-Manager-Setup
-          path: dist-installer/TIQR-Manager-Setup.exe
+          name: TIQR-Manager-test-${{ matrix.label }}
+          path: dist-installer/*
           if-no-files-found: error
 
-  # --- Path 2: signed, versioned release - only on "v*" tag pushes ---------
-  release-windows:
+  # --- Path 2: signed, versioned release - only on "v*" tag pushes --------
+
+  # Deleting the old release has to happen ONCE, before either platform
+  # builds. When this lived inside the build job it was fine with a single
+  # platform, but with a matrix the second runner would delete the release the
+  # first one had just published. Own job, runs first, everything else needs it.
+  prepare-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete any existing GitHub release for this tag
+        # release.ps1 deletes and recreates the git TAG before pushing, which
+        # is what triggers this run - but a GitHub *release* (the page with
+        # the uploaded assets) is a separate object that survives that tag
+        # delete/recreate. If one is already sitting there from an earlier
+        # attempt, the publish step below can end up updating it in place and
+        # keeping its old asset filenames (still showing the old version
+        # number) instead of a clean, freshly-named set - which is exactly the
+        # "installer still says the old version" symptom this step prevents.
+        # continue-on-error covers the normal case where this is the first
+        # release ever published under this tag.
+        run: gh release delete "${{ github.ref_name }}" --yes --repo "$GITHUB_REPOSITORY"
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      # Serialised on purpose. Both legs publish to the SAME release and both
+      # rewrite latest.json; running them one after another removes any race
+      # over creating the release and makes the final manifest deterministic.
+      # A release happens rarely enough that the extra wall-clock time is
+      # irrelevant next to getting the updater manifest right.
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            label: Windows
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            label: macOS
+    runs-on: ${{ matrix.platform }}
+    name: Release (${{ matrix.label }})
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -190,6 +285,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       # No Rust build cache here on purpose (unlike the test-build job above).
       # A cached target/ directory can let stale bundle/packaging output
@@ -201,47 +298,84 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Delete any existing GitHub release for this tag
-        # release.ps1 deletes and recreates the git TAG before pushing, which
-        # is what triggers this run - but a GitHub *release* (the page with
-        # the uploaded .exe/.msi assets) is a separate object that survives
-        # that tag delete/recreate. If one is already sitting there from an
-        # earlier attempt, the publish step below can end up updating it in
-        # place and keeping its old asset filenames (still showing the old
-        # version number) instead of a clean, freshly-named set - which is
-        # exactly the "installer still says the old version" symptom this
-        # step exists to prevent. continue-on-error covers the normal case
-        # where this is the first release ever published under this tag, so
-        # there is nothing yet to delete.
-        run: gh release delete "${{ github.ref_name }}" --yes
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build, sign and publish release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing. Without these the build still succeeds, but the
+          # produced artifacts carry no updater signature and existing installs
+          # will refuse them - see RELEASE.md.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS code signing + notarization. ALL OPTIONAL and currently
+          # unset: with none of them present the .dmg is simply unsigned, which
+          # builds and installs fine but shows Gatekeeper's "unidentified
+          # developer" warning on first open. Nothing here invents a
+          # credential - these are the exact variable names the Tauri CLI
+          # reads, wired up so that adding the secrets is the only step left.
+          # See RELEASE.md for what each one is.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_ID }}
           FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.FIREBASE_GOOGLE_OAUTH_CLIENT_SECRET }}
-          # 2.0.63: optional - automatic event category detection's AI
-          # fallback (ai_categorize.rs) simply stays unconfigured (free
-          # keyword rules still work) until this secret exists.
-          # 2.7.0: the same secret now ALSO gates the AI Import Assistant
-          # (commands/ai_import.rs), which has no free fallback of its own -
-          # without it that panel reports "AI import isn't available in this
-          # build" while the rest of the New Event/Order/Sale forms work
-          # exactly as before.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
+          tauriScript: npx tauri
+          args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: "TIQR Manager ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG or commit history for details."
+          releaseBody: "See CHANGELOG.md for what changed in this version."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
+
+  # --- Path 2b: prove the release is actually usable ----------------------
+  # The updater manifest is the one artifact nobody notices is broken until
+  # users silently stop getting updates. tauri-action rewrites latest.json on
+  # each matrix leg; this asserts the finished manifest really ends up
+  # describing BOTH platforms, and that each platform's installer is present.
+  verify-release:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release artifacts and updater manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "Assets on release $TAG:"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | tee assets.txt
+
+          fail=0
+          grep -qiE '\.exe$'          assets.txt || { echo "::error::no Windows .exe installer on the release"; fail=1; }
+          grep -qiE '\.dmg$'          assets.txt || { echo "::error::no macOS .dmg on the release"; fail=1; }
+          grep -qiE '^latest\.json$'  assets.txt || { echo "::error::no latest.json - the updater has nothing to read"; fail=1; }
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --output latest.json --clobber
+          echo "--- latest.json ---"; cat latest.json; echo
+
+          # Both platform families must be present, and every entry must carry
+          # a real signature and url - an update that downloads and is then
+          # refused for an empty signature is the failure nobody notices until
+          # users quietly stop updating.
+          jq -e '.platforms | keys | any(startswith("windows-"))' latest.json > /dev/null \
+            || { echo "::error::latest.json has no windows-* platform"; fail=1; }
+          jq -e '.platforms | keys | any(startswith("darwin-"))' latest.json > /dev/null \
+            || { echo "::error::latest.json has no darwin-* platform"; fail=1; }
+          jq -e '.platforms | to_entries | all(.value.signature != null and .value.signature != "")' latest.json > /dev/null \
+            || { echo "::error::at least one latest.json platform has an empty signature"; fail=1; }
+          jq -e '.platforms | to_entries | all(.value.url != null and .value.url != "")' latest.json > /dev/null \
+            || { echo "::error::at least one latest.json platform has no download url"; fail=1; }
+
+          echo "platforms in manifest: $(jq -r '.platforms | keys | join(", ")' latest.json)"
+          exit $fail

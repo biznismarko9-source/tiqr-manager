@@ -64,7 +64,7 @@ import {
   IconWallet,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
-import { checkForUpdate, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
+import { checkForUpdate, getLastUpdateCheck, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
@@ -161,6 +161,12 @@ export default function Settings() {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<UpdateProgress | null>(null);
+  // 2.11.0: re-read on every render rather than mirrored into state - the
+  // launch-time check in Layout.tsx can complete while this screen is already
+  // open, and `getLastUpdateCheck()` is a plain in-memory read.
+  const lastCheck = getLastUpdateCheck();
+  const lastCheckedLabel =
+    lastCheck.at === null ? "Not checked yet" : new Date(lastCheck.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
   // 2.0.5: lifted up here (rather than fetched independently inside
   // SheetsConnectionCard too) so a sign-in/sign-out in GoogleSignInCard is
@@ -714,7 +720,37 @@ export default function Settings() {
                 </div>
               )}
               {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
-              {appInfo && <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">TIQR Manager v{appInfo.version}</p>}
+
+              {/* 2.11.0: marko's "Update center" - current / latest / last
+                  checked, all read from state that already exists. `latest`
+                  is only ever a version this app really heard back from
+                  GitHub: with no update available the latest version IS the
+                  current one, and before any check has completed it is shown
+                  as unknown rather than guessed. */}
+              <dl className="mt-4 space-y-1.5 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-500 dark:text-slate-400">Current version</dt>
+                  <dd className="font-medium tabular-nums text-slate-800 dark:text-slate-200">
+                    {appInfo ? `v${appInfo.version}` : "-"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-500 dark:text-slate-400">Latest version</dt>
+                  <dd className="font-medium tabular-nums text-slate-800 dark:text-slate-200">
+                    {available
+                      ? `v${available.version}`
+                      : updateChecked && appInfo
+                        ? `v${appInfo.version}`
+                        : "Not checked yet"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-500 dark:text-slate-400">Last checked</dt>
+                  <dd className="text-slate-800 dark:text-slate-200">
+                    {lastCheckedLabel}
+                  </dd>
+                </div>
+              </dl>
             </Card>
           )}
 

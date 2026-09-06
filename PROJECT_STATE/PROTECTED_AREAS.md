@@ -21,6 +21,52 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.11.0 - Release pipeline: macOS added, matrix serialised, manifest verified
+
+- **`.github/workflows/release.yml` and `release.ps1`'s workflow guard must
+  always name the same file.** The guard exists because of the 2.0.59
+  incident: `robocopy /MIR` makes the clone match this folder exactly, so a
+  workflow file missing from the folder is silently DELETED from the repo, and
+  every later tag push then starts no build at all with no error anywhere. The
+  file was renamed from `build-windows.yml` to `release.yml` in 2.11.0 and the
+  guard was renamed with it. If it is ever renamed again, change both in the
+  same commit.
+- **The "delete stale release" step must stay in its own job that runs before
+  the build matrix.** It used to live inside the (single-platform) build job.
+  With a matrix that is a real bug: the second runner deletes the release the
+  first one just published. `prepare-release` exists for exactly this.
+- **The release matrix must stay `max-parallel: 1`.** Both platform legs
+  publish to the same GitHub Release and both rewrite `latest.json`. Running
+  them concurrently races on creating the release and makes the final manifest
+  order-dependent. A release happens rarely; correctness is worth the extra
+  wall-clock minutes.
+- **`verify-release` is not optional decoration.** The updater manifest is the
+  one artifact whose breakage is invisible - the app just quietly stops
+  offering updates. That job asserts both platform families are in
+  `latest.json` and that every entry has a real signature and url. Do not
+  remove it to speed a release up.
+- **There is exactly ONE updater UI.** The download/install flow and its
+  full-screen `UpdateOverlay` live in Settings → Software. The Dashboard pill
+  reads the already-known result (`getLastUpdateCheck()`, an in-memory read)
+  and LINKS there; it must never grow its own `downloadAndInstall` call, or
+  there would be two progress states for one install.
+- **Update checking must stay slow.** One check shortly after launch plus a
+  6-hour interval (`UPDATE_CHECK_INTERVAL_MS`). No polling, no check on
+  navigation, no check on focus - marko was explicit, and this app is
+  offline-first: a failed check is a normal, silent event everywhere except
+  Settings, where the user asked for it.
+- **Updater signing and code signing are different things, and only one is
+  configured.** `TAURI_SIGNING_PRIVATE_KEY` (updater) is set up and is what
+  makes an update safe to apply; the matching public key ships in
+  `tauri.conf.json` on purpose. Windows code signing and Apple Developer ID /
+  notarization are NOT configured and need paid external credentials. Never
+  substitute a self-signed or test certificate to make this "look" done - it
+  produces the same OS warning while hiding that nothing is really signed.
+- **An update must never touch the database.** It replaces the application
+  only; the SQLite file stays where it is and the new version runs its normal
+  forward-only migrations at startup. Do not add a migration, a reset path, or
+  any data step "for the updater".
+
 ## 2.10.0 - Price Checker event overview (read-only aggregation; no schema change)
 
 - **There is no persisted "scan failed" state, and a badge for one must not be
