@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import AiImportPanel from "../components/AiImportPanel";
+import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
 import { formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
 import {
@@ -36,6 +38,12 @@ const EVENT_TABS: { key: "upcoming" | "completed"; label: string }[] = [
   { key: "upcoming", label: "Upcoming" },
   { key: "completed", label: "Completed" },
 ];
+
+/** 2.7.0: the same three values the Status <Select> in EventFormModal
+ * offers, as a list the AI Import fill can check against - so an extracted
+ * status word that isn't one of them is ignored rather than written into
+ * `EventInput.status`. Keep in sync with that <Select>. */
+const EVENT_STATUS_VALUES: EventStatus[] = ["upcoming", "completed", "cancelled"];
 
 const EMPTY_INPUT: EventInput = {
   name: "",
@@ -641,6 +649,41 @@ export function EventFormModal({
           each other instead of each sitting alone on a full-width row.
           Event date/City and Notes are unchanged. No fields added or
           removed, purely a layout reorder. */}
+      {/* 2.7.0: AI Import Assistant, offered on NEW events only - filling an
+          existing event's fields from a screenshot would overwrite records
+          marko has already curated, which is a different (and unasked-for)
+          feature. It only ever calls setForm below; it cannot save anything,
+          and the Create button/validation underneath are untouched. */}
+      {!initial && (
+        <AiImportPanel
+          kind="event"
+          className="mb-4"
+          onApply={({ fields }) => {
+            setForm((prev) => ({
+              ...prev,
+              name: fields.name ?? prev.name,
+              venue: fields.venue ?? prev.venue,
+              city: fields.city ?? prev.city,
+              country: fields.country ?? prev.country,
+              // A date only lands if it is really YYYY-MM-DD - see
+              // isIsoDate's comment; anything else stays visible in the
+              // review list for marko to fix rather than silently vanishing
+              // into an <input type="date"> that shows nothing.
+              eventDate: isIsoDate(fields.eventDate) ? fields.eventDate : prev.eventDate,
+              // Only ever POINTS AT an existing category. The AI is never
+              // allowed to create a lookup row - that stays the "+ New"
+              // action marko clicks himself.
+              categoryId: matchByName(categories, fields.category)?.id ?? prev.categoryId,
+              // Same rule the prompt states: a status is taken only when it
+              // is one of the app's own three, never inferred.
+              status: EVENT_STATUS_VALUES.includes((fields.status ?? "") as EventStatus)
+                ? (fields.status as EventStatus)
+                : prev.status,
+            }));
+            toast.info("Fields filled in from the image - check them, then Create.");
+          }}
+        />
+      )}
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2">
           <Field label="Event name" required>

@@ -145,6 +145,11 @@ jobs:
           # 2.0.63: optional - automatic event category detection's AI
           # fallback (ai_categorize.rs) simply stays unconfigured (free
           # keyword rules still work) until this secret exists.
+          # 2.7.0: the same secret now ALSO gates the AI Import Assistant
+          # (commands/ai_import.rs), which has no free fallback of its own -
+          # without it that panel reports "AI import isn't available in this
+          # build" while the rest of the New Event/Order/Sale forms work
+          # exactly as before.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           tauriScript: npx tauri
@@ -227,6 +232,11 @@ jobs:
           # 2.0.63: optional - automatic event category detection's AI
           # fallback (ai_categorize.rs) simply stays unconfigured (free
           # keyword rules still work) until this secret exists.
+          # 2.7.0: the same secret now ALSO gates the AI Import Assistant
+          # (commands/ai_import.rs), which has no free fallback of its own -
+          # without it that panel reports "AI import isn't available in this
+          # build" while the rest of the New Event/Order/Sale forms work
+          # exactly as before.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}

@@ -103,6 +103,9 @@ pub fn run() {
             commands::events::delete_event,
             commands::events::bulk_delete_events,
             commands::events::detect_event_categories,
+            // 2.7.0: AI Import Assistant. Read-only and database-free by
+            // construction - see commands/ai_import.rs's module doc comment.
+            commands::ai_import::analyze_import_image,
             commands::orders::list_orders,
             commands::orders::get_order,
             commands::orders::get_order_sales_summary,

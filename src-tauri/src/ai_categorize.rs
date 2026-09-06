@@ -239,7 +239,7 @@ struct AnthropicResponse {
 /// the one piece of "retry on transient failure" that's actually worth unit
 /// testing directly (the HTTP call itself stays in the untested-at-that-
 /// layer bucket, same convention as google_sheets.rs's own calls).
-fn is_retriable_anthropic_status(status: reqwest::StatusCode) -> bool {
+pub(crate) fn is_retriable_anthropic_status(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::REQUEST_TIMEOUT
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()

@@ -21,6 +21,98 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.7.0 - AI Import Assistant (new backend module + new panel; no schema change, no migration, no new dependency)
+
+The first feature in this app where a model's output reaches a create form.
+These are the invariants that keeps safe, and they are easy to erode one
+convenient shortcut at a time.
+
+- **`commands/ai_import.rs` must never touch the database.** It takes no
+  `AppState`, opens no `Connection`, and has no insert/update path - that is
+  not an accident of the current implementation, it is the enforcement of
+  marko's own hard rule ("AI NIKDY nesmie priamo vytvoriť alebo meniť
+  databázový záznam"). Adding a `State<AppState>` parameter to that module,
+  however small the reason, is the thing this entry exists to prevent. If a
+  future feature genuinely needs it, that is a design conversation with marko,
+  not an incremental edit.
+- **Every save still goes through the existing create commands.** The panel's
+  only output is a bag of strings handed to a form's own `setState`. There is
+  no second create path, and `create_event` / `create_order` /
+  `create_sale_batch` and their validation are untouched. Do not "streamline"
+  this by having the panel submit anything.
+- **`temperature` must NOT be sent.** `ai_categorize.rs` sends
+  `temperature: 0.0`, which is correct for the model IT uses; `ai_import.rs`'s
+  model rejects sampling parameters with a 400. Copying that line across - or
+  "making the two callers consistent" - breaks every AI import request. There
+  is a test asserting the field is absent.
+- **`output_config` carries BOTH `format` and `effort` as siblings.** They are
+  not two top-level parameters, and `output_format` is the deprecated spelling
+  of `format`. Both are asserted by tests, because getting either wrong is a
+  400 that only shows up at runtime.
+- **The reply's JSON comes from the first `text` block, not `content[0]`.**
+  The configured model runs with thinking on by default, so a `thinking` block
+  is routinely first and deserializes with an empty `text`. `first_text_block`
+  exists for exactly this; do not simplify it back to an index.
+- **Structured-output schema rules are strict**: every object needs
+  `additionalProperties: false` AND every property listed in `required`;
+  nullability must be `anyOf: [string, null]`, since "absent" isn't available.
+  Add a property to `AiImportTicketGroup` and you must add it to `required`
+  too - there is a test that counts them against each other.
+- **`dragDropEnabled: false` on the main window is load-bearing.** With Tauri's
+  default of `true`, the OS-level handler swallows file drops and no HTML drop
+  event ever reaches the webview, so drag & drop silently stops working with no
+  error anywhere. Nothing in the app uses Tauri's own drag-drop event (checked
+  before flipping it); if something ever does, these two need reconciling
+  rather than one being flipped back.
+- **The Ctrl+V listener must only `preventDefault()` when it actually took an
+  image.** It is a `document`-level listener, so a version that swallowed every
+  paste would break text pasting in every form in the app. `imageFromClipboard`
+  returning null must stay a complete no-op.
+- **The `sale` kind deliberately has no seat/section/row/tier fields.** A sale
+  is recorded against ticket rows that already exist (`SaleInput.ticketId`), so
+  extracted seat text would have nowhere valid to go and would only invite
+  someone to build a path that creates tickets from a screenshot. Adding those
+  fields "for completeness" is the start of that path.
+- **Two ticket groups are two orders.** `OrderInput` carries one
+  section/row/tier/price for the whole order; the panel fills one group at a
+  time and tells marko why. Do not add a merge, and do not invent a multi-group
+  order shape - both would produce tickets whose seating or price no real
+  ticket has.
+- **Extracted lookups may only POINT AT existing rows.** `matchByName` returns
+  null on no match and the field is then left alone. The AI must never create
+  an event category, a platform or any other lookup row.
+- **Cost control is part of the spec, not an optimization.** One analysis per
+  explicit user action; a per-session fingerprint cache (`AiImportSession`) so
+  the same image is never analyzed twice; editing extracted fields never
+  re-calls; retry only from a button; exactly one API call per invocation in
+  Rust with at most one transient retry. Do not add a "re-analyze as you type",
+  an on-open analysis, or any background pass.
+- **`release.ps1`'s `$CommitMsg` must never contain a literal double quote.**
+  Windows PowerShell 5.1 does not escape an embedded `"` when it rebuilds the
+  command line for a native `.exe`, so `git commit -m $CommitMsg` hands git a
+  mangled argument list and git exits non-zero. The script then reports its own
+  generic "git commit failed - see the message above", which points at git and
+  says nothing about the real cause - it cost marko a failed release run on
+  2.7.0. Every earlier message happened to be quote-free by luck (2.5.2's was
+  5,115 characters and worked fine), so length is NOT the problem and never
+  was. There is now an explicit guard immediately before the commit that throws
+  with a real explanation; do not remove it, and do not "fix" a future message
+  by escaping the quotes as `""` - that is exactly the form that fails. Use
+  single quotes or rephrase.
+- **2.7.0 shipped WITHOUT a build, and that includes its tests.** Same
+  situation as 2.6.0 but with more at stake: this round added a new Rust module
+  with 28 unit tests that have never been executed, plus new IPC types on both
+  sides of the boundary. `cargo test --lib`, `cargo check --lib`, `npx tsc -b`
+  and `npm run build` must be run before this tag is published, and
+  `Cargo.lock`/`package-lock.json` regenerated. If anything here misbehaves,
+  that is the first thing to suspect.
+- **The feature is gated on the `ANTHROPIC_API_KEY` GitHub Actions secret**,
+  which before 2.7.0 only gated event-category detection (where being
+  unconfigured was invisible because free keyword rules still worked). AI
+  import has no free fallback: without the secret its panel says "AI import
+  isn't available in this build". That is a deliberate, honest dead end rather
+  than a degraded guess.
+
 ## 2.6.0 - Complete visual redesign (shared design layer; no backend, no schema, no logic change)
 
 The app's whole look was rebuilt this version. These are the traps that

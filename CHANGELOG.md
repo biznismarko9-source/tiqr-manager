@@ -16,6 +16,72 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.7.0 - AI Import Assistant (screenshot -> pre-filled form, never straight to the database)
+
+marko's own request: drop, paste (Ctrl+V) or upload a screenshot into the New
+Event, New Order or New Sale form and have Claude read the structured data off
+it. **No schema change, no migration (the next new one is still 027), no new
+dependency.**
+
+The rule the whole feature is built around, in his words: "AI NIKDY nesmie
+priamo vytvoriť alebo meniť databázový záznam." The flow is image -> Claude ->
+structured result -> review -> user confirms -> the EXISTING create form -> the
+EXISTING create command -> DB.
+
+1. **Added**: `src-tauri/src/commands/ai_import.rs` - one command,
+   `analyze_import_image`. It takes no `AppState`, opens no `Connection` and
+   has no write path of any kind, so it cannot create or change a record even
+   by mistake. Reuses `ai_categorize.rs`'s build-time embedded
+   `ANTHROPIC_API_KEY` (the key never reaches the frontend) and its
+   retry-once-on-a-transient-status policy.
+2. **Added**: a strict per-kind JSON schema (`output_config.format`). Every
+   extracted value is a plain string or `null`, each carries a
+   `high`/`medium`/`low` confidence, and a field that isn't on the image comes
+   back `null` rather than being filled in. `sanitize_result` then drops any
+   field name the form has no slot for, keeps only the first of a duplicate,
+   and collapses blank values to `null`.
+3. **Added**: multiple ticket groups are returned separately and never merged.
+   Because `OrderInput` carries one section/row/tier/price per order, the panel
+   fills one group at a time and says so, instead of inventing a multi-group
+   order shape the backend has never had.
+4. **Added**: `src/components/AiImportPanel.tsx` - one compact shared panel,
+   embedded in all three forms. Not a new page, route, tab or sidebar.
+5. **Added**: `src/lib/aiImport.ts` - image validation, downscale to 1568px
+   (only when needed, so a normal screenshot is sent untouched), an FNV-1a
+   fingerprint, clipboard/drop extraction, an ISO-date guard and a lookup
+   matcher.
+6. **Changed**: `dragDropEnabled: false` on the main window
+   (`src-tauri/tauri.conf.json`) so HTML drop events reach the webview -
+   Tauri's default of `true` swallows them. Nothing in the app used Tauri's own
+   drag-drop event.
+7. **Cost control**: one analysis per explicit user action; a per-session image
+   fingerprint cache so the same screenshot is never analyzed twice; editing an
+   extracted field never re-calls; retry only on a click; no background or
+   timed request anywhere.
+8. **Not changed**: refund/resell, `batch_id`, money/integer cents,
+   Orders/Tickets/Sales/Listings/Finance/Fulfillment logic, Price Checker,
+   every existing create command and every existing validation rule. AI
+   extraction cannot bypass validation - the same commands still run at save
+   time on values the user has seen and confirmed.
+
+9. **Fixed (same version, after the first release run failed)**:
+   `release.ps1`'s `$CommitMsg` had literal double quotes in it, which Windows
+   PowerShell 5.1 cannot pass to `git.exe` intact - `git commit` exited
+   non-zero and the script stopped with "git commit failed". The quotes are
+   gone and there is now a guard right before the commit that catches this
+   with a real explanation instead of a git error. See `PROTECTED_AREAS.md`'s
+   "2.7.0" entry.
+
+**Needs the `ANTHROPIC_API_KEY` GitHub Actions secret** (already wired into
+both build paths). Without it the panel reports "AI import isn't available in
+this build" and nothing else changes.
+
+**Not verified by a build.** Implemented on a machine with no Node.js and no
+Rust toolchain, so `cargo test --lib`, `cargo check --lib`, `npx tsc -b` and
+`npm run build` could NOT be run - marko chose to proceed on static review.
+The 28 new Rust unit tests are written but have never been executed. Run all
+four before publishing the tag, and regenerate `Cargo.lock`/`package-lock.json`.
+
 ## 2.6.0 - Complete visual redesign (UI/UX only)
 
 marko's own task: make TIQR Manager look and feel like a modern, premium

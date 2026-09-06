@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.6.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.7.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -163,6 +163,22 @@ with no Node.js and no Rust toolchain, so `npx tsc -b`, `npm run build` and
 `cargo check --lib` were NOT run** - marko chose to proceed on static review
 rather than install a toolchain. Run all three before publishing the tag.
 
+**2.7.0** adds the **AI Import Assistant** - marko's own request. Drop, paste
+(Ctrl+V) or upload a screenshot into the New Event, New Order or New Sale form
+and Claude reads structured candidate values off it, which then PRE-FILL that
+form's existing inputs. **No schema change, no migration (the next new one is
+still 027), no new dependency.** The rule the whole thing is built around, in
+his words: "AI NIKDY nesmie priamo vytvoriť alebo meniť databázový záznam" -
+so the new backend module has no database access at all, and everything still
+saves through the same create commands and the same validation as before. New
+`commands/ai_import.rs` (one command), new `components/AiImportPanel.tsx` and
+`lib/aiImport.ts`. Needs the `ANTHROPIC_API_KEY` GitHub Actions secret, which
+until now only gated event-category detection. See "Current focus" below and
+`PROTECTED_AREAS.md`'s new "2.7.0" entry. **Same caveat as 2.6.0: no Node.js
+and no Rust toolchain on the machine this was built on, so `cargo test --lib`,
+`cargo check --lib`, `npx tsc -b` and `npm run build` were NOT run** - and this
+time that includes 28 new, never-executed Rust unit tests.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -194,6 +210,11 @@ rather than install a toolchain. Run all three before publishing the tag.
   below, not duplicated), Welcome (auth), PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
+  **AI Import Assistant (2.7.0)**: `components/AiImportPanel.tsx` (one shared
+  panel, embedded in the New Event/Order/Sale forms) + `lib/aiImport.ts` (image
+  prep, clipboard/drop extraction, the per-session duplicate guard). Backed by
+  ONE backend command, `commands/ai_import.rs::analyze_import_image`, which is
+  database-free by construction - see "Current focus" below.
   **Design layer (2.6.0)**: the app's entire visual language lives in four
   files and nowhere else - `tailwind.config.js` (the `brand`/`slate` ramps,
   the `shadow-card`/`raised`/`overlay` scale, the radius rhythm, the
@@ -299,6 +320,77 @@ rather than install a toolchain. Run all three before publishing the tag.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.7.0 - AI Import Assistant.** marko's own spec: one shared, compact panel
+inside the three create forms that turns a screenshot into pre-filled fields.
+His framing of the boundary is the design: image -> Claude -> structured result
+-> review -> user confirm -> **the existing TIQR create flow** -> database.
+
+- **Where it is**: inside `EventFormModal` (new events only), `OrderFormModal`,
+  and `SaleFormModal`'s DETAILS step. Not a page, not a route, not a tab, not a
+  sidebar - marko was explicit ("Nechcem veľký AI dashboard. Nechcem chat.").
+- **It cannot write.** `commands/ai_import.rs` exposes one command,
+  `analyze_import_image`, which takes no `AppState`, opens no `Connection`, and
+  has no insert/update path. The panel's only output is a bag of strings handed
+  to the form's own `setState` calls. Every save still goes through
+  `create_event`/`create_order`/`create_sale_batch` and their existing
+  validation, on values marko has looked at. **If a future change needs this
+  module to touch the database, that is a redesign to discuss first.**
+- **Structured, not free text.** The model is held to a strict per-kind JSON
+  schema (`output_config.format`), whose `field` enum only contains the names
+  that kind's form actually has - so a hallucinated field name is rejected at
+  the API boundary before `sanitize_result` even has to drop it. Every value is
+  a plain string or `null`, with `high`/`medium`/`low` confidence.
+- **Nothing is invented.** A value not visible on the image comes back `null`,
+  and a null never overwrites a form field. The one deliberate exception to
+  "copy verbatim" is date FORMAT (ISO, because the app's inputs are
+  `<input type="date">`) - and even there, a missing year is null, never the
+  current year.
+- **Multiple ticket groups stay separate** (marko: "Nechcem zlievať rôzne
+  groups do jednej"). Because `OrderInput` carries one section/row/tier/price
+  for a whole order, two groups are two orders - the panel fills one at a time
+  and says so, rather than inventing a multi-group order shape.
+- **Sale is the deliberate exception**: its field list has no seat/section/row,
+  because a sale is always recorded against ticket rows that already exist
+  (`SaleInput.ticketId`). The tickets are picked from the database in the
+  form's own first step; a screenshot never decides them.
+- **Ctrl+V**: a `document`-level paste listener that calls `preventDefault()`
+  ONLY when the clipboard actually carried an image. A text paste anywhere in
+  the app is completely unaffected.
+- **Drag & drop** needed `dragDropEnabled: false` on the main window
+  (`tauri.conf.json`) - Tauri's default of `true` means the OS handler swallows
+  the drop and no HTML drop event reaches the webview. Verified first that
+  nothing in the app used Tauri's own drag-drop event.
+- **Cost control** (marko's own "Toto je DÔLEŽITÉ"), enforced on both sides:
+  one analysis per explicit user action, a per-session image fingerprint cache
+  so the same screenshot is never analyzed twice, editing extracted fields
+  never re-calls, retry only on a click, exactly one API call per invocation in
+  Rust with at most one transient retry, and no background or timed request
+  anywhere.
+- **Credentials**: reuses `ai_categorize.rs`'s build-time embedded
+  `ANTHROPIC_API_KEY` - the key never crosses the IPC boundary and is never in
+  the frontend. Without the secret the panel reports "AI import isn't available
+  in this build" and everything else works normally.
+- **Judgment calls, none asked about directly**: using `claude-opus-5` rather
+  than `ai_categorize`'s Haiku (misreading a seat range is worse than not
+  extracting it; the cost lever chosen instead was `effort: "medium"` - both
+  are single constants at the top of `ai_import.rs`); putting an extracted
+  order reference into the order's `notes` (the order code is backend-
+  generated, so there is no other column for it); showing the panel on NEW
+  events only; keeping `totalPrice` review-only rather than dividing it into a
+  unit price; and matching an extracted category/platform/marketplace only
+  against lookups that already exist, never creating one.
+- **NOT verified by a build.** No Node.js and no Rust toolchain on the machine
+  this was implemented on; `cargo test --lib`, `cargo check --lib`, `npx tsc -b`
+  and `npm run build` were never run, and the 28 new Rust unit tests in
+  `ai_import.rs` have never been executed. marko was asked and chose to proceed
+  on static review. What WAS verified statically: bracket balance (with strings
+  and comments stripped) in the new Rust module; JSX closing-tag structure
+  unchanged in all three edited pages; every import resolving to a real export;
+  no unused imports; the Anthropic request shape asserted by its own tests (no
+  `temperature`, which this model rejects; `effort` and `format` as siblings
+  inside `output_config`; image block before text block); and the workflow
+  already passing `ANTHROPIC_API_KEY` to both build paths.
 
 **2.6.0 - Complete visual redesign, UI/UX only.** marko's own task, and the
 first round in this project's history whose explicit scope was "change how

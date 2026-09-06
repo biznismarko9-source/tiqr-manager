@@ -2054,3 +2054,61 @@ export interface CalendarEntry {
   currency: string | null;
 }
 
+
+// ---------------------------------------------------------------------------
+// AI Import Assistant (2.7.0)
+//
+// The wire shape of `commands/ai_import.rs`. Read that module's doc comment
+// before changing anything here - the two halves are a matched pair, and the
+// Rust side owns the strict JSON schema the model is actually held to.
+//
+// The invariant worth restating on this side of the boundary: NOTHING here
+// is a database record, and nothing here has been through this app's own
+// validation yet. Every value is a plain string exactly as it appeared on
+// the image (or null), and it stays a string until it is typed into a real
+// form field and saved through the app's existing create commands. Do not
+// add a code path that turns one of these into an insert.
+// ---------------------------------------------------------------------------
+
+/** Which create form asked for the analysis. Matches `field_names_for_kind`
+ * in ai_import.rs exactly - adding a fourth kind means changing both. */
+export type AiImportKind = "event" | "order" | "sale";
+
+export type AiImportConfidence = "high" | "medium" | "low";
+
+export interface AiImportField {
+  /** One of this kind's known field names - see AI_IMPORT_FIELD_LABELS in
+   * lib/aiImport.ts for the human label and which form input it fills. */
+  field: string;
+  /** `null` means "not visible on the image" - never a default, never a
+   * guess. A field that comes back null must be left alone in the form, not
+   * blanked. */
+  value: string | null;
+  confidence: AiImportConfidence;
+}
+
+/** One block of tickets sharing a tier/section/row/price. Always empty for
+ * the "event" and "sale" kinds. Two groups are never merged - and, because
+ * `OrderInput` carries one section/row/tier/price for a whole order, two
+ * groups mean two orders, filled one at a time. */
+export interface AiImportTicketGroup {
+  quantity: string | null;
+  tier: string | null;
+  section: string | null;
+  row: string | null;
+  ticketType: string | null;
+  /** Price of ONE ticket, matching OrderFormModal's own "Unit price" grain. */
+  unitPrice: string | null;
+  fees: string | null;
+  /** Already expanded to one label per ticket ("21","22",...), or empty. */
+  seats: string[];
+}
+
+export interface AiImportResult {
+  /** false = the image was too poor to read. The panel then shows the
+   * "Image quality too low" message and offers a retry instead of showing
+   * half-read fields. */
+  readable: boolean;
+  fields: AiImportField[];
+  ticketGroups: AiImportTicketGroup[];
+}

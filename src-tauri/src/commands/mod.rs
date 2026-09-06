@@ -1,3 +1,4 @@
+pub mod ai_import;
 pub mod app_info;
 pub mod attention_center;
 pub mod backup;

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import AiImportPanel from "../components/AiImportPanel";
+import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
 import {
   centsToDecimalString,
@@ -1033,6 +1035,12 @@ interface SaleLineDraft {
   fees: string;
 }
 
+/** 2.7.0: the three values the Payment status <Select> in SaleFormModal
+ * offers, as a list the AI Import fill checks against - anything else the
+ * model reads off an image is ignored rather than written into the sale.
+ * Keep in sync with that <Select>. */
+const SALE_PAYMENT_STATUS_VALUES: SalePaymentStatus[] = ["pending", "paid", "refunded"];
+
 function SaleFormModal({
   open,
   onClose,
@@ -1468,6 +1476,36 @@ function SaleFormModal({
         </div>
       ) : (
         <>
+          {/* 2.7.0: AI Import Assistant, on the DETAILS step only - never on
+              the ticket picker before it. A sale in this app is always
+              recorded against ticket rows that already exist
+              (`SaleInput.ticketId`), so which tickets were sold is chosen
+              from the database in the step above and is not something a
+              screenshot is allowed to decide. This panel fills the sale-side
+              fields only, and ai_import.rs's "sale" field list deliberately
+              contains no seat/section/row field for the same reason.
+              Extracted event/order/quantity values stay visible in the
+              review list as a cross-check against what marko picked. */}
+          <AiImportPanel
+            kind="sale"
+            className="mb-3"
+            onApply={({ fields }) => {
+              if (isIsoDate(fields.saleDate)) setSaleDate(fields.saleDate);
+              if (fields.salePrice) setBulkPrice(fields.salePrice);
+              if (fields.sellingFees) setBulkFees(fields.sellingFees);
+              if (fields.currency) setSaleCurrency(fields.currency.trim().toUpperCase());
+              const platform = matchByName(platforms, fields.marketplace);
+              if (platform) setPlatformId(platform.id);
+              if (fields.buyerReference) setBuyerReference(fields.buyerReference);
+              // Only one of the app's own three values, never inferred - the
+              // prompt already tells the model to leave it null unless it is
+              // printed on the image.
+              if (SALE_PAYMENT_STATUS_VALUES.includes((fields.paymentStatus ?? "") as SalePaymentStatus)) {
+                setPaymentStatus(fields.paymentStatus as SalePaymentStatus);
+              }
+              toast.info("Fields filled in from the image - check them, then Record sale.");
+            }}
+          />
           <div className="mb-3 flex items-center justify-between">
             <p className="label mb-0">Selected tickets ({selected.length})</p>
             <button type="button" className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={() => setStep("pick")}>

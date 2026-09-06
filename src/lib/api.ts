@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Account,
   AccountInput,
+  AiImportKind,
+  AiImportResult,
   AppInfo,
   AttentionCenterItem,
   BulkCurrencyConversionResult,
@@ -101,6 +103,18 @@ export const api = {
    * created by a sheet sync (see ai_categorize.rs). Only ever touches events with no category yet -
    * see CategoryDetectionResult's doc comment (types.ts) - so this is always safe to run again. */
   detectEventCategories: () => invoke<CategoryDetectionResult>("detect_event_categories"),
+
+  // AI Import Assistant (2.7.0)
+  /** The ONLY AI-import call in the app. Analyzes one user-provided image and
+   * returns structured candidate values - it writes nothing, reads no
+   * database, and creates no record; see commands/ai_import.rs's module doc
+   * comment. Never call this on mount, on a timer, or in response to anything
+   * other than an explicit user action (drop, paste, file pick, or Retry) -
+   * cost control is half this feature's spec. lib/aiImport.ts's
+   * `AiImportSession` is the intended caller and already enforces that plus
+   * a per-session duplicate-image guard. */
+  analyzeImportImage: (kind: AiImportKind, mediaType: string, imageBase64: string) =>
+    invoke<AiImportResult>("analyze_import_image", { kind, mediaType, imageBase64 }),
 
   // Orders
   listOrders: (params: {
