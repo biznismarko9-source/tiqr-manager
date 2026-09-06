@@ -1838,6 +1838,19 @@ pub struct NormalizedListing {
     /// real listing elements won't have one, so this staying `None` is the
     /// normal case, not a failure.
     pub listing_id: Option<String>,
+    /// 2.9.0: true when the scanner read a real, on-screen price but could
+    /// not establish everything around it - specifically when no currency was
+    /// determinable, or when no confident listing container was found (so
+    /// section/row/quantity were read from a tight fallback scope rather than
+    /// a real listing row). This is NEVER a reason to drop the listing: the
+    /// price was genuinely on the page. It exists so the UI can filter
+    /// complete vs incomplete reads (marko's Part L) and so a partial read is
+    /// never presented as a clean one. Deliberately a single boolean rather
+    /// than a per-field confidence map - the scanner honestly does not know
+    /// enough to grade each field separately, and pretending otherwise would
+    /// be inventing confidence.
+    #[serde(default)]
+    pub incomplete: bool,
     /// Which reader produced this - `"stubhub"` / `"vividseats"` /
     /// `"ticombo"` / `"generic"`, mirrors the old auto-check's
     /// `AutoCheckDiagnostics::marketplace_reader`. Constant across every
@@ -1876,6 +1889,24 @@ pub struct ScanResultPayload {
     pub currency: Option<String>,
     pub scan_count: u32,
     pub last_scan_at: Option<String>,
+    /// 2.9.0 - marko's Part D scan summary. These describe the LAST scan
+    /// only (what that one read of the page found), while `listings` above
+    /// stays the accumulated session total.
+    pub last_scan_found: u32,
+    pub last_scan_accepted: u32,
+    pub last_scan_skipped: u32,
+    /// Duplicates rejected across the WHOLE session (this scan's candidates
+    /// that were already accumulated), plus the ones the injected script
+    /// collapsed within this single scan.
+    pub last_scan_duplicates: u32,
+    /// reason -> count for the last scan, e.g. {"crossed_out_price": 12}.
+    pub last_scan_skip_reasons: std::collections::BTreeMap<String, u32>,
+    /// How many accumulated listings the headline stats above were actually
+    /// computed from, and how many were left out because they were in a
+    /// different currency (or had none). See
+    /// `price_checker_scanner::compute_scan_stats_scoped`.
+    pub stats_listing_count: u32,
+    pub stats_excluded_count: u32,
     /// Human-readable detail for a non-"success" status - `None` when
     /// `status` is "success" (nothing to explain). Built the same way the
     /// old auto-check's diagnostic message was: real counts/text the page

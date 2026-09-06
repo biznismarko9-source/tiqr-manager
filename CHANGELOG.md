@@ -16,6 +16,67 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.9.0 - Price Checker accuracy fix, scan report, filters, CSV export
+
+marko reported the scanner reading prices wrong. Diagnosis first, then the
+smallest fix per cause. **No schema change, no migration (the next new one is
+still 027), no new dependency, no new marketplace.**
+
+1. **Fixed (root cause of the wrong prices)**: `price_checker_scan.js`'s
+   generic text-node walker found money in one text node and then called
+   `candidateFrom(parentElement)`, which re-parsed the parent's *entire* text
+   and kept the **first** money match in it. On "Was $200 / Now $120" markup
+   that stored the crossed-out old price; on a wrapper whose `aria-label`
+   reads "Total incl. fees" it stored the fee-inclusive total. The matched
+   money, and the text it was matched in, are now passed into
+   `candidateFrom`.
+2. **Added**: three price rejection rules that did not exist at all before -
+   struck-through prices (`<s>/<del>/<strike>`, line-through class or computed
+   style), money labelled total/subtotal/fee/service charge/delivery/tax/was/
+   original/RRP, and money inside header/footer/nav/aside/cart/checkout/modal
+   page chrome.
+3. **Fixed (metadata leak)**: `findListingContainer` fell back to "three
+   ancestors up" and `nearbyListingContext` then regexed that whole subtree,
+   so section/row/quantity/tier could be read off a *neighbouring* listing or
+   off page chrome. The container now reports whether it is confident;
+   metadata is read from a tight scope when it is not, and the listing is
+   flagged `incomplete` instead of being presented as a clean read.
+4. **Fixed (dedup, both directions)**: a real marketplace listing id is now
+   the whole cross-scan identity - it used to be one of seven fields
+   *including the price*, so the same listing re-read after a scroll counted
+   twice as soon as the price read differently. And `tier` joined the fallback
+   key, whose absence merged two listings that differed only by tier and
+   deleted a real one. Without an id the price stays in the key on purpose.
+5. **Fixed (currency blending)**: `compute_scan_stats` averaged across every
+   listing regardless of currency and labelled the blended result with
+   whichever currency came first. It now computes inside the largest
+   single-currency group only and reports how many listings were excluded -
+   which also makes it agree with `price_checker_analysis`, which has always
+   partitioned by currency correctly.
+6. **Added**: a Found / Accepted / Skipped / Duplicates scan summary with
+   per-reason skip counts.
+7. **Added**: six plain result filters (marketplace, tier, currency, min/max
+   price, complete vs incomplete) - not a filter builder.
+8. **Added**: Export CSV, reusing the same `plugin-dialog` `save()` + Rust
+   writer every other export in this app already uses.
+9. **Not changed**: the manual Visible Scanner workflow, Tier/Level as a
+   grouping (never a pricing input - no section/row/seat pricing, no price
+   suggestions), Your Tickets comparison, history, refund/resell, `batch_id`,
+   money/integer cents, Orders/Tickets/Sales/Listings/Finance/Fulfillment/
+   Attention/Calendar/Google Sheets. No background monitor, no scheduled scan,
+   no polling, no CAPTCHA bypass.
+
+15 new Rust unit tests (43 in `price_checker_scanner.rs` total).
+
+**Not verified by a build, and the DOM fixes are not verified against a live
+page.** No Node.js and no Rust toolchain on the machine this was implemented
+on, so `cargo test --lib`, `cargo check --lib`, `npx tsc -b` and `npm run
+build` could not be run, and the injected browser script cannot be executed
+here at all. The live marketplaces have never been reachable from this
+sandbox either (the same limitation the 2.1.9 script has always carried), so
+every DOM-level fix is reasoned from the code and must be confirmed against a
+real listings page.
+
 ## 2.8.0 - Calendar redesign + advanced calendar workflow
 
 marko asked to make the TIQR Operations Calendar one of the app's main work

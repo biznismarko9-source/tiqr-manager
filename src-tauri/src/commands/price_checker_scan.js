@@ -189,6 +189,66 @@
   }
 
   // ---------------------------------------------------------------------
+  // 2.9.0 - price REJECTION rules. Everything below exists because 2.1.9
+  // through 2.8.0 had none of it: any visible money-shaped string was a
+  // valid listing price, which is the direct cause of the three wrong-price
+  // classes marko reported (an old crossed-out price, a fees/total figure,
+  // and page-chrome prices from a header/footer/cart).
+  // ---------------------------------------------------------------------
+
+  // A struck-through price is a WAS price, never the current one. Checked on
+  // the element and a few ancestors, because sites mark this at different
+  // levels (<s>/<del> around the text, a line-through class on the wrapper).
+  function isStruckThrough(el) {
+    var node = el;
+    var hops = 0;
+    while (node && hops < 4) {
+      var tag = node.tagName;
+      if (tag === "S" || tag === "DEL" || tag === "STRIKE") return true;
+      var cls = (node.className && node.className.baseVal !== undefined ? node.className.baseVal : node.className) || "";
+      if (typeof cls === "string" && /strike|line-?through|was-?price|old-?price|original-?price|crossed/i.test(cls)) {
+        return true;
+      }
+      try {
+        var st = window.getComputedStyle(node);
+        if (st && st.textDecorationLine && st.textDecorationLine.indexOf("line-through") !== -1) return true;
+        if (st && st.textDecoration && st.textDecoration.indexOf("line-through") !== -1) return true;
+      } catch (e) {
+        /* ignore - a detached/odd node just isn't struck through */
+      }
+      node = node.parentElement;
+      hops++;
+    }
+    return false;
+  }
+
+  // Money that is explicitly labelled as something OTHER than one listing's
+  // own price. Deliberately keyword-based and conservative: it only rejects
+  // when the text says what the number is, never on a bare number.
+  var NON_LISTING_PRICE_RE =
+    /\b(total|subtotal|sub-total|grand\s*total|fees?|service\s*(charge|fee)|booking\s*fee|delivery|shipping|postage|tax|vat|balance|savings?|you\s*save|discount|credit|refund|was|before|previously|orig(inal)?|rrp|face\s*value)\b/i;
+
+  // Page chrome - a cart badge, a header banner, a footer promo. None of
+  // these is a listing, and all of them are commonly money-shaped.
+  function inExcludedRegion(el) {
+    var node = el;
+    var hops = 0;
+    while (node && node !== document.body && hops < 12) {
+      var tag = node.tagName;
+      if (tag === "HEADER" || tag === "FOOTER" || tag === "NAV" || tag === "ASIDE") return true;
+      var role = node.getAttribute && node.getAttribute("role");
+      if (role === "banner" || role === "contentinfo" || role === "navigation" || role === "dialog") return true;
+      var cls = (node.className && node.className.baseVal !== undefined ? node.className.baseVal : node.className) || "";
+      if (typeof cls === "string" && /\b(cart|basket|checkout|summary|header|footer|nav(bar)?|cookie|consent|modal|drawer)\b/i.test(cls)) {
+        return true;
+      }
+      node = node.parentElement;
+      hops++;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------
   // Layer 1: accessibility/UI text. aria-label wins when present (it's
   // what a screen reader would say - often a cleaner single string than the
   // visible DOM's scattered child nodes); aria-labelledby is resolved to
@@ -228,7 +288,7 @@
     while (node && node !== document.body && hops < 8) {
       var role = node.getAttribute && node.getAttribute("role");
       if (node.tagName === "LI" || role === "listitem" || role === "article" || role === "row") {
-        return node;
+        return { el: node, confident: true };
       }
       var parent = node.parentElement;
       if (parent) {
@@ -248,17 +308,20 @@
         // A repeated sibling pattern (>=2 same-tag siblings under the same
         // parent) is the classic shape of a rendered listing row - stop
         // here rather than climbing into the shared list wrapper.
-        if (sameTagSiblings >= 2) return node;
+        if (sameTagSiblings >= 2) return { el: node, confident: true };
       }
       node = parent;
       hops++;
     }
-    // No clear container found within 8 hops - fall back to a bounded
-    // ancestor (3 hops up from the price element itself) rather than the
-    // whole page, so context extraction still stays reasonably scoped.
+    // No clear container found within 8 hops. 2.9.0: this still returns a
+    // bounded ancestor (it is the dedup scope), but it is now flagged
+    // `confident: false` so the caller does NOT read section/row/quantity
+    // out of it - that wide subtree is exactly where metadata used to leak
+    // in from neighbouring listings - and so the listing is marked
+    // incomplete rather than silently presented as a clean read.
     node = el;
     for (var j = 0; j < 3 && node.parentElement; j++) node = node.parentElement;
-    return node;
+    return { el: node, confident: false };
   }
 
   var SECTION_RE = /\bsec(?:tion)?\.?\s*[:#]?\s*([A-Za-z0-9\-]{1,15})/i;
@@ -404,15 +467,44 @@
   // (commands::price_checker_scanner::fingerprint_for).
   // ---------------------------------------------------------------------
 
-  function candidateFrom(priceEl, marketplace) {
-    if (!isVisible(priceEl)) return null;
-    var text = accessibleText(priceEl) || (priceEl.textContent || "");
-    var money = parseMoney(text);
-    if (!money) return null;
-    var container = findListingContainer(priceEl);
-    var ctx = nearbyListingContext(container);
+  // 2.9.0 - `knownMoney`/`sourceText` are THE fix for the primary wrong-price
+  // bug. Before this, the generic text-node walker found money in one text
+  // node and then called candidateFrom(parentElement), which re-parsed the
+  // parent's ENTIRE text and kept the FIRST money match in it. On the very
+  // common "Was $200  Now $120" markup that stored $200 - the crossed-out
+  // old price - as the listing price, and on a wrapper whose aria-label
+  // reads "Total incl. fees $340" it stored the fee-inclusive total. The
+  // caller now passes the exact money it matched, and the exact text it
+  // matched it in, so the price that gets stored is always the one that was
+  // actually found rather than whatever appears first in some ancestor.
+  //
+  // Returns either a candidate, or {_skip: "<reason>"} so the scan summary
+  // can report WHY something was dropped instead of silently losing it.
+  function countSkip(skips, reason) {
+    if (!skips) return;
+    skips[reason] = (skips[reason] || 0) + 1;
+  }
+
+  function candidateFrom(priceEl, marketplace, knownMoney, sourceText) {
+    if (!isVisible(priceEl)) return { _skip: "not_visible" };
+    var text = sourceText !== undefined ? sourceText : accessibleText(priceEl) || (priceEl.textContent || "");
+    var money = knownMoney || parseMoney(text);
+    if (!money) return { _skip: "missing_price" };
+    if (isStruckThrough(priceEl)) return { _skip: "crossed_out_price" };
+    if (NON_LISTING_PRICE_RE.test(text)) return { _skip: "not_a_listing_price" };
+    if (inExcludedRegion(priceEl)) return { _skip: "page_chrome" };
+
+    var found = findListingContainer(priceEl);
+    var container = found.el;
+    // When no real listing container was identified, metadata is read from a
+    // tight scope (the price element's own parent) instead of a wide
+    // ancestor. The old code fell back to "3 ancestors up" and regexed that
+    // whole subtree, which is how section/row/quantity/tier leaked in from
+    // NEIGHBOURING listings and from page chrome.
+    var ctx = nearbyListingContext(found.confident ? container : priceEl.parentElement || container);
     return {
       _container: container,
+      _confidentContainer: found.confident,
       priceCents: money.cents,
       currency: money.currency || undefined,
       section: ctx.section,
@@ -421,9 +513,19 @@
       tier: tierFor(container, ctx.tier),
       listingId: listingIdFor(container),
       marketplace: marketplace,
+      // Reported to the Rust side so the UI can separate "read cleanly" from
+      // "read, but with gaps" - marko's own Part B/L requirement. A missing
+      // currency is the one gap that really matters for stats.
+      incomplete: !money.currency || !found.confident,
     };
   }
 
+  // 2.9.0: returns {candidates, duplicates}. A candidate whose container was
+  // only a fallback ancestor (`_confidentContainer: false`) is NOT deduped
+  // by container - several genuinely different listings can share one
+  // fallback ancestor, and collapsing them there silently deleted real
+  // listings. Those fall through to the Rust side's own fingerprint dedup
+  // instead, which can still catch a true duplicate without guessing.
   function dedupeByContainer(candidates) {
     // A Set gives O(1) "have I seen this container" lookups - with an
     // array + indexOf, a page with many real listings turns this into an
@@ -431,17 +533,24 @@
     var seen = typeof Set !== "undefined" ? new Set() : null;
     var seenArr = seen ? null : [];
     var out = [];
+    var duplicates = 0;
     for (var i = 0; i < candidates.length; i++) {
       var c = candidates[i];
       if (!c) continue;
-      var already = seen ? seen.has(c._container) : seenArr.indexOf(c._container) !== -1;
-      if (already) continue;
-      if (seen) seen.add(c._container);
-      else seenArr.push(c._container);
+      if (c._confidentContainer) {
+        var already = seen ? seen.has(c._container) : seenArr.indexOf(c._container) !== -1;
+        if (already) {
+          duplicates++;
+          continue;
+        }
+        if (seen) seen.add(c._container);
+        else seenArr.push(c._container);
+      }
       delete c._container;
+      delete c._confidentContainer;
       out.push(c);
     }
-    return out;
+    return { candidates: out, duplicates: duplicates };
   }
 
   // ---------------------------------------------------------------------
@@ -451,10 +560,11 @@
   // the actual point of not depending on CSS selectors alone.
   // ---------------------------------------------------------------------
 
-  function readGenericVisibleText(marketplace, maxMatches) {
+  function readGenericVisibleText(marketplace, maxMatches, skips) {
     var out = [];
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
     var scanned = 0;
+    var found = 0;
     var node;
     while ((node = walker.nextNode()) && out.length < maxMatches && scanned < 20000) {
       scanned++;
@@ -464,10 +574,16 @@
       if (!parent) continue;
       var money = parseMoney(text);
       if (!money) continue;
-      var c = candidateFrom(parent, marketplace);
-      if (c) out.push(c);
+      found++;
+      // 2.9.0: the money that was actually matched, and the text it was
+      // matched in, are handed to candidateFrom - it no longer re-derives a
+      // (possibly different) price from the parent's whole text. See
+      // candidateFrom's own comment for the bug this fixes.
+      var c = candidateFrom(parent, marketplace, money, text);
+      if (c && c._skip) countSkip(skips, c._skip);
+      else if (c) out.push(c);
     }
-    return { candidates: out, elementsScanned: scanned };
+    return { candidates: out, elementsScanned: scanned, found: found };
   }
 
   // ---------------------------------------------------------------------
@@ -493,9 +609,10 @@
   // on the next scan.
   var MAX_SELECTOR_ELEMENTS = 500;
 
-  function scanWithSelectors(selectors, marketplace) {
+  function scanWithSelectors(selectors, marketplace, skips) {
     var out = [];
     var hits = 0;
+    var found_count = 0;
     for (var i = 0; i < selectors.length; i++) {
       if (hits >= MAX_SELECTOR_ELEMENTS) break;
       var found;
@@ -506,11 +623,25 @@
       }
       for (var j = 0; j < found.length && hits < MAX_SELECTOR_ELEMENTS; j++) {
         hits++;
-        var c = candidateFrom(found[j], marketplace);
-        if (c) out.push(c);
+        var el = found[j];
+        // The selector layer legitimately has no pre-matched money (it
+        // matched an ELEMENT, not a text node), so candidateFrom parses the
+        // element's own accessible text - which is correct here, because the
+        // element itself is the thing the selector claims is a price.
+        var c = candidateFrom(el, marketplace);
+        if (c && c._skip) {
+          // "missing_price" on a selector hit is normal and uninteresting -
+          // most elements a loose selector matches simply are not prices.
+          if (c._skip !== "missing_price" && c._skip !== "not_visible") countSkip(skips, c._skip);
+          continue;
+        }
+        if (c) {
+          found_count++;
+          out.push(c);
+        }
       }
     }
-    return { candidates: out, selectorHits: hits };
+    return { candidates: out, selectorHits: hits, found: found_count };
   }
 
   var LISTING_PRICE_SELECTORS = [
@@ -522,14 +653,14 @@
     '[aria-label*="ticket" i]',
   ];
 
-  function readStubHub() {
-    return scanWithSelectors(LISTING_PRICE_SELECTORS, "stubhub");
+  function readStubHub(skips) {
+    return scanWithSelectors(LISTING_PRICE_SELECTORS, "stubhub", skips);
   }
-  function readVividSeats() {
-    return scanWithSelectors(LISTING_PRICE_SELECTORS, "vividseats");
+  function readVividSeats(skips) {
+    return scanWithSelectors(LISTING_PRICE_SELECTORS, "vividseats", skips);
   }
-  function readTicombo() {
-    return scanWithSelectors(LISTING_PRICE_SELECTORS, "ticombo");
+  function readTicombo(skips) {
+    return scanWithSelectors(LISTING_PRICE_SELECTORS, "ticombo", skips);
   }
 
   function hostFamily(hostname) {
@@ -578,24 +709,38 @@
     var marketplace = hostFamily(hostname);
     var blockedReason = detectBlocked();
 
+    // 2.9.0: one skip tally shared by both layers, so the UI can show WHY
+    // something was dropped rather than only how many survived.
+    var skips = {};
+
     var layered;
     try {
-      if (marketplace === "stubhub") layered = readStubHub();
-      else if (marketplace === "vividseats") layered = readVividSeats();
-      else if (marketplace === "ticombo") layered = readTicombo();
-      else layered = { candidates: [], selectorHits: 0 };
+      if (marketplace === "stubhub") layered = readStubHub(skips);
+      else if (marketplace === "vividseats") layered = readVividSeats(skips);
+      else if (marketplace === "ticombo") layered = readTicombo(skips);
+      else layered = { candidates: [], selectorHits: 0, found: 0 };
     } catch (e) {
-      layered = { candidates: [], selectorHits: 0, readerError: String((e && e.message) || e) };
+      layered = { candidates: [], selectorHits: 0, found: 0, readerError: String((e && e.message) || e) };
     }
 
     var generic;
     try {
-      generic = readGenericVisibleText(marketplace, 400);
+      generic = readGenericVisibleText(marketplace, 400, skips);
     } catch (e) {
-      generic = { candidates: [], elementsScanned: 0, readerError: String((e && e.message) || e) };
+      generic = { candidates: [], elementsScanned: 0, found: 0, readerError: String((e && e.message) || e) };
     }
 
-    var candidates = dedupeByContainer((layered.candidates || []).concat(generic.candidates || []));
+    var deduped = dedupeByContainer((layered.candidates || []).concat(generic.candidates || []));
+    var candidates = deduped.candidates;
+
+    // "found" = every money-shaped thing either layer recognised BEFORE any
+    // rejection rule ran. Accepted/skipped/duplicate below always add back up
+    // to it, which is what makes the scan summary honest rather than decorative.
+    var foundTotal = (layered.found || 0) + (generic.found || 0);
+    var skippedTotal = 0;
+    for (var k in skips) {
+      if (Object.prototype.hasOwnProperty.call(skips, k)) skippedTotal += skips[k];
+    }
 
     return {
       ok: true,
@@ -606,6 +751,13 @@
       blocked: !!blockedReason,
       blockedReason: blockedReason || undefined,
       candidates: candidates,
+      summary: {
+        found: foundTotal + skippedTotal,
+        accepted: candidates.length,
+        skipped: skippedTotal,
+        duplicatesInScan: deduped.duplicates,
+        skipReasons: skips,
+      },
       diagnostics: {
         selectorHits: layered.selectorHits || 0,
         selectorLayerError: layered.readerError,

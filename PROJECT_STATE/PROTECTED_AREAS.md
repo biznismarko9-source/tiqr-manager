@@ -21,6 +21,60 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.9.0 - Price Checker scan accuracy (parser + dedup + currency; no schema change)
+
+- **A price must always come from the element the money was actually matched
+  in.** The single worst bug in this feature's history was `candidateFrom`
+  being handed a PARENT element and re-deriving a price from its whole text,
+  which silently preferred whatever money appeared first - routinely a
+  crossed-out "was" price or a fees-inclusive total. Any future change to
+  `price_checker_scan.js` must keep passing the matched money and matched text
+  down; re-parsing an ancestor "to get more context" reintroduces this exact
+  bug.
+- **The three rejection rules are load-bearing, not decoration.**
+  `isStruckThrough`, `NON_LISTING_PRICE_RE` and `inExcludedRegion` are the only
+  things standing between the scanner and old prices, fee totals and cart
+  badges. They are deliberately conservative (keyword-based, never rejecting a
+  bare number), and a listing they reject is COUNTED in the skip summary
+  rather than silently dropped - so if one of them is ever too aggressive it
+  shows up as a number in the UI instead of as missing data.
+- **`findListingContainer` returns `{el, confident}` and the flag matters.**
+  When it is false, metadata is read from a tight scope and the listing is
+  marked `incomplete`. Reading section/row/quantity from a non-confident wide
+  ancestor is how metadata used to leak in from neighbouring listings. Do not
+  "simplify" this back to returning a bare element.
+- **Dedup rules, and why they are asymmetric.** With a real listing id, the id
+  is the WHOLE key - nothing else needs to agree, because an id is an identity
+  by definition. Without one, `price_cents` stays in the key on purpose: there
+  is no way to distinguish "same listing, re-read" from "a second listing at
+  another price in the same row", and of those two mistakes keeping a
+  duplicate is recoverable while deleting a real listing is not. `tier` is in
+  the fallback key and must stay there. Do not make this more aggressive
+  without a real identity to hang it on.
+- **`compute_scan_stats` must never blend currencies again.** It now delegates
+  to `compute_scan_stats_scoped`, which computes inside the largest
+  single-currency group and returns how many listings were excluded. Listings
+  with no currency are excluded rather than assumed to match the majority.
+  `price_checker_analysis` was always correct here; the scanner headline was
+  the one that disagreed with it.
+- **The scan summary must keep adding up.** `found` = everything either layer
+  recognised as money BEFORE any rejection ran; `accepted + skipped` must
+  reconcile to it, and `duplicates` covers both the in-scan collapse and the
+  cross-scan fingerprint rejection. If a future change adds a rejection path,
+  it has to call `countSkip` too or the summary quietly starts lying.
+- **Still true, still not to be changed**: Tier/Level is a market GROUPING and
+  Section/Row/Seat are metadata - no pricing by section, row or seat, and no
+  automatic price suggestions or repricing anywhere in Price Checker. No
+  background monitoring, no scheduled scan, no polling, no CAPTCHA/anti-bot
+  bypass. `detectBlocked` is detection only and must stay that way.
+- **None of the DOM-level work in 2.9.0 was verified against a live
+  marketplace.** That has been true of this script since 2.1.9 (network access
+  to the marketplaces has never been available from the sandbox it is written
+  in), and 2.9.0 additionally could not even execute the JS - there is no
+  Node.js on the machine. The Rust half IS unit-tested; the browser half is
+  reasoned from the code. Treat a real listings page as the actual acceptance
+  test.
+
 ## 2.8.0 - Calendar: four views, two new date sources (read-only; no schema change, no migration, no index)
 
 - **The payout/payment/fulfillment question was re-asked and re-answered, and

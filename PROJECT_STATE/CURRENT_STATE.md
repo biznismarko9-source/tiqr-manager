@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.8.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.9.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -193,6 +193,23 @@ read-only aggregator. See "Current focus" below and `PROTECTED_AREAS.md`'s new
 on the machine this was built on**, so none of the four build/test commands
 were run.
 
+**2.9.0** is a Price Checker accuracy release - marko reported the scanner
+reading prices wrong, and this round is diagnosis first, then the smallest fix
+per cause. The headline cause was in `price_checker_scan.js`: the generic
+text-node walker matched money in one text node and then re-parsed the PARENT
+element's whole text, keeping whichever money appeared first - routinely a
+crossed-out "was" price or a fees-inclusive total. Fixed, plus three new price
+rejection rules, a metadata-scoping fix, a two-way dedup fix, and a
+currency-blending fix in `compute_scan_stats`. New: a Found/Accepted/Skipped/
+Duplicates scan summary, six result filters, and CSV export. **No schema
+change, no migration (next new one is still 027), no new dependency, no new
+marketplace, no background monitoring.** See "Current focus" below and
+`PROTECTED_AREAS.md`'s new "2.9.0" entry. **Same build caveat as 2.6.0-2.8.0,
+plus one more: the injected browser script could not be executed here at all
+(no Node.js), and the live marketplaces have never been reachable from this
+sandbox - so every DOM-level fix is reasoned from the code and needs
+confirming against a real listings page.**
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -338,6 +355,57 @@ were run.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.9.0 - Price Checker accuracy + scan report, filters, export.** marko
+reported wrong prices coming out of the Visible Scanner. His own instruction
+was explicit: diagnose first, do not rewrite.
+
+- **The root cause, and it was one line of wiring.** `readGenericVisibleText`
+  found money in a TEXT NODE and then called `candidateFrom(node.parentElement)`,
+  which re-parsed that parent's entire `accessibleText()`/`textContent` and
+  kept the FIRST money match. So the price stored was never guaranteed to be
+  the price found. On "Was $200  Now $120" markup it stored $200; on a wrapper
+  whose `aria-label` reads "Total incl. fees $340" it stored $340. The matched
+  money and the matched text are now passed in.
+- **Three rejection rules that never existed**: struck-through prices
+  (`<s>/<del>/<strike>`, a line-through class, or the computed style), money
+  labelled total/subtotal/fee/service charge/delivery/tax/was/original/RRP,
+  and money inside header/footer/nav/aside/cart/checkout/modal chrome. Every
+  rejection is COUNTED and reported, so an over-aggressive rule shows up as a
+  number rather than as missing data.
+- **Metadata leak fixed.** `findListingContainer` fell back to "3 ancestors
+  up" and `nearbyListingContext` regexed that whole subtree - which is how
+  section/row/quantity/tier came in from neighbouring listings. The container
+  now reports `confident`; when it is false, metadata comes from a tight scope
+  and the listing is flagged `incomplete` instead of looking clean.
+- **Dedup was wrong in BOTH directions.** A real listing id is now the whole
+  cross-scan key (it used to be one of seven fields including the price, so a
+  re-read after scrolling counted twice the moment the price read
+  differently - which the parser bug above made routine). And `tier` joined
+  the fallback key, whose absence merged two listings differing only by tier
+  and deleted a real one. Without an id, price stays in the key deliberately.
+- **Currency blending fixed.** `compute_scan_stats` averaged across every
+  listing regardless of currency and labelled the result with the first
+  currency seen - so the scanner headline could disagree with the Market
+  Analysis directly underneath it, which has always partitioned correctly. It
+  now computes inside the largest single-currency group and says how many
+  listings it excluded.
+- **New, all additive**: Found/Accepted/Skipped/Duplicates summary with
+  per-reason counts; six plain result filters; Export CSV reusing the existing
+  `plugin-dialog` `save()` + Rust writer mechanism. `ScannerSession` gained
+  `url` (already a parameter of `open_price_scanner`, just never kept).
+- **Deliberately unchanged**: the manual Visible Scanner workflow, Tier/Level
+  as a grouping only (no section/row/seat pricing, no suggestions, no
+  repricing), Your Tickets, history, and every protected business area. No
+  background monitor, no scheduled scan, no polling, no CAPTCHA bypass, no new
+  marketplace.
+- **Verification, honestly**: 15 new Rust unit tests (43 in that module) cover
+  the fingerprint rules, the currency-scoped stats, the summary arithmetic and
+  the `incomplete` passthrough - **but none were executed** (no Rust
+  toolchain). The browser script has **no test at all** and could not be run:
+  there is no Node.js here, and the live marketplaces have never been
+  reachable from this sandbox. Every DOM-level fix is reasoned from the code.
+  A real listings page is the actual acceptance test.
 
 **2.8.0 - Calendar redesign + advanced calendar workflow.** marko's own
 request to make the TIQR Operations Calendar a main work screen rather than a

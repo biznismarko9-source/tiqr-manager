@@ -95,6 +95,11 @@ pub struct ScannerSession {
     pub fingerprints: HashSet<String>,
     pub scan_count: u32,
     pub last_scan_at: Option<String>,
+    /// 2.9.0: the marketplace URL this session was opened on - already a
+    /// parameter of `open_price_scanner`, just never kept before. Needed so
+    /// a CSV export can name the page each listing was read from without the
+    /// frontend having to pass it back down.
+    pub url: String,
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[

@@ -261,6 +261,7 @@ pub fn run() {
             commands::price_checker_scanner::open_price_scanner,
             commands::price_checker_scanner::scan_visible_prices,
             commands::price_checker_scanner::cancel_price_scan,
+            commands::price_checker_scanner::export_scan_results_csv,
             commands::price_checker_scanner::close_price_scanner,
             commands::price_checker_analysis::compute_market_analysis,
             commands::price_checker_analysis::compute_comparable_market,

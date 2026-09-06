@@ -19,9 +19,10 @@
 // was, still the fallback (and still the ONLY way anything ever reaches
 // saved history - a scan result always goes through the same review-then-
 // save step as a manual entry, never saved directly).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
 import type {
   ComparableLevel,
@@ -43,7 +44,15 @@ import type {
   TierBreakdownInput,
   YourTicketGroup,
 } from "../lib/types";
-import { centsToDecimalString, decimalStringToCents, formatDateTime, formatMoney, formatMoneyOrMixed, formatPercent } from "../lib/format";
+import {
+  centsToDecimalString,
+  decimalStringToCents,
+  formatDateTime,
+  formatMoney,
+  formatMoneyOrMixed,
+  formatPercent,
+  todayIso,
+} from "../lib/format";
 import {
   Button,
   Card,
@@ -59,7 +68,15 @@ import {
   StatCard,
   Textarea,
 } from "../components/ui";
-import { IconAlertTriangle, IconLink, IconTag, IconTrendingDown, IconTrendingUp, IconX } from "../components/icons";
+import {
+  IconAlertTriangle,
+  IconDownload,
+  IconLink,
+  IconTag,
+  IconTrendingDown,
+  IconTrendingUp,
+  IconX,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { CURRENCIES } from "./Orders";
 import { extractPricesFromText } from "../lib/priceParse";
@@ -165,6 +182,18 @@ interface ScannerCardState {
   scanCount: number;
   lastScanAt: string | null;
   message: string | null;
+  /** 2.9.0 - the LAST scan's own accounting (marko's Part D). `listings`
+   * above stays the accumulated session total, so these four intentionally
+   * do not have to add up to it: they describe one read of the page. */
+  lastScanFound: number;
+  lastScanAccepted: number;
+  lastScanSkipped: number;
+  lastScanDuplicates: number;
+  lastScanSkipReasons: Record<string, number>;
+  /** How many accumulated listings the headline stats came from, and how
+   * many were left out for being in another currency (or having none). */
+  statsListingCount: number;
+  statsExcludedCount: number;
 }
 
 function sessionKey(eventId: number, marketplaceId: number): string {
@@ -254,6 +283,310 @@ function TrendNote({ trend, currency }: { trend: Trend; currency: string }) {
  * its own transient sub-state (see ScannerCardState.opening's own doc
  * comment) rendered separately from the settled/scanning states in
  * SCANNER_STATUS_META. */
+/** 2.9.0 - marko's Parts D, K and L in one place: the scan summary, the
+ * result filters, the CSV export, and the listings table itself.
+ *
+ * Split out of the marketplace card's own JSX (where all of this used to be
+ * inline) purely so the filter state has somewhere to live - the card body is
+ * rendered per marketplace and had no room for four more `useState`s without
+ * turning into a second component anyway. No data is computed here that the
+ * backend didn't already send: every number below is either a field off
+ * `ScanResultPayload` or a count of the already-filtered `listings` array. */
+/** Human wording for the skip reasons price_checker_scan.js reports. An
+ * unknown reason falls through to its own raw key with underscores replaced,
+ * so a reason added on the JS side later still shows up readably instead of
+ * disappearing. */
+const SKIP_REASON_LABELS: Record<string, string> = {
+  crossed_out_price: "crossed-out / was price",
+  not_a_listing_price: "fees, total or other non-listing price",
+  page_chrome: "header, footer, cart or nav",
+  missing_price: "no readable price",
+  not_visible: "not on screen",
+};
+
+function ScanResultsPanel({ session }: { session: ScannerCardState }) {
+  const toast = useToast();
+  const [marketplace, setMarketplace] = useState<string>("");
+  const [tier, setTier] = useState<string>("");
+  const [currency, setCurrency] = useState<string>("");
+  const [completeness, setCompleteness] = useState<"" | "complete" | "incomplete">("");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  const listings = session.listings;
+
+  // Filter options come from what this scan actually returned - never a fixed
+  // list, so an option can never exist with nothing behind it.
+  const marketplaces = useMemo(
+    () => [...new Set(listings.map((l) => l.marketplace))].sort(),
+    [listings],
+  );
+  const tiers = useMemo(
+    () => [...new Set(listings.map((l) => l.tier).filter((t): t is string => !!t))].sort(),
+    [listings],
+  );
+  const currencies = useMemo(
+    () => [...new Set(listings.map((l) => l.currency).filter((c): c is string => !!c))].sort(),
+    [listings],
+  );
+
+  // A blank/unparseable bound is simply "no bound" - never treated as 0,
+  // which would silently hide every listing.
+  // `decimalStringToCents("")` returns 0, not null (lib/format.ts) - so an
+  // empty box has to be turned into "no bound" HERE, or an empty Max field
+  // would filter every listing out. An unparseable value is also no bound
+  // rather than a hard zero.
+  const boundCents = (raw: string): number | null => {
+    if (raw.trim() === "") return null;
+    return decimalStringToCents(raw);
+  };
+  const minCents = useMemo(() => boundCents(minPrice), [minPrice]);
+  const maxCents = useMemo(() => boundCents(maxPrice), [maxPrice]);
+
+  const filtered = useMemo(
+    () =>
+      listings.filter((l) => {
+        if (marketplace && l.marketplace !== marketplace) return false;
+        if (tier && l.tier !== tier) return false;
+        if (currency && l.currency !== currency) return false;
+        if (completeness === "complete" && l.incomplete) return false;
+        if (completeness === "incomplete" && !l.incomplete) return false;
+        if (minCents !== null && l.priceCents < minCents) return false;
+        if (maxCents !== null && l.priceCents > maxCents) return false;
+        return true;
+      }),
+    [listings, marketplace, tier, currency, completeness, minCents, maxCents],
+  );
+
+  const incompleteCount = useMemo(() => listings.filter((l) => l.incomplete).length, [listings]);
+  const anyFilter =
+    Boolean(marketplace || tier || currency || completeness) || minCents !== null || maxCents !== null;
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const path = await save({
+        defaultPath: `tiqr-scan-${todayIso()}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!path) return;
+      const rows = await api.exportScanResultsCsv(session.requestId, path);
+      toast.success(`Exported ${rows} listing${rows === 1 ? "" : "s"}.`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <>
+      {/* Part D - Found / Accepted / Skipped / Duplicates for the LAST scan.
+          Only rendered once a scan has actually run: before that every number
+          would be a zero that means "nothing happened yet", not "nothing was
+          found". */}
+      {session.scanCount > 0 && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/50">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            <span className="section-title">Last scan</span>
+            <span className="text-slate-600 dark:text-slate-400">
+              Found <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{session.lastScanFound}</span>
+            </span>
+            <span className="text-slate-600 dark:text-slate-400">
+              Accepted <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{session.lastScanAccepted}</span>
+            </span>
+            <span className="text-slate-600 dark:text-slate-400">
+              Skipped <span className="font-semibold tabular-nums text-amber-700 dark:text-amber-400">{session.lastScanSkipped}</span>
+            </span>
+            <span className="text-slate-600 dark:text-slate-400">
+              Duplicates <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-300">{session.lastScanDuplicates}</span>
+            </span>
+          </div>
+          {Object.keys(session.lastScanSkipReasons).length > 0 && (
+            <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+              {Object.entries(session.lastScanSkipReasons).map(([reason, count]) => (
+                <span key={reason}>
+                  {SKIP_REASON_LABELS[reason] ?? reason.replace(/_/g, " ")}:{" "}
+                  <span className="tabular-nums">{count}</span>
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 lg:grid-cols-7">
+        <div>
+          <p className="section-title">Listings</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{listings.length}</p>
+        </div>
+        <div>
+          <p className="section-title">Lowest</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
+            {formatMoney(session.lowestPriceCents, session.currency ?? "EUR")}
+          </p>
+        </div>
+        <div>
+          <p className="section-title">Median</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
+            {formatMoney(session.medianPriceCents, session.currency ?? "EUR")}
+          </p>
+        </div>
+        <div>
+          <p className="section-title">Average</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
+            {formatMoney(session.averagePriceCents, session.currency ?? "EUR")}
+          </p>
+        </div>
+        <div>
+          <p className="section-title">Highest</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
+            {formatMoney(session.highestPriceCents, session.currency ?? "EUR")}
+          </p>
+        </div>
+        <div>
+          <p className="section-title">Currency</p>
+          <p className="font-medium text-slate-900 dark:text-slate-100">{session.currency ?? "-"}</p>
+        </div>
+        <div>
+          <p className="section-title">Last scan</p>
+          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatDateTime(session.lastScanAt)}</p>
+        </div>
+      </div>
+
+      {/* Currencies are never blended into one number (marko's Part G). When
+          a session holds more than one, the stats above describe the largest
+          group only and this says so out loud rather than quietly
+          under-reporting. */}
+      {session.statsExcludedCount > 0 && (
+        <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+          Stats cover the {session.statsListingCount} {session.currency} listing
+          {session.statsListingCount === 1 ? "" : "s"} only - {session.statsExcludedCount} listing
+          {session.statsExcludedCount === 1 ? " is" : "s are"} in another currency (or have none) and
+          are never blended into these figures.
+        </p>
+      )}
+
+      {/* Part L - deliberately six plain controls, not a filter builder. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {marketplaces.length > 1 && (
+          <select className="input h-8 w-auto py-0 text-xs" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
+            <option value="">All marketplaces</option>
+            {marketplaces.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
+        {tiers.length > 0 && (
+          <select className="input h-8 w-auto py-0 text-xs" value={tier} onChange={(e) => setTier(e.target.value)}>
+            <option value="">All tiers</option>
+            {tiers.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        )}
+        {currencies.length > 1 && (
+          <select className="input h-8 w-auto py-0 text-xs" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            <option value="">All currencies</option>
+            {currencies.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
+        {incompleteCount > 0 && (
+          <select
+            className="input h-8 w-auto py-0 text-xs"
+            value={completeness}
+            onChange={(e) => setCompleteness(e.target.value as "" | "complete" | "incomplete")}
+          >
+            <option value="">Complete &amp; incomplete</option>
+            <option value="complete">Complete data only</option>
+            <option value="incomplete">Incomplete data only ({incompleteCount})</option>
+          </select>
+        )}
+        <input
+          className="input h-8 w-24 py-0 text-xs"
+          placeholder="Min price"
+          inputMode="decimal"
+          value={minPrice}
+          onChange={(e) => setMinPrice(e.target.value)}
+        />
+        <input
+          className="input h-8 w-24 py-0 text-xs"
+          placeholder="Max price"
+          inputMode="decimal"
+          value={maxPrice}
+          onChange={(e) => setMaxPrice(e.target.value)}
+        />
+        {anyFilter && (
+          <button
+            type="button"
+            onClick={() => {
+              setMarketplace("");
+              setTier("");
+              setCurrency("");
+              setCompleteness("");
+              setMinPrice("");
+              setMaxPrice("");
+            }}
+            className="text-xs font-medium text-slate-400 hover:text-slate-600 hover:underline dark:text-slate-500 dark:hover:text-slate-300"
+          >
+            Clear filters
+          </button>
+        )}
+        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+          Showing <span className="tabular-nums">{filtered.length}</span> of{" "}
+          <span className="tabular-nums">{listings.length}</span>
+        </span>
+        <Button variant="secondary" size="sm" onClick={doExport} disabled={exporting}>
+          {exporting ? <Spinner className="h-3.5 w-3.5" /> : <IconDownload className="h-3.5 w-3.5" />} Export CSV
+        </Button>
+      </div>
+
+      <div className="table-flush mt-3 max-h-48 rounded-lg border border-slate-200 dark:border-slate-800">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr>
+              <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
+              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
+              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
+              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
+              <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
+              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Marketplace</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {filtered.map((l, i) => (
+              <tr key={l.listingId ? `${l.marketplace}:${l.listingId}` : i}>
+                <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
+                  {formatMoney(l.priceCents, l.currency ?? session.currency ?? "EUR")}
+                  {l.incomplete && (
+                    <span
+                      title="Read from the page, but with gaps - no currency, or no confident listing row around it."
+                      className="ml-1 text-amber-600 dark:text-amber-400"
+                    >
+                      *
+                    </span>
+                  )}
+                </td>
+                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.tier ?? "-"}</td>
+                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.section ?? "-"}</td>
+                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.row ?? "-"}</td>
+                <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{l.quantity ?? "-"}</td>
+                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.marketplace}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {filtered.length === 0 && (
+        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">No listing in this scan matches those filters.</p>
+      )}
+    </>
+  );
+}
+
 function ScannerStatusPill({ session }: { session: ScannerCardState }) {
   if (session.opening) {
     return (
@@ -771,74 +1104,7 @@ function MarketplaceCard({
 
               {session.listings.length > 0 && (
                 <>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 lg:grid-cols-7">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Listings</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{session.listings.length}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Lowest</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                        {formatMoney(session.lowestPriceCents, session.currency ?? "EUR")}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Median</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                        {formatMoney(session.medianPriceCents, session.currency ?? "EUR")}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Average</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                        {formatMoney(session.averagePriceCents, session.currency ?? "EUR")}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Highest</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-                        {formatMoney(session.highestPriceCents, session.currency ?? "EUR")}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Currency</p>
-                      <p className="font-medium text-slate-900 dark:text-slate-100">{session.currency ?? "-"}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Last scan</p>
-                      <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatDateTime(session.lastScanAt)}</p>
-                    </div>
-                  </div>
-
-                  <div className="table-flush mt-3 max-h-48 rounded-lg border border-slate-200 dark:border-slate-800">
-                    <table className="w-full border-collapse">
-                      <thead>
-                        <tr>
-                          <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
-                          <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
-                          <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
-                          <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
-                          <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
-                          <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Marketplace</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {session.listings.map((l, i) => (
-                          <tr key={i}>
-                            <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
-                              {formatMoney(l.priceCents, l.currency ?? session.currency ?? "EUR")}
-                            </td>
-                            <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.tier ?? "-"}</td>
-                            <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.section ?? "-"}</td>
-                            <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.row ?? "-"}</td>
-                            <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{l.quantity ?? "-"}</td>
-                            <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.marketplace}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
+                  <ScanResultsPanel session={session} />
                   <div className="mt-3">
                     <Button variant="primary" onClick={() => onSaveScanToHistory(view, session, analysis)}>
                       Save to history
@@ -1316,6 +1582,13 @@ export default function PriceChecker() {
             scanCount: p.scanCount,
             lastScanAt: p.lastScanAt,
             message: p.message,
+            lastScanFound: p.lastScanFound,
+            lastScanAccepted: p.lastScanAccepted,
+            lastScanSkipped: p.lastScanSkipped,
+            lastScanDuplicates: p.lastScanDuplicates,
+            lastScanSkipReasons: p.lastScanSkipReasons,
+            statsListingCount: p.statsListingCount,
+            statsExcludedCount: p.statsExcludedCount,
           },
         };
       });
@@ -1395,6 +1668,13 @@ export default function PriceChecker() {
         scanCount: 0,
         lastScanAt: null,
         message: null,
+        lastScanFound: 0,
+        lastScanAccepted: 0,
+        lastScanSkipped: 0,
+        lastScanDuplicates: 0,
+        lastScanSkipReasons: {},
+        statsListingCount: 0,
+        statsExcludedCount: 0,
       };
       setScannerSessions((prev) => ({ ...prev, [key]: initial }));
       api.openPriceScanner(myRequestId, summary.eventId, view.marketplaceId, trimmedUrl).catch((e) => {

@@ -583,6 +583,7 @@ mod tests {
             quantity,
             listing_id: None,
             marketplace: "generic".to_string(),
+            incomplete: false,
         }
     }
 

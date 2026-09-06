@@ -77,6 +77,7 @@
 
 use crate::db::{AppState, ScannerSession};
 use crate::error::{AppError, AppResult};
+use crate::money::format_cents;
 use crate::models::{
     NormalizedListing, ScanResultPayload, ScannerClosedPayload, ScannerErrorPayload, ScannerOpenedPayload,
 };
@@ -126,8 +127,32 @@ struct ScanJsPayload {
     blocked_reason: Option<String>,
     #[serde(default)]
     candidates: Vec<ScanJsCandidate>,
+    /// 2.9.0 - marko's Part D. `#[serde(default)]` so a payload captured
+    /// before this existed still deserializes (all zeroes).
+    #[serde(default)]
+    summary: ScanJsSummary,
     #[serde(default)]
     diagnostics: ScanJsDiagnostics,
+}
+
+/// What the injected script counted while it read the page. `found` is every
+/// money-shaped thing either layer recognised BEFORE any rejection rule ran;
+/// `accepted` + `skipped` always add back up to it, which is what makes the
+/// scan summary honest rather than decorative.
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScanJsSummary {
+    #[serde(default)]
+    found: u32,
+    #[serde(default)]
+    accepted: u32,
+    #[serde(default)]
+    skipped: u32,
+    #[serde(default)]
+    duplicates_in_scan: u32,
+    /// reason -> count, e.g. {"crossed_out_price": 12, "not_a_listing_price": 3}.
+    #[serde(default)]
+    skip_reasons: std::collections::BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +177,15 @@ struct ScanJsCandidate {
     #[serde(default)]
     listing_id: Option<String>,
     marketplace: String,
+    /// 2.9.0: the JS side's own honest "I read this, but with gaps" flag -
+    /// set when the currency could not be determined, or when no confident
+    /// listing container was identified (so section/row/quantity were read
+    /// from a tight fallback scope instead of a real listing row). Never a
+    /// reason to drop the listing: an incomplete listing is still a real
+    /// price that was really on screen. It exists so the UI can filter on it
+    /// and so nothing has to pretend a partial read was a clean one.
+    #[serde(default)]
+    incomplete: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -209,6 +243,7 @@ fn insert_new_session(
     window_label: String,
     event_id: i64,
     marketplace_id: i64,
+    url: String,
 ) -> AppResult<Arc<AtomicBool>> {
     if sessions.contains_key(&request_id) {
         return Err(AppError::Validation(
@@ -233,6 +268,7 @@ fn insert_new_session(
             fingerprints: HashSet::new(),
             scan_count: 0,
             last_scan_at: None,
+            url,
         },
     );
     Ok(cancel_flag)
@@ -271,16 +307,54 @@ fn insert_new_session(
 ///    listing and a specific-seat listing at the same price). marko always
 ///    reviews the scanned table before saving to history, so an occasional
 ///    over-count here is visible and correctable, not silently trusted.
+/// Cross-scan identity: "have I already accumulated this exact listing in
+/// this session?"
+///
+/// 2.9.0 changed this in two specific ways, both deliberately conservative -
+/// marko's Part C is explicit that a dedup rule must never delete two
+/// legitimately different listings:
+///
+///  1. **A real marketplace listing id, when the page gives one, is now the
+///     WHOLE key.** Before, the id was only one of seven fields, so the same
+///     listing re-read after a scroll still counted twice if any other field
+///     differed - most commonly the price itself, which was the single
+///     biggest source of the duplicate counts marko reported. A listing id is
+///     a stable identity by definition; when the page hands us one, nothing
+///     else needs to agree.
+///  2. **`tier` joined the fallback key.** Its absence was an
+///     over-collapse bug in the other direction: two listings identical in
+///     price/section/row/quantity but in different tiers were silently
+///     merged into one, so a real listing disappeared from the session.
+///
+/// The fallback key still contains `price_cents`, on purpose. Without an id
+/// there is no way to tell "the same listing, re-read" from "a second
+/// listing at a different price in the same section and row" - and of those
+/// two mistakes, keeping a duplicate is recoverable while deleting a real
+/// listing is not. The 2.9.0 parser fix (see price_checker_scan.js's
+/// `candidateFrom`) also removes the main reason the same listing used to
+/// report two different prices across scans, so this fallback now
+/// double-counts far less in practice than it did.
+///
+/// Text fields are trimmed and lowercased before hashing so that trivial
+/// whitespace/case differences between two renders of the same row are not
+/// mistaken for a different listing.
 fn fingerprint_for(listing: &NormalizedListing) -> String {
+    fn norm(v: Option<&str>) -> String {
+        v.unwrap_or("").trim().to_lowercase()
+    }
+    let id = norm(listing.listing_id.as_deref());
+    if !id.is_empty() {
+        return format!("{}|id:{}", listing.marketplace.trim().to_lowercase(), id);
+    }
     format!(
         "{}|{}|{}|{}|{}|{}|{}",
-        listing.marketplace,
+        listing.marketplace.trim().to_lowercase(),
         listing.price_cents,
-        listing.currency.as_deref().unwrap_or(""),
-        listing.section.as_deref().unwrap_or(""),
-        listing.row.as_deref().unwrap_or(""),
+        norm(listing.currency.as_deref()),
+        norm(listing.section.as_deref()),
+        norm(listing.row.as_deref()),
         listing.quantity.map(|q| q.to_string()).unwrap_or_default(),
-        listing.listing_id.as_deref().unwrap_or(""),
+        norm(listing.tier.as_deref()),
     )
 }
 
@@ -310,18 +384,66 @@ pub(crate) fn median_of_sorted_cents(sorted: &[i64]) -> i64 {
 pub(crate) fn compute_scan_stats(
     listings: &[NormalizedListing],
 ) -> (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>) {
+    let (stats, _, _) = compute_scan_stats_scoped(listings);
+    stats
+}
+
+/// 2.9.0 - the currency-safety fix, and a real bug that had been shipping
+/// since 2.1.9.
+///
+/// `compute_scan_stats` used to average/median across EVERY accumulated
+/// listing regardless of currency, and then label the blended result with
+/// whichever currency the first listing happened to carry. A session holding
+/// 40 EUR and 12 USD listings therefore reported one meaningless number
+/// labelled "EUR". That directly contradicts marko's Part G ("Ak sú meny
+/// zmiešané: neblendi ich do jedného čísla") - and it also contradicted this
+/// app's own `price_checker_analysis`, which has always partitioned by
+/// currency properly, so the headline figure and the Market Analysis under it
+/// could disagree on the same data.
+///
+/// The rule now: pick the LARGEST single-currency group and compute
+/// everything inside it. Listings with no currency at all, or in any other
+/// currency, are excluded from the maths rather than folded in - and the
+/// count of what was excluded is returned so the UI can say so out loud
+/// instead of quietly under-reporting.
+///
+/// Returns `(stats_tuple, listings_used, listings_excluded)`.
+pub(crate) fn compute_scan_stats_scoped(
+    listings: &[NormalizedListing],
+) -> ((Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>), u32, u32) {
     if listings.is_empty() {
-        return (None, None, None, None, None);
+        return ((None, None, None, None, None), 0, 0);
     }
-    let mut prices: Vec<i64> = listings.iter().map(|l| l.price_cents).collect();
-    prices.sort_unstable();
-    let lowest = prices.first().copied();
-    let highest = prices.last().copied();
-    let sum: i64 = prices.iter().sum();
-    let average = Some((sum as f64 / prices.len() as f64).round() as i64);
-    let median = Some(median_of_sorted_cents(&prices));
-    let currency = listings.iter().find_map(|l| l.currency.clone());
-    (lowest, median, average, highest, currency)
+    // Group by currency. A listing with no currency can never be safely
+    // compared against one that has a currency, so it is its own excluded
+    // bucket rather than being assumed to match the majority.
+    let mut groups: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+    let mut no_currency = 0u32;
+    for l in listings {
+        match l.currency.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(c) => groups.entry(c.to_uppercase()).or_default().push(l.price_cents),
+            None => no_currency += 1,
+        }
+    }
+    // Largest group wins; ties break on the currency code so the answer is
+    // deterministic rather than dependent on scan order.
+    let best = groups.iter().max_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(a.0)));
+    let (currency, prices) = match best {
+        Some((c, p)) => (c.clone(), p.clone()),
+        // Nothing had a currency at all - report no stats rather than a
+        // number with no unit attached to it.
+        None => return ((None, None, None, None, None), 0, no_currency),
+    };
+    let used = prices.len() as u32;
+    let excluded = listings.len() as u32 - used;
+    let mut sorted = prices;
+    sorted.sort_unstable();
+    let lowest = sorted.first().copied();
+    let highest = sorted.last().copied();
+    let sum: i64 = sorted.iter().sum();
+    let average = Some((sum as f64 / sorted.len() as f64).round() as i64);
+    let median = Some(median_of_sorted_cents(&sorted));
+    ((lowest, median, average, highest, Some(currency)), used, excluded)
 }
 
 /// See this module's own doc comment, "## Status derivation". `latest_*`
@@ -423,6 +545,11 @@ fn parse_scan_js_payload(raw: &str) -> Result<ScanJsPayload, String> {
 /// scratch on every call.
 fn merge_scan_into_session(session: &mut ScannerSession, request_id: u64, js: &ScanJsPayload) -> ScanResultPayload {
     let mut added_this_scan: u32 = 0;
+    // 2.9.0: duplicates rejected HERE (already accumulated earlier in this
+    // session) plus the ones the injected script already collapsed inside
+    // this single scan - both are "the same listing seen twice", which is
+    // the number marko actually wants to see.
+    let mut duplicates_this_scan: u32 = js.summary.duplicates_in_scan;
     for c in &js.candidates {
         let listing = NormalizedListing {
             price_cents: c.price_cents,
@@ -433,11 +560,14 @@ fn merge_scan_into_session(session: &mut ScannerSession, request_id: u64, js: &S
             quantity: c.quantity,
             listing_id: c.listing_id.clone(),
             marketplace: c.marketplace.clone(),
+            incomplete: c.incomplete,
         };
         let fingerprint = fingerprint_for(&listing);
         if session.fingerprints.insert(fingerprint) {
             session.listings.push(listing);
             added_this_scan += 1;
+        } else {
+            duplicates_this_scan += 1;
         }
     }
 
@@ -447,7 +577,8 @@ fn merge_scan_into_session(session: &mut ScannerSession, request_id: u64, js: &S
     let status = derive_session_status(&session.listings, js.blocked, !js.ok);
     session.status = status.to_string();
 
-    let (lowest, median, average, highest, currency) = compute_scan_stats(&session.listings);
+    let ((lowest, median, average, highest, currency), stats_used, stats_excluded) =
+        compute_scan_stats_scoped(&session.listings);
     let message = build_status_message(status, js, &session.listings);
 
     ScanResultPayload {
@@ -462,6 +593,13 @@ fn merge_scan_into_session(session: &mut ScannerSession, request_id: u64, js: &S
         currency,
         scan_count: session.scan_count,
         last_scan_at: session.last_scan_at.clone(),
+        last_scan_found: js.summary.found,
+        last_scan_accepted: added_this_scan,
+        last_scan_skipped: js.summary.skipped,
+        last_scan_duplicates: duplicates_this_scan,
+        last_scan_skip_reasons: js.summary.skip_reasons.clone(),
+        stats_listing_count: stats_used,
+        stats_excluded_count: stats_excluded,
         message,
     }
 }
@@ -503,7 +641,8 @@ fn emit_scan_error(app: &AppHandle, request_id: u64, message: &str) {
         let mut sessions = st.price_scanner_sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(&request_id) {
             session.status = "error".to_string();
-            let (lowest, median, average, highest, currency) = compute_scan_stats(&session.listings);
+            let ((lowest, median, average, highest, currency), stats_used, stats_excluded) =
+                compute_scan_stats_scoped(&session.listings);
             let payload = ScanResultPayload {
                 request_id,
                 status: "error".to_string(),
@@ -516,6 +655,16 @@ fn emit_scan_error(app: &AppHandle, request_id: u64, message: &str) {
                 currency,
                 scan_count: session.scan_count,
                 last_scan_at: session.last_scan_at.clone(),
+                // A failed scan read nothing, so its own summary is all
+                // zeroes - the accumulated `listings` above are untouched and
+                // stay exactly as the last good scan left them.
+                last_scan_found: 0,
+                last_scan_accepted: 0,
+                last_scan_skipped: 0,
+                last_scan_duplicates: 0,
+                last_scan_skip_reasons: std::collections::BTreeMap::new(),
+                stats_listing_count: stats_used,
+                stats_excluded_count: stats_excluded,
                 message: Some(message.to_string()),
             };
             drop(sessions);
@@ -539,7 +688,7 @@ pub fn open_price_scanner(app: AppHandle, state: State<AppState>, request_id: u6
 
     {
         let mut sessions = state.price_scanner_sessions.lock().unwrap();
-        insert_new_session(&mut sessions, request_id, label.clone(), event_id, marketplace_id)?;
+        insert_new_session(&mut sessions, request_id, label.clone(), event_id, marketplace_id, url.clone())?;
     }
 
     let handle = app.clone();
@@ -678,6 +827,60 @@ pub fn scan_visible_prices(app: AppHandle, state: State<AppState>, request_id: u
 /// resets it anyway - see that command's own doc comment). Never touches
 /// the window itself: the visible browser stays open and fully usable
 /// either way.
+/// 2.9.0 - marko's Part K. Writes the accumulated listings of one live
+/// scanner session to a CSV the user picked a path for.
+///
+/// Deliberately reuses the app's EXISTING export mechanism rather than
+/// inventing a second one: the frontend picks the path with the same
+/// `@tauri-apps/plugin-dialog` `save()` call every other export in this app
+/// uses, this command writes it with the same `csv::Writer::from_path` and
+/// returns the same row count, and blank means "not present" exactly as it
+/// does in `commands/csv_export.rs` (never "N/A", never a guessed value).
+///
+/// The one difference from every other export in this app: the data is NOT
+/// read from the database, because a scan session has deliberately never
+/// been persisted - it lives only in `AppState::price_scanner_sessions`
+/// until it is saved to history explicitly. So this reads that map, and a
+/// closed/unknown session is an error rather than an empty file.
+#[tauri::command]
+pub fn export_scan_results_csv(state: State<AppState>, request_id: u64, path: String) -> AppResult<i64> {
+    let sessions = state.price_scanner_sessions.lock().unwrap();
+    let session = sessions
+        .get(&request_id)
+        .ok_or_else(|| AppError::Validation("That scan session is no longer open - scan again before exporting.".into()))?;
+    if session.listings.is_empty() {
+        return Err(AppError::Validation("Nothing to export - this scan found no listings yet.".into()));
+    }
+    let mut wtr = csv::Writer::from_path(&path)?;
+    wtr.write_record([
+        "event_id", "marketplace", "listing_id", "url", "price", "currency", "tier", "section",
+        "row", "quantity", "complete",
+    ])?;
+    let mut count = 0i64;
+    for l in &session.listings {
+        wtr.write_record([
+            // The event column carries the scanner window's own page title
+            // source - the URL is the only thing this session actually knows
+            // about the event, so the event id is written rather than a name
+            // this module would have to go and guess at.
+            &session.event_id.to_string(),
+            l.marketplace.as_str(),
+            l.listing_id.as_deref().unwrap_or(""),
+            session.url.as_str(),
+            &format_cents(l.price_cents),
+            l.currency.as_deref().unwrap_or(""),
+            l.tier.as_deref().unwrap_or(""),
+            l.section.as_deref().unwrap_or(""),
+            l.row.as_deref().unwrap_or(""),
+            &l.quantity.map(|q| q.to_string()).unwrap_or_default(),
+            if l.incomplete { "no" } else { "yes" },
+        ])?;
+        count += 1;
+    }
+    wtr.flush()?;
+    Ok(count)
+}
+
 #[tauri::command]
 pub fn cancel_price_scan(state: State<AppState>, request_id: u64) -> AppResult<()> {
     let sessions = state.price_scanner_sessions.lock().unwrap();
@@ -726,6 +929,7 @@ mod tests {
             quantity,
             listing_id: listing_id.map(|s| s.to_string()),
             marketplace: marketplace.to_string(),
+            incomplete: false,
         }
     }
 
@@ -740,6 +944,7 @@ mod tests {
             fingerprints: HashSet::new(),
             scan_count: 0,
             last_scan_at: None,
+            url: "https://example.test/e".to_string(),
         }
     }
 
@@ -783,7 +988,7 @@ mod tests {
     #[test]
     fn inserting_a_new_session_succeeds_and_starts_ready_and_empty() {
         let mut sessions = HashMap::new();
-        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20).unwrap();
+        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20, "https://example.test/e".into()).unwrap();
         let session = sessions.get(&1).unwrap();
         assert_eq!(session.status, "ready");
         assert!(session.listings.is_empty());
@@ -794,19 +999,19 @@ mod tests {
     #[test]
     fn a_duplicate_request_id_is_refused_without_touching_the_existing_session() {
         let mut sessions = HashMap::new();
-        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20).unwrap();
+        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20, "https://example.test/e".into()).unwrap();
         sessions.get_mut(&1).unwrap().scan_count = 3;
 
-        assert!(insert_new_session(&mut sessions, 1, "price-scanner-1-again".into(), 99, 99).is_err());
+        assert!(insert_new_session(&mut sessions, 1, "price-scanner-1-again".into(), 99, 99, "https://example.test/e".into()).is_err());
         assert_eq!(sessions.get(&1).unwrap().scan_count, 3, "the existing session must be untouched");
     }
 
     #[test]
     fn a_second_session_for_the_same_event_and_marketplace_is_refused() {
         let mut sessions = HashMap::new();
-        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20).unwrap();
+        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20, "https://example.test/e".into()).unwrap();
 
-        let err = insert_new_session(&mut sessions, 2, "price-scanner-2".into(), 10, 20).unwrap_err();
+        let err = insert_new_session(&mut sessions, 2, "price-scanner-2".into(), 10, 20, "https://example.test/e".into()).unwrap_err();
         assert!(err.to_string().contains("already open"));
         assert_eq!(sessions.len(), 1);
     }
@@ -814,9 +1019,9 @@ mod tests {
     #[test]
     fn a_second_session_for_a_different_marketplace_on_the_same_event_is_allowed() {
         let mut sessions = HashMap::new();
-        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20).unwrap();
+        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20, "https://example.test/e".into()).unwrap();
 
-        assert!(insert_new_session(&mut sessions, 2, "price-scanner-2".into(), 10, 21).is_ok());
+        assert!(insert_new_session(&mut sessions, 2, "price-scanner-2".into(), 10, 21, "https://example.test/e".into()).is_ok());
         assert_eq!(sessions.len(), 2, "StubHub and Vivid Seats must be able to be open at once for the same event");
     }
 
@@ -833,7 +1038,7 @@ mod tests {
         // this can't happen - reproduced here directly against
         // ScannerSession's own field, no real webview needed.
         let mut sessions = HashMap::new();
-        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20).unwrap();
+        insert_new_session(&mut sessions, 1, "price-scanner-1".into(), 10, 20, "https://example.test/e".into()).unwrap();
         let session = sessions.get_mut(&1).unwrap();
 
         let scan_a_flag = session.cancel_flag.clone(); // what scan A's spawned thread would hold
@@ -1082,5 +1287,197 @@ mod tests {
         // accident on the wrong shape.
         let inner = r#"{"ok":true,"marketplace":"stubhub","hostname":"h","url":"http://h/","title":"t","blocked":false,"candidates":[],"diagnostics":{}}"#;
         assert!(parse_scan_js_payload(inner).is_err(), "a not-double-encoded payload must not silently parse");
+    }
+
+    // ---------------------------------------------------------------
+    // 2.9.0 - accuracy, dedup and currency-safety regressions.
+    // ---------------------------------------------------------------
+
+    fn listing_full(
+        marketplace: &str,
+        price_cents: i64,
+        currency: Option<&str>,
+        tier: Option<&str>,
+        listing_id: Option<&str>,
+    ) -> NormalizedListing {
+        NormalizedListing {
+            price_cents,
+            currency: currency.map(|s| s.to_string()),
+            section: None,
+            row: None,
+            tier: tier.map(|s| s.to_string()),
+            quantity: None,
+            listing_id: listing_id.map(|s| s.to_string()),
+            marketplace: marketplace.to_string(),
+            incomplete: false,
+        }
+    }
+
+    #[test]
+    fn a_real_listing_id_is_the_whole_identity_even_when_the_price_changed() {
+        // THE duplicate bug marko reported. Before 2.9.0 the fingerprint was
+        // marketplace|price|currency|section|row|qty|id, so re-reading the
+        // same listing after a scroll counted it twice the moment the price
+        // read differently - which the old parser made happen routinely.
+        let a = listing_full("stubhub", 12000, Some("EUR"), None, Some("L-99"));
+        let b = listing_full("stubhub", 13500, Some("EUR"), None, Some("L-99"));
+        assert_eq!(fingerprint_for(&a), fingerprint_for(&b));
+    }
+
+    #[test]
+    fn listing_id_identity_is_still_scoped_to_its_marketplace() {
+        let a = listing_full("stubhub", 12000, Some("EUR"), None, Some("L-99"));
+        let b = listing_full("ticombo", 12000, Some("EUR"), None, Some("L-99"));
+        assert_ne!(fingerprint_for(&a), fingerprint_for(&b));
+    }
+
+    #[test]
+    fn whitespace_and_case_differences_are_not_a_different_listing() {
+        let a = listing_full("stubhub", 12000, Some("EUR"), None, Some("L-99"));
+        let b = listing_full("stubhub", 12000, Some("EUR"), None, Some("  l-99 "));
+        assert_eq!(fingerprint_for(&a), fingerprint_for(&b));
+    }
+
+    #[test]
+    fn two_listings_differing_only_by_tier_are_not_merged() {
+        // The over-collapse half of the old bug: tier was missing from the
+        // key entirely, so a real listing silently disappeared.
+        let a = listing_full("stubhub", 12000, Some("EUR"), Some("Level 100"), None);
+        let b = listing_full("stubhub", 12000, Some("EUR"), Some("Level 200"), None);
+        assert_ne!(fingerprint_for(&a), fingerprint_for(&b));
+    }
+
+    #[test]
+    fn without_an_id_a_different_price_is_still_treated_as_a_different_listing() {
+        // Deliberately conservative: with no stable identity there is no way
+        // to tell "same listing, re-read" from "second listing at another
+        // price", and keeping a duplicate is recoverable while deleting a
+        // real listing is not.
+        let a = listing_full("stubhub", 12000, Some("EUR"), None, None);
+        let b = listing_full("stubhub", 13500, Some("EUR"), None, None);
+        assert_ne!(fingerprint_for(&a), fingerprint_for(&b));
+    }
+
+    #[test]
+    fn stats_never_blend_two_currencies_into_one_number() {
+        // The currency bug: before 2.9.0 this averaged across every listing
+        // and labelled the result with the first currency it saw.
+        let listings = vec![
+            listing_full("stubhub", 10000, Some("EUR"), None, None),
+            listing_full("stubhub", 20000, Some("EUR"), None, None),
+            listing_full("stubhub", 999_00, Some("USD"), None, None),
+        ];
+        let ((low, median, avg, high, currency), used, excluded) = compute_scan_stats_scoped(&listings);
+        assert_eq!(currency.as_deref(), Some("EUR"));
+        assert_eq!(low, Some(10000));
+        assert_eq!(high, Some(20000));
+        assert_eq!(median, Some(15000));
+        assert_eq!(avg, Some(15000));
+        assert_eq!(used, 2);
+        assert_eq!(excluded, 1, "the USD listing must be excluded, never folded in");
+    }
+
+    #[test]
+    fn listings_with_no_currency_are_excluded_from_stats_rather_than_assumed() {
+        let listings = vec![
+            listing_full("stubhub", 10000, Some("EUR"), None, None),
+            listing_full("stubhub", 90000, None, None, None),
+        ];
+        let ((low, _, _, high, currency), used, excluded) = compute_scan_stats_scoped(&listings);
+        assert_eq!(currency.as_deref(), Some("EUR"));
+        assert_eq!(low, Some(10000));
+        assert_eq!(high, Some(10000), "the currency-less listing must not become the max");
+        assert_eq!(used, 1);
+        assert_eq!(excluded, 1);
+    }
+
+    #[test]
+    fn stats_are_none_when_nothing_has_a_currency_at_all() {
+        let listings = vec![listing_full("stubhub", 10000, None, None, None)];
+        let ((low, median, avg, high, currency), used, excluded) = compute_scan_stats_scoped(&listings);
+        assert!(low.is_none() && median.is_none() && avg.is_none() && high.is_none());
+        assert!(currency.is_none(), "never a number with no unit attached to it");
+        assert_eq!(used, 0);
+        assert_eq!(excluded, 1);
+    }
+
+    #[test]
+    fn the_largest_currency_group_wins_and_ties_are_deterministic() {
+        let listings = vec![
+            listing_full("stubhub", 100, Some("USD"), None, None),
+            listing_full("stubhub", 200, Some("USD"), None, None),
+            listing_full("stubhub", 300, Some("EUR"), None, None),
+        ];
+        let ((_, _, _, _, currency), used, excluded) = compute_scan_stats_scoped(&listings);
+        assert_eq!(currency.as_deref(), Some("USD"));
+        assert_eq!(used, 2);
+        assert_eq!(excluded, 1);
+    }
+
+    fn payload_with(candidates: &str, summary: &str) -> ScanJsPayload {
+        let raw = format!(
+            r#"{{"ok":true,"blocked":false,"candidates":[{candidates}],"summary":{summary},"diagnostics":{{}}}}"#
+        );
+        serde_json::from_str(&raw).expect("fixture payload must deserialize")
+    }
+
+    #[test]
+    fn scan_summary_counts_reach_the_payload_and_duplicates_add_up() {
+        let mut session = session_at("sum");
+        // Two candidates, one of which is the same listing id twice - the
+        // second must land as a duplicate, not a second listing.
+        let candidates = r#"
+            {"priceCents":12000,"currency":"EUR","marketplace":"stubhub","listingId":"A","incomplete":false},
+            {"priceCents":13000,"currency":"EUR","marketplace":"stubhub","listingId":"A","incomplete":false},
+            {"priceCents":14000,"currency":"EUR","marketplace":"stubhub","listingId":"B","incomplete":false}
+        "#;
+        let summary = r#"{"found":20,"accepted":3,"skipped":17,"duplicatesInScan":4,"skipReasons":{"crossed_out_price":12,"page_chrome":5}}"#;
+        let js = payload_with(candidates, summary);
+        let out = merge_scan_into_session(&mut session, 7, &js);
+        assert_eq!(out.last_scan_found, 20);
+        assert_eq!(out.last_scan_accepted, 2, "only two distinct listing ids");
+        assert_eq!(out.last_scan_skipped, 17);
+        // 4 collapsed inside the page reader + 1 rejected here by fingerprint.
+        assert_eq!(out.last_scan_duplicates, 5);
+        assert_eq!(out.last_scan_skip_reasons.get("crossed_out_price"), Some(&12));
+        assert_eq!(session.listings.len(), 2);
+    }
+
+    #[test]
+    fn re_scanning_the_same_page_adds_nothing_and_counts_every_repeat_as_a_duplicate() {
+        // Scroll-back / rerender: the identical payload arriving twice must
+        // never grow the session.
+        let mut session = session_at("rescan");
+        let candidates = r#"{"priceCents":12000,"currency":"EUR","marketplace":"stubhub","listingId":"A","incomplete":false}"#;
+        let summary = r#"{"found":1,"accepted":1,"skipped":0,"duplicatesInScan":0,"skipReasons":{}}"#;
+        let js = payload_with(candidates, summary);
+        let first = merge_scan_into_session(&mut session, 7, &js);
+        assert_eq!(first.last_scan_accepted, 1);
+        let second = merge_scan_into_session(&mut session, 7, &js);
+        assert_eq!(second.last_scan_accepted, 0);
+        assert_eq!(second.last_scan_duplicates, 1);
+        assert_eq!(session.listings.len(), 1);
+    }
+
+    #[test]
+    fn the_incomplete_flag_survives_the_trip_from_the_page_reader() {
+        let mut session = session_at("incomplete");
+        let candidates = r#"{"priceCents":12000,"marketplace":"stubhub","incomplete":true}"#;
+        let summary = r#"{"found":1,"accepted":1,"skipped":0,"duplicatesInScan":0,"skipReasons":{}}"#;
+        let js = payload_with(candidates, summary);
+        merge_scan_into_session(&mut session, 7, &js);
+        assert_eq!(session.listings.len(), 1);
+        assert!(session.listings[0].incomplete, "a partial read must never be presented as a clean one");
+        assert!(session.listings[0].currency.is_none());
+    }
+
+    #[test]
+    fn a_payload_from_before_the_summary_existed_still_deserializes() {
+        // #[serde(default)] contract - an older captured payload must not
+        // become a hard error just because a field was added.
+        let raw = r#"{"ok":true,"blocked":false,"candidates":[],"diagnostics":{}}"#;
+        let js: ScanJsPayload = serde_json::from_str(raw).expect("must still parse");
+        assert_eq!(js.summary.found, 0);
+        assert!(js.summary.skip_reasons.is_empty());
     }
 }

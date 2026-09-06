@@ -1685,6 +1685,13 @@ export interface NormalizedListing {
   tier: string | null;
   quantity: number | null;
   listingId: string | null;
+  /** 2.9.0: the scanner read a real on-screen price but could not establish
+   * everything around it (no currency, or no confident listing container so
+   * section/row/quantity came from a tight fallback scope). Never a reason to
+   * drop the listing - the price was genuinely on the page - but it must
+   * never be presented as a clean read either. Drives the Complete/Incomplete
+   * filter. */
+  incomplete: boolean;
   marketplace: string;
 }
 
@@ -1714,11 +1721,28 @@ export interface ScanResultPayload {
   medianPriceCents: number | null;
   averagePriceCents: number | null;
   highestPriceCents: number | null;
-  /** First non-null currency seen across `listings`, in the order they were
-   * found - `null` only when `listings` is empty. */
+  /** 2.9.0: the currency of the LARGEST single-currency group among
+   * `listings` - the group the stats above were actually computed from.
+   * Before 2.9.0 this was "the first currency seen" while the stats were
+   * blended across every currency, which could label a meaningless mixed
+   * average as EUR. `null` only when no listing has a currency at all. */
   currency: string | null;
   scanCount: number;
   lastScanAt: string | null;
+  /** 2.9.0 scan summary - these four describe the LAST scan only, while
+   * `listings` stays the accumulated session total.
+   * `found` = every money-shaped thing the page reader recognised before any
+   * rejection rule ran; accepted + skipped always add back up to it. */
+  lastScanFound: number;
+  lastScanAccepted: number;
+  lastScanSkipped: number;
+  lastScanDuplicates: number;
+  /** reason -> count, e.g. { crossed_out_price: 12, not_a_listing_price: 3 }. */
+  lastScanSkipReasons: Record<string, number>;
+  /** How many accumulated listings the headline stats were computed from, and
+   * how many were excluded for being in another currency (or having none). */
+  statsListingCount: number;
+  statsExcludedCount: number;
   /** Human-readable detail for a non-"success" status - `null` exactly when
    * `status` is "success". */
   message: string | null;

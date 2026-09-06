@@ -615,6 +615,13 @@ export const api = {
    * itself - it stays open and fully usable either way, and marko can start
    * a fresh scan right away. */
   cancelPriceScan: (requestId: number) => invoke<void>("cancel_price_scan", { requestId }),
+  /** 2.9.0: writes one live scan session's accumulated listings to a CSV at
+   * `path`, returning the row count - same shape as every other export in
+   * this app (the caller picks `path` with the shared plugin-dialog `save()`
+   * first). Errors if the session was already closed, since a scan is only
+   * ever held in memory until it is saved to history. */
+  exportScanResultsCsv: (requestId: number, path: string) =>
+    invoke<number>("export_scan_results_csv", { requestId, path }),
   /** Ends a scanner session - "Close" in the UI. `closeWindow: true` also
    * closes the real browser window; `false` only forgets TIQR Manager's own
    * bookkeeping and leaves the window open (marko's own spec: the browser
