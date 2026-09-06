@@ -370,9 +370,12 @@ function ScanResultsPanel({ session }: { session: ScannerCardState }) {
         defaultPath: `tiqr-scan-${todayIso()}.csv`,
         filters: [{ name: "CSV", extensions: ["csv"] }],
       });
-      if (!path) return;
+      // Same guard ExportPickerModal uses: this plugin's `save()` is typed as
+      // possibly returning an array, so narrowing to a single string here is
+      // what keeps `path` assignable to the command's `path: string`.
+      if (!path || Array.isArray(path)) return;
       const rows = await api.exportScanResultsCsv(session.requestId, path);
-      toast.success(`Exported ${rows} listing${rows === 1 ? "" : "s"}.`);
+      toast.success(`Exported ${rows} listing${rows === 1 ? "" : "s"} to ${path}`);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {

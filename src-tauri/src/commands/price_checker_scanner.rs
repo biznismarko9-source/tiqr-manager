@@ -857,22 +857,32 @@ pub fn export_scan_results_csv(state: State<AppState>, request_id: u64, path: St
         "row", "quantity", "complete",
     ])?;
     let mut count = 0i64;
+    // The event column carries the event id, not a name: the URL is the only
+    // thing this session actually knows about the event, and this module is
+    // not going to go and guess a name for it.
+    //
+    // Every element below is a `&str`. An array literal has ONE element type -
+    // a mix of `&String` and `&str` does not unify (deref coercion goes
+    // `&String -> &str`, never the other way), so the three computed values
+    // are bound to locals first. `csv_export.rs` solves the same problem by
+    // making every element an owned `String` instead; that fits there because
+    // its values come straight out of `row.get::<_, String>`, whereas these
+    // are already in memory and would only be cloned for no reason.
+    let event_id = session.event_id.to_string();
     for l in &session.listings {
+        let price = format_cents(l.price_cents);
+        let quantity = l.quantity.map(|q| q.to_string()).unwrap_or_default();
         wtr.write_record([
-            // The event column carries the scanner window's own page title
-            // source - the URL is the only thing this session actually knows
-            // about the event, so the event id is written rather than a name
-            // this module would have to go and guess at.
-            &session.event_id.to_string(),
+            event_id.as_str(),
             l.marketplace.as_str(),
             l.listing_id.as_deref().unwrap_or(""),
             session.url.as_str(),
-            &format_cents(l.price_cents),
+            price.as_str(),
             l.currency.as_deref().unwrap_or(""),
             l.tier.as_deref().unwrap_or(""),
             l.section.as_deref().unwrap_or(""),
             l.row.as_deref().unwrap_or(""),
-            &l.quantity.map(|q| q.to_string()).unwrap_or_default(),
+            quantity.as_str(),
             if l.incomplete { "no" } else { "yes" },
         ])?;
         count += 1;
