@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.11.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.12.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -248,6 +248,20 @@ defines the variable as an empty string** - which the Tauri bundler reads as
 no old release to delete. See `PROTECTED_AREAS.md`'s new "2.11.1" entry -
 that empty-vs-unset trap is worth not relearning.
 
+**2.12.0** adds **Cloud Sync** - marko works on a Windows PC and a Mac and
+wants what he writes on one to appear on the other. New
+`commands/cloud_sync.rs` keeps ONE database snapshot in his own Google Drive
+and syncs it **whole-file, one direction at a time** (Sync up / Sync down).
+Row-level merging was deliberately not attempted - see `PROTECTED_AREAS.md`'s
+"2.12.0" entry for why it would be a months-long rebuild. A lost-update guard
+refuses an upload when the other machine has pushed since, offering an
+explicit overwrite instead of silently winning; downloads reuse
+`backup::restore_database_impl` and inherit its safety backup and rollback.
+Storage reuses the Google sign-in already in production for Sheets sync -
+no server, no new dependency. **One migration cost: `OAUTH_SCOPE` gains
+`drive.file`, so everyone signs in with Google once more.** Nothing syncs
+automatically; the app stays local-first and fully usable offline.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -393,6 +407,39 @@ that empty-vs-unset trap is worth not relearning.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.12.0 - Cloud Sync: one database, two computers.** marko asked for what he
+writes on the Mac to show up on Windows. He first said "aj naraz"
+(simultaneously), then clarified he means sequential hand-off - which is the
+difference between a months-long rebuild and one contained release.
+
+- **Whole-file, one direction at a time.** `commands/cloud_sync.rs` keeps one
+  database snapshot in his own Google Drive. Sync up uploads this machine;
+  Sync down downloads and restores the other. It does NOT merge rows.
+- **Why not merge**: every PK is a per-machine `INTEGER AUTOINCREMENT` (both
+  machines mint id 5), and `insert_order_with_tickets`' exact-cent split and
+  `refund_sale_impl`'s one-way transition have no correct automatic merge.
+  That was explained to marko before building, and he chose this.
+- **The lost-update guard** is the safety story: every upload records the
+  Drive `version` it wrote and re-checks it next time. If the other machine
+  pushed since, the upload is refused and the UI offers an explicit
+  "Overwrite anyway". Downloads go through `restore_database_impl`, so they
+  inherit validation, an automatic safety backup and rollback.
+- **Almost everything is reused**: Google sign-in and refresh tokens
+  (production since Sheets sync), the SQLite Online Backup API, the restore
+  path. `backup::snapshot_db_to` was extracted from `create_safety_backup` so
+  both callers share one snapshot implementation. No server, no new
+  dependency, no hosting cost.
+- **The one migration cost**: `OAUTH_SCOPE` gains `drive.file` (the narrowest
+  scope that works - only files this app created). An existing refresh token
+  was issued against the old scopes, so **everyone signs in with Google once
+  more**.
+- **Still local-first**: nothing runs on a timer or at startup, sync is off
+  until switched on, and every sync is a click.
+- **NOT verified by a build, and no Drive call has ever run.** No Node.js or
+  Rust toolchain here. The Drive v3 request shapes are written from the API
+  docs - first thing to check if sync misbehaves. 5 new Rust unit tests cover
+  the guard logic and the off-by-default behaviour; none executed.
 
 **2.11.0 - Release pipeline: macOS builds, verified updater manifest, in-app
 update centre.** marko asked for a professional installer + auto-updater +

@@ -16,6 +16,48 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.12.0 - Cloud Sync: one database, two computers
+
+marko works on a Windows PC and a Mac and wants what he writes on one to show
+up on the other. **No schema change, no migration (next new one is still 027),
+no business logic change, no new dependency, no server.**
+
+1. **Added**: `commands/cloud_sync.rs` - keeps one database snapshot in
+   marko's **own Google Drive** and syncs it whole-file, one direction at a
+   time. "Sync up" uploads this machine; "Sync down" downloads and restores
+   the other.
+2. **Deliberately not built**: row-level merging. Every primary key here is a
+   per-machine `INTEGER AUTOINCREMENT`, so two machines both mint id 5, and
+   invariants like `insert_order_with_tickets`' exact-cent cost split and
+   `refund_sale_impl`'s one-way transition have no correct automatic merge. A
+   real merge engine is a months-long rebuild, not this release.
+3. **Added**: a lost-update guard. Every upload records the Drive file version
+   it wrote; the next upload re-checks it. If the other machine pushed since,
+   the upload is **refused** and the UI offers an explicit "Overwrite anyway"
+   decision instead of silently winning.
+4. **Reused, not rebuilt**: downloads go through
+   `backup::restore_database_impl`, inheriting its validation, automatic
+   safety backup and automatic rollback - the safety backup path is returned
+   and shown. Uploads use the SQLite Online Backup API via the new
+   `backup::snapshot_db_to`, extracted from `create_safety_backup` so both
+   callers share one implementation.
+5. **Changed**: `OAUTH_SCOPE` gains `drive.file` - the narrowest scope that
+   works, granting access only to files this app created and never to the rest
+   of the Drive. **Everyone has to sign in with Google once more**: an
+   existing refresh token was issued against the old scope set.
+6. **Added**: a "Sync between your computers" card in Settings → Data, above
+   Backup/Restore, since it is the same concern made automatic.
+7. **Not changed**: nothing runs on a timer or at startup. Sync is off until
+   switched on and every sync is a click. With sync off, or offline, the app
+   is exactly as local-first as before.
+
+5 new Rust unit tests.
+
+**Not verified by a build, and no Drive call has ever run.** No Node.js or
+Rust toolchain on the machine this was implemented on. The Drive request
+shapes are written from the Drive v3 API docs - they are the first thing to
+check if sync misbehaves.
+
 ## 2.11.1 - Fix the macOS build broken by 2.11.0
 
 2.11.0 published a working **Windows** release, but its macOS leg failed.

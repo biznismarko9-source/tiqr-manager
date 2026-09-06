@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, errMsg } from "../lib/api";
 import {
+  type CloudSyncStatus,
   type AppInfo,
   type CreatedSheetResult,
   type CsvPreview,
@@ -20,6 +21,7 @@ import {
   type SheetSyncResult,
   type SpreadsheetTabsResult,
 } from "../lib/types";
+import { formatDateTime } from "../lib/format";
 import {
   Badge,
   Button,
@@ -247,6 +249,70 @@ export default function Settings() {
       toast.error(errMsg(e));
     } finally {
       setBusyAction(null);
+    }
+  };
+
+  // --- Cloud sync (2.12.0) ---------------------------------------------
+  const [sync, setSync] = useState<CloudSyncStatus | null>(null);
+  const [syncBusy, setSyncBusy] = useState<null | "up" | "down" | "toggle">(null);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+
+  const refreshSync = useCallback(async () => {
+    try {
+      setSync(await api.cloudSyncStatus());
+    } catch {
+      // Offline is a normal state for this app - a status call that cannot
+      // reach Drive is not worth a red error on a settings screen.
+      setSync(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (section === "data") void refreshSync();
+  }, [section, refreshSync]);
+
+  const doSyncToggle = async (enabled: boolean) => {
+    setSyncBusy("toggle");
+    try {
+      await api.setCloudSyncEnabled(enabled);
+      await refreshSync();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
+  const doSyncUp = async (force = false) => {
+    setSyncBusy("up");
+    try {
+      const next = await api.cloudSyncPush(force);
+      setSync(next);
+      setConfirmOverwrite(false);
+      toast.success("Your data is now in your Google Drive.");
+    } catch (e) {
+      const msg = errMsg(e);
+      // The lost-update guard, surfaced as a decision rather than an error:
+      // the only way past it is an explicit overwrite.
+      if (msg.includes("newer data")) setConfirmOverwrite(true);
+      else toast.error(msg);
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
+  const doSyncDown = async () => {
+    setSyncBusy("down");
+    try {
+      const safetyPath = await api.cloudSyncPull();
+      toast.success(`Synced down. Your previous data was saved to ${safetyPath}.`);
+      // Same reasoning as restore: every screen must reload against the new
+      // database rather than keep stale in-memory state.
+      await relaunch();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSyncBusy(null);
     }
   };
 
@@ -522,6 +588,82 @@ export default function Settings() {
             // screens, Backup spanning below); now a single column always,
             // so all three cards read top-to-bottom regardless of width.
             <div className="grid grid-cols-1 gap-4">
+              {/* 2.12.0: Cloud sync sits above Backup/Restore because it is
+                  the same concern - moving this database between machines -
+                  just automatic. It reuses the very same snapshot and restore
+                  machinery those two cards use. */}
+              <Card className="p-5">
+                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Sync between your computers</h3>
+                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                  Keeps one copy of your database in your own Google Drive, so what you write on one computer shows up
+                  on the other. It syncs the whole database at once - so sync up before you switch machines, and sync
+                  down when you arrive.
+                </p>
+
+                {sync && !sync.signedIn ? (
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    Sign in with Google first (Settings &rarr; Integrations). Cloud sync uses the same sign-in as Google
+                    Sheets, and needs Drive access allowed.
+                  </p>
+                ) : (
+                  <>
+                    <label className="flex cursor-pointer items-center gap-2.5 text-sm text-slate-700 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={sync?.enabled ?? false}
+                        disabled={syncBusy !== null}
+                        onChange={(e) => doSyncToggle(e.target.checked)}
+                      />
+                      Turn on cloud sync
+                    </label>
+
+                    {sync?.enabled && (
+                      <>
+                        {sync.remoteNewer && (
+                          <p className="mt-3 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/25">
+                            <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            Your other computer has synced newer data. Sync down first, or anything you sync up from
+                            here will replace it.
+                          </p>
+                        )}
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button variant="primary" disabled={syncBusy !== null} onClick={() => doSyncUp(false)}>
+                            {syncBusy === "up" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
+                            Sync up
+                          </Button>
+                          <Button variant="secondary" disabled={syncBusy !== null} onClick={doSyncDown}>
+                            {syncBusy === "down" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                            Sync down
+                          </Button>
+                        </div>
+
+                        <dl className="mt-4 space-y-1.5 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500 dark:text-slate-400">Last synced from this computer</dt>
+                            <dd className="text-slate-800 dark:text-slate-200">
+                              {sync.lastSyncAt ? formatDateTime(sync.lastSyncAt) : "Never"}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500 dark:text-slate-400">Copy in Drive last changed</dt>
+                            <dd className="text-slate-800 dark:text-slate-200">
+                              {sync.remoteModifiedAt ? formatDateTime(sync.remoteModifiedAt) : "Nothing there yet"}
+                            </dd>
+                          </div>
+                        </dl>
+
+                        <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
+                          Syncing down replaces this computer's data with the copy from Drive. A safety backup of what
+                          was here is always taken first, and you'll be told where it went.
+                        </p>
+                      </>
+                    )}
+                  </>
+                )}
+              </Card>
+
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h3>
                 {/* 1.9.2 (section 8): shortened from a single dense paragraph
@@ -821,6 +963,25 @@ export default function Settings() {
       <CsvImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
 
       <ExportPickerModal open={!!exportConfig} config={exportConfig} onClose={() => setExportConfig(null)} />
+
+      <ConfirmDialog
+        open={confirmOverwrite}
+        title="Overwrite your other computer's data?"
+        message={
+          <>
+            Your other computer has synced newer data than this one has seen. Syncing up now replaces it with what is
+            on this computer, and that cannot be undone from here.
+            <br />
+            <br />
+            If you are not sure, cancel and sync down instead.
+          </>
+        }
+        confirmLabel="Overwrite anyway"
+        danger
+        busy={syncBusy === "up"}
+        onConfirm={() => doSyncUp(true)}
+        onCancel={() => setConfirmOverwrite(false)}
+      />
 
       <ConfirmDialog
         open={!!confirmRestorePath}

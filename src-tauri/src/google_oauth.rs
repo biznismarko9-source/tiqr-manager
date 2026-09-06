@@ -58,13 +58,20 @@
 //!    the same trust boundary as everything else this app already keeps
 //!    locally, not a new one.
 //!
-//! ## Scope - deliberately narrower than the service account's
+//! ## Scope
 //!
-//! `OAUTH_SCOPE` below has no `drive.file`, unlike
-//! google_sheets::SHEETS_AND_DRIVE_SCOPE: "create a new sheet" needs no
-//! separate *share* step once the person is signed in as themselves - it is
-//! already their own file the moment the Sheets API creates it, so there is
-//! nothing for a Drive scope to do here. `openid email` (both standard,
+//! Until 2.12.0 `OAUTH_SCOPE` had no `drive.file`: "create a new sheet"
+//! needs no separate *share* step once the person is signed in as
+//! themselves - it is already their own file the moment the Sheets API
+//! creates it, so there was nothing for a Drive scope to do.
+//!
+//! 2.12.0 adds `drive.file` for Cloud Sync (commands::cloud_sync), which
+//! keeps ONE database snapshot in the person's own Drive. `drive.file` is
+//! the narrowest scope that can do this: it grants access only to files this
+//! app itself created, never to anything else in the person's Drive.
+//! **Adding it means everyone has to sign in with Google once more** - an
+//! existing refresh token was issued against the old scope set and will not
+//! grant Drive access. `openid email` (both standard,
 //! non-sensitive scopes) is added instead, purely so this app can show
 //! "Signed in as ..." - it never reads anything else about the person's
 //! Google account.
@@ -97,7 +104,8 @@ const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
 
 /// See this module's doc comment ("Scope") for why this is narrower than
 /// google_sheets::SHEETS_AND_DRIVE_SCOPE.
-pub const OAUTH_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets openid email";
+pub const OAUTH_SCOPE: &str =
+    "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file openid email";
 
 /// 2.0.46: scope for the SEPARATE "Continue with Google" app sign-in button
 /// (commands::firebase_google_auth) - identity only, no Sheets/Drive access

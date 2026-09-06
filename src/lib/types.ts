@@ -2183,3 +2183,26 @@ export interface AiImportResult {
   fields: AiImportField[];
   ticketGroups: AiImportTicketGroup[];
 }
+
+/** 2.12.0 - TIQR Cloud Sync. One database file kept in the person's own
+ * Google Drive so two machines can hand work back and forth.
+ *
+ * Whole-file, one direction at a time - it does NOT merge row-level changes.
+ * See commands/cloud_sync.rs's module doc comment for why merging would need
+ * globally-unique ids and a conflict policy for invariants that have no
+ * automatic answer. */
+export interface CloudSyncStatus {
+  enabled: boolean;
+  /** False when nobody is signed in with Google, or this build has no OAuth
+   * client - the panel then asks for sign-in instead of showing controls
+   * that cannot work. */
+  signedIn: boolean;
+  /** null until the first sync-up has created the file in Drive. */
+  fileId: string | null;
+  lastSyncAt: string | null;
+  remoteModifiedAt: string | null;
+  remoteSizeBytes: number | null;
+  /** The other machine has synced newer data than this one has seen. The one
+   * signal that means "sync down before you sync up". */
+  remoteNewer: boolean;
+}

@@ -180,12 +180,24 @@ fn create_safety_backup(conn: &Connection, dir: &Path) -> AppResult<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%3f");
     let dest_path = dir.join(format!("pre-restore-{stamp}.sqlite3"));
-    let mut dst = Connection::open(&dest_path)?;
+    snapshot_db_to(conn, &dest_path)?;
+    Ok(dest_path)
+}
+
+/// 2.12.0: writes the live database to `dest_path` using the same Online
+/// Backup API every other backup in this file uses - consistent even while
+/// the app is running with WAL enabled, which a raw file copy is not.
+///
+/// Extracted from `create_safety_backup` (which now calls it) so cloud sync
+/// can produce the exact same kind of snapshot for upload without a second,
+/// possibly-diverging copy of this logic. `pub(crate)` for that one caller.
+pub(crate) fn snapshot_db_to(conn: &Connection, dest_path: &Path) -> AppResult<()> {
+    let mut dst = Connection::open(dest_path)?;
     {
         let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
         backup.run_to_completion(5, std::time::Duration::from_millis(250), None)?;
     }
-    Ok(dest_path)
+    Ok(())
 }
 
 /// Performs the actual overwrite-and-migrate: backs the candidate file into

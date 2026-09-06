@@ -27,6 +27,7 @@ import type {
   CreatedSheetResult,
   CreateFromRecurringResult,
   CsvImportResult,
+  CloudSyncStatus,
   CsvPreview,
   CurrencyConversion,
   DashboardData,
@@ -400,6 +401,18 @@ export const api = {
   backupDatabase: (destPath: string) => invoke<void>("backup_database", { destPath }),
   validateBackupFile: (srcPath: string) => invoke<void>("validate_backup_file", { srcPath }),
   restoreDatabase: (srcPath: string) => invoke<RestoreOutcome>("restore_database", { srcPath }),
+
+  // --- Cloud sync (2.12.0) ---------------------------------------------
+  // Read-only status; never uploads or downloads content.
+  cloudSyncStatus: () => invoke<CloudSyncStatus>("cloud_sync_status"),
+  setCloudSyncEnabled: (enabled: boolean) => invoke<void>("set_cloud_sync_enabled", { enabled }),
+  /** Uploads this machine's database. Rejects when the other machine has
+   * synced newer data, unless `force` - that refusal is the only thing
+   * standing between "I forgot to sync" and losing the other machine's work. */
+  cloudSyncPush: (force = false) => invoke<CloudSyncStatus>("cloud_sync_push", { force }),
+  /** Downloads and RESTORES over this machine's database. Returns the path of
+   * the automatic safety backup taken first. */
+  cloudSyncPull: () => invoke<string>("cloud_sync_pull"),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

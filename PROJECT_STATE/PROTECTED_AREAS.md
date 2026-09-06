@@ -21,6 +21,43 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.12.0 - Cloud Sync (whole-file, one direction at a time; no schema change)
+
+- **Cloud Sync must never become a row-level merge without a real design
+  pass.** It syncs the WHOLE database file. Merging rows would require
+  globally-unique ids (every PK in this app is a per-machine `INTEGER
+  AUTOINCREMENT` - two machines both mint id 5) plus a conflict policy for
+  invariants that have no automatic answer: `insert_order_with_tickets`
+  splits an order's cost across its tickets to the exact cent, and
+  `refund_sale_impl` is a one-way atomic transition, so a naive merge can
+  produce a state the app considers impossible. If this is ever revisited, it
+  is a project, not a patch.
+- **The lost-update guard is the whole safety story - do not weaken it.**
+  `REMOTE_VERSION_KEY` holds the Drive `version` this machine last read or
+  wrote; `remote_has_moved` compares it before every upload. Removing that
+  check, or making `force` the default, turns "I forgot to sync" into
+  silently destroying the other machine's work. The one deliberate gap: a
+  missing version from Drive is treated as unchanged, because refusing on a
+  missing field would make sync impossible rather than safe.
+- **Every download goes through `backup::restore_database_impl`.** That is
+  what gives it validation, an automatic safety backup and automatic
+  rollback. Never add a faster path that writes a downloaded file straight
+  over the live database.
+- **`backup::snapshot_db_to` is the single snapshot implementation.** Both
+  the safety backup and the sync upload use it, and it uses SQLite's Online
+  Backup API - a raw file copy of a WAL-mode database that is open right now
+  is not consistent.
+- **`OAUTH_SCOPE` now includes `drive.file`, and that has a migration cost.**
+  An existing refresh token was issued against the old scope set and will NOT
+  grant Drive access - everyone signs in with Google once more after
+  upgrading. `drive.file` is deliberately the narrowest scope that works: it
+  reaches only files this app itself created. Do not widen it to `drive` or
+  `drive.readonly`; nothing here needs to see the rest of a person's Drive.
+- **Nothing syncs automatically.** No timer, no startup sync, no sync on
+  write. Sync is off until switched on and every sync is an explicit click -
+  this app stays local-first and fully usable offline, which is the promise
+  its own description still makes.
+
 ## 2.11.1 - An unset GitHub secret is an EMPTY env var, not an absent one
 
 - **Never wire an optional signing variable into a workflow "ready for later".**
