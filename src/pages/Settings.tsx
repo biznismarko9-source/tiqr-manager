@@ -944,7 +944,7 @@ function PlatformList({
 
   return (
     <div>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{heading}</h4>
+      <h4 className="mb-2 section-title">{heading}</h4>
       <div className="mb-2 flex gap-2">
         <Input
           placeholder="e.g. Ticketmaster"
@@ -1080,7 +1080,7 @@ function FinanceCategoryList({
 
   return (
     <div>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{heading}</h4>
+      <h4 className="mb-2 section-title">{heading}</h4>
       <div className="mb-2 flex gap-2">
         <Input
           placeholder="e.g. Doprava"
@@ -2128,7 +2128,7 @@ function SheetsConnectionCard({
                       what a row does at a glance, not just on hover - his
                       own report ("aby si vedel naco sluzia..a nemusel to
                       hladat"). */}
-                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <p className="mb-1 flex items-center gap-1.5 section-title">
                     <IconDownload className="h-3.5 w-3.5" /> Import from sheet
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2153,7 +2153,7 @@ function SheetsConnectionCard({
 
               {onPush && (
                 <div>
-                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <p className="mb-1 flex items-center gap-1.5 section-title">
                     <IconUpload className="h-3.5 w-3.5" /> Send to sheet
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2558,9 +2558,9 @@ function CsvImportModal({
             re-importing.
           </p>
 
-          <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
+          <div className="table-flush max-h-80 rounded-lg border border-slate-200 dark:border-slate-800">
             <table className="w-full min-w-[600px] border-collapse text-xs">
-              <thead className="sticky top-0 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+              <thead>
                 <tr>
                   <th className="th">#</th>
                   {preview.headers.map((h) => (
@@ -2580,7 +2580,7 @@ function CsvImportModal({
                   </tr>
                 ) : (
                   visibleRows.slice(0, 100).map((r) => (
-                    <tr key={r.rowNumber} className={r.errors.length > 0 ? "bg-red-50 dark:bg-red-500/10" : ""}>
+                    <tr key={r.rowNumber} className={r.errors.length> 0 ? "bg-red-50 dark:bg-red-500/10" : ""}>
                       <td className="td">{r.rowNumber}</td>
                       {preview.headers.map((h) => (
                         <td key={h} className="td whitespace-nowrap">

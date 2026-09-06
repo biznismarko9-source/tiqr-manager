@@ -3,7 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import type { CalendarEntry, CalendarEntryKind, CalendarSeverity } from "../lib/types";
 import { formatDate, formatDateNumeric, formatMoney, todayIso } from "../lib/format";
-import { Card, LoadingBlock, Modal, PageHeader, TabSwitcher } from "../components/ui";
+import {
+  Card,
+  LoadingBlock,
+  Modal,
+  PageHeader,
+  SEGMENTED_TRACK,
+  segmentedItemClass,
+  TabSwitcher,
+} from "../components/ui";
 import {
   IconAlertTriangle,
   IconCalendarDays,
@@ -257,27 +265,25 @@ export default function Calendar() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <TabSwitcher tabs={[{ key: "month", label: "Month" }, { key: "week", label: "Week" }]} active={viewMode} onChange={setViewMode} />
-            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-800 dark:bg-slate-900">
+            {/* 2.6.0: the same segmented track the Month/Week switch beside it
+                uses, so the two controls in this header read as one pair. */}
+            <div className={`${SEGMENTED_TRACK} mb-4`}>
               <button
                 type="button"
                 onClick={goPrev}
                 aria-label="Previous"
-                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                className={`${segmentedItemClass(false)} px-1.5`}
               >
                 <IconChevronLeft className="h-4 w-4" />
               </button>
-              <button
-                type="button"
-                onClick={goToday}
-                className="rounded-md px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-              >
+              <button type="button" onClick={goToday} className={segmentedItemClass(false)}>
                 Today
               </button>
               <button
                 type="button"
                 onClick={goNext}
                 aria-label="Next"
-                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                className={`${segmentedItemClass(false)} px-1.5`}
               >
                 <IconChevronRight className="h-4 w-4" />
               </button>
@@ -289,7 +295,7 @@ export default function Calendar() {
       <UpcomingSummary />
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-base font-semibold text-slate-900 dark:text-slate-100">{rangeLabel}</p>
+        <p className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">{rangeLabel}</p>
         {/* 2.5.1: this row is both the kind filter AND the calendar's color
             legend - each pill's dot is the exact color its entries use below,
             so there's no separate "what does this color mean" key to add. */}
@@ -333,7 +339,7 @@ export default function Calendar() {
           {WEEKDAY_LABELS.map((label, i) => (
             <div
               key={label}
-              className={`px-2 py-2.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 ${
+              className={`section-title px-2 py-2.5 text-center ${
                 i >= 5 ? "bg-slate-50/70 dark:bg-slate-900/40" : ""
               }`}
             >
@@ -354,15 +360,15 @@ export default function Calendar() {
               return (
                 <div
                   key={iso}
-                  className={`flex flex-col gap-1 border-b border-r border-slate-100 p-2 transition-colors last:border-r-0 dark:border-slate-800/60 ${
-                    viewMode === "week" ? "min-h-[220px]" : "min-h-[96px]"
+                  className={`relative flex flex-col gap-1 border-b border-r border-slate-100 p-2 transition-colors last:border-r-0 dark:border-slate-800/60 ${
+                    viewMode === "week" ? "min-h-[240px]" : "min-h-[104px]"
                   } ${
                     isToday
-                      ? "bg-brand-50/50 dark:bg-brand-500/[0.06]"
+                      ? "bg-brand-50/60 ring-1 ring-inset ring-brand-500/30 dark:bg-brand-500/[0.08] dark:ring-brand-400/25"
                       : !inCurrentMonth
-                        ? "bg-slate-50/60 dark:bg-slate-900/40"
+                        ? "bg-slate-50/70 dark:bg-slate-950/40"
                         : weekend
-                          ? "bg-slate-50/40 dark:bg-slate-900/20"
+                          ? "bg-slate-50/50 dark:bg-slate-950/20"
                           : ""
                   }`}
                 >
@@ -371,18 +377,18 @@ export default function Calendar() {
                       type="button"
                       onClick={() => dayEntries.length > 0 && setDayDetail(iso)}
                       disabled={dayEntries.length === 0}
-                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums transition ${
                         isToday
-                          ? "bg-brand-600 text-white shadow-sm"
+                          ? "bg-brand-600 text-white shadow-card"
                           : inCurrentMonth
                             ? "text-slate-600 dark:text-slate-300"
                             : "text-slate-300 dark:text-slate-600"
-                      } ${dayEntries.length > 0 && !isToday ? "cursor-pointer hover:bg-slate-200/70 dark:hover:bg-slate-700/60" : dayEntries.length > 0 ? "cursor-pointer" : "cursor-default"}`}
+                      } ${dayEntries.length > 0 && !isToday ? "cursor-pointer hover:bg-slate-200/80 dark:hover:bg-slate-700/70" : dayEntries.length > 0 ? "cursor-pointer" : "cursor-default"}`}
                     >
                       {day.getDate()}
                     </button>
                     {dayEntries.length > 0 && (
-                      <span className="text-[10px] font-medium tabular-nums text-slate-300 dark:text-slate-600">{dayEntries.length}</span>
+                      <span className="text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">{dayEntries.length}</span>
                     )}
                   </div>
                   <div className="flex flex-1 flex-col gap-1 overflow-hidden">
@@ -394,7 +400,7 @@ export default function Calendar() {
                           type="button"
                           onClick={() => navigateToEntry(navigate, entry)}
                           title={`${entry.title}${entry.subtitle ? ` - ${entry.subtitle}` : ""}`}
-                          className={`flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-left text-[11px] font-medium transition-colors hover:brightness-95 dark:hover:brightness-125 ${accent.chip} ${SEVERITY_RING[entry.severity]}`}
+                          className={`flex items-center gap-1 truncate rounded-md px-1.5 py-[3px] text-left text-[11px] font-medium leading-tight transition hover:ring-2 hover:ring-inset hover:ring-slate-900/10 dark:hover:ring-white/15 ${accent.chip} ${SEVERITY_RING[entry.severity]}`}
                         >
                           <span className="truncate">{entry.title}</span>
                         </button>
@@ -508,7 +514,7 @@ function UpcomingSummary() {
 
   return (
     <Card className="mb-4 overflow-hidden p-0">
-      <p className="border-b border-slate-100 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:border-slate-800 dark:text-slate-500">
+      <p className="section-title border-b border-slate-100 px-4 py-2.5 dark:border-slate-800">
         Today &amp; next 7 days
       </p>
       {entries.length === 0 ? (

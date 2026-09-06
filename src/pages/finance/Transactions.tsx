@@ -242,9 +242,9 @@ export default function Transactions({ entries, categories, accounts, transfers,
               <EmptyState title="No transactions match these filters" />
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="table-flush">
               <table className="w-full border-collapse">
-                <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+                <thead>
                   <tr>
                     <th className="th">Date</th>
                     <th className="th">Type</th>
@@ -320,7 +320,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
 
 function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e: FinanceEntry) => void; onDelete: (e: FinanceEntry) => void }) {
   return (
-    <tr className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60" onClick={(ev) => {
+    <tr className="cursor-pointer" onClick={(ev) => {
       if ((ev.target as HTMLElement).closest("button")) return;
       onEdit(entry);
     }}>
@@ -363,7 +363,7 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
 
 function TransferRow({ transfer, onDelete }: { transfer: Transfer; onDelete: (t: Transfer) => void }) {
   return (
-    <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+    <tr>
       <td className="td whitespace-nowrap">{formatDate(transfer.transferDate)}</td>
       <td className="td">
         <Badge tone="listed">Transfer</Badge>

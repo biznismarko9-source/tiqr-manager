@@ -409,7 +409,7 @@ export default function SaleDetail() {
         // everything else (worst case: an unrefunded line's Edit + Refund
         // text buttons + trash icon, all inline). Shared breakpoint moved to
         // 1649px (was 1690px) - see useNarrowTables.ts.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               // 2.0.68: same 8-column budget as before, minus Fees (already
@@ -458,7 +458,7 @@ export default function SaleDetail() {
                 <col className="w-[6.931%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                   <input
@@ -493,7 +493,7 @@ export default function SaleDetail() {
                 return (
                   <tr
                     key={s.id}
-                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(s.ticketId) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
+                    className={selected.has(s.ticketId) ? "row-selected" : ""}
                   >
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       {selectable && (

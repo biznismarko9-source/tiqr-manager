@@ -231,9 +231,9 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
             <EmptyState title="No recurring expenses yet" description="e.g. rent, subscriptions, insurance - add one and it'll show up here when it's due." />
           ) : (
             <Card>
-              <div className="overflow-x-auto">
+              <div className="table-flush">
                 <table className="w-full border-collapse">
-                  <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+                  <thead>
                     <tr>
                       <th className="th">Name</th>
                       <th className="th">Amount</th>
@@ -428,7 +428,7 @@ function RecurringRow({
   // worth flagging) again once resumed.
   const overdue = item.isActive && item.nextDate < todayIso();
   return (
-    <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+    <tr>
       <td className="td">
         <span className="font-medium text-slate-800 dark:text-slate-200">{item.name}</span>
         {item.note && (

@@ -12,7 +12,18 @@ import {
   summarizeBulkDeleteSkips,
   todayIso,
 } from "../lib/format";
-import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, PageHeader, StatCard } from "../components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  LoadingBlock,
+  PageHeader,
+  SEGMENTED_TRACK,
+  segmentedItemClass,
+  StatCard,
+} from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import {
   IconAlertTriangle,
@@ -253,14 +264,13 @@ export default function Dashboard() {
           // itself moved into the Overview tab's own content (below) since
           // it's the only tab it actually affects - see that comment for why.
           <>
-            <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+            <div className={SEGMENTED_TRACK}>
               {TABS.map((t) => (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
+                  aria-pressed={tab === t.key}
+                  className={segmentedItemClass(tab === t.key)}
                 >
                   {t.label}
                 </button>
@@ -299,14 +309,13 @@ export default function Dashboard() {
               past the last button (Custom) into empty space. marko wanted
               it to end right at Custom instead; w-fit makes the box hug its
               buttons rather than fill the row. */}
-          <div className="mb-4 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+          <div className={`${SEGMENTED_TRACK} mb-4`}>
             {PERIODS.map((p) => (
               <button
                 key={p.key}
                 onClick={() => setPeriod(p.key)}
-                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  period === p.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
+                aria-pressed={period === p.key}
+                className={segmentedItemClass(period === p.key)}
               >
                 {p.label}
               </button>
@@ -352,7 +361,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <p className="mb-2 section-title">
                     Activity{" "}
                     {data.periodFrom === PERIOD_MIN_SENTINEL && data.periodTo === PERIOD_MAX_SENTINEL
                       ? "All time"
@@ -429,22 +438,19 @@ export default function Dashboard() {
                       <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
                         {METRICS.find((m) => m.key === metric)?.label} over time
                       </p>
-                      <p className={`mt-1 text-2xl font-semibold tabular-nums ${periodMetricTone(data, metric)}`}>
+                      <p className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}>
                         {metric === "sales"
                           ? String(periodMetricValue(data, metric))
                           : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
                       </p>
                     </div>
-                    <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+                    <div className={SEGMENTED_TRACK}>
                       {METRICS.map((m) => (
                         <button
                           key={m.key}
                           onClick={() => setMetric(m.key)}
-                          className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                            metric === m.key
-                              ? "bg-brand-600 text-white"
-                              : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                          }`}
+                          aria-pressed={metric === m.key}
+                          className={segmentedItemClass(metric === m.key)}
                         >
                           {m.label}
                         </button>
@@ -479,7 +485,7 @@ export default function Dashboard() {
 
           {tab === "financials" && (
             <>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+              <p className="mb-2 section-title">
                 Current inventory (all time)
               </p>
               <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -518,7 +524,7 @@ export default function Dashboard() {
                   Deliberately just 4 cards, plain (not a tinted zone like
                   Inventory & Potential Profit below) - this is a realized,
                   not a future/estimated block. */}
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+              <p className="mb-2 section-title">
                 Cashflow (all time)
               </p>
               <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -559,7 +565,7 @@ export default function Dashboard() {
                   Not affected by the period filter (unsold stock is a
                   right-now state, same reasoning as "Current inventory"). */}
               <div className="mb-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                <p className="mb-1 section-title">
                   Inventory &amp; Potential Profit
                 </p>
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
@@ -1036,7 +1042,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-overlay dark:border-slate-800 dark:bg-slate-900">
           {activeCount === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</p>
           ) : (
@@ -1151,23 +1157,29 @@ function AttentionCategoryCard({
 }) {
   const priority = worstPriority(items);
   const count = items.length;
+  // 2.6.0: same card metrics as ui.tsx's StatCard (p-3.5, 22px value) so a
+  // KPI tile and an Attention tile are visibly the same object. Selection is
+  // a brand ring rather than a heavier border, which is what stops the row of
+  // 5 from shifting by a pixel as you click across them.
   return (
     <button
       type="button"
       onClick={onSelect}
       disabled={count === 0}
-      className={`rounded-xl border p-4 text-left transition-colors ${
+      className={`card p-3.5 text-left transition ${
         selected
-          ? "border-brand-500 bg-brand-50/60 dark:border-brand-500 dark:bg-brand-500/10"
-          : "border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800/60"
-      } ${count === 0 ? "cursor-default opacity-60" : "cursor-pointer"}`}
+          ? "ring-2 ring-inset ring-brand-500 dark:ring-brand-400"
+          : "hover:border-slate-300 dark:hover:border-slate-700"
+      } ${count === 0 ? "cursor-default opacity-55" : "cursor-pointer hover:-translate-y-px hover:shadow-raised"}`}
     >
-      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <p className="section-title flex items-center gap-1.5">
         {priority && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${PRIORITY_DOT_CLASS[priority]}`} />}
         <span className="truncate">{title}</span>
       </p>
-      <p className="mt-1.5 text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</p>
-      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
+      <p className="mt-2 text-[22px] font-semibold leading-none tabular-nums text-slate-900 dark:text-slate-50">
+        {count}
+      </p>
+      <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
     </button>
   );
 }
@@ -1273,7 +1285,7 @@ function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
 
   return (
     <div className="mb-8">
-      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+      <p className="mb-2 flex items-center gap-1.5 section-title">
         <IconAlertTriangle className="h-3.5 w-3.5" /> Attention Center
       </p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1350,7 +1362,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
 
   return (
     <div className="mb-8">
-      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+      <p className="mb-2 flex items-center gap-1.5 section-title">
         <IconAlertTriangle className="h-3.5 w-3.5" /> Attention
       </p>
       {allClear ? (

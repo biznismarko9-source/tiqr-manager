@@ -9,7 +9,7 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
+  TableSkeleton,
   Modal,
   ModalFooter,
   PageHeader,
@@ -333,7 +333,7 @@ export function TicketsView({
       )}
 
       {orders === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : orders.length === 0 ? (
         <EmptyState icon={<IconBoxes className="h-8 w-8" />} title="No orders match these filters" />
       ) : visibleOrders.length === 0 ? (
@@ -423,7 +423,7 @@ export function TicketsView({
         // date to formatDateNumeric ("11.09.2026") in place of the old
         // locale-dependent formatDate call. Shared breakpoint moved to
         // 1649px (was 1690px) - see useNarrowTables.ts.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -448,7 +448,7 @@ export function TicketsView({
                 <col className="w-[6.436%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
@@ -465,7 +465,7 @@ export function TicketsView({
               {visibleOrders.map((o) => {
                 const inv = inventoryStatus(o);
                 return (
-                  <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                  <tr key={o.id}>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={o.code}>
                       <Link to={`/orders/${o.id}`} className="hover:underline">
                         {o.code}

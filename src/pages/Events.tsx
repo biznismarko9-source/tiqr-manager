@@ -12,7 +12,7 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
+  TableSkeleton,
   Modal,
   ModalFooter,
   PageHeader,
@@ -332,7 +332,7 @@ export default function Events() {
       )}
 
       {events === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : events.length === 0 ? (
         <EmptyState
           icon={<IconCalendarDays className="h-8 w-8" />}
@@ -390,7 +390,7 @@ export default function Events() {
         // dependent formatDate call, per marko's explicit format request.
         // Shared breakpoint moved to 1649px (was 1690px) - see
         // useNarrowTables.ts.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -419,7 +419,7 @@ export default function Events() {
                 <col className="w-[5.587%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 {selectionMode && (
                   <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -448,7 +448,7 @@ export default function Events() {
               {visibleEvents.map((ev) => (
                 <tr
                   key={ev.id}
-                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  className="cursor-pointer"
                   onClick={(e) => {
                     // BUG #7 fix: the event name cell already has its own
                     // <Link> below, which performs a single, correct router

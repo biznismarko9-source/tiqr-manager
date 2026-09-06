@@ -342,9 +342,9 @@ function YourTicketsTable({ groups }: { groups: YourTicketGroup[] }) {
     return <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets for this event yet.</p>;
   }
   return (
-    <div className="max-h-56 overflow-auto rounded-lg border border-slate-100 dark:border-slate-800">
+    <div className="table-flush max-h-56 rounded-lg border border-slate-200 dark:border-slate-800">
       <table className="w-full border-collapse">
-        <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+        <thead>
           <tr>
             <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
             <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
@@ -399,7 +399,7 @@ function MarketAnalysisPanel({ analysis, loading, error }: { analysis: MarketAna
   return (
     <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
       <div className="mb-2 flex items-center gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market Analysis</p>
+        <p className="section-title">Market Analysis</p>
         {loading && <Spinner className="h-3.5 w-3.5" />}
       </div>
       {error && (
@@ -429,7 +429,7 @@ function MarketAnalysisPanel({ analysis, loading, error }: { analysis: MarketAna
             analysis.byCurrency.map((block) => <CurrencyMarketBlock key={block.currency} block={block} />)
           )}
 
-          <p className="mb-2 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Your Tickets</p>
+          <p className="mb-2 mt-4 section-title">Your Tickets</p>
           <YourTicketsTable groups={analysis.yourTickets} />
         </>
       )}
@@ -489,7 +489,7 @@ function ComparableMarketTool({ requestId, currencies }: { requestId: number; cu
 
   return (
     <div className="mt-4 rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Compare a specific ticket</p>
+      <p className="mb-2 section-title">Compare a specific ticket</p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <Input placeholder="Section" value={section} onChange={(e) => setSection(e.target.value)} className="text-xs" />
         <Input placeholder="Tier / level" value={tier} onChange={(e) => setTier(e.target.value)} className="text-xs" />
@@ -517,9 +517,9 @@ function ComparableMarketTool({ requestId, currencies }: { requestId: number; cu
         (results.length === 0 ? (
           <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">No {currency} listings found yet to compare against.</p>
         ) : (
-          <div className="mt-3 max-h-56 overflow-auto rounded-lg border border-slate-100 dark:border-slate-800">
+          <div className="table-flush mt-3 max-h-56 rounded-lg border border-slate-200 dark:border-slate-800">
             <table className="w-full border-collapse">
-              <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+              <thead>
                 <tr>
                   <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
                   <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
@@ -725,7 +725,7 @@ function MarketplaceCard({
       {view.marketplaceActive && (
         <div className="mb-4 rounded-lg border border-slate-100 p-3 dark:border-slate-800">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Visible Scanner</p>
+            <p className="section-title">Visible Scanner</p>
             {session && <ScannerStatusPill session={session} />}
           </div>
 
@@ -810,9 +810,9 @@ function MarketplaceCard({
                     </div>
                   </div>
 
-                  <div className="mt-3 max-h-48 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+                  <div className="table-flush mt-3 max-h-48 rounded-lg border border-slate-200 dark:border-slate-800">
                     <table className="w-full border-collapse">
-                      <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+                      <thead>
                         <tr>
                           <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
                           <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
@@ -893,9 +893,9 @@ function MarketplaceCard({
           </div>
 
           {older.length > 0 && (
-            <div className="max-h-36 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+            <div className="table-flush max-h-36 rounded-lg border border-slate-200 dark:border-slate-800">
               <table className="w-full border-collapse">
-                <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/60">
+                <thead>
                   <tr>
                     <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Checked</th>
                     <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lowest</th>
@@ -1554,7 +1554,7 @@ export default function PriceChecker() {
           )}
 
           <Card className="mb-6 p-4">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market vs. mine</p>
+            <p className="mb-3 section-title">Market vs. mine</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
               <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
               <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
@@ -1587,7 +1587,7 @@ export default function PriceChecker() {
             )}
           </Card>
 
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Marketplaces</p>
+          <p className="mb-3 section-title">Marketplaces</p>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {summary.marketplaces.map((view) => (

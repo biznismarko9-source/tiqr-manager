@@ -2,28 +2,133 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   2.6.0 visual redesign - the app's shared design layer.
+
+   Everything premium/modern about this app's look is defined in exactly four
+   places, on purpose: `tailwind.config.js` (color ramps, shadow scale, radius
+   rhythm, motion budget), this file (base typography, surfaces, and the
+   component classes the pages already spell out by name), `components/ui.tsx`
+   (the shared React controls), and `components/Layout.tsx` (the shell). No
+   page defines its own look on top of these - if a page needs a new visual
+   pattern, it belongs here, not inlined there.
+   ------------------------------------------------------------------------- */
+
 @layer base {
   html, body, #root {
     height: 100%;
   }
-  body {
-    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+
+  /* Surface + line tokens. These exist so the handful of rules below that
+     genuinely need a raw color value (sticky header backdrops, scrollbars,
+     the dark-mode top highlight) resolve to the SAME colors as the
+     `bg-slate-*`/`border-slate-*` utilities the pages use - one source of
+     truth, defined against the retuned slate ramp in tailwind.config.js.
+     Light and dark are written independently, not as an inversion of each
+     other, which is what gives dark mode a real background -> surface ->
+     raised-surface step instead of flat near-black. */
+  :root {
+    --app-bg: theme("colors.slate.50");
+    --surface: #ffffff;
+    --surface-muted: theme("colors.slate.50");
+    --surface-raised: #ffffff;
+    --line: theme("colors.slate.200");
+    --line-soft: theme("colors.slate.100");
+    --scroll-thumb: theme("colors.slate.300");
+    --highlight: transparent;
   }
+  .dark {
+    --app-bg: theme("colors.slate.950");
+    --surface: theme("colors.slate.900");
+    --surface-muted: #151b26;
+    --surface-raised: #171e2a;
+    --line: theme("colors.slate.800");
+    --line-soft: #19202b;
+    --scroll-thumb: theme("colors.slate.700");
+    /* Dark surfaces get their depth from a 1px top highlight rather than a
+       shadow (a black shadow on a dark background is invisible). */
+    --highlight: rgb(255 255 255 / 0.04);
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+    /* Inter is listed first in the font stack but is NOT bundled or fetched -
+       this app is offline-first and deliberately adds no web font, so on most
+       machines this resolves to the OS UI face. These two settings are what
+       make that fallback look deliberate: slightly tightened tracking at UI
+       sizes, and `cv11`/`ss01` (a single-storey `a`/`g` and a straight-tailed
+       `l`) applied only where Inter actually is installed. */
+    font-feature-settings: "cv11", "ss01";
+    letter-spacing: -0.006em;
+  }
+
+  /* Data must never wobble as digits change - every number in this app
+     (money, counts, dates, percentages) renders in fixed-width figures. */
+  .tnum,
+  .td, .td-c, .td-c-narrow,
+  .th, .th-c, .th-c-narrow {
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1, h2, h3, h4 {
+    letter-spacing: -0.018em;
+  }
+
   ::selection {
     @apply bg-brand-200 dark:bg-brand-800 dark:text-white;
+  }
+
+  /* One focus treatment for the whole app: a visible brand ring, but only
+     for keyboard users - a mouse click on a card/row/button never leaves a
+     ring behind. Individual controls that want a different ring (the shared
+     Button, .input) still override this themselves. */
+  :focus-visible {
+    outline: 2px solid theme("colors.brand.500");
+    outline-offset: 2px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
   }
 }
 
 @layer components {
+  /* -----------------------------------------------------------------------
+     Forms
+     --------------------------------------------------------------------- */
   .input {
-    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100 disabled:bg-slate-100 disabled:text-slate-400
-      dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-brand-500 dark:focus:ring-brand-900 dark:disabled:bg-slate-800 dark:disabled:text-slate-500;
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-brand-500 focus:outline-none focus:shadow-focus disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400
+      dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-brand-500 dark:disabled:border-slate-800 dark:disabled:bg-slate-800/60 dark:disabled:text-slate-500;
+    outline: none;
+  }
+  /* Paired with <Field error=...> in ui.tsx - the field turns red without
+     the layout shifting, since the error ring is a shadow, not a border.
+     `.field-invalid` is the wrapper form: <Field> puts it around whatever
+     control it was given, so an errored Input/Select/Textarea turns red with
+     no prop threaded through any of the 127 call sites. */
+  .input-error,
+  .field-invalid .input {
+    @apply border-red-400 hover:border-red-500 focus:border-red-500 focus:shadow-focus-danger dark:border-red-500/60 dark:hover:border-red-500;
   }
   .label {
-    @apply mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400;
+    @apply mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-400;
   }
+
+  /* -----------------------------------------------------------------------
+     Tables
+
+     `.th`/`.td` (comfortable) and `.th-c`/`.td-c` (compact) are the two
+     density steps every table in the app already spells out by name, so
+     restyling them here restyles all 22 of them at once.
+
+     `.th-c-narrow`/`.td-c-narrow` keep their EXACT pre-2.6.0 px-1 padding
+     and 11px size - see the original 2.0.37 note kept below. Those two
+     values were measured against real formatted data in three locales to
+     guarantee no horizontal scrollbar at the app's minimum window width;
+     the redesign changes their color and alignment treatment only, never
+     their metrics.
+     --------------------------------------------------------------------- */
   .th {
-    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+    @apply px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.055em] text-slate-500 dark:text-slate-400;
   }
   .td {
     @apply px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300;
@@ -35,7 +140,7 @@
      tighter, which is what actually buys back the horizontal space needed to
      fit these two tables without a horizontal scrollbar. */
   .th-c {
-    @apply px-2 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+    @apply px-2 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.055em] text-slate-500 dark:text-slate-400;
   }
   .td-c {
     @apply px-2 py-2 text-sm text-slate-700 dark:text-slate-300;
@@ -56,8 +161,137 @@
   .td-c-narrow {
     @apply px-1 py-1.5 text-[11px] text-slate-700 dark:text-slate-300;
   }
+
+  /* The bordered surface every list table sits in. Replaces the identical
+     "overflow-x-auto rounded-xl border ... bg-white ... shadow-sm" wrapper
+     that was copy-pasted around ~14 tables, so the surface, the sticky
+     header, the row rhythm and the hover state are defined once.
+
+     Vertical scrolling lives HERE, not on the page: a table taller than the
+     viewport scrolls inside its own shell under a pinned header, instead of
+     pushing the page header and filters off-screen. Anything that fits does
+     not scroll at all. Pages whose chrome above the table is unusually tall
+     can pass a different inset with `style={{ ["--table-inset"]: "18rem" }}`. */
+  .table-shell {
+    @apply overflow-auto rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900;
+    max-height: calc(100vh - var(--table-inset, 13.5rem));
+    overscroll-behavior: contain;
+  }
+  /* Two `.table-shell`s stacked on one screen (Event Detail's Overview and
+     Sales tabs) can't each claim most of the viewport, so those opt into a
+     fixed, shorter cap instead of the viewport-relative one. */
+  .table-shell-compact {
+    max-height: 24rem;
+  }
+
+  /* Sticky header + row rhythm for both the shell above and for tables that
+     already live inside their own scroll box (Price Checker's max-h-56
+     panels, Settings' import preview) - those add `.table-flush` to the
+     scroll box they already have instead of adopting the shell's surface. */
+  .table-shell thead th,
+  .table-flush thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    /* Opaque on purpose: a translucent sticky header lets rows show through
+       as they scroll under it. This is the same class of dark-mode bug 2.4.4
+       fixed once on the old Control Center table - fixed here for every
+       table in the app instead of one page at a time. */
+    background-color: var(--surface-muted);
+    box-shadow: inset 0 -1px 0 0 var(--line);
+  }
+  .table-flush {
+    @apply overflow-auto;
+    overscroll-behavior: contain;
+  }
+  .table-shell tbody tr,
+  .table-flush tbody tr {
+    @apply transition-colors;
+    box-shadow: inset 0 -1px 0 0 var(--line-soft);
+  }
+  .table-shell tbody tr:last-child,
+  .table-flush tbody tr:last-child {
+    box-shadow: none;
+  }
+  .table-shell tbody tr:hover,
+  .table-flush tbody tr:hover {
+    background-color: var(--surface-muted);
+  }
+  .dark .table-shell tbody tr:hover,
+  .dark .table-flush tbody tr:hover {
+    background-color: rgb(255 255 255 / 0.028);
+  }
+  /* Selected row - set by the bulk-selection UIs, which already track their
+     own `selected` state and now just add this class. Deliberately a left
+     accent bar plus a tint rather than a full brand fill, so a screen with
+     20 rows selected stays readable. */
+  .row-selected,
+  .table-shell tbody tr.row-selected:hover,
+  .table-flush tbody tr.row-selected:hover {
+    background-color: theme("colors.brand.50");
+    box-shadow: inset 2px 0 0 0 theme("colors.brand.500"), inset 0 -1px 0 0 var(--line-soft);
+  }
+  .dark .row-selected,
+  .dark .table-shell tbody tr.row-selected:hover,
+  .dark .table-flush tbody tr.row-selected:hover {
+    background-color: rgb(74 104 247 / 0.1);
+  }
+
+  /* -----------------------------------------------------------------------
+     Surfaces
+     --------------------------------------------------------------------- */
   .card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
+    @apply rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900;
+    /* Dark mode's depth cue - see --highlight above. Transparent in light
+       mode, so this is a no-op there. */
+    background-image: linear-gradient(var(--highlight), transparent 1px);
+  }
+  /* Opt-in lift for cards that are actually clickable (KPI tiles, the
+     Dashboard's Attention boxes, Ticket Center's filter tiles). Not applied
+     to `.card` itself - a static container that lifts on hover is noise. */
+  .card-interactive {
+    @apply cursor-pointer transition hover:-translate-y-px hover:border-slate-300 hover:shadow-raised dark:hover:border-slate-700;
+  }
+
+  /* Section label above a group of cards/a table - the one "small heading"
+     style in the app, so Dashboard/Finance/Event Detail all title their
+     blocks identically. */
+  .section-title {
+    @apply text-[11px] font-semibold uppercase tracking-[0.07em] text-slate-400 dark:text-slate-500;
+  }
+
+  /* -----------------------------------------------------------------------
+     Loading
+
+     `.skeleton` is a neutral placeholder block - see ui.tsx's Skeleton /
+     TableSkeleton, which are the only intended callers. The sweep is a
+     pseudo-element so the block itself keeps whatever size/radius the
+     caller gave it.
+     --------------------------------------------------------------------- */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-slate-200/70 dark:bg-slate-800/70;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full;
+    /* Written out rather than via `animate-[...]`: this keyframe lives in
+       this file (next to fadein/pop-in below), not in tailwind.config.js's
+       `animation` map, so there is no utility for Tailwind to hang it off. */
+    animation: shimmer 1.4s infinite;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(255 255 255 / 0.45),
+      transparent
+    );
+  }
+  .dark .skeleton::after {
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(255 255 255 / 0.06),
+      transparent
+    );
   }
 }
 
@@ -72,32 +306,68 @@
    (modal panel, confirm dialog panel, profile dropdown, a toast arriving);
    `toast-out` is the one deliberate exit animation in the app, since a
    toast disappearing on its own (nobody clicked anything) looks like a
-   glitch if it just vanishes - see lib/toast.tsx for how it's sequenced. */
+   glitch if it just vanishes - see lib/toast.tsx for how it's sequenced.
+   2.6.0: unchanged in shape - `pop-in` only got a slightly smaller start
+   scale so it reads as a lift rather than a zoom, and `fade-up` was added
+   for content that swaps in place (tab panels). */
 @keyframes fadein {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 @keyframes pop-in {
-  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+  from { opacity: 0; transform: scale(0.98) translateY(4px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 @keyframes toast-out {
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(-6px) scale(0.98); }
 }
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
-/* Thin, unobtrusive scrollbars for the dense tables in this app */
+/* Thin, unobtrusive scrollbars for the dense tables in this app. 2.6.0:
+   narrower, with a transparent border so the thumb reads as inset rather
+   than as a second border line next to a table's own edge. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: rgb(203 213 225);
+  background-color: var(--scroll-thumb);
+  border: 3px solid transparent;
+  background-clip: content-box;
   border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: theme("colors.slate.400");
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-.dark ::-webkit-scrollbar-thumb {
-  background-color: rgb(51 65 85);
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Marko asked for light polish only, and the OS-level "reduce motion"
+   setting has to win over all of it: every transition and every one of the
+   keyframes above collapses to effectively instant, while still running so
+   any animation-driven state (lib/toast.tsx sequences a toast's removal off
+   `animationend`) keeps firing instead of hanging. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .card-interactive:hover {
+    transform: none;
+  }
 }

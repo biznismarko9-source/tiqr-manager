@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { Button, Card, Field, Input, Spinner } from "../components/ui";
+import { Button, Card, Field, Input, SEGMENTED_TRACK, segmentedItemClass, Spinner } from "../components/ui";
 import { IconGoogle } from "../components/icons";
 import { api, errMsg } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -153,9 +153,13 @@ export default function Welcome() {
     <div className="flex min-h-full w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-slate-950">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center text-center">
-          <img src={logo} alt="TIQR Manager" className="h-12 w-12 rounded-xl shadow-sm" />
-          <h1 className="mt-3 text-lg font-semibold text-slate-900 dark:text-slate-100">TIQR Manager</h1>
-          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">Reseller toolkit</p>
+          <img
+            src={logo}
+            alt="TIQR Manager"
+            className="h-12 w-12 rounded-xl shadow-raised ring-1 ring-slate-900/5 dark:ring-white/10"
+          />
+          <h1 className="mt-3.5 text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-50">TIQR Manager</h1>
+          <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Reseller toolkit</p>
         </div>
 
         <Card className="p-5">
@@ -201,26 +205,24 @@ export default function Welcome() {
             </>
           ) : (
             <>
-              <div className="mb-4 inline-flex w-full rounded-lg border border-slate-200 p-0.5 dark:border-slate-800">
+              {/* 2.6.0: the app's shared segmented control (ui.tsx), stretched to
+                  the card's full width - the same track/thumb used by every
+                  other two-way switch in the app rather than this screen's
+                  own brand-fill variant. */}
+              <div className={`${SEGMENTED_TRACK} mb-4 w-full flex-nowrap`}>
                 <button
                   type="button"
                   onClick={() => setMode("login")}
-                  className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-                    mode === "login"
-                      ? "bg-brand-600 text-white"
-                      : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
-                  }`}
+                  aria-pressed={mode === "login"}
+                  className={`${segmentedItemClass(mode === "login")} flex-1 text-sm`}
                 >
                   Log in
                 </button>
                 <button
                   type="button"
                   onClick={() => setMode("register")}
-                  className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-                    mode === "register"
-                      ? "bg-brand-600 text-white"
-                      : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
-                  }`}
+                  aria-pressed={mode === "register"}
+                  className={`${segmentedItemClass(mode === "register")} flex-1 text-sm`}
                 >
                   Sign up
                 </button>

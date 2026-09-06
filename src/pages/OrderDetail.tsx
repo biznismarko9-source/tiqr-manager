@@ -505,7 +505,7 @@ export default function OrderDetail() {
         // button here) never had a real measured width - its old
         // 2.707%/4.787% were unmeasured guesses. Shared breakpoint moved to
         // 1649px (was 1690px) - see useNarrowTables.ts.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               // 2.0.68 (marko's report, "taktiez u orders to tak urob"): 2
@@ -552,7 +552,7 @@ export default function OrderDetail() {
                 <col className="w-[1.697%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>
                   <input
@@ -584,7 +584,7 @@ export default function OrderDetail() {
                 return (
                   <tr
                     key={t.id}
-                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selected.has(t.id) ? "bg-brand-50/60 dark:bg-brand-500/5" : ""}`}
+                    className={selected.has(t.id) ? "row-selected" : ""}
                   >
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <input

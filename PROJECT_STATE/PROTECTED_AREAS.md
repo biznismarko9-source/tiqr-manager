@@ -21,6 +21,76 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.6.0 - Complete visual redesign (shared design layer; no backend, no schema, no logic change)
+
+The app's whole look was rebuilt this version. These are the traps that
+creates.
+
+- **The app's look is defined in FOUR files, and a page is not one of them.**
+  `tailwind.config.js`, `src/index.css`, `src/components/ui.tsx`,
+  `src/components/Layout.tsx`. The reason this matters is historical: before
+  2.6.0 the same "bordered white box with a table in it" markup was
+  copy-pasted around 14 pages, the same segmented-control classes were
+  hand-rolled in 5 places, and the same section-label classes in 28 - which
+  is exactly how two of them drifted apart. If a page needs a new visual
+  pattern, add it to the layer and use it from the page. Do not restyle one
+  page locally, however small the change looks.
+- **`brand` is fixed identity, `slate` is the redesign's lever.** The
+  `brand` ramp (600 = `#4a68f7`) was NOT touched in 2.6.0 and should not be
+  touched without asking marko first - he tried a palette change in 2.0.56
+  and rejected it in production (2.0.58). `slate` WAS retuned, deliberately,
+  because overriding that one ramp is how ~23k lines of already-written
+  `bg-slate-N`/`text-slate-N`/`border-slate-N` change at once. Its endpoints
+  are no longer Tailwind's published defaults - that is intentional, not
+  drift, so do not "restore" them.
+- **`.th-c-narrow`/`.td-c-narrow` still keep their exact 2.0.37 metrics.**
+  The redesign changed their color and tracking, never their `px-1` padding
+  or `text-[11px]` size. Those two values were measured against real
+  formatted data in three locales to guarantee no horizontal scrollbar at
+  the app's minimum window width - see the 2.0.37 note in this file. Same
+  for every table's `colgroup` percentages and `useNarrowTables()`'s
+  breakpoint: untouched by 2.6.0, and not to be adjusted "for balance."
+- **`.table-shell` owns vertical scrolling, and its cap is a guess with an
+  escape hatch.** `max-height: calc(100vh - var(--table-inset, 13.5rem))`
+  assumes roughly a page header plus one filter row above the table. A page
+  with taller chrome will scroll the page a little AS WELL as the table;
+  the fix is `style={{ ["--table-inset"]: "18rem" }}` on that shell, not a
+  new wrapper. Event Detail stacks two tables on one tab and uses
+  `.table-shell-compact` (a fixed 24rem) instead, for the same reason.
+- **Sticky headers must stay opaque.** `.table-shell thead th` /
+  `.table-flush thead th` set `background-color: var(--surface-muted)`
+  explicitly. A translucent sticky header lets rows show through as they
+  scroll under it - the exact dark-mode bug 2.4.4 fixed once on the old
+  Control Center page. It is fixed for every table at once now; do not
+  reintroduce a `dark:bg-slate-800/60`-style translucent header on a
+  `<thead>`.
+- **`STATUS_TONES` keys are business vocabulary, not styling.** 2.6.0
+  restyled every tone with one recipe but changed no key and no mapping.
+  Adding, removing or re-pointing a key changes what a status LOOKS LIKE to
+  marko, which is a product decision - the color recipe is not.
+- **`prefers-reduced-motion` collapses durations to 0.01ms rather than to
+  `none`.** That is deliberate: `lib/toast.tsx` sequences a toast's removal
+  off `animationend`, so an animation that never runs would hang it. Do not
+  "simplify" that media query to `animation: none`.
+- **The shimmer keyframe lives in `index.css`, not in the Tailwind config.**
+  Tailwind v3 only emits `@keyframes` for keyframes referenced through a
+  named `theme.animation` entry, so an `animate-[shimmer_...]` arbitrary
+  value would compile to an animation with no keyframes and silently do
+  nothing. `.skeleton::after` writes `animation: shimmer 1.4s infinite`
+  directly, next to the existing `fadein`/`pop-in`/`toast-out` blocks.
+- **`ModalFooter` is full-bleed via negative margins (`-mx-5 -mb-4`) and so
+  is coupled to `Modal`'s own `px-5 py-4` body padding.** They are a matched
+  pair; changing one without the other leaves a footer that doesn't reach
+  the panel edges. All 22 call sites render it as a direct child of the
+  modal body - keep it that way.
+- **2.6.0 shipped WITHOUT a build.** It was implemented on a machine with no
+  Node.js and no Rust toolchain; `npx tsc -b`, `npm run build` and
+  `cargo check --lib` were never run, and `Cargo.lock`/`package-lock.json`
+  had their version entries hand-edited instead of regenerated. marko was
+  told and chose to proceed. If anything from this version misbehaves, that
+  is the first thing to suspect - and the first thing to do is run those
+  three commands plus `cargo check` / `npm install --package-lock-only`.
+
 ## 2.5.2 - "Forgot password?" deep-link flow; Discord sign-in deferred (frontend + new tauri-plugin-deep-link, no schema change)
 
 marko asked for both after 2.5.1; this section covers what to know before

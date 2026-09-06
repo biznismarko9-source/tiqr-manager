@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.5.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.6.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -147,6 +147,22 @@ itself instead of a browser tab, landing on a new `src/pages/
 ResetPassword.tsx`. See "Current focus" below for the full mechanism and the
 one manual Firebase Console step this needs before it actually works.
 
+**2.6.0** is a complete visual redesign of the app and NOTHING else - marko's
+own task, framed by him as "VÝLUČNE UI/UX a visual redesign. Žiadne nové
+business features. Žiadne nové workflow. Žiadne nové databázové systémy."
+`src-tauri/` is byte-for-byte identical to 2.5.2 (verified by diff), there is
+no new migration (the next new one is still **027**), and no dependency was
+added. The whole change lives in one shared design layer -
+`tailwind.config.js`, `src/index.css`, `src/components/ui.tsx`,
+`src/components/Layout.tsx` - plus mechanical adoption of that layer across
+the pages. See "Current focus" below and `PROTECTED_AREAS.md`'s new "2.6.0"
+entry (especially: where the app's look is allowed to be defined, and why
+`brand` and the narrow-table metrics were left alone). **One caveat this
+release carries that no previous one did: it was implemented on a machine
+with no Node.js and no Rust toolchain, so `npx tsc -b`, `npm run build` and
+`cargo check --lib` were NOT run** - marko chose to proceed on static review
+rather than install a toolchain. Run all three before publishing the tag.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -178,6 +194,17 @@ one manual Firebase Console step this needs before it actually works.
   below, not duplicated), Welcome (auth), PendingApproval, DatabaseError.
   Shared: `src/types.ts`, IPC in `src/lib/api.ts`, auth in
   `src/lib/auth.tsx`, money/date parsing helpers in `src/lib/`.
+  **Design layer (2.6.0)**: the app's entire visual language lives in four
+  files and nowhere else - `tailwind.config.js` (the `brand`/`slate` ramps,
+  the `shadow-card`/`raised`/`overlay` scale, the radius rhythm, the
+  120-180ms `transitionDuration.DEFAULT`), `src/index.css` (base typography,
+  the surface/line CSS variables, and the `.input`/`.label`/`.th`/`.td`/
+  `.card`/`.section-title`/`.skeleton`/`.table-shell`/`.table-flush`/
+  `.row-selected`/`.field-invalid` component classes), `src/components/
+  ui.tsx` (every shared control, plus `SEGMENTED_TRACK`/`segmentedItemClass`
+  as the app's one tab pattern) and `src/components/Layout.tsx` (the shell).
+  A page must not define a visual pattern of its own - if it needs one, it
+  belongs in that layer. See `PROTECTED_AREAS.md`'s "2.6.0" entry.
   **Layout** (`src/components/Layout.tsx`, the sidebar): 2.4.4 grouped
   Events/Orders/Tickets/Sales/Inventory under one collapsible "Tickets"
   entry (session-only expand state, defaults open - the 5 routes
@@ -272,6 +299,80 @@ one manual Firebase Console step this needs before it actually works.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.6.0 - Complete visual redesign, UI/UX only.** marko's own task, and the
+first round in this project's history whose explicit scope was "change how
+everything looks, change nothing about what it does." His own constraints:
+premium SaaS look, excellent readability, compact but not cramped, subtle
+depth/borders, consistent spacing and status badges, good hover/focus - and
+explicitly NOT: heavy gradients, glassmorphism everywhere, huge rounded
+cards, flashy animation, a gaming look, too many colors. Plus a hard list of
+things not to add (command palette, global search, notifications, AI,
+monitoring, new widgets/modules/workflow).
+
+- **The redesign is a shared LAYER, not a per-page pass.** Four files define
+  the app's look now: `tailwind.config.js` (color ramps, a 3-step shadow
+  scale, radius rhythm, motion budget), `src/index.css` (base typography +
+  the component classes the pages already spell out by name), `ui.tsx` (the
+  shared React controls) and `Layout.tsx` (the shell). Pages were only
+  touched to ADOPT that layer - to delete a hand-rolled copy of something
+  the layer now owns - never to give a page a look of its own.
+- **Color**: the `slate` ramp was retuned (quieter blue-grey; dark mode's
+  950/900 lifted and de-blued off `#020617`/`#0f172a` so background ->
+  surface is a real step rather than near-black on near-black). This is the
+  same one-file mechanism 2.0.56/2.0.58 used, so ~23k lines of existing
+  `bg-slate-N`/`border-slate-N`/`text-slate-N` picked it up with no page
+  edit. **`brand` was deliberately not touched, byte for byte** - `#4a68f7`
+  is the accent marko confirmed in 2.0.56 and kept through the 2.0.58
+  revert, and a palette change has already been tried and rejected once.
+- **Tables** (marko called these out as the most important part): all 22
+  tables in the app moved onto one `.table-shell`/`.table-flush` system -
+  the identical "overflow-x-auto rounded-xl border ... shadow-sm" wrapper
+  that had been copy-pasted around 14 of them is gone. That system owns the
+  surface, an opaque sticky header (fixing the same class of dark-mode
+  bleed-through 2.4.4 fixed once on a single page), internal vertical
+  scrolling instead of page scrolling, one hover treatment and one
+  `.row-selected` treatment. Column widths, every `colgroup` percentage set,
+  and `useNarrowTables()`'s breakpoint are all untouched, and
+  `.th-c-narrow`/`.td-c-narrow` keep their exact measured 2.0.37 metrics.
+- **One tab pattern**: `SEGMENTED_TRACK`/`segmentedItemClass` (ui.tsx) is now
+  the app's only segmented control. `TabSwitcher` uses it, and so do
+  Dashboard's three previously hand-rolled rows (tab/period/metric),
+  Welcome's Log in / Sign up switch, and Calendar's prev/Today/next cluster.
+  The old solid brand-blue active fill is gone - a list filter shouldn't be
+  the loudest control on the page.
+- **Loading/empty**: new `Skeleton`/`TableSkeleton` in ui.tsx; six list pages
+  (Orders, Sales, Tickets, Events, Pulls, Ticket Center) now hold their
+  layout with a skeleton instead of collapsing to a centred spinner.
+  `EmptyState` was restyled (medallion icon, real surface); every other
+  `LoadingBlock` call site was left alone on purpose - a skeleton only helps
+  where the shape of what's coming is known.
+- **Motion**: everything lands in marko's 120-180ms band (Tailwind's
+  `transitionDuration.DEFAULT`), and `prefers-reduced-motion` now collapses
+  every transition and keyframe app-wide - including the toast exit, which
+  still fires its `animationend` so `lib/toast.tsx`'s removal sequence keeps
+  working rather than hanging.
+- **Judgment calls, none asked about directly** (per marko's standing
+  "smallest consistent solution, flag it" rule): retuning `slate` at all
+  rather than only adding new tokens (it is the only way to reach every page
+  without editing every page); capping `.table-shell` at
+  `100vh - 13.5rem` with a `--table-inset` escape hatch, and giving Event
+  Detail's stacked tables a shorter fixed cap instead; keeping the sidebar at
+  `w-48` rather than widening it back; keeping the one-click light/dark
+  toggle as a single button rather than a Sun/Moon segmented pair; and
+  leaving Dashboard's already-unused `Button` import in place rather than
+  taking an unrelated cleanup.
+- **NOT verified by a build.** No Node.js and no Rust toolchain exist on the
+  machine this was implemented on, so `npx tsc -b`, `npm run build` and
+  `cargo check --lib` could not run; marko was asked and chose to proceed on
+  static review. What WAS verified statically: `src-tauri/` byte-identical to
+  2.5.2; bracket balance unchanged in all 25 edited frontend files; every
+  `components/ui` import resolves to a real export; all 22 tables sit inside
+  a shell/flush wrapper and none kept its own `<thead>` styling; every
+  `shadow-*`/`theme()` reference resolves to a real config key; and the full
+  diff contains no `api.` call, no state/handler/effect and no routing
+  change. `Cargo.lock`/`package-lock.json` version entries were bumped by
+  hand and should be regenerated.
 
 **2.5.2 - "Forgot password?" via a deep link back into the app; Discord
 sign-in deferred.** marko asked for two things after 2.5.1: a working

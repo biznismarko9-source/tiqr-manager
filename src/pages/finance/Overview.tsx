@@ -368,7 +368,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
           <div className="mb-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
             <CategoryBreakdownCard rows={categoryBreakdown} />
             <Card className="p-4">
-              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+              <p className="mb-3 section-title">
                 Income vs Expenses by month
               </p>
               <IncomeExpenseChart buckets={monthlySeries} />

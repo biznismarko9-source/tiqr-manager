@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord } from "../lib/types";
 import { formatDateNumeric } from "../lib/format";
-import { Badge, Card, EmptyState, Input, LoadingBlock, PageHeader, Select } from "../components/ui";
+import { Badge, Card, EmptyState, Input, TableSkeleton, PageHeader, Select } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { IconSearch } from "../components/icons";
 import { orderCompletionChecks } from "./Orders";
@@ -116,15 +116,17 @@ function CategoryCard({
     <button
       type="button"
       onClick={onSelect}
-      className={`rounded-xl border p-4 text-left transition-colors ${
+      className={`card p-3.5 text-left transition hover:-translate-y-px hover:shadow-raised ${
         selected
-          ? "border-brand-500 bg-brand-50/60 dark:border-brand-500 dark:bg-brand-500/10"
-          : "border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800/60"
+          ? "ring-2 ring-inset ring-brand-500 dark:ring-brand-400"
+          : "hover:border-slate-300 dark:hover:border-slate-700"
       }`}
     >
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
-      <p className="mt-1.5 text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</p>
-      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
+      <p className="section-title truncate">{title}</p>
+      <p className="mt-2 text-[22px] font-semibold leading-none tabular-nums text-slate-900 dark:text-slate-50">
+        {count}
+      </p>
+      <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
     </button>
   );
 }
@@ -225,7 +227,7 @@ export default function TicketCenter() {
       </div>
 
       {!pending || !counts ? (
-        <LoadingBlock label="Loading ticket center..." />
+        <TableSkeleton />
       ) : (
         <>
           <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -253,7 +255,7 @@ export default function TicketCenter() {
               />
             </Card>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+            <div className="table-shell">
               <table className="w-full table-fixed border-collapse">
                 {isNarrow ? (
                   <colgroup>
@@ -274,7 +276,7 @@ export default function TicketCenter() {
                     <col className="w-[11%]" />
                   </colgroup>
                 )}
-                <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+                <thead>
                   <tr>
                     <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                     <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
@@ -290,7 +292,7 @@ export default function TicketCenter() {
                     const c = completionStatus(orderCompletionChecks(o));
                     const cellCls = isNarrow ? "td-c-narrow" : "td-c";
                     return (
-                      <tr key={o.id} onClick={() => openOrder(o)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                      <tr key={o.id} onClick={() => openOrder(o)} className="cursor-pointer">
                         <td className={cellCls} title={o.eventName}>
                           <div className="flex items-center gap-1.5">
                             <span className="truncate font-medium text-slate-900 dark:text-slate-100">{o.eventName}</span>

@@ -12,7 +12,7 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
+  TableSkeleton,
   Modal,
   ModalFooter,
   PageHeader,
@@ -459,7 +459,7 @@ export default function Orders() {
       )}
 
       {orders === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : orders.length === 0 ? (
         <EmptyState
           icon={<IconPackage className="h-8 w-8" />}
@@ -518,7 +518,7 @@ export default function Orders() {
         // request) in place of the old locale-dependent formatDate call.
         // Shared breakpoint moved to 1649px (was 1690px) - see
         // useNarrowTables.ts.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -553,7 +553,7 @@ export default function Orders() {
                 <col className="w-[6.5%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 {selectionMode && (
                   <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -583,7 +583,7 @@ export default function Orders() {
               {visibleOrders.map((o) => (
                 <tr
                   key={o.id}
-                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  className="cursor-pointer"
                   onClick={(e) => {
                     // 2.0.28: excludes the new checkbox too (its own onChange
                     // handles it), and while selectionMode is on, a row click
@@ -717,7 +717,7 @@ function FormGroup({ title, children }: { title?: string; children: ReactNode })
   return (
     <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
       {title && (
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
+        <p className="mb-3 section-title">{title}</p>
       )}
       <div className="grid grid-cols-2 gap-4">{children}</div>
     </div>
@@ -1300,7 +1300,7 @@ function OrderFormModal({
           component the way marko's brief spelled out, e.g. "4 tickets ·
           Purchase: EUR200.00 · Fees: EUR8.00 · Total: EUR208.00". */}
       <div className="mt-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Summary</p>
+        <p className="mb-2 section-title">Summary</p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
           <span>
             {qNum} ticket{qNum === 1 ? "" : "s"}

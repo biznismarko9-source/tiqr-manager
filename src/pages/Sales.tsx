@@ -24,7 +24,7 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
+  TableSkeleton,
   Modal,
   ModalFooter,
   PageHeader,
@@ -700,7 +700,7 @@ export default function Sales() {
       )}
 
       {groups === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : groups.length === 0 ? (
         hasActiveFilters ? (
           <EmptyState
@@ -814,7 +814,7 @@ export default function Sales() {
         //   Intl.NumberFormat data across en-US/sk-SK/de-DE, not just
         //   header text) to fit without scrolling or wrapping all the way
         //   down to 1080px, this app's enforced minimum window width.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -853,7 +853,7 @@ export default function Sales() {
                 <col className="w-[6.5%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 {selectionMode && (
                   <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -890,7 +890,7 @@ export default function Sales() {
               {visibleGroups.map((g) => (
                 <tr
                   key={g.id}
-                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/60 ${selectionMode ? "cursor-pointer" : ""}`}
+                  className={selectionMode ? "cursor-pointer" : ""}
                   onClick={(e) => {
                     // 2.0.28: unlike Events/Orders, this row never navigated
                     // on click before (only the Sale code cell's own <Link>

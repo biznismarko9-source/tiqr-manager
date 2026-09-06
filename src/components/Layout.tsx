@@ -94,12 +94,23 @@ const NAV: NavItem[] = [
 // drift between the two - only the group HEADER button (not a real
 // NavLink, since "Tickets" has no single route of its own) computes its own
 // equivalent class inline, from `ticketsGroupActive` below.
+// 2.6.0 (visual redesign): the active state is now a tinted surface plus a
+// short accent bar pinned to the item's left edge (see `NAV_ACTIVE_BAR`
+// below), instead of a flat brand-tinted pill. The bar is what makes the
+// current page findable at a glance in a 192px-wide rail; the tint alone
+// was easy to miss next to the hover state, which used a similar weight.
+// Nothing about which items exist, their order, or where they link changed.
+const NAV_BASE =
+  "group relative flex items-center gap-2.5 rounded-lg px-3 py-[7px] text-[13px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500";
+const NAV_ACTIVE =
+  "bg-brand-50 font-semibold text-brand-700 dark:bg-brand-500/[0.14] dark:text-brand-300";
+const NAV_IDLE =
+  "font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-100";
+const NAV_ACTIVE_BAR =
+  "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-600 dark:bg-brand-400";
+
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-    isActive
-      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
-      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-  }`;
+  `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
 
 export default function Layout() {
   const toast = useToast();
@@ -176,16 +187,26 @@ export default function Layout() {
     <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
       {/* 2.0.30: w-56 (224px) -> w-48 (192px) - marko asked to make the
           sidebar narrower to give wide tables (Pulls) more room; nav labels
-          and the logo lockup still have comfortable margin at this width. */}
+          and the logo lockup still have comfortable margin at this width.
+          2.6.0: width deliberately UNCHANGED - the redesign buys its extra
+          breathing room from tighter internal padding and a smaller nav type
+          size, not by taking width back off the tables. */}
       <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center gap-2 px-4 py-4">
-          <img src={logo} alt="TIQR Manager" className="h-8 w-8 rounded-lg shadow-sm" />
-          <div>
-            <p className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100">TIQR Manager</p>
-            <p className="text-[11px] leading-tight text-slate-400 dark:text-slate-500">Reseller toolkit</p>
+        {/* Brand lockup. The hairline under it is what separates the app's
+            identity from its navigation - the same "one quiet rule per
+            section boundary" the sidebar uses throughout, rather than
+            boxes or background changes. */}
+        <div className="flex items-center gap-2.5 border-b border-slate-100 px-3.5 py-3.5 dark:border-slate-800/80">
+          <img src={logo} alt="TIQR Manager" className="h-8 w-8 rounded-lg shadow-card ring-1 ring-slate-900/5 dark:ring-white/10" />
+          <div className="min-w-0">
+            <p className="truncate text-[13px] font-semibold leading-tight tracking-tight text-slate-900 dark:text-slate-50">
+              TIQR Manager
+            </p>
+            <p className="truncate text-[11px] leading-tight text-slate-400 dark:text-slate-500">Reseller toolkit</p>
           </div>
         </div>
-        <nav className="flex-1 space-y-0.5 px-2 py-2">
+
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           {NAV.map((item) =>
             "children" in item ? (
               <div key="tickets-group">
@@ -193,22 +214,33 @@ export default function Layout() {
                   type="button"
                   onClick={() => setTicketsOpen((o) => !o)}
                   aria-expanded={ticketsOpen}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    ticketsGroupActive
-                      ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
-                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-                  }`}
+                  className={`${NAV_BASE} w-full ${ticketsGroupActive ? NAV_ACTIVE : NAV_IDLE}`}
                 >
-                  <item.icon className="h-4 w-4" />
-                  <span className="flex-1 text-left">{item.group}</span>
-                  <IconChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${ticketsOpen ? "" : "-rotate-90"}`} />
+                  {ticketsGroupActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
+                  <item.icon className="h-[17px] w-[17px] shrink-0" />
+                  <span className="flex-1 truncate text-left">{item.group}</span>
+                  <IconChevronDown
+                    className={`h-3.5 w-3.5 shrink-0 opacity-60 transition-transform ${ticketsOpen ? "" : "-rotate-90"}`}
+                  />
                 </button>
                 {ticketsOpen && (
-                  <div className="ml-3 mt-0.5 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-700">
+                  <div className="relative ml-[18px] mt-0.5 space-y-0.5 pl-2.5">
+                    {/* The guide rail for the group's children - one hairline
+                        instead of the heavier border the 2.4.4 version used,
+                        so the group reads as indented rather than boxed. */}
+                    <span
+                      className="absolute inset-y-1 left-0 w-px bg-slate-200 dark:bg-slate-800"
+                      aria-hidden="true"
+                    />
                     {item.children.map((child) => (
                       <NavLink key={child.to} to={child.to} className={navLinkClass}>
-                        <child.icon className="h-4 w-4" />
-                        {child.label}
+                        {({ isActive }) => (
+                          <>
+                            {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
+                            <child.icon className="h-[17px] w-[17px] shrink-0" />
+                            <span className="truncate">{child.label}</span>
+                          </>
+                        )}
                       </NavLink>
                     ))}
                   </div>
@@ -216,41 +248,54 @@ export default function Layout() {
               </div>
             ) : (
               <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
-                <item.icon className="h-4 w-4" />
-                {item.label}
+                {({ isActive }) => (
+                  <>
+                    {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
+                    <item.icon className="h-[17px] w-[17px] shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </>
+                )}
               </NavLink>
             ),
           )}
         </nav>
+
         {/* 2.4.4: one-click light/dark toggle - see the isDark/setThemeMode
             comment above. Sits in its own bordered row directly above the
-            profile widget, exactly where marko asked for it. */}
-        <div className="border-t border-slate-100 px-2 py-2 dark:border-slate-800">
+            profile widget, exactly where marko asked for it. 2.6.0: same
+            single-click behaviour and the same useTheme() call, restyled -
+            the icon now sits in its own small chip so the row reads as a
+            control rather than as one more nav item. */}
+        <div className="border-t border-slate-100 px-2 py-2 dark:border-slate-800/80">
           <button
             type="button"
             onClick={() => setThemeMode(isDark ? "light" : "dark")}
-            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+            title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            className={`${NAV_BASE} w-full ${NAV_IDLE}`}
           >
-            {isDark ? <IconMoon className="h-4 w-4" /> : <IconSun className="h-4 w-4" />}
-            {isDark ? "Dark mode" : "Light mode"}
+            <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center">
+              {isDark ? <IconMoon className="h-4 w-4" /> : <IconSun className="h-4 w-4" />}
+            </span>
+            <span className="flex-1 truncate text-left">{isDark ? "Dark mode" : "Light mode"}</span>
           </button>
         </div>
+
         {/* 2.0.44: profile widget - marko's own screenshot pointed at this
             exact spot (previously just the tagline below on its own). The
             dropdown opens UPWARD (bottom-full) since this sits at the very
             bottom of the sidebar - opening down would run off the window. */}
-        <div ref={profileRef} className="relative border-t border-slate-100 dark:border-slate-800">
+        <div ref={profileRef} className="relative border-t border-slate-100 p-2 dark:border-slate-800/80">
           {profileOpen && (
             // 2.0.74: same "pop-in" entrance as Modal/ConfirmDialog
             // (index.css) - `origin-bottom` so it visibly grows up out of
             // the button it's anchored to (this menu opens upward) instead
             // of scaling from its own center, which would look like it's
             // growing out of thin air above the button.
-            <div className="absolute inset-x-2 bottom-full mb-1 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
+            <div className="absolute inset-x-2 bottom-full mb-1.5 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-overlay dark:border-slate-700 dark:bg-slate-800">
               <Link
                 to="/settings"
                 onClick={() => setProfileOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"
+                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/70 dark:hover:text-slate-50"
               >
                 <IconSettings className="h-3.5 w-3.5" /> Settings
               </Link>
@@ -264,7 +309,7 @@ export default function Layout() {
                     toast.error("Couldn't log out - try again.");
                   }
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-red-600 transition hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
               >
                 <IconLogOut className="h-3.5 w-3.5" /> Log out
               </button>
@@ -273,13 +318,20 @@ export default function Layout() {
           <button
             type="button"
             onClick={() => setProfileOpen((o) => !o)}
-            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60"
+            aria-expanded={profileOpen}
+            className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+              profileOpen
+                ? "bg-slate-100 dark:bg-slate-800/70"
+                : "hover:bg-slate-100 dark:hover:bg-slate-800/70"
+            }`}
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/20 dark:text-brand-400">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-[11px] font-semibold text-white shadow-card">
               {initialsFor(user?.name ?? "?")}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-slate-700 dark:text-slate-300">{user?.name ?? "Account"}</span>
+              <span className="block truncate text-xs font-semibold text-slate-800 dark:text-slate-200">
+                {user?.name ?? "Account"}
+              </span>
               <span className="block truncate text-[11px] text-slate-400 dark:text-slate-500">{user?.email ?? ""}</span>
             </span>
             <IconChevronUp
@@ -297,8 +349,11 @@ export default function Layout() {
             now always fills the actual available width - no more max-w cap.
             Pages with their own grids (Dashboard's stat cards, Pulls'
             table) just get proportionally more breathing room on a wide
-            monitor, nothing breaks by growing. */}
-        <div className="px-6 py-6">
+            monitor, nothing breaks by growing.
+            2.6.0: still no max-width cap (that decision stands) - only the
+            gutter changed, 24px -> 28px horizontal / 20px vertical, which is
+            the app's page inset every screen now shares. */}
+        <div className="px-7 py-5">
           <Outlet />
         </div>
       </main>

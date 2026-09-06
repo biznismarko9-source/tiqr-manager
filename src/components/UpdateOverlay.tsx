@@ -19,7 +19,7 @@ export function UpdateOverlay({ version, progress }: { version?: string; progres
   const pct = progress?.total ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
   return (
     <div className="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-gradient-to-br from-brand-600 to-brand-900 dark:from-brand-800 dark:to-brand-950">
-      <img src={logo} alt="TIQR Manager" className="h-20 w-20 rounded-2xl shadow-lg" />
+      <img src={logo} alt="TIQR Manager" className="h-20 w-20 rounded-2xl shadow-overlay" />
       <h1 className="mt-5 text-2xl font-semibold text-white">TIQR Manager</h1>
       <p className="mt-1 text-sm text-brand-100">
         Installing {version}

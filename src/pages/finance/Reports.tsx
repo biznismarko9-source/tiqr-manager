@@ -278,7 +278,7 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
           </div>
 
           <ReportCard title="Business vs Personal" icon={<IconUsers className="h-4 w-4 text-slate-400 dark:text-slate-500" />}>
-            <div className="overflow-x-auto">
+            <div className="table-flush">
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800">

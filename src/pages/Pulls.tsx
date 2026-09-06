@@ -30,7 +30,7 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
+  TableSkeleton,
   Modal,
   ModalFooter,
   PageHeader,
@@ -174,7 +174,7 @@ function FormGroup({ title, children }: { title?: string; children: ReactNode })
   return (
     <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
       {title && (
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{title}</p>
+        <p className="mb-3 section-title">{title}</p>
       )}
       <div className="grid grid-cols-2 gap-4">{children}</div>
     </div>
@@ -425,7 +425,7 @@ function GivenPulls() {
       )}
 
       {pulls === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : pulls.length === 0 ? (
         <EmptyState
           icon={<IconUsers className="h-8 w-8" />}
@@ -484,7 +484,7 @@ function GivenPulls() {
         // or wrapping all the way down to 1080px, this app's enforced
         // minimum window width - see Sales.tsx's own colgroup comment and
         // PROTECTED-AREAS-NOTES.md (2.0.38 section) for the full reasoning.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -522,7 +522,7 @@ function GivenPulls() {
                 <col className="w-[6.5%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 {selectionMode && (
                   <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -559,7 +559,7 @@ function GivenPulls() {
                 return (
                   <tr
                     key={p.id}
-                    className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    className="cursor-pointer"
                     onClick={(e) => {
                       if ((e.target as HTMLElement).closest("input, button")) return;
                       if (selectionMode) {
@@ -1134,7 +1134,7 @@ function ReceivedPulls() {
       )}
 
       {pulls === null ? (
-        <LoadingBlock />
+        <TableSkeleton />
       ) : pulls.length === 0 ? (
         <EmptyState
           icon={<IconLink className="h-8 w-8" />}
@@ -1166,7 +1166,7 @@ function ReceivedPulls() {
         // switches to the smaller .th-c-narrow/.td-c-narrow. See Sales.tsx's
         // own colgroup comment and PROTECTED-AREAS-NOTES.md (2.0.38 section)
         // for the full reasoning and verification.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
               <colgroup>
@@ -1192,7 +1192,7 @@ function ReceivedPulls() {
                 <col className="w-[14.123%]" />
               </colgroup>
             )}
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 {selectionMode && (
                   <th className={isNarrow ? "th-c-narrow" : "th-c"}>
@@ -1219,7 +1219,7 @@ function ReceivedPulls() {
               {sortedPulls.map((p) => (
                 <tr
                   key={p.id}
-                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                  className="cursor-pointer"
                   onClick={(e) => {
                     if ((e.target as HTMLElement).closest("input, button, a")) return;
                     if (selectionMode) {
@@ -1403,7 +1403,7 @@ function OrderLinkPicker({
         onBlur={() => setTimeout(() => setOpen(false), 150)}
       />
       {open && query.trim() && (
-        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg">
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-overlay">
           {searching ? (
             <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">Searching...</p>
           ) : results.length === 0 ? (

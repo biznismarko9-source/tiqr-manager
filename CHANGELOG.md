@@ -16,6 +16,57 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.6.0 - Complete visual redesign (UI/UX only)
+
+marko's own task: make TIQR Manager look and feel like a modern, premium
+desktop app, explicitly with **no new features, no new workflow, no new
+database systems**. Nothing in `src-tauri/` changed - the backend is
+byte-for-byte identical to 2.5.2. No migration, no new dependency.
+
+1. **Changed**: one shared design layer now defines the whole app's look -
+   `tailwind.config.js` (retuned `slate` ramp so light and dark each get a
+   real background -> surface -> line hierarchy instead of one being an
+   inversion of the other; a 3-step `shadow-card`/`raised`/`overlay` scale;
+   a tighter radius rhythm; a 120-180ms motion budget). The `brand` blue
+   ramp is deliberately untouched.
+2. **Changed**: `src/index.css` - base typography (tabular figures on every
+   number in the app), restyled `.input`/`.label`/`.th`/`.td`/`.card`, new
+   `.section-title`, `.field-invalid`, `.skeleton`, `.card-interactive`, and
+   the new `.table-shell`/`.table-flush`/`.row-selected` table system.
+   `.th-c-narrow`/`.td-c-narrow`'s measured 2.0.37 metrics are unchanged.
+3. **Changed**: `src/components/ui.tsx` - every shared control restyled.
+   `Button` gained an optional `size`; `Field` now turns its own control red
+   on error; `Badge`/`InlineStatusSelect` share one status pattern with a
+   leading dot; `StatCard` is shorter and quieter; `Modal`/`ConfirmDialog`/
+   `EmptyState`/`ModalFooter`/`TabSwitcher` redesigned. The status
+   vocabulary (which tones exist, which value maps to which) is unchanged.
+4. **Added**: `Skeleton` and `TableSkeleton` in `ui.tsx`, plus
+   `SEGMENTED_TRACK`/`segmentedItemClass` - the app's one tab/segmented
+   pattern, now genuinely shared instead of hand-rolled per page.
+5. **Changed**: `src/components/Layout.tsx` - sidebar redesigned (accent-bar
+   active state, hairline section separation, restyled theme toggle and
+   profile area). Same items, same order, same routes, same `w-48` width,
+   same behaviour.
+6. **Changed**: all 22 tables in the app moved onto the shared table shell -
+   sticky opaque headers, internal scrolling instead of page scrolling, one
+   hover treatment, one selected-row treatment. Column widths, `colgroup`
+   percentages and the narrow-window breakpoint are untouched.
+7. **Changed**: six list pages (Orders, Sales, Tickets, Events, Pulls,
+   Ticket Center) now show a table skeleton while loading instead of a
+   centred spinner.
+8. **Changed**: `prefers-reduced-motion` now disables every transition and
+   animation across the app.
+9. **Not changed**: any business logic. The whole diff contains no `api.`
+   call, no state/handler/effect, and no routing change - see
+   `PROTECTED_AREAS.md`'s "2.6.0" entry.
+
+**Not verified by a build.** This round was implemented on a machine with no
+Node.js and no Rust toolchain, so `npx tsc -b`, `npm run build` and
+`cargo check --lib` could NOT be run - marko chose to proceed on static
+review rather than install a toolchain. Run all three before publishing the
+tag, and regenerate `Cargo.lock`/`package-lock.json` (their version entries
+were bumped by hand for the same reason).
+
 ## 2.5.2 - "Forgot password?" via a deep link into the app; Discord sign-in deferred
 
 marko's own follow-up request after 2.5.1. No schema changes. Discord

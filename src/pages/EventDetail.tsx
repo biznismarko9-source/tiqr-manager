@@ -290,7 +290,7 @@ function OverviewTab({
 
       {event.notes && (
         <Card className="mb-6 p-4">
-          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Notes</p>
+          <p className="mb-1 section-title">Notes</p>
           <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{event.notes}</p>
         </Card>
       )}
@@ -316,9 +316,9 @@ function OverviewTab({
         // Sales.tsx's own table (2.0.35+) - if a specific column ends up
         // looking oddly stretched on an ultra-wide window, that's the
         // next thing to fix, same iterative path Sales.tsx took.
-        <div className="mb-8 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell table-shell-compact mb-8">
           <table className="w-full min-w-[700px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className="th">Order</th>
                 <th className="th">Purchase date</th>
@@ -329,7 +329,7 @@ function OverviewTab({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {orders.map((o) => (
-                <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr key={o.id}>
                   <td className="td">
                     <Link to={`/orders/${o.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {o.code}
@@ -372,9 +372,9 @@ function OverviewTab({
         <EmptyState title="No tickets match this filter" description="Clear the filter above to see every ticket again." />
       ) : (
         // 2.2.3: max-w-[1400px] removed - see the Orders table above.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell table-shell-compact">
           <table className="w-full min-w-[700px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className="th">Ticket</th>
                 <th className="th">Seat</th>
@@ -385,7 +385,7 @@ function OverviewTab({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {(visibleTickets ?? []).map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr key={t.id}>
                   <td className="td">
                     <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {t.code}
@@ -502,7 +502,7 @@ function InventoryIntelligenceBlock({
 
   return (
     <Card className="mb-6 p-4">
-      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Inventory Intelligence</p>
+      <p className="mb-3 section-title">Inventory Intelligence</p>
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <ClickableStat label="Total tickets" value={String(kpis.totalTickets)} onClick={clearFilter} />
@@ -531,7 +531,7 @@ function InventoryIntelligenceBlock({
         />
       </div>
 
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Aging (unsold tickets)</p>
+      <p className="mb-2 section-title">Aging (unsold tickets)</p>
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {aging.map((b) => (
           <ClickableStat
@@ -551,7 +551,7 @@ function InventoryIntelligenceBlock({
               tracked yet" here. Blank/null groups as "Unknown" (backend-
               computed, not a frontend fallback) - deliberately different
               wording from the section breakdown's own "No section" below. */}
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By tier</p>
+          <p className="mb-2 section-title">By tier</p>
           {breakdownByTier.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
           ) : (
@@ -574,7 +574,7 @@ function InventoryIntelligenceBlock({
           )}
         </div>
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By section</p>
+          <p className="mb-2 section-title">By section</p>
           {breakdownBySection.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
           ) : (
@@ -597,7 +597,7 @@ function InventoryIntelligenceBlock({
           )}
         </div>
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">By marketplace</p>
+          <p className="mb-2 section-title">By marketplace</p>
           {breakdownByMarketplace.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500">No active listings.</p>
           ) : (
@@ -707,9 +707,9 @@ function SalesTab({
         <EmptyState title="No sales for this event yet" />
       ) : (
         // 2.2.3: no max-w cap - see Overview's Orders table's own comment.
-        <div className="mb-8 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell table-shell-compact mb-8">
           <table className="w-full min-w-[700px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className="th">Sale</th>
                 <th className="th">Date</th>
@@ -722,7 +722,7 @@ function SalesTab({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {groups.map((g) => (
-                <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr key={g.id}>
                   <td className="td">
                     <Link to={`/sales/${g.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {g.code}
@@ -762,7 +762,7 @@ function SalesTab({
 
       {summary && summary.marketLowestPriceCents !== null && (
         <Card className="mb-6 p-4">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Market vs. mine</p>
+          <p className="mb-3 section-title">Market vs. mine</p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
             <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
@@ -784,7 +784,7 @@ function SalesTab({
       )}
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Potential Profit</p>
+        <p className="mb-1 section-title">Potential Profit</p>
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
@@ -825,9 +825,9 @@ function SalesTab({
         />
       ) : (
         // 2.2.3: no max-w cap - see Overview's Orders table's own comment.
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell table-shell-compact">
           <table className="w-full min-w-[600px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className="th">Date</th>
                 <th className="th">Order</th>
@@ -838,7 +838,7 @@ function SalesTab({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {financeEntries.map((e) => (
-                <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr key={e.id}>
                   <td className="td">{formatDate(e.entryDate)}</td>
                   <td className="td">
                     {e.orderId && e.orderCode ? (
@@ -1101,9 +1101,9 @@ function ListingsTab({
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <div className="table-shell">
           <table className="w-full min-w-[820px] border-collapse">
-            <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60">
+            <thead>
               <tr>
                 <th className="th w-8">
                   <input
@@ -1125,7 +1125,7 @@ function ListingsTab({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {visibleListings.map((l) => (
-                <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
+                <tr key={l.id}>
                   <td className="td">
                     <input
                       type="checkbox"
