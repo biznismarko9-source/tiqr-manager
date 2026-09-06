@@ -53,6 +53,14 @@ current - nothing here is superseded, they just cover different areas.
   upgrading. `drive.file` is deliberately the narrowest scope that works: it
   reaches only files this app itself created. Do not widen it to `drive` or
   `drive.readonly`; nothing here needs to see the rest of a person's Drive.
+- **This crate's reqwest has no `RequestBuilder::query`.** It is built with
+  `default-features = false` and only `blocking, json, form, rustls`, and
+  `query` needs a `serde_urlencoded` path those do not enable - the first
+  2.12.0 build failed on exactly this, on both platforms. Every URL in this
+  codebase is assembled with `format!` plus `utf8_percent_encode(...,
+  NON_ALPHANUMERIC)` for dynamic parts, the way `google_sheets.rs` has always
+  done it. Before reaching for any reqwest method, check it is one this repo
+  already uses somewhere - the feature set is deliberately minimal.
 - **Nothing syncs automatically.** No timer, no startup sync, no sync on
   write. Sync is off until switched on and every sync is an explicit click -
   this app stays local-first and fully usable offline, which is the promise

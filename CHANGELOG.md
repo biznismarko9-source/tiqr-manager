@@ -53,6 +53,16 @@ no business logic change, no new dependency, no server.**
 
 5 new Rust unit tests.
 
+**Build fix applied before this ever shipped**: the first attempt failed to
+compile on both platforms with `no method named 'query' found for
+reqwest::blocking::RequestBuilder`. `RequestBuilder::query` needs a
+`serde_urlencoded` path that this crate's reqwest 0.13 feature set does not
+enable, and no other module in this app had ever used it. Every URL is now
+built the way `google_sheets.rs` has always built them - `format!` plus
+`utf8_percent_encode` for anything dynamic. The download also streams
+straight to disk via `std::io::copy` instead of buffering the whole database
+in memory.
+
 **Not verified by a build, and no Drive call has ever run.** No Node.js or
 Rust toolchain on the machine this was implemented on. The Drive request
 shapes are written from the Drive v3 API docs - they are the first thing to

@@ -54,6 +54,7 @@ use crate::commands::google_auth::active_oauth_access_token;
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -157,15 +158,12 @@ fn token(conn: &Connection) -> AppResult<String> {
 /// machine adopts the first machine's file instead of creating a rival one.
 fn find_remote_file(client: &reqwest::blocking::Client, access_token: &str) -> AppResult<Option<DriveFile>> {
     let query = format!("name = '{REMOTE_FILE_NAME}' and trashed = false");
+    let q = utf8_percent_encode(&query, NON_ALPHANUMERIC);
+    let fields = utf8_percent_encode("files(id,name,version,modifiedTime,size)", NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_FILES}?q={q}&spaces=drive&fields={fields}&pageSize=10");
     let resp = client
-        .get(DRIVE_FILES)
+        .get(&url)
         .bearer_auth(access_token)
-        .query(&[
-            ("q", query.as_str()),
-            ("spaces", "drive"),
-            ("fields", "files(id,name,version,modifiedTime,size)"),
-            ("pageSize", "10"),
-        ])
         .send()
         .map_err(|e| AppError::External(format!("Couldn't reach Google Drive: {e}")))?;
     let status = resp.status();
@@ -187,10 +185,12 @@ fn get_remote_meta(
     access_token: &str,
     file_id: &str,
 ) -> AppResult<DriveFile> {
+    let id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let fields = utf8_percent_encode(FILE_FIELDS, NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_FILES}/{id}?fields={fields}");
     let resp = client
-        .get(format!("{DRIVE_FILES}/{file_id}"))
+        .get(&url)
         .bearer_auth(access_token)
-        .query(&[("fields", FILE_FIELDS)])
         .send()
         .map_err(|e| AppError::External(format!("Couldn't reach Google Drive: {e}")))?;
     let status = resp.status();
@@ -206,10 +206,10 @@ fn get_remote_meta(
 /// straight after - two simple requests instead of one hand-rolled
 /// multipart/related body, which is far easier to get subtly wrong.
 fn create_remote_file(client: &reqwest::blocking::Client, access_token: &str) -> AppResult<String> {
+    let url = format!("{DRIVE_FILES}?fields=id");
     let resp = client
-        .post(DRIVE_FILES)
+        .post(&url)
         .bearer_auth(access_token)
-        .query(&[("fields", "id")])
         .json(&serde_json::json!({
             "name": REMOTE_FILE_NAME,
             "description": "TIQR Manager cloud sync - one database snapshot, written by the app.",
@@ -233,10 +233,12 @@ fn upload_content(
     file_id: &str,
     bytes: Vec<u8>,
 ) -> AppResult<DriveFile> {
+    let id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let fields = utf8_percent_encode(FILE_FIELDS, NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_UPLOAD}/{id}?uploadType=media&fields={fields}");
     let resp = client
-        .patch(format!("{DRIVE_UPLOAD}/{file_id}"))
+        .patch(&url)
         .bearer_auth(access_token)
-        .query(&[("uploadType", "media"), ("fields", FILE_FIELDS)])
         .header(reqwest::header::CONTENT_TYPE, "application/x-sqlite3")
         .body(bytes)
         .send()
@@ -250,15 +252,20 @@ fn upload_content(
         .map_err(|e| AppError::External(format!("Google Drive returned something unexpected: {e}")))
 }
 
-fn download_content(
+/// Streams the remote file straight to `dest` rather than buffering the whole
+/// database in memory first - `reqwest::blocking::Response` implements
+/// `std::io::Read`, so this is a plain `io::copy`.
+fn download_to_file(
     client: &reqwest::blocking::Client,
     access_token: &str,
     file_id: &str,
-) -> AppResult<Vec<u8>> {
-    let resp = client
-        .get(format!("{DRIVE_FILES}/{file_id}"))
+    dest: &std::path::Path,
+) -> AppResult<()> {
+    let id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_FILES}/{id}?alt=media");
+    let mut resp = client
+        .get(&url)
         .bearer_auth(access_token)
-        .query(&[("alt", "media")])
         .send()
         .map_err(|e| AppError::External(format!("Couldn't download from Google Drive: {e}")))?;
     let status = resp.status();
@@ -266,10 +273,11 @@ fn download_content(
         let body = resp.text().unwrap_or_default();
         return Err(drive_error("Downloading your data", status, &body));
     }
-    let bytes = resp
-        .bytes()
-        .map_err(|e| AppError::External(format!("Couldn't read the downloaded file: {e}")))?;
-    Ok(bytes.to_vec())
+    let mut file = std::fs::File::create(dest)
+        .map_err(|e| AppError::Other(format!("Couldn't create the download file: {e}")))?;
+    std::io::copy(&mut resp, &mut file)
+        .map_err(|e| AppError::External(format!("Couldn't save the downloaded file: {e}")))?;
+    Ok(())
 }
 
 /// The lost-update guard, in one place.
@@ -461,9 +469,7 @@ pub fn cloud_sync_pull(state: State<AppState>) -> AppResult<String> {
 
     let downloaded = temp_path("tiqr-cloud-sync-download.sqlite3");
     let _ = std::fs::remove_file(&downloaded);
-    let bytes = download_content(&client, &access_token, &file_id)?;
-    std::fs::write(&downloaded, bytes)
-        .map_err(|e| AppError::Other(format!("Couldn't write the downloaded file: {e}")))?;
+    download_to_file(&client, &access_token, &file_id, &downloaded)?;
 
     // Same rule restore_database itself follows (2.0.72): the safety backup
     // goes next to the CURRENTLY ACTIVE per-account database, so it belongs
