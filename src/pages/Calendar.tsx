@@ -548,7 +548,16 @@ export default function Calendar() {
 
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
+      {/* 2.13.0: the month keeps every day on screen AND keeps the day you
+          clicked open beside it. The detail used to be a modal, which meant
+          stepping through days was open-read-close-open-read-close and the
+          grid disappeared each time. As a column it stays put, so the grid
+          and the day are readable at once. Below xl there is not room for
+          two columns, so the panel drops under the grid rather than
+          squeezing it - and the modal is still what Week/Day/Agenda use,
+          since those have no grid to sit beside. */}
       {viewMode === "month" || viewMode === "week" ? (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <Card className="overflow-hidden p-0">
           <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-800">
             {WEEKDAY_LABELS.map((label, i) => (
@@ -583,7 +592,9 @@ export default function Calendar() {
                     className={`relative flex flex-col gap-1 border-b border-r border-slate-100 p-2 transition-colors last:border-r-0 dark:border-slate-800/60 ${
                       viewMode === "week" ? "min-h-[240px]" : "min-h-[104px]"
                     } ${
-                      isToday
+                      (dayDetail ?? today) === iso
+                        ? "bg-brand-50 ring-2 ring-inset ring-brand-500/60 dark:bg-brand-500/[0.14] dark:ring-brand-400/50"
+                        : isToday
                         ? "bg-brand-50/60 ring-1 ring-inset ring-brand-500/30 dark:bg-brand-500/[0.08] dark:ring-brand-400/25"
                         : !inCurrentMonth
                           ? "bg-slate-50/70 dark:bg-slate-950/40"
@@ -595,8 +606,7 @@ export default function Calendar() {
                     <div className="flex items-center justify-between">
                       <button
                         type="button"
-                        onClick={() => dayEntries.length > 0 && setDayDetail(iso)}
-                        disabled={dayEntries.length === 0}
+                        onClick={() => setDayDetail(iso)}
                         className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums transition ${
                           isToday
                             ? "bg-brand-600 text-white shadow-card"
@@ -641,6 +651,13 @@ export default function Calendar() {
             </div>
           )}
         </Card>
+        <DayDetailPanel
+          iso={dayDetail ?? today}
+          today={today}
+          entries={entriesByDate.get(dayDetail ?? today) ?? []}
+          onNavigate={(e) => navigateToEntry(navigate, e)}
+        />
+        </div>
       ) : (
         <ListView
           mode={viewMode}
@@ -653,7 +670,7 @@ export default function Calendar() {
       )}
 
       <DayDetailModal
-        iso={dayDetail}
+        iso={viewMode === "month" || viewMode === "week" ? null : dayDetail}
         today={today}
         entries={dayDetail ? (entriesByDate.get(dayDetail) ?? []) : []}
         onClose={() => setDayDetail(null)}
@@ -828,6 +845,66 @@ function ListView({
 /** marko's section 7 - the day's items on the left, a count-by-kind summary
  * on the right. The summary is derived from the same `entries` array the list
  * renders, never a second fetch or a second rule. */
+/** 2.13.0: the same day, as a column rather than a modal - month/week use
+ * this, everything else still uses DayDetailModal below. Deliberately shares
+ * `EntryRow` and the same per-kind counts, so the two can never drift into
+ * showing a day differently. */
+function DayDetailPanel({
+  iso,
+  today,
+  entries,
+  onNavigate,
+}: {
+  iso: string;
+  today: string;
+  entries: CalendarEntry[];
+  onNavigate: (entry: CalendarEntry) => void;
+}) {
+  const weekday = new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" });
+  const counts = ALL_KINDS.map((kind) => ({ kind, count: entries.filter((e) => e.kind === kind).length })).filter(
+    (c) => c.count > 0,
+  );
+  return (
+    <Card className="overflow-hidden p-0 xl:sticky xl:top-0 xl:self-start">
+      <div className="border-b border-slate-200 px-3.5 py-3 dark:border-slate-800">
+        <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+          {weekday}, {formatDate(iso)}
+        </p>
+        <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+          {entries.length === 0 ? "Nothing on this day" : `${entries.length} item${entries.length === 1 ? "" : "s"}`}
+          {iso === today && " · today"}
+        </p>
+      </div>
+      {entries.length === 0 ? (
+        <p className="px-3.5 py-8 text-center text-sm text-slate-400 dark:text-slate-500">
+          Pick a day in the grid.
+        </p>
+      ) : (
+        <>
+          <ul className="max-h-[420px] divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">
+            {entries.map((entry) => (
+              <li key={entry.key}>
+                <EntryRow entry={entry} today={today} onNavigate={onNavigate} />
+              </li>
+            ))}
+          </ul>
+          <div className="border-t border-slate-200 px-3.5 py-3 dark:border-slate-800">
+            <ul className="space-y-1.5">
+              {counts.map(({ kind, count }) => (
+                <li key={kind} className="flex items-center gap-2 text-xs">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${KIND_ACCENT[kind].dot}`} />
+                  <span className="flex-1 text-slate-600 dark:text-slate-400">{KIND_META[kind].label}</span>
+                  <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function DayDetailModal({
   iso,
   today,

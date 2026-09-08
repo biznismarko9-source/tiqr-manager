@@ -134,14 +134,21 @@ fn http() -> AppResult<reqwest::blocking::Client> {
 /// Turns any non-2xx Drive response into a message worth showing a person.
 fn drive_error(context: &str, status: reqwest::StatusCode, body: &str) -> AppError {
     let hint = match status.as_u16() {
-        401 | 403 => " - sign in with Google again from Settings, and make sure you allow Drive access.",
+        // Two very different causes share this status. The Google Drive API
+        // not being enabled on the OAuth client's Cloud project is a
+        // one-time, project-wide setting and by far the more common of the
+        // two on a fresh setup - Google's own message (passed through below)
+        // carries the exact console URL, which the UI turns into a button.
+        401 | 403 => " - either the Google Drive API is not switched on for this app's Google Cloud project (a one-time step, see the link below), or your sign-in needs renewing: Settings -> Integrations -> sign in with Google again and allow Drive access.",
         404 => " - the sync file no longer exists in your Drive. Turn sync off and on again to start a new one.",
         507 => " - your Google Drive is full.",
         _ => "",
     };
-    // Drive's own error bodies are long JSON; the first 300 characters are
-    // plenty to diagnose without dumping a wall of text into a toast.
-    let snippet: String = body.chars().take(300).collect();
+    // Drive's own error bodies are long JSON. 400 characters is enough to
+    // keep Google's message AND the console URL it embeds when an API is not
+    // enabled - the UI looks for that URL and offers it as a button, so
+    // truncating it away would remove the one-click fix.
+    let snippet: String = body.chars().take(400).collect();
     AppError::External(format!("{context} failed ({status}){hint} {snippet}"))
 }
 

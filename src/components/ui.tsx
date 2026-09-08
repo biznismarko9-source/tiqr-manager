@@ -324,6 +324,12 @@ const STATUS_TONES: Record<string, string> = {
   pending: "bg-amber-50 text-amber-800 ring-amber-200/70 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/20",
   refunded: "bg-red-50 text-red-700 ring-red-200/70 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-400/20",
   demo: "bg-violet-50 text-violet-700 ring-violet-200/70 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/20",
+  // 2.13.0 (TKT-01): Ticket Center's "Needs" column. Named for what they
+  // mean rather than reusing unpaid/partial/demo, whose names would read as
+  // wrong next to "Needs listing". Colors match the three filter tiles.
+  needslisting: "bg-amber-50 text-amber-800 ring-amber-200/70 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/20",
+  needspayment: "bg-cyan-50 text-cyan-700 ring-cyan-200/70 dark:bg-cyan-500/10 dark:text-cyan-300 dark:ring-cyan-400/20",
+  needsdelivery: "bg-violet-50 text-violet-700 ring-violet-200/70 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/20",
   // Order-inventory status (derived client-side from ticket counts, not a DB column).
   active: "bg-emerald-50 text-emerald-700 ring-emerald-200/70 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/20",
   soldout: "bg-slate-100 text-slate-700 ring-slate-200 dark:bg-slate-100/5 dark:text-slate-300 dark:ring-slate-100/10",
@@ -479,11 +485,16 @@ export function StatCard({
    * profit/loss. Ignored when `trend` is absent. */
   trendColored?: boolean;
 }) {
-  // 2.6.0: same information, less furniture - marko asked for KPI cards that
-  // aren't huge. The label is smaller and quieter, the number is the only
-  // loud thing on the card, and the trend/sub lines sit in one tight meta
-  // row underneath. Padding dropped from p-4 to p-3.5 and the value from
-  // text-2xl to text-[22px], which is what actually shortens the card.
+  // 2.13.0: the same journey 2.6.0 started, finished. That round made the
+  // KPI card smaller; this one stops it being a card at all. A summary row
+  // sits above a table on ten screens, and a bordered box per figure gave
+  // the summary the same visual weight as the content underneath it. Now
+  // each figure is one pill - number loud, label quiet beside it, trend and
+  // sub kept inline rather than dropped, so no information is lost.
+  //
+  // Callers wrap these in `flex flex-wrap gap-2`, NOT a grid: a chip inside
+  // a grid cell stretches to the column and stops reading as a chip. If you
+  // add a new summary row, use flex.
   const valueTone =
     tone === "positive"
       ? "text-emerald-600 dark:text-emerald-400"
@@ -497,18 +508,24 @@ export function StatCard({
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
   return (
-    <Card className="p-3.5">
-      <p className="section-title truncate">{label}</p>
-      <p className={`mt-2 text-[22px] font-semibold leading-none tabular-nums ${valueTone}`}>{value}</p>
+    <div className="stat-chip" title={sub ?? undefined}>
+      <span className={`text-[15px] font-semibold leading-none tabular-nums ${valueTone}`}>{value}</span>
+      <span className="text-[11.5px] leading-none text-slate-500 dark:text-slate-400">{label}</span>
       {trend && (
-        <p className={`mt-2.5 flex items-center gap-1 text-xs font-medium ${trendTone}`}>
+        <span className={`flex items-center gap-1 text-[11px] font-medium leading-none ${trendTone}`}>
+          <span className="text-slate-300 dark:text-slate-700">·</span>
           {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
           {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
-          {trend.label} <span className="font-normal text-slate-400 dark:text-slate-500">vs. previous period</span>
-        </p>
+          {trend.label}
+        </span>
       )}
-      {sub && <p className="mt-1.5 truncate text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
-    </Card>
+      {sub && (
+        <span className="text-[11px] leading-none text-slate-400 dark:text-slate-500">
+          <span className="mr-1.5 text-slate-300 dark:text-slate-700">·</span>
+          {sub}
+        </span>
+      )}
+    </div>
   );
 }
 

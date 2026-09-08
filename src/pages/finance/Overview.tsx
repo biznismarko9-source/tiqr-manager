@@ -340,7 +340,28 @@ export default function Overview({ entries, categories, accounts, loading, reloa
         </div>
       ) : (
         <>
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {/* 2.13.0 (FIN-01): two bands, because these are two different kinds
+              of number and the old single row hid that. Balance and what you
+              are owed are STOCKS - what exists right now - and the period
+              filter does not touch them; income, expenses and net are FLOWS
+              measured over whatever period is selected. Sitting in one row at
+              one size, a EUR 68k balance and a EUR 900 monthly expense read as
+              peers, and changing the period appeared to do nothing to half the
+              row for no visible reason. Same five figures, same order within
+              each band - only the grouping and the two labels are new. */}
+          <p className="section-title mb-2">What you have · not affected by the period filter</p>
+          <div className="mb-5 flex flex-wrap gap-2">
+            <StatCard label="Current Balance" value={formatMoney(currentBalanceCents, "EUR")} sub="Across active EUR accounts" />
+            {pending && pending.count > 0 && (
+              <StatCard
+                label="Owed to you"
+                value={formatMoneyOrMixed(pending.amountCents, pending.currency)}
+                sub={`${pending.count} unpaid sale${pending.count === 1 ? "" : "s"}`}
+              />
+            )}
+          </div>
+          <p className="section-title mb-2">What moved · in the selected period</p>
+          <div className="mb-6 flex flex-wrap gap-2">
             <StatCard label="Income" value={formatMoney(incomeCents, "EUR")} />
             <StatCard label="Expenses" value={formatMoney(expenseCents, "EUR")} />
             <StatCard
@@ -348,14 +369,6 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               value={formatMoney(netCashFlowCents, "EUR")}
               tone={netCashFlowCents > 0 ? "positive" : netCashFlowCents < 0 ? "negative" : "default"}
             />
-            <StatCard label="Current Balance" value={formatMoney(currentBalanceCents, "EUR")} sub="Across active EUR accounts" />
-            {pending && pending.count > 0 && (
-              <StatCard
-                label="Pending / Outstanding"
-                value={formatMoneyOrMixed(pending.amountCents, pending.currency)}
-                sub={`${pending.count} unpaid sale${pending.count === 1 ? "" : "s"}`}
-              />
-            )}
           </div>
           {excludedNonEurCount > 0 && (
             <p className="-mt-4 mb-6 text-xs text-slate-400 dark:text-slate-500">

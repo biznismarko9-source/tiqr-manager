@@ -21,6 +21,53 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.13.0 - Two balances that must agree, and one component that moves ~50 places
+
+- **`finance_accounts::ACCOUNT_SELECT` and `finance_forecast::eur_balance_as_of`
+  compute the same number and must stay in agreement.** They did not, for a
+  long time: `eur_balance_as_of` filtered `entry_date <= today`, `ACCOUNT_SELECT`
+  had **no date filter at all**, and Finance Overview rendered both of them a
+  few hundred pixels apart - the stat card labelled *Current Balance* from the
+  first, the Forecast card's own *Current balance* line from the second. They
+  differed by exactly the sum of the user's future-dated entries. The rule was
+  never ambiguous; `finance_forecast`'s own test states it:
+  *a future-dated entry must not already be folded into 'current' balance*.
+  2.13.0 moved `ACCOUNT_SELECT` to match. **If you ever add a third place that
+  computes a balance, make it call one of these two rather than writing the
+  arithmetic again.**
+- **`ACCOUNT_SELECT`'s cut-off is SQL's own `date('now','localtime')`, not a
+  `today` parameter, and that was a deliberate trade-off.** Passing the date in
+  is the convention everywhere else (`dashboard.rs`, `calendar.rs`,
+  `finance_forecast.rs`) and is why those are deterministically testable - but
+  it would renumber `?1` at four production call sites that carry no date
+  today. A *current* balance has no caller that wants it as of another day;
+  that caller is `eur_balance_as_of`, which already exists and already takes
+  the date. Consequence: **any test touching account balances must use dates
+  that are unambiguously past or future** (the four added in 2.13.0 use 2000
+  and 2999) - a date near today silently changes meaning as the clock moves.
+- **`ui.tsx`'s `StatCard` is used ~50 times across 5 files.** Changing how it
+  renders changes Dashboard, EventDetail, PriceChecker and Finance at once -
+  including `EventDetail`, which is the biggest screen in the app and was not
+  part of the 2.13.0 design review. That blast radius is the *point* (one
+  summary style everywhere, which is what marko asked for), but check
+  EventDetail before assuming a StatCard change is small.
+- **`StatCard` callers must wrap it in `flex flex-wrap gap-2`, never a grid.**
+  A chip inside a grid cell stretches to fill the column and stops reading as
+  a chip. 2.13.0 converted 12 such wrappers; a new summary row that reaches for
+  `grid grid-cols-N` will look wrong in a way that is easy to misread as a
+  styling bug in the component.
+- **`Inventory` is not a screen.** It is `Tickets.tsx`'s `TicketsView` with
+  `lockedStatus="available,listed"` and `allowCrossLinks`. Anything done to
+  Tickets happens to Inventory too, and "redesign Inventory" means either
+  restyling both or writing a genuinely new screen - a 2.13.0 preview showed a
+  per-event roll-up before anyone noticed the two share a component. marko
+  chose to keep them shared.
+- **Settings has no home screen any more.** `/settings` with no `:section`
+  opens the first tab; `activeSection` falls back to `SECTIONS[0]` and every
+  section body keys off `sec` (the resolved key), not the raw route param.
+  `activeSection` is declared **above** the sync-refresh effect on purpose -
+  `const` is not hoisted and that effect names it in its dependency array.
+
 ## 2.12.0 - Cloud Sync (whole-file, one direction at a time; no schema change)
 
 - **Cloud Sync must never become a row-level merge without a real design

@@ -57,7 +57,12 @@ function initialsFor(name: string): string {
 type NavChild = { to: string; label: string; icon: typeof IconGauge };
 type NavItem =
   | { to: string; label: string; icon: typeof IconGauge; end?: boolean }
-  | { group: string; icon: typeof IconGauge; children: NavChild[] };
+  | { group: string; icon: typeof IconGauge; children: NavChild[] }
+  // 2.13.0: a quiet section label between groups of items. Not a link and
+  // not clickable - it exists so the eleven entries read as three short
+  // lists instead of one long one. Nothing about which items exist, their
+  // order, or where they link changed.
+  | { heading: string };
 
 const TICKETS_GROUP_CHILDREN: NavChild[] = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
@@ -73,6 +78,7 @@ const NAV: NavItem[] = [
   // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
   // v sidebar" (must be its own standalone sidebar section), not folded
   // into Events/Settings.
+  { heading: "Market & money" },
   { to: "/price-checker", label: "Price Checker", icon: IconTag },
   { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.83: same standalone-top-level-section treatment as Price Checker
@@ -82,6 +88,7 @@ const NAV: NavItem[] = [
   { to: "/finance", label: "Finance", icon: IconWallet },
   // 2.5.1: marko's own explicit order - Ticket Center sits right after
   // Finance, back out as its own top-level page (see TicketCenter.tsx).
+  { heading: "Work" },
   { to: "/ticket-center", label: "Ticket Center", icon: IconLayoutGrid },
   // 2.5.0: "TIQR Operations Calendar" - a cross-domain overview page (every
   // event/order/sale/pull/attention item with a real date). 2.5.1: moved
@@ -101,7 +108,7 @@ const NAV: NavItem[] = [
 // was easy to miss next to the hover state, which used a similar weight.
 // Nothing about which items exist, their order, or where they link changed.
 const NAV_BASE =
-  "group relative flex items-center gap-2.5 rounded-lg px-3 py-[7px] text-[13px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500";
+  "group relative flex items-center gap-2.5 rounded-lg px-3 py-[5px] text-[12.5px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500";
 const NAV_ACTIVE =
   "bg-brand-50 font-semibold text-brand-700 dark:bg-brand-500/[0.14] dark:text-brand-300";
 const NAV_IDLE =
@@ -220,8 +227,23 @@ export default function Layout() {
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           {NAV.map((item) =>
-            "children" in item ? (
-              <div key="tickets-group">
+            "heading" in item ? (
+              <p
+                key={item.heading}
+                className="px-3 pb-1 pt-3.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500"
+              >
+                {item.heading}
+              </p>
+            ) : "children" in item ? (
+              /* 2.13.0 (GRP-06): the group gets its own surface, so its five
+                 children read as one object rather than five loose rows that
+                 happen to be indented. Replaces the 2.6.0 hairline guide rail
+                 - the card IS the grouping cue now, so the rail and the deep
+                 indent both go. */
+              <div
+                key="tickets-group"
+                className="my-1.5 rounded-xl border border-slate-200 bg-slate-50/70 p-1 dark:border-slate-800 dark:bg-slate-800/30"
+              >
                 <button
                   type="button"
                   onClick={() => setTicketsOpen((o) => !o)}
@@ -236,14 +258,7 @@ export default function Layout() {
                   />
                 </button>
                 {ticketsOpen && (
-                  <div className="relative ml-[18px] mt-0.5 space-y-0.5 pl-2.5">
-                    {/* The guide rail for the group's children - one hairline
-                        instead of the heavier border the 2.4.4 version used,
-                        so the group reads as indented rather than boxed. */}
-                    <span
-                      className="absolute inset-y-1 left-0 w-px bg-slate-200 dark:bg-slate-800"
-                      aria-hidden="true"
-                    />
+                  <div className="mt-0.5 space-y-0.5">
                     {item.children.map((child) => (
                       <NavLink key={child.to} to={child.to} className={navLinkClass}>
                         {({ isActive }) => (

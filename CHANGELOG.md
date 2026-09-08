@@ -16,6 +16,91 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.13.0 - Visual redesign across seven screens, plus one balance fix
+
+marko reviewed named alternatives one screen at a time and picked each of
+these himself. **No schema change, no migration (next new one is still 027),
+no dependency change, no change to refund/resell, `batch_id` or money
+handling.** One backend change, unrelated to the redesign, is listed last.
+
+1. **`StatCard` is a chip, not a bordered box** (`ui.tsx`, `index.css`). The
+   summary row sat above ten screens at the same visual weight as the table
+   underneath it and read as furniture. Changed on the **component**, so all
+   ~50 call sites move together and the app keeps ONE summary style - which
+   also means `EventDetail`, a screen this round never reviewed, changed with
+   it. The callers' `grid` wrappers became `flex flex-wrap gap-2` (12 sites):
+   a chip inside a grid cell stretches to the column and stops reading as a
+   chip. Trend and `sub` are kept inline rather than dropped.
+2. **Sidebar** (`Layout.tsx`): tighter rows, two quiet section headings, and
+   the Tickets group given its own surface (the 2.6.0 hairline guide rail and
+   the deep indent both go - the card is the grouping cue now). **No counts**,
+   deliberately: `Layout` fetches nothing today and marko chose to keep the
+   navigation pure frontend rather than add a command to feed numbers.
+3. **Ticket Center** (`TicketCenter.tsx`): the `Completed` column mixed a
+   stock fact ("Not Sold"), a payment fact ("Not Paid") and a count ("2
+   Pending") under one heading, so it had no single meaning and a row never
+   said why it was listed. Replaced by a **Needs** column built from the same
+   `matchesCategory` predicate the four filter tiles already count with, so
+   tiles and rows cannot disagree. Rows now sort **soonest event first**;
+   orders with no event date sort last.
+4. **Settings** (`Settings.tsx`): section **tabs** instead of six door-cards.
+   The `settings/:section` route already existed, so every deep link still
+   lands where it did; `/settings` with no section now opens the first tab.
+5. **Dashboard** (`Dashboard.tsx`): profit becomes the headline figure with
+   margin and ROI as its own sub-line; the other five stay as chips. Six
+   identically-sized boxes claimed all six mattered equally.
+6. **Finance** (`finance/Overview.tsx`): balance and what you are owed split
+   into their own band **above** income/expenses/net. A stock and a flow are
+   not the same kind of number, and the period filter only moves one of them.
+7. **Calendar** (`Calendar.tsx`): the day detail is a **column beside the
+   month grid** instead of a modal, so stepping through days no longer hides
+   the grid. Empty days became selectable ("nothing on this day" is an
+   answer). Week/Day/Agenda still use the modal - they have no grid to sit
+   beside.
+8. **Price Checker** (`PriceChecker.tsx`): the event overview is a **light
+   table** instead of a card each - link state, listing count, scan age only.
+   The per-marketplace breakdown moved behind the click that already opened
+   the event (`onOpen={setEventId}` was there before this).
+9. **Fixed (backend, separate from the redesign)**: `ACCOUNT_SELECT` had **no
+   date filter at all**, so an entry dated in the future was already
+   subtracted from a figure labelled *current balance*. It now cuts off at
+   `date('now','localtime')`, matching `finance_forecast::eur_balance_as_of`,
+   whose own test states the rule this query was breaking: *a future-dated
+   entry must not already be folded into 'current' balance*. This is what made
+   Finance Overview print two different "current balance" figures a few
+   hundred pixels apart. **4 new tests** pin it, all using far-future/far-past
+   dates so they never go stale. The cut-off is SQL's own `date()` rather than
+   a `today` parameter - see the reasoning on `ACCOUNT_SELECT` before changing
+   it.
+
+**Not built in this session:** nothing was compiled or tested here (no Node,
+no Rust toolchain on that machine) - the first CI run is the first real check.
+
+## 2.12.1 - Three loose ends from 2.12.0
+
+Cloud Sync is confirmed working end to end on both machines. These are the
+follow-ups that were owed, not new features. **No schema change, no migration
+(next new one is still 027), no business logic change.**
+
+1. **Fixed**: the `tauri_plugin_deep_link::DeepLinkExt` import now carries the
+   same `cfg(all(desktop, debug_assertions))` as the only call that uses it,
+   so release builds stop warning. **Deleting it** - the obvious "fix" for an
+   unused import - **would have broken `cargo tauri dev`**, where that
+   dev-only deep-link self-registration is the whole reason the trait is in
+   scope.
+2. **Fixed**: the Drive 403 message. That one status covers two very different
+   causes and the old text only named the less likely one ("sign in again").
+   It now leads with the common case - the Google Drive API not being switched
+   on for the OAuth client's Cloud project, which is a one-time, project-wide
+   step that applies to every user of the build, not per person.
+3. **Added**: Google's own 403 body carries the exact Cloud Console URL for
+   that step, so the sync card now extracts it and offers an **Open Google
+   settings** button instead of leaving it to be copied out of a toast that
+   has already disappeared.
+4. **Fixed**: `RELEASE.md`'s macOS instructions said right-click → Open, which
+   Apple removed in macOS Sequoia (15). The working path is System Settings →
+   Privacy & Security → Open Anyway.
+
 ## 2.12.0 - Cloud Sync: one database, two computers
 
 marko works on a Windows PC and a Mac and wants what he writes on one to show

@@ -375,7 +375,37 @@ export default function Dashboard() {
                       deliberate trim of vertical rhythm on this tab, not a
                       redesign. See the chart Card's own 2.2.11 comment below
                       for the full reasoning. */}
-                  <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  {/* 2.13.0 (DSH-01): one number is the answer, the rest are
+                      context - so Profit leaves the row and becomes the
+                      headline, with margin and ROI as its own sub-line. All
+                      six figures are still here and still come from the same
+                      `data.period`; the only change is that the layout now
+                      says which one you opened the Dashboard to see. Before
+                      this, six identically-sized boxes said they mattered
+                      equally, which is the one thing that was certainly not
+                      true. */}
+                  <div className="mb-4">
+                    <p className="section-title">Profit</p>
+                    <p
+                      className={`mt-1 text-[34px] font-semibold leading-none tracking-tight tabular-nums ${
+                        data.period.profitCents > 0
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : data.period.profitCents < 0
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-slate-900 dark:text-slate-50"
+                      }`}
+                    >
+                      {formatMoney(data.period.profitCents, data.primaryCurrency)}
+                    </p>
+                    <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+                      {formatPercent(data.period.margin)} margin · {formatPercent(data.period.roi)} ROI
+                      {(() => {
+                        const t = computeTrend(data.period.profitCents, data.previousPeriod?.profitCents);
+                        return t ? <> · {t.label} vs. previous period</> : null;
+                      })()}
+                    </p>
+                  </div>
+                  <div className="mb-5 flex flex-wrap gap-2">
                     <StatCard
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
@@ -386,12 +416,6 @@ export default function Dashboard() {
                       value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
                       trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
                       trendColored={false}
-                    />
-                    <StatCard
-                      label="Profit"
-                      value={formatMoney(data.period.profitCents, data.primaryCurrency)}
-                      tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
-                      trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
                     />
                     <StatCard
                       label="Margin"
@@ -492,7 +516,7 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Current inventory (all time)
               </p>
-              <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <div className="mb-8 flex flex-wrap gap-2">
                 <StatCard label="Available" value={String(data.inventory.availableTickets)} />
                 <StatCard label="Listed" value={String(data.inventory.listedTickets)} />
                 <StatCard label="Sold (total)" value={String(data.inventory.soldTickets)} />
@@ -531,7 +555,7 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Cashflow (all time)
               </p>
-              <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="mb-8 flex flex-wrap gap-2">
                 <StatCard
                   label="Revenue"
                   value={formatMoneyOrMixed(data.cashflow.revenueCents, data.cashflow.currency)}
@@ -576,7 +600,7 @@ export default function Dashboard() {
                   Current unsold stock (available + listed), not affected by the period filter above. This is an
                   estimate, not realized profit.
                 </p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="flex flex-wrap gap-2">
                   <StatCard
                     label="Inventory cost"
                     value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}

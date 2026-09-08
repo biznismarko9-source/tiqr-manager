@@ -47,18 +47,45 @@ const ACCOUNT_TYPES: [&str; 6] = ["bank", "revolut", "paypal", "cash", "credit_c
 /// four aggregate passes total, not four-times-N) - this is the "ONE
 /// query for every account's balance" mentioned in this module's own doc
 /// comment above.
+///
+/// 2.13.0 - **every subquery is cut off at today.** Before this, these four
+/// aggregates had NO date filter at all, so an entry you had dated next week
+/// was already subtracted from a number labelled "current balance". That put
+/// this query at odds with `finance_forecast::eur_balance_as_of`, which has
+/// always filtered `entry_date <= today` - the two disagreed by exactly the
+/// sum of your future-dated entries, and Finance Overview showed BOTH of them
+/// (the "Current Balance" card from here, the Forecast card's own "Current
+/// balance" line from there) a few hundred pixels apart. finance_forecast's
+/// own test states which of the two was right:
+///     "a future-dated entry must not already be folded into 'current' balance"
+/// so this query moved to match it, not the other way round.
+///
+/// The cut-off is SQL's own `date('now','localtime')` rather than a `today`
+/// parameter, which is a deliberate trade-off and the one thing to know
+/// before touching this again: passing `today` in (the convention in
+/// dashboard.rs / calendar.rs / finance_forecast.rs, and the reason those are
+/// deterministically testable) would renumber `?1` at all four production
+/// call sites below, none of which currently carry a date. A "current"
+/// balance has no caller that wants it as of some other day - that caller is
+/// `eur_balance_as_of`, which already exists and already takes the date. If a
+/// dated variant is ever needed here, add it as a second query rather than
+/// re-plumbing this one.
 const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.account_type, a.currency, a.opening_balance_cents,
     a.opening_balance_cents + COALESCE(inc.total, 0) - COALESCE(exp.total, 0)
         + COALESCE(tin.total, 0) - COALESCE(tout.total, 0) AS current_balance_cents,
     a.is_active, a.is_demo, a.created_at, a.updated_at
     FROM accounts a
     LEFT JOIN (SELECT account_id, SUM(amount_cents) AS total FROM finance_entries
-               WHERE entry_type = 'income' GROUP BY account_id) inc ON inc.account_id = a.id
+               WHERE entry_type = 'income' AND entry_date <= date('now','localtime')
+               GROUP BY account_id) inc ON inc.account_id = a.id
     LEFT JOIN (SELECT account_id, SUM(amount_cents) AS total FROM finance_entries
-               WHERE entry_type = 'expense' GROUP BY account_id) exp ON exp.account_id = a.id
+               WHERE entry_type = 'expense' AND entry_date <= date('now','localtime')
+               GROUP BY account_id) exp ON exp.account_id = a.id
     LEFT JOIN (SELECT to_account_id AS account_id, SUM(amount_cents) AS total FROM transfers
+               WHERE transfer_date <= date('now','localtime')
                GROUP BY to_account_id) tin ON tin.account_id = a.id
     LEFT JOIN (SELECT from_account_id AS account_id, SUM(amount_cents) AS total FROM transfers
+               WHERE transfer_date <= date('now','localtime')
                GROUP BY from_account_id) tout ON tout.account_id = a.id";
 
 fn map_account(row: &Row) -> rusqlite::Result<Account> {
@@ -425,6 +452,80 @@ mod tests {
         let sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
         let reloaded = conn.query_row(&sql, [account.id], map_account).unwrap();
         assert_eq!(reloaded.current_balance_cents, 6000, "10000 opening - 4000 expense");
+    }
+
+    // --- 2.13.0: "current" balance stops at today ------------------------
+    //
+    // These four pin the fix described on ACCOUNT_SELECT. Every date below is
+    // far-future (2999) or far-past (2000) on purpose, so none of them turns
+    // into a different test as the real clock moves - the cut-off is SQL's own
+    // date('now','localtime'), so a date near today would silently change
+    // meaning over time.
+
+    fn dated_entry(account_id: i64, kind: &str, date: &str, amount_cents: i64) -> FinanceEntryInput {
+        FinanceEntryInput {
+            entry_type: kind.to_string(),
+            entry_date: date.to_string(),
+            amount_cents,
+            currency: "EUR".to_string(),
+            scope: "personal".to_string(),
+            category_id: None,
+            account_id: Some(account_id),
+            order_id: None,
+            place: None,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn a_future_dated_expense_is_not_taken_off_the_current_balance_yet() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Bank", "EUR", 100_000)).unwrap();
+        crate::commands::finance_entries::create_finance_entry_impl(&conn, &dated_entry(account.id, "expense", "2999-01-01", 7_304)).unwrap();
+        let sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
+        let reloaded = conn.query_row(&sql, [account.id], map_account).unwrap();
+        assert_eq!(
+            reloaded.current_balance_cents, 100_000,
+            "a bill dated in the future has not left the account yet - this is the exact gap that made \
+             Finance Overview print two different 'current balance' figures"
+        );
+    }
+
+    #[test]
+    fn a_future_dated_income_is_not_counted_yet_either() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Bank", "EUR", 100_000)).unwrap();
+        crate::commands::finance_entries::create_finance_entry_impl(&conn, &dated_entry(account.id, "income", "2999-01-01", 50_000)).unwrap();
+        let sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
+        let reloaded = conn.query_row(&sql, [account.id], map_account).unwrap();
+        assert_eq!(reloaded.current_balance_cents, 100_000, "money you expect is not money you have");
+    }
+
+    #[test]
+    fn a_past_dated_entry_still_counts() {
+        let conn = test_conn();
+        let account = create_account_impl(&conn, &sample_account("Bank", "EUR", 100_000)).unwrap();
+        crate::commands::finance_entries::create_finance_entry_impl(&conn, &dated_entry(account.id, "expense", "2000-01-01", 25_000)).unwrap();
+        let sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
+        let reloaded = conn.query_row(&sql, [account.id], map_account).unwrap();
+        assert_eq!(reloaded.current_balance_cents, 75_000, "the filter must only exclude the future, never the past");
+    }
+
+    #[test]
+    fn a_future_dated_transfer_has_not_moved_the_money_yet() {
+        let conn = test_conn();
+        let from = create_account_impl(&conn, &sample_account("From", "EUR", 100_000)).unwrap();
+        let to = create_account_impl(&conn, &sample_account("To", "EUR", 0)).unwrap();
+        create_transfer_impl(
+            &conn,
+            &TransferInput { transfer_date: "2999-01-01".to_string(), from_account_id: from.id, to_account_id: to.id, amount_cents: 40_000, note: None },
+        )
+        .unwrap();
+        let sql = format!("{ACCOUNT_SELECT} WHERE a.id = ?1");
+        let from_after = conn.query_row(&sql, [from.id], map_account).unwrap();
+        let to_after = conn.query_row(&sql, [to.id], map_account).unwrap();
+        assert_eq!(from_after.current_balance_cents, 100_000, "not sent yet");
+        assert_eq!(to_after.current_balance_cents, 0, "not arrived yet");
     }
 
     #[test]

@@ -177,7 +177,15 @@ the WebView2 runtime itself if the machine does not already have it (every
 Windows 11 machine does).
 
 **macOS** — download the `.dmg` → drag TIQR Manager to Applications → launch.
-First launch on an unsigned build: right-click → Open → Open.
+
+First launch on an unsigned build is blocked ("Apple could not verify..."):
+click **Done**, then **System Settings → Privacy & Security**, scroll to
+Security, and click **Open Anyway** next to TIQR Manager. Only needed once.
+
+> The old right-click → Open trick no longer works on macOS Sequoia (15) -
+> Apple removed that bypass. If the "Open Anyway" row is missing, try
+> launching the app again first; it only appears for a few minutes after a
+> blocked attempt.
 
 **Updating** — open the app → the Dashboard shows "Update to vX.Y.Z", or
 Settings → Software → Check for updates → Download & install. The app restarts

@@ -83,6 +83,26 @@ function buyerPaymentCell(o: OrderRecord) {
   );
 }
 
+/** 2.13.0 (TKT-01): the column that says WHY this order is on the list.
+ * The old "Completed" column mixed three different kinds of statement -
+ * "Not Sold" is a stock fact, "Not Paid" a payment fact, "2 Pending" a
+ * count - so it had no single meaning, and a row never explained itself.
+ * This reuses `matchesCategory`, the exact same predicate the four filter
+ * tiles count with, so the tiles and the rows can never disagree. */
+function needsCell(o: OrderRecord) {
+  const needs = (["listing", "payment", "delivery"] as const).filter((k) => matchesCategory(o, k));
+  if (needs.length === 0) return <span className="text-slate-400 dark:text-slate-500">-</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {needs.map((k) => (
+        <Badge key={k} tone={`needs${k}`}>
+          {k === "listing" ? "Needs listing" : k === "payment" ? "Needs payment" : "Needs delivery"}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 /** Same shape as buyerPaymentCell, for deliveredCount/soldCount - identical
  * tone choices to the old Fulfillment Center's own deliveryStatusBadge. */
 function deliveryCell(o: OrderRecord) {
@@ -193,7 +213,25 @@ export default function TicketCenter() {
     };
   }, [pending]);
 
-  const visible = useMemo(() => (pending ? pending.filter((o) => matchesCategory(o, category)) : []), [pending, category]);
+  // 2.13.0 (TKT-01): soonest event first. The list used to arrive in
+  // whatever order `list_orders` returned, which put an event two years out
+  // at the same visual weight as one in eighteen days. Orders with no event
+  // date sort last rather than first - a missing date is not "urgent".
+  const visible = useMemo(
+    () =>
+      pending
+        ? pending
+            .filter((o) => matchesCategory(o, category))
+            .slice()
+            .sort((a, b) => {
+              if (a.eventDate === b.eventDate) return 0;
+              if (!a.eventDate) return 1;
+              if (!b.eventDate) return -1;
+              return a.eventDate < b.eventDate ? -1 : 1;
+            })
+        : [],
+    [pending, category],
+  );
   const activeCategory = CATEGORIES.find((c) => c.key === category)!;
 
   const openOrder = (o: OrderRecord) => navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
@@ -284,12 +322,11 @@ export default function TicketCenter() {
                     <th className={isNarrow ? "th-c-narrow" : "th-c"}>Stock</th>
                     <th className={isNarrow ? "th-c-narrow" : "th-c"}>Payment</th>
                     {!isNarrow && <th className="th-c">Delivery</th>}
-                    <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
+                    <th className={isNarrow ? "th-c-narrow" : "th-c"}>Needs</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {visible.map((o) => {
-                    const c = completionStatus(orderCompletionChecks(o));
                     const cellCls = isNarrow ? "td-c-narrow" : "td-c";
                     return (
                       <tr key={o.id} onClick={() => openOrder(o)} className="cursor-pointer">
@@ -319,11 +356,7 @@ export default function TicketCenter() {
                         </td>
                         <td className={cellCls}>{buyerPaymentCell(o)}</td>
                         {!isNarrow && <td className="td-c">{deliveryCell(o)}</td>}
-                        <td className={cellCls}>
-                          <Badge tone={c.tone} title={c.title}>
-                            {c.label}
-                          </Badge>
-                        </td>
+                        <td className={cellCls}>{needsCell(o)}</td>
                       </tr>
                     );
                   })}

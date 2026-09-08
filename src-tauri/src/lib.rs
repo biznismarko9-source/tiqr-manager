@@ -14,6 +14,11 @@ use db::AppState;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
+// 2.12.1: needed ONLY by the debug-only `app.deep_link().register_all()`
+// call in setup() below, so an ungated import warns on every release build.
+// Gated with the identical cfg rather than removed - deleting it would break
+// `cargo tauri dev`, which is the one build that call exists for.
+#[cfg(all(desktop, debug_assertions))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

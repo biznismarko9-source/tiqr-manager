@@ -253,6 +253,16 @@
     @apply cursor-pointer transition hover:-translate-y-px hover:border-slate-300 hover:shadow-raised dark:hover:border-slate-700;
   }
 
+  /* 2.13.0: the summary row is a row of chips, not a row of cards. marko's
+     own reason: the same bordered box sat above ten different screens and
+     read as furniture rather than as content - the table under it is the
+     thing you came for. One pill per figure, the number loud, the label
+     quiet beside it. Same component (`StatCard`), so every one of its ~50
+     call sites changes together and the app keeps ONE summary style. */
+  .stat-chip {
+    @apply inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3.5 py-2 dark:border-slate-800 dark:bg-slate-900;
+  }
+
   /* Section label above a group of cards/a table - the one "small heading"
      style in the app, so Dashboard/Finance/Event Detail all title their
      blocks identically. */

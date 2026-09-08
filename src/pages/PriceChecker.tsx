@@ -470,17 +470,38 @@ function EventOverviewList({
           description="Try a shorter search, or switch the filter back to All."
         />
       ) : (
-        <div className="grid gap-2 lg:grid-cols-2">
-          {visible.map((row) => (
-            <EventOverviewCard
-              key={row.eventId}
-              row={row}
-              selected={selected.has(row.eventId)}
-              onToggle={() => toggle(row.eventId)}
-              onOpen={() => onOpen(row.eventId)}
-            />
-          ))}
-        </div>
+        /* 2.13.0: one row per event instead of a card each. The card
+           carried all three marketplaces inline, which meant nine numbers
+           per event and no way to compare the same marketplace across two
+           events - they were never in the same column. This keeps only what
+           you scan a list for (is it linked, how many listings, how stale)
+           and moves the per-marketplace breakdown behind the click that
+           already opened the event anyway. */
+        <Card className="overflow-hidden p-0">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className="th-c w-9" />
+                <th className="th-c">Event</th>
+                <th className="th-c">Date</th>
+                <th className="th-c">Platforms</th>
+                <th className="th-c text-right">Listings</th>
+                <th className="th-c text-right">Last scan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {visible.map((row) => (
+                <EventOverviewRow
+                  key={row.eventId}
+                  row={row}
+                  selected={selected.has(row.eventId)}
+                  onToggle={() => toggle(row.eventId)}
+                  onOpen={() => onOpen(row.eventId)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </Card>
       )}
     </>
   );
@@ -489,7 +510,7 @@ function EventOverviewList({
 /** One event as a dense card - marko asked for compact rows, not cards that
  * take half the screen. Everything on it is a real stored value; an event
  * with no data simply shows "No link" / "Not scanned" rather than a zero. */
-function EventOverviewCard({
+function EventOverviewRow({
   row,
   selected,
   onToggle,
@@ -501,79 +522,56 @@ function EventOverviewCard({
   onOpen: () => void;
 }) {
   const place = [row.city, row.venue].filter(Boolean).join(" · ");
+  const total = row.marketplaces.length;
   return (
-    <Card className={`p-3 transition ${selected ? "ring-2 ring-inset ring-brand-500 dark:ring-brand-400" : ""}`}>
-      <div className="flex items-start gap-2.5">
+    <tr
+      onClick={onOpen}
+      className={`cursor-pointer transition ${selected ? "bg-brand-50/60 dark:bg-brand-500/[0.08]" : "hover:bg-slate-50 dark:hover:bg-slate-800/50"}`}
+    >
+      {/* The checkbox is the one thing on the row that must NOT open the
+          event - batch scanning is the whole reason it exists. */}
+      <td className="td-c" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
-          className={`${CHECKBOX_CLASS} mt-0.5`}
+          className={CHECKBOX_CLASS}
           checked={selected}
           onChange={onToggle}
           aria-label={`Select ${row.eventName}`}
         />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-2">
-            <button
-              type="button"
-              onClick={onOpen}
-              className="min-w-0 truncate text-left text-sm font-semibold text-slate-900 hover:text-brand-600 dark:text-slate-100 dark:hover:text-brand-400"
-            >
-              {row.eventName}
-            </button>
-            <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
-              {row.eventDate ? formatDateNumeric(row.eventDate) : "No date"}
-            </span>
-          </div>
-          {place && <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{place}</p>}
-
-          <ul className="mt-2 space-y-1">
-            {row.marketplaces.map((m) => (
-              <li key={m.marketplaceId} className="flex items-center gap-2 text-xs">
-                <span className="w-24 shrink-0 truncate text-slate-600 dark:text-slate-400">{m.marketplaceName}</span>
-                {m.linked ? (
-                  <span className="shrink-0 font-medium text-emerald-600 dark:text-emerald-400">Linked</span>
-                ) : (
-                  <span className="shrink-0 text-slate-400 dark:text-slate-500">No link</span>
-                )}
-                <span className="ml-auto shrink-0 tabular-nums text-slate-500 dark:text-slate-400">
-                  {m.lastCheckedAt ? (
-                    <span title={m.lastCheckedAt}>
-                      {relativeTime(m.lastCheckedAt)}
-                      {m.lastListingCount !== null && ` · ${m.lastListingCount}`}
-                    </span>
-                  ) : (
-                    <span className="text-slate-400 dark:text-slate-500">Not scanned</span>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-
-          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 dark:border-slate-800">
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              {row.lastListingCount !== null ? (
-                <>
-                  <span className="font-medium tabular-nums text-slate-700 dark:text-slate-300">
-                    {row.lastListingCount}
-                  </span>{" "}
-                  listings
-                  {row.lastCheckedAt && ` · ${relativeTime(row.lastCheckedAt)}`}
-                </>
-              ) : (
-                "Not scanned yet"
-              )}
-            </span>
-            <button
-              type="button"
-              onClick={onOpen}
-              className="shrink-0 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
-            >
-              Open &rarr;
-            </button>
-          </div>
-        </div>
-      </div>
-    </Card>
+      </td>
+      <td className="td-c">
+        <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{row.eventName}</p>
+        {place && <p className="mt-0.5 truncate text-xs text-slate-400 dark:text-slate-500">{place}</p>}
+      </td>
+      <td className="td-c whitespace-nowrap tabular-nums text-slate-500 dark:text-slate-400">
+        {row.eventDate ? formatDateNumeric(row.eventDate) : "No date"}
+      </td>
+      <td className="td-c whitespace-nowrap">
+        {row.linkedCount === 0 ? (
+          <span className="text-slate-400 dark:text-slate-500">No link</span>
+        ) : (
+          <span className="font-medium text-emerald-600 dark:text-emerald-400">
+            {row.linkedCount === total ? `All ${total}` : `${row.linkedCount} of ${total}`}
+          </span>
+        )}
+      </td>
+      <td className="td-c text-right tabular-nums">
+        {row.lastListingCount !== null ? (
+          <span className="font-semibold text-slate-800 dark:text-slate-200">{row.lastListingCount}</span>
+        ) : (
+          <span className="text-slate-400 dark:text-slate-500">-</span>
+        )}
+      </td>
+      <td className="td-c whitespace-nowrap text-right">
+        {row.lastCheckedAt ? (
+          <span className="tabular-nums text-slate-500 dark:text-slate-400" title={row.lastCheckedAt}>
+            {relativeTime(row.lastCheckedAt)}
+          </span>
+        ) : (
+          <span className="text-amber-600 dark:text-amber-400">Never</span>
+        )}
+      </td>
+    </tr>
   );
 }
 
@@ -2112,7 +2110,7 @@ export default function PriceChecker() {
         <LoadingBlock />
       ) : (
         <>
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="mb-6 flex flex-wrap gap-2">
             <StatCard label="Unsold tickets" value={String(summary.unsoldTicketCount)} />
             <StatCard
               label="My avg. purchase cost"
@@ -2138,7 +2136,7 @@ export default function PriceChecker() {
 
           <Card className="mb-6 p-4">
             <p className="mb-3 section-title">Market vs. mine</p>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <div className="flex flex-wrap gap-2">
               <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
               <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
               <StatCard

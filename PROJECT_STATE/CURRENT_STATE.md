@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.12.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.13.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -262,6 +262,38 @@ no server, no new dependency. **One migration cost: `OAUTH_SCOPE` gains
 `drive.file`, so everyone signs in with Google once more.** Nothing syncs
 automatically; the app stays local-first and fully usable offline.
 
+**2.12.1** closes three loose ends after marko confirmed Cloud Sync works end
+to end on both machines: the `DeepLinkExt` import is now cfg-gated to match
+its only (debug-only) caller instead of warning on every release build -
+deleting it would have broken `cargo tauri dev`; the Drive 403 message now
+names the real common cause (the Drive API not switched on for the OAuth
+client's Cloud project - a one-time step for the whole build, not per user)
+and the sync card turns Google's own console URL into an "Open Google
+settings" button; and `RELEASE.md`'s macOS instructions were corrected, since
+right-click → Open no longer bypasses Gatekeeper on Sequoia.
+
+**2.13.0** is a visual redesign across seven screens plus one backend fix, and
+it is the first release where **marko chose every screen himself from named
+alternatives** rather than being handed one design - the working method was:
+he points at a screen, gets ~10 named, clickable variants of it, and picks a
+code. What shipped: `StatCard` renders as a **chip** rather than a bordered
+box (changed on the component, so all ~50 call sites and their 12 grid
+wrappers moved together - `EventDetail` changed with them without being part
+of the review); a tightened sidebar with section headings and the Tickets
+group on its own surface, **deliberately with no counts**; Ticket Center's
+ambiguous `Completed` column replaced by a **Needs** column off the same
+`matchesCategory` predicate its filter tiles use, sorted soonest-event-first;
+Settings as **section tabs** over the `settings/:section` route that already
+existed; a **profit headline** on the Dashboard; Finance's balance split from
+its flows into its own band; the Calendar day detail as a **column beside the
+grid** rather than a modal; and Price Checker's event overview as a **light
+table**, with the per-marketplace detail behind the click that already opened
+the event. The unrelated backend fix is the important one to know about: see
+the `ACCOUNT_SELECT` entry in `PROTECTED_AREAS.md`. **No schema change, no
+migration (next new one is still 027), no dependency change.** Nothing in this
+release was compiled or tested before it was handed over - there was no Node
+or Rust toolchain on the machine it was written on.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -407,6 +439,21 @@ automatically; the app stays local-first and fully usable offline.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.13.0 - the redesign marko picked screen by screen.** Nine choices, made
+one at a time against named alternatives: NAV-04 + GRP-06 (sidebar), SUM-05
+(the summary row as chips), DSH-01 (profit headline), the Calendar's side
+panel, PRC-02 (Price Checker as a table), FIN-01 (stock split from flow),
+SET-05 (Settings tabs), TKT-01 (Ticket Center's Needs column), and Inventory
+left as the shared `TicketsView` it has always been rather than becoming the
+per-event summary an early preview wrongly showed. Two findings from that
+round are worth carrying forward. **Inventory is not its own screen** - it is
+`TicketsView` with `lockedStatus="available,listed"`, so anything done to
+Tickets happens to Inventory too. **The Price Checker already had a
+list-then-open-one-event flow** (`onOpen={setEventId}`); only the list's shape
+changed. Three things marko was offered and declined, so do not add them back
+without asking: sidebar counts (would need a new backend command), a per-event
+Inventory screen, and splitting this into three smaller releases.
 
 **2.12.0 - Cloud Sync: one database, two computers.** marko asked for what he
 writes on the Mac to show up on Windows. He first said "aj naraz"

@@ -49,7 +49,6 @@ import { EventCategorySwatch } from "../components/EventCategoryBadge";
 import { FinanceCategorySwatch } from "../components/FinanceCategoryBadge";
 import {
   IconAlertTriangle,
-  IconArrowLeft,
   IconBell,
   IconChevronDown,
   IconDatabase,
@@ -116,6 +115,12 @@ const SECTIONS = [
 
 export default function Settings() {
   const { section } = useParams();
+  // 2.13.0 (SET-05): `/settings` with no section opens the first tab rather
+  // than a menu, so there is always exactly one active section. Defined here,
+  // above the effects that read it - `const` is not hoisted, and the sync
+  // refresh effect below names it in its dependency array.
+  const activeSection = (section ? SECTIONS.find((s) => s.key === section) : undefined) ?? SECTIONS[0];
+  const sec = activeSection.key;
   const toast = useToast();
   const { user, updateName, logout } = useAuth();
   // 2.0.44: local draft of the name field on the Account section - synced
@@ -256,6 +261,11 @@ export default function Settings() {
   const [sync, setSync] = useState<CloudSyncStatus | null>(null);
   const [syncBusy, setSyncBusy] = useState<null | "up" | "down" | "toggle">(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  // 2.12.1: the last sync error, kept so a FIXABLE one can be turned into a
+  // button. Google's own 403 body carries the exact Cloud Console URL for
+  // switching the Drive API on; showing it as a link beats making marko copy
+  // it out of a toast that has already disappeared.
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const refreshSync = useCallback(async () => {
     try {
@@ -268,8 +278,8 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    if (section === "data") void refreshSync();
-  }, [section, refreshSync]);
+    if (sec === "data") void refreshSync();
+  }, [sec, refreshSync]);
 
   const doSyncToggle = async (enabled: boolean) => {
     setSyncBusy("toggle");
@@ -283,8 +293,17 @@ export default function Settings() {
     }
   };
 
+  /** Google embeds the "enable this API" console URL in its own 403 body.
+   * Pulling it back out is more reliable than hardcoding a project id we do
+   * not own. Returns null for every other kind of error. */
+  const enableApiUrl = (message: string): string | null => {
+    const m = message.match(/https:\/\/console\.(?:developers|cloud)\.google\.com\/[^\s"'),]+/);
+    return m ? m[0] : null;
+  };
+
   const doSyncUp = async (force = false) => {
     setSyncBusy("up");
+    setSyncError(null);
     try {
       const next = await api.cloudSyncPush(force);
       setSync(next);
@@ -295,7 +314,10 @@ export default function Settings() {
       // The lost-update guard, surfaced as a decision rather than an error:
       // the only way past it is an explicit overwrite.
       if (msg.includes("newer data")) setConfirmOverwrite(true);
-      else toast.error(msg);
+      else {
+        setSyncError(msg);
+        toast.error(msg);
+      }
     } finally {
       setSyncBusy(null);
     }
@@ -303,6 +325,7 @@ export default function Settings() {
 
   const doSyncDown = async () => {
     setSyncBusy("down");
+    setSyncError(null);
     try {
       const safetyPath = await api.cloudSyncPull();
       toast.success(`Synced down. Your previous data was saved to ${safetyPath}.`);
@@ -310,6 +333,7 @@ export default function Settings() {
       // database rather than keep stale in-memory state.
       await relaunch();
     } catch (e) {
+      setSyncError(errMsg(e));
       toast.error(errMsg(e));
     } finally {
       setSyncBusy(null);
@@ -398,55 +422,41 @@ export default function Settings() {
     }
   };
 
-  const activeSection = section ? SECTIONS.find((s) => s.key === section) : undefined;
 
   return (
     <div>
-      {!activeSection ? (
-        <>
-          <PageHeader title="Settings" subtitle="Lookups, data, appearance and software." />
-          {/* 1.8.2: Settings Home - every category visible at once, no
-              scrolling needed to find one (see REDESIGN-1.8.2-REPORT.md
-              section 4).
-              2.0.48: was a 4-column grid (row-major reading order: Lookups,
-              Data, Integrations, Appearance, then Software, Account on a
-              second row) - marko found that hard to read as a sequence, so
-              this is now one column, top to bottom. SECTIONS' order itself
-              is unchanged - it already read Lookups -> Data -> Integrations
-              -> Appearance -> Software -> Account (roughly: set up your
-              reference data, bring in/manage your data, connect optional
-              external tools, personal preference, maintenance, account/
-              sign-in), the grid layout was the only thing making that read
-              as scattered instead of sequential. Capped at max-w-2xl - a
-              list of rows reads better narrower than the old grid did, and
-              it keeps every row's text at a comfortable line length on a
-              wide window. */}
-          <div className="flex flex-col gap-2 lg:max-w-2xl">
-            {SECTIONS.map((s) => (
-              <Link
-                key={s.key}
-                to={`/settings/${s.key}`}
-                className="card flex items-center gap-4 p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/60"
-              >
-                <s.icon className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
-                <span className="min-w-0 flex-1">
-                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{s.title}</h3>
-                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{s.description}</p>
-                </span>
-                <IconChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-slate-300 dark:text-slate-600" />
-              </Link>
-            ))}
-          </div>
-        </>
-      ) : (
-        <>
-          <Link
-            to="/settings"
-            className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
-          >
-            <IconArrowLeft className="h-4 w-4" /> Back to Settings
-          </Link>
-          <PageHeader title={activeSection.title} subtitle={activeSection.description} />
+      <PageHeader title="Settings" subtitle={activeSection.description} />
+      {/* 2.13.0 (SET-05): section tabs instead of six door-cards. The old
+          Settings Home was a menu you had to walk through to learn anything -
+          open a card, read, go back, open the next. The tab strip is always
+          on screen, so moving between sections is one click and you never
+          leave the page. The routes are unchanged (`/settings/:section`, see
+          App.tsx) and every existing deep link - the sidebar profile widget's
+          "Account settings", Dashboard's update pill - still lands exactly
+          where it did. `/settings` with no section now opens the first tab
+          rather than a menu, which is why `activeSection` falls back to
+          SECTIONS[0] up top. */}
+      <div className="mb-5 flex flex-wrap gap-1.5 border-b border-slate-200 pb-3 dark:border-slate-800">
+        {SECTIONS.map((s) => {
+          const on = s.key === sec;
+          return (
+            <Link
+              key={s.key}
+              to={`/settings/${s.key}`}
+              aria-current={on ? "page" : undefined}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] transition ${
+                on
+                  ? "bg-brand-600 font-semibold text-white dark:bg-brand-500"
+                  : "font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-100"
+              }`}
+            >
+              <s.icon className="h-4 w-4 shrink-0" />
+              {s.title}
+            </Link>
+          );
+        })}
+      </div>
+      <>
 
           {/* 1.8.2: same Card content as before 1.8.2, just re-grouped one
               category per route instead of one long scrolling page - see
@@ -462,7 +472,7 @@ export default function Settings() {
               FinanceCategoryList below, and their own onAdd/onDelete
               handlers) is completely unchanged - only the container
               changed, from "always visible" to "opens on click". */}
-          {section === "lookups" && (
+          {sec === "lookups" && (
             <div className="flex flex-col gap-2 lg:max-w-2xl">
               <button
                 type="button"
@@ -582,7 +592,7 @@ export default function Settings() {
             </div>
           </Modal>
 
-          {section === "data" && (
+          {sec === "data" && (
             // 1.9.5: marko wants these stacked instead of side-by-side -
             // was `grid-cols-1 lg:grid-cols-2` (Import/Export paired on wide
             // screens, Backup spanning below); now a single column always,
@@ -638,6 +648,22 @@ export default function Settings() {
                             Sync down
                           </Button>
                         </div>
+
+                        {syncError && (
+                          <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-inset ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/25">
+                            <p className="whitespace-pre-line">{syncError}</p>
+                            {enableApiUrl(syncError) && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                className="mt-2"
+                                onClick={() => openUrl(enableApiUrl(syncError)!)}
+                              >
+                                <IconLink className="h-3.5 w-3.5" /> Open Google settings
+                              </Button>
+                            )}
+                          </div>
+                        )}
 
                         <dl className="mt-4 space-y-1.5 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
                           <div className="flex justify-between gap-3">
@@ -744,7 +770,7 @@ export default function Settings() {
             </div>
           )}
 
-          {section === "integrations" && (
+          {sec === "integrations" && (
             <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
               <GoogleSignInCard onChange={setGoogleStatus} />
               {/* 2.0.16: Pulls and Orders & Sales side by side (marko's own
@@ -823,13 +849,13 @@ export default function Settings() {
             </div>
           )}
 
-          {section === "notifications" && (
+          {sec === "notifications" && (
             <div className="lg:max-w-2xl">
               <NotificationsCard />
             </div>
           )}
 
-          {section === "software" && (
+          {sec === "software" && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
               <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
@@ -901,7 +927,7 @@ export default function Settings() {
               used to say "placeholder auth, not real Firebase yet" - that
               was true back in 2.0.44 Phase 1 and went stale; caught while
               touching this section for 2.0.48.) */}
-          {section === "account" && (
+          {sec === "account" && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Your profile</h3>
               {/* 2.0.48: this caption used to sit under the sidebar profile
@@ -958,7 +984,6 @@ export default function Settings() {
             </Card>
           )}
         </>
-      )}
 
       <CsvImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
 
