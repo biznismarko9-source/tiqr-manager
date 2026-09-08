@@ -350,7 +350,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               row for no visible reason. Same five figures, same order within
               each band - only the grouping and the two labels are new. */}
           <p className="section-title mb-2">What you have · not affected by the period filter</p>
-          <div className="mb-5 flex flex-wrap gap-2">
+          <div className="summary-bar">
             <StatCard label="Current Balance" value={formatMoney(currentBalanceCents, "EUR")} sub="Across active EUR accounts" />
             {pending && pending.count > 0 && (
               <StatCard
@@ -361,7 +361,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             )}
           </div>
           <p className="section-title mb-2">What moved · in the selected period</p>
-          <div className="mb-6 flex flex-wrap gap-2">
+          <div className="summary-bar">
             <StatCard label="Income" value={formatMoney(incomeCents, "EUR")} />
             <StatCard label="Expenses" value={formatMoney(expenseCents, "EUR")} />
             <StatCard

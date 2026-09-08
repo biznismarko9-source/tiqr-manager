@@ -33,6 +33,7 @@ import {
   Select,
   TabSwitcher,
   Textarea,
+  SummaryStat,
 } from "../components/ui";
 import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
@@ -167,20 +168,6 @@ function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }
   );
 }
 
-function SummaryStat({ label, value, tone }: { label: string; value: string; tone?: "positive" | "negative" }) {
-  const toneCls =
-    tone === "positive"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tone === "negative"
-        ? "text-red-600 dark:text-red-400"
-        : "text-slate-900 dark:text-slate-100";
-  return (
-    <span className="whitespace-nowrap">
-      <span className="text-slate-400 dark:text-slate-500">{label}: </span>
-      <span className={`font-medium tabular-nums ${toneCls}`}>{value}</span>
-    </span>
-  );
-}
 
 export default function Sales() {
   const toast = useToast();

@@ -16,6 +16,35 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.13.1 - One summary style, everywhere
+
+marko ran 2.13.0, pointed at the summary strip `Sales.tsx` has had since
+1.9.0 - one border around the whole row, grey label, value beside it - and
+asked for exactly that shape on every screen. **No backend change, no schema
+change, no migration (next new one is still 027), no dependency change.**
+
+1. **`SummaryStat` moved from `Sales.tsx` into `ui.tsx`** and is now the one
+   implementation of a summary figure in the app. `StatCard` is a thin
+   wrapper over it (trend and `sub` append inline), so its ~50 call sites
+   follow automatically and Sales stops having its own private copy.
+2. **`.stat-chip` became `.summary-bar`.** 2.13.0's chips were lighter than
+   the old cards but still N bordered objects above a table; this is one
+   border around the row. The 13 wrappers converted with it - and they no
+   longer carry their own `mb-*`, since `.summary-bar` brings its own.
+3. **Ticket Center's four filter cards are segments of that bar.** They were
+   the largest thing on a screen whose point is the table underneath. Still
+   buttons, still the filter, same counts. Their subtext moved to a `title`
+   tooltip - a strip has no second line, and that text explained the count
+   rather than naming it.
+4. **Calendar's Today / Tomorrow / Next 7 days / Overdue** got the same
+   treatment. Tiles with nothing to open now render as plain text instead of
+   dead buttons.
+5. **Dashboard's profit headline dropped 34px → 26px.** Still the loudest
+   number on the page; no longer shouting.
+
+**Not built here:** no Node or Rust toolchain on the machine this was written
+on, so nothing was compiled or tested - the first build is the first check.
+
 ## 2.13.0 - Visual redesign across seven screens, plus one balance fix
 
 marko reviewed named alternatives one screen at a time and picked each of

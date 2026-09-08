@@ -253,14 +253,14 @@
     @apply cursor-pointer transition hover:-translate-y-px hover:border-slate-300 hover:shadow-raised dark:hover:border-slate-700;
   }
 
-  /* 2.13.0: the summary row is a row of chips, not a row of cards. marko's
-     own reason: the same bordered box sat above ten different screens and
-     read as furniture rather than as content - the table under it is the
-     thing you came for. One pill per figure, the number loud, the label
-     quiet beside it. Same component (`StatCard`), so every one of its ~50
-     call sites changes together and the app keeps ONE summary style. */
-  .stat-chip {
-    @apply inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3.5 py-2 dark:border-slate-800 dark:bg-slate-900;
+  /* 2.13.1: the summary row is ONE bar, not a row of separate objects.
+     2.13.0 made each figure a chip, which was lighter than the old cards but
+     still N bordered things above a table. This is the strip Sales.tsx has
+     always had (marko pointed at it and asked for it everywhere): one border
+     around the whole row, label in grey, value beside it. See `SummaryStat`
+     in ui.tsx, which is now the single implementation for all of them. */
+  .summary-bar {
+    @apply mb-5 flex flex-wrap items-center gap-x-6 gap-y-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm dark:border-slate-800 dark:bg-slate-900;
   }
 
   /* Section label above a group of cards/a table - the one "small heading"

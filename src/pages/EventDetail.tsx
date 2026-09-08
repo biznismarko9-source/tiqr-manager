@@ -265,7 +265,7 @@ function OverviewTab({
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap gap-2">
+      <div className="summary-bar">
         <StatCard label="Tickets" value={String(s.purchasedTickets)} />
         <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
         <StatCard label="Available" value={String(s.availableTickets)} sub={`${s.listedTickets} listed`} />
@@ -278,7 +278,7 @@ function OverviewTab({
           individual orders and sales instead.
         </p>
       )}
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="summary-bar">
         <StatCard
           label="Profit"
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
@@ -763,7 +763,7 @@ function SalesTab({
       {summary && summary.marketLowestPriceCents !== null && (
         <Card className="mb-6 p-4">
           <p className="mb-3 section-title">Market vs. mine</p>
-          <div className="flex flex-wrap gap-2">
+          <div className="summary-bar">
             <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
             <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
             <StatCard
@@ -788,7 +788,7 @@ function SalesTab({
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
-        <div className="flex flex-wrap gap-2">
+        <div className="summary-bar">
           <StatCard label="Inventory cost" value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)} sub="What unsold tickets cost you" />
           <StatCard label="Listing value" value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)} sub="Unsold tickets that have a listing price" />
           <StatCard label="Potential profit" value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)} sub="Listing value minus inventory cost" />
@@ -1026,7 +1026,7 @@ function ListingsTab({
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap gap-2">
+      <div className="summary-bar">
         <StatCard label="Active listings" value={String(active.length)} />
         <StatCard label="Listed value" value={formatMoneyOrMixed(activeValueCents, activeCurrency)} />
         <StatCard label="Lowest price" value={lowestCents !== null ? formatMoneyOrMixed(lowestCents, activeCurrency) : "-"} />

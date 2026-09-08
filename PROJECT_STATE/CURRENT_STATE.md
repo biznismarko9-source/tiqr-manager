@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.13.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.13.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -293,6 +293,15 @@ the `ACCOUNT_SELECT` entry in `PROTECTED_AREAS.md`. **No schema change, no
 migration (next new one is still 027), no dependency change.** Nothing in this
 release was compiled or tested before it was handed over - there was no Node
 or Rust toolchain on the machine it was written on.
+
+
+**2.13.1** is the follow-up marko asked for after running 2.13.0: **one
+summary style everywhere.** `SummaryStat` moved out of `Sales.tsx` into
+`ui.tsx` as the single implementation, `StatCard` became a thin wrapper over
+it, `.stat-chip` became `.summary-bar` (one border round the whole row rather
+than one per figure), and Ticket Center's four filter cards plus Calendar's
+four tiles became segments of that same bar - still clickable, still the same
+filters. Dashboard's profit headline dropped to 26px. **Frontend only.**
 
 ## Stack / layout
 

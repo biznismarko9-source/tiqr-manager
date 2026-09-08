@@ -387,7 +387,7 @@ export default function Dashboard() {
                   <div className="mb-4">
                     <p className="section-title">Profit</p>
                     <p
-                      className={`mt-1 text-[34px] font-semibold leading-none tracking-tight tabular-nums ${
+                      className={`mt-1 text-[26px] font-semibold leading-none tracking-tight tabular-nums ${
                         data.period.profitCents > 0
                           ? "text-emerald-600 dark:text-emerald-400"
                           : data.period.profitCents < 0
@@ -405,7 +405,7 @@ export default function Dashboard() {
                       })()}
                     </p>
                   </div>
-                  <div className="mb-5 flex flex-wrap gap-2">
+                  <div className="summary-bar">
                     <StatCard
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
@@ -516,7 +516,7 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Current inventory (all time)
               </p>
-              <div className="mb-8 flex flex-wrap gap-2">
+              <div className="summary-bar">
                 <StatCard label="Available" value={String(data.inventory.availableTickets)} />
                 <StatCard label="Listed" value={String(data.inventory.listedTickets)} />
                 <StatCard label="Sold (total)" value={String(data.inventory.soldTickets)} />
@@ -555,7 +555,7 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Cashflow (all time)
               </p>
-              <div className="mb-8 flex flex-wrap gap-2">
+              <div className="summary-bar">
                 <StatCard
                   label="Revenue"
                   value={formatMoneyOrMixed(data.cashflow.revenueCents, data.cashflow.currency)}
@@ -600,7 +600,7 @@ export default function Dashboard() {
                   Current unsold stock (available + listed), not affected by the period filter above. This is an
                   estimate, not realized profit.
                 </p>
-                <div className="flex flex-wrap gap-2">
+                <div className="summary-bar">
                   <StatCard
                     label="Inventory cost"
                     value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}

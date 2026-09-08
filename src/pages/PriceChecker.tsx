@@ -2110,7 +2110,7 @@ export default function PriceChecker() {
         <LoadingBlock />
       ) : (
         <>
-          <div className="mb-6 flex flex-wrap gap-2">
+          <div className="summary-bar">
             <StatCard label="Unsold tickets" value={String(summary.unsoldTicketCount)} />
             <StatCard
               label="My avg. purchase cost"
@@ -2136,7 +2136,7 @@ export default function PriceChecker() {
 
           <Card className="mb-6 p-4">
             <p className="mb-3 section-title">Market vs. mine</p>
-            <div className="flex flex-wrap gap-2">
+            <div className="summary-bar">
               <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
               <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
               <StatCard

@@ -485,6 +485,7 @@ export function StatCard({
    * profit/loss. Ignored when `trend` is absent. */
   trendColored?: boolean;
 }) {
+  // 2.13.1: renders SummaryStat below - see its own comment.
   // 2.13.0: the same journey 2.6.0 started, finished. That round made the
   // KPI card smaller; this one stops it being a card at all. A summary row
   // sits above a table on ten screens, and a bordered box per figure gave
@@ -508,26 +509,58 @@ export function StatCard({
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
   return (
-    <div className="stat-chip" title={sub ?? undefined}>
-      <span className={`text-[15px] font-semibold leading-none tabular-nums ${valueTone}`}>{value}</span>
-      <span className="text-[11.5px] leading-none text-slate-500 dark:text-slate-400">{label}</span>
-      {trend && (
-        <span className={`flex items-center gap-1 text-[11px] font-medium leading-none ${trendTone}`}>
-          <span className="text-slate-300 dark:text-slate-700">·</span>
-          {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
-          {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
-          {trend.label}
-        </span>
-      )}
-      {sub && (
-        <span className="text-[11px] leading-none text-slate-400 dark:text-slate-500">
-          <span className="mr-1.5 text-slate-300 dark:text-slate-700">·</span>
-          {sub}
-        </span>
-      )}
-    </div>
+    <SummaryStat
+      label={label}
+      value={value}
+      tone={tone}
+      extra={
+        <>
+          {trend && (
+            <span className={`ml-1.5 inline-flex items-center gap-0.5 text-xs font-medium ${trendTone}`}>
+              {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
+              {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
+              {trend.label}
+            </span>
+          )}
+          {sub && <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">· {sub}</span>}
+        </>
+      }
+    />
   );
 }
+
+/** 2.13.1: the one summary figure in the app - "Label: value", grey label,
+ * value beside it, nothing around it. Lived in Sales.tsx since 1.9.0; marko
+ * pointed at that bar and asked for it on every screen, so it moved here and
+ * `StatCard` above is now a thin wrapper over it. Callers put a row of these
+ * inside a single `.summary-bar` (index.css) - one border around the row, not
+ * one per figure. */
+export function SummaryStat({
+  label,
+  value,
+  tone = "default",
+  extra,
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "positive" | "negative";
+  extra?: ReactNode;
+}) {
+  const toneCls =
+    tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : tone === "negative"
+        ? "text-red-600 dark:text-red-400"
+        : "text-slate-900 dark:text-slate-100";
+  return (
+    <span className="whitespace-nowrap">
+      <span className="text-slate-400 dark:text-slate-500">{label}: </span>
+      <span className={`font-medium tabular-nums ${toneCls}`}>{value}</span>
+      {extra}
+    </span>
+  );
+}
+
 
 // ---------------------------------------------------------------------------
 // Modal
