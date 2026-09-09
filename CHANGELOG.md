@@ -16,6 +16,48 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.13.2 - Separate cards again, editable order prices, two charts
+
+marko's own list after running 2.13.1. **No schema change, no migration (next
+new one is still 027), no dependency change.**
+
+1. **Back to one card per figure.** 2.13.1 put every summary figure in a
+   single bordered bar; held up against the Attention Center row, marko wanted
+   separate boxes. `StatCard` is a card again and `.summary-bar` is now just
+   the row that holds them - one component change plus one CSS line, so all 13
+   wrappers, Ticket Center's filters and the Calendar tiles followed without
+   being touched. `SummaryStat` survives from 2.13.1 for Sales' own results
+   strip, which genuinely is one line of text.
+2. **An order's purchase price is editable after creation.** Unit price, fees
+   and other costs, re-split across the order's tickets with the exact
+   `allocate_cents` the create path uses - **including tickets already sold,
+   which does retroactively change the profit reported on those sales.**
+   marko's explicit choice over blocking the edit; the dialog says so whenever
+   the order has sold tickets. 5 new tests.
+3. **Fixed before it shipped**: the first version of that form used
+   `parseFloat`, and `parseFloat("12,50")` silently returns `12`. It now uses
+   `decimalStringToCents`, which the app already had and which handles the
+   comma marko actually types. An empty unit price errors instead of zeroing
+   the order.
+4. **Fixed**: `orders_sheet_sync.rs` also builds an `OrderEditInput`, which the
+   new required fields broke. It now reads the three price columns out of the
+   database and passes them through, the same way it already did for
+   `supplier_id` and `payment_status` - the sheet does not carry a price, and
+   filling them with 0 would have zeroed every synced order's price.
+5. **Pulls**: the Delete / New Pull buttons sit on the filter row instead of a
+   right-aligned row of their own, which had left a band of empty space.
+6. **Dashboard: two charts instead of one wide one**, each with its own metric
+   switch rather than one being chosen for him. A fourth metric, **Cost**,
+   joins Profit / Revenue / Sales - `cogs_cents` has been on every bucket since
+   1.6.0 and was the one real series never offered. The headline figure reads
+   the same field its line draws (`cogs`, not `total cost`), so the number and
+   the chart cannot disagree.
+
+**Not built here:** no toolchain on the machine this was written on. 2.13.2's
+first build failed on point 4 above and nothing was ever published under that
+number, so it is reused rather than bumped - same reasoning as the cancelled
+2.4.0 direction.
+
 ## 2.13.1 - One summary style, everywhere
 
 marko ran 2.13.0, pointed at the summary strip `Sales.tsx` has had since

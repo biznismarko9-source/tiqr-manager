@@ -21,6 +21,36 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.13.2 - Adding a field to an input struct is never a one-file change
+
+- **`OrderEditInput` is built in THREE places, and one of them is a sync.**
+  `orders.rs` (its test helper), `OrderDetail.tsx`, and - the one that is easy
+  to miss - `orders_sheet_sync.rs`'s `apply_order_rows`. Adding
+  `unit_price_cents` / `fees_cents` / `other_costs_cents` in 2.13.2 broke that
+  third site, and the compiler caught it only because every field is required.
+  **That was luck worth keeping:** never give `OrderEditInput` a `Default`, an
+  `Option` fallback or `..Default::default()`, because the failure mode there
+  is silent. Filling those three with 0 in the sync - the obvious way to make
+  it compile again - would have zeroed the purchase price of every synced
+  order on the next sheet sync, with no error anywhere.
+- **The orders sheet does not carry a price.** `OrderRowSnapshot` holds
+  `purchase_date`, `currency`, `notes` and `external_reference` and nothing
+  else, which is exactly why `apply_order_rows` re-reads `supplier_id` and
+  `payment_status` out of the database before building its `OrderEditInput`.
+  The three price columns are now read the same way for the same reason.
+  Anything else `OrderEditInput` gains later must follow that pattern: if the
+  sheet does not own the field, read it back and pass it through unchanged.
+- **Editing an order's price rewrites history, on purpose.** `update_order_impl`
+  re-splits cost across the order's tickets including the ones already sold,
+  so the profit already reported on those sales changes. marko chose this
+  explicitly over blocking the edit once anything is sold. The dialog says so
+  whenever `soldCount > 0`; do not quietly remove that warning.
+- **The re-split must stay identical to `insert_order_with_tickets`.** Unit
+  price lands on every ticket whole; fees and other costs go through
+  `allocate_cents`. An order created at a price and one edited to that price
+  have to end up byte-identical - there are tests for the sum, and they are
+  the reason a cent cannot go missing. Change one path, change both.
+
 ## 2.13.0 - Two balances that must agree, and one component that moves ~50 places
 
 - **`finance_accounts::ACCOUNT_SELECT` and `finance_forecast::eur_balance_as_of`

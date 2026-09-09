@@ -782,14 +782,26 @@ fn apply_order_rows(
                 continue;
             }
 
-            let existing: Option<(Option<i64>, String, String)> = conn
+            // 2.13.2: the three price columns are read here for exactly the
+            // same reason `supplier_id` and `payment_status` already were -
+            // the SHEET DOES NOT CARRY THEM (see `OrderRowSnapshot`: currency,
+            // purchase_date, notes, external_reference and nothing else), so
+            // they must be passed back through unchanged. `OrderEditInput`
+            // gained them in 2.13.2 when order prices became editable; filling
+            // them with 0 here would have quietly zeroed the purchase price of
+            // every synced order on the next sheet sync.
+            let existing: Option<(Option<i64>, String, String, i64, i64, i64)> = conn
                 .query_row(
-                    "SELECT supplier_id, payment_status, updated_at FROM orders WHERE id = ?1",
+                    "SELECT supplier_id, payment_status, updated_at,
+                            unit_price_cents, fees_cents, other_costs_cents
+                     FROM orders WHERE id = ?1",
                     [link.local_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
                 .optional()?;
-            let Some((supplier_id, payment_status, updated_at)) = existing else {
+            let Some((supplier_id, payment_status, updated_at, unit_price_cents, fees_cents, other_costs_cents)) =
+                existing
+            else {
                 result.errors.push(SheetSyncIssue {
                     row_number,
                     message: format!("linked order #{} no longer exists in the app", link.local_id),
@@ -811,6 +823,9 @@ fn apply_order_rows(
             }
 
             let edit = OrderEditInput {
+                unit_price_cents,
+                fees_cents,
+                other_costs_cents,
                 supplier_id,
                 platform_id,
                 purchase_date: current_snapshot.purchase_date.clone(),
