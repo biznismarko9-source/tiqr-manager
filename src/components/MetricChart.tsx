@@ -24,7 +24,7 @@ import type { RevenueTimeSeriesPoint } from "../lib/types";
 // ellipse, and mouse coordinates can be read directly off the container
 // without any extra scale-factor math.
 
-export type MetricKey = "profit" | "revenue" | "sales";
+export type MetricKey = "profit" | "revenue" | "cost" | "sales";
 
 // Single source of truth for "which metrics exist, in what order, with what
 // label" - Dashboard.tsx imports this same list for its tab buttons rather
@@ -34,12 +34,17 @@ export type MetricKey = "profit" | "revenue" | "sales";
 export const METRICS: { key: MetricKey; label: string }[] = [
   { key: "profit", label: "Profit & Loss" },
   { key: "revenue", label: "Revenue" },
+  // 2.13.2: `cogsCents` has been on every bucket since 1.6.0 and was the one
+  // real series the chart never offered. Drawn beside Revenue, the gap
+  // between the two lines IS the margin - which neither number shows alone.
+  { key: "cost", label: "Cost" },
   { key: "sales", label: "Sales" },
 ];
 
 function valueOf(p: RevenueTimeSeriesPoint, metric: MetricKey): number {
   if (metric === "profit") return p.profitCents;
   if (metric === "sales") return p.soldTickets;
+  if (metric === "cost") return p.cogsCents;
   return p.revenueCents;
 }
 

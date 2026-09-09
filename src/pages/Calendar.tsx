@@ -11,7 +11,6 @@ import {
   Modal,
   PageHeader,
   SEGMENTED_TRACK,
-  SummaryStat,
   segmentedItemClass,
 } from "../components/ui";
 import {
@@ -1011,36 +1010,33 @@ function SummaryStrip({ today, onOpenDay }: { today: string; onOpenDay: (iso: st
     });
   }
 
-  // 2.13.1: the same one-bar summary the rest of the app uses. Tiles that do
-  // nothing (no items to open) render as plain text rather than dead buttons.
+  // 2.13.2: separate cards again, matching every other tile in the app -
+  // marko's call after seeing 2.13.1's single bar next to the Attention
+  // Center row. Tiles with nothing to open stay non-interactive rather than
+  // becoming dead buttons; that part of 2.13.1 was worth keeping.
   return (
     <div className="summary-bar mb-4">
-      {tiles.map((tile) =>
-        tile.onClick ? (
-          <button
-            key={tile.label}
-            type="button"
-            onClick={tile.onClick}
-            className="-my-1 whitespace-nowrap rounded-lg px-2.5 py-1 transition hover:bg-slate-100 dark:hover:bg-slate-800/70"
+      {tiles.map((tile) => (
+        <Card
+          key={tile.label}
+          interactive={Boolean(tile.onClick)}
+          className="min-w-[9.5rem] flex-1 p-3.5"
+          onClick={tile.onClick}
+          role={tile.onClick ? "button" : undefined}
+        >
+          <p className="section-title truncate">{tile.label}</p>
+          <p
+            className={`mt-2 text-[22px] font-semibold leading-none tabular-nums ${
+              tile.tone === "danger" ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-50"
+            }`}
           >
-            <span className="text-slate-400 dark:text-slate-500">{tile.label}: </span>
-            <span
-              className={`font-semibold tabular-nums ${
-                tile.tone === "danger" ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-slate-100"
-              }`}
-            >
-              {tile.count}
-            </span>
-          </button>
-        ) : (
-          <SummaryStat
-            key={tile.label}
-            label={tile.label}
-            value={String(tile.count)}
-            tone={tile.tone === "danger" ? "negative" : "default"}
-          />
-        ),
-      )}
+            {tile.count}
+          </p>
+          <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">
+            {tile.count === 1 ? "item" : "items"}
+          </p>
+        </Card>
+      ))}
     </div>
   );
 }

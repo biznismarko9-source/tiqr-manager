@@ -339,18 +339,22 @@ function GivenPulls() {
           Sales/Events - marko asked for filters/sort to look "roughly the
           same everywhere"; this tab (and Received below) were the one
           layout left over from before that convention existed. */}
-      <div className="mb-3 flex justify-end gap-2">
-        {!selectionMode && pulls && pulls.length > 0 && (
-          <Button variant="secondary" onClick={() => setSelectionMode(true)}>
-            <IconTrash className="h-4 w-4" /> Delete
-          </Button>
-        )}
-        <Button variant="primary" onClick={() => setModalPull(null)}>
-          <IconPlus className="h-4 w-4" /> New Pull
-        </Button>
-      </div>
-
+      {/* 2.13.2: the buttons used to sit on their own right-aligned row above
+          the filters, which left a band of empty space across the page. They
+          are the same row now - `order-last ml-auto` keeps them visually at
+          the right end while staying first in source, so they wrap to their
+          own line only when the window is genuinely too narrow. */}
       <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="order-last ml-auto flex gap-2">
+          {!selectionMode && pulls && pulls.length > 0 && (
+            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+              <IconTrash className="h-4 w-4" /> Delete
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setModalPull(null)}>
+            <IconPlus className="h-4 w-4" /> New Pull
+          </Button>
+        </div>
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
@@ -1072,18 +1076,22 @@ function ReceivedPulls() {
     <>
       {/* 2.0.65: same buttons-row-then-labeled-filter-row restructuring as
           GivenPulls above - see that component's own comment. */}
-      <div className="mb-3 flex justify-end gap-2">
-        {!selectionMode && pulls && pulls.length > 0 && (
-          <Button variant="secondary" onClick={() => setSelectionMode(true)}>
-            <IconTrash className="h-4 w-4" /> Delete
-          </Button>
-        )}
-        <Button variant="primary" onClick={() => setModalPull(null)}>
-          <IconPlus className="h-4 w-4" /> New received pull
-        </Button>
-      </div>
-
+      {/* 2.13.2: the buttons used to sit on their own right-aligned row above
+          the filters, which left a band of empty space across the page. They
+          are the same row now - `order-last ml-auto` keeps them visually at
+          the right end while staying first in source, so they wrap to their
+          own line only when the window is genuinely too narrow. */}
       <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="order-last ml-auto flex gap-2">
+          {!selectionMode && pulls && pulls.length > 0 && (
+            <Button variant="secondary" onClick={() => setSelectionMode(true)}>
+              <IconTrash className="h-4 w-4" /> Delete
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setModalPull(null)}>
+            <IconPlus className="h-4 w-4" /> New received pull
+          </Button>
+        </div>
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">

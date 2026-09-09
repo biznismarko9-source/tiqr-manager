@@ -119,14 +119,12 @@ function deliveryCell(o: OrderRecord) {
 /** Same visual language as the old Fulfillment Center's own category tiles
  * (StatCard-style number + always-one-selected), just ported to this page's
  * own 4 categories. */
-/** 2.13.1: the four filters as segments of the one summary bar, not four
- * cards. They were the biggest thing on the screen and the table under them
- * was the point - marko pointed at Sales' summary strip and asked for that
- * shape everywhere. Still buttons, still the filter: only the size changed.
- * The subtext moved to `title` (a tooltip) because there is no second line in
- * a strip - it explained the count rather than naming it, so nothing is lost
- * that a hover cannot give back. */
-function CategoryFilter({
+/** 2.13.2: back to one card per filter. 2.13.1 folded these into a single
+ * bar; marko compared that with the Attention Center row and wanted separate
+ * boxes, so they are cards again - and the subtext, which had to become a
+ * tooltip in a strip, is back on the card where it can be read. Same
+ * `StatCard` metrics (p-3.5, 22px value) as every other tile in the app. */
+function CategoryCard({
   title,
   subtext,
   count,
@@ -143,24 +141,18 @@ function CategoryFilter({
     <button
       type="button"
       onClick={onSelect}
-      title={subtext}
       aria-pressed={selected}
-      className={`-my-1 whitespace-nowrap rounded-lg px-2.5 py-1 transition ${
+      className={`card min-w-[9.5rem] flex-1 p-3.5 text-left transition hover:-translate-y-px hover:shadow-raised ${
         selected
-          ? "bg-brand-50 dark:bg-brand-500/[0.14]"
-          : "hover:bg-slate-100 dark:hover:bg-slate-800/70"
+          ? "ring-2 ring-inset ring-brand-500 dark:ring-brand-400"
+          : "hover:border-slate-300 dark:hover:border-slate-700"
       }`}
     >
-      <span className={selected ? "text-brand-600 dark:text-brand-300" : "text-slate-400 dark:text-slate-500"}>
-        {title}:{" "}
-      </span>
-      <span
-        className={`font-semibold tabular-nums ${
-          selected ? "text-brand-700 dark:text-brand-200" : "text-slate-900 dark:text-slate-100"
-        }`}
-      >
+      <p className="section-title truncate">{title}</p>
+      <p className="mt-2 text-[22px] font-semibold leading-none tabular-nums text-slate-900 dark:text-slate-50">
         {count}
-      </span>
+      </p>
+      <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
     </button>
   );
 }
@@ -284,7 +276,7 @@ export default function TicketCenter() {
         <>
           <div className="summary-bar">
             {CATEGORIES.map((c) => (
-              <CategoryFilter
+              <CategoryCard
                 key={c.key}
                 title={c.title}
                 subtext={c.subtext}

@@ -253,14 +253,15 @@
     @apply cursor-pointer transition hover:-translate-y-px hover:border-slate-300 hover:shadow-raised dark:hover:border-slate-700;
   }
 
-  /* 2.13.1: the summary row is ONE bar, not a row of separate objects.
-     2.13.0 made each figure a chip, which was lighter than the old cards but
-     still N bordered things above a table. This is the strip Sales.tsx has
-     always had (marko pointed at it and asked for it everywhere): one border
-     around the whole row, label in grey, value beside it. See `SummaryStat`
-     in ui.tsx, which is now the single implementation for all of them. */
+  /* 2.13.2: back to separate small cards, one per figure. 2.13.1 put them
+     all inside one bordered bar; marko looked at it beside the Attention
+     Center row and asked for that instead - each figure its own box. So this
+     class is now just the ROW (spacing only) and `StatCard` brings its own
+     `.card` border back. `SummaryStat` stays for the places that genuinely
+     are one line of text - Sales' own results strip, which predates all of
+     this and is not a row of KPIs. */
   .summary-bar {
-    @apply mb-5 flex flex-wrap items-center gap-x-6 gap-y-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm dark:border-slate-800 dark:bg-slate-900;
+    @apply mb-5 flex flex-wrap gap-3;
   }
 
   /* Section label above a group of cards/a table - the one "small heading"

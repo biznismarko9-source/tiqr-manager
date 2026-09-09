@@ -391,6 +391,13 @@ export interface OrderInput {
 }
 
 export interface OrderEditInput {
+  /** 2.13.2: the purchase side is editable after creation. The backend
+   * re-splits these across the order's tickets with the same allocation the
+   * create path uses - see `update_order_impl`. Editing them changes the
+   * profit already reported on this order's SOLD tickets, deliberately. */
+  unitPriceCents: number;
+  feesCents: number;
+  otherCostsCents: number;
   supplierId?: number | null;
   platformId?: number | null;
   purchaseDate: string;

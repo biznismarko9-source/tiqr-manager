@@ -41,6 +41,17 @@ change, no migration (next new one is still 027), no dependency change.**
    dead buttons.
 5. **Dashboard's profit headline dropped 34px → 26px.** Still the loudest
    number on the page; no longer shouting.
+6. **Sync is one button.** It works out the direction itself: if the Drive
+   copy has not moved since this machine last synced, it pushes. If it has,
+   both sides may hold work and nothing in the app knows whether the local
+   side is also dirty - so it stops and asks (*Take theirs* / *Keep mine*)
+   rather than guessing. The explicit Sync up / Sync down pair is still there
+   under *Choose direction myself*.
+7. **The app notices by itself.** `Layout` calls `cloud_sync_status` once on
+   open and shows a dismissible bar when the other computer has newer data.
+   It **checks and tells - it never syncs**; nothing moves without a click,
+   so local-first still holds. This amends 2.12.0's "no startup sync" note in
+   `PROTECTED_AREAS.md`, at marko's explicit request.
 
 **Not built here:** no Node or Rust toolchain on the machine this was written
 on, so nothing was compiled or tested - the first build is the first check.

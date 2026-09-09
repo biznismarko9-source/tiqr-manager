@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
+  IconAlertTriangle,
   IconBoxes,
   IconCalendarDays,
   IconChevronDown,
@@ -130,6 +131,13 @@ export default function Layout() {
   // same convention as e.g. Dashboard's own eventsExpanded/ordersExpanded
   // (not persisted to disk either).
   const [ticketsOpen, setTicketsOpen] = useState(true);
+  // 2.13.1: marko asked the app to notice by itself when the other computer
+  // has newer data. This CHECKS and TELLS - it never syncs. `cloud_sync_status`
+  // already returns `remoteNewer` and already returns early when sync is off
+  // or nobody is signed in, so this costs one call and nothing when unused.
+  // ONE call, on open, no interval: it is a nudge, not a poller, and the
+  // local-first promise stays intact because nothing moves without a click.
+  const [remoteNewer, setRemoteNewer] = useState(false);
   const ticketsGroupActive = TICKETS_GROUP_CHILDREN.some(
     (c) => location.pathname === c.to || location.pathname.startsWith(`${c.to}/`),
   );
@@ -193,6 +201,19 @@ export default function Layout() {
   // optional, and any of them being off, misconfigured, or unreachable must
   // never interrupt the app with an error toast (the "Send test" buttons in
   // Settings are where a real failure IS shown, on purpose).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .cloudSyncStatus()
+      .then((st) => {
+        if (!cancelled) setRemoteNewer(st.enabled && st.remoteNewer);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const check = () => {
       api.checkAndSendNotifications().catch(() => {});
@@ -380,6 +401,22 @@ export default function Layout() {
             2.6.0: still no max-width cap (that decision stands) - only the
             gutter changed, 24px -> 28px horizontal / 20px vertical, which is
             the app's page inset every screen now shares. */}
+        {remoteNewer && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Your other computer has newer data.
+            <Link to="/settings/data" className="font-semibold underline underline-offset-2">
+              Open sync
+            </Link>
+            <button
+              type="button"
+              onClick={() => setRemoteNewer(false)}
+              className="ml-auto text-amber-700/70 hover:text-amber-900 dark:text-amber-400/70 dark:hover:text-amber-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <div className="px-7 py-5">
           <Outlet />
         </div>

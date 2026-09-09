@@ -114,6 +114,11 @@ const PERIODS: { key: string; label: string }[] = [
 function periodMetricValue(data: DashboardData, metric: MetricKey): number {
   if (metric === "profit") return data.period.profitCents;
   if (metric === "sales") return data.period.soldTickets;
+  // cogs, NOT totalCost: the chart line is `cogsCents` per bucket (what the
+  // tickets that SOLD in this period had cost), while totalCost is everything
+  // BOUGHT in it. This function exists so the big number and the line can
+  // never disagree - see its own doc comment above.
+  if (metric === "cost") return data.period.cogsCents;
   return data.period.revenueCents;
 }
 
@@ -190,6 +195,14 @@ export default function Dashboard() {
   // else.
   const [period, setPeriod] = useState("1y");
   const [metric, setMetric] = useState<MetricKey>("revenue");
+  // 2.13.2: marko asked for the one wide chart to become two smaller ones,
+  // with the second showing something he picks. Rather than choosing for him
+  // once, the second chart carries the SAME metric switch as the first - so
+  // both are his, permanently. Defaults to Sales (ticket count) because it is
+  // the only series that is NOT a function of revenue: a flat revenue month
+  // with more tickets sold means the average price fell, and no pairing of
+  // two money lines can show that.
+  const [metricB, setMetricB] = useState<MetricKey>("sales");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -460,38 +473,52 @@ export default function Dashboard() {
                       whitespace), without touching anything shared
                       (PageHeader/Layout's own spacing is untouched - it's
                       used by every other page too). */}
-                  <Card className="mb-6 p-4">
-                  <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                        {METRICS.find((m) => m.key === metric)?.label} over time
-                      </p>
-                      <p className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}>
-                        {metric === "sales"
-                          ? String(periodMetricValue(data, metric))
-                          : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
-                      </p>
-                    </div>
-                    <div className={SEGMENTED_TRACK}>
-                      {METRICS.map((m) => (
-                        <button
-                          key={m.key}
-                          onClick={() => setMetric(m.key)}
-                          aria-pressed={metric === m.key}
-                          className={segmentedItemClass(metric === m.key)}
-                        >
-                          {m.label}
-                        </button>
-                      ))}
-                    </div>
+                  {/* 2.13.2: two charts instead of one wide one, marko's own
+                      request. Both read the SAME `revenueTimeSeries` - every
+                      series they can draw (revenue, cost, profit, tickets) is
+                      already a field on every bucket, so this is a second
+                      render of data the page had, not a second query. */}
+                  <div className="mb-6 grid gap-4 xl:grid-cols-2">
+                    {[
+                      { m: metric, set: setMetric },
+                      { m: metricB, set: setMetricB },
+                    ].map((chart, i) => (
+                      <Card key={i} className="p-4">
+                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                              {METRICS.find((m) => m.key === chart.m)?.label} over time
+                            </p>
+                            <p
+                              className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, chart.m)}`}
+                            >
+                              {chart.m === "sales"
+                                ? String(periodMetricValue(data, chart.m))
+                                : formatMoney(periodMetricValue(data, chart.m), data.primaryCurrency)}
+                            </p>
+                          </div>
+                          <div className={SEGMENTED_TRACK}>
+                            {METRICS.map((m) => (
+                              <button
+                                key={m.key}
+                                onClick={() => chart.set(m.key)}
+                                aria-pressed={chart.m === m.key}
+                                className={segmentedItemClass(chart.m === m.key)}
+                              >
+                                {m.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <MetricChart
+                          points={data.revenueTimeSeries}
+                          granularity={data.timeSeriesGranularity}
+                          currency={data.primaryCurrency}
+                          metric={chart.m}
+                        />
+                      </Card>
+                    ))}
                   </div>
-                  <MetricChart
-                    points={data.revenueTimeSeries}
-                    granularity={data.timeSeriesGranularity}
-                    currency={data.primaryCurrency}
-                    metric={metric}
-                  />
-                </Card>
                 {/* "Sales by platform" (2.0.47, DIR-001 signature idea #02) -
                     same period/currency scope as the StatCards/chart above
                     (data.salesByPlatform shares period_summary's exact

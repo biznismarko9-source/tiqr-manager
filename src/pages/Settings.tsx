@@ -57,6 +57,7 @@ import {
   IconLink,
   IconLogOut,
   IconPlus,
+  IconRefresh,
   IconTag,
   IconTicket,
   IconTrash,
@@ -260,6 +261,14 @@ export default function Settings() {
   // --- Cloud sync (2.12.0) ---------------------------------------------
   const [sync, setSync] = useState<CloudSyncStatus | null>(null);
   const [syncBusy, setSyncBusy] = useState<null | "up" | "down" | "toggle">(null);
+  // 2.13.1: marko asked for ONE Sync button that works out the direction
+  // itself. It can, except in one case. `remoteNewer` means the Drive copy
+  // moved since THIS machine last synced - but nothing tracks whether this
+  // machine also has unsaved-to-Drive changes, so when the remote has moved,
+  // both sides may have work and only marko knows which he wants. That is the
+  // one case the button stops and asks; every other press just goes.
+  const [syncChoice, setSyncChoice] = useState(false);
+  const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   // 2.12.1: the last sync error, kept so a FIXABLE one can be turned into a
   // button. Google's own 403 body carries the exact Cloud Console URL for
@@ -639,15 +648,81 @@ export default function Settings() {
                         )}
 
                         <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <Button variant="primary" disabled={syncBusy !== null} onClick={() => doSyncUp(false)}>
-                            {syncBusy === "up" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
-                            Sync up
+                          <Button
+                            variant="primary"
+                            disabled={syncBusy !== null}
+                            onClick={() => {
+                              // Remote unchanged since our last sync -> nothing of
+                              // theirs to lose, so push. Remote moved -> ask.
+                              if (sync.remoteNewer) setSyncChoice(true);
+                              else void doSyncUp(false);
+                            }}
+                          >
+                            {syncBusy !== null ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
+                            Sync
                           </Button>
-                          <Button variant="secondary" disabled={syncBusy !== null} onClick={doSyncDown}>
-                            {syncBusy === "down" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
-                            Sync down
-                          </Button>
+                          <button
+                            type="button"
+                            onClick={() => setShowSyncAdvanced((v) => !v)}
+                            className="text-xs text-slate-500 underline-offset-2 hover:underline dark:text-slate-400"
+                          >
+                            {showSyncAdvanced ? "Hide" : "Choose direction myself"}
+                          </button>
                         </div>
+
+                        {syncChoice && (
+                          <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:ring-amber-500/25">
+                            <p className="flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
+                              <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              Both sides may have changed, so this one is yours to decide - it cannot be guessed
+                              without risking work.
+                            </p>
+                            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                              <Button
+                                variant="primary"
+                                disabled={syncBusy !== null}
+                                onClick={() => {
+                                  setSyncChoice(false);
+                                  void doSyncDown();
+                                }}
+                              >
+                                <IconDownload className="h-4 w-4" />
+                                Take theirs
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                disabled={syncBusy !== null}
+                                onClick={() => {
+                                  setSyncChoice(false);
+                                  void doSyncUp(false);
+                                }}
+                              >
+                                <IconUpload className="h-4 w-4" />
+                                Keep mine
+                              </Button>
+                              <button
+                                type="button"
+                                onClick={() => setSyncChoice(false)}
+                                className="text-xs text-slate-500 hover:underline dark:text-slate-400"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {showSyncAdvanced && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <Button variant="secondary" disabled={syncBusy !== null} onClick={() => doSyncUp(false)}>
+                              {syncBusy === "up" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
+                              Sync up
+                            </Button>
+                            <Button variant="secondary" disabled={syncBusy !== null} onClick={doSyncDown}>
+                              {syncBusy === "down" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                              Sync down
+                            </Button>
+                          </div>
+                        )}
 
                         {syncError && (
                           <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-inset ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/25">

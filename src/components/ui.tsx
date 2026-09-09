@@ -485,8 +485,15 @@ export function StatCard({
    * profit/loss. Ignored when `trend` is absent. */
   trendColored?: boolean;
 }) {
-  // 2.13.1: renders SummaryStat below - see its own comment.
-  // 2.13.0: the same journey 2.6.0 started, finished. That round made the
+  // 2.13.2: a card again, one per figure - marko compared 2.13.1's single
+  // bar against the Attention Center row and wanted each figure in its own
+  // box. Same metrics as `AttentionCategoryCard` in Dashboard.tsx (p-3.5,
+  // 22px value) so a KPI tile and an Attention tile stay the same object.
+  // `flex-1` with a min width is what lets a row of 3 and a row of 6 both
+  // fill the width without a grid that has to be re-tuned per screen.
+  // 2.13.0/2.13.1 tried a chip and then a shared bar; both are in the
+  // changelog, and `SummaryStat` below survives from that round because
+  // Sales' own results strip genuinely is one line of text. That round made the
   // KPI card smaller; this one stops it being a card at all. A summary row
   // sits above a table on ten screens, and a bordered box per figure gave
   // the summary the same visual weight as the content underneath it. Now
@@ -509,25 +516,21 @@ export function StatCard({
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
   return (
-    <SummaryStat
-      label={label}
-      value={value}
-      tone={tone}
-      extra={
-        <>
-          {trend && (
-            <span className={`ml-1.5 inline-flex items-center gap-0.5 text-xs font-medium ${trendTone}`}>
-              {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
-              {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
-              {trend.label}
-            </span>
-          )}
-          {sub && <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">· {sub}</span>}
-        </>
-      }
-    />
+    <Card className="min-w-[9.5rem] flex-1 p-3.5">
+      <p className="section-title truncate">{label}</p>
+      <p className={`mt-2 text-[22px] font-semibold leading-none tabular-nums ${valueTone}`}>{value}</p>
+      {trend && (
+        <p className={`mt-2.5 flex items-center gap-1 text-xs font-medium ${trendTone}`}>
+          {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
+          {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
+          {trend.label} <span className="font-normal text-slate-400 dark:text-slate-500">vs. previous</span>
+        </p>
+      )}
+      {sub && <p className="mt-1.5 truncate text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
+    </Card>
   );
 }
+
 
 /** 2.13.1: the one summary figure in the app - "Label: value", grey label,
  * value beside it, nothing around it. Lived in Sales.tsx since 1.9.0; marko

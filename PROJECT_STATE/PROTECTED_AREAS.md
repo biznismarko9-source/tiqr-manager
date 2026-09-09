@@ -108,10 +108,26 @@ current - nothing here is superseded, they just cover different areas.
   NON_ALPHANUMERIC)` for dynamic parts, the way `google_sheets.rs` has always
   done it. Before reaching for any reqwest method, check it is one this repo
   already uses somewhere - the feature set is deliberately minimal.
-- **Nothing syncs automatically.** No timer, no startup sync, no sync on
-  write. Sync is off until switched on and every sync is an explicit click -
-  this app stays local-first and fully usable offline, which is the promise
-  its own description still makes.
+- **Nothing syncs automatically.** No timer, no sync on write. Sync is off
+  until switched on and every sync is an explicit click - this app stays
+  local-first and fully usable offline, which is the promise its own
+  description still makes.
+  **2.13.1 amended one half of this at marko's explicit request:** `Layout.tsx`
+  now calls `cloud_sync_status` ONCE on app open and shows a dismissible bar
+  when `remoteNewer` is true. It **checks and tells; it never syncs** - no data
+  moves without a click, so the promise above still holds. Keep it that way:
+  one call, on open, no interval, and never a `cloud_sync_pull` from a timer.
+  `cloud_sync_status` already returns early when sync is off or nobody is
+  signed in, so this costs nothing for anyone not using sync.
+- **The single Sync button guesses the direction, except in the one case it
+  must not** (2.13.1). `remoteNewer == false` means the Drive copy has not
+  moved since this machine last synced, so pushing cannot destroy the other
+  machine's work - the button just pushes. `remoteNewer == true` means it HAS
+  moved, and nothing in this app tracks whether the local side also has
+  unsynced changes, so **both sides may hold work and only marko knows which
+  he wants** - the button stops and asks (Take theirs / Keep mine). Do not
+  "improve" this by picking a side automatically; that guess is exactly the
+  silent data loss the whole lost-update guard exists to prevent.
 
 ## 2.11.1 - An unset GitHub secret is an EMPTY env var, not an absent one
 

@@ -418,6 +418,17 @@ pub struct OrderInput {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderEditInput {
+    /// 2.13.2: the purchase side, editable after the fact - marko's own
+    /// request ("stale neviem menit cenu"). Same three numbers `OrderInput`
+    /// takes at creation, and `update_order_impl` re-splits them across the
+    /// order's tickets with the same `allocate_cents` the insert path uses,
+    /// so the two can never allocate differently. `quantity` is deliberately
+    /// NOT here: changing it would mean creating or deleting ticket rows,
+    /// which is a different operation with its own consequences for anything
+    /// already sold.
+    pub unit_price_cents: i64,
+    pub fees_cents: i64,
+    pub other_costs_cents: i64,
     pub supplier_id: Option<i64>,
     pub platform_id: Option<i64>,
     pub purchase_date: String,

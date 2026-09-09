@@ -420,14 +420,46 @@ pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Orde
     fetch_one(&conn, order_id)
 }
 
+/// 2.13.2: an order's purchase price is editable after creation - marko asked
+/// for it directly, and chose the recompute-everything option knowing what it
+/// costs: **the profit already realised on this order's SOLD tickets changes
+/// too.** A sale's revenue is untouched, but its profit is revenue minus the
+/// ticket's purchase cost, so last month's profit figure can legitimately read
+/// differently after this call than it did before. That is the behaviour he
+/// asked for, not a side effect that slipped through.
+///
+/// The split is deliberately the SAME arithmetic as `insert_order_with_tickets`
+/// - unit price lands on every ticket whole, fees and other costs go through
+/// `allocate_cents` - so an order created at one price and one edited to that
+/// price end up byte-identical. If you ever change one, change both.
+///
+/// Allocation runs over the order's REAL ticket rows (oldest first), not over
+/// `quantity`: if the two have drifted, the ticket costs must still add up to
+/// what the order says, and the rows are what actually exist. Cancelled and
+/// sold tickets are included for the same reason - excluding them would leave
+/// the parts summing to less than the whole.
+///
+/// The caller (`update_order`) already runs this inside a transaction, which
+/// is what makes the order row and every ticket row move together.
 pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInput) -> AppResult<Order> {
     if input.purchase_date.trim().is_empty() {
         return Err(AppError::Validation("Purchase date is required".into()));
     }
+    if input.unit_price_cents < 0 || input.fees_cents < 0 || input.other_costs_cents < 0 {
+        return Err(AppError::Validation("Costs cannot be negative".into()));
+    }
+
+    let quantity: i64 = conn
+        .query_row("SELECT quantity FROM orders WHERE id = ?1", [id], |r| r.get(0))
+        .map_err(|_| AppError::NotFound(format!("Order #{id} not found")))?;
+    let total_cost_cents =
+        input.unit_price_cents * quantity + input.fees_cents + input.other_costs_cents;
+
     let changed = conn.execute(
         "UPDATE orders SET supplier_id=?1, platform_id=?2, purchase_date=?3, currency=?4,
-         payment_status=?5, notes=?6, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id=?7",
+         payment_status=?5, notes=?6, unit_price_cents=?7, fees_cents=?8, other_costs_cents=?9,
+         total_cost_cents=?10, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id=?11",
         params![
             input.supplier_id,
             input.platform_id,
@@ -435,12 +467,42 @@ pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInp
             input.currency,
             input.payment_status,
             input.notes,
+            input.unit_price_cents,
+            input.fees_cents,
+            input.other_costs_cents,
+            total_cost_cents,
             id,
         ],
     )?;
     if changed == 0 {
         return Err(AppError::NotFound(format!("Order #{id} not found")));
     }
+
+    let ticket_ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id ASC")?;
+        let rows = stmt.query_map([id], |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<i64>>>()?
+    };
+    let n = ticket_ids.len() as i64;
+    if n > 0 {
+        let fees_alloc = allocate_cents(input.fees_cents, n);
+        let other_alloc = allocate_cents(input.other_costs_cents, n);
+        let mut stmt = conn.prepare(
+            "UPDATE tickets SET purchase_cost_cents=?1, purchase_fees_cents=?2, other_costs_cents=?3,
+               currency=?4, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id=?5",
+        )?;
+        for (i, ticket_id) in ticket_ids.iter().enumerate() {
+            stmt.execute(params![
+                input.unit_price_cents,
+                fees_alloc[i],
+                other_alloc[i],
+                input.currency,
+                ticket_id,
+            ])?;
+        }
+    }
+
     fetch_one(conn, id)
 }
 
@@ -1083,6 +1145,100 @@ mod tests {
         conn.execute("INSERT INTO events (name) VALUES ('Test Event')", [])
             .unwrap();
         conn.last_insert_rowid()
+    }
+
+    // --- 2.13.2: editing an order's purchase price -----------------------
+
+    fn edit_input(unit: i64, fees: i64, other: i64) -> OrderEditInput {
+        OrderEditInput {
+            unit_price_cents: unit,
+            fees_cents: fees,
+            other_costs_cents: other,
+            supplier_id: None,
+            platform_id: None,
+            purchase_date: "2026-01-01".to_string(),
+            currency: "EUR".to_string(),
+            payment_status: "paid".to_string(),
+            notes: None,
+        }
+    }
+
+    fn ticket_costs(conn: &Connection, order_id: i64) -> Vec<(i64, i64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT purchase_cost_cents, purchase_fees_cents, other_costs_cents
+                 FROM tickets WHERE order_id = ?1 ORDER BY id ASC",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([order_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn editing_the_price_re_splits_fees_across_every_ticket_to_the_exact_cent() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 3), false).unwrap();
+
+        // 100 does not divide by 3 - the allocation must still add up exactly.
+        update_order_impl(&conn, order_id, &edit_input(2000, 100, 50)).unwrap();
+
+        let costs = ticket_costs(&conn, order_id);
+        assert_eq!(costs.len(), 3);
+        assert!(costs.iter().all(|c| c.0 == 2000), "unit price lands on every ticket whole");
+        assert_eq!(costs.iter().map(|c| c.1).sum::<i64>(), 100, "fees must sum to exactly what was entered");
+        assert_eq!(costs.iter().map(|c| c.2).sum::<i64>(), 50, "other costs likewise");
+        assert_eq!(costs[0].1, 34, "the remainder goes to the earliest tickets, same as the insert path");
+    }
+
+    #[test]
+    fn editing_the_price_recomputes_the_order_total() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 4), false).unwrap();
+        let order = update_order_impl(&conn, order_id, &edit_input(2500, 300, 200)).unwrap();
+        assert_eq!(order.unit_price_cents, 2500);
+        assert_eq!(order.total_cost_cents, 2500 * 4 + 300 + 200);
+    }
+
+    #[test]
+    fn an_edited_price_lands_on_a_ticket_that_is_already_sold() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 2), false).unwrap();
+        let first: i64 = conn
+            .query_row("SELECT id FROM tickets WHERE order_id=?1 ORDER BY id ASC LIMIT 1", [order_id], |r| r.get(0))
+            .unwrap();
+        conn.execute("UPDATE tickets SET status='sold' WHERE id=?1", [first]).unwrap();
+
+        update_order_impl(&conn, order_id, &edit_input(9999, 0, 0)).unwrap();
+
+        let sold_cost: i64 = conn
+            .query_row("SELECT purchase_cost_cents FROM tickets WHERE id=?1", [first], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            sold_cost, 9999,
+            "marko chose recompute-everything: a sold ticket's cost moves too, which is what \
+             retroactively changes the profit already reported on it"
+        );
+    }
+
+    #[test]
+    fn editing_an_order_rejects_a_negative_cost() {
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
+        let err = update_order_impl(&conn, order_id, &edit_input(-1, 0, 0)).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn editing_a_missing_order_is_not_found() {
+        let conn = test_conn();
+        let err = update_order_impl(&conn, 9_999_999, &edit_input(100, 0, 0)).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
     }
 
     fn base_input(event_id: i64, quantity: i64) -> OrderInput {

@@ -1118,6 +1118,11 @@ function OrderEditModal({
   const [supplierId, setSupplierId] = useState<number | null>(null);
   const [platformId, setPlatformId] = useState<number | null>(null);
   const [purchaseDate, setPurchaseDate] = useState("");
+  // 2.13.2: kept as strings so a half-typed "12." doesn't snap to 12 under
+  // the cursor - same handling the New Order form already uses.
+  const [unitPrice, setUnitPrice] = useState("");
+  const [fees, setFees] = useState("");
+  const [otherCosts, setOtherCosts] = useState("");
   const [currency, setCurrency] = useState("EUR");
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>("unpaid");
   const [notes, setNotes] = useState("");
@@ -1130,6 +1135,9 @@ function OrderEditModal({
     setSupplierId(order.supplierId);
     setPlatformId(order.platformId);
     setPurchaseDate(order.purchaseDate);
+    setUnitPrice(centsToDecimalString(order.unitPriceCents));
+    setFees(centsToDecimalString(order.feesCents));
+    setOtherCosts(centsToDecimalString(order.otherCostsCents));
     setCurrency(order.currency);
     setPaymentStatus(order.paymentStatus);
     setNotes(order.notes ?? "");
@@ -1138,7 +1146,25 @@ function OrderEditModal({
 
   const submit = async () => {
     if (!purchaseDate) return setError("Purchase date is required");
+    // decimalStringToCents, not parseFloat: marko types amounts with a comma
+    // and parseFloat("12,50") silently returns 12. It also rejects anything
+    // with more than 2 decimals rather than rounding it away behind his back.
+    const unitPriceCents = decimalStringToCents(unitPrice);
+    const feesCents = decimalStringToCents(fees);
+    const otherCostsCents = decimalStringToCents(otherCosts);
+    if (unitPriceCents === null || feesCents === null || otherCostsCents === null) {
+      return setError("Costs must be plain amounts, e.g. 12.50");
+    }
+    // decimalStringToCents("") is 0, not null - fine for fees, wrong for the
+    // unit price, where clearing the box would silently zero the order.
+    if (unitPrice.trim() === "") return setError("Unit price is required");
+    if (unitPriceCents < 0 || feesCents < 0 || otherCostsCents < 0) {
+      return setError("Costs must be zero or more");
+    }
     const input: OrderEditInput = {
+      unitPriceCents,
+      feesCents,
+      otherCostsCents,
       supplierId,
       platformId,
       purchaseDate,
@@ -1186,6 +1212,39 @@ function OrderEditModal({
             }}
           />
         </div>
+        {/* 2.13.2: marko asked to be able to change the price after the fact.
+            The warning is not decoration - the cost is re-split across every
+            ticket in this order, including ones already sold, so the profit
+            this order has already reported changes with it. */}
+        <Field label="Unit price" required>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            className="input"
+            value={unitPrice}
+            onChange={(e) => setUnitPrice(e.target.value)}
+          />
+        </Field>
+        <Field label="Fees">
+          <input type="number" step="0.01" min="0" className="input" value={fees} onChange={(e) => setFees(e.target.value)} />
+        </Field>
+        <Field label="Other costs">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            className="input"
+            value={otherCosts}
+            onChange={(e) => setOtherCosts(e.target.value)}
+          />
+        </Field>
+        {order.soldCount > 0 && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/25">
+            {order.soldCount} of these tickets {order.soldCount === 1 ? "is" : "are"} already sold. Changing the price
+            re-splits the cost across all of them, so the profit already reported on those sales changes too.
+          </p>
+        )}
         <Field label="Purchase date" required>
           <input
             type="date"
