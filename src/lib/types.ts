@@ -2198,6 +2198,25 @@ export interface AiImportResult {
  * See commands/cloud_sync.rs's module doc comment for why merging would need
  * globally-unique ids and a conflict policy for invariants that have no
  * automatic answer. */
+/** One automatic safety backup found on disk (2.14.0). Every destructive
+ *  restore - including every cloud-sync download - takes one of these BEFORE
+ *  overwriting anything, so this is the way back from a sync that turned out
+ *  to be the wrong one. Nothing here is created or deleted by listing it. */
+export interface RestorePoint {
+  /** Passed straight back to `restoreDatabase`. */
+  path: string;
+  fileName: string;
+  /** The file's own modified time, RFC3339 - null when the filesystem
+   *  wouldn't say, rather than a made-up date. Fall back to `fileName`,
+   *  which carries the same stamp. */
+  createdAt: string | null;
+  sizeBytes: number;
+  /** "sync" = taken by a cloud-sync download, "restore" = by a manual
+   *  restore. The two write to different folders, which is why this can be
+   *  said rather than guessed. */
+  source: string;
+}
+
 /** What the automatic check decided should happen next (2.14.0).
  *
  * `off` sync is off or nobody is signed in - say nothing.

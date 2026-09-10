@@ -70,6 +70,7 @@ import type {
   RecurringExpense,
   RecurringExpenseInput,
   RestoreOutcome,
+  RestorePoint,
   Sale,
   SaleBatchInput,
   SaleEditInput,
@@ -419,6 +420,10 @@ export const api = {
    *  with `cloudSyncPush` / `cloudSyncPull`, so automatic sync never gained a
    *  destructive path of its own. */
   cloudSyncAuto: () => invoke<CloudSyncAutoPlan>("cloud_sync_auto"),
+  /** Every automatic safety backup taken for the active database, newest
+   *  first (2.14.0). Read-only - lists what is already on disk, creates and
+   *  deletes nothing. Restore one with `restoreDatabase(point.path)`. */
+  listRestorePoints: () => invoke<RestorePoint[]>("list_restore_points"),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

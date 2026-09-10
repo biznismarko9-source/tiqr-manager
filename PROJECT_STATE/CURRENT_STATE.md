@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.14.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.15.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -327,6 +327,35 @@ changed, and a machine that has never synced finding data already in Drive.
 DELETE - and the answer is persisted so a machine closed before it could push
 is not pulled over on the next launch. `rusqlite` gains the `hooks` feature;
 no new dependency, no schema change, no migration.
+
+Same release, on his follow-up (*"a taktiez moznost back up data, ak by ten
+sync nebol spravny"*): **Restore points** in Settings -> Data. Read-only list of
+the safety backups every destructive restore has always taken - both folders
+they land in - newest first, capped at 20 for display only. Restoring one runs
+the ordinary `restore_database`, so it validates, backs up first and rolls
+back. Also on the Dashboard, the chart and Sales-by-platform cards are the
+same height again (`items-start` dropped from their grid row).
+
+**2.15.0** is step one of the merge marko chose over whole-file overwriting
+(*"ta novsia verzia vzdy sa syncne s tou starou ... cize nejaky order naviac,
+sale, pull atd"*). **Migration 027** adds `uid` to the 17 tables that can
+travel between machines. Existing rows get `legacy-<id>` - both databases
+descend from the same file, so a shared row ends up with the same uid on both
+without them talking; new rows get a random 128-bit one, assigned by a
+per-table AFTER INSERT trigger so **no existing INSERT in the app changed**.
+The trigger fires only `WHEN NEW.uid IS NULL`, so a row arriving from the other
+machine keeps its identity. **Nothing reads `uid` yet** - the merge engine is
+the next step. One manual whole-file sync is needed after both machines update
+(see the migration's own header for why).
+
+Same release, marko's Dashboard pick: **"This period vs. previous" (DSH-L)**
+under the two Overview cards. Both columns side by side plus **profit per
+ticket** (no card shows it), from `data.period` / `data.previousPeriod`
+through the same `computeTrend`/`computeTrendPoints` the StatCards use - no
+backend change. Cost uncoloured, same call as its card. A range with no
+comparable period before it says so instead of showing dashes.
+
+**Next new migration is 028.**
 
 ## Stack / layout
 

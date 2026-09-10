@@ -21,6 +21,33 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.15.0 - Migration 027: row identity (schema change, no behaviour change)
+
+- **`uid` is what makes a merge possible at all - never break its two rules.**
+  (1) Existing rows are backfilled `legacy-<id>`, and that is not laziness: two
+  databases descended from the same file share ids, so they land on the same
+  uid without talking. Re-backfilling at random would tear every already-shared
+  row into two. (2) New rows get theirs from an AFTER INSERT trigger that fires
+  only `WHEN NEW.uid IS NULL` - drop that condition and every row the merge
+  inserts is stamped with a fresh identity, comes back as a duplicate, and the
+  two machines multiply their data instead of merging it.
+- **A future migration that REBUILDS one of the 17 tables must re-create its
+  uid column, unique index AND trigger.** SQLite's create-copy-drop-rename
+  dance (migration 004 is the precedent) silently drops both index and trigger.
+  A rebuilt table without them keeps working perfectly - and silently stops
+  being mergeable, which is the kind of break no test catches unless it is
+  looking for it. `db.rs`'s `row_uid_tests::UID_TABLES` is that test.
+- **The uid list and `is_bookkeeping_table` are two different lists for two
+  different jobs.** Bookkeeping = "writing this must not trigger a sync". uid =
+  "this row can travel between machines". `marketplaces` is in neither: it is
+  seeded identically by the migrations themselves, so it needs no identity and
+  is not a dirty-flag exception either.
+- **There is exactly one manual whole-file sync left, and it is not
+  automatable.** Machines that diverged BEFORE 027 carry colliding `legacy-N`
+  uids on their post-divergence rows. Push from the current machine, pull on
+  the other, once. Automating it would mean a timer choosing which side is
+  "current" - the precise guess this whole design exists to avoid.
+
 ## 2.14.0 - Automatic Cloud Sync (no schema change, no migration, no new dependency)
 
 marko asked for the hand-off between his two machines to stop needing a click,
@@ -80,6 +107,13 @@ feature safe rather than merely convenient.
   by `flush_local_dirty` on `ExitRequested` (best-effort, `try_lock`, never
   blocking an exit) and on `switch_active_database` (into the database being
   left behind, then cleared, so the account being opened inherits nothing).
+- **`list_restore_points` must stay read-only.** It lists the safety backups
+  that already exist on disk; it must never create, rotate, prune or delete
+  one. A snapshot of marko's database is his data - the 20-item cap is a
+  display cap, not a retention policy, and older files stay on disk untouched.
+  It also has to read BOTH folders: `cloud_sync_pull` writes its safety backup
+  next to the active database, `restore_database` writes its own into
+  `safety-backups/`. Reading one folder silently halves the list.
 - **`mark_local_clean` is called only after Drive accepted the bytes, or after
   a restore actually succeeded.** Never on the strength of having tried. Note
   the pushed snapshot still carries `dirty = true` inside it (it is taken before

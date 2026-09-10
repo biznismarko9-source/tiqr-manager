@@ -16,6 +16,61 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.15.0 - Migration 027: the identity a merge is built on
+
+**Schema change (migration 027), no new dependency, no behaviour change yet.**
+
+marko chose merge-over-Drive: the two machines should combine what each has
+instead of one overwriting the other. Merging needs one thing that did not
+exist - a way to say "this row here and that row there are the same row".
+Every primary key in this app is a per-machine `INTEGER AUTOINCREMENT`, so the
+Mac and the PC both mint id 5 for two different orders. That is the exact
+reason 2.12.0 shipped whole-file sync instead of a merge.
+
+1. **`uid` on the 17 tables that can travel between machines** - events,
+   orders, tickets, sales, pulls, pulls_received, ticket_listings,
+   event_marketplace_links, payments, finance_entries, accounts, transfers,
+   recurring_expenses, platforms, suppliers, event_categories,
+   finance_categories. Not on `marketplaces` (seeded identically by these same
+   migrations), not on the price-checker/`market_*` tables (per-machine scan
+   history), not on the bookkeeping tables (the same list `is_bookkeeping_table`
+   already keeps out of the sync dirty-flag).
+2. **Existing rows get `legacy-<id>`; new rows get a random 128-bit uid.**
+   Both databases descend from the same file, so a row that exists on both has
+   the same id on both and therefore ends up with the same uid on both -
+   without the machines talking. Shared history becomes shared identity for
+   free.
+3. **The uid is assigned by a trigger, not by Rust.** No existing INSERT
+   changed - not the order writer, not the CSV import, not Sheets sync, not the
+   AI import - and an insert site added later gets one automatically. The
+   trigger fires only `WHEN NEW.uid IS NULL`, so a row arriving from the other
+   machine keeps the identity it came with.
+4. **One last whole-file sync is needed after both machines update.** If they
+   had diverged first, their post-divergence rows carry colliding `legacy-N`
+   uids. Push from whichever machine is current, pull on the other, once.
+   After that hand-off nothing has to be overwritten again. Not automated on
+   purpose: picking which side is "current" is the one judgement no timer may
+   make.
+
+Nothing reads `uid` yet - the merge engine itself is the next step. 5 tests.
+
+5. **Dashboard: "This period vs. previous" (DSH-L), marko's pick, built wider
+   than the mock he chose from.** The six KPI cards already carry this period's
+   figure and a small "+62% vs. previous" label; what they never show is WHAT
+   it is being compared to - the previous period is computed, sent, and thrown
+   away after producing one adjective. This puts both columns side by side, and
+   adds the line no card has: **profit per ticket**, which is the whole
+   difference between selling more and selling better (revenue and ticket count
+   can both rise while it falls). A table rather than the paired bars in the
+   preview - the row above is already two cards of bars, and what was missing
+   here was the numbers, not another shape. Cost is deliberately uncoloured,
+   the same call `trendColored={false}` already makes on its card. No backend
+   change: `previousPeriod` has been sent since 2.0.47, and every figure goes
+   through the same `computeTrend`/`computeTrendPoints` the cards use, so a
+   number here cannot disagree with the card above it. A range with nothing
+   before it ("All time", a custom range with no start) says so in one line
+   instead of rendering six dashes.
+
 ## 2.14.0 - Cloud sync runs by itself, both directions
 
 **No schema change, no migration (next new one is still 027), no new
@@ -50,6 +105,19 @@ crate already in use, not a new one.
    to `app_settings`, written through on every check, on exit (`try_lock`, never
    blocking a close) and when accounts switch - so unsent work is not silently
    pulled over on the next launch.
+6. **Restore points** (Settings &rarr; Data). marko asked for a way back "ak by
+   ten sync nebol spravny". These files are not new - every destructive restore,
+   cloud-sync downloads included, has always taken one first - but the only
+   place their path ever appeared was a toast that disappears. `list_restore_points`
+   reads both folders they land in (sync-down puts its own next to the active
+   database, manual restore in `safety-backups/`), newest first, capped at 20.
+   Read-only: it creates nothing and deletes nothing, and restoring one goes
+   through the ordinary `restore_database`, which validates, takes its own
+   backup first and rolls back - so undoing a bad sync is itself undoable.
+7. **Dashboard: the two cards are one row again.** `items-start` let each end at
+   its own content height, leaving a step; grid items stretch by default, and
+   the platform card now fills the extra height from the inside (`flex-1` list)
+   instead of showing dead space under its last row.
 
 ## 2.13.4 - One chart, profit back in the row, a scanner for Pulls
 

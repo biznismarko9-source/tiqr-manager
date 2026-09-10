@@ -222,6 +222,7 @@ pub fn run() {
             commands::backup::backup_database,
             commands::backup::validate_backup_file,
             commands::backup::restore_database,
+            commands::backup::list_restore_points,
             commands::cloud_sync::cloud_sync_status,
             commands::cloud_sync::set_cloud_sync_enabled,
             commands::cloud_sync::cloud_sync_push,

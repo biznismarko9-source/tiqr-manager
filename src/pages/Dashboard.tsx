@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { AttentionCenterItem, DashboardData, DashboardTab, UpcomingEventAlert } from "../lib/types";
+import type { AttentionCenterItem, DashboardData, DashboardTab, FinanceSummary, UpcomingEventAlert } from "../lib/types";
 import {
   computeTrend,
   computeTrendPoints,
@@ -11,6 +11,7 @@ import {
   formatPercent,
   summarizeBulkDeleteSkips,
   todayIso,
+  type TrendInfo,
 } from "../lib/format";
 import {
   Badge,
@@ -35,6 +36,8 @@ import {
   IconCalendarDays,
   IconPackage,
   IconReceipt,
+  IconTrendingDown,
+  IconTrendingUp,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 
@@ -460,7 +463,15 @@ export default function Dashboard() {
                       the money came from, not when), and moving it up costs
                       nothing - same `data.salesByPlatform`, same period
                       scope, same card. */}
-                  <div className="mb-6 grid gap-4 items-start xl:grid-cols-2">
+                  {/* 2.14.0: `items-start` removed at marko's request ("urob
+                      obe tabulky rovnako velke, nech tam nieje ta vychilka") -
+                      it made each card end at its own content height, so the
+                      shorter one left a step in the row. Grid items stretch by
+                      default, and both cards ARE the grid items, so dropping
+                      it is the whole fix; the platform card fills the extra
+                      height from the inside (see its `flex-1` list below)
+                      rather than showing dead space under its last row. */}
+                  <div className="mb-6 grid gap-4 xl:grid-cols-2">
                     <Card className="p-4">
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -501,6 +512,7 @@ export default function Dashboard() {
                       onToggle={() => setPlatformsExpanded((v) => !v)}
                     />
                   </div>
+                  <PeriodComparisonCard data={data} />
                 </>
               )}
             </>
@@ -958,12 +970,12 @@ function SalesByPlatformCard({
   const visibleRows = expanded ? rows : rows.slice(0, RECENT_LIST_PREVIEW_COUNT);
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
   return (
-    <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />}>
+    <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="flex flex-col">
       {rows.length === 0 ? (
         <EmptyRow text="No sales in this period yet" />
       ) : (
         <>
-        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        <ul className="flex-1 divide-y divide-slate-100 dark:divide-slate-800">
           {visibleRows.map((r) => (
             <li key={r.platformId ?? "none"} className="px-4 py-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -989,6 +1001,151 @@ function SalesByPlatformCard({
         <ShowMoreToggle expanded={expanded} onToggle={onToggle} hiddenCount={rows.length - RECENT_LIST_PREVIEW_COUNT} />
         </>
       )}
+    </RecentCard>
+  );
+}
+
+/** DSH-L (2.15.0): the comparison the KPI row can only hint at.
+ *
+ * Those six cards already carry this period's figure and a small "12.4% vs.
+ * previous" label. What they cannot show is WHAT the figure is being compared
+ * to - the previous period's own numbers are computed, sent, and then thrown
+ * away after producing one adjective. This puts them side by side.
+ *
+ * Two things make it worth its space rather than being the same row twice:
+ *
+ * * **The previous column itself.** "New vs. previous" and "+62%" are very
+ *   different statements and today they look identical on the card.
+ * * **Profit per ticket**, which no card shows and which is the whole
+ *   difference between selling MORE and selling BETTER. Revenue and ticket
+ *   count can both rise while this falls, and that is exactly the case marko
+ *   would otherwise only notice at the end of a season.
+ *
+ * No backend change: `previousPeriod` has been sent with every dashboard load
+ * since 2.0.47. Every figure here comes from the same `data.period` /
+ * `data.previousPeriod` the StatCards read, through the same
+ * `computeTrend`/`computeTrendPoints` helpers, so a number here can never
+ * disagree with the card directly above it - including `totalCostCents` for
+ * cost, which is the field the Purchase cost card uses (NOT `cogsCents`,
+ * which is what the chart draws).
+ */
+function PeriodComparisonCard({ data }: { data: DashboardData }) {
+  const now = data.period;
+  const prev = data.previousPeriod;
+
+  // Mirrors StatCard's own trend colouring (ui.tsx) deliberately rather than
+  // importing it: that component is shared by ~50 call sites and this round
+  // has no business changing it. "up" is green only where up is unambiguously
+  // good, which is why Purchase cost passes `colored: false` below - the same
+  // decision `trendColored={false}` already makes on its card.
+  const tone = (trend: TrendInfo | null, colored: boolean) =>
+    !trend || !colored || trend.direction === "flat"
+      ? "text-slate-400 dark:text-slate-500"
+      : trend.direction === "up"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-red-600 dark:text-red-400";
+
+  if (!prev) {
+    // Not an error and not an empty state to hide: "All time" and a custom
+    // range with no start genuinely have nothing before them (see
+    // previous_period_bounds in dashboard.rs). Saying so is better than
+    // rendering six dashes and letting it read as broken.
+    return (
+      <RecentCard title="This period vs. previous" icon={<IconTrendingUp className="h-4 w-4" />}>
+        <p className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500">
+          This range has nothing before it to compare against - pick a fixed period (1 Wk through 5 Yr) and the
+          same range immediately before it shows up here.
+        </p>
+      </RecentCard>
+    );
+  }
+
+  const money = (cents: number) => formatMoney(cents, data.primaryCurrency);
+  /** Display only. Money stays integer cents everywhere it is stored or
+   *  summed - this is rounded for one table cell and never written back. */
+  const perTicket = (s: FinanceSummary) => (s.soldTickets > 0 ? Math.round(s.profitCents / s.soldTickets) : null);
+  const nowPer = perTicket(now);
+  const prevPer = perTicket(prev);
+
+  const rows: { label: string; now: string; prev: string; trend: TrendInfo | null; colored?: boolean }[] = [
+    {
+      label: "Revenue",
+      now: money(now.revenueCents),
+      prev: money(prev.revenueCents),
+      trend: computeTrend(now.revenueCents, prev.revenueCents),
+    },
+    {
+      label: "Purchase cost",
+      now: money(now.totalCostCents),
+      prev: money(prev.totalCostCents),
+      trend: computeTrend(now.totalCostCents, prev.totalCostCents),
+      colored: false,
+    },
+    {
+      label: "Profit",
+      now: money(now.profitCents),
+      prev: money(prev.profitCents),
+      trend: computeTrend(now.profitCents, prev.profitCents),
+    },
+    {
+      // A ratio, so a percentage-POINT delta - "+50%" of a 20% margin reads
+      // as if margin had jumped to 30 points. Same reasoning as the card.
+      label: "Margin",
+      now: formatPercent(now.margin),
+      prev: formatPercent(prev.margin),
+      trend: computeTrendPoints(now.margin, prev.margin),
+    },
+    {
+      label: "Tickets sold",
+      now: String(now.soldTickets),
+      prev: String(prev.soldTickets),
+      trend: computeTrend(now.soldTickets, prev.soldTickets),
+    },
+    {
+      label: "Profit per ticket",
+      now: nowPer === null ? "-" : money(nowPer),
+      prev: prevPer === null ? "-" : money(prevPer),
+      // No sales this period means there is no per-ticket figure to compare,
+      // not a 100% drop. `computeTrend` already returns null when the other
+      // side is missing.
+      trend: nowPer === null ? null : computeTrend(nowPer, prevPer),
+    },
+  ];
+
+  return (
+    <RecentCard title="This period vs. previous" icon={<IconTrendingUp className="h-4 w-4" />}>
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr>
+              <th className="th">Metric</th>
+              <th className="th text-right">This period</th>
+              <th className="th text-right">Previous</th>
+              <th className="th text-right">Change</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {rows.map((r) => (
+              <tr key={r.label}>
+                <td className="td">{r.label}</td>
+                <td className="td text-right tabular-nums">{r.now}</td>
+                <td className="td text-right tabular-nums text-slate-400 dark:text-slate-500">{r.prev}</td>
+                <td className={`td text-right tabular-nums font-medium ${tone(r.trend, r.colored !== false)}`}>
+                  {r.trend ? (
+                    <span className="inline-flex items-center gap-1">
+                      {r.trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
+                      {r.trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
+                      {r.trend.label}
+                    </span>
+                  ) : (
+                    "-"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </RecentCard>
   );
 }

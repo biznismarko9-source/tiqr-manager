@@ -15,6 +15,7 @@ import {
   type NotificationConfigInput,
   type NotificationStatus,
   type NotificationTestResult,
+  type RestorePoint,
   type Platform,
   type SheetsConnectionStatus,
   type SheetsConnectionTestResult,
@@ -286,9 +287,27 @@ export default function Settings() {
     }
   }, []);
 
+  // 2.14.0: marko asked for a way back "ak by ten sync nebol spravny". These
+  // are not new backups - every destructive restore, cloud-sync downloads
+  // included, has always taken one BEFORE overwriting anything. The only
+  // place their path was ever shown was a toast that disappears, so this
+  // lists what is already on disk. Purely local, no network.
+  const [restorePoints, setRestorePoints] = useState<RestorePoint[]>([]);
+
+  const refreshRestorePoints = useCallback(async () => {
+    try {
+      setRestorePoints(await api.listRestorePoints());
+    } catch {
+      setRestorePoints([]);
+    }
+  }, []);
+
   useEffect(() => {
-    if (sec === "data") void refreshSync();
-  }, [sec, refreshSync]);
+    if (sec === "data") {
+      void refreshSync();
+      void refreshRestorePoints();
+    }
+  }, [sec, refreshSync, refreshRestorePoints]);
 
   const doSyncToggle = async (enabled: boolean) => {
     setSyncBusy("toggle");
@@ -376,6 +395,21 @@ export default function Settings() {
     // Validate before showing the "this will replace your data" confirmation,
     // so a file that's not a TIQR Manager backup is rejected with a clear
     // error right away instead of behind a scary confirm dialog.
+    setBusyAction("restore");
+    try {
+      await api.validateBackupFile(path);
+      setConfirmRestorePath(path);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  // Same shape as `pickRestoreFile` minus the file dialog: validate FIRST, so
+  // a restore point that has been damaged or hand-edited is rejected with a
+  // clear message instead of behind a "this will replace your data" confirm.
+  const restoreFromPoint = async (path: string) => {
     setBusyAction("restore");
     try {
       await api.validateBackupFile(path);
@@ -834,6 +868,48 @@ export default function Settings() {
                     Restore from backup...
                   </Button>
                 </div>
+
+                {/* 2.14.0: the way back from a sync that turned out to be the
+                    wrong one. These files are not new - every destructive
+                    restore, cloud-sync downloads included, has always taken
+                    one before overwriting anything. Until now the only place
+                    their path appeared was a toast that disappears. Listing
+                    them creates nothing and deletes nothing. */}
+                {restorePoints.length > 0 && (
+                  <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                      Restore points
+                    </p>
+                    <p className="mb-1 mt-1 text-xs text-slate-400 dark:text-slate-500">
+                      Saved automatically right before anything replaced your data - including every sync down. Newest
+                      first. Restoring one takes its own backup first, so this is undoable too.
+                    </p>
+                    <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {restorePoints.map((rp) => (
+                        <li key={rp.path} className="flex flex-wrap items-center gap-2 py-2">
+                          <span className="text-sm text-slate-700 dark:text-slate-300">
+                            {rp.createdAt ? formatDateTime(rp.createdAt) : rp.fileName}
+                          </span>
+                          <Badge tone={rp.source === "sync" ? "listed" : "available"}>
+                            {rp.source === "sync" ? "before sync down" : "before restore"}
+                          </Badge>
+                          <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                            {(rp.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                          </span>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="ml-auto"
+                            disabled={busyAction === "restore"}
+                            onClick={() => restoreFromPoint(rp.path)}
+                          >
+                            Restore this
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {appInfo && (
                   <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
                     {/* 2.0.72: signed-in email shown alongside the path now

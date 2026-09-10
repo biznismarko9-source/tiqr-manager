@@ -207,6 +207,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "026_price_checker_market_monitor",
         include_str!("../migrations/026_price_checker_market_monitor.sql"),
     ),
+    (
+        "027_row_uids",
+        include_str!("../migrations/027_row_uids.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -1335,5 +1339,125 @@ mod migration_024_tests {
             .query_row("SELECT tier FROM tickets WHERE code = 'TKT-FRESH-024'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(tier, None, "a ticket inserted with no tier value must read back NULL, not an empty string or a default");
+    }
+}
+
+/// 027: the identity a merge is built on. These tests exist because every one
+/// of them is a way the merge could silently do nothing at all - a table with
+/// no `uid`, a row that never got one, or a trigger that overwrites the uid
+/// the OTHER machine sent.
+#[cfg(test)]
+mod row_uid_tests {
+    use super::*;
+
+    /// Every table migration 027 covers. Written out rather than derived, so
+    /// a table added to the migration without being added here (or the other
+    /// way round) shows up as a failing test instead of as a row that quietly
+    /// never syncs.
+    const UID_TABLES: &[&str] = &[
+        "events",
+        "orders",
+        "tickets",
+        "sales",
+        "pulls",
+        "pulls_received",
+        "ticket_listings",
+        "event_marketplace_links",
+        "payments",
+        "finance_entries",
+        "accounts",
+        "transfers",
+        "recurring_expenses",
+        "platforms",
+        "suppliers",
+        "event_categories",
+        "finance_categories",
+    ];
+
+    #[test]
+    fn every_table_that_can_travel_between_machines_carries_a_uid() {
+        let conn = test_conn();
+        for table in UID_TABLES {
+            let has: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'uid'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(has, 1, "{table} has no uid column - it could never be merged");
+        }
+    }
+
+    #[test]
+    fn rows_that_already_existed_get_an_identity_both_machines_agree_on() {
+        // event_categories is seeded by 001, so its rows pre-date 027 in
+        // exactly the way marko's real orders and sales do. Two databases
+        // descended from the same file share these ids, and therefore end up
+        // sharing these uids without ever talking to each other - that is the
+        // whole point of backfilling from the id instead of at random.
+        let conn = test_conn();
+        let (id, uid): (i64, String) = conn
+            .query_row("SELECT id, uid FROM event_categories ORDER BY id LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(uid, format!("legacy-{id}"));
+
+        let unidentified: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_categories WHERE uid IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(unidentified, 0);
+    }
+
+    #[test]
+    fn a_new_row_gets_a_uid_without_any_code_asking_for_one() {
+        // This is an ordinary INSERT - no column list change, no new Rust.
+        // Every existing insert site in the app (orders, CSV import, Sheets
+        // sync, AI import) gets identity the same way, which is why 027
+        // touches no application code at all.
+        let conn = test_conn();
+        conn.execute("INSERT INTO events(name) VALUES ('Test event')", []).unwrap();
+        let uid: String = conn
+            .query_row("SELECT uid FROM events WHERE name = 'Test event'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uid.len(), 32, "expected a 128-bit hex uid, got {uid}");
+        assert!(!uid.starts_with("legacy-"));
+    }
+
+    #[test]
+    fn two_rows_can_never_share_a_uid() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO events(name) VALUES ('A')", []).unwrap();
+        conn.execute("INSERT INTO events(name) VALUES ('B')", []).unwrap();
+        let distinct: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT uid) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(distinct, 2);
+
+        // Not merely unlikely - refused by the index.
+        let collide = conn.execute(
+            "UPDATE events SET uid = (SELECT uid FROM events WHERE name = 'A') WHERE name = 'B'",
+            [],
+        );
+        assert!(collide.is_err(), "the unique index on uid should have refused a duplicate");
+    }
+
+    #[test]
+    fn a_uid_that_came_from_the_other_machine_is_left_alone() {
+        // The merge inserts rows that ALREADY carry the other machine's uid.
+        // `WHEN NEW.uid IS NULL` is what stops the trigger from stamping a
+        // fresh one over it - without that, every merged row would arrive as
+        // a brand-new row and come straight back as a duplicate.
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO events(name, uid) VALUES ('From the other machine', 'abc123')",
+            [],
+        )
+        .unwrap();
+        let uid: String = conn
+            .query_row("SELECT uid FROM events WHERE name = 'From the other machine'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uid, "abc123");
     }
 }

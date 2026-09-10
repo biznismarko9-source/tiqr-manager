@@ -297,6 +297,100 @@ pub fn restore_database(state: State<AppState>, src_path: String) -> AppResult<R
     restore_database_impl(&mut conn, Path::new(&src_path), &safety_dir)
 }
 
+// --- Restore points (2.14.0) ---------------------------------------------
+//
+// marko asked for a way back "ak by ten sync nebol spravny" - if a sync turns
+// out to have been the wrong one. The way back already existed on disk: every
+// destructive restore, including every cloud-sync download, calls
+// `create_safety_backup` FIRST. What was missing is that the only place their
+// path was ever shown is a toast that disappears, so recovering meant hunting
+// through the app-data folder by hand.
+//
+// This lists them. It creates nothing, deletes nothing, and restoring one goes
+// through the ordinary `restore_database` command - which validates the file,
+// takes its own safety backup of the current data first, and rolls back on
+// failure. So even undoing a bad sync is itself undoable.
+
+/// How many are listed. Older files are left on disk untouched - this app
+/// never deletes marko's data behind his back, and a snapshot of a database
+/// is exactly that.
+const MAX_RESTORE_POINTS: usize = 20;
+
+/// The prefix `create_safety_backup` writes. Matching on it is what keeps an
+/// unrelated `.sqlite3` sitting in the same folder out of this list.
+const SAFETY_BACKUP_PREFIX: &str = "pre-restore-";
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePoint {
+    /// Full path - also what gets passed straight back to `restore_database`.
+    pub path: String,
+    pub file_name: String,
+    /// The file's own modified time, RFC3339. `None` rather than a made-up
+    /// date when the filesystem won't say - the UI falls back to the name,
+    /// which carries the same stamp.
+    pub created_at: Option<String>,
+    pub size_bytes: i64,
+    /// Which action took it: `"sync"` for a cloud-sync download, `"restore"`
+    /// for a manual restore from a file. They land in different folders (see
+    /// `cloud_sync_pull` vs `restore_database`), which is the only reason
+    /// this can be said rather than guessed.
+    pub source: String,
+}
+
+fn collect_restore_points(dir: &Path, source: &str, out: &mut Vec<(std::time::SystemTime, RestorePoint)>) {
+    // A missing folder is the normal state until the first restore ever runs.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+            continue;
+        };
+        if !file_name.starts_with(SAFETY_BACKUP_PREFIX) || !file_name.ends_with(".sqlite3") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        // Read once, used twice: as the sort key, and as the shown date. A
+        // filesystem that won't report it sorts oldest and shows nothing
+        // rather than being given an invented date.
+        let modified = meta.modified().ok();
+        out.push((
+            modified.unwrap_or(std::time::UNIX_EPOCH),
+            RestorePoint {
+                path: path.display().to_string(),
+                file_name,
+                created_at: modified.map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339()),
+                size_bytes: meta.len() as i64,
+                source: source.to_string(),
+            },
+        ));
+    }
+}
+
+/// Every automatic safety backup this app has taken for the CURRENTLY active
+/// database, newest first. Read-only.
+#[tauri::command]
+pub fn list_restore_points(state: State<AppState>) -> AppResult<Vec<RestorePoint>> {
+    let db_path = state.db_path.lock().unwrap().clone();
+    let Some(dir) = db_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    // Two folders on purpose, not one: `cloud_sync_pull` puts its safety
+    // backup next to the active database file, `restore_database` puts its
+    // own in a `safety-backups` subfolder. Both are pre-existing behaviour;
+    // reading both is what makes this list complete instead of half of it.
+    collect_restore_points(dir, "sync", &mut found);
+    collect_restore_points(&dir.join("safety-backups"), "restore", &mut found);
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(found.into_iter().map(|(_, rp)| rp).take(MAX_RESTORE_POINTS).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +419,60 @@ mod tests {
         backup
             .run_to_completion(5, std::time::Duration::from_millis(250), None)
             .unwrap();
+    }
+
+    // --- restore points (2.14.0) -------------------------------------
+
+    fn touch(dir: &Path, name: &str) {
+        fs::write(dir.join(name), b"not a real database, only its name matters here").unwrap();
+    }
+
+    #[test]
+    fn only_this_apps_own_safety_backups_are_offered_as_restore_points() {
+        let dir = unique_temp_dir("restore_points");
+        touch(&dir, "pre-restore-20260910-101500123.sqlite3");
+        touch(&dir, "pre-restore-20260910-120000456.sqlite3");
+        // Everything below is somebody else's file sitting in the same folder.
+        touch(&dir, "tiqr.sqlite3");
+        touch(&dir, "pre-restore-notes.txt");
+        touch(&dir, "backup-20260910.sqlite3");
+
+        let mut found = Vec::new();
+        collect_restore_points(&dir, "sync", &mut found);
+        let mut names: Vec<String> = found.iter().map(|(_, rp)| rp.file_name.clone()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "pre-restore-20260910-101500123.sqlite3".to_string(),
+                "pre-restore-20260910-120000456.sqlite3".to_string(),
+            ]
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_yet_is_not_an_error() {
+        // The normal state until the first restore or sync-down ever runs.
+        let dir = unique_temp_dir("restore_points_missing").join("never-created");
+        let mut found = Vec::new();
+        collect_restore_points(&dir, "restore", &mut found);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_restore_point_says_which_action_took_it() {
+        // The two callers write to different folders, which is the only
+        // reason this label can be stated rather than guessed.
+        let dir = unique_temp_dir("restore_points_source");
+        touch(&dir, "pre-restore-20260910-101500123.sqlite3");
+        let mut found = Vec::new();
+        collect_restore_points(&dir, "sync", &mut found);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.source, "sync");
+        assert!(found[0].1.size_bytes > 0);
+        assert_eq!(found[0].1.path, dir.join("pre-restore-20260910-101500123.sqlite3").display().to_string());
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn seed_event(conn: &Connection, name: &str) {
