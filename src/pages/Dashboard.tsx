@@ -195,14 +195,6 @@ export default function Dashboard() {
   // else.
   const [period, setPeriod] = useState("1y");
   const [metric, setMetric] = useState<MetricKey>("revenue");
-  // 2.13.2: marko asked for the one wide chart to become two smaller ones,
-  // with the second showing something he picks. Rather than choosing for him
-  // once, the second chart carries the SAME metric switch as the first - so
-  // both are his, permanently. Defaults to Sales (ticket count) because it is
-  // the only series that is NOT a function of revenue: a flat revenue month
-  // with more tickets sold means the average price fell, and no pairing of
-  // two money lines can show that.
-  const [metricB, setMetricB] = useState<MetricKey>("sales");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -388,37 +380,22 @@ export default function Dashboard() {
                       deliberate trim of vertical rhythm on this tab, not a
                       redesign. See the chart Card's own 2.2.11 comment below
                       for the full reasoning. */}
-                  {/* 2.13.0 (DSH-01): one number is the answer, the rest are
-                      context - so Profit leaves the row and becomes the
-                      headline, with margin and ROI as its own sub-line. All
-                      six figures are still here and still come from the same
-                      `data.period`; the only change is that the layout now
-                      says which one you opened the Dashboard to see. Before
-                      this, six identically-sized boxes said they mattered
-                      equally, which is the one thing that was certainly not
-                      true. */}
-                  <div className="mb-4">
-                    <p className="section-title">Profit</p>
-                    <p
-                      className={`mt-1 text-[26px] font-semibold leading-none tracking-tight tabular-nums ${
-                        data.period.profitCents > 0
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : data.period.profitCents < 0
-                            ? "text-red-600 dark:text-red-400"
-                            : "text-slate-900 dark:text-slate-50"
-                      }`}
-                    >
-                      {formatMoney(data.period.profitCents, data.primaryCurrency)}
-                    </p>
-                    <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-                      {formatPercent(data.period.margin)} margin · {formatPercent(data.period.roi)} ROI
-                      {(() => {
-                        const t = computeTrend(data.period.profitCents, data.previousPeriod?.profitCents);
-                        return t ? <> · {t.label} vs. previous period</> : null;
-                      })()}
-                    </p>
-                  </div>
+                  {/* 2.13.3: profit rejoins the row. DSH-01 lifted it out as a
+                      headline above the others; marko wanted all six on one
+                      line instead, so it is a card again - just a louder one.
+                      `emphasis` is what keeps it findable without taking its
+                      own band of the page: bigger figure, brand-tinted border,
+                      and margin/ROI as its sub-line so nothing that was in the
+                      headline is lost. */}
                   <div className="summary-bar">
+                    <StatCard
+                      label="Profit"
+                      value={formatMoney(data.period.profitCents, data.primaryCurrency)}
+                      tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
+                      trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
+                      sub={`${formatPercent(data.period.margin)} margin · ${formatPercent(data.period.roi)} ROI`}
+                      emphasis
+                    />
                     <StatCard
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
@@ -473,66 +450,57 @@ export default function Dashboard() {
                       whitespace), without touching anything shared
                       (PageHeader/Layout's own spacing is untouched - it's
                       used by every other page too). */}
-                  {/* 2.13.2: two charts instead of one wide one, marko's own
-                      request. Both read the SAME `revenueTimeSeries` - every
-                      series they can draw (revenue, cost, profit, tickets) is
-                      already a field on every bucket, so this is a second
-                      render of data the page had, not a second query. */}
-                  <div className="mb-6 grid gap-4 xl:grid-cols-2">
-                    {[
-                      { m: metric, set: setMetric },
-                      { m: metricB, set: setMetricB },
-                    ].map((chart, i) => (
-                      <Card key={i} className="p-4">
-                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                              {METRICS.find((m) => m.key === chart.m)?.label} over time
-                            </p>
-                            <p
-                              className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, chart.m)}`}
-                            >
-                              {chart.m === "sales"
-                                ? String(periodMetricValue(data, chart.m))
-                                : formatMoney(periodMetricValue(data, chart.m), data.primaryCurrency)}
-                            </p>
-                          </div>
-                          <div className={SEGMENTED_TRACK}>
-                            {METRICS.map((m) => (
-                              <button
-                                key={m.key}
-                                onClick={() => chart.set(m.key)}
-                                aria-pressed={chart.m === m.key}
-                                className={segmentedItemClass(chart.m === m.key)}
-                              >
-                                {m.label}
-                              </button>
-                            ))}
-                          </div>
+                  {/* 2.13.4: one chart, and Sales by platform beside it.
+                      2.13.2 put two charts here, but every series the second
+                      one could draw comes from the same sales - revenue and
+                      ticket count traced the same curve, so the second frame
+                      repeated the first rather than adding to it. Sales by
+                      platform was already on this tab, just below the fold;
+                      it answers a question the line genuinely cannot (WHERE
+                      the money came from, not when), and moving it up costs
+                      nothing - same `data.salesByPlatform`, same period
+                      scope, same card. */}
+                  <div className="mb-6 grid gap-4 items-start xl:grid-cols-2">
+                    <Card className="p-4">
+                      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                            {METRICS.find((m) => m.key === metric)?.label} over time
+                          </p>
+                          <p
+                            className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}
+                          >
+                            {metric === "sales"
+                              ? String(periodMetricValue(data, metric))
+                              : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
+                          </p>
                         </div>
-                        <MetricChart
-                          points={data.revenueTimeSeries}
-                          granularity={data.timeSeriesGranularity}
-                          currency={data.primaryCurrency}
-                          metric={chart.m}
-                        />
-                      </Card>
-                    ))}
+                        <div className={SEGMENTED_TRACK}>
+                          {METRICS.map((m) => (
+                            <button
+                              key={m.key}
+                              onClick={() => setMetric(m.key)}
+                              aria-pressed={metric === m.key}
+                              className={segmentedItemClass(metric === m.key)}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <MetricChart
+                        points={data.revenueTimeSeries}
+                        granularity={data.timeSeriesGranularity}
+                        currency={data.primaryCurrency}
+                        metric={metric}
+                      />
+                    </Card>
+                    <SalesByPlatformCard
+                      data={data}
+                      expanded={platformsExpanded}
+                      onToggle={() => setPlatformsExpanded((v) => !v)}
+                    />
                   </div>
-                {/* "Sales by platform" (2.0.47, DIR-001 signature idea #02) -
-                    same period/currency scope as the StatCards/chart above
-                    (data.salesByPlatform shares period_summary's exact
-                    scope - see dashboard.rs), so switching the period pills
-                    above updates this too, automatically. Orders/Sales
-                    already store platform_id today; this is the first place
-                    it gets grouped and shown as "which platform actually
-                    earns the most" (Eventbrite's "Sales by Source" - see
-                    REDESIGN-2.0.47-REPORT.md). */}
-                <SalesByPlatformCard
-                  data={data}
-                  expanded={platformsExpanded}
-                  onToggle={() => setPlatformsExpanded((v) => !v)}
-                />
                 </>
               )}
             </>
@@ -990,7 +958,7 @@ function SalesByPlatformCard({
   const visibleRows = expanded ? rows : rows.slice(0, RECENT_LIST_PREVIEW_COUNT);
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
   return (
-    <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="mb-8">
+    <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />}>
       {rows.length === 0 ? (
         <EmptyRow text="No sales in this period yet" />
       ) : (

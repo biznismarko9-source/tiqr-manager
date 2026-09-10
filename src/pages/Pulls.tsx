@@ -1,4 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
+import AiImportPanel from "../components/AiImportPanel";
+import { isIsoDate, matchByName } from "../lib/aiImport";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
@@ -828,6 +830,37 @@ function PullFormModal({
   return (
     <Modal open={open} onClose={onClose} title={editing ? `Edit ${pull?.code}` : "New pull"} width="max-w-2xl">
       <div className="flex flex-col gap-4">
+        {/* 2.13.3: the same scanner Events, Orders and Sales already have -
+            marko asked for it here too. It fills the event, date, seats and
+            the rest off a screenshot; the buyer and his own fee stay his to
+            type, because neither is ever printed on a ticket. Nothing is
+            written until he presses Fill form, same as everywhere else. */}
+        {!editing && (
+          <AiImportPanel
+            kind="pull"
+            onApply={({ fields, group }) => {
+              if (fields.eventName) setEventName(fields.eventName);
+              if (isIsoDate(fields.eventDate)) setEventDate(fields.eventDate);
+              const platform = matchByName(platforms, fields.platform);
+              if (platform) setPlatformId(platform.id);
+              if (fields.currency) {
+                const code = fields.currency.trim().toUpperCase();
+                if (code) {
+                  setCurrency(code);
+                  setCustomCurrency(!CURRENCIES.includes(code));
+                }
+              }
+              if (group) {
+                if (group.quantity) setQuantity(group.quantity);
+                if (group.section) setSection(group.section);
+                if (group.row) setRowLabel(group.row);
+                // `pulls.seats` is one free-text column, not a row per ticket -
+                // so the expanded labels are joined rather than parsed.
+                if (group.seats.length > 0) setSeat(group.seats.join(", "));
+              }
+            }}
+          />
+        )}
         <FormGroup title="Pull">
           <Field label="For (buyer)" required hint="Who you're pulling these tickets for">
             <Input value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />

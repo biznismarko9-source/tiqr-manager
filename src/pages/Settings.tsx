@@ -615,8 +615,9 @@ export default function Settings() {
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Sync between your computers</h3>
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
                   Keeps one copy of your database in your own Google Drive, so what you write on one computer shows up
-                  on the other. It syncs the whole database at once - so sync up before you switch machines, and sync
-                  down when you arrive.
+                  on the other. It syncs the whole database at once. With sync on, this happens by itself: changes go
+                  up every few minutes, and anything new is pulled down when you open the app. The buttons below stay
+                  for the one case that can't be decided for you - when both computers changed since the last sync.
                 </p>
 
                 {sync && !sync.signedIn ? (

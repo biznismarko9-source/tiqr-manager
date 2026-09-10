@@ -27,6 +27,7 @@ import type {
   CreatedSheetResult,
   CreateFromRecurringResult,
   CsvImportResult,
+  CloudSyncAutoPlan,
   CloudSyncStatus,
   CsvPreview,
   CurrencyConversion,
@@ -413,6 +414,11 @@ export const api = {
   /** Downloads and RESTORES over this machine's database. Returns the path of
    * the automatic safety backup taken first. */
   cloudSyncPull: () => invoke<string>("cloud_sync_pull"),
+  /** Decides what should happen and does none of it (2.14.0) - one Drive
+   *  metadata request, no upload, no download. The caller acts on the answer
+   *  with `cloudSyncPush` / `cloudSyncPull`, so automatic sync never gained a
+   *  destructive path of its own. */
+  cloudSyncAuto: () => invoke<CloudSyncAutoPlan>("cloud_sync_auto"),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

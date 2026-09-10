@@ -21,6 +21,71 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.14.0 - Automatic Cloud Sync (no schema change, no migration, no new dependency)
+
+marko asked for the hand-off between his two machines to stop needing a click,
+so the "nothing syncs automatically" rule from 2.12.0 is now retired (see that
+section). These are the rules that replace it, and they are what make the
+feature safe rather than merely convenient.
+
+- **`cloud_sync_auto` decides; it never acts.** One Drive metadata request, no
+  upload, no download, no restore. `Layout.tsx` performs the action by calling
+  the same `cloud_sync_push` / `cloud_sync_pull` the Settings buttons have
+  always called, so automatic sync added **no second destructive path** and
+  every download still goes through `restore_database_impl`'s validation,
+  safety backup and rollback. It also *cannot* call them itself: push, pull and
+  auto all take `state.db`, and `std::sync::Mutex` is not reentrant - a Rust
+  "convenience wrapper" that calls push from inside auto is an instant deadlock.
+- **An automatic push must never pass `force: true`.** The lost-update guard is
+  the only thing standing between "I forgot to sync" and losing the other
+  machine's day. `force` is a decision a human makes, on a button.
+- **Automatic pull happens at app launch ONLY.** A pull replaces this database
+  and therefore relaunches the app; doing that from a timer would restart the
+  app under marko mid-sentence. Mid-session a `pull` verdict becomes the banner
+  instead. Do not "improve" this into a background pull.
+- **`decide_auto` (cloud_sync.rs) is the whole policy, and it refuses to guess
+  in exactly two cases.** Both sides changed -> ask. This machine has never
+  synced and Drive already holds data -> ask (nothing on this side can tell
+  whether that file is this machine's own data or the other one's). Whole-file
+  sync has to pick a winner, and a winner picked by a timer is a coin toss with
+  marko's work. It is a pure function with no database, no network and no Tauri
+  precisely so this table can be read and tested in one place - keep it that way.
+- **An unreachable Drive is never "unchanged".** `decide_auto` returns `Offline`
+  and does nothing. Note that `cloud_sync_push` itself skips its guard when the
+  metadata request fails (`if let Ok(meta)`) - deliberate for an explicit click,
+  fatal for a timer, which is why auto stops one step earlier.
+- **The dirty flag is SQLite's own update hook, not a timestamp scan.** 17 of
+  this app's 29 tables have no `updated_at` (`transfers` and every lookup list
+  among them), and no table records a DELETE, so a scan over timestamps would
+  silently miss whole classes of edit. `db::open_connection` registers
+  `conn.update_hook`, which fires on every insert, update and delete. It needs
+  rusqlite's `hooks` feature - the same rusqlite, one more flag, not a new
+  dependency. **A hook must never write to the database it watches**: this one
+  does a single atomic store, no allocation, no SQL, no I/O.
+- **`db::is_bookkeeping_table` is a safety list, not a tidiness list.** Tables
+  the app writes by itself (`app_settings`, `counters`, `notification_log`,
+  `sheet_sync_links`, `schema_migrations`) must stay excluded: if a table the
+  30-minute notification tick writes counted as "marko changed something",
+  auto-push would upload the whole database forever, on both machines, without
+  anyone touching anything. Before adding a table here, check nothing on a
+  timer writes to it. `app_secrets` is deliberately NOT here - it only changes
+  when marko sets his API key, and being on the list would not stop it syncing
+  anyway (the whole file goes up either way); the list only decides what
+  *triggers* a sync.
+- **The dirty flag is persisted, and that is not redundant.** The atomic dies
+  with the process. `cloud_sync_local_dirty` in `app_settings` is what lets a
+  machine closed before it could push still know, next launch, that it holds
+  unsent work - which is exactly the case where the startup auto-pull would
+  otherwise overwrite it. It is written through by `local_dirty` on every check,
+  by `flush_local_dirty` on `ExitRequested` (best-effort, `try_lock`, never
+  blocking an exit) and on `switch_active_database` (into the database being
+  left behind, then cleared, so the account being opened inherits nothing).
+- **`mark_local_clean` is called only after Drive accepted the bytes, or after
+  a restore actually succeeded.** Never on the strength of having tried. Note
+  the pushed snapshot still carries `dirty = true` inside it (it is taken before
+  the upload); the pull side clears it after restoring, which is why that call
+  in `cloud_sync_pull` is not optional.
+
 ## 2.13.2 - Adding a field to an input struct is never a one-file change
 
 - **`OrderEditInput` is built in THREE places, and one of them is a sync.**
@@ -138,17 +203,14 @@ current - nothing here is superseded, they just cover different areas.
   NON_ALPHANUMERIC)` for dynamic parts, the way `google_sheets.rs` has always
   done it. Before reaching for any reqwest method, check it is one this repo
   already uses somewhere - the feature set is deliberately minimal.
-- **Nothing syncs automatically.** No timer, no sync on write. Sync is off
-  until switched on and every sync is an explicit click - this app stays
-  local-first and fully usable offline, which is the promise its own
-  description still makes.
-  **2.13.1 amended one half of this at marko's explicit request:** `Layout.tsx`
-  now calls `cloud_sync_status` ONCE on app open and shows a dismissible bar
-  when `remoteNewer` is true. It **checks and tells; it never syncs** - no data
-  moves without a click, so the promise above still holds. Keep it that way:
-  one call, on open, no interval, and never a `cloud_sync_pull` from a timer.
-  `cloud_sync_status` already returns early when sync is off or nobody is
-  signed in, so this costs nothing for anyone not using sync.
+- ~~**Nothing syncs automatically.**~~ **RETIRED IN 2.14.0 at marko's explicit
+  request** - he asked for the Mac/Windows hand-off to happen without clicking,
+  and answered "both directions automatic" when asked. This rule was weakened
+  once already (2.13.1: check and tell, never sync); 2.14.0 removes it. What
+  replaced it is the 2.14.0 section at the top of this file - read that before
+  touching anything here. The half that did NOT change: sync is still off until
+  switched on, and with it off nothing here runs at all, so the app is still
+  local-first and fully usable offline.
 - **The single Sync button guesses the direction, except in the one case it
   must not** (2.13.1). `remoteNewer == false` means the Drive copy has not
   moved since this machine last synced, so pushing cannot destroy the other

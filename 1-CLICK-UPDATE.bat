@@ -1,7 +1,7 @@
 @echo off
-title TIQR Manager - Publish v2.13.2
+title TIQR Manager - Publish v2.14.0
 echo.
-echo Publishing TIQR Manager v2.13.2 to GitHub - this will take a minute...
+echo Publishing TIQR Manager v2.14.0 to GitHub - this will take a minute...
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0release.ps1"
 echo.

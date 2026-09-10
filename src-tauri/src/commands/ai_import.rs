@@ -229,8 +229,17 @@ fn field_names_for_kind(kind: &str) -> AppResult<&'static [&'static str]> {
             "paymentStatus",
             "deliveryStatus",
         ]),
+        // 2.13.3: a pull is a purchase made for someone else, so this reads
+        // the same kind of screenshot the "order" kind does and reuses
+        // `ticketGroups` for the per-ticket half - that is where the seat-range
+        // expansion the prompt already describes lives. Deliberately does NOT
+        // extract `buyerName` or a price: the buyer is a person marko knows and
+        // types himself, and `pulls.price_cents` is HIS OWN fee for doing the
+        // pull, which is never printed on a ticket screenshot. Asking for
+        // either would invite exactly the guessing the whole feature forbids.
+        "pull" => Ok(&["eventName", "eventDate", "venue", "platform", "currency"]),
         other => Err(AppError::Validation(format!(
-            "unknown AI import kind '{other}' - expected event, order or sale"
+            "unknown AI import kind '{other}' - expected event, order, sale or pull"
         ))),
     }
 }
@@ -321,6 +330,14 @@ fn build_prompt(kind: &str) -> AppResult<String> {
              \"unitPrice\" is the price of ONE ticket - if only a total is shown, put it in the \
              \"totalPrice\" field instead and leave \"unitPrice\" null rather than dividing it \
              yourself."
+        }
+        "pull" => {
+            "This image should describe ONE ticket purchase made on someone else's behalf. Put \
+             event-level facts in \"fields\" and per-ticket facts in \"ticketGroups\". Return one \
+             group per set of tickets that share a tier, section, row and price. Expand a seat \
+             range into individual labels (\"21-24\" becomes \"21\", \"22\", \"23\", \"24\"); leave \
+             \"seats\" empty if individual seats are not shown. Never try to work out who the \
+             tickets are for - that is not in the image."
         }
         "sale" => {
             "This image should describe ONE sale. Set \"paymentStatus\" and \"deliveryStatus\" \

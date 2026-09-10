@@ -63,10 +63,19 @@ pub(crate) fn switch_active_database_impl(state: &AppState, target_path: PathBuf
         return Ok(DatabaseSwitchOutcome { db_path: target_path.display().to_string(), is_new: false });
     }
 
+    // 2.14.0: the automatic-sync write flag is one process-wide atomic, so
+    // it has to be handed over with the connection. Writing it into the
+    // database it actually belongs to first means unsent work on the account
+    // being left behind is still known the next time that account is opened;
+    // clearing it after means the account being opened doesn't inherit a
+    // "changed" verdict it never earned.
+    crate::commands::cloud_sync::flush_local_dirty(&conn_guard);
+
     let is_new = !target_path.exists();
     let new_conn = crate::db::open_connection(&target_path)?;
     crate::db::run_migrations(&new_conn)?;
     *conn_guard = new_conn; // old Connection drops here - WAL flushed, same as a normal app quit
+    crate::db::LOCAL_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     *path_guard = target_path.clone();
     Ok(DatabaseSwitchOutcome { db_path: target_path.display().to_string(), is_new })
 }

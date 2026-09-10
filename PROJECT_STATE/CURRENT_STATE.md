@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.13.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.14.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -303,6 +303,31 @@ than one per figure), and Ticket Center's four filter cards plus Calendar's
 four tiles became segments of that same bar - still clickable, still the same
 filters. Dashboard's profit headline dropped to 26px. **Frontend only.**
 
+
+**2.13.4** puts profit back in the Dashboard card row (six on one line, profit
+tinted), drops the second chart - both charts drew the same curve because every
+series came from the same sales - and gives that slot to **Sales by platform**,
+which was already on the tab below the fold. **Pulls** gains the screenshot
+scanner via a new `"pull"` AI-import kind; it fills event/date/section/row/seats
+and deliberately never reads the buyer or the pull fee.
+
+**2.14.0** makes Cloud Sync automatic in both directions, which retires the
+"nothing syncs automatically" rule 2.12.0 wrote (marko asked for it directly:
+*"vieme urobit nejaku verziu ktore vie stiahnut tie data z windows do macu a
+opacne automaticky?"*, then chose "both directions" and "fix the deletion hole
+now"). A new **read-only** `cloud_sync_auto` command decides what should happen
+and does none of it; `Layout.tsx` performs the verdict by calling the same
+`cloud_sync_push` / `cloud_sync_pull` the buttons already called, so no second
+destructive path exists. Uploads run every 5 minutes when this machine has
+unsent work and **never** pass `force`; downloads run **only at app launch**,
+because a download restarts the app. Two cases stop and ask forever: both sides
+changed, and a machine that has never synced finding data already in Drive.
+"Has anything changed here?" is now SQLite's own `update_hook` rather than an
+`updated_at` scan - 17 of 29 tables have no such column and none record a
+DELETE - and the answer is persisted so a machine closed before it could push
+is not pulled over on the next launch. `rusqlite` gains the `hooks` feature;
+no new dependency, no schema change, no migration.
+
 ## Stack / layout
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, Vite build.
@@ -490,6 +515,9 @@ difference between a months-long rebuild and one contained release.
   scope that works - only files this app created). An existing refresh token
   was issued against the old scopes, so **everyone signs in with Google once
   more**.
+- **2.14.0 made it automatic** (both directions) - the whole-file, one-
+  direction-at-a-time design above is unchanged, only who presses the button.
+  See the 2.14.0 paragraph above and `PROTECTED_AREAS.md`'s 2.14.0 section.
 - **Still local-first**: nothing runs on a timer or at startup, sync is off
   until switched on, and every sync is a click.
 - **NOT verified by a build, and no Drive call has ever run.** No Node.js or

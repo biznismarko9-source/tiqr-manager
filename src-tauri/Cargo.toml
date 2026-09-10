@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.13.2"
+version = "2.14.0"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -62,7 +62,12 @@ tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+# 2.14.0: "hooks" is what makes automatic sync safe. It gives us SQLite's own
+# update hook, which fires on EVERY insert, update and delete - including the
+# 17 tables that carry no `updated_at` column (transfers, every lookup list),
+# where a scan over timestamps would silently miss an edit. Not a new
+# dependency: the same rusqlite, one more feature flag.
+rusqlite = { version = "0.32", features = ["bundled", "backup", "hooks"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
 anyhow = "1"

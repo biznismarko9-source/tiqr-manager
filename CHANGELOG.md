@@ -16,6 +16,66 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.14.0 - Cloud sync runs by itself, both directions
+
+**No schema change, no migration (next new one is still 027), no new
+dependency** - `rusqlite` gains its `hooks` feature flag, which is the same
+crate already in use, not a new one.
+
+1. **The hand-off no longer needs a click.** With sync on, unsent work goes up
+   every few minutes and anything new comes down when the app opens. marko asked
+   for exactly this ("obe smery automaticky"), which retires 2.12.0's "nothing
+   syncs automatically" rule - see `PROTECTED_AREAS.md`'s new 2.14.0 section for
+   the rules that replace it.
+2. **The new command decides and does nothing.** `cloud_sync_auto` makes one
+   Drive metadata request and returns a verdict; `Layout.tsx` acts on it by
+   calling the same `cloud_sync_push` / `cloud_sync_pull` the Settings buttons
+   call. No second destructive path: every download still runs through
+   `restore_database_impl`'s validation, safety backup and rollback. The policy
+   itself is `decide_auto`, a pure function with the whole table on one screen
+   and 11 tests over it.
+3. **Two cases stay manual, on purpose.** Both machines changed since the last
+   sync, and a machine that has never synced finding data already in Drive.
+   Whole-file sync must pick a winner and neither case has an answer that isn't
+   a guess, so both stop and ask. An automatic push never passes `force`, and an
+   unreachable Drive is never read as "unchanged" - it does nothing and waits.
+4. **Deleting something now counts as a change.** "Has this machine changed
+   anything?" is answered by SQLite's own `update_hook` instead of a scan over
+   `updated_at`: 17 of the 29 tables have no such column (`transfers` and every
+   lookup list among them) and no table records a DELETE at all, so a timestamp
+   scan would have missed whole classes of edit and let them be overwritten. The
+   hook ignores the app's own bookkeeping tables, so the 30-minute notification
+   tick can never trigger an upload.
+5. **A machine closed before it could push still knows.** The flag is persisted
+   to `app_settings`, written through on every check, on exit (`try_lock`, never
+   blocking a close) and when accounts switch - so unsent work is not silently
+   pulled over on the next launch.
+
+## 2.13.4 - One chart, profit back in the row, a scanner for Pulls
+
+**No schema change, no migration (next new one is still 027), no dependency
+change.**
+
+1. **Profit rejoins the card row.** 2.13.2 lifted it out as a headline above
+   the others; marko wanted all six on one line. It is a card again, just a
+   louder one - brand-tinted border, larger figure, margin and ROI as its
+   sub-line. Every card narrowed so six fit without wrapping.
+2. **The second chart is gone.** Every series it could draw came from the same
+   sales, so revenue and ticket count traced the same curve - the second frame
+   repeated the first rather than adding to it. **Sales by platform** takes
+   that slot: already on this tab below the fold, already the same
+   `data.salesByPlatform` at the same period scope, and it answers *where* the
+   money came from, which a line over time cannot. The **Cost** metric added in
+   2.13.2 stays on the remaining chart.
+3. **Pulls gets the screenshot scanner** Events, Orders and Sales already had.
+   A new `"pull"` kind for the AI import fills event, date, section, row and
+   seats off an image, reusing the `ticketGroups` seat-range expansion the
+   `"order"` kind already describes. It deliberately does **not** read the
+   buyer name or the pull fee: neither is ever printed on a ticket, and asking
+   for either would invite exactly the guessing the feature forbids.
+
+**Not built here:** no toolchain on the machine this was written on.
+
 ## 2.13.2 - Separate cards again, editable order prices, two charts
 
 marko's own list after running 2.13.1. **No schema change, no migration (next

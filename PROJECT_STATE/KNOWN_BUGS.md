@@ -34,6 +34,20 @@ from old reports.
   since a robust pull-side guard would need real design input, not a
   guess. Revisit if marko reports a duplicate sale after a refund.
 
+- **A hard kill (crash, force-quit, power loss) in the few minutes right
+  after an edit can lose that edit's "unsent work" flag** (2.14.0). Automatic
+  sync answers "did this machine change anything?" from an in-memory atomic
+  that is written to disk on every automatic check (every 5 minutes), on a
+  clean exit, and when accounts switch - none of which happen if the process
+  is killed outright. Consequence: on the next launch that machine believes it
+  is clean, and if the OTHER machine pushed in the meantime, the startup
+  auto-pull replaces it. **The data is not gone** - every pull takes a safety
+  backup first and the toast names its path - but marko would have to restore
+  it by hand. Closing this properly means persisting the flag from the write
+  itself, which the SQLite update hook must not do (a hook may not write to
+  the database it watches), so it needs a real design pass rather than a
+  guess. Revisit if marko reports losing an edit after a crash.
+
 ## Documented limitations (not bugs, but worth remembering)
 
 - Outbound notifications (desktop/Pushover) only fire while the app process

@@ -19,12 +19,22 @@ import {
   IconUsers,
   IconWallet,
 } from "./icons";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import logo from "../assets/logo.png";
+
+// 2.14.0: how often automatic sync looks at the other machine while the app
+// stays open. Five minutes is picked for what it costs, not for how fast it
+// feels: a check is one small Drive metadata request, but a check that finds
+// unsent work uploads the whole database, so a tighter interval would mean
+// re-uploading the same file every couple of minutes through a long working
+// session. Five minutes is far below the time it takes to walk from one
+// machine to the other, which is the only deadline that matters here.
+const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 // 2.0.44: initials shown in the profile widget's avatar circle - up to 2,
 // from up to 2 words of the name, uppercased. "T" for an empty/whitespace
@@ -131,13 +141,15 @@ export default function Layout() {
   // same convention as e.g. Dashboard's own eventsExpanded/ordersExpanded
   // (not persisted to disk either).
   const [ticketsOpen, setTicketsOpen] = useState(true);
-  // 2.13.1: marko asked the app to notice by itself when the other computer
-  // has newer data. This CHECKS and TELLS - it never syncs. `cloud_sync_status`
-  // already returns `remoteNewer` and already returns early when sync is off
-  // or nobody is signed in, so this costs one call and nothing when unused.
-  // ONE call, on open, no interval: it is a nudge, not a poller, and the
-  // local-first promise stays intact because nothing moves without a click.
-  const [remoteNewer, setRemoteNewer] = useState(false);
+  // 2.13.1 checked and told; 2.14.0 acts - marko asked for the hand-off
+  // between his Mac and his Windows PC to stop needing a click. This holds
+  // the one sentence the backend could NOT decide by itself (see
+  // cloud_sync.rs's `decide_auto`); everything it could decide happens
+  // without ever reaching this banner.
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  // Guards against a tick starting while the previous one is still
+  // uploading - a slow upload on a slow connection must not stack.
+  const autoSyncBusy = useRef(false);
   const ticketsGroupActive = TICKETS_GROUP_CHILDREN.some(
     (c) => location.pathname === c.to || location.pathname.startsWith(`${c.to}/`),
   );
@@ -190,6 +202,55 @@ export default function Layout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 2.14.0: automatic two-machine sync. `cloud_sync_auto` DECIDES and does
+  // nothing - the acting is done here by calling the very same push/pull the
+  // Settings buttons call, so nothing destructive gained a second code path.
+  //
+  // Two deliberate asymmetries:
+  //
+  // * Uploading is invisible and can happen any time; it only ever adds a
+  //   version to Drive and is refused outright by the backend's lost-update
+  //   guard if the other machine got there first. Never `force`.
+  // * Downloading REPLACES this database and therefore restarts the app, so
+  //   it is only ever done automatically at launch. Mid-session it becomes
+  //   the banner instead - restarting the app under marko while he is typing
+  //   into a form would be a bug, not a feature.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async (atStartup: boolean) => {
+      if (autoSyncBusy.current) return;
+      autoSyncBusy.current = true;
+      try {
+        const plan = await api.cloudSyncAuto();
+        if (cancelled) return;
+        if (plan.action === "push") {
+          await api.cloudSyncPush();
+        } else if (plan.action === "pull" && atStartup) {
+          const safetyPath = await api.cloudSyncPull();
+          toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
+          setTimeout(() => relaunch(), 900);
+        } else if (plan.action === "pull" || plan.action === "ask") {
+          setSyncNotice(plan.reason);
+        }
+      } catch {
+        // Offline, signed out, or the remote moved in the moment between
+        // deciding and acting: all normal for a local-first app, none of them
+        // worth interrupting marko over, and the next tick simply tries
+        // again. Real failures are still shown where he asked for them - the
+        // Sync buttons in Settings.
+      } finally {
+        autoSyncBusy.current = false;
+      }
+    };
+    tick(true);
+    const interval = setInterval(() => tick(false), AUTO_SYNC_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 2.0.76: periodic check for the outbound-notification feature (desktop/
   // ntfy - Settings -> Notifications) - see commands/notifications.rs's
   // module doc comment. Fires once shortly after mount,
@@ -201,19 +262,6 @@ export default function Layout() {
   // optional, and any of them being off, misconfigured, or unreachable must
   // never interrupt the app with an error toast (the "Send test" buttons in
   // Settings are where a real failure IS shown, on purpose).
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .cloudSyncStatus()
-      .then((st) => {
-        if (!cancelled) setRemoteNewer(st.enabled && st.remoteNewer);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   useEffect(() => {
     const check = () => {
       api.checkAndSendNotifications().catch(() => {});
@@ -401,16 +449,16 @@ export default function Layout() {
             2.6.0: still no max-width cap (that decision stands) - only the
             gutter changed, 24px -> 28px horizontal / 20px vertical, which is
             the app's page inset every screen now shares. */}
-        {remoteNewer && (
+        {syncNotice && (
           <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
-            Your other computer has newer data.
+            {syncNotice}
             <Link to="/settings/data" className="font-semibold underline underline-offset-2">
               Open sync
             </Link>
             <button
               type="button"
-              onClick={() => setRemoteNewer(false)}
+              onClick={() => setSyncNotice(null)}
               className="ml-auto text-amber-700/70 hover:text-amber-900 dark:text-amber-400/70 dark:hover:text-amber-200"
             >
               Dismiss

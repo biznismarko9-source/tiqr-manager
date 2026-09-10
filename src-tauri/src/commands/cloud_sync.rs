@@ -42,12 +42,30 @@
 //! sign-in and refresh-token plumbing `commands::google_auth` already has in
 //! production for Sheets sync.
 //!
-//! ## Never automatic without consent
+//! ## Automatic, but never a guess (2.14.0)
 //!
-//! Nothing in this module runs on a timer or on startup by itself. The
-//! frontend decides when to call, and only ever after marko has switched
-//! sync on. This app is still local-first: with sync off, or offline, every
-//! command here simply reports that and the app works exactly as before.
+//! Until 2.14.0 nothing here ran on a timer or on startup by itself. marko
+//! asked for the hand-off between his two machines to stop needing a click,
+//! so the frontend now calls `cloud_sync_auto` when the app opens and on a
+//! quiet timer while he works.
+//!
+//! That command is READ-ONLY: it decides and reports. The frontend then
+//! calls the same `cloud_sync_push` / `cloud_sync_pull` the buttons have
+//! always called, so nothing destructive got a second code path, and every
+//! download still goes through `restore_database_impl` with its validation,
+//! safety backup and rollback.
+//!
+//! The policy itself is `decide_auto` - one pure function, the whole table
+//! on one screen. It refuses to decide in exactly two cases: when BOTH
+//! sides changed, and when this machine has never synced while Drive
+//! already holds data. Both stop and ask, because whole-file sync has to
+//! pick a winner and neither case has an answer that isn't a guess.
+//! Everything else - only this side changed, only that side changed,
+//! nothing changed, offline, sync off - is answerable without a human, and
+//! is answered.
+//!
+//! With sync off, or offline, every command here still simply reports that
+//! and the app works exactly as before. That part has not changed.
 
 use crate::commands::backup::{restore_database_impl, snapshot_db_to};
 use crate::commands::google_auth::active_oauth_access_token;
@@ -58,6 +76,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use tauri::State;
 
 pub(crate) const ENABLED_KEY: &str = "cloud_sync_enabled";
@@ -66,6 +85,9 @@ pub(crate) const FILE_ID_KEY: &str = "cloud_sync_file_id";
 /// lost-update guard hangs off this one value.
 pub(crate) const REMOTE_VERSION_KEY: &str = "cloud_sync_remote_version";
 pub(crate) const LAST_SYNC_KEY: &str = "cloud_sync_last_sync_at";
+/// Persisted copy of `db::LOCAL_DIRTY`. Survives a restart; the atomic does
+/// not. See `local_dirty`.
+pub(crate) const DIRTY_KEY: &str = "cloud_sync_local_dirty";
 
 /// Name of the file in the person's Drive. Visible to them on purpose (an
 /// `appDataFolder` file would be invisible and impossible to back up or
@@ -425,6 +447,10 @@ pub fn cloud_sync_push(state: State<AppState>, force: bool) -> AppResult<CloudSy
         set_setting(&conn, REMOTE_VERSION_KEY, v)?;
     }
     set_setting(&conn, LAST_SYNC_KEY, &now_iso())?;
+    // Only now, with the bytes accepted by Drive. Nothing marko wrote can be
+    // lost in the gap: every write goes through this same lock, which this
+    // command has held since before the snapshot was taken.
+    mark_local_clean(&conn)?;
 
     Ok(CloudSyncStatus {
         enabled: true,
@@ -496,7 +522,238 @@ pub fn cloud_sync_pull(state: State<AppState>) -> AppResult<String> {
         set_setting(&conn, REMOTE_VERSION_KEY, v)?;
     }
     set_setting(&conn, LAST_SYNC_KEY, &now_iso())?;
+    // The restore itself is a write, and this machine's contents are now
+    // exactly what is in Drive - so the flag is cleared here rather than
+    // left set by the very operation that made the two sides agree.
+    mark_local_clean(&conn)?;
     Ok(outcome.safety_backup_path)
+}
+
+// ---------------------------------------------------------------------------
+// Automatic sync (2.14.0)
+// ---------------------------------------------------------------------------
+
+/// What the frontend should do next. Serialized camelCase, so TypeScript sees
+/// `"off" | "offline" | "idle" | "push" | "pull" | "ask"`.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CloudSyncAutoAction {
+    /// Sync is switched off, or nobody is signed in. Do nothing, say nothing.
+    Off,
+    /// Drive could not be reached. Normal for a local-first app - do nothing
+    /// and try again on the next tick. Never treated as "the remote is
+    /// unchanged", because a push on that assumption is exactly how the
+    /// other machine's day disappears.
+    Offline,
+    /// Both sides already agree.
+    Idle,
+    /// This machine holds work the other one has not seen: call
+    /// `cloud_sync_push` (never with `force`).
+    Push,
+    /// The other machine holds work this one has not seen, and this one has
+    /// nothing unsent: call `cloud_sync_pull`, then relaunch.
+    Pull,
+    /// One of the two cases that stay manual forever - see `decide_auto`.
+    Ask,
+}
+
+/// The result of one automatic check. Carries the two facts the decision was
+/// made from, so the UI can explain itself without asking again.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSyncAutoPlan {
+    pub action: CloudSyncAutoAction,
+    /// One plain sentence, safe to show as-is.
+    pub reason: String,
+    pub local_dirty: bool,
+    pub remote_newer: bool,
+}
+
+/// The whole automatic-sync policy, as one pure function.
+///
+/// Deliberately free of Drive, the database and Tauri: this is the part that
+/// decides whether a machine's data gets replaced, so it has to fit on one
+/// screen and be testable without a network.
+///
+/// It refuses to decide in exactly two situations, and both are honest
+/// refusals rather than missing features:
+///
+/// * **Both sides changed.** Whole-file sync has to pick a winner, and a
+///   winner picked by a timer is a coin toss with marko's work.
+/// * **This machine has never synced, and Drive already holds data.** That
+///   file might be this machine's own data pushed from elsewhere, or the
+///   other machine's - nothing on this side can tell. The first hand-off
+///   per machine is chosen by hand, once; everything after it is automatic.
+pub(crate) fn decide_auto(
+    enabled: bool,
+    signed_in: bool,
+    remote_reachable: bool,
+    remote_has_content: bool,
+    ever_synced: bool,
+    local_dirty: bool,
+    remote_newer: bool,
+) -> (CloudSyncAutoAction, &'static str) {
+    use CloudSyncAutoAction::*;
+    if !enabled || !signed_in {
+        return (Off, "Cloud sync is off.");
+    }
+    if !remote_reachable {
+        return (Offline, "Google Drive couldn't be reached - nothing was changed.");
+    }
+    if !remote_has_content {
+        // Nothing up there yet, so an upload cannot overwrite anything.
+        return if local_dirty || !ever_synced {
+            (Push, "Drive is still empty - this machine's data goes up first.")
+        } else {
+            (Idle, "Everything is already in sync.")
+        };
+    }
+    if !ever_synced {
+        return (
+            Ask,
+            "This machine hasn't synced before and Drive already has data - choose once which side wins.",
+        );
+    }
+    match (local_dirty, remote_newer) {
+        (true, true) => (
+            Ask,
+            "Both machines changed since the last sync - choose which one wins.",
+        ),
+        (true, false) => (Push, "This machine has changes the other one hasn't seen."),
+        (false, true) => (
+            Pull,
+            "The other machine has newer data and this one has nothing unsent.",
+        ),
+        (false, false) => (Idle, "Everything is already in sync."),
+    }
+}
+
+/// The in-memory write flag and its persisted copy, combined.
+///
+/// The atomic (`db::LOCAL_DIRTY`) dies with the process. The persisted copy
+/// is what lets a machine that was closed before it could push still know,
+/// next launch, that it is holding unsent work - which is precisely the case
+/// where an automatic pull would otherwise overwrite it.
+fn combine_dirty(atomic: bool, persisted: Option<&str>) -> bool {
+    atomic || persisted == Some("true")
+}
+
+/// True when this machine has writes the remote copy has not seen.
+///
+/// Writing the flag through on the way past is the point: the atomic is
+/// volatile, and the window between "marko edited something" and "the app
+/// was closed" is exactly where the persisted copy earns its keep.
+pub(crate) fn local_dirty(conn: &Connection) -> AppResult<bool> {
+    let atomic = crate::db::LOCAL_DIRTY.load(Ordering::Relaxed);
+    if atomic {
+        set_setting(conn, DIRTY_KEY, "true")?;
+    }
+    let persisted = get_setting(conn, DIRTY_KEY)?;
+    Ok(combine_dirty(atomic, persisted.as_deref()))
+}
+
+/// Called only after an upload or a restore has actually succeeded - never
+/// before, never on the strength of having tried.
+pub(crate) fn mark_local_clean(conn: &Connection) -> AppResult<()> {
+    set_setting(conn, DIRTY_KEY, "false")?;
+    crate::db::LOCAL_DIRTY.store(false, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Best-effort flush on the way out of the process (see `lib.rs`'s
+/// `ExitRequested` block). Closes the last gap in the persisted flag: an
+/// edit made between two automatic checks, followed immediately by a close.
+/// Failure is ignored on purpose - nothing may delay an ordinary exit.
+pub fn flush_local_dirty(conn: &Connection) {
+    if crate::db::LOCAL_DIRTY.load(Ordering::Relaxed) {
+        let _ = set_setting(conn, DIRTY_KEY, "true");
+    }
+}
+
+/// Decides what should happen, and does none of it.
+///
+/// READ-ONLY except for the dirty flag: one Drive metadata request, no
+/// upload, no download, no restore. The frontend acts on the answer by
+/// calling the same `cloud_sync_push` / `cloud_sync_pull` the buttons have
+/// always called, so automatic sync introduced no second destructive path -
+/// and it cannot take those locks itself anyway, since both of them lock
+/// `state.db` and this command is already holding it.
+#[tauri::command]
+pub fn cloud_sync_auto(state: State<AppState>) -> AppResult<CloudSyncAutoPlan> {
+    let conn = state.db.lock().unwrap();
+
+    let enabled = is_enabled(&conn)?;
+    // ONE token call, where `cloud_sync_status` makes two. That is a
+    // deliberate difference: status runs when marko opens a panel, this runs
+    // on a timer for as long as the app is open, and
+    // `active_oauth_access_token` refreshes over the network whenever the
+    // cached token has expired.
+    let token_result = active_oauth_access_token(&conn);
+    let signed_in = match &token_result {
+        Ok(t) => t.is_some(),
+        // A refresh that FAILED is a network problem, not a signed-out
+        // account. Calling it `Off` would tell marko sync is switched off
+        // when it is switched on and simply out of reach.
+        Err(_) => true,
+    };
+    let plan = |action: CloudSyncAutoAction, reason: &str, dirty: bool, newer: bool| CloudSyncAutoPlan {
+        action,
+        reason: reason.to_string(),
+        local_dirty: dirty,
+        remote_newer: newer,
+    };
+    if !enabled || !signed_in {
+        // Deliberately before the dirty flag is even read: with sync off,
+        // this command writes nothing at all.
+        let (action, reason) = decide_auto(enabled, signed_in, false, false, false, false, false);
+        return Ok(plan(action, reason, false, false));
+    }
+
+    let dirty = local_dirty(&conn)?;
+    let ever_synced = get_setting(&conn, LAST_SYNC_KEY)?.is_some();
+    let stored_version = get_setting(&conn, REMOTE_VERSION_KEY)?;
+
+    let client = http()?;
+    // `Ok(None)` cannot reach here - it is `signed_in == false`, returned
+    // above. So the only way this fails is a refresh that could not complete,
+    // which is exactly the offline case.
+    let Ok(Some(access_token)) = token_result else {
+        let (action, reason) = decide_auto(true, true, false, false, ever_synced, dirty, false);
+        return Ok(plan(action, reason, dirty, false));
+    };
+
+    // No stored file id means this machine has never synced. Looking the
+    // file up (rather than assuming there is none) is what lets a second
+    // machine notice the first one's data instead of quietly pushing over
+    // it. Nothing is stored here - `cloud_sync_push`/`_pull` adopt the file
+    // themselves when marko actually chooses a direction.
+    let found = match get_setting(&conn, FILE_ID_KEY)? {
+        Some(id) => get_remote_meta(&client, &access_token, &id).map(Some),
+        None => find_remote_file(&client, &access_token),
+    };
+    let (remote_reachable, meta) = match found {
+        Ok(m) => (true, m),
+        Err(_) => (false, None),
+    };
+    let remote_has_content = meta
+        .as_ref()
+        .map(|m| m.size.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0)
+        .unwrap_or(false);
+    let remote_newer = meta
+        .as_ref()
+        .map(|m| remote_has_moved(stored_version.as_deref(), m.version.as_deref()))
+        .unwrap_or(false);
+
+    let (action, reason) = decide_auto(
+        true,
+        true,
+        remote_reachable,
+        remote_has_content,
+        ever_synced,
+        dirty,
+        remote_newer,
+    );
+    Ok(plan(action, reason, dirty, remote_newer))
 }
 
 #[cfg(test)]
@@ -548,5 +805,133 @@ mod tests {
         assert!(get_setting(&conn, FILE_ID_KEY).unwrap().is_none());
         assert!(get_setting(&conn, REMOTE_VERSION_KEY).unwrap().is_none());
         assert!(get_setting(&conn, LAST_SYNC_KEY).unwrap().is_none());
+    }
+
+    // --- the automatic policy (2.14.0) ---------------------------------
+    //
+    // Argument order throughout: enabled, signed_in, remote_reachable,
+    // remote_has_content, ever_synced, local_dirty, remote_newer.
+
+    fn act(
+        enabled: bool,
+        signed_in: bool,
+        reachable: bool,
+        has_content: bool,
+        ever: bool,
+        dirty: bool,
+        newer: bool,
+    ) -> CloudSyncAutoAction {
+        decide_auto(enabled, signed_in, reachable, has_content, ever, dirty, newer).0
+    }
+
+    #[test]
+    fn nothing_happens_automatically_while_sync_is_off_or_signed_out() {
+        // Even with every other condition screaming "push".
+        assert_eq!(act(false, true, true, true, true, true, false), CloudSyncAutoAction::Off);
+        assert_eq!(act(true, false, true, true, true, true, false), CloudSyncAutoAction::Off);
+    }
+
+    #[test]
+    fn an_unreachable_drive_is_never_mistaken_for_an_unchanged_one() {
+        // The dangerous bug this rules out: treating "no answer from Drive"
+        // as "the remote hasn't moved" and pushing over the other machine.
+        assert_eq!(act(true, true, false, true, true, true, false), CloudSyncAutoAction::Offline);
+        assert_eq!(act(true, true, false, true, true, false, true), CloudSyncAutoAction::Offline);
+    }
+
+    #[test]
+    fn an_empty_drive_takes_this_machines_data_without_asking() {
+        // An upload into an empty file cannot overwrite anything, so there
+        // is nothing to ask about - including on a machine that has never
+        // synced, which is how the very first sync gets started.
+        assert_eq!(act(true, true, true, false, false, false, false), CloudSyncAutoAction::Push);
+        assert_eq!(act(true, true, true, false, true, true, false), CloudSyncAutoAction::Push);
+    }
+
+    #[test]
+    fn an_empty_drive_with_nothing_new_stays_quiet() {
+        // Already pushed once, nothing written since: no re-upload on every
+        // tick just because the remote happens to read as empty.
+        assert_eq!(act(true, true, true, false, true, false, false), CloudSyncAutoAction::Idle);
+    }
+
+    #[test]
+    fn a_machine_that_has_never_synced_asks_before_touching_existing_drive_data() {
+        // Nothing on this side can tell whether that file is this machine's
+        // own data or the other one's. Both answers are destructive if
+        // wrong, so the first hand-off per machine is chosen by hand.
+        assert_eq!(act(true, true, true, true, false, false, true), CloudSyncAutoAction::Ask);
+        assert_eq!(act(true, true, true, true, false, true, true), CloudSyncAutoAction::Ask);
+    }
+
+    #[test]
+    fn one_side_changing_is_answerable_without_a_human() {
+        assert_eq!(act(true, true, true, true, true, true, false), CloudSyncAutoAction::Push);
+        assert_eq!(act(true, true, true, true, true, false, true), CloudSyncAutoAction::Pull);
+    }
+
+    #[test]
+    fn both_sides_changing_always_asks_and_never_picks() {
+        // The one case that stays manual forever: whole-file sync has to
+        // pick a winner, and a winner picked by a timer is a coin toss with
+        // marko's work.
+        assert_eq!(act(true, true, true, true, true, true, true), CloudSyncAutoAction::Ask);
+    }
+
+    #[test]
+    fn two_machines_that_agree_do_nothing_at_all() {
+        assert_eq!(act(true, true, true, true, true, false, false), CloudSyncAutoAction::Idle);
+    }
+
+    #[test]
+    fn every_automatic_outcome_explains_itself() {
+        // The reason is shown to marko as-is, so no branch may return a
+        // placeholder.
+        for plan in [
+            decide_auto(false, true, true, true, true, true, false),
+            decide_auto(true, true, false, true, true, true, false),
+            decide_auto(true, true, true, false, false, false, false),
+            decide_auto(true, true, true, false, true, false, false),
+            decide_auto(true, true, true, true, false, false, true),
+            decide_auto(true, true, true, true, true, true, false),
+            decide_auto(true, true, true, true, true, false, true),
+            decide_auto(true, true, true, true, true, true, true),
+        ] {
+            assert!(plan.1.len() > 10, "empty reason for {:?}", plan.0);
+        }
+    }
+
+    #[test]
+    fn unsent_work_survives_the_app_being_closed() {
+        // The whole point of persisting the flag: the atomic is gone after a
+        // restart, and a machine that forgets it has unsent work is a
+        // machine that will let the next startup pull over it.
+        assert!(combine_dirty(false, Some("true")));
+        assert!(combine_dirty(true, None));
+        assert!(combine_dirty(true, Some("false")));
+    }
+
+    #[test]
+    fn a_machine_that_has_written_nothing_is_not_dirty() {
+        assert!(!combine_dirty(false, None));
+        assert!(!combine_dirty(false, Some("false")));
+    }
+
+    #[test]
+    fn a_persisted_dirty_flag_is_believed_on_the_next_launch() {
+        // Reads the true direction only - `db::LOCAL_DIRTY` is one static
+        // shared by every test in this binary, so asserting it is false
+        // would be asserting something about the other tests.
+        let conn = test_conn();
+        set_setting(&conn, DIRTY_KEY, "true").unwrap();
+        assert!(local_dirty(&conn).unwrap());
+    }
+
+    #[test]
+    fn a_successful_sync_clears_the_persisted_flag() {
+        let conn = test_conn();
+        set_setting(&conn, DIRTY_KEY, "true").unwrap();
+        mark_local_clean(&conn).unwrap();
+        assert_eq!(get_setting(&conn, DIRTY_KEY).unwrap().as_deref(), Some("false"));
     }
 }

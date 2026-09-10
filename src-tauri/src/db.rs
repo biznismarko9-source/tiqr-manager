@@ -253,6 +253,34 @@ pub fn resolve_user_db_path(app: &tauri::AppHandle, uid: &str) -> anyhow::Result
     Ok(dir.join("tiqr-manager.sqlite3"))
 }
 
+/// 2.14.0: set by SQLite's own update hook the moment anything in this
+/// database changes, and cleared by a successful cloud sync. This is what
+/// lets automatic sync know whether THIS machine has work the other one has
+/// not seen - the question that decides, without guessing, whether pulling
+/// the remote copy down would destroy anything.
+///
+/// A timestamp scan cannot answer it: 17 of the 29 tables have no
+/// `updated_at` at all (transfers, and every lookup list), and even where the
+/// column exists a plain DELETE leaves no trace behind. The hook sees all
+/// three operations on every table.
+///
+/// In-memory on purpose - **a hook must never write to the database it is
+/// watching** (SQLite forbids it, and it would recurse). `cloud_sync`
+/// persists the flag from outside the hook so it survives a restart; see
+/// `local_dirty` there for how the two are combined.
+pub static LOCAL_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// Tables whose writes must NOT count as "marko changed something". These are
+/// the app's own bookkeeping - if they counted, a sync would dirty the
+/// database by recording that it had just synced, and auto-push would never
+/// stop pushing.
+fn is_bookkeeping_table(table: &str) -> bool {
+    matches!(
+        table,
+        "app_settings" | "counters" | "notification_log" | "sheet_sync_links" | "schema_migrations"
+    )
+}
+
 pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     // journal_mode returns a row with the resulting mode, so query_row it explicitly.
@@ -262,6 +290,19 @@ pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;",
     )?;
+    // The hook fires inside the writing statement, so it does the least
+    // possible work: one atomic store, no allocation, no I/O, no SQL. (A hook
+    // must never write to the database it is watching.)
+    //
+    // No `?` here on purpose: rusqlite 0.32.1's `Connection::update_hook`
+    // returns `()`, not `Result<()>` - verified against the crate's own source
+    // at tag v0.32.1, `src/hooks/mod.rs:380`, after docs.rs was read the other
+    // way round. Adding `?` is a compile error on both platforms.
+    conn.update_hook(Some(|_action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
+        if !is_bookkeeping_table(table) {
+            LOCAL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
     Ok(conn)
 }
 

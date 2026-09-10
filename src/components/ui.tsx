@@ -467,6 +467,7 @@ export function StatCard({
   tone = "default",
   trend,
   trendColored = true,
+  emphasis = false,
 }: {
   label: string;
   value: string;
@@ -477,6 +478,12 @@ export function StatCard({
    * nothing, so every pre-2.0.47 caller (Event Detail's StatCard usages
    * never pass this) stays visually unchanged. */
   trend?: TrendInfo | null;
+  /** 2.13.3: the one figure on a row that is the answer, not the context -
+   * Dashboard's Profit. A slightly larger number and a brand-tinted border,
+   * which is enough to find it without giving it a band of the page to
+   * itself (DSH-01 did that; marko wanted everything on one line instead).
+   * At most one card per row should set this, or none of them stands out. */
+  emphasis?: boolean;
   /** false = the trend arrow/text always render in neutral slate regardless
    * of direction - for a metric where "up" isn't unambiguously good (e.g.
    * Purchase cost - spending more isn't necessarily bad). Default true
@@ -516,17 +523,28 @@ export function StatCard({
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
   return (
-    <Card className="min-w-[9.5rem] flex-1 p-3.5">
+    // 2.13.3: narrower and a touch tighter than 2.13.2, so six of these fit
+    // one row on a normal window instead of wrapping - marko's own ask. They
+    // still grow to fill the width when there are only three.
+    <Card
+      className={`min-w-[7.5rem] flex-1 p-3 ${
+        emphasis ? "border-brand-300 bg-brand-50/40 dark:border-brand-500/40 dark:bg-brand-500/[0.06]" : ""
+      }`}
+    >
       <p className="section-title truncate">{label}</p>
-      <p className={`mt-2 text-[22px] font-semibold leading-none tabular-nums ${valueTone}`}>{value}</p>
+      <p
+        className={`mt-1.5 font-semibold leading-none tabular-nums ${emphasis ? "text-[24px]" : "text-[19px]"} ${valueTone}`}
+      >
+        {value}
+      </p>
       {trend && (
-        <p className={`mt-2.5 flex items-center gap-1 text-xs font-medium ${trendTone}`}>
+        <p className={`mt-2 flex items-center gap-1 text-[11px] font-medium ${trendTone}`}>
           {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
           {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
           {trend.label} <span className="font-normal text-slate-400 dark:text-slate-500">vs. previous</span>
         </p>
       )}
-      {sub && <p className="mt-1.5 truncate text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
+      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{sub}</p>}
     </Card>
   );
 }

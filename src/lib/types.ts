@@ -2150,7 +2150,7 @@ export interface CalendarEntry {
 
 /** Which create form asked for the analysis. Matches `field_names_for_kind`
  * in ai_import.rs exactly - adding a fourth kind means changing both. */
-export type AiImportKind = "event" | "order" | "sale";
+export type AiImportKind = "event" | "order" | "sale" | "pull";
 
 export type AiImportConfidence = "high" | "medium" | "low";
 
@@ -2198,6 +2198,28 @@ export interface AiImportResult {
  * See commands/cloud_sync.rs's module doc comment for why merging would need
  * globally-unique ids and a conflict policy for invariants that have no
  * automatic answer. */
+/** What the automatic check decided should happen next (2.14.0).
+ *
+ * `off` sync is off or nobody is signed in - say nothing.
+ * `offline` Drive couldn't be reached - normal here, try again later.
+ * `idle` both sides already agree.
+ * `push` this machine has unsent work; upload it (never with force).
+ * `pull` the other machine is ahead and this one has nothing unsent.
+ * `ask` the two cases that stay manual: both sides changed, or this
+ *          machine has never synced and Drive already holds data.
+ */
+export type CloudSyncAutoAction = "off" | "offline" | "idle" | "push" | "pull" | "ask";
+
+/** The answer from one automatic check. The backend decides; the frontend
+ *  performs the action by calling the same push/pull the buttons call. */
+export interface CloudSyncAutoPlan {
+  action: CloudSyncAutoAction;
+  /** One plain sentence, safe to show as-is. */
+  reason: string;
+  localDirty: boolean;
+  remoteNewer: boolean;
+}
+
 export interface CloudSyncStatus {
   enabled: boolean;
   /** False when nobody is signed in with Google, or this build has no OAuth

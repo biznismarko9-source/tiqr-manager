@@ -226,6 +226,7 @@ pub fn run() {
             commands::cloud_sync::set_cloud_sync_enabled,
             commands::cloud_sync::cloud_sync_push,
             commands::cloud_sync::cloud_sync_pull,
+            commands::cloud_sync::cloud_sync_auto,
             commands::app_info::get_app_info,
             commands::database::switch_active_database,
             commands::notifications::get_notification_status,
@@ -304,6 +305,17 @@ pub fn run() {
                         for session in sessions.values() {
                             session.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
+                    }
+                    // 2.14.0, same best-effort rules as everything else in
+                    // this block. Automatic sync tracks unsent work in an
+                    // atomic that dies with the process; writing it through
+                    // here covers an edit made between two automatic checks
+                    // and followed straight by a close. `try_lock`, never
+                    // `lock`: an exit must not wait on a sync that happens
+                    // to be uploading. A missed flush costs one extra
+                    // "both machines changed" prompt, never data.
+                    if let Ok(conn) = state.db.try_lock() {
+                        commands::cloud_sync::flush_local_dirty(&conn);
                     }
                 }
             }
