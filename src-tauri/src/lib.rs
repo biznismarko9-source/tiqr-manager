@@ -228,6 +228,7 @@ pub fn run() {
             commands::cloud_sync::cloud_sync_push,
             commands::cloud_sync::cloud_sync_pull,
             commands::cloud_sync::cloud_sync_auto,
+            commands::cloud_merge::cloud_merge_pull,
             commands::app_info::get_app_info,
             commands::database::switch_active_database,
             commands::notifications::get_notification_status,

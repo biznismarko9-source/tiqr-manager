@@ -16,6 +16,57 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.16.0 - The two machines add up instead of one replacing the other
+
+**No schema change (027 did that), no new dependency.**
+
+marko: *"ked ma jedna strana nieco ine a druha a das sync tak sa to zachova len
+z jednej strany"*. Correct, and by design - push and pull move the whole
+database FILE, so whichever direction runs, one machine's copy replaces the
+other's. `commands/cloud_merge.rs` makes them add up.
+
+1. **Records only one side has are copied in; records both sides have are left
+   exactly as they are here.** So a merge cannot lose anything. It deliberately
+   does NOT carry an edit or a delete across: an insert has one obvious correct
+   outcome, an edit has two plausible ones, and guessing between them is the
+   data loss this was written to end. Deletes need tombstones (a row that
+   merely "isn't there" is indistinguishable from one that hasn't arrived yet)
+   and that is its own migration.
+2. **Ids are rewritten on the way in.** The other machine's order #12 becomes a
+   different number here, so every foreign key is translated remote id ->
+   `uid` -> local id, parents before children.
+3. **Three collisions found by running the real thing, not by reading it.** The
+   algorithm was executed against two actual SQLite databases before any of it
+   was trusted:
+   - **`code` is UNIQUE and both machines mint the same ones** from their own
+     `counters` row, so `ORD-000007` exists twice. Arriving records whose code
+     is taken get the next free one, and the count is reported.
+   - **A lookup matched by name would have silently dropped its orders.**
+     "Ticketmaster" typed on both machines is linked, not duplicated - which
+     means this machine holds no row carrying the other's `uid`, so every
+     arriving order pointing at it looked like an orphan. `translate_id` falls
+     back to the name for exactly this reason.
+   - **An arriving code from ahead poisoned the counter.** `ORD-000009`
+     arriving while this machine's counter reads 5 breaks nothing that day -
+     and then order creation starts failing on a UNIQUE constraint once the
+     counter climbs to 9, with nothing on screen connecting it to a sync.
+     Counters are now dragged up to the highest code present, before and after
+     each coded table.
+4. **Anything that still clashes is skipped, counted and named** (the same
+   ticket sold on both machines), never forced and never allowed to abandon the
+   rest of the merge. The whole thing runs in one transaction on top of a
+   safety backup, which appears in Settings -> Data's restore points.
+5. **Automatic sync no longer asks.** `decide_auto`'s two manual cases - both
+   sides changed, and a machine that has never synced finding data in Drive -
+   now answer `merge` instead of `ask`. Merging at launch reloads the page
+   rather than relaunching the app: rows were added, the database file was not
+   swapped. Mid-session it stays a banner, same rule as pull. Settings' old
+   Take theirs / Keep mine prompt now leads with **Combine both**.
+
+8 tests in the new module, all of them a scenario that was first run for real
+against two databases: the platform-name drop and the counter poisoning are
+both in there.
+
 ## 2.15.0 - Migration 027: the identity a merge is built on
 
 **Schema change (migration 027), no new dependency, no behaviour change yet.**

@@ -21,6 +21,45 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.16.0 - Cloud Merge (new module, no schema change, no new dependency)
+
+- **The merge is INSERT-ONLY, and that is the safety property, not a gap in
+  it.** A record only one machine has is copied; a record both have is left
+  exactly as it is here. Never add "and update the row if theirs is newer"
+  without a real design pass: `insert_order_with_tickets` splits an order's
+  cost across its tickets to the exact cent, so taking their order row while
+  keeping our ticket rows produces a split that no longer sums. An edit-merge
+  has to move whole aggregates or nothing.
+- **`translate_id` MUST keep its natural-key fallback.** A lookup both machines
+  created (a platform called "Ticketmaster") is LINKED to the local row, not
+  copied - so this machine holds nothing carrying the other's `uid`. Without
+  the name fallback every arriving order pointing at that platform looks like
+  an orphan and is dropped: records would vanish for the sole reason that both
+  machines had once typed the same platform name. There is a test named for
+  exactly this.
+- **`reconcile_counter` is not housekeeping.** `codes::next_code` hands out
+  `counters.value + 1` and never checks that it is free, because on one machine
+  it always is. A merge breaks that: `ORD-000009` can arrive while the counter
+  reads 5, and then everything works until the counter climbs back to 9 and
+  ORDER CREATION fails on a UNIQUE constraint, days later, with nothing on
+  screen connecting it to a sync. It runs before and after every coded table
+  and only ever raises the counter.
+- **Natural-key matching follows the schema's own `UNIQUE(name)`, never a
+  hunch.** platforms, suppliers, event_categories, finance_categories declare
+  it; `accounts` does not, so two same-named accounts stay two rows. Following
+  the schema is a rule; inventing one for a table that never made the claim is
+  a guess, and a wrong guess there silently re-parents money.
+- **A merge never half-applies and never forces a row in.** One transaction, on
+  top of a safety backup taken first. A row the schema refuses (the same ticket
+  sold on both machines) is skipped, counted and named - never swallowed, never
+  allowed to abandon the rest of the merge.
+- **The parent-before-child order of `MERGE_TABLES` is load-bearing** and is
+  checked by a test against the list's own foreign keys. A table moved up by
+  hand would silently start skipping children as orphans.
+- **Merging at launch reloads the page; it does not relaunch the app.** Rows
+  were added, the database file was not swapped, so the process is fine - and
+  mid-session a merge stays a banner for the same reason a pull does.
+
 ## 2.15.0 - Migration 027: row identity (schema change, no behaviour change)
 
 - **`uid` is what makes a merge possible at all - never break its two rules.**

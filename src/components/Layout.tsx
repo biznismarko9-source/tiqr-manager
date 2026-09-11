@@ -214,7 +214,9 @@ export default function Layout() {
   // * Downloading REPLACES this database and therefore restarts the app, so
   //   it is only ever done automatically at launch. Mid-session it becomes
   //   the banner instead - restarting the app under marko while he is typing
-  //   into a form would be a bug, not a feature.
+  //   into a form would be a bug, not a feature. 2.16.0's merge follows the
+  //   same rule for the same reason: it only adds rows, but they still land
+  //   underneath whatever is already on screen, so it reloads the page.
   useEffect(() => {
     let cancelled = false;
     const tick = async (atStartup: boolean) => {
@@ -229,7 +231,24 @@ export default function Layout() {
           const safetyPath = await api.cloudSyncPull();
           toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
           setTimeout(() => relaunch(), 900);
-        } else if (plan.action === "pull" || plan.action === "ask") {
+        } else if (plan.action === "merge" && atStartup) {
+          // 2.16.0: the case that used to stop and ask which machine wins.
+          // Nothing is replaced and nothing is deleted, so there is no
+          // question left to put to marko - but the page still has to reload,
+          // because rows arrived underneath everything already on screen.
+          // A plain reload, not `relaunch()`: the database file was added to,
+          // not swapped, so the running process is fine.
+          const merged = await api.cloudMergePull();
+          const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
+          if (merged.totalRenumbered > 0) {
+            parts.push(`${merged.totalRenumbered} got a new code (both computers had used the same one).`);
+          }
+          if (merged.totalSkipped > 0) {
+            parts.push(`${merged.totalSkipped} couldn't be added - see Settings → Data.`);
+          }
+          toast.success(parts.join(" "));
+          setTimeout(() => window.location.reload(), 1200);
+        } else if (plan.action === "pull" || plan.action === "merge") {
           setSyncNotice(plan.reason);
         }
       } catch {

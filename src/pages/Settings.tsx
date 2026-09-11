@@ -15,6 +15,7 @@ import {
   type NotificationConfigInput,
   type NotificationStatus,
   type NotificationTestResult,
+  type MergeOutcome,
   type RestorePoint,
   type Platform,
   type SheetsConnectionStatus,
@@ -368,6 +369,34 @@ export default function Settings() {
     }
   };
 
+  // 2.16.0: the answer to "sync keeps only one side". Adds the other
+  // machine's records to this one's - never replaces, never deletes - so the
+  // Take-theirs/Keep-mine choice below is no longer the only way out of "both
+  // sides changed". Kept visible afterwards because a merge can legitimately
+  // skip rows (the same ticket sold on both machines), and a toast that says
+  // "see Settings" has to be telling the truth.
+  const [mergeResult, setMergeResult] = useState<MergeOutcome | null>(null);
+
+  const doMergeBoth = async () => {
+    setSyncBusy("merge");
+    setSyncError(null);
+    try {
+      const outcome = await api.cloudMergePull();
+      setMergeResult(outcome);
+      setSyncChoice(false);
+      toast.success(
+        `Added ${outcome.totalInserted} record${outcome.totalInserted === 1 ? "" : "s"} from your other computer.`,
+      );
+      await refreshSync();
+      await refreshRestorePoints();
+    } catch (e) {
+      setSyncError(errMsg(e));
+      toast.error(errMsg(e));
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
   const doBackup = async () => {
     const stamp = new Date().toISOString().slice(0, 10);
     const path = await save({
@@ -709,12 +738,20 @@ export default function Settings() {
                           <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:ring-amber-500/25">
                             <p className="flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
                               <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              Both sides may have changed, so this one is yours to decide - it cannot be guessed
-                              without risking work.
+                              Both sides may have changed. Combining keeps everything - the two older buttons each
+                              throw one side's changes away, and are only here for when that is what you want.
                             </p>
                             <div className="mt-2.5 flex flex-wrap items-center gap-2">
                               <Button
                                 variant="primary"
+                                disabled={syncBusy !== null}
+                                onClick={() => void doMergeBoth()}
+                              >
+                                {syncBusy === "merge" ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
+                                Combine both
+                              </Button>
+                              <Button
+                                variant="secondary"
                                 disabled={syncBusy !== null}
                                 onClick={() => {
                                   setSyncChoice(false);
@@ -743,6 +780,43 @@ export default function Settings() {
                                 Cancel
                               </button>
                             </div>
+                          </div>
+                        )}
+
+                        {/* 2.16.0: what the last combine actually did. Kept on
+                            screen rather than left in a toast, because the two
+                            interesting numbers are the ones marko would
+                            otherwise never see - records that arrived with a
+                            code both computers had used, and records that
+                            could not be added at all. */}
+                        {mergeResult && (
+                          <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-slate-200 dark:bg-slate-800/60 dark:ring-slate-700">
+                            <p className="font-medium text-slate-700 dark:text-slate-200">
+                              Added {mergeResult.totalInserted} record{mergeResult.totalInserted === 1 ? "" : "s"} from
+                              your other computer.
+                            </p>
+                            {mergeResult.totalRenumbered > 0 && (
+                              <p className="mt-1 text-slate-500 dark:text-slate-400">
+                                {mergeResult.totalRenumbered} of them got a new code - both computers had already used
+                                the one they arrived with. Their contents are unchanged.
+                              </p>
+                            )}
+                            {mergeResult.totalSkipped > 0 && (
+                              <>
+                                <p className="mt-1 text-amber-700 dark:text-amber-400">
+                                  {mergeResult.totalSkipped} could not be added:
+                                </p>
+                                <ul className="mt-1 list-disc pl-4 text-slate-500 dark:text-slate-400">
+                                  {mergeResult.skipReasons.map((r) => (
+                                    <li key={r}>{r}</li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
+                            <p className="mt-1.5 break-all text-slate-400 dark:text-slate-500">
+                              Your data from before this was saved to {mergeResult.safetyBackupPath} - it is also in
+                              Restore points below.
+                            </p>
                           </div>
                         )}
 

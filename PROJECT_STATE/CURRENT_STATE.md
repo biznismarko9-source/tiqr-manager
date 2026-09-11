@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.15.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.16.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -354,6 +354,19 @@ ticket** (no card shows it), from `data.period` / `data.previousPeriod`
 through the same `computeTrend`/`computeTrendPoints` the StatCards use - no
 backend change. Cost uncoloured, same call as its card. A range with no
 comparable period before it says so instead of showing dashes.
+
+**2.16.0** finishes what 027 started: `commands/cloud_merge.rs` adds the other
+machine's records to this one's instead of one file replacing the other
+(marko's complaint: *"ked ma jedna strana nieco ine a druha a das sync tak sa
+to zachova len z jednej strany"*). Insert-only by design - a record only one
+side has is copied, a record both have is left alone, so nothing can be lost;
+edits and deletes deliberately do NOT cross. Ids are translated through `uid`,
+parents before children. Codes that collide are re-issued, lookups are matched
+by name (and `translate_id` falls back to that name, or every order pointing at
+a shared-name platform would be dropped), and counters are dragged up to the
+highest code present so order creation cannot start failing days later.
+`decide_auto`'s two ask-cases now answer `merge`, so automatic sync never stops
+to ask again. Merging at launch reloads the page instead of relaunching.
 
 **Next new migration is 028.**
 

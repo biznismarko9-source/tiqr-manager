@@ -56,13 +56,11 @@
 //! safety backup and rollback.
 //!
 //! The policy itself is `decide_auto` - one pure function, the whole table
-//! on one screen. It refuses to decide in exactly two cases: when BOTH
-//! sides changed, and when this machine has never synced while Drive
-//! already holds data. Both stop and ask, because whole-file sync has to
-//! pick a winner and neither case has an answer that isn't a guess.
-//! Everything else - only this side changed, only that side changed,
-//! nothing changed, offline, sync off - is answerable without a human, and
-//! is answered.
+//! on one screen. Until 2.16.0 two cases stopped and asked (both sides
+//! changed; a machine that had never synced finding data in Drive), because
+//! whole-file sync had to pick a winner. Both now answer `Merge` and hand
+//! off to `commands::cloud_merge`, which adds the two sides together
+//! instead. Every case is answerable without a human, and is answered.
 //!
 //! With sync off, or offline, every command here still simply reports that
 //! and the app works exactly as before. That part has not changed.
@@ -102,15 +100,15 @@ const FILE_FIELDS: &str = "id,name,version,modifiedTime,size";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DriveFile {
-    id: String,
+pub(crate) struct DriveFile {
+    pub(crate) id: String,
     /// Drive returns int64s as strings.
     #[serde(default)]
-    version: Option<String>,
+    pub(crate) version: Option<String>,
     #[serde(default)]
-    modified_time: Option<String>,
+    pub(crate) modified_time: Option<String>,
     #[serde(default)]
-    size: Option<String>,
+    pub(crate) size: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,11 +137,11 @@ pub struct CloudSyncStatus {
     pub remote_newer: bool,
 }
 
-fn temp_path(name: &str) -> PathBuf {
+pub(crate) fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
 }
 
-fn http() -> AppResult<reqwest::blocking::Client> {
+pub(crate) fn http() -> AppResult<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         // Generous: a database upload over a slow connection is normal, and
         // a hung request must still eventually give up rather than wedge the
@@ -174,7 +172,7 @@ fn drive_error(context: &str, status: reqwest::StatusCode, body: &str) -> AppErr
     AppError::External(format!("{context} failed ({status}){hint} {snippet}"))
 }
 
-fn token(conn: &Connection) -> AppResult<String> {
+pub(crate) fn token(conn: &Connection) -> AppResult<String> {
     active_oauth_access_token(conn)?.ok_or_else(|| {
         AppError::Validation(
             "Cloud sync needs you signed in with Google - open Settings and sign in first.".to_string(),
@@ -185,7 +183,7 @@ fn token(conn: &Connection) -> AppResult<String> {
 /// Looks for an existing sync file this app created. Used only when the
 /// stored file id is missing (first run on a second machine), so the second
 /// machine adopts the first machine's file instead of creating a rival one.
-fn find_remote_file(client: &reqwest::blocking::Client, access_token: &str) -> AppResult<Option<DriveFile>> {
+pub(crate) fn find_remote_file(client: &reqwest::blocking::Client, access_token: &str) -> AppResult<Option<DriveFile>> {
     let query = format!("name = '{REMOTE_FILE_NAME}' and trashed = false");
     let q = utf8_percent_encode(&query, NON_ALPHANUMERIC);
     let fields = utf8_percent_encode("files(id,name,version,modifiedTime,size)", NON_ALPHANUMERIC);
@@ -209,7 +207,7 @@ fn find_remote_file(client: &reqwest::blocking::Client, access_token: &str) -> A
     Ok(files.into_iter().next())
 }
 
-fn get_remote_meta(
+pub(crate) fn get_remote_meta(
     client: &reqwest::blocking::Client,
     access_token: &str,
     file_id: &str,
@@ -284,7 +282,7 @@ fn upload_content(
 /// Streams the remote file straight to `dest` rather than buffering the whole
 /// database in memory first - `reqwest::blocking::Response` implements
 /// `std::io::Read`, so this is a plain `io::copy`.
-fn download_to_file(
+pub(crate) fn download_to_file(
     client: &reqwest::blocking::Client,
     access_token: &str,
     file_id: &str,
@@ -328,11 +326,11 @@ pub(crate) fn remote_has_moved(stored: Option<&str>, remote: Option<&str>) -> bo
     }
 }
 
-fn is_enabled(conn: &Connection) -> AppResult<bool> {
+pub(crate) fn is_enabled(conn: &Connection) -> AppResult<bool> {
     Ok(get_setting(conn, ENABLED_KEY)?.as_deref() == Some("true"))
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -534,7 +532,7 @@ pub fn cloud_sync_pull(state: State<AppState>) -> AppResult<String> {
 // ---------------------------------------------------------------------------
 
 /// What the frontend should do next. Serialized camelCase, so TypeScript sees
-/// `"off" | "offline" | "idle" | "push" | "pull" | "ask"`.
+/// `"off" | "offline" | "idle" | "push" | "pull" | "merge"`.
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CloudSyncAutoAction {
@@ -553,8 +551,12 @@ pub enum CloudSyncAutoAction {
     /// The other machine holds work this one has not seen, and this one has
     /// nothing unsent: call `cloud_sync_pull`, then relaunch.
     Pull,
-    /// One of the two cases that stay manual forever - see `decide_auto`.
-    Ask,
+    /// Both sides hold something the other has not seen. Call
+    /// `cloud_merge_pull`, which adds them together instead of picking a
+    /// winner - see `commands::cloud_merge`. Until 2.16.0 this was `Ask`,
+    /// because with whole-file sync there was genuinely nothing to do but
+    /// make marko choose which machine's day to keep.
+    Merge,
 }
 
 /// The result of one automatic check. Carries the two facts the decision was
@@ -575,15 +577,13 @@ pub struct CloudSyncAutoPlan {
 /// decides whether a machine's data gets replaced, so it has to fit on one
 /// screen and be testable without a network.
 ///
-/// It refuses to decide in exactly two situations, and both are honest
-/// refusals rather than missing features:
-///
-/// * **Both sides changed.** Whole-file sync has to pick a winner, and a
-///   winner picked by a timer is a coin toss with marko's work.
-/// * **This machine has never synced, and Drive already holds data.** That
-///   file might be this machine's own data pushed from elsewhere, or the
-///   other machine's - nothing on this side can tell. The first hand-off
-///   per machine is chosen by hand, once; everything after it is automatic.
+/// Two situations used to stop and ask, because whole-file sync had to pick a
+/// winner and a winner picked by a timer is a coin toss with marko's work:
+/// both sides changed, and a machine that has never synced finding data
+/// already in Drive. **Since 2.16.0 neither asks.** Both now answer `Merge`,
+/// and `commands::cloud_merge` adds the two sides together - a record only
+/// one machine has is copied, a record both have is left alone. There is
+/// nothing to choose between when nothing is thrown away.
 pub(crate) fn decide_auto(
     enabled: bool,
     signed_in: bool,
@@ -610,14 +610,14 @@ pub(crate) fn decide_auto(
     }
     if !ever_synced {
         return (
-            Ask,
-            "This machine hasn't synced before and Drive already has data - choose once which side wins.",
+            Merge,
+            "First sync on this machine - your data and what's in Drive get added together.",
         );
     }
     match (local_dirty, remote_newer) {
         (true, true) => (
-            Ask,
-            "Both machines changed since the last sync - choose which one wins.",
+            Merge,
+            "Both machines have changes - they get added together, nothing is dropped.",
         ),
         (true, false) => (Push, "This machine has changes the other one hasn't seen."),
         (false, true) => (
@@ -856,12 +856,12 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_that_has_never_synced_asks_before_touching_existing_drive_data() {
-        // Nothing on this side can tell whether that file is this machine's
-        // own data or the other one's. Both answers are destructive if
-        // wrong, so the first hand-off per machine is chosen by hand.
-        assert_eq!(act(true, true, true, true, false, false, true), CloudSyncAutoAction::Ask);
-        assert_eq!(act(true, true, true, true, false, true, true), CloudSyncAutoAction::Ask);
+    fn a_machine_that_has_never_synced_merges_rather_than_picking_a_side() {
+        // 2.16.0. Nothing on this side can tell whether that file is this
+        // machine's own data or the other one's - and now it does not have
+        // to, because adding them together loses neither.
+        assert_eq!(act(true, true, true, true, false, false, true), CloudSyncAutoAction::Merge);
+        assert_eq!(act(true, true, true, true, false, true, true), CloudSyncAutoAction::Merge);
     }
 
     #[test]
@@ -871,11 +871,12 @@ mod tests {
     }
 
     #[test]
-    fn both_sides_changing_always_asks_and_never_picks() {
-        // The one case that stays manual forever: whole-file sync has to
-        // pick a winner, and a winner picked by a timer is a coin toss with
-        // marko's work.
-        assert_eq!(act(true, true, true, true, true, true, true), CloudSyncAutoAction::Ask);
+    fn both_sides_changing_merges_and_never_picks() {
+        // This was the whole complaint: "ked ma jedna strana nieco ine a
+        // druha a das sync tak sa to zachova len z jednej strany". A winner
+        // picked by a timer was a coin toss with marko's work; now there is
+        // no winner to pick.
+        assert_eq!(act(true, true, true, true, true, true, true), CloudSyncAutoAction::Merge);
     }
 
     #[test]

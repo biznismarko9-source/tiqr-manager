@@ -2217,6 +2217,34 @@ export interface RestorePoint {
   source: string;
 }
 
+/** One table's share of a merge (2.16.0). */
+export interface MergeTableResult {
+  table: string;
+  inserted: number;
+  /** Arrived carrying a code this machine had already issued to something
+   *  else, and was given the next free one. The code is a label; the row's
+   *  uid is its identity. */
+  renumbered: number;
+  /** Matched an existing local row by name (platforms, suppliers and the two
+   *  category lists are UNIQUE by name) instead of being duplicated. */
+  linked: number;
+  skipped: number;
+}
+
+/** The result of adding the other machine's records to this one's (2.16.0).
+ *  Nothing is replaced and nothing is deleted - see cloud_merge.rs. */
+export interface MergeOutcome {
+  tables: MergeTableResult[];
+  totalInserted: number;
+  totalRenumbered: number;
+  totalSkipped: number;
+  /** Where this machine's data was saved before the merge touched it - it
+   *  also shows up in Settings -> Data as a restore point. */
+  safetyBackupPath: string;
+  /** Why rows were skipped, capped. Safe to show as-is. */
+  skipReasons: string[];
+}
+
 /** What the automatic check decided should happen next (2.14.0).
  *
  * `off` sync is off or nobody is signed in - say nothing.
@@ -2224,10 +2252,12 @@ export interface RestorePoint {
  * `idle` both sides already agree.
  * `push` this machine has unsent work; upload it (never with force).
  * `pull` the other machine is ahead and this one has nothing unsent.
- * `ask` the two cases that stay manual: both sides changed, or this
- *          machine has never synced and Drive already holds data.
+ * `merge` both sides hold something the other has not seen (or this is this
+ *          machine's first sync). They get added together - see
+ *          `cloudMergePull`. Before 2.16.0 this was `ask`, because
+ *          whole-file sync had to pick a winner and only marko could.
  */
-export type CloudSyncAutoAction = "off" | "offline" | "idle" | "push" | "pull" | "ask";
+export type CloudSyncAutoAction = "off" | "offline" | "idle" | "push" | "pull" | "merge";
 
 /** The answer from one automatic check. The backend decides; the frontend
  *  performs the action by calling the same push/pull the buttons call. */

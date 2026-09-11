@@ -47,6 +47,7 @@ import type {
   InventoryIntelligence,
   MarketAnalysisResult,
   Marketplace,
+  MergeOutcome,
   NotificationConfigInput,
   NotificationStatus,
   NotificationTestResult,
@@ -424,6 +425,10 @@ export const api = {
    *  first (2.14.0). Read-only - lists what is already on disk, creates and
    *  deletes nothing. Restore one with `restoreDatabase(point.path)`. */
   listRestorePoints: () => invoke<RestorePoint[]>("list_restore_points"),
+  /** Adds the other machine's records to this one's (2.16.0). Never replaces
+   *  and never deletes: a record only one side has is copied, a record both
+   *  have is left exactly as it is here. Takes a safety backup first. */
+  cloudMergePull: () => invoke<MergeOutcome>("cloud_merge_pull"),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

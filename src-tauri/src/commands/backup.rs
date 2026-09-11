@@ -101,7 +101,7 @@ fn has_columns(conn: &Connection, table: &str, required: &[&str]) -> bool {
 /// Manager database. Every failure path returns the same user-facing
 /// message, so a corrupted file and a wrong-app file are equally clearly
 /// rejected without leaking internal check names.
-fn validate_tiqr_backup(path: &Path) -> AppResult<()> {
+pub(crate) fn validate_tiqr_backup(path: &Path) -> AppResult<()> {
     if !path.is_file() {
         return Err(not_a_valid_backup());
     }
@@ -176,7 +176,7 @@ fn backup_file_into(src_path: &Path, dst: &mut Connection) -> rusqlite::Result<(
 /// anything, using the same Online Backup API as above - not a new backup
 /// mechanism, just the existing one pointed at an app-managed location
 /// instead of a user-chosen one, so a bad restore can always be undone.
-fn create_safety_backup(conn: &Connection, dir: &Path) -> AppResult<PathBuf> {
+pub(crate) fn create_safety_backup(conn: &Connection, dir: &Path) -> AppResult<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%3f");
     let dest_path = dir.join(format!("pre-restore-{stamp}.sqlite3"));
