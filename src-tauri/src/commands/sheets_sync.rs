@@ -160,9 +160,9 @@ pub(crate) fn set_sheets_connection_impl(
     Ok(config)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_sheets_connection(
-    state: State<AppState>,
+    state: State<'_, AppState>,
     data_source: String,
     spreadsheet_url_or_id: String,
     sheet_tab: String,
@@ -312,8 +312,8 @@ fn test_sheets_connection_impl(conn: &Connection, data_source: &str) -> AppResul
 /// `AppError` - the frontend shows one thing either way, it never needs a
 /// separate error-vs-failed-result branch for what is, to the person
 /// looking at the screen, the same "it didn't work, here's why" message.
-#[tauri::command]
-pub fn test_sheets_connection(state: State<AppState>, data_source: String) -> AppResult<SheetsConnectionTestResult> {
+#[tauri::command(async)]
+pub fn test_sheets_connection(state: State<'_, AppState>, data_source: String) -> AppResult<SheetsConnectionTestResult> {
     let conn = state.db.lock().unwrap();
     test_sheets_connection_impl(&conn, &data_source)
 }
@@ -372,9 +372,9 @@ fn detect_spreadsheet_tabs_impl(conn: &Connection, spreadsheet_url_or_id: &str) 
 /// Called from Settings as soon as the "Spreadsheet URL or ID" field loses
 /// focus (and once on load for an already-connected sheet) - see
 /// `detect_spreadsheet_tabs_impl`'s doc comment for why this exists.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn detect_spreadsheet_tabs(
-    state: State<AppState>,
+    state: State<'_, AppState>,
     spreadsheet_url_or_id: String,
 ) -> AppResult<SpreadsheetTabsResult> {
     let conn = state.db.lock().unwrap();

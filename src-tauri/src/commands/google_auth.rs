@@ -45,8 +45,8 @@ fn sign_in_status_impl(conn: &Connection) -> AppResult<GoogleSignInStatus> {
     })
 }
 
-#[tauri::command]
-pub fn get_google_sign_in_status(state: State<AppState>) -> AppResult<GoogleSignInStatus> {
+#[tauri::command(async)]
+pub fn get_google_sign_in_status(state: State<'_, AppState>) -> AppResult<GoogleSignInStatus> {
     let conn = state.db.lock().unwrap();
     sign_in_status_impl(&conn)
 }
@@ -57,8 +57,8 @@ fn google_sign_out_impl(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn google_sign_out(state: State<AppState>) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn google_sign_out(state: State<'_, AppState>) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     google_sign_out_impl(&conn)
 }

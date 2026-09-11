@@ -16,6 +16,45 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.17.0 - The window stops freezing while data moves
+
+**No schema change, no new dependency.**
+
+marko: *"su tam nejake nereagujuce spravy, nejake dlhe nacitavanie"*. Not a slow
+query - a threading mistake, and it was in my own code.
+
+1. **Tauri runs a SYNCHRONOUS command on the main thread.** Verified against
+   the v2 docs, not memory: *"Commands without the async keyword are executed on
+   the main thread unless defined with `#[tauri::command(async)]`."* Every
+   Cloud Sync command was synchronous, so pushing a multi-megabyte database
+   over the internet blocked the event loop and the OS drew "Not responding"
+   over the window. Sheets sync and AI import never did this - they were
+   already `async fn`, which is why only the sync family froze. 2.14.0's
+   5-minute timer made it recurring and 2.16.0's merge made it long.
+2. **16 commands that reach the network or move the whole database are now
+   `#[tauri::command(async)]`**: the cloud sync/merge family, backup, restore,
+   validate, `switch_active_database`, the Sheets connection tests, Google
+   sign-in status and sign-out, currency conversion, the desktop-notification
+   test. Their `State` argument gained the explicit `'_` lifetime that this
+   codebase's already-async commands (`test_ntfy_notification`,
+   `check_and_send_notifications`) already spell out.
+3. **Something to look at while it works.** An app that is silently busy for
+   eight seconds still looks broken even when it is perfectly responsive. A
+   background upload gets a corner pill it can be ignored in; a download or a
+   merge gets the screen, because both end in a restart or reload and a restart
+   with no warning reads as a crash.
+4. **The one silent failure the merge could still have, caught and reported.**
+   Machines that drifted apart BEFORE migration 027 each counted up from the
+   same place, so the Mac's 7th order and the PC's 7th order both call
+   themselves `legacy-7`. The merge would see that identity already present,
+   skip the arriving order as "already have it", and report nothing at all - a
+   real order would simply never arrive. A shared identity whose `code` differs
+   is now counted and named, together with the one manual sync that fixes it.
+   Deliberately NOT repaired automatically: deciding which `legacy-7` is which
+   is a human's call. 2 tests, and the detector was run against two real
+   databases first - including the negative, so a genuinely shared record never
+   trips it.
+
 ## 2.16.0 - The two machines add up instead of one replacing the other
 
 **No schema change (027 did that), no new dependency.**

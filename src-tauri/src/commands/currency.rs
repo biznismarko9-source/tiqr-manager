@@ -34,7 +34,7 @@ pub struct CurrencyConversion {
 /// amount. Returns `Err` (surfaced to marko via a toast, same as every
 /// other command's error) if the rate can't be fetched at all - never
 /// guesses a rate or silently leaves an amount unconverted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn convert_currency(
     from_currency: String,
     to_currency: String,

@@ -2229,6 +2229,10 @@ export interface MergeTableResult {
    *  category lists are UNIQUE by name) instead of being duplicated. */
   linked: number;
   skipped: number;
+  /** Records wearing the same identity as one of yours while plainly being a
+   *  different record - the two machines drifted apart before migration 027.
+   *  Counted, never guessed at. */
+  identityClashes: number;
 }
 
 /** The result of adding the other machine's records to this one's (2.16.0).
@@ -2238,6 +2242,9 @@ export interface MergeOutcome {
   totalInserted: number;
   totalRenumbered: number;
   totalSkipped: number;
+  /** Non-zero means the one manual whole-file sync migration 027 asks for was
+   *  never done, and records with a clashing identity did NOT arrive. */
+  totalIdentityClashes: number;
   /** Where this machine's data was saved before the merge touched it - it
    *  also shows up in Settings -> Data as a restore point. */
   safetyBackupPath: string;

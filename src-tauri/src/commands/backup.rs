@@ -7,8 +7,8 @@ use tauri::State;
 
 /// Uses SQLite's Online Backup API (not a raw file copy) so the backup is
 /// always consistent even while the app is running with WAL mode enabled.
-#[tauri::command]
-pub fn backup_database(state: State<AppState>, dest_path: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn backup_database(state: State<'_, AppState>, dest_path: String) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
     let mut dst = rusqlite::Connection::open(&dest_path)?;
     {
@@ -269,7 +269,7 @@ pub(crate) fn restore_database_impl(
 /// right away instead of behind a scary confirmation dialog. Calls the
 /// exact same validation `restore_database` itself relies on as the real
 /// safety boundary, so the two can never drift apart.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn validate_backup_file(src_path: String) -> AppResult<()> {
     validate_tiqr_backup(Path::new(&src_path))
 }
@@ -286,8 +286,8 @@ pub fn validate_backup_file(src_path: String) -> AppResult<()> {
 /// longer needs `tauri::AppHandle` at all now that it isn't calling
 /// `resolve_db_path` itself - Tauri simply stops injecting the parameter,
 /// nothing else (the invoke_handler entry, the frontend call) needs to know.
-#[tauri::command]
-pub fn restore_database(state: State<AppState>, src_path: String) -> AppResult<RestoreOutcome> {
+#[tauri::command(async)]
+pub fn restore_database(state: State<'_, AppState>, src_path: String) -> AppResult<RestoreOutcome> {
     let mut conn = state.db.lock().unwrap();
     let db_path = state.db_path.lock().unwrap().clone();
     let safety_dir = db_path

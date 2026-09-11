@@ -21,6 +21,38 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.17.0 - A synchronous Tauri command runs on the MAIN THREAD
+
+- **Any command that can touch the network or move the whole database must be
+  `#[tauri::command(async)]`.** Tauri's own v2 docs: *"Commands without the
+  async keyword are executed on the main thread unless defined with
+  `#[tauri::command(async)]`."* A sync command doing a multi-megabyte upload
+  blocks the event loop and the OS paints "Not responding" over the window.
+  This is not a performance nicety - it is the difference between a working app
+  and one that looks crashed. Ordinary DB reads/writes are microseconds and
+  stay sync on purpose; the line is network I/O or whole-database work.
+- **Async commands in this codebase spell the State lifetime out:**
+  `state: State<'_, AppState>`, never `State<AppState>`. `test_ntfy_notification`
+  and `check_and_send_notifications` set that precedent long before 2.17.0.
+  They also must return a `Result` - that is the documented workaround for
+  borrowed arguments in an async command, and every command here already does.
+- **Making these async means they now genuinely run concurrently.** The
+  `state.db` mutex is what still serialises them, so per-command atomicity is
+  unchanged - but a long merge now HOLDS that lock while the UI's own queries
+  wait on it. That is correct and much better than freezing the window; it is
+  also why the blocking overlay exists rather than a spinner nobody sees.
+- **`SyncActivity`'s two shapes are a rule, not decoration.** A background
+  upload gets a corner pill and must never interrupt: marko did not ask for it
+  and can keep working through it. A download or a merge gets the whole screen,
+  because both end in a relaunch or a reload, and a restart that arrives
+  unannounced reads as a crash.
+- **`count_identity_clashes` must never "fix" what it finds.** Two records
+  wearing the same `legacy-N` identity (machines that drifted apart before 027)
+  cannot be told apart by any rule this app owns - deciding which is which is
+  marko's call. Detect, count, name the one manual sync that resolves it, and
+  stop there. Auto-repair here would be exactly the guess this whole design
+  exists to avoid.
+
 ## 2.16.0 - Cloud Merge (new module, no schema change, no new dependency)
 
 - **The merge is INSERT-ONLY, and that is the safety property, not a gap in

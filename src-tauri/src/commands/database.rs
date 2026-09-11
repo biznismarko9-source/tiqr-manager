@@ -85,10 +85,10 @@ pub(crate) fn switch_active_database_impl(state: &AppState, target_path: PathBuf
 /// `switchDatabaseFor`) - never before, since there's nothing meaningful to
 /// switch to for a not-yet-approved account (App.tsx's `RequireAuth` never
 /// even reaches a data-consuming page for one).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn switch_active_database(
     app: tauri::AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     uid: String,
     legacy: bool,
 ) -> AppResult<DatabaseSwitchOutcome> {

@@ -366,7 +366,7 @@ pub fn set_notification_config(state: State<AppState>, input: NotificationConfig
 
 /// Local OS call only, no network - stays plain `fn` (see module doc
 /// comment for why the ntfy test command below can't).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn test_desktop_notification(app: tauri::AppHandle) -> AppResult<NotificationTestResult> {
     Ok(match send_desktop_notification(&app, "TIQR Manager", "This is a test notification.") {
         Ok(()) => NotificationTestResult { success: true, message: "Desktop notification sent.".to_string() },

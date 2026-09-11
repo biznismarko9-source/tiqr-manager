@@ -805,6 +805,15 @@ export default function Settings() {
                                 the one they arrived with. Their contents are unchanged.
                               </p>
                             )}
+                            {mergeResult.totalIdentityClashes > 0 && (
+                              <p className="mt-1.5 rounded bg-amber-50 px-2 py-1.5 text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/25">
+                                {mergeResult.totalIdentityClashes} record{mergeResult.totalIdentityClashes === 1 ? "" : "s"}{" "}
+                                on your other computer could not be told apart from {mergeResult.totalIdentityClashes === 1 ? "one of" : "some of"}{" "}
+                                yours, so {mergeResult.totalIdentityClashes === 1 ? "it" : "they"} did not come across. This happens when both
+                                computers were used before the update that added record identities. Fix it once: sync down on
+                                whichever computer is behind, then combine again.
+                              </p>
+                            )}
                             {mergeResult.totalSkipped > 0 && (
                               <>
                                 <p className="mt-1 text-amber-700 dark:text-amber-400">

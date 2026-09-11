@@ -20,6 +20,7 @@ import {
   IconWallet,
 } from "./icons";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { Spinner } from "./ui";
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
@@ -150,6 +151,13 @@ export default function Layout() {
   // Guards against a tick starting while the previous one is still
   // uploading - a slow upload on a slow connection must not stack.
   const autoSyncBusy = useRef(false);
+  // 2.17.0: what the app is doing with marko's data right now, in words. It
+  // exists because a whole database crossing the internet takes real seconds
+  // and, until this release, they were seconds of nothing - see SyncActivity
+  // at the bottom of this file. `blocking` separates "carry on working, this
+  // is happening quietly" from "this ends in a restart, there is nothing
+  // useful to click".
+  const [syncActivity, setSyncActivity] = useState<{ label: string; blocking: boolean } | null>(null);
   const ticketsGroupActive = TICKETS_GROUP_CHILDREN.some(
     (c) => location.pathname === c.to || location.pathname.startsWith(`${c.to}/`),
   );
@@ -226,8 +234,10 @@ export default function Layout() {
         const plan = await api.cloudSyncAuto();
         if (cancelled) return;
         if (plan.action === "push") {
+          setSyncActivity({ label: "Saving your changes to Google Drive", blocking: false });
           await api.cloudSyncPush();
         } else if (plan.action === "pull" && atStartup) {
+          setSyncActivity({ label: "Getting newer data from your other computer", blocking: true });
           const safetyPath = await api.cloudSyncPull();
           toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
           setTimeout(() => relaunch(), 900);
@@ -238,6 +248,7 @@ export default function Layout() {
           // because rows arrived underneath everything already on screen.
           // A plain reload, not `relaunch()`: the database file was added to,
           // not swapped, so the running process is fine.
+          setSyncActivity({ label: "Combining what's on both computers", blocking: true });
           const merged = await api.cloudMergePull();
           const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
           if (merged.totalRenumbered > 0) {
@@ -245,6 +256,9 @@ export default function Layout() {
           }
           if (merged.totalSkipped > 0) {
             parts.push(`${merged.totalSkipped} couldn't be added - see Settings → Data.`);
+          }
+          if (merged.totalIdentityClashes > 0) {
+            parts.push(`${merged.totalIdentityClashes} couldn't be told apart from yours - see Settings → Data.`);
           }
           toast.success(parts.join(" "));
           setTimeout(() => window.location.reload(), 1200);
@@ -259,6 +273,10 @@ export default function Layout() {
         // Sync buttons in Settings.
       } finally {
         autoSyncBusy.current = false;
+        // Left standing on purpose when a restart or reload is already
+        // scheduled above: clearing it would flash the app back to normal for
+        // a second and make the restart look like a crash.
+        setSyncActivity((current) => (current?.blocking ? current : null));
       }
     };
     tick(true);
@@ -488,6 +506,53 @@ export default function Layout() {
           <Outlet />
         </div>
       </main>
+      <SyncActivity activity={syncActivity} />
+    </div>
+  );
+}
+
+/** 2.17.0: what the app is doing with marko's data, while it does it.
+ *
+ * The freeze this replaces was not a slow query - every Cloud Sync command was
+ * a SYNCHRONOUS Tauri command, and Tauri runs those on the main thread, so
+ * pushing a multi-megabyte database over the internet blocked the event loop
+ * and the OS drew "Not responding" over the window. The commands are
+ * `#[tauri::command(async)]` now, which is the actual fix; this is the other
+ * half of it, because an app that is silently busy for eight seconds still
+ * looks broken even when it is perfectly responsive.
+ *
+ * Two shapes on purpose. A background upload gets a corner pill - it must not
+ * interrupt anything, marko did not ask for it and can keep working straight
+ * through. A download or a merge gets the whole screen, because both end in a
+ * restart or a reload: there is nothing useful to click, and a restart that
+ * arrives with no warning reads as a crash.
+ */
+function SyncActivity({ activity }: { activity: { label: string; blocking: boolean } | null }) {
+  if (!activity) return null;
+  if (!activity.blocking) {
+    return (
+      <div
+        role="status"
+        className="pointer-events-none fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
+      >
+        <Spinner className="h-3.5 w-3.5 text-brand-500" />
+        {activity.label}...
+      </div>
+    );
+  }
+  return (
+    <div
+      role="status"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 backdrop-blur-sm"
+    >
+      <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white px-7 py-6 text-center shadow-raised dark:border-slate-700 dark:bg-slate-900">
+        <Spinner className="h-7 w-7 text-brand-500" />
+        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{activity.label}...</p>
+        <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          This can take a moment over a slow connection. A backup of your current data is saved first - you can find
+          it in Settings &rarr; Data. The app reloads by itself when it&apos;s done.
+        </p>
+      </div>
     </div>
   );
 }

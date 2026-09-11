@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.16.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.17.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -367,6 +367,17 @@ a shared-name platform would be dropped), and counters are dragged up to the
 highest code present so order creation cannot start failing days later.
 `decide_auto`'s two ask-cases now answer `merge`, so automatic sync never stops
 to ask again. Merging at launch reloads the page instead of relaunching.
+
+**2.17.0** fixes the freeze that came with all of the above: Tauri runs a
+synchronous command on the MAIN THREAD, and every Cloud Sync command was
+synchronous, so moving a multi-megabyte database blocked the event loop and the
+OS drew "Not responding". 16 network/whole-database commands are now
+`#[tauri::command(async)]` (Sheets sync and AI import were always `async fn`,
+which is why only the sync family froze). Plus a visible activity indicator -
+corner pill for a background upload, full screen for a download or merge, since
+those end in a restart. And the merge now detects and reports two records
+wearing the same `legacy-N` identity, which is the one way it could still have
+silently failed to bring a record across.
 
 **Next new migration is 028.**
 

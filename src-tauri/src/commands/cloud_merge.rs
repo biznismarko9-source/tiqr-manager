@@ -199,6 +199,9 @@ pub struct MergeTableResult {
     /// Matched an existing local row by name instead of being duplicated.
     pub linked: i64,
     pub skipped: i64,
+    /// Records that WEAR the same identity as one of this machine's but are
+    /// plainly not the same record. See `count_identity_clashes`.
+    pub identity_clashes: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -208,6 +211,10 @@ pub struct MergeOutcome {
     pub total_inserted: i64,
     pub total_renumbered: i64,
     pub total_skipped: i64,
+    /// Sum of `identity_clashes`. Non-zero means the one manual whole-file
+    /// sync that migration 027 asks for was never done - see
+    /// `count_identity_clashes`.
+    pub total_identity_clashes: i64,
     /// Where this machine's data was saved before the merge touched it.
     pub safety_backup_path: String,
     /// Why rows were skipped, capped - shown as-is.
@@ -316,10 +323,44 @@ fn reconcile_counter(conn: &Connection, table: &str, counter: &str, prefix: &str
     Ok(())
 }
 
+/// Counts records that wear the same identity as one of this machine's while
+/// plainly being a different record.
+///
+/// Migration 027 gave rows that already existed the identity `legacy-<id>`,
+/// which is what lets two databases descended from one file agree without
+/// talking. It only holds for rows they actually shared. If the two machines
+/// had already DRIFTED APART before the update - each holding records the
+/// other had never seen - then both counted up from the same place, and the
+/// Mac's seventh order and the PC's seventh order are two different orders
+/// both calling themselves `legacy-7`.
+///
+/// The merge then looks at the arriving one, sees that identity already here,
+/// and skips it as something this machine already has. Nothing breaks, nothing
+/// is reported, and a real order simply never arrives. That is the one silent
+/// failure this whole design exists to prevent, so it is detected and said out
+/// loud instead: a shared identity whose `code` differs is not one record.
+///
+/// It is NOT repaired automatically. Deciding which `legacy-7` is which is a
+/// human's call, and the fix is the one whole-file sync migration 027 already
+/// asks for. Only tables with a `code` can be checked, which is fine - those
+/// are the records marko actually creates.
+fn count_identity_clashes(conn: &Connection, table: &str) -> AppResult<i64> {
+    let n: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM remote.{table} r JOIN main.{table} l ON l.uid = r.uid
+             WHERE r.uid LIKE 'legacy-%' AND r.code IS NOT l.code"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(n)
+}
+
 fn merge_one_table(conn: &Connection, table: &MergeTable, reasons: &mut Vec<String>) -> AppResult<MergeTableResult> {
     let mut result = MergeTableResult { table: table.name.to_string(), ..Default::default() };
     if let Some((counter, prefix)) = table.code {
         reconcile_counter(conn, table.name, counter, prefix)?;
+        result.identity_clashes = count_identity_clashes(conn, table.name)?;
     }
     let cols = shared_columns(conn, table.name)?;
     if !cols.iter().any(|c| c == "uid") {
@@ -493,8 +534,8 @@ pub(crate) fn merge_attached(conn: &Connection) -> AppResult<(Vec<MergeTableResu
 
 /// Downloads the other machine's database and adds in everything this one is
 /// missing. Never replaces, never deletes - see this module's header.
-#[tauri::command]
-pub fn cloud_merge_pull(state: State<AppState>) -> AppResult<MergeOutcome> {
+#[tauri::command(async)]
+pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
     let mut conn = state.db.lock().unwrap();
     if !is_enabled(&conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
@@ -579,11 +620,13 @@ pub fn cloud_merge_pull(state: State<AppState>) -> AppResult<MergeOutcome> {
     let total_inserted = tables.iter().map(|t| t.inserted).sum();
     let total_renumbered = tables.iter().map(|t| t.renumbered).sum();
     let total_skipped = tables.iter().map(|t| t.skipped).sum();
+    let total_identity_clashes = tables.iter().map(|t| t.identity_clashes).sum();
     Ok(MergeOutcome {
         tables,
         total_inserted,
         total_renumbered,
         total_skipped,
+        total_identity_clashes,
         safety_backup_path: safety_backup_path.display().to_string(),
         skip_reasons,
     })
@@ -771,6 +814,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pointed, 1, "and it must point at THIS machine's platform row");
+    }
+
+    #[test]
+    fn two_different_orders_wearing_the_same_legacy_identity_are_reported_not_swallowed() {
+        // The one silent failure this design can still have. Machines that
+        // drifted apart BEFORE migration 027 each counted up from the same
+        // place, so the Mac's seventh order and the PC's seventh order both
+        // call themselves `legacy-7`. The merge would see that identity
+        // already present, skip the arriving order as "already have it", and
+        // report nothing at all - a real order would simply never arrive.
+        let (conn, remote_path) = two_machines();
+        conn.execute("INSERT INTO events(name) VALUES ('Coldplay')", []).unwrap();
+        conn.execute(
+            "INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+             VALUES ('ORD-000007', (SELECT id FROM events WHERE name='Coldplay'), '2026-05-01', 1, 1000, 'EUR', 'legacy-7')",
+            [],
+        )
+        .unwrap();
+        remote_exec(
+            &remote_path,
+            "INSERT INTO events(name) VALUES ('Sparta');
+             INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+             VALUES ('ORD-000008', (SELECT id FROM events WHERE name='Sparta'), '2026-05-02', 1, 2000, 'EUR', 'legacy-7');",
+        );
+        attach(&conn, &remote_path);
+        let (results, _) = merge_attached(&conn).unwrap();
+
+        let orders = results.iter().find(|r| r.table == "orders").unwrap();
+        assert_eq!(orders.identity_clashes, 1, "the collision must be counted and said out loud");
+    }
+
+    #[test]
+    fn a_record_both_machines_genuinely_share_is_never_reported_as_a_clash() {
+        // The other half: the `legacy-` scheme working exactly as intended
+        // must stay silent, or the warning becomes noise nobody reads.
+        let (conn, remote_path) = two_machines();
+        for target in [None, Some(&remote_path)] {
+            let sql = "INSERT INTO events(name) VALUES ('Shared');
+                       INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+                       VALUES ('ORD-000003', (SELECT id FROM events WHERE name='Shared'), '2026-05-01', 1, 1000, 'EUR', 'legacy-3');";
+            match target {
+                Some(path) => remote_exec(path, sql),
+                None => conn.execute_batch(sql).unwrap(),
+            }
+        }
+        attach(&conn, &remote_path);
+        let (results, _) = merge_attached(&conn).unwrap();
+        let orders = results.iter().find(|r| r.table == "orders").unwrap();
+        assert_eq!(orders.identity_clashes, 0);
     }
 
     #[test]

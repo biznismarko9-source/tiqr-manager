@@ -340,8 +340,8 @@ pub(crate) fn now_iso() -> String {
 
 /// Read-only. Never uploads, never downloads content - one small metadata
 /// request, and not even that when sync is off or nobody is signed in.
-#[tauri::command]
-pub fn cloud_sync_status(state: State<AppState>) -> AppResult<CloudSyncStatus> {
+#[tauri::command(async)]
+pub fn cloud_sync_status(state: State<'_, AppState>) -> AppResult<CloudSyncStatus> {
     let conn = state.db.lock().unwrap();
     let enabled = is_enabled(&conn)?;
     let file_id = get_setting(&conn, FILE_ID_KEY)?;
@@ -390,8 +390,8 @@ pub fn set_cloud_sync_enabled(state: State<AppState>, enabled: bool) -> AppResul
 /// Refuses when the remote has moved since this machine last synced, unless
 /// `force` - see `remote_has_moved`. That refusal is the only thing standing
 /// between "I forgot to sync" and losing the other machine's day of work.
-#[tauri::command]
-pub fn cloud_sync_push(state: State<AppState>, force: bool) -> AppResult<CloudSyncStatus> {
+#[tauri::command(async)]
+pub fn cloud_sync_push(state: State<'_, AppState>, force: bool) -> AppResult<CloudSyncStatus> {
     let conn = state.db.lock().unwrap();
     if !is_enabled(&conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
@@ -468,8 +468,8 @@ pub fn cloud_sync_push(state: State<AppState>, force: bool) -> AppResult<CloudSy
 /// automatic safety backup and automatic rollback. The safety backup's
 /// location is returned so the UI can tell marko exactly where his previous
 /// data went.
-#[tauri::command]
-pub fn cloud_sync_pull(state: State<AppState>) -> AppResult<String> {
+#[tauri::command(async)]
+pub fn cloud_sync_pull(state: State<'_, AppState>) -> AppResult<String> {
     let mut conn = state.db.lock().unwrap();
     if !is_enabled(&conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
@@ -678,8 +678,8 @@ pub fn flush_local_dirty(conn: &Connection) {
 /// always called, so automatic sync introduced no second destructive path -
 /// and it cannot take those locks itself anyway, since both of them lock
 /// `state.db` and this command is already holding it.
-#[tauri::command]
-pub fn cloud_sync_auto(state: State<AppState>) -> AppResult<CloudSyncAutoPlan> {
+#[tauri::command(async)]
+pub fn cloud_sync_auto(state: State<'_, AppState>) -> AppResult<CloudSyncAutoPlan> {
     let conn = state.db.lock().unwrap();
 
     let enabled = is_enabled(&conn)?;
