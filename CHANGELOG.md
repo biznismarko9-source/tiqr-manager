@@ -67,6 +67,13 @@ other's. `commands/cloud_merge.rs` makes them add up.
 against two databases: the platform-name drop and the counter poisoning are
 both in there.
 
+*Build fix, same version:* `syncBusy` is a fixed set of strings (`up`, `down`,
+`toggle`) and the new Combine-both handler set it to `"merge"`, which `tsc -b`
+rejected before the Rust ever compiled. The union now carries `"merge"` -
+deliberately still a closed union rather than `string`, because every button in
+that card disables itself on `syncBusy !== null`, so a missing value should stay
+a compile error rather than a button that stays live mid-operation.
+
 ## 2.15.0 - Migration 027: the identity a merge is built on
 
 **Schema change (migration 027), no new dependency, no behaviour change yet.**

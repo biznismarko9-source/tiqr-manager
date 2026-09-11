@@ -262,7 +262,11 @@ export default function Settings() {
 
   // --- Cloud sync (2.12.0) ---------------------------------------------
   const [sync, setSync] = useState<CloudSyncStatus | null>(null);
-  const [syncBusy, setSyncBusy] = useState<null | "up" | "down" | "toggle">(null);
+  // 2.16.0: "merge" added for Combine both (`doMergeBoth`). Every button in
+  // this card reads `syncBusy !== null` to disable itself, so a value missing
+  // from this union is a compile error rather than a button that stays live
+  // mid-operation.
+  const [syncBusy, setSyncBusy] = useState<null | "up" | "down" | "toggle" | "merge">(null);
   // 2.13.1: marko asked for ONE Sync button that works out the direction
   // itself. It can, except in one case. `remoteNewer` means the Drive copy
   // moved since THIS machine last synced - but nothing tracks whether this
