@@ -21,6 +21,32 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.27.0 - Comments whose content is also syntax
+
+Three build failures in this project now share one shape: **a comment or string
+whose TEXT is syntax in the surrounding language.**
+
+- 2.24.0: `"Mixed events"` written inside a SQL comment that lived inside a
+  non-raw Rust string literal. The quote closed the string; the rest of the SQL
+  was parsed as Rust.
+- 2.27.0: `{/* ... */}` placed in a ternary BRANCH. That form is only legal as
+  a child of a JSX element; in expression position it is a syntax error.
+- 2.27.0 again, in the fix for the above: a block comment explaining the rule
+  quoted a comment terminator, which closed the comment early.
+
+Rules that follow, and they are cheap:
+- A JSX comment goes inside an element's children. In a ternary branch, after
+  `=>`, or in any expression position, use a plain line comment.
+- Never write a comment terminator inside a block comment. If the explanation
+  needs to mention one, use line comments - they cannot be closed by their own
+  contents.
+- SQL comments inside a Rust string carry the STRING's escaping rules, not
+  SQL's. No quotes, or make it a raw string.
+
+None of these are caught by brace/paren balance checking, which is what the
+local verification here relies on - all three balanced perfectly and still did
+not compile.
+
 ## 2.27.0 - The automatic run is finite, and that is the whole safety argument
 
 **`start_price_scan_run` is NOT the Live Market Monitor** (deleted in 2.4.2,

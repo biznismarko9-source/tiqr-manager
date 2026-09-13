@@ -16,6 +16,28 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.27.0 - BUILD FIX (a comment I wrote, twice over)
+
+The 2.27.0 build failed in `tsc` before anything else ran. Six errors, all in
+`MarketMapView.tsx`, all cascade from one:
+
+**`{/* ... */}` is only legal as a CHILD of a JSX element.** I put one directly
+in a ternary's branch - `) : ( {/* ... */} <div>` - which is expression
+position, where it is a syntax error. Fixed.
+
+And the first fix was wrong in a second way worth recording: I rewrote it as a
+block comment whose TEXT quoted the JSX comment syntax, so the comment
+terminator inside my own explanation closed the comment early and broke the
+file again. It is line comments now, which cannot be closed by their own
+contents.
+
+Both are the same shape as 2.24.0's `"Mixed events"` inside a non-raw Rust
+string: **a comment whose content is also syntax**. Scanned the whole `src`
+tree for the JSX case afterwards - zero remaining.
+
+Version deliberately stays **2.27.0**: the failed build published no release,
+so the updater has never seen this number. Same call as 2.16.0 and 2.24.0.
+
 ## 2.27.0 - One press reads the whole page, and the glitching is gone
 
 ### The glitching had two causes, both removed

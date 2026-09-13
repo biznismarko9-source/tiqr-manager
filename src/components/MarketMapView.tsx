@@ -245,9 +245,17 @@ export function MarketMapPanel({
           </p>
         </div>
       ) : (
-        {/* A FIXED min-height. Without it the panel's height changed every
-            time a scan added a section, which moved everything below it and
-            read as the page jumping under the cursor. */}
+        // A FIXED min-height. Without it the panel's height changed every
+        // time a scan added a section, which moved everything below it and
+        // read as the page jumping under the cursor.
+        //
+        // Line comments on purpose. This position is a ternary BRANCH, not an
+        // element's children, so a curly-brace JSX comment is a syntax error
+        // here - that is what broke the 2.27.0 build. A block comment would
+        // work, but only if its text never contains a comment terminator, and
+        // explaining this rule needs to mention one. Line comments cannot be
+        // closed early by their own contents, so they cannot repeat either
+        // mistake.
         <div
           className="max-h-[28rem] min-h-[11rem] overflow-auto px-5 py-4"
           style={{ overscrollBehavior: "contain" }}
