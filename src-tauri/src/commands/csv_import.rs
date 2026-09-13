@@ -282,8 +282,8 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
     Ok((headers, rows))
 }
 
-#[tauri::command]
-pub fn preview_orders_csv(state: State<AppState>, path: String) -> AppResult<CsvPreview> {
+#[tauri::command(async)]
+pub fn preview_orders_csv(state: State<'_, AppState>, path: String) -> AppResult<CsvPreview> {
     let conn = state.db.lock().unwrap();
     let (headers, rows) = parse_rows(&conn, &path)?;
     let valid_count = rows.iter().filter(|r| r.errors.is_empty()).count() as i64;
@@ -391,8 +391,8 @@ fn import_orders_csv_impl(conn: &mut Connection, path: &str) -> AppResult<CsvImp
     })
 }
 
-#[tauri::command]
-pub fn import_orders_csv(state: State<AppState>, path: String) -> AppResult<CsvImportResult> {
+#[tauri::command(async)]
+pub fn import_orders_csv(state: State<'_, AppState>, path: String) -> AppResult<CsvImportResult> {
     let mut conn = state.db.lock().unwrap();
     import_orders_csv_impl(&mut conn, &path)
 }

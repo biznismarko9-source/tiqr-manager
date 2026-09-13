@@ -609,6 +609,9 @@ export interface SaleGroup {
   /** Null means the group's tickets span more than one event ("Mixed events"). */
   eventId: number | null;
   eventName: string | null;
+  /** 2.23.0: the shared event's own date, under the same "only when every
+   *  line's event agrees" rule. null for a mixed-event group or a TBD event. */
+  eventDate: string | null;
   /** 2.0.27: the group's shared event category - same "Some only when every
    * line's event agrees" rule as eventId/eventName above (null on a "Mixed
    * events" group, and also null when the one shared event has no category). */
@@ -2217,6 +2220,51 @@ export interface RestorePoint {
   source: string;
 }
 
+/** One table's part of a past merge (2.20.0). */
+export interface MergeLogTable {
+  table: string;
+  inserted: number;
+  deleted: number;
+}
+
+/** What one past merge did (2.20.0). Kept so sync stops being magic - the
+ *  report used to vanish with the toast. Newest first. */
+export interface MergeLogEntry {
+  at: string;
+  inserted: number;
+  deleted: number;
+  renumbered: number;
+  skipped: number;
+  identityClashes: number;
+  /** Only the tables that actually changed. */
+  changed: MergeLogTable[];
+}
+
+/** An earlier version of the sync file, as Google Drive still holds it
+ *  (2.20.0). Drive keeps revisions of every upload and prunes them on its own
+ *  schedule - this shows what is still there, it does not pin anything. */
+export interface CloudRevision {
+  id: string;
+  modifiedAt: string | null;
+  sizeBytes: number | null;
+  /** The version live in Drive right now - restoring it is an ordinary sync
+   *  down, not a trip backwards. */
+  isCurrent: boolean;
+}
+
+/** One month of Claude API usage from screenshot imports (2.20.0). */
+export interface AiUsageMonth {
+  /** YYYY-MM */
+  month: string;
+  scans: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Estimated at Opus 5 list price ($5/$25 per million tokens). USD, because
+   *  that is what Anthropic bills - converting it would make an estimate look
+   *  like an invoice. */
+  estimatedCostUsdCents: number;
+}
+
 /** One table's share of a merge (2.16.0). */
 export interface MergeTableResult {
   table: string;
@@ -2229,6 +2277,8 @@ export interface MergeTableResult {
    *  category lists are UNIQUE by name) instead of being duplicated. */
   linked: number;
   skipped: number;
+  /** 2.20.0: rows removed here because the other computer deleted them. */
+  deleted: number;
   /** Records wearing the same identity as one of yours while plainly being a
    *  different record - the two machines drifted apart before migration 027.
    *  Counted, never guessed at. */
@@ -2242,6 +2292,9 @@ export interface MergeOutcome {
   totalInserted: number;
   totalRenumbered: number;
   totalSkipped: number;
+  /** 2.20.0: rows this merge removed because the other computer had deleted
+   *  them - migration 028's tombstones. */
+  totalDeleted: number;
   /** Non-zero means the one manual whole-file sync migration 027 asks for was
    *  never done, and records with a clashing identity did NOT arrive. */
   totalIdentityClashes: number;
@@ -2290,4 +2343,12 @@ export interface CloudSyncStatus {
   /** The other machine has synced newer data than this one has seen. The one
    * signal that means "sync down before you sync up". */
   remoteNewer: boolean;
+  /** 2.18.0: the single word the panel shows, decided by the backend's
+   *  `summarize_state` so the UI never re-derives it from the booleans below
+   *  and drifts away from what the timer thinks. */
+  state: "off" | "syncing" | "conflict" | "offline" | "failed" | "localChanges" | "cloudChanges" | "synced";
+  /** This machine holds writes Drive has not seen. */
+  localChanges: boolean;
+  /** How the last sync failed, in one sentence - null when it worked. */
+  lastError: string | null;
 }

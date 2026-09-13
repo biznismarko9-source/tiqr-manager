@@ -21,8 +21,7 @@ import {
   formatMoney,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  todayIso,
-} from "../lib/format";
+  todayIso, shortCode } from "../lib/format";
 import {
   Badge,
   Button,
@@ -544,7 +543,7 @@ function GivenPulls() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Pull</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>For</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
@@ -588,9 +587,10 @@ function GivenPulls() {
                     )}
                     <td
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`}
-                      title={`Added ${formatDate(p.createdAt)}`}
+                      title={`${p.code} · added ${formatDate(p.createdAt)}`}
                     >
-                      {p.code}
+                      {/* 2.23.0: `#9`, not `PULL-000009` - see shortCode. */}
+                      {shortCode(p.code)}
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.buyerName}>
                       {p.buyerName}
@@ -1249,7 +1249,7 @@ function ReceivedPulls() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Pull</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>From</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Order</th>}

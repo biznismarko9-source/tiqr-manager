@@ -80,16 +80,16 @@ fn export_events_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
     Ok(count)
 }
 
-#[tauri::command]
-pub fn export_events_csv(state: State<AppState>, path: String) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_events_csv(state: State<'_, AppState>, path: String) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_events_csv_impl(&conn, &path, None)
 }
 
 /// 1.9.1: "pick specific events" export for the new Settings -> Data picker -
 /// same idea as `export_sales_csv_selected` (1.8.0), just for events.
-#[tauri::command]
-pub fn export_events_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_events_csv_selected(state: State<'_, AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_events_csv_impl(&conn, &path, Some(&ids))
 }
@@ -161,16 +161,16 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
     Ok(count)
 }
 
-#[tauri::command]
-pub fn export_orders_csv(state: State<AppState>, path: String) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_orders_csv(state: State<'_, AppState>, path: String) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_orders_csv_impl(&conn, &path, None)
 }
 
 /// 1.9.1: "pick specific orders" export for the new Settings -> Data picker -
 /// same idea as `export_sales_csv_selected` (1.8.0), just for orders.
-#[tauri::command]
-pub fn export_orders_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_orders_csv_selected(state: State<'_, AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_orders_csv_impl(&conn, &path, Some(&ids))
 }
@@ -270,9 +270,9 @@ fn export_tickets_inner(
     Ok(count)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_tickets_csv(
-    state: State<AppState>,
+    state: State<'_, AppState>,
     path: String,
     status: Option<String>,
     event_id: Option<i64>,
@@ -288,9 +288,9 @@ pub fn export_tickets_csv(
 }
 
 /// "Inventory" = current stock only (available + listed), excluding sold/cancelled.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_inventory_csv(
-    state: State<AppState>,
+    state: State<'_, AppState>,
     path: String,
     event_id: Option<i64>,
 ) -> AppResult<i64> {
@@ -312,14 +312,14 @@ pub fn export_inventory_csv(
 /// doesn't need to re-enforce that restriction itself - it exports exactly
 /// the ids it's given, the same "trust the already-filtered selection"
 /// approach `export_sales_csv_selected` already uses for its group ids.
-#[tauri::command]
-pub fn export_tickets_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_tickets_csv_selected(state: State<'_, AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_tickets_inner(&conn, &path, None, None, Some(&ids))
 }
 
-#[tauri::command]
-pub fn export_sales_csv(state: State<AppState>, path: String) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_sales_csv(state: State<'_, AppState>, path: String) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_sales_csv_impl(&conn, &path)
 }
@@ -480,8 +480,8 @@ fn export_sales_csv_selected_impl(conn: &Connection, path: &str, group_ids: &[i6
     write_sales_csv(conn, path, &where_extra, &param_refs)
 }
 
-#[tauri::command]
-pub fn export_sales_csv_selected(state: State<AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
+#[tauri::command(async)]
+pub fn export_sales_csv_selected(state: State<'_, AppState>, path: String, ids: Vec<i64>) -> AppResult<i64> {
     let conn = state.db.lock().unwrap();
     export_sales_csv_selected_impl(&conn, &path, &ids)
 }
@@ -501,7 +501,7 @@ pub fn export_sales_csv_selected(state: State<AppState>, path: String, ids: Vec<
 /// blank column isn't mistaken for "required" when it's actually optional
 /// (e.g. supplier, platform, seats, notes). Doesn't touch the database at
 /// all, so it needs no connection/state.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_orders_csv_template(path: String) -> AppResult<()> {
     let mut wtr = csv::Writer::from_path(&path)?;
     wtr.write_record([

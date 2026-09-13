@@ -137,6 +137,7 @@ fn map_sale_group(row: &Row) -> rusqlite::Result<SaleGroup> {
         ticket_count: row.get("ticket_count")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        event_date: row.get("event_date")?,
         category_id: row.get("category_id")?,
         category_name: row.get("category_name")?,
         category_color_slot: row.get("category_color_slot")?,
@@ -264,6 +265,12 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       COUNT(*) as ticket_count,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(t.event_id) END as event_id,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.name) END as event_name,
+      -- 2.23.0: the event's own date, carried with the same
+      -- only-when-every-line's-event-agrees guard as event_id/event_name
+      -- above rather than a rule of its own. Null on a "Mixed events" group
+      -- AND on a TBD event - both are honestly "no single date", and the
+      -- list renders both as "-" rather than inventing one.
+      CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.event_date) END as event_date,
       -- 2.0.27: a category is itself just an attribute of the group's shared
       -- event, so it uses the exact same only-when-every-lines-event-agrees
       -- guard as event_id/event_name right above, not a separate

@@ -21,6 +21,164 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.24.0 - Recap is a presentation layer, and must stay one
+
+- **`get_dashboard` needs `period: "custom"` to honour `from`/`to`.**
+  `period_bounds` matches on the period NAME first; the `None` arm returns
+  `today -> today` and never looks at the dates. Passing a range without the
+  name is a silent wrong answer, not an error - a month's heading over one
+  day's figures. Any new caller must pass it.
+- **The Recap must never compute a figure of its own.** Every number on it
+  comes from `get_dashboard`'s existing aggregation, under the existing
+  definitions. The moment it needs a number that does not exist, the answer is
+  to say so on screen (as it already does for biggest sale, fastest event and
+  best tier) - not to add an aggregation, which is how a recap becomes a second
+  reporting backend with its own slightly different idea of profit.
+- **Realized / Pending / Potential never share a band, and each prints its own
+  definition.** Unsold stock is not profit; money owed is not money received.
+  The definitions on screen are load-bearing, not decoration - drop them and
+  the three read as one.
+- **Percent vs percentage points is not cosmetic.** Money and counts use
+  `computeTrend`; ROI and margin are already ratios and use
+  `computeTrendPoints`. Using the first on a ratio reports "+50%" for a margin
+  that moved 20 -> 30, which reads as a margin near 45.
+- **The all-time scope on the best-event line is stated because it is real.**
+  `EventWithStats.stats` is all-time; re-scoping it to the recap's period would
+  need a new per-event per-period aggregation. Label the scope, never quietly
+  present one scope as another.
+- **`save_png_file` takes bytes and writes them. Nothing else belongs in it** -
+  no database handle, no knowledge of what the image shows. It verifies the PNG
+  signature so a mis-stripped data URL cannot write a file that will not open.
+
+## 2.23.0 - Three traps: a class that eats the wheel, a code, and a rules file
+
+- **`.table-flush` MUST be given a height cap by its caller.** It is
+  `overflow: auto` plus `overscroll-behavior: contain` (index.css). On a box
+  with no height that combination is the worst of both: the box cannot scroll
+  itself, and `contain` still stops the wheel from reaching the page behind it,
+  so the content is reachable only by dragging the window's own scrollbar. All
+  three Finance tabs had it; Price Checker and Settings never did because they
+  pass `max-h-*`. The class's own doc comment already says it belongs on a box
+  that scrolls - honour that, or use `.table-shell`, which brings its own
+  height.
+- **`shortCode` is for DISPLAY in lists and nothing else.** The stored `code`
+  keeps its full `PREFIX-000000` form because other things read it: a connected
+  Google Sheet shows it, `codes::next_code` mints it, and the merge parses its
+  numeric tail to keep two machines' counters in step (see 2.16.0). Never
+  rewrite stored codes to the short form, and never shorten one on a detail
+  screen - that is where the full value has to stay reachable.
+- **Lists show the EVENT date; detail screens show the purchase/sale date.**
+  Both are kept, one is chosen per screen by what that screen is for. A list is
+  scanned for what is coming up. Do not "fix" this by adding both columns to
+  the list - the version with both is what marko asked to get away from.
+- **`firestore.rules` is never deployed by anything.** It has to be pasted into
+  the Firebase Console by hand, once, and again every time the file changes -
+  the file's own header has said so since 2.0.71 and 2.23.0's suggestion box
+  makes it matter twice over. And `admin: true` on a `users/{uid}` doc is
+  Console-only by design: the rules forbid every update from the app, so the
+  app can never promote itself. If the inbox is empty or sending fails, check
+  those two things before touching code.
+- **The suggestion box reads nothing back.** A user cannot see their own note
+  after sending, on purpose - it is a postbox, not a forum, and a reply thread
+  nobody answers is worse than none.
+
+## 2.20.0 - Tombstones, and three things that must not be "tidied up"
+
+- **A tombstone is never deleted.** They are a table name and a uid. Removing
+  one lets the record it describes come back on the next merge from any machine
+  that still has it - which is the exact bug 028 exists to fix. There is no
+  retention policy here on purpose.
+- **The insert pass MUST keep its second `NOT IN (SELECT uid FROM
+  main.deleted_rows ...)`.** Without it a record deleted here is just a record
+  "this machine has never seen", and the merge copies it back. That one clause
+  is the whole feature.
+- **Tombstones are applied children first** (reverse `MERGE_TABLES`), because
+  `tickets.event_id` is `ON DELETE RESTRICT`. Do not "simplify" the loop to
+  forward order; and a delete the schema refuses is counted and named, never
+  retried with foreign keys off.
+- **A tombstone beats an edit, and that is a decision.** Nothing here records
+  which machine deleted the row or when relative to an edit, so the only
+  alternative is resurrecting a record its owner deliberately removed.
+- **`deleted_rows` is deliberately a rowid table, not `WITHOUT ROWID`.**
+  SQLite's update hook - how this app notices unsynced changes - is not called
+  for `WITHOUT ROWID` tables, so a tombstone arriving from the other machine
+  would not mark the database as needing a push and could sit unpropagated.
+- **`INPUT_CENTS_PER_MTOK` / `OUTPUT_CENTS_PER_MTOK` in `ai_import.rs` are tied
+  to `ANTHROPIC_MODEL`.** They are Claude Opus 5's list price, read off
+  Anthropic's pricing page on 2026-09-12. If the model constant changes, these
+  must change with it - a cost shown against the wrong model's price is worse
+  than no cost at all. Integer cents per million tokens so the arithmetic never
+  touches a float.
+- **`keepForever` is never set on a Drive upload.** Drive prunes revision
+  history itself; pinning every sync would multiply marko's Drive usage by the
+  number of syncs. The UI says Google decides how long they are kept, and that
+  has to stay true.
+- **Restoring a Drive revision records the version that is CURRENTLY live, and
+  deliberately leaves the pushed-hash stale.** That is what makes the rescue
+  travel: this machine has seen the newer copy and is choosing not to keep it,
+  so there is no conflict to report, and the stale hash is what stops the
+  upload being skipped.
+
+## 2.19.0 - `.summary-bar` is a grid, and why it must stay one
+
+- **Never put `flex-1` cards in a `flex-wrap` row.** The cards that land on the
+  last row stretch to fill it: six cards at the app's minimum window width
+  produced five at 157px and one at 832px. `.summary-bar` is now
+  `repeat(auto-fit, minmax(9rem, 1fr))`, which keeps every card the same width
+  on every row AND still lets three cards fill the width exactly as `flex-1`
+  did. Measured in a browser at 832px and 1152px content width, 6 and 9 cards,
+  before and after - do not "simplify" it back to flex.
+- **`StatCard` needs `min-w-0`.** A grid item defaults to min-content width, so
+  without it a long money figure widens its own column and pushes the row off
+  the page instead of truncating. The 9rem floor is what keeps a 22px figure
+  readable at minWidth 1080.
+- **`SummaryStat` (the chip) is the exception and still wants flex** - see its
+  own note in ui.tsx. A chip in a grid cell stretches and stops reading as a
+  chip. `.summary-bar` is for `StatCard`, not for chips.
+- **The Price Checker scanner's commands stay synchronous.** They create and
+  close webview windows through the `AppHandle`, and window work off the main
+  thread is not safe on every platform. Everything else that does network or
+  whole-file I/O is `#[tauri::command(async)]`; the scanner is the documented
+  exception, not an oversight.
+- **z-index order, top down: toasts `z-[100]`, updater `z-[70]/[60]`, the sync
+  blocking overlay `z-[65]`, `ConfirmDialog` `z-[60]`, `Modal` `z-50`, the busy
+  pill `z-40`.** Two bugs came from getting this wrong: the pill shared the
+  bottom-right corner with the toast stack (every toast hid it), and the
+  blocking overlay at `z-50` let a confirm dialog be clicked into a database
+  being merged underneath it. Anything new that covers the screen belongs in
+  this list.
+
+## 2.18.0 - Sync hardening: one guard, bounded retries, a content hash
+
+- **Every sync entry point must take `SyncGuard`.** push, pull, merge - and any
+  future one. The per-screen guards (`Layout.tsx`'s ref, Settings' disabled
+  buttons) do NOT count: they never knew about each other, and since 2.17.0
+  these commands genuinely run in parallel. Two uploads racing decide the
+  winner by whichever HTTP request finishes last and then store a `version` for
+  a file the other has already replaced. The guard never blocks - a sync that
+  queued would pile up behind the five-minute timer forever.
+- **`retrying` must only ever retry `AppError::External`, and never an auth
+  rejection.** 401/403/404 and `invalid_grant` are answers. And the delay list
+  is what bounds it: there is no endless retry, on purpose - "it will try again
+  in five minutes" is a perfectly good outcome for a local-first app. The
+  `thread::sleep` inside it is ONLY safe while these commands stay
+  `#[tauri::command(async)]`; on the main thread it is a four-second freeze.
+- **`PUSHED_HASH_KEY` answers a different question from the dirty flag.** Dirty
+  means "the database was written to"; the hash means "the bytes differ from
+  what Drive has". Migrations on launch make the first true without making the
+  second true. Never replace one with the other: the dirty flag is what decides
+  IF a sync is needed, the hash is what decides whether the UPLOAD is needed.
+  `cloud_sync_pull` records it too, or a freshly downloaded database gets
+  pushed straight back.
+- **The conflict flag is cleared by a clean merge and by nothing else.** Not by
+  a push, not by a pull. Skipped rows and `legacy-N` clashes mean the two
+  machines still disagree about specific records; letting the next upload paint
+  a green tick over that is how it would never get fixed.
+- **`summarize_state` is the single source of the word the UI shows.** The
+  frontend must not re-derive it from the booleans - that is how a panel starts
+  saying "synced" while the timer thinks otherwise. Pure, and tested for all
+  eight states.
+
 ## 2.17.0 - A synchronous Tauri command runs on the MAIN THREAD
 
 - **Any command that can touch the network or move the whole database must be

@@ -2,7 +2,8 @@ rules_version = '2';
 
 // TIQR Manager - Firestore security rules.
 //
-// 2.0.71: added for exactly one purpose - marko's account-approval gate
+// 2.0.71: added for the account-approval gate; 2.23.0 added the suggestion
+// box as the second (and so far only other) use -
 // (stop one person from registering multiple accounts). This is the ONLY
 // thing Firestore is used for in this app - see src/lib/firebase.ts's own
 // comment on `db` before reaching for Firestore anywhere else without
@@ -41,6 +42,41 @@ service cloud.firestore {
 
       // Nobody - including the doc's own owner - can update or delete it
       // from the app. Approving someone is a Console-only action (see above).
+      allow update, delete: if false;
+    }
+
+    // 2.23.0: the suggestion box in Settings -> Support.
+    //
+    // Anyone signed in can POST one and nothing else - no reading anyone's
+    // (including their own), no editing, no deleting. Reading the whole
+    // collection is marko's alone, and "marko" is defined by the `admin` field
+    // on his own users/{uid} doc, which only the Console can set (the rules
+    // above forbid every update from the app, so the app can never promote
+    // itself).
+    //
+    // TWO THINGS MUST BE DONE BY HAND FOR THIS TO WORK, and nothing in the app
+    // can do either: paste this file into the Console's Rules tab and Publish,
+    // and set `admin: true` on your own users/{uid} document in the Data tab.
+    // Until both are done, sending a suggestion fails with a permission error
+    // and the inbox stays hidden - which is the safe way round.
+    match /suggestions/{suggestionId} {
+      // Post your own, and only ever as a fresh, unanswered one. The shape is
+      // pinned here rather than trusted from the client: a suggestion that
+      // arrives already marked "done", or attributed to someone else, is not
+      // a suggestion.
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.status == 'new'
+                    && request.resource.data.text is string
+                    && request.resource.data.text.size() > 0
+                    && request.resource.data.text.size() <= 2000;
+
+      // Only an admin ever reads them. Note `get` on the reader's OWN user doc
+      // - that is the one document these rules already let them read.
+      allow read: if request.auth != null
+                  && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.admin == true;
+
+      // Triaging happens in the Console, the same asymmetry approval uses.
       allow update, delete: if false;
     }
 

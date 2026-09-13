@@ -251,6 +251,9 @@ export default function Layout() {
           setSyncActivity({ label: "Combining what's on both computers", blocking: true });
           const merged = await api.cloudMergePull();
           const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
+          if (merged.totalDeleted > 0) {
+            parts.push(`${merged.totalDeleted} removed here because you deleted them there.`);
+          }
           if (merged.totalRenumbered > 0) {
             parts.push(`${merged.totalRenumbered} got a new code (both computers had used the same one).`);
           }
@@ -533,7 +536,12 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
     return (
       <div
         role="status"
-        className="pointer-events-none fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
+        // 2.19.0: bottom CENTRE, not bottom-right. The toast stack is
+        // `fixed bottom-4 right-4 z-[100]` (lib/toast.tsx), so this pill was
+        // sitting in the same corner underneath it - every toast hid the one
+        // thing that was supposed to say the app is busy, which is the exact
+        // opposite of what it is for.
+        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
       >
         <Spinner className="h-3.5 w-3.5 text-brand-500" />
         {activity.label}...
@@ -543,7 +551,12 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
   return (
     <div
       role="status"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 backdrop-blur-sm"
+      // 2.19.0: z-[65], not z-50. Modal is z-50 and ConfirmDialog is z-[60]
+      // (ui.tsx), so at z-50 a confirm dialog could sit on top of "the app is
+      // about to reload" and be clicked into a database that is being merged
+      // underneath it. Still below the updater's own overlay (z-[70]), which
+      // outranks everything because it ends the process.
+      className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm"
     >
       <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white px-7 py-6 text-center shadow-raised dark:border-slate-700 dark:bg-slate-900">
         <Spinner className="h-7 w-7 text-brand-500" />

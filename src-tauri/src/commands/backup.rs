@@ -374,8 +374,8 @@ fn collect_restore_points(dir: &Path, source: &str, out: &mut Vec<(std::time::Sy
 
 /// Every automatic safety backup this app has taken for the CURRENTLY active
 /// database, newest first. Read-only.
-#[tauri::command]
-pub fn list_restore_points(state: State<AppState>) -> AppResult<Vec<RestorePoint>> {
+#[tauri::command(async)]
+pub fn list_restore_points(state: State<'_, AppState>) -> AppResult<Vec<RestorePoint>> {
     let db_path = state.db_path.lock().unwrap().clone();
     let Some(dir) = db_path.parent() else {
         return Ok(Vec::new());

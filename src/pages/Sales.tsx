@@ -15,8 +15,7 @@ import {
   formatSeatLocation,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  todayIso,
-} from "../lib/format";
+  todayIso, shortCode } from "../lib/format";
 import {
   Badge,
   Button,
@@ -858,7 +857,7 @@ export default function Sales() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Sale</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Platform</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 {!isNarrow && <th className="th-c">Seats</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`} title="Tickets">Tix</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
@@ -907,9 +906,12 @@ export default function Sales() {
                     <Link
                       to={`/sales/${g.id}`}
                       title={g.code}
-                      className="block truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      className="block truncate font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
-                      {g.code}
+                      {/* 2.23.0: `#26`, not `SAL-000026` - see shortCode in
+                          lib/format.ts. Full code stays in the tooltip and on
+                          Sale Detail. */}
+                      {shortCode(g.code)}
                     </Link>
                   </td>
                   {/* 1.9.1: the Event name used to be a <Link> to Event
@@ -935,8 +937,17 @@ export default function Sales() {
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={g.platformName ?? undefined}>
                     {g.platformName ?? "-"}
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
-                    {formatDateNumeric(g.saleDate)}
+                  {/* 2.23.0: the EVENT's date, not the sale date - marko
+                      scans this list for what is coming up. Sale Detail still
+                      shows when it sold, and the tooltip carries it here too.
+                      Null on a mixed-event group or a TBD event, and
+                      `formatDateNumeric` renders that as "-" rather than
+                      guessing. */}
+                  <td
+                    className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}
+                    title={`Sold ${formatDateNumeric(g.saleDate)}`}
+                  >
+                    {formatDateNumeric(g.eventDate)}
                   </td>
                   {!isNarrow && (
                     <td className="td-c truncate" title={formatSeatsSummary(g.seats)}>

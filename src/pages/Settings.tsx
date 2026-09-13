@@ -15,6 +15,9 @@ import {
   type NotificationConfigInput,
   type NotificationStatus,
   type NotificationTestResult,
+  type AiUsageMonth,
+  type CloudRevision,
+  type MergeLogEntry,
   type MergeOutcome,
   type RestorePoint,
   type Platform,
@@ -24,12 +27,15 @@ import {
   type SpreadsheetTabsResult,
 } from "../lib/types";
 import { formatDateTime } from "../lib/format";
+import { addDoc, collection, getDocs, limit, orderBy, query, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
 import {
   Badge,
   Button,
   Card,
   CHECKBOX_CLASS,
   ConfirmDialog,
+  EmptyState,
   Field,
   Input,
   Modal,
@@ -55,6 +61,7 @@ import {
   IconChevronDown,
   IconDatabase,
   IconDownload,
+  IconGauge,
   IconInfo,
   IconLink,
   IconLogOut,
@@ -71,6 +78,7 @@ import { useToast } from "../lib/toast";
 import { checkForUpdate, getLastUpdateCheck, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
+import { InsightsCards } from "../components/Recap";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 
 // 1.8.2: Settings Home - one card per category, each a real route
@@ -105,6 +113,15 @@ const SECTIONS = [
   // marko's own request; 2.0.78 switched the mobile-push channel from
   // Pushover to ntfy - see NotificationsCard's own doc comment.
   { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts for the things that need your attention.", icon: IconBell },
+  // 2.23.0: marko asked for a place with a guide and a way for people to say
+  // what they want changed - and for him to see those as admin. Both live in
+  // this one section rather than anywhere new; see SupportCards at the bottom
+  // of this file.
+  // 2.24.0: Recap lives HERE, not in the sidebar - marko's own call. It is
+  // something you open when you want to see how things are going, not
+  // something in the way of everyday work. See components/Recap.tsx.
+  { key: "insights", title: "Insights", description: "Ticket and Finance recaps - how a period actually went, in one screen.", icon: IconGauge },
+  { key: "support", title: "Support", description: "How the app wants to be used, and a direct line for anything missing.", icon: IconInfo },
   // 2.4.4: the old "Appearance" section (Light/System/Dark) moved out of
   // Settings entirely - marko's own request for a one-click light/dark
   // toggle right above the sidebar's profile widget instead (Layout.tsx,
@@ -115,6 +132,85 @@ const SECTIONS = [
   // links straight to /settings/account.
   { key: "account", title: "Account", description: "Your name, email and sign-in.", icon: IconUser },
 ];
+
+/** 2.18.0: the seven states marko asked to be able to see at a glance, in his
+ *  words rather than the backend's. `off` never reaches the UI - the card
+ *  shows the toggle instead. */
+/** 2.23.0: how many restore points show before "Show N more". Two, because
+ *  the one worth restoring is almost always the most recent and a list of
+ *  fifteen identical-looking rows hides it. */
+/** 2.23.0: the guide in Settings -> Support. Written for someone opening TIQR
+ *  for the first time, in the order the app is actually built around - not a
+ *  feature list. The three genuinely surprising things are named outright,
+ *  because they are what a new person gets wrong first. */
+const GUIDE_STEPS = [
+  {
+    title: "Add the event first",
+    body: "Everything hangs off an event - orders, tickets, sales, the calendar. If the date is not settled yet, leave it empty rather than guessing; the app shows TBD and sorts it separately.",
+  },
+  {
+    title: "Then the order - it creates the tickets for you",
+    body: "Enter what you paid for the whole order and how many tickets it was. The app splits that cost across them to the exact cent, so you never type a per-ticket price. Section, row and seat are labels, not prices.",
+  },
+  {
+    title: "List them, then record the sale",
+    body: "A ticket with no listing price cannot sell, and the Dashboard counts those separately. When one sells, record the sale with the platform and the fee that platform took - the fee is what makes your margin real rather than optimistic.",
+  },
+  {
+    title: "Money is typed normally, stored exactly",
+    body: "Type 12,50 or 12.50 - both work. It is kept to the cent internally, so totals never drift the way a spreadsheet's do.",
+  },
+  {
+    title: "Turn on sync once, then forget it",
+    body: "Settings -> Data. After that your two computers keep themselves level on their own: changes go up every few minutes and come down when you open the app. If both changed, they get combined - nothing is thrown away.",
+  },
+  {
+    title: "There is always a way back",
+    body: "Before anything replaces your data, the app saves a restore point - and Google Drive keeps an earlier version of every sync. Both are in Settings -> Data, both are one click.",
+  },
+  {
+    title: "Screenshots do the typing",
+    body: "On events, orders, sales and pulls there's a scanner: drop a screenshot and it fills in what it can read. It is sent to Anthropic to be read, and what it costs you is shown in Settings -> Integrations.",
+  },
+];
+
+/** One suggestion as the inbox renders it. */
+interface SuggestionDoc {
+  id: string;
+  email: string;
+  name: string;
+  kind: string;
+  text: string;
+  appVersion: string;
+  /** null while the server timestamp is still being filled in. */
+  createdAt: string | null;
+}
+
+const RESTORE_POINTS_COLLAPSED = 2;
+
+const SYNC_STATE_LABEL: Record<string, string> = {
+  syncing: "Syncing",
+  synced: "Synced",
+  localChanges: "Local changes",
+  cloudChanges: "Cloud changes",
+  conflict: "Conflict",
+  offline: "Offline",
+  failed: "Failed",
+  off: "Off",
+};
+
+/** Reuses the existing badge tones rather than adding new ones - the same
+ *  green/amber/red vocabulary the rest of the app already speaks. */
+const SYNC_STATE_TONE: Record<string, string> = {
+  syncing: "partial",
+  synced: "paid",
+  localChanges: "listed",
+  cloudChanges: "listed",
+  conflict: "unpaid",
+  offline: "available",
+  failed: "cancelled",
+  off: "available",
+};
 
 export default function Settings() {
   const { section } = useParams();
@@ -307,12 +403,73 @@ export default function Settings() {
     }
   }, []);
 
+  /** 2.23.0: what a restore point was taken FOR, when that can be said.
+   *
+   *  A point saved before a merge has a merge-log entry from the same moment,
+   *  so the two can be paired by time - the log records what arrived, which is
+   *  exactly the "what changed" marko asked to see next to each one. Two
+   *  minutes of slack, because the backup is taken first and the log is
+   *  written after the merge finishes.
+   *
+   *  Returns null rather than a guess when nothing matches: a point saved
+   *  before a whole-file sync down has no merge entry at all, and inventing a
+   *  summary for it would be worse than leaving it blank. */
+  const changeNote = (rp: RestorePoint): string | null => {
+    if (!rp.createdAt) return null;
+    const at = new Date(rp.createdAt).getTime();
+    if (Number.isNaN(at)) return null;
+    const near = mergeHistory.find((e) => Math.abs(new Date(e.at).getTime() - at) < 120_000);
+    if (!near) return null;
+    const parts = near.changed.map((c) =>
+      [c.inserted > 0 ? `${c.inserted} ${c.table.replace(/_/g, " ")}` : null,
+       c.deleted > 0 ? `${c.deleted} ${c.table.replace(/_/g, " ")} removed` : null]
+        .filter(Boolean)
+        .join(", "),
+    );
+    if (near.skipped > 0) parts.push(`${near.skipped} skipped`);
+    return parts.length === 0 ? "nothing arrived" : `then: ${parts.join(", ")}`;
+  };
+
+  const refreshMergeHistory = useCallback(async () => {
+    try {
+      setMergeHistory(await api.cloudMergeHistory());
+    } catch {
+      setMergeHistory([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (sec === "data") {
       void refreshSync();
       void refreshRestorePoints();
+      void refreshMergeHistory();
     }
-  }, [sec, refreshSync, refreshRestorePoints]);
+  }, [sec, refreshSync, refreshRestorePoints, refreshMergeHistory]);
+
+  // Not loaded with the section: it is a network call, and marko only wants
+  // it when he is actually looking for a version to go back to.
+  const loadRevisions = async () => {
+    setRevisionsBusy(true);
+    try {
+      setRevisions(await api.cloudSyncRevisions());
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setRevisionsBusy(false);
+    }
+  };
+
+  const doRestoreRevision = async (rev: CloudRevision) => {
+    setBusyAction("restore");
+    try {
+      const safetyPath = await api.cloudSyncRestoreRevision(rev.id);
+      toast.success(`Restored the cloud version. Your previous data was saved to ${safetyPath}. Relaunching...`);
+      setTimeout(() => relaunch(), 900);
+    } catch (e) {
+      toast.error(errMsg(e));
+      setBusyAction(null);
+    }
+  };
 
   const doSyncToggle = async (enabled: boolean) => {
     setSyncBusy("toggle");
@@ -380,6 +537,15 @@ export default function Settings() {
   // skip rows (the same ticket sold on both machines), and a toast that says
   // "see Settings" has to be telling the truth.
   const [mergeResult, setMergeResult] = useState<MergeOutcome | null>(null);
+  // 2.20.0: what past merges did, and what Drive still holds. Both load with
+  // the Data section, both read-only.
+  const [mergeHistory, setMergeHistory] = useState<MergeLogEntry[]>([]);
+  const [revisions, setRevisions] = useState<CloudRevision[]>([]);
+  const [revisionsBusy, setRevisionsBusy] = useState(false);
+  // 2.23.0: marko asked for the last one or two, not fifteen. The list is a
+  // way back from a bad sync, and the one you want is almost always the most
+  // recent - the rest are a wall that hides it.
+  const [restoreExpanded, setRestoreExpanded] = useState(false);
 
   const doMergeBoth = async () => {
     setSyncBusy("merge");
@@ -400,6 +566,23 @@ export default function Settings() {
       setSyncBusy(null);
     }
   };
+
+  // 2.19.0: a button that errors out is a broken button. 2.18.0 gave the
+  // backend a one-sync-at-a-time guard, so pressing Sync while the 5-minute
+  // timer happens to be uploading now comes back "a sync is already running" -
+  // which looks like a bug rather than a queue. `state === "syncing"` is the
+  // backend's own word for it, so these disable for the timer's sync exactly
+  // as they already did for one started here.
+  const syncDisabled = syncBusy !== null || sync?.state === "syncing";
+
+  // Only while something is actually in flight, and it stops by itself: the
+  // state above comes from a command, so without this the panel would sit on
+  // "Syncing" until marko navigated away and back.
+  useEffect(() => {
+    if (sec !== "data" || sync?.state !== "syncing") return;
+    const t = setInterval(() => void refreshSync(), 2000);
+    return () => clearInterval(t);
+  }, [sec, sync?.state, refreshSync]);
 
   const doBackup = async () => {
     const stamp = new Date().toISOString().slice(0, 10);
@@ -699,7 +882,7 @@ export default function Settings() {
                         type="checkbox"
                         className={CHECKBOX_CLASS}
                         checked={sync?.enabled ?? false}
-                        disabled={syncBusy !== null}
+                        disabled={syncDisabled}
                         onChange={(e) => doSyncToggle(e.target.checked)}
                       />
                       Turn on cloud sync
@@ -707,6 +890,44 @@ export default function Settings() {
 
                     {sync?.enabled && (
                       <>
+                        {/* 2.18.0: marko asked for a short state, not a Sync
+                            Center. One line, in the card that already exists.
+                            The word comes from the backend's summarize_state,
+                            so this can never disagree with what the automatic
+                            check decided. */}
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                          <Badge tone={SYNC_STATE_TONE[sync.state] ?? "available"}>{SYNC_STATE_LABEL[sync.state] ?? sync.state}</Badge>
+                          <span className="text-slate-400 dark:text-slate-500">
+                            {sync.lastSyncAt ? `Last synced ${formatDateTime(sync.lastSyncAt)}` : "Never synced from this computer"}
+                          </span>
+                        </div>
+                        {sync.lastError && sync.state !== "syncing" && (
+                          <p className="mt-2 text-xs text-red-600 dark:text-red-400">{sync.lastError}</p>
+                        )}
+                        {/* 2.19.0: "Combine both" used to live only inside the
+                            prompt that appears after a push is refused, so a
+                            conflict recorded by a merge had no button at all -
+                            the state said Conflict and nothing on screen
+                            resolved it. */}
+                        {sync.state === "conflict" && (
+                          <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:ring-amber-500/25">
+                            <p className="flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
+                              <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              Both computers hold changes the other hasn&apos;t seen. Combining keeps everything -
+                              nothing is replaced and nothing is deleted.
+                            </p>
+                            <Button
+                              variant="primary"
+                              className="mt-2.5"
+                              disabled={syncDisabled}
+                              onClick={() => void doMergeBoth()}
+                            >
+                              {syncBusy === "merge" ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
+                              Combine both
+                            </Button>
+                          </div>
+                        )}
+
                         {sync.remoteNewer && (
                           <p className="mt-3 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/25">
                             <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -718,7 +939,7 @@ export default function Settings() {
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           <Button
                             variant="primary"
-                            disabled={syncBusy !== null}
+                            disabled={syncDisabled}
                             onClick={() => {
                               // Remote unchanged since our last sync -> nothing of
                               // theirs to lose, so push. Remote moved -> ask.
@@ -748,7 +969,7 @@ export default function Settings() {
                             <div className="mt-2.5 flex flex-wrap items-center gap-2">
                               <Button
                                 variant="primary"
-                                disabled={syncBusy !== null}
+                                disabled={syncDisabled}
                                 onClick={() => void doMergeBoth()}
                               >
                                 {syncBusy === "merge" ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
@@ -756,7 +977,7 @@ export default function Settings() {
                               </Button>
                               <Button
                                 variant="secondary"
-                                disabled={syncBusy !== null}
+                                disabled={syncDisabled}
                                 onClick={() => {
                                   setSyncChoice(false);
                                   void doSyncDown();
@@ -767,7 +988,7 @@ export default function Settings() {
                               </Button>
                               <Button
                                 variant="secondary"
-                                disabled={syncBusy !== null}
+                                disabled={syncDisabled}
                                 onClick={() => {
                                   setSyncChoice(false);
                                   void doSyncUp(false);
@@ -833,13 +1054,47 @@ export default function Settings() {
                           </div>
                         )}
 
+                        {/* 2.20.0: the merge already said what it did, but the
+                            report left with the toast. Three entries is
+                            enough to trust it without turning the card into a
+                            log viewer. */}
+                        {mergeHistory.length > 0 && (
+                          <div className="mt-3 border-t border-slate-100 pt-3 dark:border-slate-800">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                              What came from your other computer
+                            </p>
+                            <ul className="mt-1.5 space-y-1">
+                              {mergeHistory.slice(0, 3).map((e) => (
+                                <li key={e.at} className="text-xs text-slate-500 dark:text-slate-400">
+                                  <span className="text-slate-400 dark:text-slate-500">{formatDateTime(e.at)}</span>
+                                  {" - "}
+                                  {e.changed.length === 0 && e.deleted === 0
+                                    ? "nothing new"
+                                    : e.changed
+                                        .map((c) =>
+                                          [
+                                            c.inserted > 0 ? `${c.inserted} ${c.table.replace(/_/g, " ")}` : null,
+                                            c.deleted > 0 ? `${c.deleted} ${c.table.replace(/_/g, " ")} removed` : null,
+                                          ]
+                                            .filter(Boolean)
+                                            .join(", "),
+                                        )
+                                        .join(", ")}
+                                  {e.renumbered > 0 ? ` (${e.renumbered} renumbered)` : ""}
+                                  {e.skipped > 0 ? ` (${e.skipped} skipped)` : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
                         {showSyncAdvanced && (
                           <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <Button variant="secondary" disabled={syncBusy !== null} onClick={() => doSyncUp(false)}>
+                            <Button variant="secondary" disabled={syncDisabled} onClick={() => doSyncUp(false)}>
                               {syncBusy === "up" ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
                               Sync up
                             </Button>
-                            <Button variant="secondary" disabled={syncBusy !== null} onClick={doSyncDown}>
+                            <Button variant="secondary" disabled={syncDisabled} onClick={doSyncDown}>
                               {syncBusy === "down" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
                               Sync down
                             </Button>
@@ -956,6 +1211,55 @@ export default function Settings() {
                   </Button>
                 </div>
 
+                {/* 2.20.0: the only copy of this database that is NOT on this
+                    machine is the file in Drive, and every sync overwrites it -
+                    so a bad day that got pushed had nowhere to be undone from.
+                    Drive has been keeping a revision of every upload all
+                    along; this just asks for the list. Not loaded with the
+                    section: it is a network call, and only wanted when marko
+                    is actually looking for a version to go back to. */}
+                <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    Earlier versions in Google Drive
+                  </p>
+                  <p className="mb-2 mt-1 text-xs text-slate-400 dark:text-slate-500">
+                    Every sync up left one. Restoring one replaces this computer&apos;s data - it takes its own backup
+                    first, and then syncs the older version to your other computer too. Google decides how long it
+                    keeps them.
+                  </p>
+                  {revisions.length === 0 ? (
+                    <Button variant="secondary" size="sm" disabled={revisionsBusy} onClick={loadRevisions}>
+                      {revisionsBusy ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
+                      Show versions in Drive
+                    </Button>
+                  ) : (
+                    <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {revisions.map((r) => (
+                        <li key={r.id} className="flex flex-wrap items-center gap-2 py-2">
+                          <span className="text-sm text-slate-700 dark:text-slate-300">
+                            {r.modifiedAt ? formatDateTime(r.modifiedAt) : r.id}
+                          </span>
+                          {r.isCurrent && <Badge tone="paid">in Drive now</Badge>}
+                          {r.sizeBytes !== null && (
+                            <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                              {(r.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                            </span>
+                          )}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="ml-auto"
+                            disabled={busyAction === "restore" || syncDisabled}
+                            onClick={() => void doRestoreRevision(r)}
+                          >
+                            Restore this
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 {/* 2.14.0: the way back from a sync that turned out to be the
                     wrong one. These files are not new - every destructive
                     restore, cloud-sync downloads included, has always taken
@@ -972,29 +1276,48 @@ export default function Settings() {
                       first. Restoring one takes its own backup first, so this is undoable too.
                     </p>
                     <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {restorePoints.map((rp) => (
-                        <li key={rp.path} className="flex flex-wrap items-center gap-2 py-2">
-                          <span className="text-sm text-slate-700 dark:text-slate-300">
-                            {rp.createdAt ? formatDateTime(rp.createdAt) : rp.fileName}
-                          </span>
-                          <Badge tone={rp.source === "sync" ? "listed" : "available"}>
-                            {rp.source === "sync" ? "before sync down" : "before restore"}
-                          </Badge>
-                          <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
-                            {(rp.sizeBytes / 1024 / 1024).toFixed(1)} MB
-                          </span>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            className="ml-auto"
-                            disabled={busyAction === "restore"}
-                            onClick={() => restoreFromPoint(rp.path)}
-                          >
-                            Restore this
-                          </Button>
-                        </li>
-                      ))}
+                      {(restoreExpanded ? restorePoints : restorePoints.slice(0, RESTORE_POINTS_COLLAPSED)).map((rp) => {
+                        const note = changeNote(rp);
+                        return (
+                          <li key={rp.path} className="py-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm text-slate-700 dark:text-slate-300">
+                                {rp.createdAt ? formatDateTime(rp.createdAt) : rp.fileName}
+                              </span>
+                              <Badge tone={rp.source === "sync" ? "listed" : "available"}>
+                                {rp.source === "sync" ? "before sync down" : "before restore"}
+                              </Badge>
+                              <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                                {(rp.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                              </span>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                className="ml-auto"
+                                disabled={busyAction === "restore"}
+                                onClick={() => restoreFromPoint(rp.path)}
+                              >
+                                Restore this
+                              </Button>
+                            </div>
+                            {note && (
+                              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{note}</p>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
+                    {restorePoints.length > RESTORE_POINTS_COLLAPSED && (
+                      <button
+                        type="button"
+                        onClick={() => setRestoreExpanded((v) => !v)}
+                        className="mt-2 text-xs font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400"
+                      >
+                        {restoreExpanded
+                          ? "Show fewer"
+                          : `Show ${restorePoints.length - RESTORE_POINTS_COLLAPSED} more`}
+                      </button>
+                    )}
                   </div>
                 )}
                 {appInfo && (
@@ -1008,6 +1331,10 @@ export default function Settings() {
               </Card>
             </div>
           )}
+
+          {sec === "insights" && <InsightsCards />}
+
+          {sec === "support" && <SupportCards />}
 
           {sec === "integrations" && (
             <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
@@ -1758,12 +2085,20 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
 function AnthropicApiKeyCard() {
   const toast = useToast();
   const [configured, setConfigured] = useState<boolean | null>(null);
+  // 2.20.0: what THIS app has spent, which is a different question from the
+  // one the comment above answers. That one is about a live account balance,
+  // which no endpoint returns without an Admin key. This is measured: the
+  // Messages API reports token usage on every response and the app was
+  // throwing it away. Nothing is fabricated - the tokens are counted, and the
+  // price is Opus 5's published list price.
+  const [usage, setUsage] = useState<AiUsageMonth[]>([]);
   const [editing, setEditing] = useState(false);
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
 
   const load = () => {
+    api.aiUsageSummary().then(setUsage).catch(() => setUsage([]));
     api
       .getAnthropicApiKeyConfigured()
       .then((c) => {
@@ -1844,6 +2179,34 @@ function AnthropicApiKeyCard() {
           Check usage &amp; balance on the Anthropic Console ↗
         </button>
       </p>
+
+      {usage.length > 0 && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            What this app has used
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {usage.slice(0, 3).map((m) => (
+              <li key={m.month} className="flex flex-wrap items-baseline gap-2 text-xs">
+                <span className="tabular-nums text-slate-600 dark:text-slate-300">{m.month}</span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  {m.scans} scan{m.scans === 1 ? "" : "s"}
+                </span>
+                <span className="tabular-nums font-medium text-slate-700 dark:text-slate-200">
+                  ~${(m.estimatedCostUsdCents / 100).toFixed(2)}
+                </span>
+                <span className="tabular-nums text-slate-400 dark:text-slate-500">
+                  {(m.inputTokens / 1000).toFixed(1)}k in / {(m.outputTokens / 1000).toFixed(1)}k out
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500">
+            Estimated from the tokens each import actually used, at Claude Opus 5 list price ($5 / $25 per million
+            tokens). USD, because that is what Anthropic bills.
+          </p>
+        </div>
+      )}
 
       {configured && !editing ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
@@ -3317,5 +3680,216 @@ function NotificationsCard() {
         </div>
       )}
     </Card>
+  );
+}
+
+/** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
+ *
+ * The guide is written for someone opening TIQR for the first time, in the
+ * order the app actually wants to be used - it is not a feature list, and it
+ * names the three things that are genuinely surprising (money is entered as a
+ * decimal but stored to the cent, an order creates its tickets for you, and
+ * sync is automatic once switched on).
+ *
+ * The suggestion box writes one document to Firestore and reads nothing back.
+ * The rules (firestore.rules) let anyone signed in POST one and let nobody but
+ * an admin read the collection, so a user can never see another user's note -
+ * or even their own after sending it. That is deliberate: this is a postbox,
+ * not a forum, and pretending otherwise would invite a reply that never comes.
+ *
+ * TWO MANUAL STEPS make this live, and nothing in the app can do either:
+ * publish the rules in the Firebase Console, and set `admin: true` on marko's
+ * own users/{uid} doc. Until then, sending fails with a permission error and
+ * the inbox stays hidden - the safe way round, and the error below says so in
+ * plain words rather than showing a raw Firebase code.
+ */
+function SupportCards() {
+  const toast = useToast();
+  const { user, isAdmin } = useAuth();
+  const [version, setVersion] = useState("");
+  const [text, setText] = useState("");
+  const [kind, setKind] = useState<"idea" | "problem" | "question">("idea");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [inbox, setInbox] = useState<SuggestionDoc[] | null>(null);
+  const [inboxBusy, setInboxBusy] = useState(false);
+
+  useEffect(() => {
+    api.getAppInfo().then((i) => setVersion(i.version)).catch(() => setVersion(""));
+  }, []);
+
+  const send = async () => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      toast.error("Write what you'd like changed first.");
+      return;
+    }
+    setSending(true);
+    try {
+      await addDoc(collection(db, "suggestions"), {
+        uid: auth.currentUser?.uid ?? "",
+        email: user?.email ?? "",
+        name: user?.name ?? "",
+        kind,
+        text: trimmed.slice(0, 2000),
+        status: "new",
+        appVersion: version,
+        createdAt: serverTimestamp(),
+      });
+      setText("");
+      setSent(true);
+      toast.success("Sent. Thanks - it lands straight in marko's inbox.");
+    } catch {
+      // Deliberately not the raw Firebase message: "Missing or insufficient
+      // permissions" tells the person who typed it nothing they can act on.
+      toast.error("Couldn't send that - the suggestion box isn't switched on yet for this account.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const loadInbox = async () => {
+    setInboxBusy(true);
+    try {
+      const snap = await getDocs(query(collection(db, "suggestions"), orderBy("createdAt", "desc"), limit(50)));
+      setInbox(
+        snap.docs.map((d) => {
+          const v = d.data() as Record<string, unknown>;
+          const created = v.createdAt as { toDate?: () => Date } | undefined;
+          return {
+            id: d.id,
+            email: typeof v.email === "string" ? v.email : "",
+            name: typeof v.name === "string" ? v.name : "",
+            kind: typeof v.kind === "string" ? v.kind : "idea",
+            text: typeof v.text === "string" ? v.text : "",
+            appVersion: typeof v.appVersion === "string" ? v.appVersion : "",
+            // serverTimestamp() is null for a beat on the writer's own device
+            // until the server fills it in - shown as "just now" rather than
+            // as a broken date.
+            createdAt: created?.toDate ? created.toDate().toISOString() : null,
+          };
+        }),
+      );
+    } catch {
+      toast.error("Couldn't read the inbox - check the Firestore rules are published.");
+      setInbox([]);
+    } finally {
+      setInboxBusy(false);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
+      <Card className="p-5">
+        <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">How TIQR wants to be used</h3>
+        <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+          The short version. Everything below is the order the app is built around - going out of order mostly works,
+          it just makes more typing.
+        </p>
+        <ol className="space-y-3">
+          {GUIDE_STEPS.map((step, i) => (
+            <li key={step.title} className="flex gap-3">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-50 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">
+                {i + 1}
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{step.title}</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{step.body}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </Card>
+
+      <Card className="p-5">
+        <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suggest a change</h3>
+        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          Something missing, something in the way, something that behaves oddly - write it here and it goes straight to
+          marko. There's no reply thread: this is a postbox, not a chat.
+        </p>
+        <div className="mb-3 flex flex-wrap gap-2">
+          {([
+            ["idea", "Idea"],
+            ["problem", "Something's wrong"],
+            ["question", "Question"],
+          ] as const).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setKind(k)}
+              aria-pressed={kind === k}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                kind === k
+                  ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300"
+                  : "border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800/60"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setSent(false);
+          }}
+          rows={4}
+          maxLength={2000}
+          placeholder="Napíš, čo by si zmenil alebo pridal…"
+          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
+        />
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Button variant="primary" disabled={sending || text.trim().length === 0} onClick={send}>
+            {sending ? <Spinner className="h-4 w-4" /> : null}
+            Send to marko
+          </Button>
+          <span className="text-xs text-slate-400 dark:text-slate-500">
+            {sent ? "Sent." : `${text.trim().length}/2000 · sent with your email and app version`}
+          </span>
+        </div>
+      </Card>
+
+      {isAdmin && (
+        <Card className="p-5">
+          <div className="mb-1 flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Inbox</h3>
+            <Badge tone="demo">admin</Badge>
+          </div>
+          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            Everything anyone has sent, newest first. Read-only here - marking one handled happens in the Firebase
+            Console, the same place approvals do.
+          </p>
+          {inbox === null ? (
+            <Button variant="secondary" disabled={inboxBusy} onClick={loadInbox}>
+              {inboxBusy ? <Spinner className="h-4 w-4" /> : <IconRefresh className="h-4 w-4" />}
+              Load suggestions
+            </Button>
+          ) : inbox.length === 0 ? (
+            <EmptyState title="Nothing sent yet" />
+          ) : (
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {inbox.map((s) => (
+                <li key={s.id} className="py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={s.kind === "problem" ? "unpaid" : s.kind === "question" ? "listed" : "available"}>
+                      {s.kind}
+                    </Badge>
+                    <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                      {s.name || s.email || "unknown"}
+                    </span>
+                    <span className="text-xs text-slate-400 dark:text-slate-500">
+                      {s.createdAt ? formatDateTime(s.createdAt) : "just now"}
+                      {s.appVersion ? ` · v${s.appVersion}` : ""}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{s.text}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+    </div>
   );
 }

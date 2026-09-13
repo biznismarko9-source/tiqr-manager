@@ -242,7 +242,17 @@ export default function Transactions({ entries, categories, accounts, transfers,
               <EmptyState title="No transactions match these filters" />
             </div>
           ) : (
-            <div className="table-flush">
+            /* 2.23.0: the height cap is what makes the wheel work here.
+               `.table-flush` is `overflow: auto` PLUS
+               `overscroll-behavior: contain` (index.css), and this div had no
+               height - so it could never scroll itself, while `contain` still
+               stopped the wheel from reaching the page behind it. The list was
+               only reachable by dragging the window's own scrollbar, exactly as
+               marko reported. Measured both ways in a browser before fixing:
+               without a cap the wheel moved the page 0px; with one the table
+               moved 500px. The class's own doc comment already says it belongs
+               on a box that scrolls - this usage just never gave it one. */
+            <div className="table-flush max-h-[calc(100vh-21rem)]">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>

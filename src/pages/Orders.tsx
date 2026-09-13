@@ -4,7 +4,7 @@ import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
-import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
+import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso, shortCode } from "../lib/format";
 import {
   Badge,
   Button,
@@ -570,7 +570,7 @@ export default function Orders() {
                 )}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 {!isNarrow && <th className="th-c">Seats</th>}
                 {!isNarrow && <th className="th-c">Notes</th>}
                 {!isNarrow && <th className="th-c">Platform</th>}
@@ -609,13 +609,16 @@ export default function Orders() {
                       />
                     </td>
                   )}
+                  {/* 2.23.0: `#14`, not `ORD-000014` - see shortCode in
+                      lib/format.ts. The full code is still the tooltip, and
+                      Order Detail still shows it in full. */}
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.code}>
                     <Link
                       to={`/orders/${o.id}`}
                       state={{ from: location.pathname }}
-                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                      className="font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
-                      {o.code}
+                      {shortCode(o.code)}
                     </Link>
                   </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"} title={o.eventName}>
@@ -642,7 +645,15 @@ export default function Orders() {
                       )}
                     </div>
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(o.purchaseDate)}</td>
+                  {/* 2.23.0: the EVENT's date, not the purchase date. marko:
+                      the list is scanned to find "what is coming up", and a
+                      purchase date answers a question nobody asks while
+                      scanning. Order Detail still shows when it was bought -
+                      that is where that belongs. `formatDateNumeric` already
+                      renders a TBD event's null date as "-". */}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`} title={`Bought ${formatDateNumeric(o.purchaseDate)}`}>
+                    {formatDateNumeric(o.eventDate)}
+                  </td>
                   {!isNarrow && (
                     <td className="td-c truncate" title={formatSeatsSummary(o.seats)}>
                       {formatSeatsSummary(o.seats)}

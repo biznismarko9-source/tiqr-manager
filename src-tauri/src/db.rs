@@ -211,6 +211,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "027_row_uids",
         include_str!("../migrations/027_row_uids.sql"),
     ),
+    (
+        "028_tombstones",
+        include_str!("../migrations/028_tombstones.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

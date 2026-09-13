@@ -761,6 +761,10 @@ pub struct SaleGroup {
     /// restricted to one event) and the UI should show "Mixed events".
     pub event_id: Option<i64>,
     pub event_name: Option<String>,
+    /// 2.23.0: the shared event's own date - same "only when every line's
+    /// event agrees" rule as the two above. None for a mixed-event group or a
+    /// TBD event; both are honestly "no single date".
+    pub event_date: Option<String>,
     /// 2.0.27: the shared event's category - same "Some only when every
     /// line's event agrees" rule as `event_id`/`event_name` right above
     /// (derived from the very same single-event check), since a category is

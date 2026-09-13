@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.17.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.24.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -379,7 +379,95 @@ those end in a restart. And the merge now detects and reports two records
 wearing the same `legacy-N` identity, which is the one way it could still have
 silently failed to bring a record across.
 
-**Next new migration is 028.**
+**2.18.0** hardens the same sync layer without adding anything to it: a
+process-wide `SyncGuard` so the timer and a hand-pressed sync can never run at
+once (2.17.0's move off the main thread made that genuinely possible), bounded
+retries that never loop and never retry an auth rejection, a content hash that
+stops re-uploading a database Drive already has byte for byte (app migrations
+used to force a full push on every update), one short `state` word plus the
+last error in the existing Settings card, and a merge conflict that persists
+until a merge comes back clean. No new module, no new screen.
+
+**2.19.0** is a layout and responsiveness pass. `.summary-bar` became a
+`repeat(auto-fit, minmax(9rem, 1fr))` grid: with `flex-1` + `flex-wrap` the
+cards on the last row stretched to fill it, so six cards at the minimum window
+width gave five normal ones and one spanning the whole row, and nine (Price
+Checker, Event Detail) did it on a default window. Measured in a browser before
+and after; the common six-on-a-normal-window case is unchanged. `StatCard`
+gained `min-w-0` + a truncating value (a grid item defaults to content width).
+12 CSV commands and `list_restore_points` moved off the main thread (scanner
+deliberately not - it creates windows). Sync buttons now disable for a sync
+started anywhere, a recorded conflict has its own Combine-both button, and two
+z-index mistakes from 2.17.0 are fixed (the busy pill shared a corner with the
+toast stack; the blocking overlay sat below ConfirmDialog).
+
+**2.20.0** (SYN-5/6/7/8). **Migration 028: tombstones** - `deleted_rows` plus
+an AFTER DELETE trigger on all 17 syncable tables, because a row that is merely
+absent is indistinguishable from one that has not arrived yet, so a deletion
+had to leave something behind or the merge copied the record straight back.
+Applied children first (RESTRICT), refusals reported not forced, tombstones
+travel. **Merge history** kept (last 20, JSON in `app_settings`) instead of
+vanishing with the toast. **AI cost**: the Messages API's `usage` was being
+thrown away; now counted per month with an estimate at Opus 5 list price
+($5/$25 per MTok, integer cents, USD). **Drive revisions**: Drive already kept
+a revision of every upload and `drive.file` is enough to list and download
+them, so there is off-machine point-in-time recovery with no new
+infrastructure; restoring one routes through `restore_database_impl` and then
+pushes the older version onward.
+
+**2.21.0** turns the Dashboard from a record into something that answers
+questions, with **no API wired up** (marko's only constraint). `dashboard.rs`
+gained `OperationsSnapshot`: sell-through, days-to-sell (median + mean +
+sample), ageing stock in day buckets, money at risk in the next 14 days ranked
+by euros and unpriced tickets, realized profit per event, and stock by
+supplier. Six new Overview cards, plus profit beside revenue on Sales by
+platform (`profitCents` was sent since 2.0.47 and never shown). All six SQL
+statements were run verbatim against a real seeded database, and the three bar
+colours were validated by computing OKLab distance under simulated CVD rather
+than by eye. Not period-filtered on purpose: ageing stock and an event five
+days away are facts about now.
+
+**2.22.0 reverted 2.21.0 in full**, at marko's request - he saw the preview and
+said *"toto ani nejdem stahovat je to strasne zabudnime na tuto verziu"*, and
+never installed it. `OperationsSnapshot`, the six `dashboard.rs` aggregates,
+the six Overview cards and platform profit are gone; `PROTECTED_AREAS.md`'s
+2.21.0 section went with them. The Dashboard is byte-for-byte what 2.20.0
+shipped, `PeriodComparisonCard` (DSH-L, his own pick) included. Everything from
+2.14.0-2.20.0 is untouched. **Version went forward, never back** - the updater
+will not accept a repeated number (same lesson as 2.3.0 -> 2.3.1). What was
+wrong with it is not recorded, because it is not yet known.
+
+**2.23.0** (marko's own list). Orders/Sales/Pulls lists show the **event date**
+instead of the purchase/sale date (which moved to the tooltip and stays on the
+detail screens); `SaleGroup` gained `event_date` under the same
+only-when-every-line-agrees guard as `event_name`. Codes render as `#14` in
+lists via `shortCode` - **display only**, the stored code is untouched.
+`.table-flush` without a height cap was stranding the mouse wheel in all three
+Finance tabs (`overflow:auto` + `overscroll-behavior:contain` on a box that
+cannot scroll) - fixed, and verified in a browser both ways. Restore points
+collapse to two with "Show N more" and pair with the merge log to say what
+arrived. New **Settings → Support**: a guide plus a Firestore-backed suggestion
+box, readable only by an account whose `users/{uid}` doc has `admin: true` -
+**requires publishing the updated `firestore.rules` and setting that field by
+hand in the Console.**
+
+**2.24.0 - TIQR Recap** (Settings → Insights, never the sidebar). Ticket and
+Finance recaps open full-screen over the app with a period picker (this month /
+last month / 3m / 6m / this year / custom). **A presentation layer only: not
+one new business calculation.** Everything reads ONE existing call -
+`get_dashboard` with `period: "custom"` plus a concrete range - which already
+returns the period summary, the equal-length previous period, cashflow,
+inventory potential, platform breakdown and time series. Realized / Pending /
+Potential get separate bands with their definitions printed on screen; unpaid
+orders show a count only because no total exists. The summary table uses the
+app's own trend helpers and distinguishes % from pp. Share renders a hand-laid
+SVG card to PNG via canvas and saves it through `save_png_file` (decode, verify
+PNG signature, write - no logic). Biggest sale / fastest event / best tier are
+deliberately absent; best event is labelled all-time because that is the scope
+that exists. `components/Recap.tsx` + `commands/share.rs` are the only new
+files.
+
+**Next new migration is 029.**
 
 ## Stack / layout
 

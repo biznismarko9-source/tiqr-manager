@@ -55,9 +55,14 @@
 //     can call Anthropic twice for two different prompts.
 
 use crate::ai_categorize::{embedded_anthropic_api_key, is_retriable_anthropic_status};
+use crate::commands::sheets_sync::{get_setting, set_setting};
+use crate::db::AppState;
 use crate::error::{AppError, AppResult};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
+use tauri::State;
 
 const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
@@ -510,12 +515,111 @@ struct AnthropicContentBlock {
     text: String,
 }
 
+// --- what the AI costs (2.20.0) ------------------------------------------
+//
+// Per month, in `app_settings` as JSON. A settings row rather than a table:
+// nothing queries it, and `app_settings` is a bookkeeping table (see
+// `db::is_bookkeeping_table`) so counting a scan cannot make the app think it
+// has data to sync.
+
+const AI_USAGE_KEY: &str = "ai_usage_by_month";
+
+/// Claude Opus 5 list price, USD per million tokens, taken from Anthropic's
+/// own pricing page on 2026-09-12 (not from memory):
+/// **$5 / MTok input, $25 / MTok output**, standard global pricing with no
+/// caching and no batch discount - which is exactly how `analyze_impl` calls
+/// it (one image, one turn, no `cache_control`).
+///
+/// Kept as integer USD cents per million tokens so the arithmetic below never
+/// touches a float: 500 cents and 2500 cents.
+///
+/// If `ANTHROPIC_MODEL` ever changes, THIS HAS TO CHANGE WITH IT - a cost
+/// shown against the wrong model's price is worse than showing no cost.
+const INPUT_CENTS_PER_MTOK: i64 = 500;
+const OUTPUT_CENTS_PER_MTOK: i64 = 2_500;
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiUsageMonth {
+    /// `YYYY-MM`.
+    pub month: String,
+    pub scans: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Estimated, in USD cents, at the list price above. Anthropic bills in
+    /// USD, so this is not converted - an FX rate would make an estimate look
+    /// like an invoice.
+    pub estimated_cost_usd_cents: i64,
+}
+
+fn cost_usd_cents(input_tokens: i64, output_tokens: i64) -> i64 {
+    // Integer throughout: (tokens * cents_per_mtok) / 1_000_000. At these
+    // volumes the product cannot overflow i64 by any margin that matters.
+    (input_tokens * INPUT_CENTS_PER_MTOK) / 1_000_000
+        + (output_tokens * OUTPUT_CENTS_PER_MTOK) / 1_000_000
+}
+
+/// Adds one scan to this month's tally. Best-effort on purpose: a usage
+/// counter that cannot be written must never fail an import that worked.
+fn record_ai_usage(conn: &Connection, usage: AnthropicUsage) {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        return;
+    }
+    let month = chrono::Local::now().format("%Y-%m").to_string();
+    let mut by_month: BTreeMap<String, (i64, i64, i64)> = get_setting(conn, AI_USAGE_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let entry = by_month.entry(month).or_insert((0, 0, 0));
+    entry.0 += 1;
+    entry.1 += usage.input_tokens;
+    entry.2 += usage.output_tokens;
+    if let Ok(raw) = serde_json::to_string(&by_month) {
+        let _ = set_setting(conn, AI_USAGE_KEY, &raw);
+    }
+}
+
+/// Newest month first. Read-only.
+#[tauri::command(async)]
+pub fn ai_usage_summary(state: State<'_, AppState>) -> AppResult<Vec<AiUsageMonth>> {
+    let conn = state.db.lock().unwrap();
+    let by_month: BTreeMap<String, (i64, i64, i64)> = get_setting(&conn, AI_USAGE_KEY)?
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let mut out: Vec<AiUsageMonth> = by_month
+        .into_iter()
+        .map(|(month, (scans, input_tokens, output_tokens))| AiUsageMonth {
+            month,
+            scans,
+            input_tokens,
+            output_tokens,
+            estimated_cost_usd_cents: cost_usd_cents(input_tokens, output_tokens),
+        })
+        .collect();
+    out.reverse();
+    Ok(out)
+}
+
+/// 2.20.0: what the call actually cost. The Messages API reports it on every
+/// response; this app was throwing it away, so marko had no idea what his
+/// screenshot imports were adding up to.
+#[derive(Debug, Default, Deserialize, Clone, Copy)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: i64,
+    #[serde(default)]
+    output_tokens: i64,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct AnthropicResponse {
     #[serde(default)]
     content: Vec<AnthropicContentBlock>,
     #[serde(default)]
     stop_reason: Option<String>,
+    #[serde(default)]
+    usage: AnthropicUsage,
 }
 
 /// Pulls the model's JSON out of a Messages response.
@@ -601,7 +705,7 @@ fn build_request_body(kind: &str, media_type: &str, image_base64: &str) -> AppRe
 /// detail is not lost, it is simply not his problem: a wrong API key and a
 /// DNS failure both read as "AI analysis failed. Try again." because the
 /// action he can take is identical either way.
-fn analyze_impl(kind: &str, media_type: &str, image_base64: &str) -> AppResult<AiImportResult> {
+fn analyze_impl(kind: &str, media_type: &str, image_base64: &str) -> AppResult<(AiImportResult, AnthropicUsage)> {
     // Cheapest rejections first, so a bad IPC call never reaches the network
     // and never builds a schema it won't use.
     field_names_for_kind(kind)?;
@@ -645,7 +749,10 @@ fn analyze_impl(kind: &str, media_type: &str, image_base64: &str) -> AppResult<A
     let raw: AiImportResult = serde_json::from_str(raw_json)
         .map_err(|_| AppError::External("Could not reliably identify required fields.".to_string()))?;
 
-    sanitize_result(kind, raw)
+    // The usage travels out with the result rather than being recorded here:
+    // this function has no database - it runs on a blocking thread with only
+    // owned strings, which is what keeps the AI call off the main thread.
+    Ok((sanitize_result(kind, raw)?, parsed.usage))
 }
 
 /// The single command this module exposes. Read-only, database-free, and
@@ -660,17 +767,50 @@ fn analyze_impl(kind: &str, media_type: &str, image_base64: &str) -> AppResult<A
 /// so the closure captures only owned `String`s.
 #[tauri::command]
 pub async fn analyze_import_image(
+    state: State<'_, AppState>,
     kind: String,
     media_type: String,
     image_base64: String,
 ) -> AppResult<AiImportResult> {
-    tauri::async_runtime::spawn_blocking(move || analyze_impl(&kind, &media_type, &image_base64))
+    let (result, usage) = tauri::async_runtime::spawn_blocking(move || analyze_impl(&kind, &media_type, &image_base64))
         .await
-        .map_err(|_| AppError::External("AI analysis failed. Try again.".to_string()))?
+        .map_err(|_| AppError::External("AI analysis failed. Try again.".to_string()))??;
+    // Only after the await, and only on success: the lock is taken here and
+    // never held across it, which is what keeps this command Send.
+    {
+        let conn = state.db.lock().unwrap();
+        record_ai_usage(&conn, usage);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
+    // --- what the AI costs (2.20.0) -------------------------------------
+
+    #[test]
+    fn cost_is_integer_cents_at_the_published_opus_5_price() {
+        use super::cost_usd_cents;
+        // $5 / MTok input: a million input tokens is exactly 500 cents.
+        assert_eq!(cost_usd_cents(1_000_000, 0), 500);
+        // $25 / MTok output: a million output tokens is exactly 2500 cents.
+        assert_eq!(cost_usd_cents(0, 1_000_000), 2_500);
+        assert_eq!(cost_usd_cents(0, 0), 0);
+        // A realistic single import - one screenshot plus a short JSON reply.
+        assert_eq!(cost_usd_cents(2_400, 900), 3);
+    }
+
+    #[test]
+    fn a_response_without_usage_costs_nothing_rather_than_panicking() {
+        // `usage` is `#[serde(default)]`, so an unexpected shape gives zeros
+        // and the import still works - a missing counter must never fail a
+        // scan that succeeded.
+        let parsed: super::AnthropicResponse =
+            serde_json::from_str(r#"{"content":[{"type":"text","text":"{}"}]}"#).unwrap();
+        assert_eq!(parsed.usage.input_tokens, 0);
+        assert_eq!(super::cost_usd_cents(parsed.usage.input_tokens, parsed.usage.output_tokens), 0);
+    }
+
     use super::*;
 
     fn field(name: &str, value: Option<&str>, confidence: &str) -> AiImportField {

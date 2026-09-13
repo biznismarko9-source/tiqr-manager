@@ -231,7 +231,7 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
             <EmptyState title="No recurring expenses yet" description="e.g. rent, subscriptions, insurance - add one and it'll show up here when it's due." />
           ) : (
             <Card>
-              <div className="table-flush">
+              <div className="table-flush max-h-[calc(100vh-24rem)]">
                 <table className="w-full border-collapse">
                   <thead>
                     <tr>

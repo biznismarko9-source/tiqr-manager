@@ -4,6 +4,7 @@ import type {
   AccountInput,
   AiImportKind,
   AiImportResult,
+  AiUsageMonth,
   AppInfo,
   AttentionCenterItem,
   BulkCurrencyConversionResult,
@@ -27,6 +28,7 @@ import type {
   CreatedSheetResult,
   CreateFromRecurringResult,
   CsvImportResult,
+  CloudRevision,
   CloudSyncAutoPlan,
   CloudSyncStatus,
   CsvPreview,
@@ -47,6 +49,7 @@ import type {
   InventoryIntelligence,
   MarketAnalysisResult,
   Marketplace,
+  MergeLogEntry,
   MergeOutcome,
   NotificationConfigInput,
   NotificationStatus,
@@ -425,10 +428,29 @@ export const api = {
    *  first (2.14.0). Read-only - lists what is already on disk, creates and
    *  deletes nothing. Restore one with `restoreDatabase(point.path)`. */
   listRestorePoints: () => invoke<RestorePoint[]>("list_restore_points"),
+  /** 2.24.0: writes a base64 PNG where the user's own save dialog said to.
+   *  The Recap's shareable card is drawn in the frontend (hand-laid SVG,
+   *  rasterised on a canvas) and a webview cannot write a file itself; this
+   *  app carries no filesystem plugin, and adding one to write a single PNG
+   *  would be a far bigger surface than one command. Contains no logic and
+   *  reads nothing - see commands/share.rs. */
+  savePngFile: (destPath: string, dataBase64: string) =>
+    invoke<void>("save_png_file", { destPath, dataBase64 }),
   /** Adds the other machine's records to this one's (2.16.0). Never replaces
    *  and never deletes: a record only one side has is copied, a record both
    *  have is left exactly as it is here. Takes a safety backup first. */
   cloudMergePull: () => invoke<MergeOutcome>("cloud_merge_pull"),
+  /** What past merges did (2.20.0), newest first. Read-only. */
+  cloudMergeHistory: () => invoke<MergeLogEntry[]>("cloud_merge_history"),
+  /** Earlier versions of the sync file that Google Drive still holds
+   *  (2.20.0). One metadata request, no file content. */
+  cloudSyncRevisions: () => invoke<CloudRevision[]>("cloud_sync_revisions"),
+  /** Replaces this machine's database with an earlier Drive version. Goes
+   *  through the same validation + safety backup + rollback as every restore;
+   *  returns the safety backup path. Relaunch after this. */
+  cloudSyncRestoreRevision: (revisionId: string) => invoke<string>("cloud_sync_restore_revision", { revisionId }),
+  /** Claude API usage from screenshot imports, per month, newest first. */
+  aiUsageSummary: () => invoke<AiUsageMonth[]>("ai_usage_summary"),
 
   // Misc
   getAppInfo: () => invoke<AppInfo>("get_app_info"),

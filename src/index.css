@@ -260,8 +260,21 @@
      `.card` border back. `SummaryStat` stays for the places that genuinely
      are one line of text - Sales' own results strip, which predates all of
      this and is not a row of KPIs. */
+  /* 2.19.0: a GRID, not flex-wrap - marko's report that the boxes "bugujú"
+     when the window is not full screen.
+     `flex-1` + `flex-wrap` means the cards that land on the LAST row stretch
+     to fill it. Six cards in an 1100px window become five normal ones and a
+     sixth stretched across the full width; nine (Price Checker, Event Detail)
+     do it even on a default 1400px window. Resizing then re-flows that
+     stretch continuously, which is the "skákanie".
+     `auto-fit` + `minmax` fixes both at once: every card keeps the same
+     width whatever row it lands on, empty tracks collapse so three cards
+     still fill the row exactly as they did with flex-1, and the 9rem floor
+     is what stops a 22px money figure being squeezed into 128px at the app's
+     minimum window width. */
   .summary-bar {
-    @apply mb-5 flex flex-wrap gap-3;
+    @apply mb-5 grid gap-3;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   }
 
   /* Section label above a group of cards/a table - the one "small heading"

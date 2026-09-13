@@ -526,14 +526,19 @@ export function StatCard({
     // 2.13.3: narrower and a touch tighter than 2.13.2, so six of these fit
     // one row on a normal window instead of wrapping - marko's own ask. They
     // still grow to fill the width when there are only three.
+    // `min-w-0` matters now that `.summary-bar` is a grid: a grid item
+    // defaults to min-content width, so without it a long figure widens its
+    // own column and pushes the row out of the page instead of truncating.
+    // `flex-1` is kept for the handful of callers that still use their own
+    // flex row (see SummaryStat's note below) - it is inert inside the grid.
     <Card
-      className={`min-w-[7.5rem] flex-1 p-3 ${
+      className={`min-w-0 flex-1 p-3 ${
         emphasis ? "border-brand-300 bg-brand-50/40 dark:border-brand-500/40 dark:bg-brand-500/[0.06]" : ""
       }`}
     >
       <p className="section-title truncate">{label}</p>
       <p
-        className={`mt-1.5 font-semibold leading-none tabular-nums ${emphasis ? "text-[24px]" : "text-[19px]"} ${valueTone}`}
+        className={`mt-1.5 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[24px]" : "text-[19px]"} ${valueTone}`}
       >
         {value}
       </p>

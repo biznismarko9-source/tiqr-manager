@@ -16,6 +16,376 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.24.0 - TIQR Recap: Ticket & Finance
+
+**No schema change, no new dependency, and - the point of the whole thing -
+NOT ONE NEW BUSINESS CALCULATION.** Reached from **Settings → Insights**, never
+the sidebar.
+
+### One existing call does all of it
+
+Every figure comes from `get_dashboard` with a concrete range. That command
+already returns the period's `FinanceSummary`, the equal-length previous
+period, the cashflow split, the inventory potential, the per-platform
+breakdown and the time series - so the Recap makes **one round trip**, not the
+"dozens of separate queries" the brief warned against, and every number is the
+same number the Dashboard shows under the same definition.
+
+**Caught before shipping:** `period_bounds` in `dashboard.rs` matches on the
+period NAME first and only reads `from`/`to` under `"custom"`. Passing the
+dates alone falls into the `None` arm, which returns **today → today** - every
+recap would have shown a single day's figures under a month's heading, silently
+and plausibly. Checked against that function rather than assumed.
+
+### Realized / Pending / Potential, kept apart by construction
+
+Three bands, each with its own heading, colour and **one-line definition on
+screen**, because without it "pending" and "potential" read as the same kind of
+number:
+
+- **Realized** - money that actually moved, inside the period.
+- **Pending** - owed either way and not moved yet. *Unpaid orders show a COUNT
+  only, and say so: the app tracks which orders are unpaid but never totals
+  what is owed, and adding that sum would be a new calculation.*
+- **Potential** - what unsold stock might be worth. Never called profit.
+
+### The summary table
+
+Compares against the previous period with the app's own `computeTrend` /
+`computeTrendPoints`, so **percent and percentage points are distinguished**:
+money and counts move by %, ROI and margin are already percentages and move by
+**pp**. "Previous period" is the app's own definition - the equal-length window
+immediately before - and the table says so underneath rather than leaving it to
+be assumed.
+
+### Charts and share
+
+The chart is `MetricChart`, the app's own hand-rolled SVG component, unchanged.
+Purchased/Sold/Remaining is a composition bar and deliberately **not** a time
+series: nothing in the existing aggregation reports how many tickets were
+*bought* per bucket, so that line would have to be invented.
+
+**Share** produces a PNG, laid out by hand as SVG and rasterised on a canvas -
+so it reads as a report rather than a screenshot of the app, and needs no
+screenshot library (this project carries no UI dependencies). Saved through the
+normal save dialog; `save_png_file` decodes base64, **verifies the PNG
+signature** and writes bytes. No logic, no database, no cloud.
+
+### Deliberately absent rather than invented
+
+Biggest single sale, fastest-selling event and best tier: none exists as an
+aggregation today, and building one would make this a reporting engine. The
+best-event line is labelled **all time**, because all-time is the scope the app
+already keeps per event.
+
+### Verified
+
+- **Date ranges executed, not reasoned about**: end of March → Feb 1–28; leap
+  year → Feb 1–29; January → December of the previous year; rolling 3/6-month
+  windows; custom keeps what was typed.
+- 3 tests on `save_png_file` (signature accepted, non-PNG refused without
+  writing a file, bad base64 is a clear error not a panic).
+- 180 commands still match `api.ts` ↔ `lib.rs` in both directions.
+
+## 2.23.0 - Event dates in lists, readable codes, the wheel works, and a Support section
+
+**No schema change, no new dependency.** Five things marko asked for.
+
+1. **Lists show the EVENT date, not the purchase/sale date** (Orders, Sales,
+   Pulls). The list is scanned to find *what is coming up*; a purchase date
+   answers a question nobody asks while scanning. Detail screens still show
+   when it was bought or sold, and in the list it moved into the tooltip so
+   nothing was lost. Sales needed `event_date` added to its grouped query -
+   carried under the same "only when every line's event agrees" guard the event
+   name already used, so a mixed-event group and a TBD event both honestly show
+   "-" instead of a made-up date.
+2. **Codes are readable in lists**: `#14`, not `ORD-000014`. Six zero-padded
+   digits behind a prefix were the first thing the eye landed on in every
+   table, and the table is already called Orders. **Only the display changed** -
+   the stored code keeps its full form because a connected Google Sheet shows
+   it and the merge parses its numeric tail to keep both machines' counters in
+   step (PROTECTED_AREAS 2.16.0). Full code stays in the tooltip and on every
+   detail screen.
+3. **Finance → Transactions can be scrolled with the wheel again.**
+   `.table-flush` is `overflow: auto` **plus** `overscroll-behavior: contain`,
+   and this wrapper had no height - so it could never scroll itself while
+   `contain` still stopped the wheel reaching the page behind it. Only dragging
+   the window's scrollbar worked, exactly as reported. **Measured both ways in
+   a real browser before fixing:** without a height cap the wheel moved the
+   page 0px; with one the table moved 500px. The class's own doc comment
+   already says it belongs on a box that scrolls - this usage never gave it
+   one. **The same bug was in the Reports and Accounts tabs** and is fixed
+   there too.
+4. **Restore points show the last two**, with "Show N more". Each one that can
+   be paired with a merge from the same minute now says what actually arrived
+   ("then: 3 orders, 4 tickets") - taken from the merge log, and left blank
+   rather than guessed when nothing matches (a whole-file sync down has no
+   merge entry at all).
+5. **Settings → Support**: a short guide in the order the app wants to be used,
+   and a suggestion box. The box posts one document to Firestore and reads
+   nothing back - a postbox, not a forum, because a reply thread that never
+   gets answered is worse than none. Only an admin can read the collection, and
+   `admin` is a field only the Firebase Console can set, so the app can never
+   promote itself. The inbox appears in Settings for that account and nowhere
+   else.
+
+**Two manual steps for #5, and nothing in the app can do either:** publish the
+updated `firestore.rules` in the Firebase Console, and set `admin: true` on
+your own `users/{uid}` document. Until both are done, sending a suggestion
+fails and the inbox stays hidden - the safe way round. The failure message says
+so in plain words rather than showing a raw Firebase permission code.
+
+## 2.22.0 - 2.21.0 reverted at marko's request
+
+**The dashboard is back to exactly what it was in 2.20.0.** marko looked at the
+preview and said so plainly: *"okej toto ani nejdem stahovat je to strasne
+zabudnime na tuto verziu"*. He never installed it, so nothing needs migrating
+back - the code is simply gone.
+
+Removed: `OperationsSnapshot` and its five structs, the six aggregates in
+`dashboard.rs`, the six Overview cards, and profit on the Sales-by-platform
+card. `PROTECTED_AREAS.md`'s 2.21.0 section went with them - it documented
+invariants for code that no longer exists, and a stale invariant is worse than
+none.
+
+**Untouched:** everything from 2.14.0 through 2.20.0. Automatic sync, the
+merge, tombstones, merge history, AI cost, Drive revisions, the `.summary-bar`
+grid fix, the busy indicator - all still there. So is `PeriodComparisonCard`
+(DSH-L), which marko picked himself.
+
+Version goes FORWARD, not back to 2.20.0: the Tauri updater compares version
+numbers directly and will not accept a repeat. Same lesson as the 2.3.0 ->
+2.3.1 revert (see `CURRENT_STATE.md`).
+
+*What was actually wrong with 2.21.0 is not recorded here, because I do not
+know yet - "it's terrible" could be too many blocks, the wrong metrics, or the
+wrong idea entirely. Whatever replaces it starts from an answer, not a guess.*
+
+## 2.21.0 - The dashboard starts answering questions
+
+**No schema change, no new dependency, no API wired up - that last one was
+marko's only constraint, and it turned out not to cost anything: nearly
+everything a reseller needs was already in the database and simply never asked
+for.**
+
+### Six new aggregates in `dashboard.rs`, all from data already stored
+
+The metric set is the one this trade actually uses, checked against published
+inventory/ticketing KPI guidance rather than invented:
+
+1. **Sell-through** (sold / bought) - that guidance calls it the single most
+   important number in a stock business. `None` when nothing has been bought:
+   a rate with no denominator is unanswerable, not 0%.
+2. **Days to sell**, median *and* mean, with the sample size shown. The median
+   because one ticket that sat for a year drags a mean into uselessness; the
+   sample size because an average of three is not the same claim as an average
+   of three hundred. A sale dated before its own purchase is left out - that is
+   a typo, not a fast sale.
+3. **Ageing stock** in 0-6 / 7-29 / 30-89 / 90+ day buckets, with the money in
+   each, plus the five oldest tickets by name.
+4. **Money at risk**: events in the next 14 days with unsold stock, ranked by
+   euros and days left, and how many of those tickets have **no price at all**.
+   The Attention tiles count things; this says which one costs the most to
+   ignore. Same window and same `upcoming` scope as those tiles, so the two can
+   never disagree.
+5. **Realized profit per event**, sold tickets only - never blended with the
+   potential profit of unsold stock.
+6. **Where stock comes from**, per supplier. Only the SOLD tickets' cost counts
+   against realized revenue, or every batch still in stock would show as a
+   loss; and tickets bought with no supplier keep their own row rather than
+   being folded into a neighbour, which would make every puller look worse than
+   they are.
+
+### On the screen
+
+Six new cards on Overview, ordered by the question they answer: what happened
+to the money, what the stock is doing, what needs doing today, and only then
+what worked.
+
+- **Where the money went** - revenue split into stock cost / platform fees /
+  profit. It says out loud when no fees are recorded, because then the margin
+  shown is a best case rather than a fact (marko's recorded fees are currently
+  zero against €5,093 of revenue).
+- **Sales by platform now shows profit beside revenue.** `profitCents` has been
+  sent with every dashboard load since 2.0.47 and was never displayed, so the
+  card ranked channels by turnover instead of by what they earn.
+
+### How the numbers and colours were checked
+
+- **All six SQL statements were extracted verbatim from the Rust source and run
+  against a real seeded SQLite database** before being trusted - 6/6, with the
+  figures hand-checked.
+- The three bar colours (brand / amber / emerald, the app's own ramp - no new
+  palette) were checked for colour-blind separation by **computing OKLab
+  distance under simulated deuteranopia and protanopia**, not by eye: worst pair
+  9.3 against a target of 8, normal-vision floor 23.8 against a floor of 15.
+  Every segment is also directly labelled, so identity never rests on colour.
+- 5 new Rust tests for the parts that live in Rust rather than SQL.
+
+### Deliberately absent, not approximated
+
+Conversion rate, cart abandonment, show-up rate and on-sale velocity all need
+data from the marketplace's side of the transaction. This app does not have it
+and will not invent it.
+
+## 2.20.0 - Deletions travel, the merge keeps a record, the AI has a price tag, and Drive has yesterday
+
+**Migration 028. No new dependency, no business logic touched.** SYN-5/6/7/8.
+
+### SYN-5 - Tombstones (migration 028)
+
+The last hole in the merge, and marko named it: delete an order on the Mac and
+it stays on the PC - then the next merge, seeing a record the Mac "has never
+seen", copies it straight back. The deletion undoes itself.
+
+A merge cannot notice the absence, because **a row that is merely not there is
+indistinguishable from one that has not arrived yet.** Absence carries no
+information. So the deletion has to leave something behind: `deleted_rows`,
+written by an AFTER DELETE trigger on all 17 syncable tables.
+
+- **Verified against real SQLite, not assumed:** an AFTER DELETE trigger DOES
+  fire for rows removed by `ON DELETE CASCADE`, with or without
+  `recursive_triggers`. That matters - deleting an order cascades to its
+  tickets, and without it those tickets would leave no tombstone.
+- Deletions are applied **children first** (reverse merge order), because
+  `tickets.event_id` is `ON DELETE RESTRICT` and an event cannot go while a
+  ticket holds it. A deletion the schema still refuses is reported, never
+  forced, and never abandons the rest of the merge.
+- Tombstones travel too, so a third copy cannot resurrect what was removed.
+- **A tombstone beats an edit.** No per-row history exists to decide otherwise,
+  and the alternative is resurrecting a record its owner deliberately removed.
+- Probed against two real databases across 4 scenarios (9 assertions) before
+  any of it was trusted, then covered by 3 Rust tests.
+
+### SYN-6 - What came from the other computer
+
+The merge already reported what it did; the report left with the toast. Now the
+last 20 are kept - per table, with removals - and the sync card shows the last
+three. JSON in `app_settings` rather than a table: nothing queries it, and
+`app_settings` is a bookkeeping table, so writing the log cannot itself look
+like data that needs syncing.
+
+### SYN-7 - What the AI costs
+
+The Messages API reports token usage on **every** response and this app was
+throwing it away. Each screenshot import now counts towards a monthly total,
+with an estimate at Claude Opus 5's published list price - **$5 / $25 per
+million tokens**, read off Anthropic's pricing page today rather than recalled -
+in integer cents, in USD because that is what Anthropic bills. Shown in the
+existing API-key card. This does not contradict that card's long-standing note
+about not showing a balance: a balance needs an Admin key and has no endpoint;
+these tokens are measured, not guessed.
+
+### SYN-8 - Earlier versions in Google Drive
+
+The restore points are all on this machine, and the one copy that isn't gets
+overwritten by every sync. It turns out the history was already there: **Drive
+keeps a revision of every upload**, and `revisions.list` accepts
+`https://www.googleapis.com/auth/drive.file` - the narrow scope this app
+already holds, verified against Google's own reference. So point-in-time
+recovery from off the machine, retroactively, with no new storage, no new
+service and no new consent screen. Restoring one goes through the same
+`restore_database_impl` as every restore (validation, safety backup, rollback)
+and then pushes the older version to the other machine too, so the rescue
+travels. `keepForever` is deliberately not set - pinning every sync would
+multiply Drive usage by the number of syncs, so this shows what Drive kept and
+says so.
+
+5 new tests (3 tombstone, 2 cost). 179 commands still match `api.ts` <-> `lib.rs`
+in both directions.
+
+## 2.19.0 - The boxes stop breaking when the window isn't full screen
+
+**No schema change, no new dependency, no business logic touched.**
+
+marko: *"ked neni dashboard na full screene tak ze nebudu bugovat okienka"* -
+and it was measurable, not a matter of taste.
+
+1. **`.summary-bar` is a grid, not `flex flex-wrap`.** With `flex-1` the cards
+   that land on the LAST row stretch to fill it. Measured in a real browser
+   before and after, at the app's minimum window width (1080px -> 832px of
+   content) and at its default (1400px -> 1152px):
+   - 6 cards at 832px, before: five at 157px and **one at 832px** - a single
+     box across the whole row.
+   - 9 cards at 1152px, before: seven at 154px and **two at 570px** - so Price
+     Checker and Event Detail did it on a normal window, not just a small one.
+   - After, both cases: every card the same width, tidy rows.
+   - 6 cards at 1152px: 182px each, one row, **identical before and after** -
+     the common case is untouched.
+   Resizing used to re-flow that stretch continuously, which is the "skákanie".
+2. **A long figure can no longer push the row off the page.** A grid item
+   defaults to its content width, so `StatCard` gained `min-w-0` and a
+   truncating value. The 9rem column floor is what keeps a 22px money figure
+   readable at the minimum window width.
+3. **12 CSV export/import commands and the restore-point listing moved off the
+   main thread** - the same fix the sync family got in 2.17.0. A large export
+   was reading files and querying whole tables on the thread that draws the
+   window. The Price Checker scanner was deliberately left alone: it creates
+   windows through the `AppHandle`, and its logic is protected.
+4. **Buttons that could error out.** 2.18.0's one-sync-at-a-time guard meant
+   pressing Sync while the timer happened to be uploading came back "a sync is
+   already running" - which reads as a bug, not a queue. Every sync button now
+   disables for a sync started anywhere, and the panel stops saying "Syncing"
+   by itself instead of waiting to be navigated away from.
+5. **A recorded conflict now has a button.** "Combine both" only existed inside
+   the prompt that appears after a push is refused, so a conflict recorded by a
+   merge showed the state and offered nothing to do about it.
+6. **Two stacking mistakes of my own, from 2.17.0.** The busy pill was
+   `fixed bottom-4 right-4` - the same corner as the toast stack at `z-[100]`,
+   so every toast hid the one thing meant to say the app was busy. And the
+   blocking overlay sat at `z-50`, below `ConfirmDialog`'s `z-[60]`, so a
+   confirm dialog could be clicked into a database being merged underneath it.
+
+Also checked and clean: all 175 Tauri commands match between `api.ts` and
+`lib.rs` in both directions (a typo'd `invoke` name is a button that silently
+does nothing), every `api.X()` the UI calls exists, every `<Icon*>` and every
+`ui.tsx` import resolves, and no literal-union state mismatch remains - the
+class that broke the build twice this week.
+
+## 2.18.0 - Sync gets safer, faster and harder to confuse
+
+**No schema change, no new dependency, no new module, no new screen.** Every
+change lands in `cloud_sync.rs` / `cloud_merge.rs` and in the sync card that
+already existed in Settings.
+
+1. **One sync at a time.** A process-wide `SyncGuard` - the only guards before
+   were per-screen (`Layout.tsx`'s timer ref, Settings' disabled buttons) and
+   neither knew about the other. 2.17.0 made that genuinely concurrent by
+   moving these commands off the main thread: two uploads racing decide the
+   winner by whichever request finishes last, then record a `version` for a
+   file the other already replaced. Every entry point takes it - push, pull,
+   merge - and the timer answers `idle` instead of an error, because "nothing
+   to do right now" is the truth when it fires every five minutes anyway. It
+   releases on drop, including on an early `?` return and on a panic.
+2. **Bounded retries.** A dropped connection, a 429 or a 503 gets two more
+   goes with 1s and 3s between. A 401/403/404 or an `invalid_grant` is
+   returned immediately - those are answers, not hiccups, and retrying them
+   makes the user wait longer for the same message. Never endless. The pause
+   is only safe because 2.17.0 moved these commands off the main thread.
+3. **Pointless uploads are gone.** The app records a hash of the bytes it last
+   uploaded, so a database that was WRITTEN TO but does not actually DIFFER
+   from Drive's copy is no longer shipped across. Running the migrations on
+   launch marked it dirty, so every app update used to push several megabytes
+   Drive already had, byte for byte. A download records the same hash, so a
+   freshly pulled database is not immediately pushed back. Taking the snapshot
+   is the cheap half of a push; this skips the slow half. The hash is FNV-1a
+   plus the byte length, no dependency, and it fails in the safe direction:
+   the same data laid out differently reads as "changed" (one extra upload),
+   while the opposite needs a 1-in-2^64 collision.
+4. **One short word for the state.** `synced` / `syncing` / `localChanges` /
+   `cloudChanges` / `conflict` / `offline` / `failed`, decided by a pure
+   `summarize_state` so the panel can never drift from what the timer decided,
+   shown with the last successful sync and one readable sentence for the last
+   failure. In the existing card - no Sync Center, no new tab.
+5. **A conflict the merge could not settle now persists.** Skipped rows or
+   `legacy-N` identity clashes set a conflict flag that only a clean merge
+   clears - an ordinary push no longer hides it behind a green tick while the
+   two machines still disagree about those records.
+
+15 new tests: the guard (including that it frees on drop), the retry
+classification both ways, the retry limit, the hash, all eight states, and the
+error shortener.
+
 ## 2.17.0 - The window stops freezing while data moves
 
 **No schema change, no new dependency.**

@@ -65,7 +65,7 @@
 //! With sync off, or offline, every command here still simply reports that
 //! and the app works exactly as before. That part has not changed.
 
-use crate::commands::backup::{restore_database_impl, snapshot_db_to};
+use crate::commands::backup::{restore_database_impl, snapshot_db_to, validate_tiqr_backup};
 use crate::commands::google_auth::active_oauth_access_token;
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
@@ -135,6 +135,15 @@ pub struct CloudSyncStatus {
     /// or pulled - i.e. the other machine has newer data. This is the single
     /// signal the UI needs to say "pull first".
     pub remote_newer: bool,
+    /// 2.18.0. One of: `off`, `syncing`, `conflict`, `offline`, `failed`,
+    /// `localChanges`, `cloudChanges`, `synced`. Decided by `summarize_state`
+    /// so the panel never re-derives it from the booleans and drifts.
+    pub state: String,
+    /// This machine holds writes Drive has not seen.
+    pub local_changes: bool,
+    /// How the last sync failed, in one sentence. `None` when the last one
+    /// worked - a stale error left on screen is worse than none.
+    pub last_error: Option<String>,
 }
 
 pub(crate) fn temp_path(name: &str) -> PathBuf {
@@ -335,6 +344,386 @@ pub(crate) fn now_iso() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud versions (2.20.0)
+// ---------------------------------------------------------------------------
+//
+// marko: the restore points are all on this machine, and the one copy that
+// isn't - the file in Drive - gets overwritten by every sync. So a bad day
+// that got pushed had nowhere to be undone from.
+//
+// It turns out there was already a history there. Google Drive keeps
+// REVISIONS of a file, and every upload this app has ever made created one.
+// So this is point-in-time recovery from off the machine with no new storage,
+// no new service and not one byte of new infrastructure - just an endpoint
+// that was never called.
+//
+// Verified against Google's own reference for `revisions.list` rather than
+// assumed: `https://www.googleapis.com/auth/drive.file` IS among the accepted
+// scopes, which is the narrow scope this app already holds. No new consent
+// screen, and it works retroactively on revisions already up there.
+//
+// Deliberately NOT setting `keepForever` on uploads: Drive prunes revision
+// history on its own schedule, and pinning every sync would multiply marko's
+// Drive usage by the number of syncs. So this shows what Drive has kept, and
+// says as much.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveRevision {
+    id: String,
+    #[serde(default)]
+    modified_time: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DriveRevisionList {
+    #[serde(default)]
+    revisions: Vec<DriveRevision>,
+}
+
+/// One earlier version of the sync file, as Drive still holds it.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRevision {
+    pub id: String,
+    pub modified_at: Option<String>,
+    pub size_bytes: Option<i64>,
+    /// True for the version currently live in Drive - restoring that one is
+    /// an ordinary sync down, not a trip backwards.
+    pub is_current: bool,
+}
+
+fn fetch_revisions(
+    client: &reqwest::blocking::Client,
+    access_token: &str,
+    file_id: &str,
+) -> AppResult<Vec<DriveRevision>> {
+    let id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let fields = utf8_percent_encode("revisions(id,modifiedTime,size)", NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_FILES}/{id}/revisions?fields={fields}&pageSize=100");
+    let resp = client
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| AppError::External(format!("Couldn't reach Google Drive: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(drive_error("Listing earlier cloud versions", status, &body));
+    }
+    let parsed: DriveRevisionList = resp
+        .json()
+        .map_err(|e| AppError::External(format!("Google Drive returned something unexpected: {e}")))?;
+    Ok(parsed.revisions)
+}
+
+fn download_revision_to_file(
+    client: &reqwest::blocking::Client,
+    access_token: &str,
+    file_id: &str,
+    revision_id: &str,
+    dest: &std::path::Path,
+) -> AppResult<()> {
+    let id = utf8_percent_encode(file_id, NON_ALPHANUMERIC);
+    let rev = utf8_percent_encode(revision_id, NON_ALPHANUMERIC);
+    let url = format!("{DRIVE_FILES}/{id}/revisions/{rev}?alt=media");
+    let mut resp = client
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| AppError::External(format!("Couldn't download from Google Drive: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(drive_error("Downloading an earlier cloud version", status, &body));
+    }
+    let mut file = std::fs::File::create(dest)
+        .map_err(|e| AppError::Other(format!("Couldn't create the download file: {e}")))?;
+    std::io::copy(&mut resp, &mut file)
+        .map_err(|e| AppError::External(format!("Couldn't save the downloaded file: {e}")))?;
+    Ok(())
+}
+
+/// Earlier versions of the sync file, newest first. Read-only: one metadata
+/// request, no file content.
+#[tauri::command(async)]
+pub fn cloud_sync_revisions(state: State<'_, AppState>) -> AppResult<Vec<CloudRevision>> {
+    let conn = state.db.lock().unwrap();
+    if !is_enabled(&conn)? {
+        return Ok(Vec::new());
+    }
+    let Some(file_id) = get_setting(&conn, FILE_ID_KEY)? else {
+        return Ok(Vec::new());
+    };
+    let client = http()?;
+    let access_token = token(&conn)?;
+    let mut revisions = retrying(|| fetch_revisions(&client, &access_token, &file_id))?;
+    // Drive returns oldest first; the last one is what is live right now.
+    revisions.reverse();
+    Ok(revisions
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| CloudRevision {
+            id: r.id,
+            modified_at: r.modified_time,
+            size_bytes: r.size.and_then(|s| s.parse::<i64>().ok()),
+            is_current: i == 0,
+        })
+        .collect())
+}
+
+/// Replaces this machine's database with an earlier version from Drive.
+///
+/// Destructive, and routed through exactly the same `restore_database_impl`
+/// as every other restore: validation, an automatic safety backup, automatic
+/// rollback. The caller relaunches afterwards.
+#[tauri::command(async)]
+pub fn cloud_sync_restore_revision(state: State<'_, AppState>, revision_id: String) -> AppResult<String> {
+    let Some(_guard) = SyncGuard::acquire() else { return Err(busy_error()) };
+    let mut conn = state.db.lock().unwrap();
+    let db_path = state.db_path.lock().unwrap().clone();
+    let outcome = restore_revision_inner(&mut conn, db_path, &revision_id);
+    record_outcome(&conn, &outcome);
+    outcome
+}
+
+fn restore_revision_inner(
+    conn: &mut Connection,
+    db_path: std::path::PathBuf,
+    revision_id: &str,
+) -> AppResult<String> {
+    if !is_enabled(conn)? {
+        return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
+    }
+    let file_id = get_setting(conn, FILE_ID_KEY)?.ok_or_else(|| {
+        AppError::Validation("There is nothing in your Drive to restore from yet.".to_string())
+    })?;
+    let client = http()?;
+    let access_token = token(conn)?;
+
+    let downloaded = temp_path("tiqr-cloud-revision.sqlite3");
+    let _ = std::fs::remove_file(&downloaded);
+    retrying(|| download_revision_to_file(&client, &access_token, &file_id, revision_id, &downloaded))?;
+    validate_tiqr_backup(&downloaded)?;
+
+    let safety_dir = db_path
+        .parent()
+        .ok_or_else(|| AppError::Other("Could not resolve app data directory".into()))?
+        .to_path_buf();
+    let outcome = restore_database_impl(conn, &downloaded, &safety_dir)?;
+    let _ = std::fs::remove_file(&downloaded);
+
+    // Record the version that is CURRENTLY live in Drive, not the one just
+    // restored. That is deliberate and it is what makes the restore travel:
+    // this machine has seen the newer copy and is choosing not to keep it, so
+    // there is no conflict to report - and the restore left the database
+    // dirty, so automatic sync pushes the older data up and the other machine
+    // gets the same rescue. The pushed-hash is deliberately left stale for the
+    // same reason: it must not match, or the upload would be skipped.
+    if let Ok(meta) = retrying(|| get_remote_meta(&client, &access_token, &file_id)) {
+        if let Some(v) = meta.version.as_deref() {
+            set_setting(conn, REMOTE_VERSION_KEY, v)?;
+        }
+    }
+    set_setting(conn, LAST_SYNC_KEY, &now_iso())?;
+    Ok(outcome.safety_backup_path)
+}
+
+// ---------------------------------------------------------------------------
+// One sync at a time, bounded retries, and a hash that stops pointless uploads
+// (2.18.0)
+// ---------------------------------------------------------------------------
+
+/// Hash of the bytes this machine last successfully uploaded. What turns "the
+/// database was written to" into "the database actually differs from the copy
+/// in Drive" - see `content_hash`.
+pub(crate) const PUSHED_HASH_KEY: &str = "cloud_sync_pushed_hash";
+/// Last failure, in one sentence, so the panel can still explain itself long
+/// after the toast is gone.
+pub(crate) const LAST_ERROR_KEY: &str = "cloud_sync_last_error";
+/// Set when a merge could not decide something on its own. Cleared only by a
+/// merge that comes back clean - not by an ordinary push, which would hide it
+/// while the two machines still disagree.
+pub(crate) const CONFLICT_KEY: &str = "cloud_sync_conflict";
+
+/// True while any sync operation is running, anywhere in the app.
+///
+/// Before 2.18.0 the only guards were per-screen: `Layout.tsx` had a ref for
+/// its timer and Settings disabled its own buttons. Neither knew about the
+/// other, so the 5-minute tick could start an upload in the middle of a
+/// hand-pressed Sync - and 2.17.0 made that genuinely concurrent by moving
+/// these commands off the main thread. Two uploads racing decide the winner
+/// by whichever HTTP request finishes last, and then store a `version` for a
+/// file the other one has already replaced.
+static SYNC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Held for the length of one sync operation. Releases on drop, including on
+/// an early `?` return and on a panic, which is the entire reason it is a
+/// guard rather than two stores.
+pub(crate) struct SyncGuard;
+
+impl SyncGuard {
+    /// `None` when another sync is already running. Never blocks: a sync that
+    /// waits its turn would just queue up behind the timer forever.
+    pub(crate) fn acquire() -> Option<SyncGuard> {
+        SYNC_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| SyncGuard)
+    }
+}
+
+impl Drop for SyncGuard {
+    fn drop(&mut self) {
+        SYNC_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn sync_in_progress() -> bool {
+    SYNC_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+fn busy_error() -> AppError {
+    AppError::Validation("A sync is already running - wait for it to finish.".to_string())
+}
+
+/// How long to wait before each retry. Two entries = three attempts total,
+/// and then it gives up. Never an endless retry: this app is local-first, so
+/// "we'll try again in five minutes" is a perfectly good outcome and a loop
+/// that never stops is worse than a failure that says so.
+const RETRY_DELAYS_MS: &[u64] = &[1_000, 3_000];
+
+/// Whether an error is a hiccup or an answer.
+///
+/// Only `External` is ever retried - that is this codebase's own class for
+/// "an outside service failed" (see error.rs). A rejected token, a missing
+/// file or a refused permission are answers: retrying them twice more just
+/// makes the user wait longer for the same message.
+fn is_worth_retrying(e: &AppError) -> bool {
+    let AppError::External(msg) = e else { return false };
+    let lower = msg.to_lowercase();
+    !(lower.contains("(401")
+        || lower.contains("(403")
+        || lower.contains("(404")
+        || lower.contains("invalid_grant")
+        || lower.contains("sign in"))
+}
+
+/// Runs `op`, and on a transient failure runs it again after a pause.
+///
+/// The sleep is only safe because 2.17.0 moved these commands off the main
+/// thread with `#[tauri::command(async)]`. On the main thread this would
+/// freeze the window for four seconds - exactly the bug that release fixed.
+pub(crate) fn retrying<T>(mut op: impl FnMut() -> AppResult<T>) -> AppResult<T> {
+    let mut attempt = 0usize;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                if attempt >= RETRY_DELAYS_MS.len() || !is_worth_retrying(&e) {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Identifies a snapshot's contents well enough to answer one question: are
+/// these the same bytes this machine last uploaded?
+///
+/// FNV-1a with the byte length appended. Deliberately not a cryptographic
+/// hash and not a new dependency - nothing here defends against a forged
+/// database, it only avoids pushing several megabytes that Drive already has.
+///
+/// The failure modes are lopsided in the safe direction. The same data can
+/// produce different bytes (SQLite is free to lay pages out differently), so
+/// the common wrong answer is "changed" when it hasn't - which costs one
+/// upload. The opposite, a collision saying "unchanged" when it changed, is a
+/// 1-in-2^64 event that would cost one delayed hand-off, and the next edit
+/// undoes it.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}-{}", bytes.len())
+}
+
+/// One sentence, safe to put on a settings panel. Long technical detail is
+/// not more helpful here, it just stops the sentence being read at all.
+fn short_error(e: &AppError) -> String {
+    let msg = e.to_string();
+    let first = msg.lines().next().unwrap_or(&msg).trim().to_string();
+    if first.chars().count() > 180 {
+        let cut: String = first.chars().take(177).collect();
+        format!("{cut}...")
+    } else {
+        first
+    }
+}
+
+/// Records how a sync operation ended, so the panel can say so later.
+pub(crate) fn record_outcome(conn: &Connection, outcome: &AppResult<impl Sized>) {
+    match outcome {
+        Ok(_) => {
+            let _ = set_setting(conn, LAST_ERROR_KEY, "");
+        }
+        Err(e) => {
+            let _ = set_setting(conn, LAST_ERROR_KEY, &short_error(e));
+        }
+    }
+}
+
+/// The one short word the UI shows, decided in one place.
+///
+/// A pure function for the same reason `decide_auto` is one: this is what
+/// marko reads to know whether his two machines agree, and it has to be
+/// checkable without a network, a database or a running app.
+pub(crate) fn summarize_state(
+    enabled: bool,
+    signed_in: bool,
+    syncing: bool,
+    conflict: bool,
+    reachable: bool,
+    failed: bool,
+    local_changes: bool,
+    remote_newer: bool,
+) -> &'static str {
+    if !enabled || !signed_in {
+        return "off";
+    }
+    if syncing {
+        return "syncing";
+    }
+    // Before offline on purpose: a recorded conflict is a fact about the data
+    // itself and stays true whether or not there is a signal right now.
+    if conflict {
+        return "conflict";
+    }
+    if !reachable {
+        return "offline";
+    }
+    if failed {
+        return "failed";
+    }
+    if local_changes && remote_newer {
+        return "conflict";
+    }
+    if local_changes {
+        return "localChanges";
+    }
+    if remote_newer {
+        return "cloudChanges";
+    }
+    "synced"
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -349,6 +738,15 @@ pub fn cloud_sync_status(state: State<'_, AppState>) -> AppResult<CloudSyncStatu
     let last_sync_at = get_setting(&conn, LAST_SYNC_KEY)?;
 
     let signed_in = active_oauth_access_token(&conn).map(|t| t.is_some()).unwrap_or(false);
+    let syncing = sync_in_progress();
+    let conflict = get_setting(&conn, CONFLICT_KEY)?.as_deref() == Some("true");
+    let last_error = get_setting(&conn, LAST_ERROR_KEY)?.filter(|e| !e.is_empty());
+    // Reading the flag is a write when the in-memory one is set - see
+    // `local_dirty`. Harmless here and deliberately the same call the auto
+    // check makes, so the panel and the timer can never disagree about
+    // whether this machine has unsent work.
+    let local_changes = if enabled && signed_in { local_dirty(&conn)? } else { false };
+
     let mut status = CloudSyncStatus {
         enabled,
         signed_in,
@@ -357,25 +755,49 @@ pub fn cloud_sync_status(state: State<'_, AppState>) -> AppResult<CloudSyncStatu
         remote_modified_at: None,
         remote_size_bytes: None,
         remote_newer: false,
+        state: String::new(),
+        local_changes,
+        last_error: last_error.clone(),
+    };
+    let finish = |mut st: CloudSyncStatus, reachable: bool| {
+        st.state = summarize_state(
+            st.enabled,
+            st.signed_in,
+            syncing,
+            conflict,
+            reachable,
+            st.last_error.is_some(),
+            st.local_changes,
+            st.remote_newer,
+        )
+        .to_string();
+        st
     };
     if !enabled || !signed_in {
-        return Ok(status);
+        return Ok(finish(status, true));
     }
     let Some(file_id) = file_id else {
-        return Ok(status);
+        // Nothing uploaded yet. Not offline, just never synced - the state
+        // falls out as localChanges or synced from what is known locally.
+        return Ok(finish(status, true));
     };
 
     // Being offline is a normal state for this app, not an error worth
-    // failing a status call over - the panel just shows what it knows
-    // locally.
+    // failing a status call over - the panel says "offline" and shows what it
+    // knows locally. One attempt only: this runs whenever the panel opens,
+    // and making that wait four seconds for a retry would be worse than the
+    // honest answer.
     let client = http()?;
-    let access_token = token(&conn)?;
-    if let Ok(meta) = get_remote_meta(&client, &access_token, &file_id) {
-        status.remote_newer = remote_has_moved(stored_version.as_deref(), meta.version.as_deref());
-        status.remote_modified_at = meta.modified_time;
-        status.remote_size_bytes = meta.size.and_then(|s| s.parse::<i64>().ok());
+    let mut reachable = false;
+    if let Ok(access_token) = token(&conn) {
+        if let Ok(meta) = get_remote_meta(&client, &access_token, &file_id) {
+            reachable = true;
+            status.remote_newer = remote_has_moved(stored_version.as_deref(), meta.version.as_deref());
+            status.remote_modified_at = meta.modified_time;
+            status.remote_size_bytes = meta.size.and_then(|s| s.parse::<i64>().ok());
+        }
     }
-    Ok(status)
+    Ok(finish(status, reachable))
 }
 
 #[tauri::command]
@@ -392,72 +814,119 @@ pub fn set_cloud_sync_enabled(state: State<AppState>, enabled: bool) -> AppResul
 /// between "I forgot to sync" and losing the other machine's day of work.
 #[tauri::command(async)]
 pub fn cloud_sync_push(state: State<'_, AppState>, force: bool) -> AppResult<CloudSyncStatus> {
+    // 2.18.0: before anything else. Two uploads racing decide the winner by
+    // whichever request happens to finish last, and then record a `version`
+    // for a file the other one already replaced.
+    let Some(_guard) = SyncGuard::acquire() else { return Err(busy_error()) };
     let conn = state.db.lock().unwrap();
-    if !is_enabled(&conn)? {
+    let outcome = push_inner(&conn, force);
+    record_outcome(&conn, &outcome);
+    outcome
+}
+
+fn push_inner(conn: &Connection, force: bool) -> AppResult<CloudSyncStatus> {
+    if !is_enabled(conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
     }
     let client = http()?;
-    let access_token = token(&conn)?;
+    let access_token = token(conn)?;
 
     // Adopt an existing file before creating one, so a second machine joins
     // the same sync instead of starting a rival copy.
-    let file_id = match get_setting(&conn, FILE_ID_KEY)? {
+    let file_id = match get_setting(conn, FILE_ID_KEY)? {
         Some(id) => id,
-        None => match find_remote_file(&client, &access_token)? {
+        None => match retrying(|| find_remote_file(&client, &access_token))? {
             Some(found) => {
-                set_setting(&conn, FILE_ID_KEY, &found.id)?;
+                set_setting(conn, FILE_ID_KEY, &found.id)?;
                 found.id
             }
             None => {
-                let id = create_remote_file(&client, &access_token)?;
-                set_setting(&conn, FILE_ID_KEY, &id)?;
+                let id = retrying(|| create_remote_file(&client, &access_token))?;
+                set_setting(conn, FILE_ID_KEY, &id)?;
                 id
             }
         },
     };
 
-    if !force {
-        let stored = get_setting(&conn, REMOTE_VERSION_KEY)?;
-        // A file this machine just created has no content yet; only guard
-        // once there is something up there worth protecting.
-        if let Ok(meta) = get_remote_meta(&client, &access_token, &file_id) {
-            let has_content = meta.size.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0;
-            if has_content && remote_has_moved(stored.as_deref(), meta.version.as_deref()) {
-                return Err(AppError::Validation(
-                    "The other machine has synced newer data since this one last did. Sync down first, or choose to overwrite."
-                        .to_string(),
-                ));
-            }
-        }
+    let stored_version = get_setting(conn, REMOTE_VERSION_KEY)?;
+    let meta = retrying(|| get_remote_meta(&client, &access_token, &file_id)).ok();
+    let remote_moved = meta
+        .as_ref()
+        .map(|m| {
+            let has_content = m.size.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0;
+            // A file this machine just created has no content yet; only guard
+            // once there is something up there worth protecting.
+            has_content && remote_has_moved(stored_version.as_deref(), m.version.as_deref())
+        })
+        .unwrap_or(false);
+
+    if !force && remote_moved {
+        return Err(AppError::Validation(
+            "The other machine has synced newer data since this one last did. Sync down first, or choose to overwrite."
+                .to_string(),
+        ));
     }
 
     // Online Backup API, not a raw file copy - consistent even though the
     // live connection is in WAL mode and open right now.
     let snapshot = temp_path("tiqr-cloud-sync-upload.sqlite3");
     let _ = std::fs::remove_file(&snapshot);
-    snapshot_db_to(&conn, &snapshot)?;
+    snapshot_db_to(conn, &snapshot)?;
     let bytes = std::fs::read(&snapshot)
         .map_err(|e| AppError::Other(format!("Couldn't read the snapshot to upload: {e}")))?;
-    let uploaded = upload_content(&client, &access_token, &file_id, bytes)?;
     let _ = std::fs::remove_file(&snapshot);
 
-    if let Some(v) = uploaded.version.as_deref() {
-        set_setting(&conn, REMOTE_VERSION_KEY, v)?;
+    // 2.18.0: the database being WRITTEN to is not the same thing as the
+    // database DIFFERING from the copy in Drive. Running the app's own
+    // migrations on launch marks it dirty, so before this every app update
+    // pushed several megabytes that Drive already had, byte for byte. Taking
+    // the snapshot is the cheap half of a push; the upload is the slow half,
+    // and this is what skips it.
+    let hash = content_hash(&bytes);
+    let already_there = !remote_moved
+        && get_setting(conn, PUSHED_HASH_KEY)?.as_deref() == Some(hash.as_str())
+        && meta.is_some();
+    if already_there {
+        set_setting(conn, LAST_SYNC_KEY, &now_iso())?;
+        mark_local_clean(conn)?;
+        let m = meta.expect("checked by already_there");
+        return Ok(CloudSyncStatus {
+            enabled: true,
+            signed_in: true,
+            file_id: Some(file_id),
+            last_sync_at: get_setting(conn, LAST_SYNC_KEY)?,
+            remote_modified_at: m.modified_time,
+            remote_size_bytes: m.size.and_then(|s| s.parse::<i64>().ok()),
+            remote_newer: false,
+            state: "synced".to_string(),
+            local_changes: false,
+            last_error: None,
+        });
     }
-    set_setting(&conn, LAST_SYNC_KEY, &now_iso())?;
+
+    let uploaded = retrying(|| upload_content(&client, &access_token, &file_id, bytes.clone()))?;
+
+    if let Some(v) = uploaded.version.as_deref() {
+        set_setting(conn, REMOTE_VERSION_KEY, v)?;
+    }
+    set_setting(conn, PUSHED_HASH_KEY, &hash)?;
+    set_setting(conn, LAST_SYNC_KEY, &now_iso())?;
     // Only now, with the bytes accepted by Drive. Nothing marko wrote can be
     // lost in the gap: every write goes through this same lock, which this
     // command has held since before the snapshot was taken.
-    mark_local_clean(&conn)?;
+    mark_local_clean(conn)?;
 
     Ok(CloudSyncStatus {
         enabled: true,
         signed_in: true,
         file_id: Some(file_id),
-        last_sync_at: get_setting(&conn, LAST_SYNC_KEY)?,
+        last_sync_at: get_setting(conn, LAST_SYNC_KEY)?,
         remote_modified_at: uploaded.modified_time,
         remote_size_bytes: uploaded.size.and_then(|s| s.parse::<i64>().ok()),
         remote_newer: false,
+        state: "synced".to_string(),
+        local_changes: false,
+        last_error: None,
     })
 }
 
@@ -470,16 +939,28 @@ pub fn cloud_sync_push(state: State<'_, AppState>, force: bool) -> AppResult<Clo
 /// data went.
 #[tauri::command(async)]
 pub fn cloud_sync_pull(state: State<'_, AppState>) -> AppResult<String> {
+    let Some(_guard) = SyncGuard::acquire() else { return Err(busy_error()) };
     let mut conn = state.db.lock().unwrap();
-    if !is_enabled(&conn)? {
+    let db_path = state.db_path.lock().unwrap().clone();
+    let outcome = pull_inner(&mut conn, db_path);
+    record_outcome(&conn, &outcome);
+    outcome
+}
+
+/// The destructive half, kept separate only so the command above can record
+/// how it ended. Every safety property lives here and is unchanged: validation,
+/// the automatic safety backup, and the rollback all come from
+/// `restore_database_impl`.
+fn pull_inner(conn: &mut Connection, db_path: std::path::PathBuf) -> AppResult<String> {
+    if !is_enabled(conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
     }
     let client = http()?;
-    let access_token = token(&conn)?;
+    let access_token = token(conn)?;
 
-    let file_id = match get_setting(&conn, FILE_ID_KEY)? {
+    let file_id = match get_setting(conn, FILE_ID_KEY)? {
         Some(id) => id,
-        None => find_remote_file(&client, &access_token)?
+        None => retrying(|| find_remote_file(&client, &access_token))?
             .map(|f| f.id)
             .ok_or_else(|| {
                 AppError::Validation(
@@ -488,9 +969,9 @@ pub fn cloud_sync_pull(state: State<'_, AppState>) -> AppResult<String> {
                 )
             })?,
     };
-    set_setting(&conn, FILE_ID_KEY, &file_id)?;
+    set_setting(conn, FILE_ID_KEY, &file_id)?;
 
-    let meta = get_remote_meta(&client, &access_token, &file_id)?;
+    let meta = retrying(|| get_remote_meta(&client, &access_token, &file_id))?;
     let has_content = meta.size.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0;
     if !has_content {
         return Err(AppError::Validation(
@@ -500,30 +981,35 @@ pub fn cloud_sync_pull(state: State<'_, AppState>) -> AppResult<String> {
 
     let downloaded = temp_path("tiqr-cloud-sync-download.sqlite3");
     let _ = std::fs::remove_file(&downloaded);
-    download_to_file(&client, &access_token, &file_id, &downloaded)?;
+    retrying(|| download_to_file(&client, &access_token, &file_id, &downloaded))?;
 
     // Same rule restore_database itself follows (2.0.72): the safety backup
     // goes next to the CURRENTLY ACTIVE per-account database, so it belongs
     // to the account that is signed in right now rather than to a shared
     // root.
-    let db_path = state.db_path.lock().unwrap().clone();
     let safety_dir = db_path
         .parent()
         .ok_or_else(|| AppError::Other("Could not resolve app data directory".into()))?
         .to_path_buf();
-    let outcome = restore_database_impl(&mut conn, &downloaded, &safety_dir)?;
+    let outcome = restore_database_impl(conn, &downloaded, &safety_dir)?;
     let _ = std::fs::remove_file(&downloaded);
 
     // Only recorded after a restore that actually succeeded - a failed pull
     // must not make this machine believe it is up to date.
     if let Some(v) = meta.version.as_deref() {
-        set_setting(&conn, REMOTE_VERSION_KEY, v)?;
+        set_setting(conn, REMOTE_VERSION_KEY, v)?;
     }
-    set_setting(&conn, LAST_SYNC_KEY, &now_iso())?;
+    set_setting(conn, LAST_SYNC_KEY, &now_iso())?;
+    // This machine now IS the remote copy byte for byte, so the next push has
+    // nothing to send - recording the hash of what was downloaded is what
+    // lets it skip the upload instead of shipping it straight back.
+    if let Ok(bytes) = std::fs::read(&downloaded) {
+        let _ = set_setting(conn, PUSHED_HASH_KEY, &content_hash(&bytes));
+    }
     // The restore itself is a write, and this machine's contents are now
     // exactly what is in Drive - so the flag is cleared here rather than
     // left set by the very operation that made the two sides agree.
-    mark_local_clean(&conn)?;
+    mark_local_clean(conn)?;
     Ok(outcome.safety_backup_path)
 }
 
@@ -681,6 +1167,18 @@ pub fn flush_local_dirty(conn: &Connection) {
 #[tauri::command(async)]
 pub fn cloud_sync_auto(state: State<'_, AppState>) -> AppResult<CloudSyncAutoPlan> {
     let conn = state.db.lock().unwrap();
+    // 2.18.0: the timer must never decide anything while a hand-pressed sync
+    // is mid-flight - it would read a half-written state and then act on it.
+    // Idle rather than an error: this fires every five minutes on its own, so
+    // "nothing to do right now" is the truthful answer, not a failure.
+    if sync_in_progress() {
+        return Ok(CloudSyncAutoPlan {
+            action: CloudSyncAutoAction::Idle,
+            reason: "A sync is already running.".to_string(),
+            local_dirty: false,
+            remote_newer: false,
+        });
+    }
 
     let enabled = is_enabled(&conn)?;
     // ONE token call, where `cloud_sync_status` makes two. That is a
@@ -728,8 +1226,8 @@ pub fn cloud_sync_auto(state: State<'_, AppState>) -> AppResult<CloudSyncAutoPla
     // it. Nothing is stored here - `cloud_sync_push`/`_pull` adopt the file
     // themselves when marko actually chooses a direction.
     let found = match get_setting(&conn, FILE_ID_KEY)? {
-        Some(id) => get_remote_meta(&client, &access_token, &id).map(Some),
-        None => find_remote_file(&client, &access_token),
+        Some(id) => retrying(|| get_remote_meta(&client, &access_token, &id)).map(Some),
+        None => retrying(|| find_remote_file(&client, &access_token)),
     };
     let (remote_reachable, meta) = match found {
         Ok(m) => (true, m),
@@ -805,6 +1303,148 @@ mod tests {
         assert!(get_setting(&conn, FILE_ID_KEY).unwrap().is_none());
         assert!(get_setting(&conn, REMOTE_VERSION_KEY).unwrap().is_none());
         assert!(get_setting(&conn, LAST_SYNC_KEY).unwrap().is_none());
+    }
+
+    // --- one sync at a time, retries, change detection, state (2.18.0) ---
+
+    #[test]
+    fn a_second_sync_cannot_start_while_one_is_running() {
+        // The race 2.17.0 created by moving these commands off the main
+        // thread: the 5-minute timer firing into a hand-pressed Sync. Two
+        // uploads decide the winner by whichever request finishes last.
+        let first = SyncGuard::acquire().expect("nothing should be running");
+        assert!(sync_in_progress());
+        assert!(SyncGuard::acquire().is_none(), "a second sync must be refused, not queued");
+        drop(first);
+        assert!(!sync_in_progress());
+        // And the lock is genuinely free again afterwards - a guard that
+        // leaked would wedge every sync until the app restarted.
+        let again = SyncGuard::acquire().expect("the guard must release on drop");
+        drop(again);
+    }
+
+    #[test]
+    fn an_authentication_failure_is_an_answer_and_is_never_retried() {
+        // Retrying a rejected token twice more just makes marko wait longer
+        // for the same message.
+        for msg in ["Drive metadata failed (401) unauthorized", "failed (403) forbidden", "invalid_grant"] {
+            assert!(!is_worth_retrying(&AppError::External(msg.to_string())), "{msg}");
+        }
+        // Nor is anything that was never a network problem.
+        assert!(!is_worth_retrying(&AppError::Validation("Cloud sync is turned off.".into())));
+        assert!(!is_worth_retrying(&AppError::Db("disk image is malformed".into())));
+    }
+
+    #[test]
+    fn a_dropped_connection_is_worth_one_more_go() {
+        assert!(is_worth_retrying(&AppError::External(
+            "Couldn't reach Google Drive: connection reset".into()
+        )));
+        assert!(is_worth_retrying(&AppError::External("failed (503) unavailable".into())));
+        assert!(is_worth_retrying(&AppError::External("failed (429) too many requests".into())));
+    }
+
+    #[test]
+    fn retrying_stops_rather_than_going_on_forever() {
+        use std::cell::Cell;
+        let attempts = Cell::new(0);
+        let result: AppResult<()> = retrying(|| {
+            attempts.set(attempts.get() + 1);
+            Err(AppError::External("failed (503) unavailable".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.get(),
+            RETRY_DELAYS_MS.len() + 1,
+            "one attempt per delay, plus the first - and then it gives up"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_worth_retrying_is_returned_immediately() {
+        use std::cell::Cell;
+        let attempts = Cell::new(0);
+        let result: AppResult<()> = retrying(|| {
+            attempts.set(attempts.get() + 1);
+            Err(AppError::Validation("Cloud sync is turned off.".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn identical_bytes_hash_the_same_and_one_changed_byte_does_not() {
+        // The whole question this answers: "are these the bytes I already
+        // uploaded?" A wrong "changed" costs one upload; a wrong "unchanged"
+        // is a 1-in-2^64 collision.
+        let a = vec![1u8, 2, 3, 4, 5];
+        let mut b = a.clone();
+        assert_eq!(content_hash(&a), content_hash(&b));
+        b[3] = 9;
+        assert_ne!(content_hash(&a), content_hash(&b));
+        // Length is part of it, so a truncated file is never mistaken for the
+        // whole one.
+        assert_ne!(content_hash(&a), content_hash(&a[..4]));
+        assert_eq!(content_hash(&[]), content_hash(&[]));
+    }
+
+    // --- the one word the panel shows -----------------------------------
+    //
+    // Argument order: enabled, signed_in, syncing, conflict, reachable,
+    // failed, local_changes, remote_newer.
+
+    #[test]
+    fn sync_that_is_off_or_signed_out_says_so_before_anything_else() {
+        assert_eq!(summarize_state(false, true, false, true, true, true, true, true), "off");
+        assert_eq!(summarize_state(true, false, false, true, true, true, true, true), "off");
+    }
+
+    #[test]
+    fn a_sync_in_flight_outranks_everything_it_is_about_to_change() {
+        assert_eq!(summarize_state(true, true, true, true, false, true, true, true), "syncing");
+    }
+
+    #[test]
+    fn a_recorded_conflict_survives_being_offline() {
+        // It is a fact about the data, not about the signal - hiding it
+        // behind "offline" is how it would never get fixed.
+        assert_eq!(summarize_state(true, true, false, true, false, false, false, false), "conflict");
+    }
+
+    #[test]
+    fn both_sides_changed_reads_as_a_conflict_too() {
+        assert_eq!(summarize_state(true, true, false, false, true, false, true, true), "conflict");
+    }
+
+    #[test]
+    fn unreachable_drive_reads_as_offline_not_as_a_failure() {
+        assert_eq!(summarize_state(true, true, false, false, false, false, false, false), "offline");
+    }
+
+    #[test]
+    fn the_last_failure_is_shown_until_something_works() {
+        assert_eq!(summarize_state(true, true, false, false, true, true, false, false), "failed");
+    }
+
+    #[test]
+    fn one_side_changing_names_which_side() {
+        assert_eq!(summarize_state(true, true, false, false, true, false, true, false), "localChanges");
+        assert_eq!(summarize_state(true, true, false, false, true, false, false, true), "cloudChanges");
+    }
+
+    #[test]
+    fn two_machines_that_agree_say_synced() {
+        assert_eq!(summarize_state(true, true, false, false, true, false, false, false), "synced");
+    }
+
+    #[test]
+    fn a_short_error_stays_short_enough_to_read() {
+        let long = AppError::External("x".repeat(400));
+        assert!(short_error(&long).chars().count() <= 180);
+        assert!(short_error(&long).ends_with("..."));
+        // And a multi-line failure is cut to its first line, not pasted whole.
+        let multi = AppError::Other("Couldn't reach Drive\nbacktrace nonsense".into());
+        assert_eq!(short_error(&multi), "Couldn't reach Drive");
     }
 
     // --- the automatic policy (2.14.0) ---------------------------------

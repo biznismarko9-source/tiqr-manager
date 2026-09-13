@@ -114,6 +114,30 @@ export function computeTrendPoints(current: number | null, previous: number | nu
   return { direction: deltaPoints > 0 ? "up" : "down", label: `${Math.abs(deltaPoints).toFixed(1)}pp` };
 }
 
+/** 2.23.0: `ORD-000014` -> `#14`, for LISTS only.
+ *
+ * marko: *"tie ID ktore su pri orders sales pulls atd ... zmenit nejak nech
+ * davaju zmysel lebo teraz je to velmi nepriehladne"*. Six zero-padded digits
+ * behind a prefix is the first thing the eye lands on in every table and it
+ * carries almost nothing - the table is already called Orders, so `ORD-` is
+ * repeated on every row for no one.
+ *
+ * Only the DISPLAY changes. The stored code keeps its full form because other
+ * things read it: a connected Google Sheet shows it, `codes::next_code` mints
+ * it, and the merge's collision handling parses its numeric tail to keep the
+ * two machines' counters in step (see PROTECTED_AREAS.md 2.16.0). Detail
+ * screens and the `title` tooltip still show the whole thing, so it is never
+ * unreachable - just not shouting.
+ *
+ * Anything that does not match the app's own `PREFIX-000000` shape is returned
+ * untouched rather than mangled.
+ */
+export function shortCode(code: string | null | undefined): string {
+  if (!code) return "-";
+  const match = /^[A-Z]+-0*(\d+)$/.exec(code.trim());
+  return match ? `#${match[1]}` : code;
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);

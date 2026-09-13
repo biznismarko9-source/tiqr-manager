@@ -64,14 +64,15 @@
 use crate::commands::backup::{create_safety_backup, validate_tiqr_backup};
 use crate::commands::cloud_sync::{
     download_to_file, find_remote_file, get_remote_meta, http, is_enabled, now_iso, temp_path,
-    token, FILE_ID_KEY, LAST_SYNC_KEY, REMOTE_VERSION_KEY,
+    record_outcome, retrying, token, SyncGuard, CONFLICT_KEY, FILE_ID_KEY, LAST_ERROR_KEY, LAST_SYNC_KEY,
+    REMOTE_VERSION_KEY,
 };
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// One table's part of a merge.
@@ -202,6 +203,8 @@ pub struct MergeTableResult {
     /// Records that WEAR the same identity as one of this machine's but are
     /// plainly not the same record. See `count_identity_clashes`.
     pub identity_clashes: i64,
+    /// 2.20.0: rows removed here because the other machine deleted them.
+    pub deleted: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -215,6 +218,9 @@ pub struct MergeOutcome {
     /// sync that migration 027 asks for was never done - see
     /// `count_identity_clashes`.
     pub total_identity_clashes: i64,
+    /// 2.20.0: rows this merge removed because the other machine had deleted
+    /// them - see `apply_tombstones`.
+    pub total_deleted: i64,
     /// Where this machine's data was saved before the merge touched it.
     pub safety_backup_path: String,
     /// Why rows were skipped, capped - shown as-is.
@@ -374,10 +380,17 @@ fn merge_one_table(conn: &Connection, table: &MergeTable, reasons: &mut Vec<Stri
         )));
     }
 
+    // 2.20.0: the second NOT IN is the whole point of tombstones. Without it
+    // a record deleted here is simply a record "this machine has never seen",
+    // so the next merge copies it straight back and the deletion undoes
+    // itself. Absence carries no information; the tombstone does.
     let select = format!(
         "SELECT {} FROM remote.{} WHERE uid IS NOT NULL \
-         AND uid NOT IN (SELECT uid FROM main.{} WHERE uid IS NOT NULL) ORDER BY id",
+         AND uid NOT IN (SELECT uid FROM main.{} WHERE uid IS NOT NULL) \
+         AND uid NOT IN (SELECT uid FROM main.deleted_rows WHERE table_name = '{}') \
+         ORDER BY id",
         cols.join(", "),
+        table.name,
         table.name,
         table.name
     );
@@ -519,33 +532,207 @@ fn merge_one_table(conn: &Connection, table: &MergeTable, reasons: &mut Vec<Stri
     Ok(result)
 }
 
+/// Brings the other machine's tombstones over, then carries out what they say.
+///
+/// Three steps, in this order, and the order is load-bearing:
+///
+/// 1. **Copy the tombstones in.** They are keyed by `(table_name, uid)`,
+///    which means the same thing on both machines, so this is a plain
+///    `INSERT OR IGNORE` with no id translation anywhere. It also has to
+///    happen before the insert pass, whose filter reads this table.
+/// 2. **Delete what they name, children first.** `tickets.event_id` is
+///    `ON DELETE RESTRICT`, so an event cannot go before its tickets do -
+///    hence reverse `MERGE_TABLES` order, which is parent-before-child read
+///    backwards. A delete the schema still refuses is skipped and counted,
+///    never forced.
+/// 3. Only then the ordinary insert pass runs.
+///
+/// A local delete that fires here writes a NEW local tombstone through 028's
+/// triggers. That is harmless and idempotent - same `(table_name, uid)`,
+/// `INSERT OR REPLACE`.
+fn apply_tombstones(conn: &Connection, reasons: &mut Vec<String>) -> AppResult<Vec<(String, i64)>> {
+    conn.execute(
+        "INSERT OR IGNORE INTO main.deleted_rows(table_name, uid, deleted_at)
+         SELECT table_name, uid, deleted_at FROM remote.deleted_rows",
+        [],
+    )?;
+
+    let mut deleted: Vec<(String, i64)> = Vec::new();
+    for table in MERGE_TABLES.iter().rev() {
+        let uids: Vec<String> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT uid FROM main.deleted_rows d WHERE d.table_name = ?1
+                 AND EXISTS (SELECT 1 FROM main.{} t WHERE t.uid = d.uid)",
+                table.name
+            ))?;
+            let rows = stmt.query_map([table.name], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        let mut count = 0i64;
+        for uid in uids {
+            match conn.execute(
+                &format!("DELETE FROM main.{} WHERE uid = ?1", table.name),
+                [&uid],
+            ) {
+                Ok(n) => count += n as i64,
+                Err(e) => {
+                    let reason = format!(
+                        "{}: a record the other machine deleted is still referenced here ({e})",
+                        table.name
+                    );
+                    if reasons.len() < MAX_SKIP_REASONS && !reasons.contains(&reason) {
+                        reasons.push(reason);
+                    }
+                }
+            }
+        }
+        if count > 0 {
+            deleted.push((table.name.to_string(), count));
+        }
+    }
+    Ok(deleted)
+}
+
 /// Runs the whole merge against an already-attached `remote` schema.
 ///
 /// Split out from the command so it can be tested against two real databases
 /// without Drive, Tauri or a network anywhere in the picture.
 pub(crate) fn merge_attached(conn: &Connection) -> AppResult<(Vec<MergeTableResult>, Vec<String>)> {
-    let mut results = Vec::with_capacity(MERGE_TABLES.len());
     let mut reasons: Vec<String> = Vec::new();
+    // Deletions first - see `apply_tombstones` for why the order matters.
+    let deleted = apply_tombstones(conn, &mut reasons)?;
+    let mut results = Vec::with_capacity(MERGE_TABLES.len());
     for table in MERGE_TABLES {
-        results.push(merge_one_table(conn, table, &mut reasons)?);
+        let mut r = merge_one_table(conn, table, &mut reasons)?;
+        r.deleted = deleted
+            .iter()
+            .find(|(name, _)| name == table.name)
+            .map(|(_, n)| *n)
+            .unwrap_or(0);
+        results.push(r);
     }
     Ok((results, reasons))
+}
+
+// --- what came from the other computer, kept (2.20.0) --------------------
+//
+// marko: the merge already reported what it did, but the report vanished with
+// the toast. Kept here so sync stops being magic - "12 Sep: 3 orders and 4
+// tickets arrived from the other computer" is the difference between trusting
+// it and hoping.
+//
+// Stored as JSON in `app_settings` rather than a table on purpose: it is a
+// display log, nothing queries it, and `app_settings` is one of the
+// bookkeeping tables `db::is_bookkeeping_table` keeps out of the dirty flag -
+// so writing the log cannot itself make the app think it needs to sync.
+
+pub(crate) const MERGE_LOG_KEY: &str = "cloud_sync_merge_log";
+/// Old entries fall off the end. This is a log to glance at, not an audit
+/// trail, and an unbounded JSON blob in a settings row is a slow leak.
+const MERGE_LOG_MAX: usize = 20;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeLogTable {
+    pub table: String,
+    pub inserted: i64,
+    pub deleted: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeLogEntry {
+    pub at: String,
+    pub inserted: i64,
+    pub deleted: i64,
+    pub renumbered: i64,
+    pub skipped: i64,
+    pub identity_clashes: i64,
+    /// Only the tables that actually changed - a list of seventeen zeroes is
+    /// not a log entry.
+    pub changed: Vec<MergeLogTable>,
+}
+
+fn append_merge_log(conn: &Connection, outcome: &MergeOutcome) {
+    let mut log: Vec<MergeLogEntry> = get_setting(conn, MERGE_LOG_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+
+    log.insert(
+        0,
+        MergeLogEntry {
+            at: now_iso(),
+            inserted: outcome.total_inserted,
+            deleted: outcome.total_deleted,
+            renumbered: outcome.total_renumbered,
+            skipped: outcome.total_skipped,
+            identity_clashes: outcome.total_identity_clashes,
+            changed: outcome
+                .tables
+                .iter()
+                .filter(|t| t.inserted > 0 || t.deleted > 0)
+                .map(|t| MergeLogTable {
+                    table: t.table.clone(),
+                    inserted: t.inserted,
+                    deleted: t.deleted,
+                })
+                .collect(),
+        },
+    );
+    log.truncate(MERGE_LOG_MAX);
+    // Best-effort: a log that cannot be written must never fail a merge that
+    // already succeeded.
+    if let Ok(raw) = serde_json::to_string(&log) {
+        let _ = set_setting(conn, MERGE_LOG_KEY, &raw);
+    }
+}
+
+/// Newest first. Read-only.
+#[tauri::command(async)]
+pub fn cloud_merge_history(state: State<'_, AppState>) -> AppResult<Vec<MergeLogEntry>> {
+    let conn = state.db.lock().unwrap();
+    let log: Vec<MergeLogEntry> = get_setting(&conn, MERGE_LOG_KEY)?
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    Ok(log)
 }
 
 /// Downloads the other machine's database and adds in everything this one is
 /// missing. Never replaces, never deletes - see this module's header.
 #[tauri::command(async)]
 pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
+    // 2.18.0: the same one-at-a-time guard every other sync entry point takes.
+    // A merge running alongside a push would upload a database that is being
+    // written to underneath it.
+    let Some(_guard) = SyncGuard::acquire() else {
+        return Err(AppError::Validation(
+            "A sync is already running - wait for it to finish.".to_string(),
+        ));
+    };
     let mut conn = state.db.lock().unwrap();
-    if !is_enabled(&conn)? {
+    let outcome = merge_inner(&mut conn, db_path);
+    // Same split as `cloud_sync_pull`: the body does the work, the command
+    // records how it ended so the panel can still say so once the toast has
+    // gone.
+    record_outcome(&conn, &outcome);
+    if let Ok(o) = &outcome {
+        append_merge_log(&conn, o);
+    }
+    outcome
+}
+
+fn merge_inner(conn: &mut Connection, db_path: std::path::PathBuf) -> AppResult<MergeOutcome> {
+    if !is_enabled(conn)? {
         return Err(AppError::Validation("Cloud sync is turned off.".to_string()));
     }
     let client = http()?;
-    let access_token = token(&conn)?;
+    let access_token = token(conn)?;
 
-    let file_id = match get_setting(&conn, FILE_ID_KEY)? {
+    let file_id = match get_setting(conn, FILE_ID_KEY)? {
         Some(id) => id,
-        None => find_remote_file(&client, &access_token)?
+        None => retrying(|| find_remote_file(&client, &access_token))?
             .map(|f| f.id)
             .ok_or_else(|| {
                 AppError::Validation(
@@ -554,9 +741,9 @@ pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
                 )
             })?,
     };
-    set_setting(&conn, FILE_ID_KEY, &file_id)?;
+    set_setting(conn, FILE_ID_KEY, &file_id)?;
 
-    let meta = get_remote_meta(&client, &access_token, &file_id)?;
+    let meta = retrying(|| get_remote_meta(&client, &access_token, &file_id))?;
     let has_content = meta.size.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0;
     if !has_content {
         return Err(AppError::Validation(
@@ -566,7 +753,7 @@ pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
 
     let downloaded = temp_path("tiqr-cloud-merge.sqlite3");
     let _ = std::fs::remove_file(&downloaded);
-    download_to_file(&client, &access_token, &file_id, &downloaded)?;
+    retrying(|| download_to_file(&client, &access_token, &file_id, &downloaded))?;
     // Same validation the restore path applies before it trusts a file.
     validate_tiqr_backup(&downloaded)?;
 
@@ -583,12 +770,11 @@ pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
     // Before anything destructive - and this lands next to the active
     // database, so it shows up in Settings -> Data's restore points like
     // every other one.
-    let db_path = state.db_path.lock().unwrap().clone();
     let safety_dir = db_path
         .parent()
         .ok_or_else(|| AppError::Other("Could not resolve app data directory".into()))?
         .to_path_buf();
-    let safety_backup_path = create_safety_backup(&conn, &safety_dir)?;
+    let safety_backup_path = create_safety_backup(conn, &safety_dir)?;
 
     // ATTACH cannot run inside a transaction, and the transaction is what
     // makes the merge all-or-nothing, so the order here is load-bearing.
@@ -613,20 +799,34 @@ pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
     // dirty through the update hook - so automatic sync pushes the union up
     // on its own from here, and `mark_local_clean` is deliberately NOT called.
     if let Some(v) = meta.version.as_deref() {
-        set_setting(&conn, REMOTE_VERSION_KEY, v)?;
+        set_setting(conn, REMOTE_VERSION_KEY, v)?;
     }
-    set_setting(&conn, LAST_SYNC_KEY, &now_iso())?;
+    set_setting(conn, LAST_SYNC_KEY, &now_iso())?;
 
     let total_inserted = tables.iter().map(|t| t.inserted).sum();
     let total_renumbered = tables.iter().map(|t| t.renumbered).sum();
-    let total_skipped = tables.iter().map(|t| t.skipped).sum();
-    let total_identity_clashes = tables.iter().map(|t| t.identity_clashes).sum();
+    let total_skipped: i64 = tables.iter().map(|t| t.skipped).sum();
+    let total_identity_clashes: i64 = tables.iter().map(|t| t.identity_clashes).sum();
+    let total_deleted: i64 = tables.iter().map(|t| t.deleted).sum();
+
+    // 2.18.0: a merge that could not settle everything is a CONFLICT, and it
+    // stays one until a merge comes back clean. Not cleared by an ordinary
+    // push: the two machines still disagree about those records, and hiding
+    // that behind a green tick is how it would never get fixed. Records what
+    // it knows and stops - deciding which of two `legacy-7` orders is which
+    // is marko's call, not a rule this app owns.
+    let unresolved = total_skipped > 0 || total_identity_clashes > 0;
+    set_setting(conn, CONFLICT_KEY, if unresolved { "true" } else { "false" })?;
+    if !unresolved {
+        let _ = set_setting(conn, LAST_ERROR_KEY, "");
+    }
     Ok(MergeOutcome {
         tables,
         total_inserted,
         total_renumbered,
         total_skipped,
         total_identity_clashes,
+        total_deleted,
         safety_backup_path: safety_backup_path.display().to_string(),
         skip_reasons,
     })
@@ -814,6 +1014,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pointed, 1, "and it must point at THIS machine's platform row");
+    }
+
+    // --- tombstones (2.20.0) -----------------------------------------
+
+    #[test]
+    fn a_record_deleted_here_is_not_copied_back_from_the_other_machine() {
+        // The hole marko named. Without a tombstone, a record deleted here is
+        // simply one "this machine has never seen", so the merge copies it
+        // back and the deletion undoes itself.
+        let (conn, remote_path) = two_machines();
+        let shared = "INSERT INTO events(name, uid) VALUES ('Shared','ev-1');
+                      INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+                      VALUES ('ORD-000001', (SELECT id FROM events WHERE uid='ev-1'), '2026-05-01', 1, 1000, 'EUR', 'or-1');";
+        conn.execute_batch(shared).unwrap();
+        remote_exec(&remote_path, shared);
+
+        // Deleted HERE - 028's trigger leaves the tombstone.
+        conn.execute("DELETE FROM orders WHERE uid = 'or-1'", []).unwrap();
+        let tombstoned: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deleted_rows WHERE uid = 'or-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tombstoned, 1, "the delete must leave a tombstone behind");
+
+        attach(&conn, &remote_path);
+        merge_attached(&conn).unwrap();
+        assert_eq!(count(&conn, "orders"), 0, "the order must NOT come back");
+    }
+
+    #[test]
+    fn a_record_the_other_machine_deleted_goes_away_here_too() {
+        let (conn, remote_path) = two_machines();
+        let shared = "INSERT INTO events(name, uid) VALUES ('Shared','ev-1');
+                      INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+                      VALUES ('ORD-000001', (SELECT id FROM events WHERE uid='ev-1'), '2026-05-01', 1, 1000, 'EUR', 'or-1');";
+        conn.execute_batch(shared).unwrap();
+        remote_exec(&remote_path, shared);
+        remote_exec(&remote_path, "DELETE FROM orders WHERE uid = 'or-1';");
+
+        attach(&conn, &remote_path);
+        let (results, _) = merge_attached(&conn).unwrap();
+        assert_eq!(count(&conn, "orders"), 0);
+        let orders = results.iter().find(|r| r.table == "orders").unwrap();
+        assert_eq!(orders.deleted, 1);
+        // And the tombstone came across, so a third machine cannot resurrect it.
+        let here: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deleted_rows WHERE uid = 'or-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(here, 1);
+    }
+
+    #[test]
+    fn a_deletion_the_schema_still_refuses_is_reported_not_forced() {
+        // `tickets.event_id` is ON DELETE RESTRICT, so an event cannot go
+        // while a ticket here still points at it. That is the schema's
+        // decision, not something a merge may override - it is reported and
+        // the rest of the merge carries on.
+        let (conn, remote_path) = two_machines();
+        conn.execute_batch(
+            "INSERT INTO events(name, uid) VALUES ('Keep','ev-9');
+             INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency, uid)
+             VALUES ('ORD-000009', (SELECT id FROM events WHERE uid='ev-9'), '2026-05-01', 1, 1000, 'EUR', 'or-9');
+             INSERT INTO tickets(code, event_id, order_id, currency, uid)
+             VALUES ('TKT-000009', (SELECT id FROM events WHERE uid='ev-9'),
+                     (SELECT id FROM orders WHERE uid='or-9'), 'EUR', 'tk-9');",
+        )
+        .unwrap();
+        remote_exec(
+            &remote_path,
+            "INSERT OR REPLACE INTO deleted_rows(table_name, uid, deleted_at)
+             VALUES ('events','ev-9','2026-09-12T10:00:00Z');",
+        );
+
+        attach(&conn, &remote_path);
+        let (_, reasons) = merge_attached(&conn).unwrap();
+        assert_eq!(count(&conn, "events"), 1, "the event is held by a ticket and must survive");
+        assert_eq!(count(&conn, "tickets"), 1, "and the ticket must be untouched");
+        assert!(
+            reasons.iter().any(|r| r.contains("events")),
+            "the refusal has to be said out loud: {reasons:?}"
+        );
     }
 
     #[test]

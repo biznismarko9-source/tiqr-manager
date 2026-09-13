@@ -31,6 +31,7 @@ pub mod pulls_received;
 pub mod pulls_sheet_sync;
 pub mod sales;
 pub mod settings;
+pub mod share;
 pub mod sheets_sync;
 pub mod ticket_control_center;
 pub mod ticket_listings;

@@ -63,6 +63,10 @@ interface AuthContextValue {
    * false if App.tsx's RequireAuth should show PendingApproval instead. See
    * fetchApproved below for exactly what "approved" means. */
   approved: boolean | null;
+  /** 2.23.0: true only when this account's own Firestore doc says
+   *  `admin: true` - a field only marko can set, from the Console. Gates the
+   *  support inbox in Settings and nothing else. */
+  isAdmin: boolean;
   /** 2.0.72: true once the per-account database file for `user` is open and
    * migrated - see `switchDatabaseFor` below. Only meaningful once `approved`
    * is true; stays false the whole time an account is still pending, since
@@ -144,12 +148,21 @@ function isGrandfatheredAccount(firebaseUser: User): boolean {
  * gets the same benefit of the doubt either way (missing doc or failed
  * read); a new-enough one gets approved only by an actual `approved: true`
  * successfully read back. */
-async function fetchApproved(firebaseUser: User): Promise<boolean> {
+async function fetchApproved(firebaseUser: User): Promise<{ approved: boolean; admin: boolean }> {
   try {
     const snap = await getDoc(doc(db, "users", firebaseUser.uid));
-    return snap.exists() ? snap.data().approved === true : isGrandfatheredAccount(firebaseUser);
+    // 2.23.0: `admin` rides along on the SAME read - no second round trip and
+    // no separate source of truth about who marko is. It comes from the same
+    // doc only he can edit (Console-only, see firestore.rules), so the app can
+    // never make itself an admin. A missing or false field is not an admin,
+    // and neither is a failed read: the support inbox stays hidden rather than
+    // flashing open on a network hiccup.
+    if (snap.exists()) {
+      return { approved: snap.data().approved === true, admin: snap.data().admin === true };
+    }
+    return { approved: isGrandfatheredAccount(firebaseUser), admin: false };
   } catch {
-    return isGrandfatheredAccount(firebaseUser);
+    return { approved: isGrandfatheredAccount(firebaseUser), admin: false };
   }
 }
 
@@ -166,6 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   // 2.0.71: see AuthContextValue's own doc comment for what each value means.
   const [approved, setApproved] = useState<boolean | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   // 2.0.72: see AuthContextValue's own doc comments for what these mean.
   const [dbReady, setDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
@@ -193,6 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(firebaseUser ? toAuthUser(firebaseUser) : null);
       if (!firebaseUser) {
         setApproved(null);
+        setIsAdmin(false);
         setDbReady(false);
         setDbError(null);
         setLoading(false);
@@ -201,8 +216,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // fetchApproved never rejects - see its own doc comment for how it
       // handles a Firestore read failure (not the same as "approved").
       fetchApproved(firebaseUser)
-        .then((isApproved) => {
+        .then(({ approved: isApproved, admin }) => {
           setApproved(isApproved);
+          setIsAdmin(admin);
           // Fire-and-forget: RequireAuth independently gates on `dbReady`,
           // so there's nothing more to sequence here.
           if (isApproved) switchDatabaseFor(firebaseUser);
@@ -240,6 +256,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // see comment above
     }
     setApproved(false);
+    setIsAdmin(false);
   }, []);
 
   const loginWithGoogle = useCallback(async (): Promise<void> => {
@@ -272,9 +289,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // see register()'s own comment on why this is swallowed on purpose
       }
       setApproved(false);
+    setIsAdmin(false);
     } else {
-      const isApproved = await fetchApproved(cred.user);
+      const { approved: isApproved, admin } = await fetchApproved(cred.user);
       setApproved(isApproved);
+      setIsAdmin(admin);
       if (isApproved) await switchDatabaseFor(cred.user);
     }
   }, [switchDatabaseFor]);
@@ -313,6 +332,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       approved,
+      isAdmin,
       dbReady,
       dbError,
       login,
@@ -327,6 +347,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       user,
       loading,
+      isAdmin,
       approved,
       dbReady,
       dbError,
