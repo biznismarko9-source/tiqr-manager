@@ -21,6 +21,50 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.27.0 - The automatic run is finite, and that is the whole safety argument
+
+**`start_price_scan_run` is NOT the Live Market Monitor** (deleted in 2.4.2,
+see that entry below) and must never be allowed to drift into it. The line is
+exact: this run only ever starts from a button marko pressed, on a window he
+opened himself, and it **ends and stays ended**. No schedule, no timer, no
+polling, nothing that re-arms it.
+
+**The three caps are the safety property, not tuning knobs.**
+`RUN_STOP_AFTER_EMPTY_PASSES` (3), `RUN_MAX_PASSES` (60) and `RUN_MAX_DURATION`
+(300s) are what stop an infinite feed - a page that lazily mints money-shaped
+nodes forever - from becoming a process that scans until the app is closed.
+Removing any one of them removes the guarantee that a run terminates. The empty
+count is 3 rather than 1 on purpose: a lazy-loading page routinely needs a beat
+to fetch the next block, and stopping at the first empty pass cuts those pages
+off halfway.
+
+**`perform_one_scan` is the one and only scan path.** It is the body
+`scan_visible_prices` used to run inline, moved out unchanged. Both the single
+scan and the run call it. Never grow a second copy - every rule in it (check
+the cancel flag before, check it AGAIN after the eval returns, unwrap the
+double-encoded payload) was learned the hard way in 2.1.9.
+
+**A scan RESULT is one pass, not the end of a run.** The frontend must not
+clear `scanning` on a scan-result event - that is what
+`price-scanner-run-finished` is for. Clearing it per pass makes the button
+flicker back to idle mid-run.
+
+**Never unmount a panel to show it is refreshing.** The Market Map recomputes
+after every pass; swapping it for a loading box each time is what marko
+reported as violent glitching. The big loading state is for the first build
+only. This applies to anything that recomputes on a timer-like cadence.
+
+**`zoom` is not a layout tool.** It is non-standard, it re-lays-out the entire
+subtree, and applying it from React state re-runs that on every render. It was
+the other half of the glitching. If zooming is ever wanted again it needs a
+different mechanism and a real reason.
+
+**The macOS user agent is a completion, not an impersonation.** WKWebView omits
+the `Version/… Safari/…` suffix, so sites read "outdated browser". The suffix
+sent says Safari/WebKit, which is what is actually rendering. It is not there
+to look like a different browser and it bypasses nothing - challenge detection
+in `price_checker_scan.js` still reports honestly and never circumvents.
+
 ## 2.26.1 - Scans save themselves, and fixed-column grids are the bug
 
 **A scan is the ONLY way a price check is recorded.** The manual entry modal is

@@ -44,6 +44,7 @@ import type {
   ScannerOpenedPayload,
   ScannerStatus,
   ScanResultPayload,
+  ScanRunFinishedPayload,
   TierBreakdownInput,
   YourTicketGroup,
 } from "../lib/types";
@@ -101,6 +102,8 @@ const SCANNER_OPENED_EVENT = "price-scanner-opened";
 const SCANNER_ERROR_EVENT = "price-scanner-error";
 const SCAN_RESULT_EVENT = "price-scanner-scan-result";
 const SCANNER_CLOSED_EVENT = "price-scanner-closed";
+/** 2.27.0 - one automatic run ended. Fires once per run, not per pass. */
+const RUN_FINISHED_EVENT = "price-scanner-run-finished";
 
 const SCANNER_STATUS_META: Record<ScannerStatus, { label: string; className: string }> = {
   ready: { label: "Ready", className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
@@ -186,6 +189,10 @@ interface ScannerCardState {
   highestPriceCents: number | null;
   currency: string | null;
   scanCount: number;
+  /** 2.27.0 - why the last automatic run ended, in marko's own reading
+   *  language ("the page stopped showing anything new"). `undefined` until a
+   *  run has finished on this session. */
+  runReason?: string;
   lastScanAt: string | null;
   message: string | null;
   /** 2.9.0 - the LAST scan's own accounting (marko's Part D). `listings`
@@ -880,7 +887,7 @@ function MarketplaceCard({
               title={
                 !scannerTarget
                   ? "Enter this marketplace's listings page URL above first."
-                  : "Opens a real, visible browser window on this page - scroll it yourself, then click Scan Visible Prices."
+                  : "Opens a real, visible browser window on this page. One click then reads the whole page on its own - you can leave this screen and carry on working."
               }
             >
               <IconLink className="h-4 w-4" /> Open & Scan
@@ -893,7 +900,7 @@ function MarketplaceCard({
                   onClick={() => onScanVisible(eventId, view.marketplaceId)}
                   disabled={session.opening || session.scanning}
                 >
-                  <IconTag className="h-4 w-4" /> Scan Visible Prices
+                  <IconTag className="h-4 w-4" /> Read the whole page
                 </Button>
                 {session.scanning && (
                   <Button variant="secondary" onClick={() => onStopScan(eventId, view.marketplaceId)}>
@@ -934,9 +941,14 @@ function MarketplaceCard({
               {session.listings.length > 0 && (
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   {session.listings.length} listing{session.listings.length === 1 ? "" : "s"} read
-                  {session.currency
-                    ? " - saved to the history below."
-                    : " - not saved: the page never showed a currency, and a price check without one would be a guess."}
+                  {session.scanning
+                    ? " so far - still reading, you can leave this screen."
+                    : session.currency
+                      ? " - saved to the history below."
+                      : " - not saved: the page never showed a currency, and a price check without one would be a guess."}
+                  {/* Why the run ended, in the backend's own words - never
+                      just "done", which would hide a run that hit a cap. */}
+                  {!session.scanning && session.runReason ? ` Stopped because ${session.runReason}.` : ""}
                 </p>
               )}
             </>
@@ -1106,6 +1118,7 @@ export default function PriceChecker() {
     let unlistenOpened: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
     let unlistenResult: (() => void) | undefined;
+    let unlistenRunFinished: (() => void) | undefined;
     let unlistenClosed: (() => void) | undefined;
     let disposed = false;
 
@@ -1149,7 +1162,10 @@ export default function PriceChecker() {
           ...prev,
           [key]: {
             ...s,
-            scanning: false,
+            // 2.27.0: a scan RESULT is now one pass of a run, not the end of
+            // it. Clearing `scanning` here made the button flicker back to
+            // idle between every pass. The run's own finished event is what
+            // ends it - see RUN_FINISHED_EVENT below.
             status: p.status,
             listings: p.listings,
             lowestPriceCents: p.lowestPriceCents,
@@ -1175,6 +1191,20 @@ export default function PriceChecker() {
       else unlistenResult = fn;
     });
 
+    listen<ScanRunFinishedPayload>(RUN_FINISHED_EVENT, (event) => {
+      const p = event.payload;
+      const key = keyForRequestId(scannerSessionsRef.current, p.requestId);
+      if (!key) return;
+      setScannerSessions((prev) => {
+        const s = prev[key];
+        if (!s || s.requestId !== p.requestId) return prev;
+        return { ...prev, [key]: { ...s, scanning: false, runReason: p.reason } };
+      });
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenRunFinished = fn;
+    });
+
     listen<ScannerClosedPayload>(SCANNER_CLOSED_EVENT, (event) => {
       const key = keyForRequestId(scannerSessionsRef.current, event.payload.requestId);
       if (!key) return;
@@ -1195,6 +1225,7 @@ export default function PriceChecker() {
       unlistenOpened?.();
       unlistenError?.();
       unlistenResult?.();
+      unlistenRunFinished?.();
       unlistenClosed?.();
     };
   }, [toast]);
@@ -1334,7 +1365,12 @@ export default function PriceChecker() {
         if (!s) return prev;
         return { ...prev, [key]: { ...s, scanning: true } };
       });
-      api.scanVisiblePrices(session.requestId).catch((e) => {
+      // 2.27.0 - one press reads the WHOLE page now: scan, scroll, scan, until
+      // it stops finding anything new. Marko: "stacu nechat otvoreny link a
+      // ona to uz robi a ty si mozes robit ostatne veci." This returns at once
+      // and the run continues on a backend thread, so leaving this page - or
+      // the app being behind another window - does not interrupt it.
+      api.startPriceScanRun(session.requestId).catch((e) => {
         toast.error(errMsg(e));
         setScannerSessions((prev) => {
           const s = prev[key];

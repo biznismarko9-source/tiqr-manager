@@ -94,7 +94,18 @@ export function MarketMapPanel({
   const [showMine, setShowMine] = useState(true);
   const [tierFilter, setTierFilter] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+
+  /** THE fix for the flashing marko reported ("glitchovanie ked stava tu
+   *  mapu"). The map is recomputed after every pass of a scan, and the old
+   *  code swapped the entire panel for a loading box each time: the map
+   *  vanished, a short box took its place, everything below jumped up, then
+   *  the map came back and everything jumped down again - several times a
+   *  minute during a run.
+   *
+   *  Now a refresh is invisible except for one word in the header. The big
+   *  loading state is only for the FIRST build, when there is genuinely
+   *  nothing to show yet. */
+  const refreshing = loading && !!map;
 
   /** The map with the marketplace/tier filters applied. Derived, not stored -
    *  the listing arrays are the same ones, only shorter. */
@@ -126,14 +137,16 @@ export function MarketMapPanel({
     return null;
   }, [view, selected]);
 
-  if (loading) {
+  if (loading && !map) {
     return (
       <div className="mt-4 flex items-center gap-2 rounded-xl border border-slate-200 p-5 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
-        <Spinner className="h-4 w-4" /> Building the map from this scan...
+        <Spinner className="h-4 w-4" /> Building the map...
       </div>
     );
   }
-  if (error) {
+  // An error while a map is already on screen keeps the map: the last good
+  // one is more useful than an error box where the map used to be.
+  if (error && !map) {
     return (
       <div className="mt-4 rounded-xl border border-slate-200 p-5 dark:border-slate-800">
         <EmptyState title={error} />
@@ -159,27 +172,16 @@ export function MarketMapPanel({
         <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
           {map.totalListings} listing{map.totalListings === 1 ? "" : "s"} · {map.totalMyTickets} of yours
         </span>
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setZoom((z) => Math.max(0.7, +(z - 0.15).toFixed(2)))}
-            className="rounded-md border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
-            aria-label="Zoom out"
-          >
-            −
-          </button>
-          <span className="w-10 text-center text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            type="button"
-            onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.15).toFixed(2)))}
-            className="rounded-md border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
-            aria-label="Zoom in"
-          >
-            +
-          </button>
-        </div>
+        {/* 2.27.0: the zoom control is GONE. `zoom` is a non-standard CSS
+            property that re-lays-out the entire subtree on every change, and
+            it was re-applied on every re-render - one of the two things making
+            this panel jump while a scan was running. Marko asked for the map
+            to be "nehybne" (still), and a map that never scales never has to
+            re-lay-out. The blocks are a fixed, readable size and the area
+            scrolls. */}
+        {refreshing && (
+          <span className="ml-auto text-[11px] text-slate-400 dark:text-slate-500">updating…</span>
+        )}
       </header>
 
       {/* ---------------- filters ---------------- */}
@@ -243,8 +245,14 @@ export function MarketMapPanel({
           </p>
         </div>
       ) : (
-        <div className="max-h-[28rem] overflow-auto px-5 py-4" style={{ overscrollBehavior: "contain" }}>
-          <div style={{ zoom }}>
+        {/* A FIXED min-height. Without it the panel's height changed every
+            time a scan added a section, which moved everything below it and
+            read as the page jumping under the cursor. */}
+        <div
+          className="max-h-[28rem] min-h-[11rem] overflow-auto px-5 py-4"
+          style={{ overscrollBehavior: "contain" }}
+        >
+          <div>
             {view.tiers.map((t) => (
               <div key={t.key} className="mb-5 last:mb-0">
                 <div className="mb-2 flex items-baseline gap-2">
@@ -271,7 +279,7 @@ export function MarketMapPanel({
                           title={`${s.label} · ${s.listings.length} listing${s.listings.length === 1 ? "" : "s"}${
                             mineHere ? ` · ${s.myTickets.length} of yours` : ""
                           }`}
-                          className={`relative flex h-[3.25rem] w-[5.25rem] flex-col items-center justify-center rounded-lg border text-center transition-colors ${densityClass(
+                          className={`relative flex h-[3.25rem] w-[5.25rem] flex-col items-center justify-center rounded-lg border text-center ${densityClass(
                             s.listings.length,
                             view.maxCount,
                           )} ${
@@ -281,7 +289,7 @@ export function MarketMapPanel({
                                 ? "border-emerald-500/70 dark:border-emerald-400/60"
                                 : s.listings.length === 0
                                   ? "border-dashed border-slate-300 dark:border-slate-700"
-                                  : "border-slate-200 hover:border-brand-400 dark:border-slate-700"
+                                  : "border-slate-200 dark:border-slate-700"
                           }`}
                         >
                           <span className="max-w-full truncate px-1 text-[12px] font-semibold text-slate-800 dark:text-slate-100">

@@ -79,7 +79,8 @@ use crate::db::{AppState, ScannerSession};
 use crate::error::{AppError, AppResult};
 use crate::money::format_cents;
 use crate::models::{
-    NormalizedListing, ScanResultPayload, ScannerClosedPayload, ScannerErrorPayload, ScannerOpenedPayload,
+    NormalizedListing, ScanResultPayload, ScanRunFinishedPayload, ScannerClosedPayload, ScannerErrorPayload,
+    ScannerOpenedPayload,
 };
 use chrono::Utc;
 use serde::Deserialize;
@@ -100,6 +101,9 @@ const EVENT_SCANNER_OPENED: &str = "price-scanner-opened";
 const EVENT_SCANNER_ERROR: &str = "price-scanner-error";
 const EVENT_SCAN_RESULT: &str = "price-scanner-scan-result";
 const EVENT_SCANNER_CLOSED: &str = "price-scanner-closed";
+/// 2.27.0 - one automatic run finished (or was stopped). Carries why it ended
+/// so the UI can say something true rather than just "done".
+const EVENT_SCAN_RUN_FINISHED: &str = "price-scanner-run-finished";
 
 /// How long one eval is allowed to take before `scan_visible_prices` gives
 /// up and reports status "error" - reading the CURRENTLY VISIBLE page
@@ -109,6 +113,42 @@ const EVENT_SCANNER_CLOSED: &str = "price-scanner-closed";
 /// auto-retry mechanism; if this trips, he just clicks "Scan Visible
 /// Prices" again himself.
 const SCAN_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/* --- 2.27.0: the automatic run ---------------------------------------------
+ *
+ * Marko: "urobme to tak ze sa ta mapa akokeby robi v backgrounde, ze stacu
+ * nechat otvoreny link a ona to uz robi a ty si mozes robit ostatne veci...
+ * taktiez je to dlhe cize takto cakat by bolo nezmyselne."
+ *
+ * Before this, reading a long listings page meant clicking "Scan Visible
+ * Prices", scrolling by hand, clicking again, over and over, while watching.
+ *
+ * WHAT THIS IS NOT. It is not the Live Market Monitor that was deleted in
+ * 2.4.2, and nothing here brings it back: there is no schedule, no timer, no
+ * polling, and nothing runs unless marko pressed the button on a window he
+ * opened himself. A run is FINITE and stops on its own - it ends when the page
+ * stops producing new listings, at a hard pass cap, at a hard time cap, or the
+ * moment Stop is pressed. When it ends, it is over; nothing re-arms it.
+ *
+ * The caps exist so a page that lazily loads forever (an infinite feed, an ad
+ * carousel that keeps minting money-shaped nodes) can never turn into a
+ * process that scans until the app is closed. */
+
+/// A page that yields nothing new this many passes in a row is finished. Three
+/// rather than one: a lazy-loading page routinely needs a beat to fetch the
+/// next block, and stopping at the first empty pass would cut those pages off
+/// halfway.
+const RUN_STOP_AFTER_EMPTY_PASSES: u32 = 3;
+/// Hard ceiling on passes, whatever the page does.
+const RUN_MAX_PASSES: u32 = 60;
+/// Hard ceiling on wall-clock time for one run.
+const RUN_MAX_DURATION: Duration = Duration::from_secs(300);
+/// How long to let the page settle after scrolling before reading it again -
+/// lazily-loaded listings are not in the DOM the instant the scroll happens.
+const RUN_SETTLE: Duration = Duration::from_millis(900);
+/// Scrolls one screen, minus a little overlap so a listing sitting exactly on
+/// the fold is never skipped between two passes.
+const SCROLL_SCRIPT: &str = "window.scrollBy(0, Math.round(window.innerHeight * 0.85));";
 
 // ---------------------------------------------------------------------------
 // Shapes returned by price_checker_scan.js. Deliberately separate from
@@ -693,11 +733,36 @@ pub fn open_price_scanner(app: AppHandle, state: State<AppState>, request_id: u6
 
     let handle = app.clone();
     std::thread::spawn(move || {
-        let build_result = tauri::WebviewWindowBuilder::new(&handle, &label, tauri::WebviewUrl::External(parsed_url))
+        let mut builder = tauri::WebviewWindowBuilder::new(&handle, &label, tauri::WebviewUrl::External(parsed_url))
             .title("TIQR Manager - Price Scanner")
             .inner_size(1280.0, 900.0)
-            .visible(true)
-            .build();
+            .visible(true);
+
+        // 2.27.0 - marko: the page was showing "An outdated browser may result
+        // in unexpected behavior on the site".
+        //
+        // That is macOS-only and it is a TRUNCATED user agent, not an old
+        // engine. WKWebView's default string ends after
+        // "AppleWebKit/605.1.15 (KHTML, like Gecko)" with no
+        // "Version/<n> Safari/<n>" suffix at all, so a site's browser check
+        // finds no version to compare and falls through to "outdated". This
+        // appends the suffix the engine leaves off - it says Safari/WebKit,
+        // which is exactly what is rendering the page.
+        //
+        // It is NOT an attempt to look like a different browser and it defeats
+        // nothing: challenge pages are still detected and reported honestly
+        // (see `detect_blocked` in price_checker_scan.js), never bypassed.
+        //
+        // Windows is left alone deliberately: WebView2 already reports a
+        // current Chromium/Edge version, so there is nothing to complete.
+        if cfg!(target_os = "macos") {
+            builder = builder.user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+                 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+            );
+        }
+
+        let build_result = builder.build();
 
         match build_result {
             Ok(window) => {
@@ -765,56 +830,201 @@ pub fn scan_visible_prices(app: AppHandle, state: State<AppState>, request_id: u
 
     let handle = app.clone();
     std::thread::spawn(move || {
-        if cancel_flag.load(Ordering::Relaxed) {
-            return;
+        let _ = perform_one_scan(&handle, request_id, &window_label, &cancel_flag);
+    });
+
+    Ok(())
+}
+
+/// How one pass of the reader ended.
+///
+/// 2.27.0: this is the body `scan_visible_prices` used to run inline, moved
+/// out UNCHANGED so the automatic run below can drive the exact same code
+/// rather than growing a second copy of the scan path. Every rule that was in
+/// it is still in it, in the same order: check the flag before starting, check
+/// it AGAIN after the eval returns (a Stop during an in-flight eval must drop
+/// the result rather than merge it), and unwrap the double-encoded payload via
+/// `parse_scan_js_payload`.
+enum PassOutcome {
+    /// The pass completed; this many listings were NEW to the session.
+    Added(u32),
+    /// The user stopped it - nothing was merged.
+    Cancelled,
+    /// The window is gone, the page did not answer, or the payload was
+    /// unreadable. An error has already been emitted.
+    Failed,
+}
+
+fn perform_one_scan(
+    handle: &AppHandle,
+    request_id: u64,
+    window_label: &str,
+    cancel_flag: &Arc<AtomicBool>,
+) -> PassOutcome {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return PassOutcome::Cancelled;
+    }
+    let window = match handle.get_webview_window(window_label) {
+        Some(w) => w,
+        None => {
+            emit_scan_error(handle, request_id, "The scanner window is no longer open.");
+            return PassOutcome::Failed;
         }
-        let window = match handle.get_webview_window(&window_label) {
-            Some(w) => w,
-            None => {
-                emit_scan_error(&handle, request_id, "The scanner window is no longer open.");
-                return;
+    };
+
+    let (tx, rx) = mpsc::channel::<String>();
+    if let Err(e) = window.eval_with_callback(SCAN_SCRIPT, move |result: String| {
+        let _ = tx.send(result);
+    }) {
+        emit_scan_error(handle, request_id, &format!("Could not run the scan: {e}"));
+        return PassOutcome::Failed;
+    }
+
+    let raw = match rx.recv_timeout(SCAN_EVAL_TIMEOUT) {
+        Ok(r) => r,
+        Err(_) => {
+            emit_scan_error(handle, request_id, "The page didn't respond to the scan in time.");
+            return PassOutcome::Failed;
+        }
+    };
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        // Stopped while the eval was in flight - drop the result rather than
+        // merging it in, so a cancelled scan really does add nothing (matches
+        // marko's own "Stop scanning" intent).
+        return PassOutcome::Cancelled;
+    }
+
+    let js: ScanJsPayload = match parse_scan_js_payload(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            emit_scan_error(handle, request_id, &format!("Got an unreadable response from the page: {e}"));
+            return PassOutcome::Failed;
+        }
+    };
+
+    let mut added = 0u32;
+    if let Some(st) = handle.try_state::<AppState>() {
+        let mut sessions = st.price_scanner_sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(&request_id) {
+            let payload = merge_scan_into_session(session, request_id, &js);
+            added = payload.added_this_scan;
+            drop(sessions);
+
+            let _ = handle.emit(EVENT_SCAN_RESULT, payload);
+        }
+    }
+    PassOutcome::Added(added)
+}
+
+/// Reads the whole page on its own: scan, scroll, scan, until the page stops
+/// giving anything new - then says so and stops.
+///
+/// Marko presses this once and goes and does something else. TIQR stays fully
+/// usable the entire time: everything heavy happens on this spawned thread,
+/// the command returns immediately, and each pass broadcasts the same
+/// `price-scanner-scan-result` event a manual scan does, so any screen that is
+/// listening just keeps up.
+///
+/// Stop still works exactly as before - it flips the same per-attempt flag,
+/// which is checked between passes AND inside each pass.
+///
+/// Not a monitor: see the RUN_* constants above for why this is finite by
+/// construction and what ends it.
+#[tauri::command]
+pub fn start_price_scan_run(app: AppHandle, state: State<AppState>, request_id: u64) -> AppResult<()> {
+    let (window_label, cancel_flag) = {
+        let mut sessions = state.price_scanner_sessions.lock().unwrap();
+        let session = sessions
+            .get_mut(&request_id)
+            .ok_or_else(|| AppError::NotFound("Scanner session not found - the window may have been closed".into()))?;
+        // A fresh Arc per attempt, for exactly the reason `scan_visible_prices`
+        // documents at length: never reset the old flag in place.
+        session.cancel_flag = Arc::new(AtomicBool::new(false));
+        session.status = "scanning".to_string();
+        (session.window_label.clone(), session.cancel_flag.clone())
+    };
+
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut passes: u32 = 0;
+        let mut empty_passes: u32 = 0;
+        let reason: &str = loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                break "stopped";
             }
+            if passes >= RUN_MAX_PASSES {
+                break "reached the limit on how many times it will re-read one page";
+            }
+            if started.elapsed() >= RUN_MAX_DURATION {
+                break "reached the time limit for one run";
+            }
+            passes += 1;
+
+            match perform_one_scan(&handle, request_id, &window_label, &cancel_flag) {
+                PassOutcome::Cancelled => break "stopped",
+                // The error itself has already been emitted by the pass.
+                PassOutcome::Failed => break "the page stopped responding",
+                PassOutcome::Added(0) => empty_passes += 1,
+                PassOutcome::Added(_) => empty_passes = 0,
+            }
+
+            if empty_passes >= RUN_STOP_AFTER_EMPTY_PASSES {
+                break "the page stopped showing anything new";
+            }
+
+            // Scroll and let lazily-loaded listings arrive. `eval` rather than
+            // `eval_with_callback`: there is nothing to read back, and waiting
+            // for a callback here would just add a second timeout to babysit.
+            match handle.get_webview_window(&window_label) {
+                Some(w) => {
+                    if w.eval(SCROLL_SCRIPT).is_err() {
+                        break "the scanner window stopped responding";
+                    }
+                }
+                None => break "the scanner window was closed",
+            }
+            std::thread::sleep(RUN_SETTLE);
         };
 
-        let (tx, rx) = mpsc::channel::<String>();
-        if let Err(e) = window.eval_with_callback(SCAN_SCRIPT, move |result: String| {
-            let _ = tx.send(result);
-        }) {
-            emit_scan_error(&handle, request_id, &format!("Could not run the scan: {e}"));
-            return;
-        }
-
-        let raw = match rx.recv_timeout(SCAN_EVAL_TIMEOUT) {
-            Ok(r) => r,
-            Err(_) => {
-                emit_scan_error(&handle, request_id, "The page didn't respond to the scan in time.");
-                return;
+        // Settle the session: a run that was stopped before its first pass
+        // would otherwise be left saying "scanning" forever.
+        let total = {
+            let mut total = 0usize;
+            if let Some(st) = handle.try_state::<AppState>() {
+                let mut sessions = st.price_scanner_sessions.lock().unwrap();
+                if let Some(session) = sessions.get_mut(&request_id) {
+                    total = session.listings.len();
+                    if session.status == "scanning" {
+                        session.status = derive_session_status(&session.listings, false, false).to_string();
+                    }
+                }
             }
+            total
         };
 
-        if cancel_flag.load(Ordering::Relaxed) {
-            // Stopped while the eval was in flight - drop the result
-            // rather than merging it in, so a cancelled scan really does
-            // add nothing (matches marko's own "Stop scanning" intent).
-            return;
-        }
+        let _ = handle.emit(
+            EVENT_SCAN_RUN_FINISHED,
+            ScanRunFinishedPayload {
+                request_id,
+                listing_count: total as u32,
+                passes,
+                reason: reason.to_string(),
+                stopped: reason == "stopped",
+            },
+        );
 
-        let js: ScanJsPayload = match parse_scan_js_payload(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                emit_scan_error(&handle, request_id, &format!("Got an unreadable response from the page: {e}"));
-                return;
-            }
-        };
-
-        if let Some(st) = handle.try_state::<AppState>() {
-            let mut sessions = st.price_scanner_sessions.lock().unwrap();
-            if let Some(session) = sessions.get_mut(&request_id) {
-                let payload = merge_scan_into_session(session, request_id, &js);
-                drop(sessions);
-
-                let _ = handle.emit(EVENT_SCAN_RESULT, payload);
-            }
+        // Reaches marko even when TIQR is behind another window, which is the
+        // entire point of letting the run happen while he does other things.
+        // Best-effort: a machine that refuses notifications must never turn a
+        // finished scan into an error.
+        if reason != "stopped" {
+            let _ = crate::commands::notifications::send_desktop_notification(
+                &handle,
+                "Market map is ready",
+                &format!("{total} listing{} read from the page.", if total == 1 { "" } else { "s" }),
+            );
         }
     });
 

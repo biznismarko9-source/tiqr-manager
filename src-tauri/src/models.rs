@@ -2117,6 +2117,21 @@ pub struct ScannerErrorPayload {
 /// prices` call already delivered them via `ScanResultPayload` above), so
 /// nothing is lost - this only tells the card to stop offering Scan/Stop for
 /// a session that no longer has a window behind it.
+/// 2.27.0 - one automatic scan run has ended, delivered via
+/// `price-scanner-run-finished`. `reason` is a plain sentence fragment meant
+/// to be shown to marko as-is ("the page stopped showing anything new"), not a
+/// code to switch on - the one thing the UI does branch on is `stopped`, which
+/// separates "he pressed Stop" from "it finished by itself".
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanRunFinishedPayload {
+    pub request_id: u64,
+    pub listing_count: u32,
+    pub passes: u32,
+    pub reason: String,
+    pub stopped: bool,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerClosedPayload {

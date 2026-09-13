@@ -666,6 +666,15 @@ export const api = {
    * deduplicated total - see `ScanResultPayload`'s own doc comment
    * (types.ts) for why it's the whole session, not just this scan's delta. */
   scanVisiblePrices: (requestId: number) => invoke<void>("scan_visible_prices", { requestId }),
+  /** 2.27.0 - reads the whole page on its own: scan, scroll, scan, until the
+   *  page stops giving anything new. Returns IMMEDIATELY; the run happens on a
+   *  background thread and broadcasts the same `price-scanner-scan-result`
+   *  event each pass, then `price-scanner-run-finished` once. TIQR stays fully
+   *  usable throughout, which is the entire point of it.
+   *
+   *  Finite by construction - it ends on an exhausted page, a pass cap, a time
+   *  cap or Stop. It is not a monitor and nothing re-arms it. */
+  startPriceScanRun: (requestId: number) => invoke<void>("start_price_scan_run", { requestId }),
   /** "Stop scanning" - interrupts a `scanVisiblePrices` call currently in
    * flight for this session, if any. A harmless no-op otherwise (e.g. a
    * stray click after the scan already finished). Never touches the window

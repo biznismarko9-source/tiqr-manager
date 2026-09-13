@@ -26,6 +26,8 @@ import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
+import { listen } from "@tauri-apps/api/event";
+import type { ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
 import logo from "../assets/logo.png";
 
@@ -134,6 +136,35 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 
 export default function Layout() {
   const toast = useToast();
+
+  // 2.27.0 - "ked sa to dokonci tak napisat nejak oznamenie... ze map is
+  // finished". An automatic Price Checker run exists so marko can go and do
+  // something else, so the thing that tells him it is done has to reach him
+  // wherever he is - not on the Price Checker page he has already left. This
+  // listener lives in the Layout, which is mounted for every page.
+  //
+  // The backend ALSO raises an OS notification for the same event, which is
+  // what reaches him when TIQR is behind another window. This one is for when
+  // he is looking at the app.
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let disposed = false;
+    listen<ScanRunFinishedPayload>("price-scanner-run-finished", (event) => {
+      const p = event.payload;
+      // A run he stopped himself needs no announcement.
+      if (p.stopped) return;
+      toast.success(
+        `Market map is ready - ${p.listingCount} listing${p.listingCount === 1 ? "" : "s"} read (${p.reason}).`,
+      );
+    }).then((fn) => {
+      if (disposed) fn();
+      else dispose = fn;
+    });
+    return () => {
+      disposed = true;
+      dispose?.();
+    };
+  }, [toast]);
   const { user, logout } = useAuth();
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);

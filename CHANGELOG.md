@@ -16,6 +16,72 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.27.0 - One press reads the whole page, and the glitching is gone
+
+### The glitching had two causes, both removed
+
+1. **The map was unmounted on every refresh.** The map is recomputed after each
+   pass of a scan, and the panel swapped itself for a loading box each time:
+   the map vanished, a short box took its place, everything below jumped up,
+   then the map came back and everything jumped down - several times a minute.
+   Now a refresh is invisible except for the word "updating" in the header; the
+   big loading state is only for the FIRST build, when there is genuinely
+   nothing to show.
+2. **The `zoom` control.** `zoom` is a non-standard CSS property that re-lays
+   out the whole subtree, and it was re-applied on every render. It is gone -
+   marko asked for the map to be "nehybne". Blocks are a fixed readable size,
+   the area scrolls, and the panel has a fixed minimum height so adding a
+   section no longer resizes it. Hover and colour transitions on the blocks
+   went too.
+
+### One press now reads the whole page, in the background
+
+`start_price_scan_run`: scan, scroll, scan, until the page stops giving
+anything new. It returns immediately and the run continues on a backend thread,
+so **leaving the Price Checker page - or putting TIQR behind another window -
+does not interrupt it**. Each pass broadcasts the same scan-result event a
+manual scan always did.
+
+**This is not the Live Market Monitor coming back.** There is no schedule, no
+timer, no polling, and nothing runs unless marko pressed a button on a window
+he opened himself. A run is finite by construction and ends on: an exhausted
+page (three passes with nothing new - three, not one, because a lazy-loading
+page routinely needs a beat), a 60-pass cap, a 300-second cap, a failure, or
+Stop. When it ends it is over; nothing re-arms it.
+
+The termination logic was executed against scripted page behaviours - a normal
+page, an infinite feed, a dead page, a mid-run failure, a closed window, Stop,
+and a page with a two-pass lazy gap. Every one terminates, for the right
+reason.
+
+### It tells you when it is done
+
+An OS notification ("Market map is ready - N listings read") reaches marko with
+TIQR behind another window, and an in-app toast fires wherever he is in the app
+- the listener lives in the Layout, not on the Price Checker page he has
+already left. A run he stopped himself announces nothing.
+
+The card also reports **why** the run ended in the backend's own words, rather
+than just "done" - a run that hit a cap says so.
+
+### The "outdated browser" warning
+
+macOS only, and it was a TRUNCATED user agent, not an old engine. WKWebView's
+default string stops after `AppleWebKit/605.1.15 (KHTML, like Gecko)` with no
+`Version/… Safari/…` suffix, so a site's browser check finds no version and
+falls through to "outdated". The scanner window now sends the suffix the engine
+leaves off - it says Safari/WebKit, which is exactly what renders the page.
+Windows is untouched: WebView2 already reports a current version.
+
+It defeats nothing - challenge pages are still detected and reported honestly,
+never bypassed.
+
+### Verified
+
+`WebviewWindowBuilder::user_agent` and `WebviewWindow::eval` are both new to
+this codebase, so both were checked against the real tauri 2.11.5
+documentation rather than assumed.
+
 ## 2.26.1 - Price Checker stripped back to what marko actually reads
 
 His screenshots, his words: the screen was unreadable. Three marketplace cards

@@ -1816,6 +1816,18 @@ export interface ScannerErrorPayload {
  * found already reached the frontend via earlier `ScanResultPayload`
  * events, so nothing is lost - this only tells the card to stop offering
  * Scan/Stop for a session that no longer has a window behind it. */
+/** 2.27.0 - one automatic scan run ended. Fires ONCE per run, unlike
+ *  `ScanResultPayload` which fires once per pass. `reason` is a sentence
+ *  fragment written to be shown as-is; `stopped` is the one thing to branch
+ *  on, separating "marko pressed Stop" from "it finished by itself". */
+export interface ScanRunFinishedPayload {
+  requestId: number;
+  listingCount: number;
+  passes: number;
+  reason: string;
+  stopped: boolean;
+}
+
 export interface ScannerClosedPayload {
   requestId: number;
 }

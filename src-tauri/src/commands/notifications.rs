@@ -305,7 +305,12 @@ fn mark_sent(conn: &Connection, category: NotificationCategory, today: NaiveDate
 // Thin, deliberately-untested network/OS calls.
 // ---------------------------------------------------------------------------
 
-fn send_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) -> AppResult<()> {
+/// 2.27.0: `pub(crate)` so the Price Checker's automatic scan run can tell
+/// marko it has finished while he is in another window - that run exists
+/// precisely so he does not have to sit and watch it. Nothing else about this
+/// module's config or category gating is involved: the run's notification is
+/// the direct result of a button he pressed, not a monitored condition.
+pub(crate) fn send_desktop_notification(app: &tauri::AppHandle, title: &str, body: &str) -> AppResult<()> {
     app.notification()
         .builder()
         .title(title)

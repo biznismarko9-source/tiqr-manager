@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.26.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.27.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -560,6 +560,32 @@ branch, a dispatch arm.
 - **Fixed: the `EUR1,815.0064` collision** in the latest-check stats row. It
   was `grid-cols-5` - fixed columns in a card that sits three-across. Now
   `auto-fit` + `minmax(6.5rem, 1fr)`, same fix as `.summary-bar` in 2.19.0.
+
+**2.27.0 - the scan reads the whole page by itself; the map stopped glitching.**
+- **`start_price_scan_run`** (new command, 182 total): scan -> scroll -> scan
+  until the page stops producing new listings. Returns immediately, runs on a
+  spawned thread, so **leaving the page or backgrounding the app does not stop
+  it**. `perform_one_scan` is the OLD `scan_visible_prices` thread body moved
+  out unchanged - both entry points drive the same code, there is no second
+  scan path.
+- **Finite by construction, and NOT the Live Market Monitor.** No schedule, no
+  timer, no polling; nothing runs unless a button was pressed on a window marko
+  opened. Ends on: 3 consecutive empty passes, 60 passes, 300 seconds, a
+  failure, or Stop. Caps exist so an infinite feed cannot become a process that
+  scans until the app closes.
+- **Notification**: OS notification (via `notifications::send_desktop_notification`,
+  now `pub(crate)`) + an app-wide toast listening in **`Layout.tsx`**, not on
+  the Price Checker page. A run marko stopped announces nothing.
+- **The glitching had two causes, both removed**: the map panel unmounted
+  itself for a loading box on every recompute (now only the FIRST build shows
+  it; refreshes show one word), and the non-standard CSS `zoom` control
+  re-laid-out the subtree on every render (removed entirely; fixed block size,
+  fixed panel min-height, no transitions).
+- **"Outdated browser" was a truncated macOS user agent**, not an old engine -
+  WKWebView omits the `Version/… Safari/…` suffix. The scanner window now sends
+  it. Windows untouched.
+- `WebviewWindowBuilder::user_agent` and `WebviewWindow::eval` were both new to
+  this codebase and were **verified against the real tauri 2.11.5 docs**.
 
 **Next new migration is 029.**
 
