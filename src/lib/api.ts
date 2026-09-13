@@ -48,6 +48,7 @@ import type {
   GoogleSignInStatus,
   InventoryIntelligence,
   MarketAnalysisResult,
+  MarketMap,
   Marketplace,
   MergeLogEntry,
   MergeOutcome,
@@ -706,6 +707,13 @@ export const api = {
    * safe to call repeatedly as marko edits the reference fields. */
   computeComparableMarket: (input: ComparableReferenceInput) =>
     invoke<RankedComparable[]>("compute_comparable_market", { input }),
+  /** 2.26.0 - the Market Map view of the SAME scanner session
+   * `computeMarketAnalysis` reads. Adds no scanning: it folds that session's
+   * already-accumulated listings together with marko's own unsold tickets for
+   * the event. Read-only, cheap, and safe to call again after every manual
+   * scan. */
+  computeMarketMap: (requestId: number, eventId: number) =>
+    invoke<MarketMap>("compute_market_map", { requestId, eventId }),
 };
 
 export function errMsg(e: unknown): string {

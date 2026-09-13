@@ -21,6 +21,104 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.26.0 - The Market Map draws only what the reader actually produces
+
+**The scanner produces no seat, no venue, no geometry and no per-listing URL.**
+Audited, not assumed: `price_checker_scan.js` has no seat pattern at all, never
+reads the page's seat-map widget, and captures no href. Every one of those
+absences is visible on screen - "Seats" in the section detail is a COUNT of
+seats in a listing, the only URL offered is the event's own marketplace link,
+and the block layout is sorted, not positional. If someone later "improves"
+this by giving blocks real coordinates or seat numbers, they are inventing
+data, not fixing a limitation.
+
+**Section order is display order, never venue adjacency.** `order_key` sorts
+numeric-leading keys ascending, then everything else alphabetically. It exists
+so a map is stable between draws and a section is findable. Section 102 sitting
+next to 103 on screen says nothing about the building.
+
+**Normalization is safe-only, and both halves are kept.** Leading zeroes come
+off ONLY when what remains is entirely digits (`"0102"` -> `"102"`, but `"0A"`
+stays). Every group carries `key` (what groups) AND `label` (the first source
+value, what is drawn). A value that cannot be reduced safely becomes its own
+group under its own text - it is never rewritten.
+
+**Tier wording is never mapped or merged.** "Level 100" and "Tier 1" are two
+groups. Nothing in this app can know whether a marketplace means the same thing
+by them, and guessing would silently merge unrelated inventory.
+
+**A mixed-currency section reports NO prices.** Not a blend, not a conversion -
+`lowest`/`median`/`highest` are all `None` and the UI says why. Same rule the
+rest of the app follows.
+
+**There is no pricing here and there must not be.** The map describes what is
+listed in a block. It never compares one section to another, never interpolates
+between neighbours and never recommends a price. Section/row/seat are metadata;
+tier is a market grouping. A "fair price from the next section over" is exactly
+the thing this feature is forbidden to grow into.
+
+**`compute_market_map` takes its two locks one at a time, never together** -
+sessions first, released, then db. Same deadlock-safety rule
+`compute_market_analysis` documents, and the reason both are safe regardless of
+what order any other command takes them in.
+
+**The map recomputes on `scanCount`, i.e. on a MANUAL scan.** No timer, no
+polling, no background monitor - the Live Market Monitor stayed deleted (see
+the 2.4.2 entry below). If this ever needs to refresh on its own, that is a new
+conversation, not a tweak.
+
+## 2.25.0 - The story reads, the tour points, the CSV appends
+
+**The Recap story computes NOTHING.** `slides` in `components/Recap.tsx` is a
+`useMemo` over the SAME `data` object the report renders - every slide is a
+field the report already shows. The moment a slide does its own arithmetic,
+the story and the report can disagree about the same period, and the recap
+stops being a presentation layer (see the 2.24.0 entry below, which this
+extends rather than replaces). A slide with nothing true to say is NOT pushed:
+that is why an empty period gets its own honest slide instead of a wall of
+zeroes, and why "unpaid orders" appears as a count with the reason printed on
+the slide.
+
+**`allTime` is not a new period concept.** It returns `0001-01-01` /
+`9999-12-31` - byte for byte what `period_bounds`'s own `Some("all")` arm
+already produces - so the backend learns nothing and one code path
+(`period: "custom"` + two dates) still serves every period. Two consequences
+that must not be "tidied up":
+- `previous_period_bounds` in `dashboard.rs` explicitly special-cases those two
+  strings and returns `None`. Removing that check makes the recap compare
+  against a window before year 1.
+- `range.unbounded` exists only so the hero line and the share card print "All
+  time" instead of "1 Jan 0001 - 31 Dec 9999". It is a display flag; do not
+  make it mean anything about the query.
+
+**`data-tour` attributes are load-bearing.** They look like dead attributes and
+they are not: `components/Tour.tsx` finds every element it highlights through
+them. They live in exactly four files (`ui.tsx`'s `PageHeader`, `Layout.tsx`'s
+sidebar and nav links, two on `Dashboard.tsx`) and carry no behaviour, which is
+exactly why a later cleanup would delete them. Removing one does not break the
+build - it silently downgrades that tour step to a centred card.
+
+**The Tour is mounted in `Layout.tsx`, not in a route.** It navigates between
+pages as it runs; anything rendered inside a route would unmount itself on its
+own first step.
+
+**CSV columns are APPENDED, never inserted.** Every export in `csv_export.rs`
+adds new columns at the END of the header and the end of the `write_record`
+array, and reads them back BY NAME while existing columns stay positional.
+Marko reads these files in sheets; inserting a column silently shifts every
+column after it. The header array and the row array must always have the same
+length - the `csv` crate errors on a length mismatch at runtime, not at compile
+time, so this is not something the compiler will catch.
+
+**The suggestion image cap exists in two places and they must agree.**
+`SUGGESTION_IMAGE_MAX_CHARS` in `Settings.tsx` and the 600000 in
+`firestore.rules` are the same number for the same reason: Firestore allows
+1 MiB per DOCUMENT, and the text, email and metadata share the document with
+the picture. Raising one without the other either breaks sending or removes
+the server-side guard. The image is stored IN the document deliberately -
+Firebase Storage is a service this app does not use and would have to be set
+up, billed and secured separately for one attachment.
+
 ## 2.24.0 - Recap is a presentation layer, and must stay one
 
 - **`get_dashboard` needs `period: "custom"` to honour `from`/`to`.**

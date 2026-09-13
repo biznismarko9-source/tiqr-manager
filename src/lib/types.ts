@@ -1963,6 +1963,72 @@ export interface CurrencyMarketAnalysis {
  * them. `yourTickets` lives at this top level, not inside one
  * `CurrencyMarketAnalysis`, since marko's own inventory has its own
  * currency independent of what's been scanned so far. */
+/* ============ Price Checker Market Map (2.26.0) ============
+ *
+ * A second VIEW of one scan session. Mirrors `models.rs`'s MarketMap* structs
+ * exactly. See `commands/price_checker_map.rs` for the audited list of what
+ * the scanner can and cannot produce - in particular: market listings NEVER
+ * carry a seat number or their own URL, which is why neither appears here. */
+
+export interface MarketMapListing {
+  marketplace: string;
+  listingId: string | null;
+  /** The page's own wording, verbatim. */
+  row: string | null;
+  rowKey: string | null;
+  priceCents: number;
+  currency: string | null;
+  /** Seats in this listing - a COUNT, never a seat number. */
+  quantity: number | null;
+  incomplete: boolean;
+}
+
+export interface MarketMapMyTicket {
+  ticketId: number;
+  orderId: number;
+  code: string;
+  row: string | null;
+  /** Marko's own seat, which the app does store - market listings never have
+   *  one. The asymmetry is real and is labelled on screen. */
+  seat: string | null;
+  listingPriceCents: number | null;
+  currency: string;
+  status: string;
+}
+
+export interface MarketMapSection {
+  key: string;
+  label: string;
+  /** False for the single explicit "No section data" bucket. */
+  hasSection: boolean;
+  listingCount: number;
+  myTicketCount: number;
+  currency: string | null;
+  mixedCurrencies: boolean;
+  lowestPriceCents: number | null;
+  medianPriceCents: number | null;
+  highestPriceCents: number | null;
+  listings: MarketMapListing[];
+  myTickets: MarketMapMyTicket[];
+}
+
+export interface MarketMapTier {
+  key: string;
+  label: string;
+  listingCount: number;
+  myTicketCount: number;
+  sections: MarketMapSection[];
+}
+
+export interface MarketMap {
+  tiers: MarketMapTier[];
+  totalListings: number;
+  totalMyTickets: number;
+  listingsWithoutSection: number;
+  hasSectionData: boolean;
+  marketplaces: string[];
+}
+
 export interface MarketAnalysisResult {
   requestId: number;
   byCurrency: CurrencyMarketAnalysis[];

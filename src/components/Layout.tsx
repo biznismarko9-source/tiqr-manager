@@ -26,6 +26,7 @@ import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
+import { Tour } from "./Tour";
 import logo from "../assets/logo.png";
 
 // 2.14.0: how often automatic sync looks at the other machine while the app
@@ -334,7 +335,8 @@ export default function Layout() {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
+        {/* 2.25.0: `data-tour` anchors only - see components/Tour.tsx. */}
+        <nav data-tour="nav" className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           {NAV.map((item) =>
             "heading" in item ? (
               <p
@@ -369,7 +371,7 @@ export default function Layout() {
                 {ticketsOpen && (
                   <div className="mt-0.5 space-y-0.5">
                     {item.children.map((child) => (
-                      <NavLink key={child.to} to={child.to} className={navLinkClass}>
+                      <NavLink key={child.to} data-tour={`nav:${child.to}`} to={child.to} className={navLinkClass}>
                         {({ isActive }) => (
                           <>
                             {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
@@ -383,7 +385,7 @@ export default function Layout() {
                 )}
               </div>
             ) : (
-              <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
+              <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
                 {({ isActive }) => (
                   <>
                     {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
@@ -510,6 +512,10 @@ export default function Layout() {
         </div>
       </main>
       <SyncActivity activity={syncActivity} />
+      {/* 2.25.0: the guided tour. Mounted HERE because it navigates between
+          pages as it runs - anything rendered inside a route would unmount
+          itself on its own first step. Renders nothing until started. */}
+      <Tour />
     </div>
   );
 }

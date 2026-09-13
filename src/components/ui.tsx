@@ -199,7 +199,11 @@ export function PageHeader({
   // separates the header band from the page content. Same props as before,
   // so every page that already renders one picks this up unchanged.
   return (
-    <div className="mb-5 border-b border-slate-200 pb-4 dark:border-slate-800">
+    // 2.25.0: `data-tour` only - two anchors for the guided tour
+    // (components/Tour.tsx), which is how one edit here gives every page in
+    // the app a place for the tour to point at instead of a dozen page edits.
+    // No behaviour, no styling, no prop.
+    <div data-tour="page-header" className="mb-5 border-b border-slate-200 pb-4 dark:border-slate-800">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h1 className="truncate text-[19px] font-semibold leading-tight text-slate-900 dark:text-slate-50">
@@ -207,7 +211,7 @@ export function PageHeader({
           </h1>
           {subtitle && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
         </div>
-        {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        {actions && <div data-tour="page-actions" className="flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
     </div>
   );

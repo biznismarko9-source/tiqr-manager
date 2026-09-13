@@ -69,7 +69,17 @@ service cloud.firestore {
                     && request.resource.data.status == 'new'
                     && request.resource.data.text is string
                     && request.resource.data.text.size() > 0
-                    && request.resource.data.text.size() <= 2000;
+                    && request.resource.data.text.size() <= 2000
+                    // 2.25.0: the optional screenshot. Either genuinely absent
+                    // (null) or a data URL, and capped here as well as in the
+                    // client - a rule that trusts the app to have resized the
+                    // picture is not a rule. 600k characters is the same
+                    // ceiling `shrinkImage` compresses down to, and leaves
+                    // room under Firestore's 1 MiB per-document limit for the
+                    // text and metadata sharing the document.
+                    && (request.resource.data.image == null
+                        || (request.resource.data.image is string
+                            && request.resource.data.image.size() <= 600000));
 
       // Only an admin ever reads them. Note `get` on the reader's OWN user doc
       // - that is the one document these rules already let them read.

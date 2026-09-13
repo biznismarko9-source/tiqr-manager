@@ -24,6 +24,7 @@ import { useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
+import { MarketMapPanel } from "../components/MarketMapView";
 import type {
   ComparableLevel,
   ComparableReferenceInput,
@@ -31,6 +32,7 @@ import type {
   DataQuality,
   EventWithStats,
   MarketAnalysisResult,
+  MarketMap,
   MarketplacePriceView,
   NormalizedListing,
   PriceCheck,
@@ -1256,6 +1258,42 @@ function MarketplaceCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.requestId, session?.scanCount, eventId]);
 
+  // 2.26.0 - the Market Map. Same session, same trigger, same shape as the
+  // analysis above: recomputed after each MANUAL scan (`scanCount`), never on
+  // a timer and never in the background. Adds no scanning of its own - it is a
+  // read-only fold of listings this session already has plus marko's own
+  // unsold tickets for the event.
+  const [marketMap, setMarketMap] = useState<MarketMap | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!session || session.listings.length === 0) {
+      setMarketMap(null);
+      setMapError(null);
+      return;
+    }
+    let cancelled = false;
+    setMapLoading(true);
+    api
+      .computeMarketMap(session.requestId, eventId)
+      .then((result) => {
+        if (!cancelled) {
+          setMarketMap(result);
+          setMapError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setMapError(errMsg(e));
+      })
+      .finally(() => {
+        if (!cancelled) setMapLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.requestId, session?.scanCount, eventId]);
+
   // Keeps the field in sync when the parent reloads (e.g. after this exact
   // save, or after switching away and back to this event) without clobbering
   // a save that's still in flight.
@@ -1405,6 +1443,13 @@ function MarketplaceCard({
                       Save to history
                     </Button>
                   </div>
+
+                  <MarketMapPanel
+                    map={marketMap}
+                    loading={mapLoading}
+                    error={mapError}
+                    sourceUrl={view.link?.url ?? null}
+                  />
 
                   <MarketAnalysisPanel analysis={analysis} loading={analysisLoading} error={analysisError} />
                   <ComparableMarketTool requestId={session.requestId} currencies={analysis?.byCurrency.map((c) => c.currency) ?? []} />

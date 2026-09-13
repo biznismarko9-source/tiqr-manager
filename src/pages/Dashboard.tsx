@@ -321,7 +321,8 @@ export default function Dashboard() {
               past the last button (Custom) into empty space. marko wanted
               it to end right at Custom instead; w-fit makes the box hug its
               buttons rather than fill the row. */}
-          <div className={`${SEGMENTED_TRACK} mb-4`}>
+          {/* 2.25.0: `data-tour` anchor only - see components/Tour.tsx. */}
+          <div data-tour="dash-period" className={`${SEGMENTED_TRACK} mb-4`}>
             {PERIODS.map((p) => (
               <button
                 key={p.key}
@@ -390,7 +391,7 @@ export default function Dashboard() {
                       own band of the page: bigger figure, brand-tinted border,
                       and margin/ROI as its sub-line so nothing that was in the
                       headline is lost. */}
-                  <div className="summary-bar">
+                  <div data-tour="dash-stats" className="summary-bar">
                     <StatCard
                       label="Profit"
                       value={formatMoney(data.period.profitCents, data.primaryCurrency)}

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { startTour } from "../components/Tour";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -113,15 +114,6 @@ const SECTIONS = [
   // marko's own request; 2.0.78 switched the mobile-push channel from
   // Pushover to ntfy - see NotificationsCard's own doc comment.
   { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts for the things that need your attention.", icon: IconBell },
-  // 2.23.0: marko asked for a place with a guide and a way for people to say
-  // what they want changed - and for him to see those as admin. Both live in
-  // this one section rather than anywhere new; see SupportCards at the bottom
-  // of this file.
-  // 2.24.0: Recap lives HERE, not in the sidebar - marko's own call. It is
-  // something you open when you want to see how things are going, not
-  // something in the way of everyday work. See components/Recap.tsx.
-  { key: "insights", title: "Insights", description: "Ticket and Finance recaps - how a period actually went, in one screen.", icon: IconGauge },
-  { key: "support", title: "Support", description: "How the app wants to be used, and a direct line for anything missing.", icon: IconInfo },
   // 2.4.4: the old "Appearance" section (Light/System/Dark) moved out of
   // Settings entirely - marko's own request for a one-click light/dark
   // toggle right above the sidebar's profile widget instead (Layout.tsx,
@@ -131,6 +123,20 @@ const SECTIONS = [
   // the bottom of the sidebar (Layout.tsx), whose "Account settings" item
   // links straight to /settings/account.
   { key: "account", title: "Account", description: "Your name, email and sign-in.", icon: IconUser },
+  // 2.23.0: marko asked for a place with a guide and a way for people to say
+  // what they want changed - and for him to see those as admin. Both live in
+  // this one section rather than anywhere new; see SupportCards at the bottom
+  // of this file.
+  // 2.24.0: Recap lives HERE, not in the sidebar - marko's own call. It is
+  // something you open when you want to see how things are going, not
+  // something in the way of everyday work. See components/Recap.tsx.
+  // 2.25.0: both moved to the VERY END of this list at marko's request. They
+  // are the two things you go looking for on purpose; everything above them
+  // is something you come to Settings to change. Order here is the only thing
+  // that decides the Settings home list AND the section rail, so this one
+  // move covers both.
+  { key: "insights", title: "Insights", description: "Ticket and Finance recaps - how a period actually went, in one screen.", icon: IconGauge },
+  { key: "support", title: "Support", description: "A guided walkthrough of the app, and a direct line for anything missing.", icon: IconInfo },
 ];
 
 /** 2.18.0: the seven states marko asked to be able to see at a glance, in his
@@ -139,40 +145,12 @@ const SECTIONS = [
 /** 2.23.0: how many restore points show before "Show N more". Two, because
  *  the one worth restoring is almost always the most recent and a list of
  *  fifteen identical-looking rows hides it. */
-/** 2.23.0: the guide in Settings -> Support. Written for someone opening TIQR
- *  for the first time, in the order the app is actually built around - not a
- *  feature list. The three genuinely surprising things are named outright,
- *  because they are what a new person gets wrong first. */
-const GUIDE_STEPS = [
-  {
-    title: "Add the event first",
-    body: "Everything hangs off an event - orders, tickets, sales, the calendar. If the date is not settled yet, leave it empty rather than guessing; the app shows TBD and sorts it separately.",
-  },
-  {
-    title: "Then the order - it creates the tickets for you",
-    body: "Enter what you paid for the whole order and how many tickets it was. The app splits that cost across them to the exact cent, so you never type a per-ticket price. Section, row and seat are labels, not prices.",
-  },
-  {
-    title: "List them, then record the sale",
-    body: "A ticket with no listing price cannot sell, and the Dashboard counts those separately. When one sells, record the sale with the platform and the fee that platform took - the fee is what makes your margin real rather than optimistic.",
-  },
-  {
-    title: "Money is typed normally, stored exactly",
-    body: "Type 12,50 or 12.50 - both work. It is kept to the cent internally, so totals never drift the way a spreadsheet's do.",
-  },
-  {
-    title: "Turn on sync once, then forget it",
-    body: "Settings -> Data. After that your two computers keep themselves level on their own: changes go up every few minutes and come down when you open the app. If both changed, they get combined - nothing is thrown away.",
-  },
-  {
-    title: "There is always a way back",
-    body: "Before anything replaces your data, the app saves a restore point - and Google Drive keeps an earlier version of every sync. Both are in Settings -> Data, both are one click.",
-  },
-  {
-    title: "Screenshots do the typing",
-    body: "On events, orders, sales and pulls there's a scanner: drop a screenshot and it fills in what it can read. It is sent to Anthropic to be read, and what it costs you is shown in Settings -> Integrations.",
-  },
-];
+/* 2.25.0: the seven-paragraph GUIDE_STEPS list that used to live here is
+   gone. Marko: "ten guide nieje dobry treba ho prerobit na poriadny guide...
+   ze realne ti poukazuje veci". It is now a guided tour that walks the app
+   and points at the real thing it is describing - components/Tour.tsx - so
+   keeping a wall of text next to it would be keeping exactly what he asked
+   to be replaced. */
 
 /** One suggestion as the inbox renders it. */
 interface SuggestionDoc {
@@ -182,8 +160,65 @@ interface SuggestionDoc {
   kind: string;
   text: string;
   appVersion: string;
+  /** 2.25.0: an optional screenshot, as a `data:image/jpeg;base64,...` URL.
+   *  Stored in the document itself rather than in Firebase Storage - Storage
+   *  is a service this app does not use and would have to be set up, billed
+   *  and secured separately for one attachment. See `shrinkImage`. */
+  image: string | null;
   /** null while the server timestamp is still being filled in. */
   createdAt: string | null;
+}
+
+/** The longest edge a suggestion screenshot is kept at. */
+const SUGGESTION_IMAGE_MAX_PX = 1280;
+/** Ceiling on the base64 string, in characters.
+ *
+ *  Firestore's hard limit is 1 MiB per DOCUMENT, and base64 costs about a
+ *  third on top of the raw bytes - so this is deliberately well under it,
+ *  because the text, the email and the metadata have to fit in the same
+ *  document alongside the picture. */
+const SUGGESTION_IMAGE_MAX_CHARS = 600_000;
+
+/** Shrinks a picked image to something one Firestore document can hold.
+ *
+ *  Done on a canvas, which the webview already has: no image library, and no
+ *  new dependency for one attachment. The quality steps down until it fits
+ *  rather than refusing a big photo outright - a screenshot of the actual
+ *  problem is worth more than its last 10% of JPEG quality. Only the final
+ *  step failing is a real refusal, and it says so. */
+function shrinkImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("unreadable"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("not an image"));
+      img.onload = () => {
+        const scale = Math.min(1, SUGGESTION_IMAGE_MAX_PX / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("no canvas"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        for (const q of [0.72, 0.6, 0.48, 0.36, 0.25]) {
+          const url = canvas.toDataURL("image/jpeg", q);
+          if (url.length <= SUGGESTION_IMAGE_MAX_CHARS) {
+            resolve(url);
+            return;
+          }
+        }
+        reject(new Error("too big"));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 const RESTORE_POINTS_COLLAPSED = 2;
@@ -546,6 +581,24 @@ export default function Settings() {
   // way back from a bad sync, and the one you want is almost always the most
   // recent - the rest are a wall that hides it.
   const [restoreExpanded, setRestoreExpanded] = useState(false);
+  // 2.25.0: the Drive revision list never had a collapse at all - it loaded
+  // every version Google still holds and left them all on screen, which is
+  // the wall marko photographed.
+  const [revisionsExpanded, setRevisionsExpanded] = useState(false);
+
+  // 2.25.0: "tie restores sa zavru ked odidem." Leaving this section puts both
+  // lists back the way they were found - collapsed, and the Drive list not
+  // even fetched. Switching Settings sections does NOT unmount this component
+  // (the sections are conditional renders inside one page), so without this
+  // the lists were still hanging open on the way back. Keyed on `sec` rather
+  // than on unmount for exactly that reason.
+  useEffect(() => {
+    if (sec !== "data") {
+      setRestoreExpanded(false);
+      setRevisionsExpanded(false);
+      setRevisions([]);
+    }
+  }, [sec]);
 
   const doMergeBoth = async () => {
     setSyncBusy("merge");
@@ -1234,7 +1287,11 @@ export default function Settings() {
                     </Button>
                   ) : (
                     <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {revisions.map((r) => (
+                      {/* 2.25.0: same two-then-more rule the restore points
+                          below already follow. Google can hold a lot of
+                          revisions and every row looks identical, so the one
+                          worth restoring - the most recent - was buried. */}
+                      {(revisionsExpanded ? revisions : revisions.slice(0, RESTORE_POINTS_COLLAPSED)).map((r) => (
                         <li key={r.id} className="flex flex-wrap items-center gap-2 py-2">
                           <span className="text-sm text-slate-700 dark:text-slate-300">
                             {r.modifiedAt ? formatDateTime(r.modifiedAt) : r.id}
@@ -1257,6 +1314,34 @@ export default function Settings() {
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {revisions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      {revisions.length > RESTORE_POINTS_COLLAPSED && (
+                        <button
+                          type="button"
+                          onClick={() => setRevisionsExpanded((v) => !v)}
+                          className="text-xs font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400"
+                        >
+                          {revisionsExpanded
+                            ? "Show fewer"
+                            : `Show ${revisions.length - RESTORE_POINTS_COLLAPSED} more`}
+                        </button>
+                      )}
+                      {/* Puts the list away entirely, back to the button that
+                          fetched it. Marko asked for this explicitly: "Show
+                          fewer" still leaves two rows on screen forever. */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRevisions([]);
+                          setRevisionsExpanded(false);
+                        }}
+                        className="text-xs font-medium text-slate-400 underline-offset-2 hover:underline dark:text-slate-500"
+                      >
+                        Hide
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1308,15 +1393,26 @@ export default function Settings() {
                       })}
                     </ul>
                     {restorePoints.length > RESTORE_POINTS_COLLAPSED && (
-                      <button
-                        type="button"
-                        onClick={() => setRestoreExpanded((v) => !v)}
-                        className="mt-2 text-xs font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400"
-                      >
-                        {restoreExpanded
-                          ? "Show fewer"
-                          : `Show ${restorePoints.length - RESTORE_POINTS_COLLAPSED} more`}
-                      </button>
+                      <div className="mt-2 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setRestoreExpanded((v) => !v)}
+                          className="text-xs font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400"
+                        >
+                          {restoreExpanded
+                            ? "Show fewer"
+                            : `Show ${restorePoints.length - RESTORE_POINTS_COLLAPSED} more`}
+                        </button>
+                        {restoreExpanded && (
+                          <button
+                            type="button"
+                            onClick={() => setRestoreExpanded(false)}
+                            className="text-xs font-medium text-slate-400 underline-offset-2 hover:underline dark:text-slate-500"
+                          >
+                            Hide
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -3713,6 +3809,11 @@ function SupportCards() {
   const [sent, setSent] = useState(false);
   const [inbox, setInbox] = useState<SuggestionDoc[] | null>(null);
   const [inboxBusy, setInboxBusy] = useState(false);
+  // 2.25.0: marko asked for people to be able to add a photo. One picture,
+  // optional, and never required for a suggestion to send.
+  const [image, setImage] = useState<string | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api.getAppInfo().then((i) => setVersion(i.version)).catch(() => setVersion(""));
@@ -3732,11 +3833,16 @@ function SupportCards() {
         name: user?.name ?? "",
         kind,
         text: trimmed.slice(0, 2000),
+        // Always written, `null` when there is no picture, so the inbox and
+        // the security rule both see one consistent shape.
+        image,
         status: "new",
         appVersion: version,
         createdAt: serverTimestamp(),
       });
       setText("");
+      setImage(null);
+      if (fileRef.current) fileRef.current.value = "";
       setSent(true);
       toast.success("Sent. Thanks - it lands straight in marko's inbox.");
     } catch {
@@ -3763,6 +3869,10 @@ function SupportCards() {
             kind: typeof v.kind === "string" ? v.kind : "idea",
             text: typeof v.text === "string" ? v.text : "",
             appVersion: typeof v.appVersion === "string" ? v.appVersion : "",
+            // Only a data URL is rendered. Anything else - a remote URL, a
+            // stray string - is dropped rather than handed to an img element.
+            image:
+              typeof v.image === "string" && v.image.startsWith("data:image/") ? v.image : null,
             // serverTimestamp() is null for a beat on the writer's own device
             // until the server fills it in - shown as "just now" rather than
             // as a broken date.
@@ -3780,25 +3890,38 @@ function SupportCards() {
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
-      <Card className="p-5">
-        <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">How TIQR wants to be used</h3>
-        <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-          The short version. Everything below is the order the app is built around - going out of order mostly works,
-          it just makes more typing.
-        </p>
-        <ol className="space-y-3">
-          {GUIDE_STEPS.map((step, i) => (
-            <li key={step.title} className="flex gap-3">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-50 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">
-                {i + 1}
-              </span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{step.title}</p>
-                <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{step.body}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
+      {/* 2.25.0: the guide is now something that HAPPENS, not something you
+          read. See components/Tour.tsx. */}
+      <Card className="overflow-hidden p-0">
+        <div className="bg-gradient-to-br from-brand-600 to-brand-800 px-6 py-7">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/70">Guide</p>
+          <h3 className="mt-2 text-[22px] font-semibold leading-tight text-white">Let the app show you itself</h3>
+          <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-white/80">
+            Fourteen steps that walk through the real screens - the Dashboard&apos;s headline numbers, then events,
+            orders, tickets, sales and everything after them. Each step dims the app and points at the thing it is
+            talking about, so nothing has to be found from a description.
+          </p>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={startTour}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-50"
+            >
+              Start the tour
+            </button>
+            <span className="text-xs text-white/70">About two minutes · Esc ends it at any point</span>
+          </div>
+        </div>
+        <div className="px-6 py-4">
+          <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            The three things people get wrong first, in case you want them now: the{" "}
+            <span className="font-medium text-slate-700 dark:text-slate-300">event comes before everything</span>; the{" "}
+            <span className="font-medium text-slate-700 dark:text-slate-300">order creates its own tickets</span> and
+            splits the cost across them, so a per-ticket price is never typed; and a{" "}
+            <span className="font-medium text-slate-700 dark:text-slate-300">sale needs the platform&apos;s fee</span>{" "}
+            or the margin it shows you is optimistic rather than real.
+          </p>
+        </div>
       </Card>
 
       <Card className="p-5">
@@ -3839,13 +3962,65 @@ function SupportCards() {
           placeholder="Napíš, čo by si zmenil alebo pridal…"
           className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
         />
+        {/* 2.25.0: one optional picture. A screenshot says in one look what a
+            paragraph gets wrong - and it is resized here before it is sent,
+            so a 12 MP phone photo is not what leaves the machine. */}
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              setImageBusy(true);
+              shrinkImage(file)
+                .then((url) => {
+                  setImage(url);
+                  setSent(false);
+                })
+                .catch(() =>
+                  toast.error(
+                    "That picture could not be used. Try a screenshot, or a smaller image - one photo has to fit in one message.",
+                  ),
+                )
+                .finally(() => setImageBusy(false));
+            }}
+          />
+          <Button variant="secondary" disabled={imageBusy} onClick={() => fileRef.current?.click()}>
+            {imageBusy ? <Spinner className="h-4 w-4" /> : <IconUpload className="h-4 w-4" />}
+            {image ? "Replace picture" : "Add a picture"}
+          </Button>
+          {image && (
+            <span className="flex items-center gap-2">
+              <img
+                src={image}
+                alt="Attached screenshot"
+                className="h-10 w-16 rounded border border-slate-200 object-cover dark:border-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setImage(null);
+                  if (fileRef.current) fileRef.current.value = "";
+                }}
+                className="text-xs font-medium text-slate-400 underline-offset-2 hover:underline dark:text-slate-500"
+              >
+                Remove
+              </button>
+            </span>
+          )}
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button variant="primary" disabled={sending || text.trim().length === 0} onClick={send}>
             {sending ? <Spinner className="h-4 w-4" /> : null}
             Send to marko
           </Button>
           <span className="text-xs text-slate-400 dark:text-slate-500">
-            {sent ? "Sent." : `${text.trim().length}/2000 · sent with your email and app version`}
+            {sent
+              ? "Sent."
+              : `${text.trim().length}/2000${image ? " · 1 picture" : ""} · sent with your email and app version`}
           </span>
         </div>
       </Card>
@@ -3884,6 +4059,13 @@ function SupportCards() {
                     </span>
                   </div>
                   <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{s.text}</p>
+                  {s.image && (
+                    <img
+                      src={s.image}
+                      alt="Sent with this suggestion"
+                      className="mt-2 max-h-72 rounded-lg border border-slate-200 object-contain dark:border-slate-700"
+                    />
+                  )}
                 </li>
               ))}
             </ul>

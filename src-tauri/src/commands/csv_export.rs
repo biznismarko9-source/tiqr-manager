@@ -107,7 +107,8 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
     // hadn't been updated to include it since categories shipped in 2.0.27.
     let mut sql = "SELECT o.code, e.name, sup.name, p.name, o.purchase_date, o.quantity,
                 o.unit_price_cents, o.fees_cents, o.other_costs_cents, o.total_cost_cents,
-                o.currency, o.payment_status, o.notes, o.is_demo, o.created_at, e.category
+                o.currency, o.payment_status, o.notes, o.is_demo, o.created_at, e.category,
+                e.event_date, o.external_reference
          FROM orders o
          JOIN events e ON e.id = o.event_id
          LEFT JOIN suppliers sup ON sup.id = o.supplier_id
@@ -132,6 +133,14 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
         "order_code", "event", "category", "supplier", "platform", "purchase_date", "quantity",
         "unit_price", "fees", "other_costs", "total_cost", "currency", "payment_status",
         "notes", "is_demo", "created_at",
+        // 2.25.0 (marko's CSV check): both of these existed in the database
+        // and reached no export. `event_date` is the date that actually
+        // matters to him - 2.23.0 made it the date shown in the Orders list
+        // for exactly that reason, while this file still only carried
+        // `purchase_date`. `external_reference` has been on orders since
+        // migration 009. Appended at the END so every column an existing
+        // sheet or script already reads keeps its position.
+        "event_date", "external_reference",
     ])?;
     let mut count = 0i64;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -154,6 +163,10 @@ fn export_orders_csv_impl(conn: &Connection, path: &str, ids: Option<&[i64]>) ->
             opt(row.get(12)?),
             yesno(row.get(13)?).to_string(),
             row.get::<_, String>(14)?,
+            // By name, not by index - the module convention for every column
+            // added after the original set.
+            opt(row.get("event_date")?),
+            opt(row.get("external_reference")?),
         ])?;
         count += 1;
     }
@@ -199,7 +212,7 @@ fn export_tickets_inner(
     let mut sql = "SELECT t.code, e.name, o.code, t.section, t.row_label, t.seat, t.ticket_type,
                 t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents, t.listing_price_cents,
                 t.currency, t.status, t.notes, t.is_demo, t.created_at, t.resale_status, t.delivery_status,
-                t.tier
+                t.tier, e.event_date
          FROM tickets t
          JOIN events e ON e.id = t.event_id
          JOIN orders o ON o.id = t.order_id
@@ -237,6 +250,10 @@ fn export_tickets_inner(
         "ticket_code", "event", "order_code", "section", "row", "tier", "seat", "ticket_type",
         "purchase_cost", "purchase_fees", "other_costs", "listing_price", "currency",
         "status", "resale_status", "delivery_status", "notes", "is_demo", "created_at",
+        // 2.25.0: the event's own date. This export named the event but never
+        // said WHEN it is, which is the one thing you sort a ticket list by.
+        // Appended, same convention as `tier` above it.
+        "event_date",
     ])?;
     let mut count = 0i64;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -263,6 +280,7 @@ fn export_tickets_inner(
             opt(row.get(13)?),
             yesno(row.get(14)?).to_string(),
             row.get::<_, String>(15)?,
+            opt(row.get("event_date")?),
         ])?;
         count += 1;
     }
@@ -353,7 +371,8 @@ fn write_sales_csv(
                 (t.purchase_cost_cents+t.purchase_fees_cents+t.other_costs_cents) as cost_cents,
                 s.currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at,
                 t.currency as ticket_currency, o.code as order_code, t.section, t.row_label, t.seat,
-                t.resale_status, t.delivery_status, s.refunded_at, s.refund_reason, t.tier
+                t.resale_status, t.delivery_status, s.refunded_at, s.refund_reason, t.tier,
+                e.event_date
          FROM sales s
          JOIN tickets t ON t.id = s.ticket_id
          JOIN events e ON e.id = t.event_id
@@ -369,6 +388,10 @@ fn write_sales_csv(
         "platform", "sale_date", "sale_price", "selling_fees", "cost", "profit", "margin",
         "roi", "currency", "payment_status", "resale_status", "delivery_status",
         "buyer_reference", "refunded_at", "refund_reason", "notes", "is_demo", "created_at",
+        // 2.25.0: the event's own date, the same gap Orders and Tickets had.
+        // This export carried `sale_date` and the event NAME but never said
+        // when the event itself is. Appended, same convention as `tier`.
+        "event_date",
     ])?;
     let mut count = 0i64;
     let mut rows = stmt.query(extra_params)?;
@@ -439,6 +462,7 @@ fn write_sales_csv(
             opt(row.get(11)?),
             yesno(row.get(12)?).to_string(),
             row.get::<_, String>(13)?,
+            opt(row.get("event_date")?),
         ])?;
         count += 1;
     }
@@ -1108,5 +1132,98 @@ mod tests {
         let example: Vec<String> =
             rdr.records().next().unwrap().unwrap().iter().map(|f| f.to_string()).collect();
         assert_eq!(example[row_idx + 1], "VIP", "the filled-in example row demonstrates a real tier value");
+    }
+
+    /// Reads a CSV's header and its rows together - `read_csv_rows` above
+    /// consumes the header into `Reader::headers()` and never returns it, and
+    /// the 2.25.0 tests below need to look columns up BY NAME rather than
+    /// hard-coding an index that a future appended column would shift.
+    fn read_csv_with_header(path: &std::path::Path) -> (Vec<String>, Vec<Vec<String>>) {
+        let mut rdr = csv::Reader::from_path(path).unwrap();
+        let header: Vec<String> = rdr.headers().unwrap().iter().map(|h| h.to_string()).collect();
+        let rows: Vec<Vec<String>> = rdr
+            .records()
+            .map(|r| r.unwrap().iter().map(|f| f.to_string()).collect())
+            .collect();
+        (header, rows)
+    }
+
+    #[test]
+    fn export_orders_csv_includes_the_event_date_and_the_external_reference() {
+        // 2.25.0 (marko's "skontrolovat cele CSV"): both existed in the
+        // database and reached no export. `orders.external_reference` has
+        // been there since migration 009; the event's own date is the one
+        // 2.23.0 made the visible date in the Orders list, while this export
+        // still only carried `purchase_date`.
+        let mut conn = test_conn();
+        let order_id = seed_order_id(&mut conn);
+        conn.execute("UPDATE orders SET external_reference='TM-REF-99' WHERE id=?1", [order_id])
+            .unwrap();
+        conn.execute(
+            "UPDATE events SET event_date='2026-07-11' WHERE id=(SELECT event_id FROM orders WHERE id=?1)",
+            [order_id],
+        )
+        .unwrap();
+
+        let out = temp_csv_path();
+        export_orders_csv_impl(&conn, out.0.to_str().unwrap(), None).unwrap();
+        let (header, rows) = read_csv_with_header(&out.0);
+        assert_eq!(rows.len(), 1);
+        let ed = header.iter().position(|h| h == "event_date").unwrap();
+        let xr = header.iter().position(|h| h == "external_reference").unwrap();
+        assert_eq!(rows[0][ed], "2026-07-11");
+        assert_eq!(rows[0][xr], "TM-REF-99");
+        // Appended, never inserted: everything that was already in this file
+        // has to still be where it was, or marko's existing sheets shift by
+        // two columns the next time he exports.
+        assert_eq!(header[0], "order_code");
+        assert_eq!(header[1], "event");
+        assert_eq!(header[5], "purchase_date");
+    }
+
+    #[test]
+    fn a_tbd_event_exports_a_blank_event_date_rather_than_a_made_up_one() {
+        // `seed_tickets` inserts an event with no date at all - the same
+        // "NULL/empty stays NULL/empty" rule every other optional field in
+        // this file follows. A TBD event must never acquire a date by being
+        // exported.
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        create_sale_impl(&mut conn, &sale_input(tickets[0], 2000)).unwrap();
+
+        let out = temp_csv_path();
+        export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
+        let (header, rows) = read_csv_with_header(&out.0);
+        let ed = header.iter().position(|h| h == "event_date").unwrap();
+        assert_eq!(rows[0][ed], "", "no event date set - must stay blank");
+
+        let out2 = temp_csv_path();
+        export_tickets_inner(&conn, out2.0.to_str().unwrap(), None, None, None).unwrap();
+        let (h2, r2) = read_csv_with_header(&out2.0);
+        let ed2 = h2.iter().position(|h| h == "event_date").unwrap();
+        assert_eq!(r2[0][ed2], "", "same rule on the tickets export");
+    }
+
+    #[test]
+    fn export_sales_and_tickets_carry_the_event_date_when_there_is_one() {
+        let mut conn = test_conn();
+        let tickets = seed_tickets(&mut conn, 1);
+        conn.execute("UPDATE events SET event_date='2026-07-11'", []).unwrap();
+        create_sale_impl(&mut conn, &sale_input(tickets[0], 2000)).unwrap();
+
+        let out = temp_csv_path();
+        export_sales_csv_impl(&conn, out.0.to_str().unwrap()).unwrap();
+        let (header, rows) = read_csv_with_header(&out.0);
+        let ed = header.iter().position(|h| h == "event_date").unwrap();
+        assert_eq!(rows[0][ed], "2026-07-11");
+        // Not the same date as the SALE - the two must stay separate columns.
+        let sd = header.iter().position(|h| h == "sale_date").unwrap();
+        assert_ne!(ed, sd);
+
+        let out2 = temp_csv_path();
+        export_tickets_inner(&conn, out2.0.to_str().unwrap(), None, None, None).unwrap();
+        let (h2, r2) = read_csv_with_header(&out2.0);
+        let ed2 = h2.iter().position(|h| h == "event_date").unwrap();
+        assert_eq!(r2[0][ed2], "2026-07-11");
     }
 }

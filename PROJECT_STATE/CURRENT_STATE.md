@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.24.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.26.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -485,6 +485,61 @@ Worse, `rustc` aborts after name resolution, so when errors like these are
 present **the type-check phase never runs at all** - a build that clears them
 can still surface a fresh round of type errors on code that has never been
 type-checked. Treat "it compiles" as unknown until CI says so.
+
+**2.25.0 - Recap as a story, a guided tour, CSV gaps, suggestion photos.**
+Seven changes, one pass:
+
+- **`components/Recap.tsx`** opens as a **story** - one idea per screen, its own
+  effect, auto-advancing, ending on a card into the unchanged full report
+  (Skip / Replay both exist). **Not one new figure**: every slide reads a field
+  the report already renders from the same single `get_dashboard` call, and a
+  slide with nothing true to say is never built.
+- **All time is a period and is now the DEFAULT.** It returns the same two
+  sentinels `period_bounds`'s own `all` arm produces (`0001-01-01` /
+  `9999-12-31`), so there is NO backend change; `previous_period_bounds`
+  already returns `None` for them, which is why the comparison table correctly
+  says there is nothing to compare against. `range.unbounded` exists purely so
+  the two places that print a range say "All time" instead of year 0001.
+- **`components/Tour.tsx` (new)** - a 14-step guided tour that navigates to each
+  real page, spotlights a real element and explains it there. Replaces the
+  deleted `GUIDE_STEPS` list. Anchors are `data-tour` attributes in exactly
+  four files - `ui.tsx`'s `PageHeader` (one edit = every page), `Layout.tsx`'s
+  sidebar, and two on `Dashboard.tsx` - each a bare attribute with no logic.
+  Mounted in Layout, NOT in a route, because it navigates as it runs. A step
+  whose anchor is absent still runs, centred and without a spotlight.
+- **Settings order**: `insights` and `support` are now LAST in `SECTIONS`.
+- **Restore lists**: Drive revisions collapse to 2 with "Show N more"; both
+  lists have **Hide**; leaving the Data section resets both (keyed on `sec` -
+  switching sections does not unmount this page).
+- **CSV**: orders gained `event_date` + `external_reference`, tickets/inventory
+  and sales gained `event_date`, all **appended at the end** so existing column
+  positions never shift. Still absent on purpose: any Pulls, Finance or
+  ticket-listings export, and `batch_id` on sales (protected).
+- **Suggestions take one optional picture**, resized on a canvas to <=600k
+  base64 chars and stored in the Firestore document. **`firestore.rules` needs
+  re-pasting into the Console** - it caps the field server-side too.
+
+**2.26.0 - Price Checker Market Map.** A second VIEW of one manual scan
+session, inside the existing Price Checker. `commands/price_checker_map.rs`
+(new, 13 tests) + `components/MarketMapView.tsx` (new) + one command,
+`compute_market_map` - deliberately the same shape as `compute_market_analysis`
+next door: read the session's already-accumulated listings out of
+`ScannerSession`, read marko's available/listed tickets for the event, fold,
+return. **No new scanner, no new table, no migration, no background work.**
+Commands are now 181.
+
+**The reader audit is the important part.** `price_checker_scan.js` is ONE
+generic DOM reader; the three `read*` functions differ only in the marketplace
+label they stamp. It produces price, currency, section, row, tier, quantity,
+listing id, marketplace - and **no seat number, no venue, no coordinates/map
+geometry, and no per-listing URL** anywhere. That is why the map is tier ->
+section only, why "Seats" in the detail table is a COUNT, and why the only URL
+offered is the event's marketplace link.
+
+**Bug fixed in passing:** `hostFamily` had no viagogo branch, so every viagogo
+scan labelled its listings `"generic"` (viagogo replaced StubHub in migration
+017; StubHub went in 020). Three lines - a `readViagogo`, a `hostFamily`
+branch, a dispatch arm.
 
 **Next new migration is 029.**
 

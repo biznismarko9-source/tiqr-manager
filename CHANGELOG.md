@@ -16,6 +16,164 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.26.0 - Price Checker Market Map
+
+A second VIEW of a scan session that already happened. **No new scanner, no new
+table, no migration, no background work, no polling** - `compute_market_map` is
+the same shape as `compute_market_analysis` next door: it folds the listings a
+manual scan already accumulated together with marko's own unsold tickets for
+that event, and returns a read-only structure the frontend draws.
+
+### The reader audit came first, and it changed the design
+
+`price_checker_scan.js` is ONE generic DOM reader, not three per-marketplace
+ones - the three `read*` functions differ only in the label they stamp. Per
+listing it can produce price, currency, section, row, tier, quantity, listing
+id and marketplace; everything except price and marketplace is best-effort and
+routinely absent. It produces **no seat numbers, no venue identity, no
+coordinates or map geometry, and no per-listing URL** - none of those exist
+anywhere in the extraction.
+
+So the map stops at tier -> section, section detail shows Seats as a COUNT, and
+the only URL offered is the event's own marketplace link. A geometric replica
+would have had to be invented.
+
+### Bug found by the audit and fixed
+
+**`hostFamily` had no viagogo branch.** Viagogo replaced StubHub as the seeded
+marketplace in migration 017 and StubHub was removed outright in 020, but this
+file was never updated - so every scan of a viagogo page fell through to
+`"generic"` and every listing it produced was labelled `"generic"`. Since the
+three readers differ only in their label, the fix is the label (three lines):
+a `readViagogo`, a `hostFamily` branch and a dispatch arm. Nothing else in the
+scanner was touched.
+
+### Normalization: safe only
+
+`"Sec 102"`, `"Section 102"` and `"102"` become one block. Trim, collapse
+whitespace, upper-case the grouping KEY, and drop leading zeroes ONLY when what
+is left is entirely digits - so `"0102"` joins `"102"` while `"0A"` stays
+`"0A"`. Every group keeps both a `key` and the first SOURCE value as its
+`label`, which is what is drawn. **Tier wording is never mapped**: "Level 100"
+and "Tier 1" stay separate groups, because nothing here can know whether they
+mean the same thing.
+
+### What the map shows
+
+Tier bands of section blocks, tinted in four steps by listing count (not a
+continuous ramp - it is "more here than there", not a measurement). Marko's own
+tickets overlay the same blocks in emerald and are counted separately, never
+folded into the market count. Click a block for the detail panel: counts,
+lowest / median / highest, then Row | Seats | Marketplace | Price | Mine, with
+his own tickets first and each linking to the EXISTING order detail.
+
+Filters: each marketplace, My tickets, and tier. Zoom 70-160%, scroll contained
+inside the map area.
+
+### Honest states rather than invented ones
+
+- A scan with prices but **no sections at all** says so and draws nothing.
+- Listings with no section go to one explicitly labelled bucket **outside** the
+  grid, never scattered into blocks.
+- A section whose listings span **more than one currency** reports no
+  lowest/median/highest at all rather than a blend.
+- Section order is numeric-then-alphabetical - a stable way to find a section,
+  never a claim about where it physically sits.
+
+### No pricing, anywhere
+
+Lowest/median/highest describe what is listed in one block. Nothing compares
+one section to another, interpolates between them, or recommends a price.
+
+## 2.25.0 - A recap you watch, a guide that points, and the CSV gaps
+
+Seven things marko asked for in one pass.
+
+### The Recap is a story now
+
+It OPENS as a sequence: a title beat, then one idea per screen, each arriving
+with its own effect and advancing on its own, ending on a card that hands you
+the full report. "Skip to the full report" reaches the old view at any point,
+and "Replay" in the header starts it again.
+
+Not one new figure. Every slide reads a field the report already shows, from
+the same single `get_dashboard` call, so a slide and the report cannot
+disagree. A slide with nothing true to say is never built - an empty period
+says so instead of showing zeroes, and the two numbers the app genuinely does
+not hold (what unpaid orders total, per-event profit inside a period) say so
+on the slide.
+
+### All time, and it is the default
+
+Marko: "ked som chcel aby mi vsetko ukazalo tak som musel dat last 6 months. a
+realne pracujem na tiqr mesiac max dva." With one or two months of history the
+recap opened on a near-empty month and the only preset that showed the whole
+business was a six-month window. `period_bounds` already had an `all` arm, so
+this is the same two sentinel dates it produces and no backend change at all -
+`previous_period_bounds` already special-cases them, which is why the summary
+table correctly says there is nothing to compare against.
+
+### The guide walks the app instead of describing it
+
+The seven-paragraph list is gone. In its place is a 14-step tour that
+NAVIGATES to each real page, finds a real element, dims everything else and
+puts the explanation next to the thing it is talking about - the Dashboard's
+headline numbers, the period picker, then events, orders, tickets, sales,
+inventory, pulls, finance, price checker, calendar, sync and the recap.
+
+Elements opt in with a `data-tour` attribute. Four files carry them and every
+one is a single attribute with no logic: `PageHeader` in ui.tsx (which gives
+every page in the app an anchor in one edit), the sidebar in Layout.tsx, and
+two on the Dashboard. A step whose anchor is not on screen still runs, just
+centred and without a spotlight - the tour never points at nothing and never
+waits for an element that is not coming.
+
+### Insights and Support moved to the very end of Settings
+
+They are the two things you go looking for on purpose; everything above them
+is something you came to Settings to change.
+
+### The restore lists close behind you
+
+The Drive revision list had no collapse at all - it loaded every version
+Google still holds and left them all on screen. It now shows two with "Show N
+more", both lists have a real **Hide**, and leaving the Data section puts them
+back the way they were found. Switching Settings sections does not unmount the
+page, which is why this is keyed on the section rather than left to unmount.
+
+### CSV: three columns that existed in the database and reached no export
+
+- **Orders** gained `event_date` and `external_reference`. The reference has
+  been on orders since migration 009; the event's own date is the one 2.23.0
+  made the visible date in the Orders list, while the export still carried
+  only `purchase_date`.
+- **Tickets / Inventory** gained `event_date`.
+- **Sales** gained `event_date`.
+
+All **appended at the end**, so every column an existing sheet or script
+already reads keeps its position. A TBD event still exports a blank date -
+never a fabricated one.
+
+**Checked and deliberately NOT changed:** Events CSV is complete (its
+`category` column is kept in step with `category_id` by `resolve_category_name`,
+so it is not the stale legacy value it looks like). **Not built, and marko
+should say if he wants them:** there is no Pulls export, no Finance export and
+no ticket-listings export at all, and Sales still does not carry `batch_id` -
+that one is protected and was left alone rather than touched in passing.
+
+### Suggestions can carry a picture
+
+One optional image, resized on a canvas before it is sent - no image library,
+no Firebase Storage, no new dependency. It is stored in the suggestion
+document itself, which is why the ceiling is 600k base64 characters: Firestore
+allows 1 MiB per DOCUMENT and the text and metadata share it. The quality
+steps down until it fits rather than refusing a big photo. The admin inbox
+renders it, and only a `data:image/` URL is ever put into an image element.
+
+**`firestore.rules` must be pasted into the Console again** - the new rule caps
+the image field there too, because a rule that trusts the app to have resized
+the picture is not a rule.
+
 ## 2.24.0 - BUILD FIX (three compile errors, no behaviour change)
 
 The 2.24.0 build failed on both Windows and macOS. Three independent errors;

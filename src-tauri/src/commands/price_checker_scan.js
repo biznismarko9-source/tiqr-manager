@@ -659,12 +659,26 @@
   function readVividSeats(skips) {
     return scanWithSelectors(LISTING_PRICE_SELECTORS, "vividseats", skips);
   }
+  // 2.26.0 (found during the Market Map reader audit): viagogo REPLACED
+  // StubHub as the seeded marketplace back in migration 017, and stubhub was
+  // removed outright in 020 - but this file was never updated, so every scan
+  // of a viagogo page fell through `hostFamily` to "generic" and every listing
+  // it produced was labelled "generic". The three readers differ only in the
+  // label they stamp (all three pass the same LISTING_PRICE_SELECTORS), so the
+  // fix is the label, not new extraction logic. This is the one bug fixed in
+  // passing, because the Market Map's marketplace filter is unusable without
+  // it - nothing else in the scanner was touched.
+  function readViagogo(skips) {
+    return scanWithSelectors(LISTING_PRICE_SELECTORS, "viagogo", skips);
+  }
+
   function readTicombo(skips) {
     return scanWithSelectors(LISTING_PRICE_SELECTORS, "ticombo", skips);
   }
 
   function hostFamily(hostname) {
     var h = (hostname || "").toLowerCase();
+    if (h.indexOf("viagogo") !== -1) return "viagogo";
     if (h.indexOf("stubhub") !== -1) return "stubhub";
     if (h.indexOf("vividseats") !== -1) return "vividseats";
     if (h.indexOf("ticombo") !== -1) return "ticombo";
@@ -715,7 +729,8 @@
 
     var layered;
     try {
-      if (marketplace === "stubhub") layered = readStubHub(skips);
+      if (marketplace === "viagogo") layered = readViagogo(skips);
+      else if (marketplace === "stubhub") layered = readStubHub(skips);
       else if (marketplace === "vividseats") layered = readVividSeats(skips);
       else if (marketplace === "ticombo") layered = readTicombo(skips);
       else layered = { candidates: [], selectorHits: 0, found: 0 };

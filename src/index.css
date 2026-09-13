@@ -354,6 +354,49 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 2.25.0 - the Recap story. Marko asked for the recap to be visual: a line
+   ("this is your monthly recap"), an effect, a part of the story, another
+   effect, the next part. These four keyframes are that, and nothing else in
+   the app uses them.
+
+   Deliberately four small ones rather than one big timeline: each slide
+   staggers the SAME keyframes with different `animation-delay` values set
+   inline, so a slide with two figures and a slide with five are built the
+   same way and neither needs its own animation. The reduce-motion block at
+   the bottom of this file already collapses all of them - a story that
+   auto-advances still advances, it just stops moving. */
+@keyframes recap-rise {
+  from { opacity: 0; transform: translateY(22px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* The headline figure lands a beat after its label, slightly heavier. */
+@keyframes recap-land {
+  0% { opacity: 0; transform: translateY(30px) scale(0.9); letter-spacing: 0.04em; }
+  60% { opacity: 1; transform: translateY(-3px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0) scale(1); letter-spacing: -0.02em; }
+}
+/* The "effect" between slides: a wash of colour that sweeps the panel as the
+   new slide arrives, so one part giving way to the next is something you see
+   rather than something you notice afterwards. */
+@keyframes recap-sweep {
+  from { opacity: 0.55; transform: translateX(-100%) skewX(-12deg); }
+  to { opacity: 0; transform: translateX(130%) skewX(-12deg); }
+}
+/* The segmented progress bar at the top of the story - one segment per slide,
+   the active one filling over exactly the slide's own duration. Paused via
+   `animation-play-state` rather than by removing the animation, so pausing
+   freezes the bar where it is instead of snapping it back to empty. */
+@keyframes recap-fill {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+/* Slow ambient drift on the slide background. Long, low-contrast and
+   non-repeating per slide - it should register as depth, not as motion. */
+@keyframes recap-drift {
+  from { transform: translate3d(-4%, -3%, 0) scale(1.06); }
+  to { transform: translate3d(4%, 3%, 0) scale(1.12); }
+}
+
 /* Thin, unobtrusive scrollbars for the dense tables in this app. 2.6.0:
    narrower, with a transparent border so the thumb reads as inset rather
    than as a second border line next to a table's own edge. */

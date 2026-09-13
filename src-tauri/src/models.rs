@@ -1933,6 +1933,107 @@ pub struct NormalizedListing {
     pub marketplace: String,
 }
 
+/// ===================== Price Checker Market Map (2.26.0) =====================
+///
+/// A second VIEW of one scan session - see `commands::price_checker_map` for
+/// the audited list of what the scanner can and cannot produce, and why this
+/// model stops at section/row rather than seat.
+///
+/// One market listing as the map places it. A thinned-down `NormalizedListing`:
+/// the fields the map actually draws, plus `row_key` so the detail panel can
+/// group rows without re-running the normalizer in the frontend.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMapListing {
+    pub marketplace: String,
+    pub listing_id: Option<String>,
+    /// The page's own wording, kept verbatim for display.
+    pub row: Option<String>,
+    /// The normalized grouping key for `row`, or `None` when the page never
+    /// showed a row for this listing.
+    pub row_key: Option<String>,
+    pub price_cents: i64,
+    pub currency: Option<String>,
+    /// How many seats this listing is for - the closest thing to seat data the
+    /// scanner produces. It is NOT a seat number and is never displayed as one.
+    pub quantity: Option<u32>,
+    pub incomplete: bool,
+}
+
+/// One of marko's own unsold tickets, placed on the same map.
+///
+/// Carries `ticket_id` and `order_id` so the UI can open the EXISTING order
+/// detail - no new ticket-detail system exists or is needed for this feature.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMapMyTicket {
+    pub ticket_id: i64,
+    pub order_id: i64,
+    pub code: String,
+    pub row: Option<String>,
+    /// Marko's OWN seat, which the app does store - unlike market listings,
+    /// where seat is never available. The asymmetry is real and is labelled as
+    /// such on screen.
+    pub seat: Option<String>,
+    pub listing_price_cents: Option<i64>,
+    pub currency: String,
+    pub status: String,
+}
+
+/// One block on the map.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMapSection {
+    /// Normalized grouping key (upper-cased, numeric leading zeroes removed).
+    pub key: String,
+    /// The first SOURCE value that landed in this block - what is drawn.
+    pub label: String,
+    /// False for the single explicit "No section data" bucket, which is drawn
+    /// apart from the grid rather than as a block in it.
+    pub has_section: bool,
+    pub listing_count: i64,
+    pub my_ticket_count: i64,
+    /// The one currency every listing in this block shares, when they do.
+    pub currency: Option<String>,
+    /// True when this block's listings span more than one currency - in which
+    /// case the three price figures below are all `None` rather than a blend.
+    pub mixed_currencies: bool,
+    pub lowest_price_cents: Option<i64>,
+    pub median_price_cents: Option<i64>,
+    pub highest_price_cents: Option<i64>,
+    pub listings: Vec<MarketMapListing>,
+    pub my_tickets: Vec<MarketMapMyTicket>,
+}
+
+/// A tier/level band of blocks. `label` is the page's own wording - no tier
+/// vocabulary is mapped, merged or invented anywhere in this feature.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMapTier {
+    pub key: String,
+    pub label: String,
+    pub listing_count: i64,
+    pub my_ticket_count: i64,
+    pub sections: Vec<MarketMapSection>,
+}
+
+/// `compute_market_map`'s result.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMap {
+    pub tiers: Vec<MarketMapTier>,
+    pub total_listings: i64,
+    pub total_my_tickets: i64,
+    /// How many scanned listings had a price but no section at all.
+    pub listings_without_section: i64,
+    /// False when NOTHING in this scan had a section. The UI shows an honest
+    /// "this scan found prices but no section data" state instead of drawing
+    /// an empty venue.
+    pub has_section_data: bool,
+    /// Which marketplace labels appear in this session, for the filter row.
+    pub marketplaces: Vec<String>,
+}
+
 /// `scan_visible_prices`'s result, delivered via the
 /// `price-scanner-scan-result` event (2.1.9) - the accumulated state of the
 /// WHOLE session after merging this scan's findings in, not just this scan's

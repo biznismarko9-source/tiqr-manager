@@ -49,12 +49,18 @@ import { useToast } from "../lib/toast";
 export type RecapKind = "ticket" | "finance";
 
 export const RECAP_PERIODS = [
-  { key: "thisMonth", label: "This month" },
-  { key: "lastMonth", label: "Last month" },
-  { key: "3m", label: "3 months" },
-  { key: "6m", label: "6 months" },
-  { key: "thisYear", label: "This year" },
-  { key: "custom", label: "Custom" },
+  // 2.25.0, first and the default. Marko: "ked som chcel aby mi vsetko ukazalo
+  // tak som musel dat last 6 months. a realne pracujem na tiqr mesiac max
+  // dva." With one or two months of history, "This month" opened on a
+  // near-empty report and the only preset that showed the whole business was
+  // a six-month window - which is the wrong question to have to ask.
+  { key: "allTime", label: "All time", story: "Everything you have done so far" },
+  { key: "thisMonth", label: "This month", story: "This is your month so far" },
+  { key: "lastMonth", label: "Last month", story: "This is your monthly recap" },
+  { key: "3m", label: "3 months", story: "This is your three-month recap" },
+  { key: "6m", label: "6 months", story: "This is your six-month recap" },
+  { key: "thisYear", label: "This year", story: "This is your year so far" },
+  { key: "custom", label: "Custom", story: "This is your recap" },
 ] as const;
 
 export type RecapPeriodKey = (typeof RECAP_PERIODS)[number]["key"];
@@ -86,10 +92,26 @@ export function recapRange(
   today: Date,
   customFrom?: string,
   customTo?: string,
-): { from: string; to: string; note: string } {
+): { from: string; to: string; note: string; unbounded?: boolean } {
   const y = today.getFullYear();
   const m = today.getMonth();
   switch (key) {
+    case "allTime":
+      // The exact pair `period_bounds`'s own `Some("all")` arm produces, so
+      // this stays one code path (always `period: "custom"` + two dates) and
+      // the backend learns nothing new. `previous_period_bounds` already
+      // special-cases these two sentinels and returns None, which is why the
+      // summary table correctly says there is nothing to compare against
+      // instead of inventing a window before year 1.
+      return {
+        from: "0001-01-01",
+        to: "9999-12-31",
+        note: "everything you have ever recorded",
+        // Flagged rather than formatted here: this stays pure date maths with
+        // no UI in it. The two places that print a range check this instead of
+        // rendering "1 Jan 0001 - 31 Dec 9999", which is true and useless.
+        unbounded: true,
+      };
     case "thisMonth":
       return { from: iso(new Date(y, m, 1)), to: iso(today), note: "calendar month so far" };
     case "lastMonth":
@@ -386,9 +408,258 @@ function svgToPngDataUrl(svg: string, scale = 2): Promise<string> {
 
 /* ================================= recap ================================= */
 
+/* ==========================================================================
+   The story (2.25.0)
+
+   Marko: "ten recap chcem skor vizualny ze napr this is your monthly recap
+   dalej sa urobi nejaky efekt a ukaze sa nejaka cast, potom dalsi efekt."
+
+   So the Recap now OPENS as a story: one idea per screen, each arriving with
+   an effect, advancing on its own, and ending on a card that hands you the
+   full report. The report underneath is completely unchanged - the story is a
+   way IN to the same numbers, not a replacement for them, and "Skip" reaches
+   it at any point.
+
+   Two rules it does not break:
+
+     - Not one new figure. Every slide reads a field the report already shows,
+       from the same single `get_dashboard` call. Nothing is recomputed for
+       the story, so a slide and the report can never disagree.
+     - A slide with nothing true to say is not built at all. There is no
+       placeholder, no "0" standing in for "we never tracked that", and the
+       two figures the app genuinely does not hold (what unpaid orders total,
+       per-event profit inside a period) say so on the slide rather than being
+       quietly filled in.
+
+   The slide grounds are deliberately dark and saturated in BOTH themes. This
+   is the one surface in the app that is a single committed look rather than a
+   theme-following panel - it is a full-bleed story, and a light version of it
+   would read as a settings page with big numbers.
+   ========================================================================== */
+
+/** One beat of the story. */
+interface StorySlide {
+  id: string;
+  /** Small line above the headline. */
+  kicker?: string;
+  /** The one thing this slide is about. */
+  headline: string;
+  tone?: "positive" | "negative";
+  /** One line under the headline. */
+  sub?: string;
+  /** Up to three supporting figures. */
+  detail?: { label: string; value: string }[];
+  /** An honesty line - scope, or something the app does not track. */
+  note?: string;
+  /** This slide's ground, as Tailwind gradient stops. */
+  accent: string;
+}
+
+/** How long each slide holds before the next one. Long enough to read a
+ *  headline and two figures without feeling parked. The last slide never
+ *  advances - it is where you decide what to do next. */
+const SLIDE_MS = 4200;
+
+function Story({
+  slides,
+  onDone,
+  onShare,
+  sharing,
+}: {
+  slides: StorySlide[];
+  onDone: () => void;
+  onShare: () => void;
+  sharing: boolean;
+}) {
+  const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const last = slides.length - 1;
+  const s = slides[Math.min(i, last)];
+
+  const go = useCallback(
+    (d: number) => setI((v) => Math.min(last, Math.max(0, v + d))),
+    [last],
+  );
+
+  // Auto-advance. Stops on the final slide rather than looping or closing:
+  // the end card is a decision point, not another beat.
+  useEffect(() => {
+    if (paused || i >= last) return;
+    const t = window.setTimeout(() => setI((v) => (v >= last ? v : v + 1)), SLIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [i, paused, last]);
+
+  // Arrows step, space holds. Esc is NOT handled here - the Recap's own
+  // listener already closes the whole overlay, and two handlers for one key
+  // is how you get a story that closes the app behind it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowRight") go(1);
+      else if (e.key === "ArrowLeft") go(-1);
+      else if (e.key === " ") {
+        e.preventDefault();
+        setPaused((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [go]);
+
+  return (
+    <div className={`relative flex min-h-0 flex-1 flex-col overflow-hidden bg-gradient-to-br ${s.accent}`}>
+      {/* Ambient drift. Purely decorative, and behind everything. */}
+      <div
+        className="pointer-events-none absolute -inset-32 opacity-50"
+        style={{
+          background: "radial-gradient(closest-side, rgba(255,255,255,0.20), rgba(255,255,255,0))",
+          animation: "recap-drift 19s ease-in-out infinite alternate",
+        }}
+      />
+      {/* The effect between parts. Keyed on the slide index so it remounts -
+          and therefore re-runs - every time the story moves on. */}
+      <div
+        key={`sweep-${i}`}
+        className="pointer-events-none absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+        style={{ animation: "recap-sweep 820ms cubic-bezier(.3,.7,.3,1) forwards" }}
+      />
+
+      {/* Progress. One segment per slide; the live one fills over exactly
+          SLIDE_MS. Keyed on `i` so the fill restarts rather than carrying
+          its old position into the next slide. */}
+      <div className="relative z-20 flex gap-1.5 px-6 pt-5">
+        {slides.map((sl, n) => (
+          <div key={sl.id} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/25">
+            <div
+              key={`fill-${n}-${i}`}
+              className="h-full rounded-full bg-white"
+              style={
+                n < i || (n === i && i === last)
+                  ? { width: "100%" }
+                  : n === i
+                    ? {
+                        animation: `recap-fill ${SLIDE_MS}ms linear forwards`,
+                        animationPlayState: paused ? "paused" : "running",
+                      }
+                    : { width: "0%" }
+              }
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Tap zones. Stopped short of the footer so the buttons down there stay
+          clickable - a full-height zone would swallow them. */}
+      <button
+        type="button"
+        aria-label="Previous"
+        onClick={() => go(-1)}
+        className="absolute bottom-24 left-0 top-10 z-10 w-1/3 cursor-default focus:outline-none"
+      />
+      <button
+        type="button"
+        aria-label="Next"
+        onClick={() => go(1)}
+        className="absolute bottom-24 right-0 top-10 z-10 w-2/3 cursor-default focus:outline-none"
+      />
+
+      <div className="relative z-[15] flex min-h-0 flex-1 items-center justify-center px-8">
+        {/* Keyed on the slide index: every element inside re-runs its entrance
+            animation when the story moves, which is the whole point. */}
+        <div key={`slide-${i}`} className="pointer-events-none mx-auto w-full max-w-3xl text-center">
+          {s.kicker && (
+            <p
+              className="text-[12px] font-semibold uppercase tracking-[0.22em] text-white/70"
+              style={{ animation: "recap-rise 520ms cubic-bezier(.2,.7,.2,1) both" }}
+            >
+              {s.kicker}
+            </p>
+          )}
+          <p
+            className={`mt-4 font-semibold leading-[1.03] tracking-tight ${
+              s.headline.length > 26 ? "text-[40px] sm:text-[54px]" : "text-[58px] sm:text-[76px]"
+            } ${
+              s.tone === "positive"
+                ? "text-emerald-200"
+                : s.tone === "negative"
+                  ? "text-rose-200"
+                  : "text-white"
+            }`}
+            style={{ animation: "recap-land 780ms cubic-bezier(.2,.7,.2,1) both", animationDelay: "130ms" }}
+          >
+            {s.headline}
+          </p>
+          {s.sub && (
+            <p
+              className="mx-auto mt-5 max-w-xl text-[15px] leading-relaxed text-white/80"
+              style={{ animation: "recap-rise 520ms cubic-bezier(.2,.7,.2,1) both", animationDelay: "430ms" }}
+            >
+              {s.sub}
+            </p>
+          )}
+          {s.detail && s.detail.length > 0 && (
+            <div className="mt-10 flex flex-wrap items-start justify-center gap-x-14 gap-y-6">
+              {s.detail.map((d, n) => (
+                <div
+                  key={d.label}
+                  style={{
+                    animation: "recap-rise 520ms cubic-bezier(.2,.7,.2,1) both",
+                    animationDelay: `${560 + n * 110}ms`,
+                  }}
+                >
+                  <p className="text-[11px] font-medium uppercase tracking-[0.09em] text-white/60">{d.label}</p>
+                  <p className="mt-1.5 text-[26px] font-semibold tabular-nums text-white">{d.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {s.note && (
+            <p
+              className="mx-auto mt-8 max-w-lg text-xs leading-relaxed text-white/55"
+              style={{ animation: "recap-rise 520ms cubic-bezier(.2,.7,.2,1) both", animationDelay: "920ms" }}
+            >
+              {s.note}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="relative z-30 flex flex-wrap items-center justify-center gap-3 px-6 pb-8">
+        {i === last ? (
+          <>
+            <Button variant="primary" onClick={onDone}>
+              See the full report
+            </Button>
+            <Button variant="secondary" disabled={sharing} onClick={onShare}>
+              {sharing ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+              Share as image
+            </Button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onDone}
+              className="rounded-lg border border-white/30 px-3.5 py-1.5 text-xs font-medium text-white/90 transition-colors hover:bg-white/10"
+            >
+              Skip to the full report
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaused((v) => !v)}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-white/60 transition-colors hover:text-white"
+            >
+              {paused ? "Play" : "Pause"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void }) {
   const toast = useToast();
-  const [periodKey, setPeriodKey] = useState<RecapPeriodKey>("thisMonth");
+  const [periodKey, setPeriodKey] = useState<RecapPeriodKey>("allTime");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -397,6 +668,11 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
   const [error, setError] = useState<string | null>(null);
   const [metric, setMetric] = useState<MetricKey>(kind === "finance" ? "profit" : "sales");
   const [sharing, setSharing] = useState(false);
+  // 2.25.0: the recap OPENS as the story and the report is where it lands.
+  // Once you have left the story it stays left for this visit - being thrown
+  // back into an animation every time you change the period would make the
+  // picker unusable.
+  const [mode, setMode] = useState<"story" | "report">("story");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const range = useMemo(
@@ -463,6 +739,196 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
     return withProfit.reduce((a, b) => (b.stats.profitCents > a.stats.profitCents ? b : a));
   }, [events]);
 
+  /** The story, built from the SAME `data` the report below renders.
+   *
+   *  Nothing here is computed a second way - every value is the field the
+   *  report already shows - and a slide with nothing true to say is never
+   *  pushed, so the story is short on a quiet month rather than padded with
+   *  zeroes. */
+  const slides: StorySlide[] = useMemo(() => {
+    if (!data) return [];
+    const p = data.period;
+    const cur = data.primaryCurrency;
+    const money = (c: number) => formatMoney(c, cur);
+    const remaining = data.inventory.availableTickets + data.inventory.listedTickets;
+    const storyTitle = RECAP_PERIODS.find((x) => x.key === periodKey)?.story ?? "This is your recap";
+    const out: StorySlide[] = [];
+
+    out.push({
+      id: "open",
+      kicker: kind === "ticket" ? "Ticket Recap" : "Finance Recap",
+      headline: storyTitle,
+      sub: range.unbounded
+        ? "Everything on record, from your very first order."
+        : `${formatDate(range.from)} — ${formatDate(range.to)}`,
+      accent: "from-brand-950 via-slate-950 to-brand-900",
+    });
+
+    if (p.purchasedTickets === 0 && p.soldTickets === 0) {
+      out.push({
+        id: "empty",
+        kicker: "Nothing moved",
+        headline: "No tickets bought or sold",
+        sub: "Nothing was recorded in this range, so there is nothing to add up. Try a wider one - All time shows everything you have.",
+        accent: "from-slate-900 via-slate-950 to-slate-900",
+      });
+    } else if (kind === "ticket") {
+      if (p.purchasedTickets > 0) {
+        out.push({
+          id: "bought",
+          kicker: "You bought",
+          headline: `${p.purchasedTickets} ticket${p.purchasedTickets === 1 ? "" : "s"}`,
+          detail: [{ label: "Total invested", value: money(p.totalCostCents) }],
+          accent: "from-slate-900 via-brand-950 to-slate-950",
+        });
+      }
+      if (p.soldTickets > 0) {
+        out.push({
+          id: "sold",
+          kicker: "You sold",
+          headline: `${p.soldTickets} ticket${p.soldTickets === 1 ? "" : "s"}`,
+          detail: [{ label: "Sales revenue", value: money(p.revenueCents) }],
+          accent: "from-brand-900 via-brand-950 to-slate-950",
+        });
+        const per = perTicket(p.profitCents, p.soldTickets);
+        out.push({
+          id: "profit",
+          kicker: "Which left you",
+          headline: money(p.profitCents),
+          tone: p.profitCents > 0 ? "positive" : p.profitCents < 0 ? "negative" : undefined,
+          detail: [
+            { label: "ROI", value: formatPercent(p.roi) },
+            { label: "Margin", value: formatPercent(p.margin) },
+            { label: "Per ticket", value: per === null ? "-" : money(per) },
+          ],
+          note: "Realized only: money that actually moved. Unsold stock is not in this number.",
+          accent:
+            p.profitCents < 0
+              ? "from-rose-900 via-slate-950 to-slate-900"
+              : "from-emerald-900 via-slate-950 to-brand-950",
+        });
+      }
+    } else {
+      out.push({
+        id: "in",
+        kicker: "Money in",
+        headline: money(p.revenueCents),
+        sub: "Sales made inside this period.",
+        accent: "from-brand-900 via-brand-950 to-slate-950",
+      });
+      out.push({
+        id: "out",
+        kicker: "Money out",
+        headline: money(p.totalCostCents + p.sellingFeesCents),
+        detail: [
+          { label: "Tickets bought", value: money(p.totalCostCents) },
+          { label: "Platform fees", value: money(p.sellingFeesCents) },
+        ],
+        accent: "from-slate-900 via-brand-950 to-slate-950",
+      });
+      out.push({
+        id: "profit",
+        kicker: "Which left you",
+        headline: money(p.profitCents),
+        tone: p.profitCents > 0 ? "positive" : p.profitCents < 0 ? "negative" : undefined,
+        detail: [
+          { label: "Margin", value: formatPercent(p.margin) },
+          { label: "ROI", value: formatPercent(p.roi) },
+        ],
+        note: "Realized only: money that actually moved. Unsold stock is not in this number.",
+        accent:
+          p.profitCents < 0
+            ? "from-rose-900 via-slate-950 to-slate-900"
+            : "from-emerald-900 via-slate-950 to-brand-950",
+      });
+      out.push({
+        id: "pending",
+        kicker: "Still owed to you",
+        headline: formatMoneyOrMixed(data.cashflow.outstandingCents, data.cashflow.currency),
+        detail: [
+          {
+            label: "Sales not collected",
+            value: String(data.alerts.pendingSalesCount),
+          },
+          { label: "Unpaid orders", value: String(data.alerts.unpaidOrdersCount) },
+        ],
+        // The one number the app genuinely does not hold, said out loud
+        // rather than filled in with something that looks like it.
+        note: "Unpaid orders is a count, not a sum: the app tracks WHICH orders are unpaid, never how much they come to.",
+        accent: "from-amber-900 via-slate-950 to-slate-900",
+      });
+    }
+
+    if (data.salesByPlatform.length > 0) {
+      const best = data.salesByPlatform.reduce((a, b) => (b.profitCents > a.profitCents ? b : a));
+      out.push({
+        id: "channel",
+        kicker: "Your best channel",
+        headline: best.platformName ?? "No platform",
+        detail: [
+          { label: "Profit", value: money(best.profitCents) },
+          { label: "Sold there", value: String(best.soldTickets) },
+        ],
+        accent: "from-indigo-900 via-slate-950 to-brand-950",
+      });
+    }
+
+    if (bestEventAllTime) {
+      out.push({
+        id: "event",
+        kicker: "Your best event",
+        headline: bestEventAllTime.name,
+        detail: [
+          {
+            label: "Profit",
+            value: formatMoneyOrMixed(bestEventAllTime.stats.profitCents, bestEventAllTime.stats.currency),
+          },
+          { label: "Sold", value: String(bestEventAllTime.stats.soldTickets) },
+        ],
+        // Scope stated because it differs from every other slide's.
+        note: "All time. The app keeps profit per event across that event's whole life, not inside a window - so this one figure is not scoped to the period above.",
+        accent: "from-violet-900 via-slate-950 to-brand-950",
+      });
+    }
+
+    if (remaining > 0) {
+      out.push({
+        id: "held",
+        kicker: kind === "ticket" ? "Still in your hands" : "Sitting in stock",
+        headline: `${remaining} ticket${remaining === 1 ? "" : "s"}`,
+        detail: [
+          {
+            label: "Capital tied up",
+            value: formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency),
+          },
+          {
+            label: "Listing value",
+            value: formatMoneyOrMixed(data.inventoryPotential.listingValueCents, data.inventoryPotential.currency),
+          },
+          {
+            label: "If they all sold",
+            value: formatMoneyOrMixed(data.inventoryPotential.potentialProfitCents, data.inventoryPotential.currency),
+          },
+        ],
+        note:
+          data.alerts.missingListingPriceCount > 0
+            ? `Potential, never profit. ${data.alerts.missingListingPriceCount} of these have no listing price, so they count against the capital but add nothing to the value.`
+            : "Potential, never profit - it only becomes real when it sells.",
+        accent: "from-amber-900 via-slate-950 to-slate-900",
+      });
+    }
+
+    out.push({
+      id: "end",
+      kicker: "That is the short version",
+      headline: "Now the whole thing",
+      sub: "The full report has every figure behind these, the split between realized, pending and potential money, and how this period compares to the one before it.",
+      accent: "from-brand-900 via-brand-950 to-slate-950",
+    });
+    return out;
+  }, [data, kind, periodKey, range, bestEventAllTime]);
+
+
   const share = useCallback(async () => {
     if (!data) return;
     setSharing(true);
@@ -489,12 +955,14 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
             ];
       const svg = buildShareSvg(
         title,
-        `${formatDate(range.from)} - ${formatDate(range.to)}`,
+        range.unbounded ? "All time" : `${formatDate(range.from)} - ${formatDate(range.to)}`,
         figures,
         "Realized figures only. Unsold stock is not counted as profit.",
       );
       const dataUrl = await svgToPngDataUrl(svg);
-      const stamp = range.to.replace(/-/g, "");
+      // An all-time recap is stamped with the day it was taken, not with the
+      // sentinel 9999-12-31 that would otherwise land in the filename.
+      const stamp = (range.unbounded ? iso(new Date()) : range.to).replace(/-/g, "");
       const path = await save({
         defaultPath: `tiqr-${kind}-recap-${stamp}.png`,
         filters: [{ name: "PNG image", extensions: ["png"] }],
@@ -564,7 +1032,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
             {title}
           </p>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {formatDate(range.from)} — {formatDate(range.to)} · {range.note}
+            {range.unbounded ? "All time" : `${formatDate(range.from)} — ${formatDate(range.to)}`} · {range.note}
           </p>
           {nothingHappened ? (
             <p className="mt-6 text-[30px] font-semibold leading-none text-slate-400 dark:text-slate-500">
@@ -867,6 +1335,11 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
             </span>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {mode === "report" && (
+              <Button variant="ghost" disabled={!data} onClick={() => setMode("story")}>
+                Replay
+              </Button>
+            )}
             <Button variant="secondary" disabled={sharing || !data} onClick={share}>
               {sharing ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
               Share as image
@@ -879,9 +1352,23 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
         </div>
       </header>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">{body()}</div>
-      </div>
+      {/* 2.25.0: the story plays first, the report is underneath it. Keyed on
+          the range so changing the period while the story is running restarts
+          it on the new numbers instead of leaving a half-played one showing
+          figures from the range before. */}
+      {mode === "story" && data && !loading && !error ? (
+        <Story
+          key={`${kind}-${range.from}-${range.to}`}
+          slides={slides}
+          onDone={() => setMode("report")}
+          onShare={share}
+          sharing={sharing}
+        />
+      ) : (
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-6xl px-6 py-6">{body()}</div>
+        </div>
+      )}
     </div>
   );
 }
