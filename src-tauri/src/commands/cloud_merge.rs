@@ -712,6 +712,10 @@ pub fn cloud_merge_pull(state: State<'_, AppState>) -> AppResult<MergeOutcome> {
         ));
     };
     let mut conn = state.db.lock().unwrap();
+    // Same lock order as `cloud_sync_pull`: db first, then db_path. Taking
+    // them the other way round in one place and this way in another is how a
+    // deadlock gets built.
+    let db_path = state.db_path.lock().unwrap().clone();
     let outcome = merge_inner(&mut conn, db_path);
     // Same split as `cloud_sync_pull`: the body does the work, the command
     // records how it ended so the panel can still say so once the toast has

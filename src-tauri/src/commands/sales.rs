@@ -267,9 +267,9 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.name) END as event_name,
       -- 2.23.0: the event's own date, carried with the same
       -- only-when-every-line's-event-agrees guard as event_id/event_name
-      -- above rather than a rule of its own. Null on a "Mixed events" group
-      -- AND on a TBD event - both are honestly "no single date", and the
-      -- list renders both as "-" rather than inventing one.
+      -- above rather than a rule of its own. Null on a Mixed events group
+      -- AND on a TBD event - both are honestly no single date, and the
+      -- list renders both as a dash rather than inventing one.
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.event_date) END as event_date,
       -- 2.0.27: a category is itself just an attribute of the group's shared
       -- event, so it uses the exact same only-when-every-lines-event-agrees

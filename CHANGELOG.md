@@ -16,6 +16,37 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.24.0 - BUILD FIX (three compile errors, no behaviour change)
+
+The 2.24.0 build failed on both Windows and macOS. Three independent errors;
+the other 34 lines of the log were cascade from the first.
+
+1. **`commands/sales.rs` - a `"` inside a `&str` constant.** The 2.23.0
+   `event_date` change added an SQL `--` comment containing `"Mixed events"`,
+   `"no single date"` and `"-"` INSIDE `GROUP_BASE_SELECT`, which is a plain
+   (non-raw) Rust string literal. The first quote closed the string and the
+   rest of the SQL was parsed as Rust, which is why all 17 `sales::*` commands
+   then "could not be found" by `generate_handler!`. Quotes removed from the
+   comment text; the SQL itself is byte-for-byte unchanged.
+
+2. **`commands/cloud_sync.rs` - `AtomicBool` was never imported.** Line 77 read
+   `use std::sync::atomic::Ordering;` while `SYNC_IN_PROGRESS` (2.18.0) needs
+   both. Widened to `{AtomicBool, Ordering}`.
+
+3. **`commands/cloud_merge.rs` - `db_path` was used but never bound.**
+   `cloud_merge_pull` called `merge_inner(&mut conn, db_path)` without the
+   `let db_path = state.db_path.lock().unwrap().clone();` line its twin
+   `cloud_sync_pull` has. Added, in the same lock order (db first, then
+   db_path) so the two entry points cannot deadlock against each other.
+
+**Errors 2 and 3 date from 2.18.0, not from Recap** - which means every build
+from 2.18.0 onward failed the same way and 2.17.0 was the last version that
+actually produced installers.
+
+Version deliberately stays **2.24.0**: the failed build published no release,
+so the updater has never seen this number and reusing it is not a repeat.
+Same call as the 2.16.0 build fix.
+
 ## 2.24.0 - TIQR Recap: Ticket & Finance
 
 **No schema change, no new dependency, and - the point of the whole thing -

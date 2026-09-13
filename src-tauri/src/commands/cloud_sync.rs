@@ -74,7 +74,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::State;
 
 pub(crate) const ENABLED_KEY: &str = "cloud_sync_enabled";

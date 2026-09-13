@@ -467,6 +467,25 @@ deliberately absent; best event is labelled all-time because that is the scope
 that exists. `components/Recap.tsx` + `commands/share.rs` are the only new
 files.
 
+**2.24.0 BUILD FIX.** The 2.24.0 build failed on both platforms with 37
+errors from three causes: a `"` inside the non-raw `GROUP_BASE_SELECT` string
+in `commands/sales.rs` (added by 2.23.0's `event_date` comment, which closed
+the literal and turned the rest of the SQL into Rust - hence all 17
+`sales::*` commands "not found"), a missing `AtomicBool` in
+`cloud_sync.rs`'s import, and `db_path` used but never bound in
+`cloud_merge_pull`. The last two date from **2.18.0**, so every build from
+2.18.0 onward failed identically and **2.17.0 was the last version that
+produced installers**. Version stayed 2.24.0 - a failed build publishes no
+release, so the updater never saw the number.
+
+**Standing risk this exposed: there is no Rust or Node toolchain on marko's
+Mac**, so `cargo check`, `cargo test`, `tsc` and `npm run build` only ever run
+in CI. Static review caught neither of the 2.18.0 errors for six releases.
+Worse, `rustc` aborts after name resolution, so when errors like these are
+present **the type-check phase never runs at all** - a build that clears them
+can still surface a fresh round of type errors on code that has never been
+type-checked. Treat "it compiles" as unknown until CI says so.
+
 **Next new migration is 029.**
 
 ## Stack / layout
