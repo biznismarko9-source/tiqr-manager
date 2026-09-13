@@ -54,7 +54,7 @@
 //! recommendation - section, row and seat are metadata, not pricing inputs.
 
 use crate::db::AppState;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::models::{
     MarketMap, MarketMapListing, MarketMapMyTicket, MarketMapSection, MarketMapTier,
     NormalizedListing,
@@ -362,14 +362,27 @@ fn read_my_tickets(conn: &Connection, event_id: i64) -> AppResult<Vec<MyTicketRo
 
 /// Read-only. Takes the two locks one at a time and never together - the same
 /// deadlock-safety rule `compute_market_analysis` documents next door.
+///
+/// 2.26.1: keyed on the EVENT, not on one scanner session. Marko's own call -
+/// "mapa by mala byt pre vsetky platformy rovnaka a tie listingy sa spoja".
+/// So every open session for this event contributes its listings to ONE map:
+/// scan Viagogo, then Ticombo, and section 102 shows both marketplaces' rows
+/// side by side instead of each card drawing its own half-empty map.
+///
+/// Deliberately NOT deduplicated across marketplaces. The same physical seat
+/// listed on two sites is two real offers at two real prices, and the scanner
+/// has no cross-site listing identity that could tell a genuine duplicate from
+/// two different sellers who happen to match - see `fingerprint_for`'s own
+/// note in price_checker_scanner.rs.
 #[tauri::command(async)]
-pub fn compute_market_map(state: State<'_, AppState>, request_id: u64, event_id: i64) -> AppResult<MarketMap> {
+pub fn compute_market_map(state: State<'_, AppState>, event_id: i64) -> AppResult<MarketMap> {
     let listings: Vec<NormalizedListing> = {
         let sessions = state.price_scanner_sessions.lock().unwrap();
-        let session = sessions
-            .get(&request_id)
-            .ok_or_else(|| AppError::NotFound("Scanner session not found - the window may have been closed".into()))?;
-        session.listings.clone()
+        let mut all: Vec<NormalizedListing> = Vec::new();
+        for session in sessions.values().filter(|s| s.event_id == event_id) {
+            all.extend(session.listings.iter().cloned());
+        }
+        all
     };
     let mine = {
         let conn = state.db.lock().unwrap();

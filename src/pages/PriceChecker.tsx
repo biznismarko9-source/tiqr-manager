@@ -48,7 +48,6 @@ import type {
   YourTicketGroup,
 } from "../lib/types";
 import {
-  centsToDecimalString,
   decimalStringToCents,
   formatDateNumeric,
   formatDateTime,
@@ -62,10 +61,8 @@ import {
   Card,
   CHECKBOX_CLASS,
   EmptyState,
-  Field,
   Input,
   LoadingBlock,
-  Modal,
   ModalFooter,
   PageHeader,
   SEGMENTED_TRACK,
@@ -220,26 +217,6 @@ function keyForRequestId(sessions: Record<string, ScannerCardState>, requestId: 
   return null;
 }
 
-/** What `SavePriceCheckModal` gets prefilled with when opened from a live
- * scan's "Save to history" button, instead of a normal blank/latest-check
- * open. Structured cents values straight from the scan session - no text
- * round-trip needed (unlike the old auto-check's paste-pipeline hack),
- * since the scanner already produced exact numbers. */
-interface ScanPrefill {
-  lowestPriceCents: number;
-  medianPriceCents: number | null;
-  averagePriceCents: number;
-  highestPriceCents: number;
-  listingCount: number;
-  currency: string | null;
-  /** 2.2.0: this session's own Market Analysis tier breakdown for
-   * `currency` above, if any was computed by the time "Save to history" was
-   * clicked - carried straight through to `savePriceCheck` so
-   * `PriceCheck.tierBreakdown` (history/"## PRICE HISTORY") isn't left
-   * empty just because a perfectly good breakdown was sitting right there.
-   * Empty when no analysis was available yet, or this currency has none. */
-  tierBreakdown: TierBreakdownInput[];
-}
 
 // ---------------------------------------------------------------------------
 // Small local helpers
@@ -598,291 +575,6 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   not_visible: "not on screen",
 };
 
-function ScanResultsPanel({ session }: { session: ScannerCardState }) {
-  const toast = useToast();
-  const [marketplace, setMarketplace] = useState<string>("");
-  const [tier, setTier] = useState<string>("");
-  const [currency, setCurrency] = useState<string>("");
-  const [completeness, setCompleteness] = useState<"" | "complete" | "incomplete">("");
-  const [minPrice, setMinPrice] = useState("");
-  const [maxPrice, setMaxPrice] = useState("");
-  const [exporting, setExporting] = useState(false);
-
-  const listings = session.listings;
-
-  // Filter options come from what this scan actually returned - never a fixed
-  // list, so an option can never exist with nothing behind it.
-  const marketplaces = useMemo(
-    () => [...new Set(listings.map((l) => l.marketplace))].sort(),
-    [listings],
-  );
-  const tiers = useMemo(
-    () => [...new Set(listings.map((l) => l.tier).filter((t): t is string => !!t))].sort(),
-    [listings],
-  );
-  const currencies = useMemo(
-    () => [...new Set(listings.map((l) => l.currency).filter((c): c is string => !!c))].sort(),
-    [listings],
-  );
-
-  // A blank/unparseable bound is simply "no bound" - never treated as 0,
-  // which would silently hide every listing.
-  // `decimalStringToCents("")` returns 0, not null (lib/format.ts) - so an
-  // empty box has to be turned into "no bound" HERE, or an empty Max field
-  // would filter every listing out. An unparseable value is also no bound
-  // rather than a hard zero.
-  const boundCents = (raw: string): number | null => {
-    if (raw.trim() === "") return null;
-    return decimalStringToCents(raw);
-  };
-  const minCents = useMemo(() => boundCents(minPrice), [minPrice]);
-  const maxCents = useMemo(() => boundCents(maxPrice), [maxPrice]);
-
-  const filtered = useMemo(
-    () =>
-      listings.filter((l) => {
-        if (marketplace && l.marketplace !== marketplace) return false;
-        if (tier && l.tier !== tier) return false;
-        if (currency && l.currency !== currency) return false;
-        if (completeness === "complete" && l.incomplete) return false;
-        if (completeness === "incomplete" && !l.incomplete) return false;
-        if (minCents !== null && l.priceCents < minCents) return false;
-        if (maxCents !== null && l.priceCents > maxCents) return false;
-        return true;
-      }),
-    [listings, marketplace, tier, currency, completeness, minCents, maxCents],
-  );
-
-  const incompleteCount = useMemo(() => listings.filter((l) => l.incomplete).length, [listings]);
-  const anyFilter =
-    Boolean(marketplace || tier || currency || completeness) || minCents !== null || maxCents !== null;
-
-  const doExport = async () => {
-    setExporting(true);
-    try {
-      const path = await save({
-        defaultPath: `tiqr-scan-${todayIso()}.csv`,
-        filters: [{ name: "CSV", extensions: ["csv"] }],
-      });
-      // Same guard ExportPickerModal uses: this plugin's `save()` is typed as
-      // possibly returning an array, so narrowing to a single string here is
-      // what keeps `path` assignable to the command's `path: string`.
-      if (!path || Array.isArray(path)) return;
-      const rows = await api.exportScanResultsCsv(session.requestId, path);
-      toast.success(`Exported ${rows} listing${rows === 1 ? "" : "s"} to ${path}`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  return (
-    <>
-      {/* Part D - Found / Accepted / Skipped / Duplicates for the LAST scan.
-          Only rendered once a scan has actually run: before that every number
-          would be a zero that means "nothing happened yet", not "nothing was
-          found". */}
-      {session.scanCount > 0 && (
-        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/50">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-            <span className="section-title">Last scan</span>
-            <span className="text-slate-600 dark:text-slate-400">
-              Found <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{session.lastScanFound}</span>
-            </span>
-            <span className="text-slate-600 dark:text-slate-400">
-              Accepted <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{session.lastScanAccepted}</span>
-            </span>
-            <span className="text-slate-600 dark:text-slate-400">
-              Skipped <span className="font-semibold tabular-nums text-amber-700 dark:text-amber-400">{session.lastScanSkipped}</span>
-            </span>
-            <span className="text-slate-600 dark:text-slate-400">
-              Duplicates <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-300">{session.lastScanDuplicates}</span>
-            </span>
-          </div>
-          {Object.keys(session.lastScanSkipReasons).length > 0 && (
-            <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-              {Object.entries(session.lastScanSkipReasons).map(([reason, count]) => (
-                <span key={reason}>
-                  {SKIP_REASON_LABELS[reason] ?? reason.replace(/_/g, " ")}:{" "}
-                  <span className="tabular-nums">{count}</span>
-                </span>
-              ))}
-            </p>
-          )}
-        </div>
-      )}
-
-      <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 lg:grid-cols-7">
-        <div>
-          <p className="section-title">Listings</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{listings.length}</p>
-        </div>
-        <div>
-          <p className="section-title">Lowest</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-            {formatMoney(session.lowestPriceCents, session.currency ?? "EUR")}
-          </p>
-        </div>
-        <div>
-          <p className="section-title">Median</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-            {formatMoney(session.medianPriceCents, session.currency ?? "EUR")}
-          </p>
-        </div>
-        <div>
-          <p className="section-title">Average</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-            {formatMoney(session.averagePriceCents, session.currency ?? "EUR")}
-          </p>
-        </div>
-        <div>
-          <p className="section-title">Highest</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">
-            {formatMoney(session.highestPriceCents, session.currency ?? "EUR")}
-          </p>
-        </div>
-        <div>
-          <p className="section-title">Currency</p>
-          <p className="font-medium text-slate-900 dark:text-slate-100">{session.currency ?? "-"}</p>
-        </div>
-        <div>
-          <p className="section-title">Last scan</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatDateTime(session.lastScanAt)}</p>
-        </div>
-      </div>
-
-      {/* Currencies are never blended into one number (marko's Part G). When
-          a session holds more than one, the stats above describe the largest
-          group only and this says so out loud rather than quietly
-          under-reporting. */}
-      {session.statsExcludedCount > 0 && (
-        <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
-          Stats cover the {session.statsListingCount} {session.currency} listing
-          {session.statsListingCount === 1 ? "" : "s"} only - {session.statsExcludedCount} listing
-          {session.statsExcludedCount === 1 ? " is" : "s are"} in another currency (or have none) and
-          are never blended into these figures.
-        </p>
-      )}
-
-      {/* Part L - deliberately six plain controls, not a filter builder. */}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        {marketplaces.length > 1 && (
-          <select className="input h-8 w-auto py-0 text-xs" value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
-            <option value="">All marketplaces</option>
-            {marketplaces.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        )}
-        {tiers.length > 0 && (
-          <select className="input h-8 w-auto py-0 text-xs" value={tier} onChange={(e) => setTier(e.target.value)}>
-            <option value="">All tiers</option>
-            {tiers.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-        )}
-        {currencies.length > 1 && (
-          <select className="input h-8 w-auto py-0 text-xs" value={currency} onChange={(e) => setCurrency(e.target.value)}>
-            <option value="">All currencies</option>
-            {currencies.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        )}
-        {incompleteCount > 0 && (
-          <select
-            className="input h-8 w-auto py-0 text-xs"
-            value={completeness}
-            onChange={(e) => setCompleteness(e.target.value as "" | "complete" | "incomplete")}
-          >
-            <option value="">Complete &amp; incomplete</option>
-            <option value="complete">Complete data only</option>
-            <option value="incomplete">Incomplete data only ({incompleteCount})</option>
-          </select>
-        )}
-        <input
-          className="input h-8 w-24 py-0 text-xs"
-          placeholder="Min price"
-          inputMode="decimal"
-          value={minPrice}
-          onChange={(e) => setMinPrice(e.target.value)}
-        />
-        <input
-          className="input h-8 w-24 py-0 text-xs"
-          placeholder="Max price"
-          inputMode="decimal"
-          value={maxPrice}
-          onChange={(e) => setMaxPrice(e.target.value)}
-        />
-        {anyFilter && (
-          <button
-            type="button"
-            onClick={() => {
-              setMarketplace("");
-              setTier("");
-              setCurrency("");
-              setCompleteness("");
-              setMinPrice("");
-              setMaxPrice("");
-            }}
-            className="text-xs font-medium text-slate-400 hover:text-slate-600 hover:underline dark:text-slate-500 dark:hover:text-slate-300"
-          >
-            Clear filters
-          </button>
-        )}
-        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
-          Showing <span className="tabular-nums">{filtered.length}</span> of{" "}
-          <span className="tabular-nums">{listings.length}</span>
-        </span>
-        <Button variant="secondary" size="sm" onClick={doExport} disabled={exporting}>
-          {exporting ? <Spinner className="h-3.5 w-3.5" /> : <IconDownload className="h-3.5 w-3.5" />} Export CSV
-        </Button>
-      </div>
-
-      <div className="table-flush mt-3 max-h-48 rounded-lg border border-slate-200 dark:border-slate-800">
-        <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
-              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
-              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
-              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
-              <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
-              <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Marketplace</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {filtered.map((l, i) => (
-              <tr key={l.listingId ? `${l.marketplace}:${l.listingId}` : i}>
-                <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
-                  {formatMoney(l.priceCents, l.currency ?? session.currency ?? "EUR")}
-                  {l.incomplete && (
-                    <span
-                      title="Read from the page, but with gaps - no currency, or no confident listing row around it."
-                      className="ml-1 text-amber-600 dark:text-amber-400"
-                    >
-                      *
-                    </span>
-                  )}
-                </td>
-                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.tier ?? "-"}</td>
-                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.section ?? "-"}</td>
-                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.row ?? "-"}</td>
-                <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">{l.quantity ?? "-"}</td>
-                <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{l.marketplace}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {filtered.length === 0 && (
-        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">No listing in this scan matches those filters.</p>
-      )}
-    </>
-  );
-}
 
 function ScannerStatusPill({ session }: { session: ScannerCardState }) {
   if (session.opening) {
@@ -901,65 +593,6 @@ function ScannerStatusPill({ session }: { session: ScannerCardState }) {
   );
 }
 
-/** One currency's tier/section breakdown - marko's own spec, "## TIER
- * PRICING" + "## MAP / SECTION ANALYSIS". Deliberately NOT a literal seating
- * chart (marko's spec explicitly doesn't require one) - a plain, scannable
- * list of tiers lowest-price-first, each with its own sections lowest-price-
- * first underneath. */
-function CurrencyMarketBlock({ block }: { block: CurrencyMarketAnalysis }) {
-  return (
-    <div className="mb-4 last:mb-0">
-      <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">{block.currency} market</p>
-      <div className="mb-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
-        <div>
-          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Listings</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{block.overall.listingCount}</p>
-        </div>
-        <div>
-          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Lowest</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.lowestPriceCents, block.currency)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Median</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.medianPriceCents, block.currency)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Average</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.averagePriceCents, block.currency)}</p>
-        </div>
-        <div>
-          <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Highest</p>
-          <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(block.overall.highestPriceCents, block.currency)}</p>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        {block.tiers.map((tier) => (
-          <div key={tier.tier} className="rounded-lg border border-slate-100 p-2 dark:border-slate-800">
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
-              <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{tier.tier}</p>
-              <p className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                {formatMoney(tier.stats.lowestPriceCents, block.currency)} &ndash; {formatMoney(tier.stats.highestPriceCents, block.currency)}
-                {" · "}
-                {tier.stats.listingCount} listing{tier.stats.listingCount === 1 ? "" : "s"}
-              </p>
-            </div>
-            {tier.sections.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-                {tier.sections.map((s) => (
-                  <span key={s.section} className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Sec {s.section}: <span className="tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(s.stats.lowestPriceCents, block.currency)}</span>{" "}
-                    ({s.stats.listingCount})
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /** Marko's own unsold inventory for this event, grouped by section/row/
  * currency (marko's own spec, "## YOUR TICKETS" + "## PRICE RECOMMENDATION")
@@ -1021,168 +654,7 @@ function YourTicketsTable({ groups }: { groups: YourTicketGroup[] }) {
   );
 }
 
-/** The whole Market Analysis block for one scanner session - tier/section
- * pricing per currency, then "Your Tickets" with recommendations. `analysis`
- * is null before the first scan (or while one is loading); this never blocks
- * or replaces the existing raw listings table above it, purely additive. */
-function MarketAnalysisPanel({ analysis, loading, error }: { analysis: MarketAnalysisResult | null; loading: boolean; error: string | null }) {
-  return (
-    <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
-      <div className="mb-2 flex items-center gap-2">
-        <p className="section-title">Market Analysis</p>
-        {loading && <Spinner className="h-3.5 w-3.5" />}
-      </div>
-      {error && (
-        <p className="mb-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-          <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          {error}
-        </p>
-      )}
-      {!analysis ? (
-        !loading && !error && <p className="text-xs text-slate-400 dark:text-slate-500">Scan to see tier/section pricing and recommendations.</p>
-      ) : (
-        <>
-          {analysis.mixedCurrencies && (
-            <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
-              These listings span more than one currency - shown separately below, never blended together.
-            </p>
-          )}
-          {analysis.uncurrenciedListingCount > 0 && (
-            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-              {analysis.uncurrenciedListingCount} listing{analysis.uncurrenciedListingCount === 1 ? "" : "s"} had a price but no
-              detected currency, so {analysis.uncurrenciedListingCount === 1 ? "it isn't" : "they aren't"} included below.
-            </p>
-          )}
-          {analysis.byCurrency.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500">None of the listings found so far have a usable currency yet.</p>
-          ) : (
-            analysis.byCurrency.map((block) => <CurrencyMarketBlock key={block.currency} block={block} />)
-          )}
 
-          <p className="mb-2 mt-4 section-title">Your Tickets</p>
-          <YourTicketsTable groups={analysis.yourTickets} />
-        </>
-      )}
-    </div>
-  );
-}
-
-/** "## COMPARABLE MARKET" - ranks this session's listings against ONE
- * specific reference ticket marko types in (his own worked example: Section
- * 112 / Row 8 / Quantity 4). Self-contained (fetches on its own "Compare"
- * click, no shared state with MarketAnalysisPanel) since it's a one-off
- * lookup, not something that needs to refresh automatically on every scan.
- * `currencies` restricts the picker to currencies this session actually has
- * listings in - comparing against an empty currency would only ever come
- * back with zero results. */
-function ComparableMarketTool({ requestId, currencies }: { requestId: number; currencies: string[] }) {
-  const toast = useToast();
-  const [section, setSection] = useState("");
-  const [tier, setTier] = useState("");
-  const [row, setRow] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [currency, setCurrency] = useState("");
-  const [results, setResults] = useState<RankedComparable[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  // Keeps the picker pointed at a currency that actually has data - resets
-  // to the first available one whenever the current selection stops being
-  // valid (e.g. this is the very first scan, or a currency this session
-  // never had disappears from the list - which in practice never happens
-  // once a currency has appeared, but stays correct either way).
-  useEffect(() => {
-    setCurrency((c) => (currencies.includes(c) ? c : (currencies[0] ?? "")));
-  }, [currencies]);
-
-  if (currencies.length === 0) return null;
-
-  const compare = async () => {
-    if (!currency) return;
-    setLoading(true);
-    try {
-      const qty = quantity.trim() === "" ? NaN : parseInt(quantity, 10);
-      const input: ComparableReferenceInput = {
-        requestId,
-        section: section.trim() || null,
-        tier: tier.trim() || null,
-        row: row.trim() || null,
-        quantity: Number.isFinite(qty) && qty > 0 ? qty : null,
-        currency,
-      };
-      setResults(await api.computeComparableMarket(input));
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="mt-4 rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-      <p className="mb-2 section-title">Compare a specific ticket</p>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        <Input placeholder="Section" value={section} onChange={(e) => setSection(e.target.value)} className="text-xs" />
-        <Input placeholder="Tier / level" value={tier} onChange={(e) => setTier(e.target.value)} className="text-xs" />
-        <Input placeholder="Row" value={row} onChange={(e) => setRow(e.target.value)} className="text-xs" />
-        <Input type="number" min={1} step={1} placeholder="Quantity" value={quantity} onChange={(e) => setQuantity(e.target.value)} className="text-xs" />
-        {currencies.length > 1 ? (
-          <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-            {currencies.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <div className="flex items-center px-1 text-xs text-slate-500 dark:text-slate-400">{currency}</div>
-        )}
-      </div>
-      <div className="mt-2">
-        <Button variant="secondary" onClick={compare} disabled={loading}>
-          {loading ? <Spinner className="h-4 w-4" /> : "Compare"}
-        </Button>
-      </div>
-
-      {results &&
-        (results.length === 0 ? (
-          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">No {currency} listings found yet to compare against.</p>
-        ) : (
-          <div className="table-flush mt-3 max-h-56 rounded-lg border border-slate-200 dark:border-slate-800">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr>
-                  <th className="px-2 py-1 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Price</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Section</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Tier</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Row</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Match</th>
-                  <th className="px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Data</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {results.map((r, i) => (
-                  <tr key={i}>
-                    <td className="px-2 py-1 text-right text-xs tabular-nums text-slate-700 dark:text-slate-300">
-                      {formatMoney(r.listing.priceCents, r.listing.currency ?? currency)}
-                    </td>
-                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.section ?? "-"}</td>
-                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.tier ?? "-"}</td>
-                    <td className="px-2 py-1 text-xs text-slate-700 dark:text-slate-300">{r.listing.row ?? "-"}</td>
-                    <td className="px-2 py-1">
-                      <LevelPill level={r.level} />
-                    </td>
-                    <td className="px-2 py-1">
-                      <DataQualityPill quality={r.dataQuality} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // One marketplace's card: link + latest check + full history + Visible
@@ -1193,18 +665,15 @@ function MarketplaceCard({
   eventId,
   view,
   onLinkSaved,
-  onCheckPrices,
   session,
   onOpenScanner,
   onScanVisible,
   onStopScan,
   onCloseScanner,
-  onSaveScanToHistory,
 }: {
   eventId: number;
   view: MarketplacePriceView;
   onLinkSaved: () => void;
-  onCheckPrices: () => void;
   /** This card's live Visible Scanner session, if one is open - undefined
    *  means no session (shows "Open & Scan" instead of Scan/Stop/Close). */
   session: ScannerCardState | undefined;
@@ -1212,7 +681,6 @@ function MarketplaceCard({
   onScanVisible: (eventId: number, marketplaceId: number) => void;
   onStopScan: (eventId: number, marketplaceId: number) => void;
   onCloseScanner: (eventId: number, marketplaceId: number) => void;
-  onSaveScanToHistory: (view: MarketplacePriceView, session: ScannerCardState, analysis: MarketAnalysisResult | null) => void;
 }) {
   const toast = useToast();
   const [url, setUrl] = useState(view.link?.url ?? "");
@@ -1258,41 +726,55 @@ function MarketplaceCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.requestId, session?.scanCount, eventId]);
 
-  // 2.26.0 - the Market Map. Same session, same trigger, same shape as the
-  // analysis above: recomputed after each MANUAL scan (`scanCount`), never on
-  // a timer and never in the background. Adds no scanning of its own - it is a
-  // read-only fold of listings this session already has plus marko's own
-  // unsold tickets for the event.
-  const [marketMap, setMarketMap] = useState<MarketMap | null>(null);
-  const [mapLoading, setMapLoading] = useState(false);
-  const [mapError, setMapError] = useState<string | null>(null);
+  // 2.26.1 - a finished scan records ITSELF. The modal that used to ask marko
+  // to type in numbers the scanner had just read is gone, so this is the only
+  // path into `price_checks` now.
+  //
+  // Guarded on the scan NUMBER, not on a boolean: `analysisLoading` flipping
+  // false re-runs this effect, and without the guard the same scan would be
+  // written to history twice. `savedScanRef` starts at 0 and `scanCount` is
+  // 1-based, so the first scan is never mistaken for "already saved".
+  //
+  // It waits for the analysis so the per-tier breakdown goes in with it - the
+  // analysis PANEL is gone from the card, but the command still runs, purely
+  // for that breakdown (it is what the history line's "1 tier" counts).
+  //
+  // No currency means no save. A price check whose currency had to be guessed
+  // is worse than no price check, and the card says so in one line.
+  const savedScanRef = useRef(0);
   useEffect(() => {
-    if (!session || session.listings.length === 0) {
-      setMarketMap(null);
-      setMapError(null);
-      return;
-    }
-    let cancelled = false;
-    setMapLoading(true);
+    if (!session || session.scanning || session.listings.length === 0) return;
+    if (!session.currency || analysisLoading) return;
+    if (savedScanRef.current >= session.scanCount) return;
+    savedScanRef.current = session.scanCount;
+    const matching = analysis?.byCurrency.find((c) => c.currency === session.currency);
     api
-      .computeMarketMap(session.requestId, eventId)
-      .then((result) => {
-        if (!cancelled) {
-          setMarketMap(result);
-          setMapError(null);
-        }
+      .savePriceCheck({
+        eventId,
+        marketplaceId: view.marketplaceId,
+        lowestPriceCents: session.lowestPriceCents ?? 0,
+        medianPriceCents: session.medianPriceCents,
+        averagePriceCents: session.averagePriceCents ?? 0,
+        highestPriceCents: session.highestPriceCents ?? 0,
+        listingCount: session.listings.length,
+        currency: session.currency,
+        tierBreakdown:
+          matching?.tiers.map((t) => ({
+            tier: t.tier,
+            lowestPriceCents: t.stats.lowestPriceCents,
+            medianPriceCents: t.stats.medianPriceCents,
+            listingCount: t.stats.listingCount,
+          })) ?? [],
       })
-      .catch((e) => {
-        if (!cancelled) setMapError(errMsg(e));
-      })
-      .finally(() => {
-        if (!cancelled) setMapLoading(false);
+      // Refreshes this card's own history and the event's "Market vs. mine".
+      .then(() => onLinkSaved())
+      .catch(() => {
+        // Let the scan be re-saved by the next one rather than sticking on a
+        // scan number that never actually landed.
+        savedScanRef.current = session.scanCount - 1;
       });
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.requestId, session?.scanCount, eventId]);
+  }, [session?.scanCount, session?.scanning, session?.currency, analysisLoading, eventId, view.marketplaceId]);
 
   // Keeps the field in sync when the parent reloads (e.g. after this exact
   // save, or after switching away and back to this event) without clobbering
@@ -1344,16 +826,11 @@ function MarketplaceCard({
             </span>
           )}
         </div>
-        {/* Check Prices only makes sense for a marketplace still accepting
-         *  new checks - the backend refuses a new price check against a
-         *  retired one either way (require_marketplace_active in
-         *  price_checker.rs), this just keeps marko from ever seeing a
-         *  button that would only error. */}
-        {view.marketplaceActive && (
-          <Button variant="secondary" onClick={onCheckPrices}>
-            <IconTag className="h-4 w-4" /> Check Prices
-          </Button>
-        )}
+        {/* 2.26.1: "Check Prices" and its manual-entry modal are gone. That
+         *  button opened a form asking marko to type in the numbers the
+         *  scanner had just read for him - his own words, "to uplne odstran".
+         *  Scanning is now the only way a price check is recorded, and it
+         *  records itself (see the auto-save effect below). */}
       </div>
 
       {view.marketplaceActive ? (
@@ -1372,7 +849,7 @@ function MarketplaceCard({
           )}
         </div>
       ) : (
-        // Read-only, same styling as SavePriceCheckModal's own URL display -
+        // Read-only URL display -
         // no Input/Save here, saving a new url for a retired marketplace
         // would just be rejected by the backend anyway.
         view.link?.url && (
@@ -1435,25 +912,32 @@ function MarketplaceCard({
                 </p>
               )}
 
+              {/* 2.26.1 - marko's screenshots. A marketplace card is a SCAN
+                  BUTTON AND ITS HISTORY, nothing else. The listings table with
+                  its Min/Max filters and CSV export, the manual "Save to
+                  history" button, the Market Map, the Market Analysis panel
+                  and the "Compare a specific ticket" tool were all stacked
+                  under each of THREE side-by-side cards - which is what made
+                  this screen unreadable.
+
+                  Where each went:
+                    - the map is now ONE map for the whole event, above the
+                      cards, merging every marketplace's listings (marko: "mapa
+                      by mala byt pre vsetky platformy rovnaka a tie listingy
+                      sa spoja");
+                    - saving is automatic - see the effect above;
+                    - the comparison he actually reads is the "Market vs. mine"
+                      card at the top of the event.
+
+                  What is left is one honest line, and the history below it
+                  updates itself. */}
               {session.listings.length > 0 && (
-                <>
-                  <ScanResultsPanel session={session} />
-                  <div className="mt-3">
-                    <Button variant="primary" onClick={() => onSaveScanToHistory(view, session, analysis)}>
-                      Save to history
-                    </Button>
-                  </div>
-
-                  <MarketMapPanel
-                    map={marketMap}
-                    loading={mapLoading}
-                    error={mapError}
-                    sourceUrl={view.link?.url ?? null}
-                  />
-
-                  <MarketAnalysisPanel analysis={analysis} loading={analysisLoading} error={analysisError} />
-                  <ComparableMarketTool requestId={session.requestId} currencies={analysis?.byCurrency.map((c) => c.currency) ?? []} />
-                </>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  {session.listings.length} listing{session.listings.length === 1 ? "" : "s"} read
+                  {session.currency
+                    ? " - saved to the history below."
+                    : " - not saved: the page never showed a currency, and a price check without one would be a guess."}
+                </p>
               )}
             </>
           )}
@@ -1475,7 +959,18 @@ function MarketplaceCard({
             </p>
             {trend && <TrendNote trend={trend} currency={latest.currency} />}
           </div>
-          <div className="mb-3 grid grid-cols-5 gap-2 text-sm">
+          {/* 2.26.1 - THE collision in marko's screenshot. This was
+              `grid-cols-5`: five FIXED columns regardless of how wide the card
+              actually is. These cards sit three-across (`lg:grid-cols-3`), so
+              one fifth of a third of the page is not enough for "EUR1,815.00"
+              - it ran straight into the next cell and rendered as
+              "EUR1,815.0064". Same class of bug as `.summary-bar` in 2.19.0,
+              and the same fix: let the column COUNT follow the width, with a
+              minimum a real money value fits in. */}
+          <div
+            className="mb-3 grid gap-x-3 gap-y-2 text-sm"
+            style={{ gridTemplateColumns: "repeat(auto-fit, minmax(6.5rem, 1fr))" }}
+          >
             <div>
               <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">Lowest</p>
               <p className="font-medium tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(latest.lowestPriceCents, latest.currency)}</p>
@@ -1536,267 +1031,6 @@ function MarketplaceCard({
 // "Check Prices" entry form
 // ---------------------------------------------------------------------------
 
-function SavePriceCheckModal({
-  eventId,
-  view,
-  defaultCurrency,
-  prefill,
-  onClose,
-  onSaved,
-}: {
-  eventId: number;
-  /** null = closed. */
-  view: MarketplacePriceView | null;
-  defaultCurrency: string;
-  /** 2.1.9: set when this modal was opened via a Visible Scanner session's
-   *  "Save to history" button - null for a normal "Check Prices" click. The
-   *  4+1 fields below are seeded straight from these exact numbers and stay
-   *  fully editable, same as any other open - marko reviews before Save
-   *  either way. */
-  prefill?: ScanPrefill | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [lowest, setLowest] = useState("");
-  const [median, setMedian] = useState("");
-  const [average, setAverage] = useState("");
-  const [highest, setHighest] = useState("");
-  const [listingCount, setListingCount] = useState("");
-  const [currency, setCurrency] = useState(defaultCurrency);
-  const [customCurrency, setCustomCurrency] = useState(false);
-  // 2.2.0: carried straight through to savePriceCheck, never hand-edited
-  // here - see ScanPrefill.tierBreakdown's own doc comment. Not shown as
-  // editable fields (that would be a lot of new form UI for data marko
-  // never asked to hand-tweak per tier), just a small read-only summary
-  // below so he can see it's included before saving.
-  const [tierBreakdown, setTierBreakdown] = useState<TierBreakdownInput[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  // 2.0.82: "paste from the listings page" - see priceParse.ts. Purely a
-  // faster way to fill in the same fields below; marko still has to open
-  // the marketplace page and copy the text himself, and every field it
-  // fills stays fully editable afterward.
-  const [pasteText, setPasteText] = useState("");
-  const [pasteInfo, setPasteInfo] = useState<string | null>(null);
-
-  // Prefills either from a just-finished Visible Scanner session
-  // (`prefill`) or the latest existing check for this marketplace, if any -
-  // most real checks only move a little from last time, so this saves
-  // retyping numbers that haven't changed; every field stays fully editable.
-  useEffect(() => {
-    if (!view) return;
-    if (prefill) {
-      setLowest(centsToDecimalString(prefill.lowestPriceCents));
-      setMedian(prefill.medianPriceCents !== null ? centsToDecimalString(prefill.medianPriceCents) : "");
-      setAverage(centsToDecimalString(prefill.averagePriceCents));
-      setHighest(centsToDecimalString(prefill.highestPriceCents));
-      setListingCount(String(prefill.listingCount));
-      const cur = prefill.currency ?? defaultCurrency;
-      setCurrency(cur);
-      setCustomCurrency(!CURRENCIES.includes(cur));
-      setTierBreakdown(prefill.tierBreakdown);
-    } else {
-      const latest = view.history[0] ?? null;
-      setLowest(latest ? centsToDecimalString(latest.lowestPriceCents) : "");
-      setMedian(latest && latest.medianPriceCents !== null ? centsToDecimalString(latest.medianPriceCents) : "");
-      setAverage(latest ? centsToDecimalString(latest.averagePriceCents) : "");
-      setHighest(latest ? centsToDecimalString(latest.highestPriceCents) : "");
-      setListingCount(latest ? String(latest.listingCount) : "");
-      const cur = latest?.currency ?? defaultCurrency;
-      setCurrency(cur);
-      setCustomCurrency(!CURRENCIES.includes(cur));
-      // Same "start from what's already known" convention as the fields
-      // above - re-typing a fresh check for the same marketplace usually
-      // means the tiers themselves haven't changed shape even when the
-      // prices have, so this saves marko from losing that structure. Fully
-      // replaced (not merged) the moment a live scan prefill arrives instead.
-      setTierBreakdown(latest?.tierBreakdown.map((t) => ({ tier: t.tier, lowestPriceCents: t.lowestPriceCents, medianPriceCents: t.medianPriceCents, listingCount: t.listingCount })) ?? []);
-    }
-    setError(null);
-    setSaving(false);
-    setPasteText("");
-    setPasteInfo(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, defaultCurrency, prefill]);
-
-  // Runs on every keystroke/paste in the textarea - re-extracting from the
-  // full current text each time (not just the newly-pasted chunk) so
-  // editing or re-pasting on top of earlier text keeps working sensibly.
-  // Leaves the fields untouched (rather than clearing them) when nothing is
-  // found, so a paste that didn't work never destroys numbers already
-  // sitting in the form.
-  const handlePasteTextChange = (text: string) => {
-    setPasteText(text);
-    if (!text.trim()) {
-      setPasteInfo(null);
-      return;
-    }
-    const { prices, currency: detected } = extractPricesFromText(text);
-    if (prices.length === 0) {
-      setPasteInfo("Couldn't find any prices in that text - enter the numbers manually below.");
-      return;
-    }
-    const sorted = [...prices].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const medianVal = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-    const lowestVal = sorted[0];
-    const highestVal = sorted[sorted.length - 1];
-    const avgVal = prices.reduce((a, b) => a + b, 0) / prices.length;
-    setLowest(lowestVal.toFixed(2));
-    setMedian(medianVal.toFixed(2));
-    setAverage(avgVal.toFixed(2));
-    setHighest(highestVal.toFixed(2));
-    setListingCount(String(prices.length));
-    if (detected) {
-      setCurrency(detected);
-      setCustomCurrency(!CURRENCIES.includes(detected));
-    }
-    setPasteInfo(
-      `Found ${prices.length} price${prices.length === 1 ? "" : "s"}${detected ? ` in ${detected}` : ""} - filled in below, double-check before saving.`,
-    );
-  };
-
-  if (!view) return null;
-
-  const submit = async () => {
-    const lowestCents = decimalStringToCents(lowest);
-    const averageCents = decimalStringToCents(average);
-    const highestCents = decimalStringToCents(highest);
-    const count = parseInt(listingCount, 10);
-    if (lowestCents === null || averageCents === null || highestCents === null) {
-      setError("Enter valid prices (up to 2 decimal places).");
-      return;
-    }
-    // Blank median means "not provided" (null, never a fabricated 0) -
-    // decimalStringToCents("") itself returns 0, which would silently save
-    // a real "free" median, so the blank case is checked separately here
-    // before ever calling it.
-    const medianCents = median.trim() === "" ? null : decimalStringToCents(median);
-    if (median.trim() !== "" && medianCents === null) {
-      setError("Enter a valid median price (up to 2 decimal places), or leave it blank.");
-      return;
-    }
-    if (!Number.isFinite(count) || count < 0) {
-      setError("Enter a valid number of listings (0 or more).");
-      return;
-    }
-    if (lowestCents > averageCents || averageCents > highestCents) {
-      setError("Lowest price must be at or below average, and average must be at or below highest.");
-      return;
-    }
-    if (medianCents !== null && (medianCents < lowestCents || medianCents > highestCents)) {
-      setError("Median price must be between the lowest and highest price.");
-      return;
-    }
-    if (!currency.trim()) {
-      setError("Currency is required.");
-      return;
-    }
-    setError(null);
-    setSaving(true);
-    try {
-      await api.savePriceCheck({
-        eventId,
-        marketplaceId: view.marketplaceId,
-        lowestPriceCents: lowestCents,
-        medianPriceCents: medianCents,
-        averagePriceCents: averageCents,
-        highestPriceCents: highestCents,
-        listingCount: count,
-        currency: currency.trim().toUpperCase(),
-        tierBreakdown,
-      });
-      toast.success("Price check saved");
-      onSaved();
-    } catch (e) {
-      setError(errMsg(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal open onClose={onClose} title={`Check Prices - ${view.marketplaceName}`}>
-      <div className="flex flex-col gap-4">
-        {view.link?.url && (
-          <p className="select-all break-all rounded-lg bg-slate-50 p-2 font-mono text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
-            {view.link.url}
-          </p>
-        )}
-        {prefill && (
-          <p className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-400">
-            Prefilled from your Visible Scanner scan ({prefill.listingCount} listing{prefill.listingCount === 1 ? "" : "s"}) - review before saving.
-          </p>
-        )}
-        {tierBreakdown.length > 0 && (
-          <p className="-mt-2 text-xs text-slate-500 dark:text-slate-400">
-            Includes a breakdown for {tierBreakdown.length} tier{tierBreakdown.length === 1 ? "" : "s"} ({tierBreakdown.map((t) => t.tier).join(", ")}).
-          </p>
-        )}
-        <Field label="Paste from the listings page" hint="Select the prices on that page, copy, and paste here - the fields below fill in automatically.">
-          <Textarea
-            rows={3}
-            value={pasteText}
-            onChange={(e) => handlePasteTextChange(e.target.value)}
-            placeholder="e.g. $145  $150  $138  $162 ..."
-            className="font-mono text-xs"
-          />
-        </Field>
-        {pasteInfo && <p className="-mt-2 text-xs text-slate-500 dark:text-slate-400">{pasteInfo}</p>}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Lowest price" required>
-            <Input inputMode="decimal" value={lowest} onChange={(e) => setLowest(e.target.value)} placeholder="0.00" />
-          </Field>
-          <Field label="Median price" hint="Optional - leave blank if unknown.">
-            <Input inputMode="decimal" value={median} onChange={(e) => setMedian(e.target.value)} placeholder="0.00" />
-          </Field>
-          <Field label="Average price" required>
-            <Input inputMode="decimal" value={average} onChange={(e) => setAverage(e.target.value)} placeholder="0.00" />
-          </Field>
-          <Field label="Highest price" required>
-            <Input inputMode="decimal" value={highest} onChange={(e) => setHighest(e.target.value)} placeholder="0.00" />
-          </Field>
-          <Field label="Number of listings" required>
-            <Input type="number" min={0} step={1} value={listingCount} onChange={(e) => setListingCount(e.target.value)} />
-          </Field>
-        </div>
-        <div>
-          <div className="flex items-center justify-between">
-            <span className="label mb-1">Currency</span>
-            <button
-              type="button"
-              className="mb-1 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
-              onClick={() => setCustomCurrency((c) => !c)}
-            >
-              {customCurrency ? "Choose from list" : "Other..."}
-            </button>
-          </div>
-          {customCurrency ? (
-            <Input autoFocus placeholder="e.g. AED" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />
-          ) : (
-            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              {(CURRENCIES.includes(currency) ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </Select>
-          )}
-        </div>
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      </div>
-      <ModalFooter>
-        <Button variant="secondary" onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={submit} disabled={saving}>
-          {saving ? <Spinner className="h-4 w-4" /> : "Save check"}
-        </Button>
-      </ModalFooter>
-    </Modal>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -1814,12 +1048,6 @@ export default function PriceChecker() {
   const [eventId, setEventId] = useState<number | "">("");
   const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
   const [loading, setLoading] = useState(false);
-  const [checkModalFor, setCheckModalFor] = useState<MarketplacePriceView | null>(null);
-  // 2.1.9: set alongside checkModalFor when it was opened from a scan's
-  // "Save to history" button - null for a normal "Check Prices" click.
-  // Cleared alongside checkModalFor so a stale prefill never leaks into the
-  // next open.
-  const [checkModalPrefill, setCheckModalPrefill] = useState<ScanPrefill | null>(null);
 
   // 2.1.9: every open Visible Scanner session on this page, keyed by
   // sessionKey(eventId, marketplaceId) - see ScannerCardState's own doc
@@ -1971,6 +1199,60 @@ export default function PriceChecker() {
     };
   }, [toast]);
 
+  // 2.26.1 - ONE Market Map for the whole event, above the marketplace cards.
+  //
+  // Marko's own call after seeing 2.26.0: "mapa by mala byt niekde inde nie
+  // tam dole a mapa by mala byt pre vsetky platformy rovnaka a tie listingy sa
+  // spoja." So the map moved out of the per-marketplace card (where each of
+  // three cards drew its own half-empty copy) and the backend now keys on the
+  // EVENT - every open scanner session for it contributes its listings to one
+  // map, so section 102 shows Viagogo, Vivid Seats and Ticombo side by side.
+  //
+  // Recomputed when the TOTAL number of scans across this event's sessions
+  // changes - i.e. after any manual scan on any marketplace. Still no timer,
+  // no polling, no background work.
+  const [marketMap, setMarketMap] = useState<MarketMap | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  // `ScannerCardState` carries no eventId of its own - the MAP KEY is
+  // `${eventId}:${marketplaceId}` (see `sessionKey`), so the prefix is what
+  // identifies this event's sessions. Checked against that function rather
+  // than assumed.
+  const scanTotal = useMemo(() => {
+    if (!summary) return 0;
+    const prefix = `${summary.eventId}:`;
+    return Object.entries(scannerSessions).reduce(
+      (n, [key, sess]) => n + (key.startsWith(prefix) ? sess.scanCount : 0),
+      0,
+    );
+  }, [scannerSessions, summary]);
+  useEffect(() => {
+    if (!summary || scanTotal === 0) {
+      setMarketMap(null);
+      setMapError(null);
+      return;
+    }
+    let cancelled = false;
+    setMapLoading(true);
+    api
+      .computeMarketMap(summary.eventId)
+      .then((result) => {
+        if (!cancelled) {
+          setMarketMap(result);
+          setMapError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setMapError(errMsg(e));
+      })
+      .finally(() => {
+        if (!cancelled) setMapLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [summary, scanTotal]);
+
   const load = useCallback(() => {
     if (eventId === "") {
       setSummary(null);
@@ -2104,34 +1386,6 @@ export default function PriceChecker() {
     [toast],
   );
 
-  // "Save to history" on a live scan - opens the same review-then-save
-  // modal any manual "Check Prices" uses, prefilled with this session's
-  // current running totals. Never saves directly - marko still reviews and
-  // clicks Save himself, same as every other path into price_checks.
-  // 2.2.0: also carries through this session's own tier breakdown for
-  // `session.currency`, if the card's Market Analysis had finished loading
-  // by the time this was clicked - see ScanPrefill.tierBreakdown's own doc
-  // comment for why (marko's spec, "## PRICE HISTORY").
-  const saveScanToHistory = useCallback((view: MarketplacePriceView, session: ScannerCardState, analysis: MarketAnalysisResult | null) => {
-    const matchingCurrency = analysis?.byCurrency.find((c) => c.currency === session.currency);
-    setCheckModalPrefill({
-      lowestPriceCents: session.lowestPriceCents ?? 0,
-      medianPriceCents: session.medianPriceCents,
-      averagePriceCents: session.averagePriceCents ?? 0,
-      highestPriceCents: session.highestPriceCents ?? 0,
-      listingCount: session.listings.length,
-      currency: session.currency,
-      tierBreakdown:
-        matchingCurrency?.tiers.map((t) => ({
-          tier: t.tier,
-          lowestPriceCents: t.stats.lowestPriceCents,
-          medianPriceCents: t.stats.medianPriceCents,
-          listingCount: t.stats.listingCount,
-        })) ?? [],
-    });
-    setCheckModalFor(view);
-  }, []);
-
   return (
     <div>
       <PageHeader title="Price Checker" subtitle="Compare your unsold inventory against Vivid Seats, Ticombo and Viagogo." />
@@ -2213,6 +1467,13 @@ export default function PriceChecker() {
             )}
           </Card>
 
+          {/* One map for the event, above the cards - never inside one. */}
+          {scanTotal > 0 && (
+            <div className="mb-5">
+              <MarketMapPanel map={marketMap} loading={mapLoading} error={mapError} sourceUrl={null} />
+            </div>
+          )}
+
           <p className="mb-3 section-title">Marketplaces</p>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -2222,35 +1483,15 @@ export default function PriceChecker() {
                 eventId={summary.eventId}
                 view={view}
                 onLinkSaved={load}
-                onCheckPrices={() => {
-                  setCheckModalPrefill(null);
-                  setCheckModalFor(view);
-                }}
                 session={scannerSessions[sessionKey(summary.eventId, view.marketplaceId)]}
                 onOpenScanner={openScanner}
                 onScanVisible={scanVisible}
                 onStopScan={stopScan}
                 onCloseScanner={closeScanner}
-                onSaveScanToHistory={saveScanToHistory}
               />
             ))}
           </div>
 
-          <SavePriceCheckModal
-            eventId={summary.eventId}
-            view={checkModalFor}
-            defaultCurrency={summary.myCurrency ?? "EUR"}
-            prefill={checkModalPrefill}
-            onClose={() => {
-              setCheckModalFor(null);
-              setCheckModalPrefill(null);
-            }}
-            onSaved={() => {
-              setCheckModalFor(null);
-              setCheckModalPrefill(null);
-              load();
-            }}
-          />
         </>
       )}
     </div>

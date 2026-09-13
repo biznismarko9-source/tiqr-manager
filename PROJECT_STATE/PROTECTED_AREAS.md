@@ -21,6 +21,34 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.26.1 - Scans save themselves, and fixed-column grids are the bug
+
+**A scan is the ONLY way a price check is recorded.** The manual entry modal is
+deleted. If a future task wants hand-entered checks back, that is a new screen,
+not a revert - and it should not come back as a form pre-filled with numbers
+the scanner already read, which is exactly what marko asked to be removed.
+
+**The auto-save guard is a scan NUMBER, never a boolean.** `savedScanRef`
+compares against `session.scanCount` because the effect re-runs when
+`analysisLoading` flips - with a boolean, the same scan lands in history twice.
+On failure it steps the ref BACK so the next scan can retry, rather than
+sticking on a scan number that never landed.
+
+**No currency means no save.** A price check needs a currency; guessing one is
+worse than recording nothing. The card says so in one line.
+
+**`compute_market_map` is keyed on the EVENT, not a session**, and merges every
+open session for it - one map for all marketplaces, drawn above the cards. It
+does NOT deduplicate across marketplaces: the same seat on two sites is two
+real offers, and the scanner has no cross-site identity that could tell a true
+duplicate from two sellers who happen to match.
+
+**Fixed column counts in these cards are a bug, not a style.** The latest-check
+stats row was `grid-cols-5` inside cards that sit `lg:grid-cols-3`, which
+rendered `EUR1,815.00` and `64` as `EUR1,815.0064`. Any stat row in a card that
+can be narrow uses `auto-fit` + a `minmax` floor wide enough for a real money
+value - the same rule `.summary-bar` has followed since 2.19.0.
+
 ## 2.26.0 - The Market Map draws only what the reader actually produces
 
 **The scanner produces no seat, no venue, no geometry and no per-listing URL.**

@@ -16,6 +16,57 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.26.1 - Price Checker stripped back to what marko actually reads
+
+His screenshots, his words: the screen was unreadable. Three marketplace cards
+side by side, each stacking a listings table, Min/Max filters, a CSV export, a
+"Save to history" button, a Market Map, a Market Analysis panel and a "Compare
+a specific ticket" tool underneath it.
+
+### The manual "Check Prices" form is gone
+
+Button and modal both. It opened a form asking him to type in the lowest,
+median, average and highest price - **numbers the scanner had just read for
+him**. So scanning is now the only way a price check is recorded, and **a
+finished scan records itself**.
+
+The auto-save waits for the tier breakdown so history keeps its "1 tier" line,
+and it is guarded on the scan NUMBER rather than a boolean, so one scan can
+never be written to history twice. **No currency, no save** - a price check
+whose currency had to be guessed is worse than none, and the card says so in
+one line instead of saving a guess.
+
+### A marketplace card is now a scan button and its history
+
+Exactly the last screenshot he sent: name, URL, Visible Scanner, Latest check,
+the five figures, the history table. Everything else went - 766 lines of UI
+that is no longer reachable was deleted, not just hidden.
+
+### The Market Map moved out and became ONE map
+
+Marko: "mapa by mala byt niekde inde nie tam dole a mapa by mala byt pre vsetky
+platformy rovnaka a tie listingy sa spoja."
+
+So `compute_market_map` is keyed on the **event** now, not on one scanner
+session: every open session for that event contributes its listings to one map,
+and it is drawn **above** the marketplace cards rather than inside one. Scan
+Viagogo, then Ticombo, and section 102 shows both marketplaces' rows together.
+
+Deliberately NOT deduplicated across marketplaces - the same seat listed on two
+sites is two real offers at two real prices, and the scanner has no cross-site
+listing identity that could tell a genuine duplicate from two different sellers
+who happen to match.
+
+### The collision in the screenshot was a real bug
+
+`EUR1,815.0064` - the Highest figure running straight into the Listings count.
+The stats row was `grid-cols-5`: five FIXED columns no matter how wide the card
+is. These cards sit three-across, so a fifth of a third of the page is not
+enough for a four-figure price. Now the column COUNT follows the width
+(`auto-fit` + a `6.5rem` minimum), so the figures wrap to a second row and
+every one of them is fully readable. Same class of bug as `.summary-bar` in
+2.19.0, same fix.
+
 ## 2.26.0 - Price Checker Market Map
 
 A second VIEW of a scan session that already happened. **No new scanner, no new

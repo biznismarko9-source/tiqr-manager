@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.26.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.26.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -540,6 +540,26 @@ offered is the event's marketplace link.
 scan labelled its listings `"generic"` (viagogo replaced StubHub in migration
 017; StubHub went in 020). Three lines - a `readViagogo`, a `hostFamily`
 branch, a dispatch arm.
+
+**2.26.1 - Price Checker stripped back.** From marko's own screenshots.
+- **The manual "Check Prices" modal and its button are DELETED**, along with
+  `SavePriceCheckModal`, `ScanResultsPanel`, `MarketAnalysisPanel`,
+  `ComparableMarketTool`, `CurrencyMarketBlock` and the `ScanPrefill` interface
+  - 766 lines of now-unreachable UI, removed rather than hidden.
+  `PriceChecker.tsx` went 2258 -> 1499 lines.
+- **A finished scan saves itself to history** (the only path into
+  `price_checks` now). Guarded on the scan NUMBER, not a boolean, so one scan
+  cannot be written twice; waits for the analysis so the tier breakdown goes
+  with it; **refuses to save when the page showed no currency** and says so.
+  The `computeMarketAnalysis` call still runs, invisibly, purely for that
+  breakdown.
+- **A marketplace card = scan button + history.** Nothing else.
+- **The Market Map moved to EVENT level, above the cards, and merges every
+  marketplace's listings** - `compute_market_map(event_id)`, no longer
+  `(request_id, event_id)`. Not deduplicated across marketplaces on purpose.
+- **Fixed: the `EUR1,815.0064` collision** in the latest-check stats row. It
+  was `grid-cols-5` - fixed columns in a card that sits three-across. Now
+  `auto-fit` + `minmax(6.5rem, 1fr)`, same fix as `.summary-bar` in 2.19.0.
 
 **Next new migration is 029.**
 

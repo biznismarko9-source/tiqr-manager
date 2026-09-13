@@ -712,8 +712,7 @@ export const api = {
    * already-accumulated listings together with marko's own unsold tickets for
    * the event. Read-only, cheap, and safe to call again after every manual
    * scan. */
-  computeMarketMap: (requestId: number, eventId: number) =>
-    invoke<MarketMap>("compute_market_map", { requestId, eventId }),
+  computeMarketMap: (eventId: number) => invoke<MarketMap>("compute_market_map", { eventId }),
 };
 
 export function errMsg(e: unknown): string {
