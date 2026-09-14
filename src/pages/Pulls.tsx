@@ -21,7 +21,7 @@ import {
   formatMoney,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  todayIso, shortCode } from "../lib/format";
+  todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -589,8 +589,10 @@ function GivenPulls() {
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`}
                       title={`${p.code} · added ${formatDate(p.createdAt)}`}
                     >
-                      {/* 2.23.0: `#9`, not `PULL-000009` - see shortCode. */}
-                      {shortCode(p.code)}
+                      {/* 2.30.0: the FULL code, same as everywhere else. 2.23.0 shortened
+                          it to `#14` here and nowhere else, which is exactly the
+                          "one place has 91, another 0091" marko reported. */}
+                      {p.code}
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={p.buyerName}>
                       {p.buyerName}

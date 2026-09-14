@@ -345,7 +345,15 @@ pub(crate) fn insert_order_with_tickets(
 
     let total_cost_cents =
         input.unit_price_cents * input.quantity + input.fees_cents + input.other_costs_cents;
-    let code = codes::next_code(conn, "order", "ORD")?;
+    // 2.30.0 - event-derived codes (CELINE-001). One lookup, reused for the
+    // ticket batch below. Falls back to the old fixed sequence when the
+    // event's name yields no usable prefix: `code` is NOT NULL UNIQUE in
+    // every table that has one, so "no prefix" can never mean "no code".
+    let event_prefix = codes::event_prefix_for(conn, input.event_id);
+    let code = match &event_prefix {
+        Some(p) => codes::next_event_code(conn, "order", p)?,
+        None => codes::next_code(conn, "order", "ORD")?,
+    };
     let payment_status = input
         .payment_status
         .clone()
@@ -375,7 +383,10 @@ pub(crate) fn insert_order_with_tickets(
     )?;
     let order_id = conn.last_insert_rowid();
 
-    let ticket_codes = codes::next_code_batch(conn, "ticket", "TKT", input.quantity)?;
+    let ticket_codes = match &event_prefix {
+        Some(p) => codes::next_event_code_batch(conn, "ticket", p, input.quantity)?,
+        None => codes::next_code_batch(conn, "ticket", "TKT", input.quantity)?,
+    };
     let fees_alloc = allocate_cents(input.fees_cents, input.quantity);
     let other_alloc = allocate_cents(input.other_costs_cents, input.quantity);
 

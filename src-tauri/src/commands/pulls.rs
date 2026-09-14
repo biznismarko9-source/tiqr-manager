@@ -182,7 +182,12 @@ pub(crate) fn create_pull_impl(conn: &Connection, input: &PullInput, is_demo: bo
         input.price_cents,
         &input.currency,
     )?;
-    let code = codes::next_code(conn, "pull", "PULL")?;
+    // A pull stores the event NAME rather than an id, so the prefix comes
+    // off that name directly.
+    let code = match codes::prefix_for_event(&input.event_name) {
+        Some(p) => codes::next_event_code(conn, "pull", &p)?,
+        None => codes::next_code(conn, "pull", "PULL")?,
+    };
     conn.execute(
         "INSERT INTO pulls (code, buyer_name, event_name, event_date, quantity, platform_id,
            section, row_label, seat, more_info, price_cents, currency, is_demo)

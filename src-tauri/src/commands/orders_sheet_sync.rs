@@ -2020,8 +2020,24 @@ fn apply_sales_rows(
         let sale_price_cents = sale_price_cents.unwrap();
         let sale_date = sale_date.unwrap();
 
-        let order_id: Option<i64> =
-            conn.query_row("SELECT id FROM orders WHERE code = ?1", [&order_code], |r| r.get(0)).optional()?;
+        // 2.30.0: falls back to `legacy_code`. The sheet stores whatever the
+        // order's code was when that row was written, and 029 rewrote every
+        // existing code to the event-derived form - so an already-synced
+        // sheet is full of ORD-000091 values that no longer match any
+        // `code`. Without this fallback every one of those rows would come
+        // back as "does not match any order in the app", which is the error
+        // just below. The current code is still tried FIRST, so a freshly
+        // written row costs nothing extra.
+        let order_id: Option<i64> = conn
+            .query_row("SELECT id FROM orders WHERE code = ?1", [&order_code], |r| r.get(0))
+            .optional()?
+            .or(conn
+                .query_row(
+                    "SELECT id FROM orders WHERE legacy_code = ?1",
+                    [&order_code],
+                    |r| r.get(0),
+                )
+                .optional()?);
         let Some(order_id) = order_id else {
             result.errors.push(SheetSyncIssue {
                 row_number,

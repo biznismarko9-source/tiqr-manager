@@ -16,6 +16,74 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.30.0 - CELINE-001: codes that say what they are
+
+Marko: "ked je to celine dion tak celine-001 ... bolo by to lepsie zmapovatelne
+nez to ako to je teraz", and "nech je vsade rovnaky - nie je jedno miesto ma 91
+a druhy order 0091".
+
+### One format, everywhere
+
+`shortCode` is gone. 2.23.0 rendered ORD-000014 as `#14` in three list views
+and nowhere else, which is exactly the "91 in one place, 0091 in another" he
+reported. Every screen now shows the same string.
+
+### Codes come from the event
+
+`ORD-000084` becomes `CELINE-001`. Orders, tickets, sales, pulls and received
+pulls all mint from the event they belong to - a sale through its ticket, a
+pull off the event name it stores. Each kind counts from 1 within an event, so
+an event's second order is CELINE-002.
+
+The prefix rule is pure and deterministic, because **both machines mint
+independently from synced counters** - if it ever answered differently on two
+machines they would produce two codes for one record. It keys on the part
+before the app's own " · " separator, so two Oasis nights share a run of
+numbers; folds accents (Letná -> LETNA); and caps at eight characters. Run
+against marko's real event names: OASIS, MILEY, CELINE, ENGLAND, COLDPLAY,
+EAGLES, GARTH, ACDC, VBV08 and VBV10 - no collisions.
+
+**An event whose name yields nothing usable keeps its old code.** No invented
+prefix - `code` is NOT NULL UNIQUE everywhere, so "no prefix" can never mean
+"no code".
+
+### Existing records are rewritten too
+
+Migration 029 adds `legacy_code`; the rewrite itself runs in Rust, tied to that
+migration so it happens exactly once, on the same all-or-nothing path as every
+other schema change. Numbering is by `id` within each prefix, so both machines
+rewriting their own copy of the same data land on identical codes.
+
+**Your Google Sheet keeps working.** It matches rows back by the code in its
+"TIQR ID" column, and every one of those is now a stale ORD-000091 - without a
+fallback the sync would reject the lot as "does not match any order in the
+app". The matcher now tries the current code first and falls back to
+`legacy_code`.
+
+### The one thing this needed inside protected logic
+
+A sale group took its identity from `MIN(s.code)`. That is the same row as
+`MIN(s.id)` for every code this app has ever minted, because ids and codes
+ascended together - but a batch spanning two events (which the
+`COUNT(DISTINCT t.event_id) = 1` guard exists to handle) would have shown
+COLDPLAY-003 as the group's code while `batch_id` said OASIS-001: identified by
+one string, displayed under another. The group now takes its code from the
+MIN(id) row. Verified against a real mixed-event batch - the old expression
+returned COLDPLAY-003, the new one OASIS-001, matching batch_id. `batch_id`
+itself is untouched.
+
+### Verified by running it
+
+The prefix rule and the whole backfill were executed against a real SQLite
+database, not read: accents folded, per-event numbering correct, the unnamed
+event left alone, `legacy_code` preserved, and the counters advanced so the
+next Celine order is CELINE-003 rather than a collision.
+
+**Before you update, sync both machines.** The rewrite is deterministic on
+identical data; if the two have drifted they will each renumber their own copy
+and the merge will reconcile by `uid` afterwards, which works but is noisier
+than it needs to be.
+
 ## 2.29.5 - Ticket Center stays put, and Finance explains itself
 
 ### Ticket Center

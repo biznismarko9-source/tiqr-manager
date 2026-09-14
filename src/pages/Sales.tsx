@@ -15,7 +15,7 @@ import {
   formatSeatLocation,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  todayIso, shortCode } from "../lib/format";
+  todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -908,10 +908,10 @@ export default function Sales() {
                       title={g.code}
                       className="block truncate font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
-                      {/* 2.23.0: `#26`, not `SAL-000026` - see shortCode in
-                          lib/format.ts. Full code stays in the tooltip and on
-                          Sale Detail. */}
-                      {shortCode(g.code)}
+                      {/* 2.30.0: the FULL code, same as everywhere else. 2.23.0 shortened
+                          it to `#14` here and nowhere else, which is exactly the
+                          "one place has 91, another 0091" marko reported. */}
+                      {g.code}
                     </Link>
                   </td>
                   {/* 1.9.1: the Event name used to be a <Link> to Event

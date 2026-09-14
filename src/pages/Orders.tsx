@@ -4,7 +4,7 @@ import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
-import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso, shortCode } from "../lib/format";
+import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatsSummary, summarizeBulkDeleteSkips, todayIso } from "../lib/format";
 import {
   Badge,
   Button,
@@ -610,16 +610,16 @@ export default function Orders() {
                       />
                     </td>
                   )}
-                  {/* 2.23.0: `#14`, not `ORD-000014` - see shortCode in
-                      lib/format.ts. The full code is still the tooltip, and
-                      Order Detail still shows it in full. */}
+                  {/* 2.30.0: the FULL code, same as everywhere else. 2.23.0 shortened
+                          it to `#14` here and nowhere else, which is exactly the
+                          "one place has 91, another 0091" marko reported. */}
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.code}>
                     <Link
                       to={`/orders/${o.id}`}
                       state={{ from: location.pathname }}
                       className="font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
-                      {shortCode(o.code)}
+                      {o.code}
                     </Link>
                   </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"} title={o.eventName}>

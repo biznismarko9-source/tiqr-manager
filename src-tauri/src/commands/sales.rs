@@ -260,7 +260,18 @@ pub fn get_sale(state: State<AppState>, id: i64) -> AppResult<Sale> {
 pub(crate) const GROUP_BASE_SELECT: &str = "
     SELECT
       MIN(s.id) as id,
-      MIN(s.code) as code,
+      -- 2.30.0: the code of the row that produced MIN(s.id), NOT the
+      -- alphabetically smallest code. SQLite's documented bare-column rule
+      -- for a min/max aggregate query is what makes this the same row.
+      --
+      -- Identical to the old MIN(s.code) on every code this app has ever
+      -- minted, because ids and codes ascended together. It stops being
+      -- identical the moment codes are event-derived: a batch spanning two
+      -- events (which `COUNT(DISTINCT t.event_id) = 1` below exists to
+      -- handle) would otherwise show COLDPLAY-003 as the group's code while
+      -- `batch_id` said OASIS-001 - the group identified by one string and
+      -- displayed under another. Verified against a real mixed batch.
+      s.code as code,
       MAX(s.batch_id) as batch_id,
       COUNT(*) as ticket_count,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(t.event_id) END as event_id,
@@ -682,7 +693,11 @@ pub(crate) fn create_sale_impl(conn: &mut Connection, input: &SaleInput) -> AppR
         |r| Ok((r.get(0)?,)),
     )?;
 
-    let code = codes::next_code(&tx, "sale", "SAL")?;
+    // 2.30.0: a sale inherits its ticket's event.
+    let code = match codes::event_prefix_for_ticket(&tx, input.ticket_id) {
+        Some(p) => codes::next_event_code(&tx, "sale", &p)?,
+        None => codes::next_code(&tx, "sale", "SAL")?,
+    };
     let payment_status = input
         .payment_status
         .clone()
@@ -775,7 +790,22 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
         .payment_status
         .clone()
         .unwrap_or_else(|| "pending".to_string());
-    let codes_batch = codes::next_code_batch(&tx, "sale", "SAL", input.lines.len() as i64)?;
+    // 2.30.0: minted PER LINE, because a batch may legitimately span events
+    // (that is exactly what `COUNT(DISTINCT t.event_id) = 1` in
+    // GROUP_BASE_SELECT exists to handle). One batch call with a single
+    // prefix would stamp an Oasis code on a Coldplay ticket.
+    //
+    // `batch_id` still becomes the FIRST line's code, unchanged - and the
+    // group's displayed code now comes from the MIN(id) row rather than
+    // MIN(code), so the two still name the same row even when the codes in
+    // a batch no longer sort in insertion order.
+    let mut codes_batch: Vec<String> = Vec::with_capacity(input.lines.len());
+    for line in &input.lines {
+        codes_batch.push(match codes::event_prefix_for_ticket(&tx, line.ticket_id) {
+            Some(p) => codes::next_event_code(&tx, "sale", &p)?,
+            None => codes::next_code(&tx, "sale", "SAL")?,
+        });
+    }
     // Only a real multi-ticket batch gets a batch_id (using its own first
     // code as the shared identifier - codes are sequential, so it's always
     // the lowest code in the group). A batch of one line is just an ordinary

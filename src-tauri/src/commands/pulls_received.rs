@@ -178,7 +178,11 @@ pub(crate) fn create_pull_received_with_source(
     source: &str,
 ) -> AppResult<PullReceived> {
     validate_pull_received_fields(&input.puller_name, &input.event_name, input.quantity, input.amount_cents, &input.currency)?;
-    let code = codes::next_code(conn, "pull_received", "RPULL")?;
+    // 2.30.0: same rule as a pull - it carries the event NAME.
+    let code = match codes::prefix_for_event(&input.event_name) {
+        Some(p) => codes::next_event_code(conn, "pull_received", &p)?,
+        None => codes::next_code(conn, "pull_received", "RPULL")?,
+    };
     conn.execute(
         "INSERT INTO pulls_received (code, puller_name, event_name, event_date, quantity,
            amount_cents, currency, more_info, order_id, source, is_demo)

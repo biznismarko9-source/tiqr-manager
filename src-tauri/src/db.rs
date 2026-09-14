@@ -215,6 +215,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "028_tombstones",
         include_str!("../migrations/028_tombstones.sql"),
     ),
+    (
+        "029_event_codes",
+        include_str!("../migrations/029_event_codes.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -338,6 +342,21 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
             [version],
         )?;
+        // 2.30.0: the one-time rewrite of existing codes to the event-derived
+        // form runs HERE, immediately after its own migration added
+        // `legacy_code` - not as a separate startup step. Tying it to the
+        // migration is what makes it run exactly once per database, on the
+        // same all-or-nothing path every other schema change uses, and it can
+        // never run before the column it writes into exists.
+        //
+        // Both machines run it against their own copy. Because the numbering
+        // is by `id` within each prefix, identical data produces identical
+        // codes - so as long as the two are in sync when they update, they
+        // agree. If they are not, the merge resolves by `uid` exactly as it
+        // does for any other divergence.
+        if *version == "029_event_codes" {
+            crate::codes::backfill_event_codes(conn)?;
+        }
     }
     Ok(())
 }
