@@ -748,27 +748,37 @@ export default function Settings() {
           where it did. `/settings` with no section now opens the first tab
           rather than a menu, which is why `activeSection` falls back to
           SECTIONS[0] up top. */}
-      <div className="mb-5 flex flex-wrap gap-1.5 border-b border-slate-200 pb-3 dark:border-slate-800">
-        {SECTIONS.map((s) => {
-          const on = s.key === sec;
-          return (
-            <Link
-              key={s.key}
-              to={`/settings/${s.key}`}
-              aria-current={on ? "page" : undefined}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] transition ${
-                on
-                  ? "bg-brand-600 font-semibold text-white dark:bg-brand-500"
-                  : "font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-100"
-              }`}
-            >
-              <s.icon className="h-4 w-4 shrink-0" />
-              {s.title}
-            </Link>
-          );
-        })}
-      </div>
-      <>
+      {/* 2.29.3: sections move from a tab strip across the top to a rail down
+          the LEFT, which is what marko approved in the preview. Routes are
+          untouched (`/settings/:section`), so every existing deep link still
+          lands exactly where it did - only where the list sits changed.
+          Under lg it falls back to a horizontal scroller rather than eating
+          half a narrow window. */}
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
+        <nav
+          data-tour="settings-sections"
+          className="flex shrink-0 gap-1 overflow-x-auto rounded-xl bg-surface p-2 shadow-card lg:w-56 lg:flex-col lg:overflow-visible"
+        >
+          {SECTIONS.map((s) => {
+            const on = s.key === sec;
+            return (
+              <Link
+                key={s.key}
+                to={`/settings/${s.key}`}
+                aria-current={on ? "page" : undefined}
+                className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] transition ${
+                  on
+                    ? "bg-brand-500/[0.16] font-semibold text-slate-900 dark:text-slate-50"
+                    : "font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+                }`}
+              >
+                <s.icon className="h-4 w-4 shrink-0" />
+                {s.title}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="min-w-0 flex-1">
 
           {/* 1.8.2: same Card content as before 1.8.2, just re-grouped one
               category per route instead of one long scrolling page - see
@@ -1645,7 +1655,8 @@ export default function Settings() {
               </div>
             </Card>
           )}
-        </>
+        </div>
+      </div>
 
       <CsvImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
 

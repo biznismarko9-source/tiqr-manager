@@ -20,8 +20,7 @@ import {
   PageHeader,
   Select,
   TabSwitcher,
-  Textarea,
-} from "../components/ui";
+  Textarea, PreviewPanel } from "../components/ui";
 import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
@@ -1044,7 +1043,41 @@ function OrderFormModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="New order" width="max-w-2xl">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="New order"
+      width="max-w-5xl"
+      /* 2.29.3 - split preview, marko's chosen form style. Every value here
+         is read from this form's OWN existing state and from `summary`, the
+         same memo the cost bar already used - no second calculation, so the
+         panel can never disagree with what `submit()` sends. */
+      preview={
+        <PreviewPanel
+          rows={[
+            { label: "Event", value: events.find((e) => e.id === eventId)?.name ?? "" },
+            { label: "Supplier", value: platforms.find((p) => p.id === platformId)?.name ?? "" },
+            { label: "Purchase date", value: purchaseDate ? formatDateNumeric(purchaseDate) : "" },
+            { label: "Tickets", value: qNum || "" },
+            { label: "Unit price", value: unitPrice ? formatMoney(decimalStringToCents(unitPrice) ?? 0, currency) : "" },
+            { label: "Fees", value: formatMoney(summary.feesCents, currency) },
+            { label: "Other costs", value: formatMoney(summary.otherCents, currency) },
+            ...(pulled ? [{ label: "Pull fee", value: formatMoney(summary.pullFeeCents, currency) }] : []),
+            { label: "Total", value: formatMoney(summary.totalCents, currency) },
+            { label: "Payment", value: paymentStatus },
+            { label: "Section / row", value: [section, rowLabel].filter(Boolean).join(" · ") },
+          ]}
+          note={
+            qNum > 0
+              ? `Creates ${qNum} ticket${qNum === 1 ? "" : "s"}, each costing ${formatMoney(
+                  Math.round(summary.totalCents / qNum),
+                  currency,
+                )} once the total is split across them.`
+              : "Enter a quantity and the cost is split across that many tickets, to the cent."
+          }
+        />
+      }
+    >
       <div className="flex flex-col gap-4">
         {/* 2.7.0: AI Import Assistant. Every line below sets one of THIS
             form's own existing useState values and nothing else - there is

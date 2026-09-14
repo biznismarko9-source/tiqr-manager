@@ -21,7 +21,7 @@ import {
   Select,
   TabSwitcher,
   Textarea,
-} from "../components/ui";
+, PreviewPanel } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
@@ -640,7 +640,37 @@ export function EventFormModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title={initial ? "Edit event" : "New event"}>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={initial ? "Edit event" : "New event"}
+      width="max-w-4xl"
+      /* 2.29.3 - split preview. Reads this form's own `form` object, nothing
+         derived a second way. TBD is printed as TBD rather than left blank:
+         an event with no settled date is a real state in this app, not a
+         missing value. */
+      preview={
+        <PreviewPanel
+          rows={[
+            { label: "Name", value: form.name },
+            { label: "Artist / team", value: form.artistTeam ?? "" },
+            {
+              label: "Date",
+              value: form.eventDate ? formatDateNumeric(form.eventDate) : <span className="text-slate-400">TBD</span>,
+            },
+            { label: "Venue", value: form.venue ?? "" },
+            { label: "City", value: form.city ?? "" },
+            { label: "Country", value: form.country ?? "" },
+            {
+              label: "Category",
+              value: categories.find((c) => c.id === form.categoryId)?.name ?? "",
+            },
+            { label: "Status", value: form.status ?? "" },
+          ]}
+          note="Everything else hangs off this event - orders, tickets, sales and the calendar. If the date is not settled, leave it empty rather than guessing."
+        />
+      }
+    >
       {/* 1.9.10: reordered per marko's spec - was Event name / [Category,
           Venue] / [Event date, City] / Country (full) / Status (full) /
           Notes (full), 6 rows. Now Event name / [Category, Country] /

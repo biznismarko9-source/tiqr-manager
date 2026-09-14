@@ -601,12 +601,18 @@ export function Modal({
   title,
   children,
   width = "max-w-lg",
+  preview,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   width?: string;
+  /** 2.29.3 - marko's chosen form style: the form on the left, and what it is
+   *  about to create on the right, updating as he types. Optional, so every
+   *  one of the app's existing modals keeps rendering exactly as it did and
+   *  only the create forms opt in. */
+  preview?: ReactNode;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -643,8 +649,60 @@ export function Modal({
             <IconX className="h-4 w-4" />
           </button>
         </div>
-        <div className="max-h-[75vh] overflow-y-auto px-5 py-4">{children}</div>
+        {preview ? (
+          /* Split preview. The form column scrolls; the preview column is
+             sticky, so what the record will look like stays on screen while
+             he works down a long form. Collapses to one column under lg,
+             where a side-by-side would squeeze both halves. */
+          <div className="grid max-h-[75vh] grid-cols-1 gap-5 overflow-y-auto px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
+            <div className="min-w-0">{children}</div>
+            <aside className="min-w-0 lg:sticky lg:top-0 lg:self-start">{preview}</aside>
+          </div>
+        ) : (
+          <div className="max-h-[75vh] overflow-y-auto px-5 py-4">{children}</div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** 2.29.3 - the right-hand column of a split-preview form.
+ *
+ *  Rows whose value is empty print an em dash rather than being hidden: the
+ *  point of this panel is to show what WILL be created, and a field he has
+ *  not filled in is exactly the thing he needs to see is still blank. */
+export function PreviewPanel({
+  title = "What this will create",
+  rows,
+  note,
+}: {
+  title?: string;
+  rows: { label: string; value: ReactNode }[];
+  note?: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl bg-surface-muted p-4">
+      <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+        {title}
+      </p>
+      <dl className="space-y-0">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="flex items-baseline justify-between gap-3 border-t border-line py-2 first:border-t-0 first:pt-0"
+          >
+            <dt className="shrink-0 text-xs text-slate-500 dark:text-slate-400">{r.label}</dt>
+            <dd className="min-w-0 truncate text-right text-[13px] font-medium text-slate-900 dark:text-slate-100">
+              {r.value === "" || r.value === null || r.value === undefined ? (
+                <span className="text-slate-400 dark:text-slate-600">—</span>
+              ) : (
+                r.value
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {note && <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{note}</p>}
     </div>
   );
 }

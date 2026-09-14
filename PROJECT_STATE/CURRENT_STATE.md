@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.29.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.29.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -659,6 +659,21 @@ to the soft design, which is what came off.
 
 Pressed-in gestures went too: sidebar item tinted, chosen tab filled with the
 accent, selected card gets a brand ring.
+
+**2.29.3 - the LAYOUTS.** 2.29.0-2.29.2 only recoloured; marko pointed out the
+create forms and Settings were still arranged the old way.
+
+- **`Modal` has an optional `preview` slot** (ui.tsx). Pass it and the dialog
+  becomes form-left / "what this will create"-right, sticky, stacking under lg.
+  Omit it and the modal is byte-identical to before, which is why none of the
+  app's other dialogs changed. `PreviewPanel` renders the rows; an empty value
+  prints an em dash rather than hiding, because a blank field is exactly what
+  he needs to see.
+- **Wired: New order, New event.** Both read the form's own state - the order
+  one uses the existing `summary` memo, so the panel can never disagree with
+  what `submit()` sends. **NOT wired: New sale, ticket, pull, finance.**
+- **Settings sections moved to a left rail.** Routes unchanged, so every deep
+  link still works.
 
 **Next new migration is 029.**
 

@@ -16,6 +16,47 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.3 - The layouts, not just the paint
+
+Marko was right: 2.29.0-2.29.2 changed how the app is COLOURED and never
+changed how the create forms and Settings are ARRANGED. The preview he approved
+had split-preview forms and a sections rail; the app still had plain dialogs and
+a tab strip.
+
+### Split preview
+
+`Modal` gained an optional `preview` slot. When a form passes one, the dialog
+becomes two columns: the form on the left, **what it is about to create** on the
+right, updating as he types. The preview column is sticky, so on a long form the
+result stays on screen while he works down it. Under `lg` it stacks, where
+side-by-side would squeeze both halves.
+
+Optional on purpose - every one of the app's other modals renders exactly as it
+did, and only the create forms opt in.
+
+**Wired so far: New order and New event.** Both read the form's OWN state -
+the order preview uses `summary`, the same memo the cost bar already used - so
+the panel cannot disagree with what `submit()` actually sends. The order preview
+also states the per-ticket cost, which is the thing that split is for.
+
+**Not wired yet: New sale, New ticket, New pull, finance entries.** Each needs
+its own few lines against its own state; the slot is there and the pattern is
+set, but I am not claiming work I have not done.
+
+### Settings: sections down the left
+
+The tab strip across the top becomes a rail on the left, as in the preview.
+Routes are untouched (`/settings/:section`), so every existing deep link - the
+sidebar's "Account settings", the Dashboard's update pill - still lands exactly
+where it did. Under `lg` it falls back to a horizontal scroller rather than
+eating half a narrow window.
+
+### Also
+
+`border-line` and `bg-line-soft` exist now: with a hairline drawing every edge
+in the flat design, that was worth a token instead of repeating
+`border-slate-200 dark:border-slate-800`.
+
 ## 2.29.2 - Flat: the lighting comes off
 
 Marko: "odstranme tu taku 3d svetlo co je za tym, nech to je ako keby bez
