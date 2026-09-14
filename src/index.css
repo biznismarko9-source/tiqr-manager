@@ -27,27 +27,49 @@
      Light and dark are written independently, not as an inversion of each
      other, which is what gives dark mode a real background -> surface ->
      raised-surface step instead of flat near-black. */
+  /* 2.29.0 (Onyx) - the soft surface.
+
+     A neumorphic surface is lit by TWO shadows derived from the ground it
+     sits on: one darker, one lighter. That pair is what makes the card look
+     pressed out of the background rather than laid on top of it, and it is
+     why this cannot be one fixed value - light and dark need their own
+     measured pairs. Get the light half wrong and every surface turns muddy
+     grey, which is what most dark neumorphism looks like.
+
+     `--sh-*` are consumed by `shadow-card`/`shadow-raised`/`shadow-overlay`
+     in tailwind.config.js, so all ~23k lines of pages that already spell
+     those utilities out pick this up with no page edit - the same mechanism
+     the 2.6.0 redesign used. */
   :root {
     --app-bg: theme("colors.slate.50");
-    --surface: #ffffff;
-    --surface-muted: theme("colors.slate.50");
-    --surface-raised: #ffffff;
+    --surface: theme("colors.slate.50");
+    --surface-muted: theme("colors.slate.100");
+    --surface-raised: theme("colors.slate.50");
     --line: theme("colors.slate.200");
     --line-soft: theme("colors.slate.100");
     --scroll-thumb: theme("colors.slate.300");
     --highlight: transparent;
+    --sh-card: 7px 7px 16px #c9c9d0, -7px -7px 16px #ffffff;
+    --sh-raised: 10px 10px 22px #c5c5cd, -10px -10px 22px #ffffff;
+    --sh-overlay: 0 26px 70px rgb(60 60 72 / 0.28), 10px 10px 24px #c5c5cd;
+    --sh-inset: inset 4px 4px 9px #c9c9d0, inset -4px -4px 9px #ffffff;
   }
   .dark {
     --app-bg: theme("colors.slate.950");
     --surface: theme("colors.slate.900");
-    --surface-muted: #151b26;
-    --surface-raised: #171e2a;
+    --surface-muted: #202127;
+    --surface-raised: theme("colors.slate.900");
     --line: theme("colors.slate.800");
-    --line-soft: #19202b;
+    --line-soft: #232429;
     --scroll-thumb: theme("colors.slate.700");
-    /* Dark surfaces get their depth from a 1px top highlight rather than a
-       shadow (a black shadow on a dark background is invisible). */
-    --highlight: rgb(255 255 255 / 0.04);
+    /* The soft pair replaces the 2.6.0 top-highlight trick entirely: on a
+       dark ground the LIGHT half of the pair is the highlight, and it has to
+       be a genuinely lighter grey (#26272f), not a translucent white. */
+    --highlight: transparent;
+    --sh-card: 7px 7px 16px #121317, -7px -7px 16px #26272f;
+    --sh-raised: 10px 10px 22px #101115, -10px -10px 22px #282932;
+    --sh-overlay: 0 26px 70px rgb(0 0 0 / 0.6), 10px 10px 24px #101115;
+    --sh-inset: inset 4px 4px 9px #121317, inset -4px -4px 9px #26272f;
   }
 
   body {
@@ -95,19 +117,33 @@
   /* -----------------------------------------------------------------------
      Forms
      --------------------------------------------------------------------- */
+  /* 2.29.0 (Onyx): a field is a dent in the sheet, not a box on it - so the
+     border goes and an inset pair takes over. The focus halo is kept exactly
+     as it was (a soft shadow, not a hard ring) and simply stacks on top of
+     the inset, which is why `focus:` still reads clearly. */
   .input {
-    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-brand-500 focus:outline-none focus:shadow-focus disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400
-      dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-brand-500 dark:disabled:border-slate-800 dark:disabled:bg-slate-800/60 dark:disabled:text-slate-500;
+    @apply w-full rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-900 shadow-inset transition placeholder:text-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-400
+      dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:disabled:text-slate-500;
+    border: 0;
     outline: none;
+  }
+  .input:focus {
+    box-shadow: var(--sh-inset), theme("boxShadow.focus");
   }
   /* Paired with <Field error=...> in ui.tsx - the field turns red without
      the layout shifting, since the error ring is a shadow, not a border.
      `.field-invalid` is the wrapper form: <Field> puts it around whatever
      control it was given, so an errored Input/Select/Textarea turns red with
      no prop threaded through any of the 127 call sites. */
+  /* With the border gone, an errored field says so with the red halo alone -
+     same "shadow, not border, so nothing shifts" rule as before. */
   .input-error,
   .field-invalid .input {
-    @apply border-red-400 hover:border-red-500 focus:border-red-500 focus:shadow-focus-danger dark:border-red-500/60 dark:hover:border-red-500;
+    box-shadow: var(--sh-inset), theme("boxShadow.focus-danger");
+  }
+  .input-error:focus,
+  .field-invalid .input:focus {
+    box-shadow: var(--sh-inset), theme("boxShadow.focus-danger");
   }
   .label {
     @apply mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-400;
@@ -172,8 +208,13 @@
      pushing the page header and filters off-screen. Anything that fits does
      not scroll at all. Pages whose chrome above the table is unusually tall
      can pass a different inset with `style={{ ["--table-inset"]: "18rem" }}`. */
+  /* 2.29.0 (Onyx): same treatment as `.card` - the shadow pair defines the
+     edge, so the border goes. Everything else about this shell (the height
+     cap, the contained overscroll, the sticky header below) is untouched:
+     that behaviour was fixed against a real bug and is not a style. */
   .table-shell {
-    @apply overflow-auto rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900;
+    @apply overflow-auto rounded-xl bg-slate-50 shadow-card dark:bg-slate-900;
+    border: 0;
     max-height: calc(100vh - var(--table-inset, 13.5rem));
     overscroll-behavior: contain;
   }
@@ -240,17 +281,26 @@
   /* -----------------------------------------------------------------------
      Surfaces
      --------------------------------------------------------------------- */
+  /* 2.29.0 (Onyx): the border is GONE on purpose. A soft surface that also
+     has a 1px outline reads as two different design languages arguing - the
+     shadow pair already says where the card ends. Background now matches the
+     app ground, because in this material the card and the page are one
+     sheet. */
   .card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900;
-    /* Dark mode's depth cue - see --highlight above. Transparent in light
-       mode, so this is a no-op there. */
-    background-image: linear-gradient(var(--highlight), transparent 1px);
+    @apply rounded-xl bg-slate-50 shadow-card dark:bg-slate-900;
+    border: 0;
   }
   /* Opt-in lift for cards that are actually clickable (KPI tiles, the
      Dashboard's Attention boxes, Ticket Center's filter tiles). Not applied
      to `.card` itself - a static container that lifts on hover is noise. */
   .card-interactive {
-    @apply cursor-pointer transition hover:-translate-y-px hover:border-slate-300 hover:shadow-raised dark:hover:border-slate-700;
+    @apply cursor-pointer transition hover:-translate-y-px hover:shadow-raised;
+  }
+  /* A clickable card that is CURRENTLY chosen presses in rather than lifting -
+     the one gesture this material has that a flat one does not. */
+  .card-interactive[aria-pressed="true"],
+  .card-interactive.is-active {
+    @apply shadow-inset;
   }
 
   /* 2.13.2: back to separate small cards, one per figure. 2.13.1 put them

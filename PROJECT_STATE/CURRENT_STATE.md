@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.27.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.29.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -586,6 +586,47 @@ branch, a dispatch arm.
   it. Windows untouched.
 - `WebviewWindowBuilder::user_agent` and `WebviewWindow::eval` were both new to
   this codebase and were **verified against the real tauri 2.11.5 docs**.
+
+**2.28.0 - Market Map REMOVED.** Marko: "odstranme tu mapu kompletne lebo aj
+tak to vbc nejde." Both files deleted (`commands/price_checker_map.rs`,
+`components/MarketMapView.tsx`) along with the `MarketMap*` models, the
+TypeScript interfaces, `computeMarketMap`, and the event-level state/effect/
+render in `PriceChecker.tsx`. Commands back to **181**. A grep for MarketMap /
+market_map / marketMap / price_checker_map across `src` and `src-tauri/src`
+returns nothing.
+
+**Kept, because none of it was the map:** the automatic scan run
+(`start_price_scan_run`, now announcing "Price scan finished"), the viagogo
+reader label fix, the macOS user-agent fix, scans saving themselves to history,
+the stripped-back marketplace card, and the `grid-cols-5` collision fix.
+
+Version bumped FORWARD to 2.28.0 rather than reused - marko's own updater rule
+for a revert.
+
+**2.29.0 - Onyx.** The app is one soft material now: near-neutral greys, a
+single lavender, no borders on surfaces, fields pressed into the sheet.
+Marko chose it from a design lab (eleven movements, then ten siblings of the
+one he kept).
+
+**Changed: TWO files.** `tailwind.config.js` (slate ramp, brand ramp, shadow
+scale, radius) and `src/index.css` (surface tokens, `.card`, `.card-interactive`,
+`.input`, `.table-shell`) — plus four lines in `Layout.tsx` for the sidebar's
+active state. **No page file was touched**, which is exactly what the 2.6.0
+redesign's "four places" rule was built for.
+
+**The mechanism to know before changing anything here:** `shadow-card` /
+`shadow-raised` / `shadow-overlay` / `shadow-inset` now resolve to `--sh-*`
+CSS variables set separately on `:root` and `.dark` in index.css. A
+neumorphic shadow is a PAIR derived from its ground (one darker, one lighter),
+so it cannot be one fixed value across themes. On the dark ground the light
+half must be a genuinely lighter grey (#26272f), never a translucent white -
+that is the difference between this and the muddy dark neumorphism everywhere
+else.
+
+**Reversal, on purpose:** `borderRadius` grew (lg 8px->13px, xl 10px->20px),
+which undoes marko's 2.6.0 "no obrovské rounded cards". He picked the preview
+that has them; a soft extruded corner needs the room for the two shadows to
+travel around it. Recorded so nobody reads it as drift.
 
 **Next new migration is 029.**
 

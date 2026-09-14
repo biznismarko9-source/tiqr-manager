@@ -23,18 +23,21 @@ export default {
         // fixed identity and only changes how much of it is used, never the
         // hue. Do not "modernize" this ramp without asking him first - a
         // palette change has already been tried and rejected once.
+        // 2.29.0 (Onyx): the blue becomes the lavender marko picked. Same
+        // job, same 600-is-the-action-colour convention - every `bg-brand-600`
+        // across the pages picks this up with no page edit.
         brand: {
-          50: "#eef4ff",
-          100: "#d2e0ff",
-          200: "#b6cbfe",
-          300: "#9ab4fd",
-          400: "#7f9cfb",
-          500: "#6483f9",
-          600: "#4a68f7",
-          700: "#213fe9",
-          800: "#1e30b5",
-          900: "#1d277f",
-          950: "#181c4d",
+          50: "#f0eefb",
+          100: "#ddd9f5",
+          200: "#c6c0ee",
+          300: "#aea6e6",
+          400: "#9d94df",
+          500: "#8f86d8",
+          600: "#7f76cd",
+          700: "#6d64b8",
+          800: "#574f94",
+          900: "#443e73",
+          950: "#2a2648",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -57,18 +60,26 @@ export default {
         //     both now clear 4.5:1 on their own surface in both modes.
         // Endpoints are no longer Tailwind's published defaults; that is
         // intentional and is the redesign, not drift.
+        // 2.29.0 (Onyx): retuned again, and this time the ramp is deliberately
+        // FLATTER at the dark end. Soft UI is one material - the card and the
+        // ground are the same sheet, separated by light rather than by a
+        // colour step - so 900 and 950 sit two values apart instead of the
+        // eight-value gap the 2.6.0 ramp used. The depth that step used to
+        // carry now comes from the two-shadow pair in index.css.
+        // The hue also loses the blue: these are near-neutral greys so the
+        // lavender brand below is the only colour on screen.
         slate: {
-          50: "#f7f8fa",
-          100: "#eff1f5",
-          200: "#e3e7ed",
-          300: "#c8ced9",
-          400: "#8d96a7",
-          500: "#68717f",
-          600: "#4c5563",
-          700: "#333c4a",
-          800: "#1d2430",
-          900: "#11161f",
-          950: "#080b11",
+          50: "#e9e9ec",
+          100: "#e3e3e8",
+          200: "#dcdce1",
+          300: "#c9c9d0",
+          400: "#8b8b99",
+          500: "#6f6f7d",
+          600: "#55555f",
+          700: "#3a3b45",
+          800: "#2a2b32",
+          900: "#1c1d22",
+          950: "#1a1b20",
         },
       },
       fontFamily: {
@@ -91,26 +102,37 @@ export default {
       // shadow on a dark surface is invisible - there, depth comes from a
       // subtle top highlight instead, applied via .card/.overlay in
       // index.css rather than from these utilities.
+      // 2.29.0 (Onyx): the scale is now the neumorphic PAIR - one darker
+      // shadow and one lighter highlight, both derived from the surface the
+      // element sits on. That pair cannot be one fixed value, because it is
+      // different in light and dark, so these resolve to variables set per
+      // theme in index.css. The names and the card -> raised -> overlay
+      // hierarchy are unchanged, so every existing `shadow-card` keeps
+      // working and simply looks soft now.
       boxShadow: {
-        card: "0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.04)",
-        raised:
-          "0 1px 2px 0 rgb(15 23 42 / 0.05), 0 4px 12px -2px rgb(15 23 42 / 0.08)",
-        overlay:
-          "0 2px 4px -1px rgb(15 23 42 / 0.06), 0 12px 32px -8px rgb(15 23 42 / 0.18)",
+        card: "var(--sh-card)",
+        raised: "var(--sh-raised)",
+        overlay: "var(--sh-overlay)",
+        inset: "var(--sh-inset)",
         // Focus ring used by inputs/selects/textareas - a soft brand halo
         // rather than Tailwind's hard 2px ring, so a focused field in a
         // dense form doesn't shout.
-        focus: "0 0 0 3px rgb(74 104 247 / 0.16)",
+        focus: "0 0 0 3px rgb(143 134 216 / 0.28)",
         "focus-danger": "0 0 0 3px rgb(220 38 38 / 0.16)",
       },
       borderRadius: {
         // 2.6.0: the app's radius rhythm. Controls (buttons/inputs/badges)
         // sit at `lg`, containers (cards, table shells, modals) at `xl`.
-        // Both are SMALLER than Tailwind's stock values on purpose - marko
-        // explicitly asked for no "obrovské rounded cards".
-        lg: "0.5rem",
-        xl: "0.625rem",
-        "2xl": "0.875rem",
+        //
+        // 2.29.0 (Onyx): both grew. This REVERSES marko's own 2.6.0
+        // instruction about "obrovské rounded cards" - noted here so nobody
+        // treats it as drift. He chose the Clay/Onyx preview, and a soft
+        // extruded surface at a 10px radius reads as a mistake rather than a
+        // material: the corner has to be round enough for the two shadows to
+        // travel around it. The ratio between the two steps is unchanged.
+        lg: "0.8125rem",
+        xl: "1.25rem",
+        "2xl": "1.5rem",
       },
       transitionDuration: {
         // 2.6.0: the app's motion budget - marko asked for 120-180ms and

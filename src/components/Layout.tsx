@@ -124,12 +124,17 @@ const NAV: NavItem[] = [
 // Nothing about which items exist, their order, or where they link changed.
 const NAV_BASE =
   "group relative flex items-center gap-2.5 rounded-lg px-3 py-[5px] text-[12.5px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500";
+// 2.29.0 (Onyx): the current item is PRESSED INTO the rail rather than
+// tinted on top of it - the one gesture this material has that a flat one
+// does not, and it is unmistakable at a glance in a narrow rail. The accent
+// bar stays: the dent alone is quiet, and the bar is what 2.6.0 added
+// precisely because the tint alone was easy to miss.
 const NAV_ACTIVE =
-  "bg-brand-50 font-semibold text-brand-700 dark:bg-brand-500/[0.14] dark:text-brand-300";
+  "shadow-inset font-semibold text-slate-900 dark:text-slate-50";
 const NAV_IDLE =
-  "font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-100";
+  "font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
 const NAV_ACTIVE_BAR =
-  "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-600 dark:bg-brand-400";
+  "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-500";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
@@ -137,8 +142,10 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 export default function Layout() {
   const toast = useToast();
 
-  // 2.27.0 - "ked sa to dokonci tak napisat nejak oznamenie... ze map is
-  // finished". An automatic Price Checker run exists so marko can go and do
+  // 2.27.0 - marko asked to be told when an automatic run finishes, so he can
+  // start one and go and do something else. (2.28.0: the wording no longer
+  // mentions a map - that feature was removed.) The run exists so he can go
+  // and do
   // something else, so the thing that tells him it is done has to reach him
   // wherever he is - not on the Price Checker page he has already left. This
   // listener lives in the Layout, which is mounted for every page.
@@ -154,7 +161,7 @@ export default function Layout() {
       // A run he stopped himself needs no announcement.
       if (p.stopped) return;
       toast.success(
-        `Market map is ready - ${p.listingCount} listing${p.listingCount === 1 ? "" : "s"} read (${p.reason}).`,
+        `Price scan finished - ${p.listingCount} listing${p.listingCount === 1 ? "" : "s"} read (${p.reason}).`,
       );
     }).then((fn) => {
       if (disposed) fn();

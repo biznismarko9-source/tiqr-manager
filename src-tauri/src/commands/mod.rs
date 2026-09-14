@@ -25,7 +25,6 @@ pub mod orders;
 pub mod orders_sheet_sync;
 pub mod price_checker;
 pub mod price_checker_analysis;
-pub mod price_checker_map;
 pub mod price_checker_scanner;
 pub mod pulls;
 pub mod pulls_received;

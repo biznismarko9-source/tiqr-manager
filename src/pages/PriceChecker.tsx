@@ -24,7 +24,6 @@ import { useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errMsg } from "../lib/api";
-import { MarketMapPanel } from "../components/MarketMapView";
 import type {
   ComparableLevel,
   ComparableReferenceInput,
@@ -32,7 +31,6 @@ import type {
   DataQuality,
   EventWithStats,
   MarketAnalysisResult,
-  MarketMap,
   MarketplacePriceView,
   NormalizedListing,
   PriceCheck,
@@ -1230,60 +1228,6 @@ export default function PriceChecker() {
     };
   }, [toast]);
 
-  // 2.26.1 - ONE Market Map for the whole event, above the marketplace cards.
-  //
-  // Marko's own call after seeing 2.26.0: "mapa by mala byt niekde inde nie
-  // tam dole a mapa by mala byt pre vsetky platformy rovnaka a tie listingy sa
-  // spoja." So the map moved out of the per-marketplace card (where each of
-  // three cards drew its own half-empty copy) and the backend now keys on the
-  // EVENT - every open scanner session for it contributes its listings to one
-  // map, so section 102 shows Viagogo, Vivid Seats and Ticombo side by side.
-  //
-  // Recomputed when the TOTAL number of scans across this event's sessions
-  // changes - i.e. after any manual scan on any marketplace. Still no timer,
-  // no polling, no background work.
-  const [marketMap, setMarketMap] = useState<MarketMap | null>(null);
-  const [mapLoading, setMapLoading] = useState(false);
-  const [mapError, setMapError] = useState<string | null>(null);
-  // `ScannerCardState` carries no eventId of its own - the MAP KEY is
-  // `${eventId}:${marketplaceId}` (see `sessionKey`), so the prefix is what
-  // identifies this event's sessions. Checked against that function rather
-  // than assumed.
-  const scanTotal = useMemo(() => {
-    if (!summary) return 0;
-    const prefix = `${summary.eventId}:`;
-    return Object.entries(scannerSessions).reduce(
-      (n, [key, sess]) => n + (key.startsWith(prefix) ? sess.scanCount : 0),
-      0,
-    );
-  }, [scannerSessions, summary]);
-  useEffect(() => {
-    if (!summary || scanTotal === 0) {
-      setMarketMap(null);
-      setMapError(null);
-      return;
-    }
-    let cancelled = false;
-    setMapLoading(true);
-    api
-      .computeMarketMap(summary.eventId)
-      .then((result) => {
-        if (!cancelled) {
-          setMarketMap(result);
-          setMapError(null);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setMapError(errMsg(e));
-      })
-      .finally(() => {
-        if (!cancelled) setMapLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [summary, scanTotal]);
-
   const load = useCallback(() => {
     if (eventId === "") {
       setSummary(null);
@@ -1502,13 +1446,6 @@ export default function PriceChecker() {
               </p>
             )}
           </Card>
-
-          {/* One map for the event, above the cards - never inside one. */}
-          {scanTotal > 0 && (
-            <div className="mb-5">
-              <MarketMapPanel map={marketMap} loading={mapLoading} error={mapError} sourceUrl={null} />
-            </div>
-          )}
 
           <p className="mb-3 section-title">Marketplaces</p>
 

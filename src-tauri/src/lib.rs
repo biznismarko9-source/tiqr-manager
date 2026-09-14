@@ -283,7 +283,6 @@ pub fn run() {
             commands::price_checker_scanner::close_price_scanner,
             commands::price_checker_analysis::compute_market_analysis,
             commands::price_checker_analysis::compute_comparable_market,
-            commands::price_checker_map::compute_market_map,
             commands::price_checker_scanner::start_price_scan_run,
         ])
         .build(tauri::generate_context!())

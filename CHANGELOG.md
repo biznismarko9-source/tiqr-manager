@@ -16,6 +16,96 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.0 - Onyx: the app becomes one soft material
+
+Marko picked it out of a design lab of eleven, then out of ten siblings of the
+one he liked: **Onyx** — a dark, near-neutral soft UI with a single lavender.
+
+### It is four files, not twenty-three thousand lines
+
+The 2.6.0 redesign put the whole visual language in four places on purpose, and
+this release is the proof that it worked. Every `bg-slate-N`, `text-slate-N`,
+`shadow-card` and `rounded-xl` already spelled out across the pages picks the
+new look up **with no page edit**:
+
+- **`tailwind.config.js`** — the `slate` ramp is retuned to near-neutral greys
+  and deliberately FLATTENED at the dark end (900 and 950 now sit two values
+  apart, not eight), because in this material the card and the ground are one
+  sheet. `brand` becomes the lavender. `borderRadius` grows.
+- **`src/index.css`** — the surface tokens, and the component classes.
+
+### The shadow is the whole design
+
+A soft surface is lit by **two** shadows derived from the ground it sits on:
+one darker, one lighter. That pair cannot be a single fixed value — light and
+dark need their own measured pairs — so `shadow-card`/`shadow-raised`/
+`shadow-overlay` now resolve to `--sh-*` variables set per theme. Both themes
+got measured pairs; the light half on a dark ground has to be a genuinely
+lighter grey rather than a translucent white, which is the thing most dark
+neumorphism gets wrong and why it usually looks muddy.
+
+That also retires the 2.6.0 top-highlight trick: on a dark ground the light
+half of the pair IS the highlight.
+
+### What lost its border
+
+`.card` and `.table-shell`. A soft surface that also carries a 1px outline
+reads as two design languages arguing — the shadow pair already says where the
+card ends. `.input` went further: a field is now a dent pressed into the sheet
+rather than a box on it. The focus halo is unchanged and simply stacks on the
+inset, so a focused field still reads instantly.
+
+The sidebar's current item is **pressed in** instead of tinted — the one
+gesture this material has that a flat one does not. The accent bar 2.6.0 added
+stays, because the dent alone is quiet in a narrow rail.
+
+### One reversal, stated plainly
+
+`borderRadius` grew: `lg` 8px → 13px, `xl` 10px → 20px. That **reverses
+marko's own 2.6.0 instruction** about "obrovské rounded cards". He chose the
+preview that has them, and the reason is structural rather than fashion: a
+soft extruded surface at a 10px radius reads as a mistake, because the corner
+has to be round enough for the two shadows to travel around it.
+
+### Not changed
+
+No page file was touched. No logic, no schema, no migration (next is still
+029), no new dependency, and not one number on any screen moves.
+
+## 2.28.0 - Market Map removed
+
+Marko: "odstranme tu mapu kompletne lebo aj tak to vbc nejde." Gone, not
+hidden - both files deleted, every reference with them. `grep` for MarketMap,
+market_map, marketMap or price_checker_map across `src` and `src-tauri/src`
+returns nothing.
+
+**Removed**
+- `src-tauri/src/commands/price_checker_map.rs` (module, `compute_market_map`,
+  13 tests) and its registration in `commands/mod.rs` + `lib.rs`. Commands are
+  back to **181**.
+- `src/components/MarketMapView.tsx`.
+- The `MarketMap*` structs in `models.rs` and the matching interfaces in
+  `types.ts`.
+- `computeMarketMap` in `api.ts`.
+- The event-level map state, the `scanTotal` memo, its effect and its render in
+  `PriceChecker.tsx`.
+
+**Deliberately KEPT** - none of this was the map, and all of it still works:
+- **The automatic scan run** (`start_price_scan_run`): one press reads the
+  whole page, on a background thread, while TIQR stays usable. Its notification
+  and toast now say **"Price scan finished"** instead of advertising a map that
+  no longer exists.
+- **The viagogo reader label fix** in `price_checker_scan.js` - a real scanner
+  bug found during the map's reader audit. Viagogo pages were labelling every
+  listing `"generic"`; that stays fixed.
+- **The truncated macOS user agent fix** ("An outdated browser...").
+- **Scans saving themselves to history**, and the stripped-back marketplace
+  card.
+- **The `grid-cols-5` collision fix** (`EUR1,815.0064`).
+
+**Version bumped FORWARD to 2.28.0**, not reused - marko's own rule for a
+revert, because the updater rejects a repeated number.
+
 ## 2.27.0 - BUILD FIX (a comment I wrote, twice over)
 
 The 2.27.0 build failed in `tsc` before anything else ran. Six errors, all in

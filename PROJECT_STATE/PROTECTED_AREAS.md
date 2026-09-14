@@ -21,6 +21,31 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.29.0 - Onyx is a material, and materials have rules
+
+**The shadow is a PAIR, derived from the ground.** `--sh-card`, `--sh-raised`,
+`--sh-overlay` and `--sh-inset` each carry a darker shadow AND a lighter one,
+measured against the surface they sit on. Replace either half with a single
+soft shadow and the whole app stops looking extruded and starts looking like a
+flat card with a blur behind it. They are variables rather than fixed values
+because light and dark need DIFFERENT pairs - and on the dark ground the light
+half has to be a real lighter grey, not `rgba(255,255,255,.05)`. That one
+substitution is why most dark neumorphism looks muddy.
+
+**Surfaces have no border.** `.card`, `.table-shell` and `.input` deliberately
+set `border: 0`. Adding a 1px outline back "for definition" puts two design
+languages on the same element - the pair already defines the edge.
+
+**900 and 950 are two values apart on purpose.** The slate ramp is flat at the
+dark end because the card and the page ARE one sheet here. Re-opening that gap
+to give cards "contrast" undoes the material.
+
+**Still exactly four files.** The whole look lives in `tailwind.config.js`,
+`src/index.css`, `components/ui.tsx` and `components/Layout.tsx`. 2.29.0 was
+only possible as a two-file change because no page had ever defined its own
+look. If a page ever needs a new visual pattern it belongs in these four, not
+inlined - that rule is now load-bearing, not advice.
+
 ## 2.27.0 - Comments whose content is also syntax
 
 Three build failures in this project now share one shape: **a comment or string
@@ -119,51 +144,19 @@ rendered `EUR1,815.00` and `64` as `EUR1,815.0064`. Any stat row in a card that
 can be narrow uses `auto-fit` + a `minmax` floor wide enough for a real money
 value - the same rule `.summary-bar` has followed since 2.19.0.
 
-## 2.26.0 - The Market Map draws only what the reader actually produces
+## 2.26.0 - Market Map (REMOVED in 2.28.0)
 
-**The scanner produces no seat, no venue, no geometry and no per-listing URL.**
-Audited, not assumed: `price_checker_scan.js` has no seat pattern at all, never
-reads the page's seat-map widget, and captures no href. Every one of those
-absences is visible on screen - "Seats" in the section detail is a COUNT of
-seats in a listing, the only URL offered is the event's own marketplace link,
-and the block layout is sorted, not positional. If someone later "improves"
-this by giving blocks real coordinates or seat numbers, they are inventing
-data, not fixing a limitation.
+The Market Map and its invariants are gone - marko's own call, "odstranme tu
+mapu kompletne lebo aj tak to vbc nejde". Nothing here to protect any more.
 
-**Section order is display order, never venue adjacency.** `order_key` sorts
-numeric-leading keys ascending, then everything else alphabetically. It exists
-so a map is stable between draws and a section is findable. Section 102 sitting
-next to 103 on screen says nothing about the building.
-
-**Normalization is safe-only, and both halves are kept.** Leading zeroes come
-off ONLY when what remains is entirely digits (`"0102"` -> `"102"`, but `"0A"`
-stays). Every group carries `key` (what groups) AND `label` (the first source
-value, what is drawn). A value that cannot be reduced safely becomes its own
-group under its own text - it is never rewritten.
-
-**Tier wording is never mapped or merged.** "Level 100" and "Tier 1" are two
-groups. Nothing in this app can know whether a marketplace means the same thing
-by them, and guessing would silently merge unrelated inventory.
-
-**A mixed-currency section reports NO prices.** Not a blend, not a conversion -
-`lowest`/`median`/`highest` are all `None` and the UI says why. Same rule the
-rest of the app follows.
-
-**There is no pricing here and there must not be.** The map describes what is
-listed in a block. It never compares one section to another, never interpolates
-between neighbours and never recommends a price. Section/row/seat are metadata;
-tier is a market grouping. A "fair price from the next section over" is exactly
-the thing this feature is forbidden to grow into.
-
-**`compute_market_map` takes its two locks one at a time, never together** -
-sessions first, released, then db. Same deadlock-safety rule
-`compute_market_analysis` documents, and the reason both are safe regardless of
-what order any other command takes them in.
-
-**The map recomputes on `scanCount`, i.e. on a MANUAL scan.** No timer, no
-polling, no background monitor - the Live Market Monitor stayed deleted (see
-the 2.4.2 entry below). If this ever needs to refresh on its own, that is a new
-conversation, not a tweak.
+Two findings from building it OUTLIVE it and are still live rules:
+- **The scanner produces no seat, no venue, no geometry and no per-listing
+  URL.** Audited in `price_checker_scan.js`, not assumed. Anything that ever
+  wants those has to add real extraction, not infer them.
+- **`price_checker_scan.js` is ONE generic reader.** The three `read*`
+  functions differ only in the marketplace LABEL they stamp - they all pass the
+  same selector list. That is why the missing viagogo branch silently labelled
+  every viagogo listing `"generic"` for six releases.
 
 ## 2.25.0 - The story reads, the tour points, the CSV appends
 

@@ -1022,8 +1022,11 @@ pub fn start_price_scan_run(app: AppHandle, state: State<AppState>, request_id: 
         if reason != "stopped" {
             let _ = crate::commands::notifications::send_desktop_notification(
                 &handle,
-                "Market map is ready",
-                &format!("{total} listing{} read from the page.", if total == 1 { "" } else { "s" }),
+                "Price scan finished",
+                &format!(
+                    "{total} listing{} read from the page.",
+                    if total == 1 { "" } else { "s" }
+                ),
             );
         }
     });
