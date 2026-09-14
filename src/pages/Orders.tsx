@@ -1058,7 +1058,6 @@ function OrderFormModal({
         <PreviewPanel
           rows={[
             { label: "Event", value: events.find((e) => e.id === eventId)?.name ?? "" },
-            { label: "Supplier", value: platforms.find((p) => p.id === platformId)?.name ?? "" },
             { label: "Purchase date", value: purchaseDate ? formatDateNumeric(purchaseDate) : "" },
             { label: "Tickets", value: qNum || "" },
             { label: "Unit price", value: unitPrice ? formatMoney(decimalStringToCents(unitPrice) ?? 0, currency) : "" },
@@ -1212,9 +1211,10 @@ function OrderFormModal({
           <Field label="Row">
             <Input value={rowLabel} onChange={(e) => setRowLabel(e.target.value)} />
           </Field>
-          <Field label="Tier / Level">
-            <Input value={tier} onChange={(e) => setTier(e.target.value)} />
-          </Field>
+{/* 2.29.4: the Tier / Level input is gone at marko's request. `tier` is
+              still SENT (as null unless the AI import panel fills it - see the
+              group mapping above), and tickets.tier still exists, so nothing
+              downstream changed shape. Only the field he never filled in. */}
 
           <div className="col-span-2">
             <Field

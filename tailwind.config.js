@@ -99,6 +99,7 @@ export default {
         surface: "var(--surface)",
         "surface-muted": "var(--surface-muted)",
         "surface-raised": "var(--surface-raised)",
+        "surface-sunken": "var(--surface-sunken)",
         // 2.29.3: the hairline, as a colour. Now that a 1px line draws every
         // edge in the flat design, `border-line` is worth having rather than
         // repeating `border-slate-200 dark:border-slate-800` each time.

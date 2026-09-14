@@ -105,7 +105,24 @@ export default function Transactions({ entries, categories, accounts, transfers,
             : `${r.transfer.note ?? ""} ${r.transfer.fromAccountName ?? ""} ${r.transfer.toAccountName ?? ""}`;
         return hay.toLowerCase().includes(q);
       })
-      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+      /* 2.29.4 - marko: "finance zoraduj vzdy podla casu kedy sa to stalo".
+         Sorting on the date ALONE returned 0 for everything that happened on
+         the same day, and a comparator that returns 0 leaves those rows in
+         whatever order the two lists happened to be concatenated in - every
+         entry, then every transfer. So a transfer made this morning sat below
+         an entry from tonight, and the order changed as soon as either list
+         grew. `id` descending breaks the tie by when the record was actually
+         created, which is the closest thing to a time this data carries: the
+         date columns are dates, with no clock in them. Entries and transfers
+         have separate id sequences, so the kind is the last tiebreaker purely
+         to keep the order STABLE rather than to rank one above the other. */
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        const aId = a.kind === "entry" ? a.entry.id : a.transfer.id;
+        const bId = b.kind === "entry" ? b.entry.id : b.transfer.id;
+        if (aId !== bId) return bId - aId;
+        return a.kind === b.kind ? 0 : a.kind === "entry" ? -1 : 1;
+      });
   }, [entries, transfers, from, to, scopeFilter, typeFilter, accountFilter, categoryFilter, search, customDatesMissing]);
 
   const openAdd = () => {

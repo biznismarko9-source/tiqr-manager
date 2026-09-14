@@ -358,7 +358,7 @@ export default function Layout() {
           2.6.0: width deliberately UNCHANGED - the redesign buys its extra
           breathing room from tighter internal padding and a smaller nav type
           size, not by taking width back off the tables. */}
-      <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-surface dark:border-slate-800 dark:bg-slate-900">
+      <aside className="flex w-48 shrink-0 flex-col border-r border-line bg-surface-sunken">
         {/* Brand lockup. The hairline under it is what separates the app's
             identity from its navigation - the same "one quiet rule per
             section boundary" the sidebar uses throughout, rather than
@@ -397,7 +397,14 @@ export default function Layout() {
                   type="button"
                   onClick={() => setTicketsOpen((o) => !o)}
                   aria-expanded={ticketsOpen}
-                  className={`${NAV_BASE} w-full ${ticketsGroupActive ? NAV_ACTIVE : NAV_IDLE}`}
+                  /* 2.29.4: marko - "ked mam nieco vybrate v tickets tak
+                     tickets niesu oznacene". The group carries the SAME
+                     active treatment as a real nav item when any child is
+                     open, so the rail always shows both where you are and
+                     which group it belongs to. */
+                  className={`${NAV_BASE} w-full ${
+                    ticketsGroupActive ? `${NAV_ACTIVE} text-brand-700 dark:text-brand-300` : NAV_IDLE
+                  }`}
                 >
                   {ticketsGroupActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
                   <item.icon className="h-[17px] w-[17px] shrink-0" />

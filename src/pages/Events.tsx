@@ -654,7 +654,6 @@ export function EventFormModal({
         <PreviewPanel
           rows={[
             { label: "Name", value: form.name },
-            { label: "Artist / team", value: form.artistTeam ?? "" },
             {
               label: "Date",
               value: form.eventDate ? formatDateNumeric(form.eventDate) : <span className="text-slate-400">TBD</span>,

@@ -16,6 +16,36 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.4 - Seven fixes from marko's own screenshots
+
+- **Orders**: the *Tier / Level* field is gone from the New order form, and
+  *Supplier* is gone from its preview. `tier` is still sent (null unless the
+  AI import panel fills it) and `tickets.tier` still exists, so nothing
+  downstream changed shape - only the field he never filled in.
+- **Events**: *Artist / team* removed from the preview. It was showing a row
+  for a field the form does not even offer.
+- **Sidebar**: when a page inside the Tickets group is open, the **group now
+  marks itself** too, so the rail shows both where you are and which group it
+  belongs to. It was only opening, never highlighting.
+- **Sidebar and segmented tracks are darker.** New `--surface-sunken` token:
+  darker than the page, for chrome that sits UNDER the content rather than on
+  top of it. Both were using the lighter muted surface.
+- **Price Checker**: the whole selection mechanism is gone - the "Selected: N"
+  bar, "Select all", and the per-row checkbox. It never led anywhere a single
+  click did not: the scanner opens one visible window that marko drives
+  himself, so "Check selected" could only ever open the FIRST one anyway.
+- **Finance transactions now sort by when things actually happened.** Sorting
+  on the date alone returned 0 for everything on the same day, and a
+  comparator that returns 0 leaves rows in whatever order the two lists were
+  concatenated - every entry, then every transfer. A morning transfer sat
+  below an evening entry, and the order shifted whenever either list grew.
+  Broken by `id` descending (the closest thing to a time this data carries -
+  the date columns have no clock), with a final stable tiebreaker.
+
+Removing the Price Checker selection also orphaned a `toggle` helper that
+still called the deleted `setSelected` - caught and removed before shipping;
+that one would have failed the build.
+
 ## 2.29.3 - BUILD FIX (a comma)
 
 `tsc` stopped on `Events.tsx(24,1): Identifier expected`. My script added

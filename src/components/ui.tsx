@@ -780,7 +780,7 @@ export function ConfirmDialog({
  * active item, replacing the solid brand-blue fill. The blue fill made an
  * ordinary list filter read as the loudest control on the page. */
 export const SEGMENTED_TRACK =
-  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg bg-surface-muted p-1 shadow-card";
+  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg bg-surface-sunken p-1 shadow-card";
 
 export function segmentedItemClass(active: boolean): string {
   return `rounded-md px-3 py-1.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${

@@ -58,7 +58,6 @@ import {
 import {
   Button,
   Card,
-  CHECKBOX_CLASS,
   EmptyState,
   Input,
   LoadingBlock,
@@ -323,7 +322,6 @@ function EventOverviewList({
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<OverviewFilter>("all");
-  const [selected, setSelected] = useState<Set<number>>(() => new Set());
 
   const needle = search.trim().toLowerCase();
   const visible = useMemo(
@@ -343,20 +341,6 @@ function EventOverviewList({
 
   // Selecting is scoped to what is currently visible - "Select all" on a
   // filtered list must not quietly also select events you cannot see.
-  const visibleIds = useMemo(() => visible.map((r) => r.eventId), [visible]);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
-
-  const toggle = (eventId: number) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(eventId)) next.delete(eventId);
-      else next.add(eventId);
-      return next;
-    });
-
-  const selectAllVisible = () => setSelected((prev) => new Set([...prev, ...visibleIds]));
-  const clearSelection = () => setSelected(new Set());
-
   if (loading) return <LoadingBlock label="Loading events..." />;
 
   if (rows.length === 0) {
@@ -400,53 +384,11 @@ function EventOverviewList({
         </span>
       </div>
 
-      {/* Selection bar - only present once something is selected, so the
-          default view stays clean (same convention as BulkDeleteBar). */}
-      {selected.size > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl bg-brand-50 px-4 py-2.5 text-sm ring-1 ring-inset ring-brand-200 dark:bg-brand-500/10 dark:ring-brand-500/25">
-          <span className="font-medium text-brand-800 dark:text-brand-300">
-            Selected: {selected.size} event{selected.size === 1 ? "" : "s"}
-          </span>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              // The scanner opens one real, visible browser window per
-              // marketplace and marko drives it himself - there is no safe
-              // way to run several events at once, and he was explicit that
-              // no parallel sessions may be invented here. So "Check
-              // selected" opens the FIRST selected event's own flow; the
-              // selection stays, so working through the rest is one click
-              // each. No queue, no automation, no background anything.
-              const first = visible.find((r) => selected.has(r.eventId)) ?? null;
-              if (first) onOpen(first.eventId);
-            }}
-          >
-            Check selected
-          </Button>
-          <button
-            type="button"
-            onClick={clearSelection}
-            className="ml-auto rounded text-xs font-medium text-brand-700 hover:underline dark:text-brand-400"
-          >
-            Clear selection
-          </button>
-        </div>
-      )}
-
-      <div className="mb-2 flex items-center gap-3">
-        <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
-          <input
-            type="checkbox"
-            className={CHECKBOX_CLASS}
-            checked={allVisibleSelected}
-            onChange={() => (allVisibleSelected ? clearSelection() : selectAllVisible())}
-            disabled={visibleIds.length === 0}
-          />
-          Select all
-        </label>
-      </div>
-
+      {/* 2.29.4: selection removed at marko's request. The scanner opens one
+          visible window per marketplace and he drives it himself, so a
+          multi-select never led anywhere a single click did not - "Check
+          selected" could only ever open the FIRST one. The row's own Check
+          button is the whole interaction now. */}
       {visible.length === 0 ? (
         <EmptyState
           icon={<IconSearch className="h-5 w-5" />}
@@ -465,7 +407,6 @@ function EventOverviewList({
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <th className="th-c w-9" />
                 <th className="th-c">Event</th>
                 <th className="th-c">Date</th>
                 <th className="th-c">Platforms</th>
@@ -475,13 +416,7 @@ function EventOverviewList({
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {visible.map((row) => (
-                <EventOverviewRow
-                  key={row.eventId}
-                  row={row}
-                  selected={selected.has(row.eventId)}
-                  onToggle={() => toggle(row.eventId)}
-                  onOpen={() => onOpen(row.eventId)}
-                />
+                <EventOverviewRow key={row.eventId} row={row} onOpen={() => onOpen(row.eventId)} />
               ))}
             </tbody>
           </table>
@@ -496,13 +431,9 @@ function EventOverviewList({
  * with no data simply shows "No link" / "Not scanned" rather than a zero. */
 function EventOverviewRow({
   row,
-  selected,
-  onToggle,
   onOpen,
 }: {
   row: PriceCheckerEventOverview;
-  selected: boolean;
-  onToggle: () => void;
   onOpen: () => void;
 }) {
   const place = [row.city, row.venue].filter(Boolean).join(" · ");
@@ -510,19 +441,8 @@ function EventOverviewRow({
   return (
     <tr
       onClick={onOpen}
-      className={`cursor-pointer transition ${selected ? "bg-brand-50/60 dark:bg-brand-500/[0.08]" : "hover:bg-slate-50 dark:hover:bg-slate-800/50"}`}
+      className="cursor-pointer transition hover:bg-slate-50 dark:hover:bg-slate-800/50"
     >
-      {/* The checkbox is the one thing on the row that must NOT open the
-          event - batch scanning is the whole reason it exists. */}
-      <td className="td-c" onClick={(e) => e.stopPropagation()}>
-        <input
-          type="checkbox"
-          className={CHECKBOX_CLASS}
-          checked={selected}
-          onChange={onToggle}
-          aria-label={`Select ${row.eventName}`}
-        />
-      </td>
       <td className="td-c">
         <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{row.eventName}</p>
         {place && <p className="mt-0.5 truncate text-xs text-slate-400 dark:text-slate-500">{place}</p>}
