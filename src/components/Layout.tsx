@@ -130,7 +130,7 @@ const NAV_BASE =
 // bar stays: the dent alone is quiet, and the bar is what 2.6.0 added
 // precisely because the tint alone was easy to miss.
 const NAV_ACTIVE =
-  "shadow-inset font-semibold text-slate-900 dark:text-slate-50";
+  "bg-brand-500/[0.16] font-semibold text-slate-900 dark:text-slate-50";
 const NAV_IDLE =
   "font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
 const NAV_ACTIVE_BAR =

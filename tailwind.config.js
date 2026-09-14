@@ -71,18 +71,23 @@ export default {
         // carry now comes from the two-shadow pair in index.css.
         // The hue also loses the blue: these are near-neutral greys so the
         // lavender brand below is the only colour on screen.
+        // 2.29.2: darker and higher-contrast, because the design is FLAT now -
+        // with the lighting gone, every bit of separation has to come from the
+        // fills and the lines themselves. The dark end drops further and the
+        // ground-to-surface step opens back up; 800 is lifted so a hairline is
+        // actually visible against 900, which is what now draws every edge.
         slate: {
-          50: "#e6e7ec",
-          100: "#dfe0e7",
-          200: "#d5d7e0",
-          300: "#c0c2ce",
-          400: "#84869a",
-          500: "#6a6c80",
-          600: "#515367",
-          700: "#383a49",
-          800: "#2b2c35",
-          900: "#1e1f26",
-          950: "#16171c",
+          50: "#eff1f5",
+          100: "#e4e7ed",
+          200: "#d3d7e1",
+          300: "#b6bbca",
+          400: "#767b8e",
+          500: "#5d6274",
+          600: "#464b5c",
+          700: "#313543",
+          800: "#262935",
+          900: "#15171d",
+          950: "#0d0e12",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the

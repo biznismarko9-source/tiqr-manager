@@ -16,6 +16,46 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.2 - Flat: the lighting comes off
+
+Marko: "odstranme tu taku 3d svetlo co je za tym, nech to je ako keby bez
+efektov jednoliate... tie farby take tmavsie aby mali lepsi kontrast."
+
+### The extrusion is gone
+
+Every surface was lit by a two-shadow pair. That pair is now **a 1px ring**.
+One substitution in `--sh-card` / `--sh-raised` / `--sh-inset` flattens every
+card, table shell, dialog and field in the app at once — because once the light
+stops drawing an edge, the edge still has to exist, and a hairline does it
+without adding depth.
+
+**One exception, on purpose:** `--sh-overlay` keeps a real drop shadow. A
+dialog genuinely floats over a dimmed page, and with no shadow at all the modal
+and the backdrop merge into one dark mass.
+
+The gestures that only made sense while things were extruded went with it: the
+sidebar's current item is **tinted** rather than pressed in, the chosen tab is
+**filled with the accent** rather than lifted, and a selected card gets a brand
+**ring** rather than a dent.
+
+### Darker, with the contrast put back
+
+With the lighting gone, every bit of separation has to come from the fills and
+the lines themselves, so the ramp was rebuilt for that job rather than for
+softness: the dark ground drops to `#0d0e12`, the surface steps well clear of
+it at `#15171d`, and `slate-800` is **lifted** so a hairline is actually visible
+against a panel — that hairline is now what draws every edge in the app.
+
+Light mode goes back to a white surface on a light grey ground, which is the
+highest-contrast pairing there is and no longer contradicts anything: the "one
+sheet of material" rule that made white wrong in 2.29.1 was a property of the
+soft design, and the soft design is what just came off.
+
+### Not changed
+
+No logic, no schema, no migration (next is still 029), no new dependency. Every
+figure on every screen is the same figure.
+
 ## 2.29.1 - Onyx, second pass: the surfaces the first pass missed
 
 Marko, on 2.29.0: the colours are not nice in the layout, New order / pull and

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.29.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.29.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -644,6 +644,21 @@ variables index.css already sets per theme, and all 39 `bg-white` became
 Also: the ground and the surface are no longer the same colour (identical was
 washed out in light mode - the card is now a step lighter, with every shadow
 pair re-measured against the card's own colour), and the accent gained pigment.
+
+**2.29.2 - flat.** Marko asked for the 3D lighting off, uniform surfaces and
+darker/higher-contrast colour. The two-shadow pair is now a **1px ring** in
+`--sh-card`/`--sh-raised`/`--sh-inset`, which flattens every surface in the app
+from one place. **`--sh-overlay` deliberately keeps a real drop shadow** - a
+dialog floats over a dimmed page and merges into it otherwise.
+
+The ramp was rebuilt for a flat design: ground `#0d0e12`, surface `#15171d`,
+and `slate-800` LIFTED so a hairline reads against a panel - with the lighting
+gone, that hairline is what draws every edge. Light mode is a white surface on
+light grey again; the "one sheet" rule that made white wrong in 2.29.1 belonged
+to the soft design, which is what came off.
+
+Pressed-in gestures went too: sidebar item tinted, chosen tab filled with the
+accent, selected card gets a brand ring.
 
 **Next new migration is 029.**
 

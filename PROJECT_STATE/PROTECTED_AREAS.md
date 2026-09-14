@@ -21,6 +21,29 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.29.2 - Flat, and the one shadow that stays
+
+**The design is FLAT. `--sh-card`, `--sh-raised` and `--sh-inset` are 1px
+rings, not shadows.** Marko asked for the 3D lighting off. Anything that
+reintroduces a glow, a gradient on a surface, or a pressed-in state is undoing
+that - the 2.29.0 entry below describes the soft material it replaced and is
+history, not current guidance.
+
+**`--sh-overlay` is the exception and must keep a real drop shadow.** A dialog
+floats above a dimmed page; strip its shadow "for consistency" and the modal
+and the backdrop become one dark mass with no edge between them.
+
+**With the lighting gone, the hairline IS the edge.** `slate-800` is
+deliberately lifted so a 1px line reads against `slate-900`. Darkening it back
+toward the surface for "subtlety" erases every panel boundary in the app at
+once.
+
+**Light mode surface is white again, and that is not a regression.** The "never
+`bg-white`" rule from 2.29.1 was a property of the SOFT design - a white card
+contradicted one sheet of material. Flat has no such rule. The `bg-surface`
+token stays the right thing to reach for, because it is correct in both themes;
+it simply resolves to white in light mode now.
+
 ## 2.29.0 - Onyx is a material, and materials have rules
 
 **The shadow is a PAIR, derived from the ground.** `--sh-card`, `--sh-raised`,

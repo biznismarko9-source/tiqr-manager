@@ -35,10 +35,10 @@ export function Button({
   };
   const variants: Record<ButtonVariant, string> = {
     primary:
-      "bg-brand-600 text-white shadow-card hover:bg-brand-500 active:shadow-inset focus-visible:ring-brand-500",
+      "bg-brand-600 text-white hover:bg-brand-500 focus-visible:ring-brand-500",
     secondary:
-      "bg-surface text-slate-700 shadow-card hover:shadow-raised active:shadow-inset focus-visible:ring-slate-400 dark:text-slate-200 dark:focus-visible:ring-slate-500",
-    danger: "bg-red-600 text-white shadow-card hover:bg-red-500 active:shadow-inset focus-visible:ring-red-500",
+      "bg-surface text-slate-700 shadow-card hover:bg-surface-muted focus-visible:ring-slate-400 dark:text-slate-200 dark:focus-visible:ring-slate-500",
+    danger: "bg-red-600 text-white hover:bg-red-500 focus-visible:ring-red-500",
     ghost:
       "text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-slate-400 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100",
   };
@@ -292,7 +292,7 @@ export function EmptyState({
   // floating as a large grey glyph, and the whole block sits on a real
   // (dashed) surface. Same props, same call sites.
   return (
-    <div className="flex flex-col items-center justify-center gap-1 rounded-xl px-6 py-14 text-center shadow-inset">
+    <div className="flex flex-col items-center justify-center gap-1 rounded-xl bg-surface-muted px-6 py-14 text-center shadow-card">
       {icon && (
         <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-surface text-slate-400 shadow-card dark:text-slate-500">
           {icon}
@@ -722,12 +722,12 @@ export function ConfirmDialog({
  * active item, replacing the solid brand-blue fill. The blue fill made an
  * ordinary list filter read as the loudest control on the page. */
 export const SEGMENTED_TRACK =
-  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg p-1 shadow-inset";
+  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg bg-surface-muted p-1 shadow-card";
 
 export function segmentedItemClass(active: boolean): string {
   return `rounded-md px-3 py-1.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
     active
-      ? "bg-surface text-slate-900 shadow-card dark:text-slate-50"
+      ? "bg-brand-600 text-white"
       : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
   }`;
 }
