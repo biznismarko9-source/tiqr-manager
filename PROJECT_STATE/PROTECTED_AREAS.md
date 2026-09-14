@@ -98,6 +98,10 @@ whose TEXT is syntax in the surrounding language.**
 - 2.27.0 again, in the fix for the above: a block comment explaining the rule
   quoted a comment terminator, which closed the comment early.
 
+- 2.29.3: a scripted insert into an import list that already had a trailing
+  comma, producing `Textarea,` then `, PreviewPanel }`. Same family: the file
+  balanced perfectly and still did not parse.
+
 Rules that follow, and they are cheap:
 - A JSX comment goes inside an element's children. In a ternary branch, after
   `=>`, or in any expression position, use a plain line comment.
@@ -107,9 +111,14 @@ Rules that follow, and they are cheap:
 - SQL comments inside a Rust string carry the STRING's escaping rules, not
   SQL's. No quotes, or make it a raw string.
 
+- When editing an import list by script, rewrite the whole list rather than
+  splicing a name in. A trailing comma is invisible to a regex and fatal to
+  the parser.
+
 None of these are caught by brace/paren balance checking, which is what the
-local verification here relies on - all three balanced perfectly and still did
-not compile.
+local verification here relies on - every one of them balanced perfectly and
+still did not compile. Token-level errors need a token-level check; there is
+now one for import lists specifically.
 
 ## 2.27.0 - The automatic run is finite, and that is the whole safety argument
 

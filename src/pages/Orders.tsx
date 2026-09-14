@@ -20,7 +20,9 @@ import {
   PageHeader,
   Select,
   TabSwitcher,
-  Textarea, PreviewPanel } from "../components/ui";
+  Textarea,
+  PreviewPanel,
+} from "../components/ui";
 import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";

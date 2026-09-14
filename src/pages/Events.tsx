@@ -21,7 +21,8 @@ import {
   Select,
   TabSwitcher,
   Textarea,
-, PreviewPanel } from "../components/ui";
+  PreviewPanel,
+} from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";

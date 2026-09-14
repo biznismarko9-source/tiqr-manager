@@ -16,6 +16,23 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.3 - BUILD FIX (a comma)
+
+`tsc` stopped on `Events.tsx(24,1): Identifier expected`. My script added
+`PreviewPanel` to an import list that already ended in a trailing comma, so the
+file got `Textarea,` followed by `, PreviewPanel }` - a double comma. Both
+import lists are now written out properly, one name per line, like the rest of
+the file.
+
+**The check that was missing now exists.** Brace and JSX balance both sail
+straight past this: it is a token-level error, not a structural one, and the
+file balances perfectly while failing to parse. There is now a pass that reads
+every named-import list in `src` and requires each specifier to be a plain
+identifier - it reports zero across the tree.
+
+Version stays **2.29.3**: the failed build published no release, so the updater
+has never seen this number. Same call as 2.16.0, 2.24.0 and 2.27.0.
+
 ## 2.29.3 - The layouts, not just the paint
 
 Marko was right: 2.29.0-2.29.2 changed how the app is COLOURED and never
