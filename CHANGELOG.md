@@ -16,6 +16,90 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.31.0 - a pull is paid AND transferred
+
+Marko: "do pulls taktiez mali by byt 2 veci dane co sa daju checknut a to je
+payment ci uz zaplatili a + transfer ale ten tam uz je."
+
+### The second checkbox
+
+Pulls (Given) has a **Paid** column next to **Done**, tickable straight from
+the list exactly like the transfer one. It answers the other half of a pull:
+has the buyer actually paid the fee? The two are independent on purpose - they
+finish in either order, and "transferred but not paid" is the state worth
+seeing. Both are also correctable from the edit form.
+
+`paid` is its own column with its own `paid_at` stamp (migration 030), shaped
+exactly like `transfer_done`/`transfer_done_at`. One helper now applies the
+timestamp rule for both: stamp when it really flips off->on, clear when it
+flips back, and never touch it on a plain re-save.
+
+### Completed now means both
+
+**Every pull you already have will read "Not paid" until you tick it** -
+including ones showing "Completed" today. That is the new meaning, not lost
+data: nothing knew about payment before this version, so there was nothing to
+carry over. The hover on the badge spells out which half is missing.
+
+### The Google Sheet
+
+Untouched. It has a `Transfer` column and no `Paid` one, so the sync neither
+reads nor writes payment - it carries the app's own value through instead,
+which is what stops a sync from quietly un-ticking a paid pull. Adding a real
+`Paid` column would mean changing your live sheet, so that is your call.
+
+**Not included, say if you want them:** a Paid filter next to the existing
+Transfer filter, and payment tracking on Pulls (Received) - that tab has no
+transfer flag either, so there was nothing to pair one with.
+
+## 2.30.1 - Settings says less
+
+Marko: "zjednodusti celu data sekciu a jednodusit vsetko co je v nastaveniach
+nech je to minimalisticke."
+
+### Twenty blocks of prose, cut
+
+Nothing moved, nothing was removed, nothing changed what it does - only the
+text around the controls. Cloud sync went from four sentences to one line. The
+CSV importer no longer lists sixteen column names on screen; the template file
+it tells you to download is where those actually get read. Export, Backup,
+Drive revisions, restore points, the two Google sign-in notes, the Sheets URL
+note, the Anthropic key, ntfy, Notifications, the guide header, Suggest a
+change, both category pickers and all eight section descriptions are each a
+line or two now.
+
+What was deliberately KEPT, because each one changes what you would do:
+
+* an import is all-or-nothing;
+* notifications only fire while the app is running, one per category per day;
+* an ntfy topic is a shared secret - anyone who knows it reads your alerts;
+* duplicates are never flagged on import;
+* a restore or a sync down replaces this computer's data, and takes a backup
+  first;
+* both-computers-changed: combining keeps everything, the other two throw one
+  side away.
+
+### The counter bug 2.30.0 left behind
+
+Found while writing this up, fixed here, and it is the more important half of
+this release. `reconcile_counter` exists so a merge can never leave a code
+counter behind the codes the table actually holds - the failure it prevents is
+silent for days and then stops order creation dead on a UNIQUE constraint.
+2.30.0 started minting from per-event counters (`order:CELINE`) and did not
+teach that function about them, so the exact failure it was written to prevent
+came back one counter row over: `CELINE-004` arrives from the other machine,
+this machine's `order:CELINE` still reads 3, and the next Celine order collides.
+
+It now raises every event counter a table's codes imply, in one statement, and
+there is a test named for that scenario. `counters` stays out of the merge on
+purpose - each machine owns its own numbering.
+
+**Known and left alone:** when two machines mint the *same* code for one event
+at once, the arriving one is still re-numbered with the old fixed prefix
+(`ORD-000092`), not the event's. It is rare, it is harmless, and making it
+event-derived means a different event lookup per table - not something to do
+inside a text-simplification release.
+
 ## 2.30.0 - CELINE-001: codes that say what they are
 
 Marko: "ked je to celine dion tak celine-001 ... bolo by to lepsie zmapovatelne

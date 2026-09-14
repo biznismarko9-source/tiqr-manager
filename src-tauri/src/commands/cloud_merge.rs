@@ -317,6 +317,13 @@ fn translate_id(conn: &Connection, parent: &str, remote_id: i64) -> AppResult<Op
 /// So this runs before a coded table is merged (so a re-issued code is free)
 /// and again after (so an arrived code cannot poison the counter). It only
 /// ever raises the counter - a merge must not hand out a number twice.
+///
+/// 2.30.1: it now covers the EVENT-SCOPED counters too. 2.30.0 started minting
+/// `CELINE-001` from a `order:CELINE` row, and those rows did not exist when
+/// the fixed-prefix statement below was written - so nothing raised them, and
+/// a merge could leave `order:CELINE` reading 3 while `CELINE-004` had already
+/// arrived. That is exactly the days-later UNIQUE failure this function exists
+/// to prevent, just one counter row over.
 fn reconcile_counter(conn: &Connection, table: &str, counter: &str, prefix: &str) -> AppResult<()> {
     conn.execute(
         &format!(
@@ -325,6 +332,30 @@ fn reconcile_counter(conn: &Connection, table: &str, counter: &str, prefix: &str
              WHERE name = ?1"
         ),
         rusqlite::params![counter, (prefix.len() + 2) as i64, format!("{prefix}-%")],
+    )?;
+    // One statement for every event prefix the table actually holds, whether
+    // or not this machine has ever minted for that event. The name it builds
+    // is `codes::scoped_counter`'s - `order:CELINE` - and it must stay that
+    // way or the reconciliation silently raises a row nothing mints from.
+    //
+    // Splitting at the FIRST '-' is safe: `prefix_for_event` keeps ASCII
+    // letters and digits only, so an event prefix never contains one.
+    //
+    // The exclusion is `ORD-______` (six single-character wildcards), not
+    // `ORD-%`: the old fixed-width codes are the ones the statement above
+    // already handles, while an event legitimately named so that its prefix
+    // IS "ORD" would produce `ORD-001` and still needs its own counter.
+    conn.execute(
+        &format!(
+            "INSERT INTO counters (name, value)
+                 SELECT ?1 || ':' || substr(code, 1, instr(code, '-') - 1),
+                        MAX(CAST(substr(code, instr(code, '-') + 1) AS INTEGER))
+                   FROM main.{table}
+                  WHERE code LIKE '%-%' AND code NOT LIKE ?2
+                  GROUP BY substr(code, 1, instr(code, '-') - 1)
+             ON CONFLICT(name) DO UPDATE SET value = MAX(counters.value, excluded.value)"
+        ),
+        rusqlite::params![counter, format!("{prefix}-______")],
     )?;
     Ok(())
 }
@@ -1190,6 +1221,55 @@ mod tests {
             [&next],
         )
         .expect("creating an order after a merge must still work");
+    }
+
+    #[test]
+    fn an_arrived_event_code_drags_its_own_counter_up_too() {
+        // The 2.30.0 version of the test above. Codes are minted per event now,
+        // so the counter that can be left behind is `order:CELINE`, not
+        // `order` - and the failure is the same one: everything works until
+        // this machine's own numbering climbs back into what arrived.
+        let (conn, remote_path) = two_machines();
+        conn.execute("INSERT INTO events(name) VALUES ('Celine Dion')", []).unwrap();
+        // Captured once: `events` has no natural key, so the merge inserts the
+        // other machine's Celine Dion as a SECOND local event, and a name
+        // lookup after the merge would no longer be the row we started from.
+        let event_id: i64 = conn
+            .query_row("SELECT id FROM events WHERE name='Celine Dion'", [], |r| r.get(0))
+            .unwrap();
+        for _ in 0..2 {
+            let code = crate::codes::next_code_for_event(&conn, "order", "ORD", event_id).unwrap();
+            conn.execute(
+                "INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency)
+                 VALUES (?1, ?2, '2026-05-01', 1, 1000, 'EUR')",
+                rusqlite::params![&code, event_id],
+            )
+            .unwrap();
+        }
+        // The other machine got further with the same event. CELINE-004 does
+        // not clash with anything here, so it arrives untouched.
+        remote_exec(
+            &remote_path,
+            "INSERT INTO events(name) VALUES ('Celine Dion');
+             INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency)
+             VALUES ('CELINE-004', (SELECT id FROM events WHERE name='Celine Dion'), '2026-06-01', 1, 2000, 'EUR');",
+        );
+        attach(&conn, &remote_path);
+        merge_attached(&conn).unwrap();
+
+        let counter: i64 = conn
+            .query_row("SELECT value FROM counters WHERE name = 'order:CELINE'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(counter, 4, "the event's own counter must have been dragged up as well");
+
+        let next = crate::codes::next_code_for_event(&conn, "order", "ORD", event_id).unwrap();
+        assert_eq!(next, "CELINE-005");
+        conn.execute(
+            "INSERT INTO orders(code, event_id, purchase_date, quantity, total_cost_cents, currency)
+             VALUES (?1, ?2, '2026-08-01', 1, 1000, 'EUR')",
+            rusqlite::params![&next, event_id],
+        )
+        .expect("creating an order for that event after a merge must still work");
     }
 
     #[test]

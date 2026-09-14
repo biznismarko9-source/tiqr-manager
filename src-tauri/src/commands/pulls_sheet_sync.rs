@@ -31,6 +31,12 @@
 //! | (unnamed blank column) | ignored (marko: no purpose) |
 //! | `TIQR ID` (appended by the app itself the first time it's missing) | the sync marker - never typed by hand |
 //!
+//! 2.31.0 added a second checkbox to a pull, `paid`. It is deliberately NOT in
+//! this table: the sheet has no such column, so the sync neither reads nor
+//! writes it and simply carries the app's own value through every update (see
+//! the `PullEditInput` built below). Adding a `Paid` column here would mean
+//! changing marko's live sheet, which is his call, not this module's.
+//!
 //! `pull`/`Event name`/`Ks`/`Price` are required: a sheet missing any of
 //! them fails the whole sync with one clear message up front, rather than
 //! silently skipping every row. Every other column is optional - if absent,
@@ -680,6 +686,11 @@ fn apply_pull_rows(
                     price_cents: parsed.price_cents,
                     currency: currency.to_string(),
                     transfer_done: parsed.transfer_done,
+                    // 2.31.0: the sheet has no Paid column, so the app's own
+                    // value is passed straight back through. Without this the
+                    // full-edit path would read `false` from a default and a
+                    // sheet sync would silently un-tick a paid pull.
+                    paid: pull.paid,
                 };
                 match update_pull_impl(conn, link.local_id, &edit) {
                     Ok(_) => {
@@ -2188,6 +2199,7 @@ mod tests {
             price_cents: pull.price_cents,
             currency: pull.currency.clone(),
             transfer_done: pull.transfer_done,
+            paid: pull.paid,
         };
         edit.price_cents = 9999;
         update_pull_impl(&conn, pull.id, &edit).unwrap();
@@ -2432,6 +2444,7 @@ mod tests {
             price_cents: 4500,
             currency: "EUR".to_string(),
             transfer_done: false,
+            paid: false,
         };
         edit.price_cents = 6000; // was 4500
         update_pull_impl(&conn, id, &edit).unwrap();

@@ -1256,6 +1256,13 @@ pub struct Pull {
     pub transfer_deadline: Option<String>,
     pub transfer_done: bool,
     pub transfer_done_at: Option<String>,
+    /// 2.31.0: the pull's second obligation - has the buyer paid marko's fee
+    /// (`price_cents`)? Independent of `transfer_done` on purpose: the two
+    /// finish in either order, and "transferred but not paid" is a state
+    /// marko needs to see. `paid_at` follows the same auto-stamp rule as
+    /// `transfer_done_at` and is not user-editable.
+    pub paid: bool,
+    pub paid_at: Option<String>,
     pub is_demo: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -1264,6 +1271,7 @@ pub struct Pull {
 /// Input for `create_pull`. `transfer_done`/`transfer_done_at` deliberately
 /// aren't here - a brand new pull always starts not-transferred; use
 /// `set_pull_transfer_done` (or edit it afterwards) once it's actually done.
+/// 2.31.0: `paid`/`paid_at` are absent for exactly the same reason.
 /// No `transfer_deadline` either as of 1.9.8 - see the section doc comment
 /// above.
 #[derive(Debug, Deserialize, Clone)]
@@ -1301,6 +1309,8 @@ pub struct PullEditInput {
     pub price_cents: i64,
     pub currency: String,
     pub transfer_done: bool,
+    /// 2.31.0: correctable here for the same reason `transfer_done` is.
+    pub paid: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -242,6 +242,7 @@ export const api = {
   bulkDeletePulls: (ids: number[]) => invoke<BulkDeleteResult>("bulk_delete_pulls", { ids }),
   /** Dedicated quick-action for the Pulls list's inline "Done" checkbox - see set_pull_transfer_done_impl (pulls.rs). */
   setPullTransferDone: (id: number, done: boolean) => invoke<Pull>("set_pull_transfer_done", { id, done }),
+  setPullPaid: (id: number, paid: boolean) => invoke<Pull>("set_pull_paid", { id, paid }),
 
   // Pulls received (2.0.17) - the mirror direction: pulls marko TOOK from
   // other people, instead of pulls he did FOR them. Can be typed manually

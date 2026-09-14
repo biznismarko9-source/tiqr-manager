@@ -219,6 +219,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "029_event_codes",
         include_str!("../migrations/029_event_codes.sql"),
     ),
+    (
+        "030_pull_paid",
+        include_str!("../migrations/030_pull_paid.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

@@ -986,6 +986,12 @@ export interface Pull {
   transferDeadline: string | null;
   transferDone: boolean;
   transferDoneAt: string | null;
+  /** 2.31.0: the pull's second obligation - has the buyer paid marko's fee
+   * (`priceCents`)? Independent of `transferDone`: the two finish in either
+   * order, and "transferred but not paid" is a state marko needs to see.
+   * `paidAt` is auto-stamped by the backend, never sent from here. */
+  paid: boolean;
+  paidAt: string | null;
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
@@ -994,6 +1000,7 @@ export interface Pull {
 /** Input for `createPull`. `transferDone`/`transferDoneAt` deliberately
  * aren't here - a brand new pull always starts not-transferred; use
  * `setPullTransferDone` (or edit it afterwards) once it's actually done.
+ * 2.31.0: `paid`/`paidAt` are absent for exactly the same reason.
  * No `transferDeadline` either as of 1.9.8 - see `Pull`'s comment above. */
 export interface PullInput {
   buyerName: string;
@@ -1010,8 +1017,8 @@ export interface PullInput {
 }
 
 /** Input for `updatePull` - the full edit form. Unlike `PullInput`, this DOES
- * include `transferDone` (so a mistaken checkbox click, or backfilling older
- * data, can be corrected here too). */
+ * include both checkboxes (so a mistaken click, or backfilling older data, can
+ * be corrected here too). */
 export interface PullEditInput {
   buyerName: string;
   eventName: string;
@@ -1025,6 +1032,7 @@ export interface PullEditInput {
   priceCents: number;
   currency: string;
   transferDone: boolean;
+  paid: boolean;
 }
 
 // ---------------------------------------------------------------------------

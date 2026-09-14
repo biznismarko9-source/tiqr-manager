@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.30.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.31.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -675,7 +675,43 @@ create forms and Settings were still arranged the old way.
 - **Settings sections moved to a left rail.** Routes unchanged, so every deep
   link still works.
 
-**Next new migration is 030.**
+**2.30.0 - codes come from the event.** `ORD-000084` is `CELINE-001`. Orders,
+tickets, sales, pulls and received pulls all mint from the event they belong to
+(a sale through its ticket, a pull off the event name it stores), each kind
+counting from 1 within that event. `codes::prefix_for_event` is the whole rule
+and it MUST stay pure - both machines mint independently, so a prefix that
+differed between them would be two codes for one record. Migration 029 adds
+`legacy_code`, which holds the pre-rewrite value and is what lets an
+already-connected Google Sheet keep matching its rows; the one-time rewrite
+itself is `codes::backfill_event_codes`, in Rust rather than SQL because the
+prefix rule folds accents. A row whose event yields no usable prefix keeps its
+old code rather than getting an invented one. `shortCode` is gone.
+
+**2.30.1 - Settings text, and a counter fix.** Twenty prose blocks in
+`Settings.tsx` cut to a line or two each; no control moved and nothing changed
+behaviour. The real change is in `cloud_merge.rs`: `reconcile_counter` now
+raises the EVENT-scoped counters too. 2.30.0 introduced them and left that
+function on the fixed prefix only, which brought back the exact silent
+UNIQUE-failure-days-later the function exists to prevent. See
+`PROTECTED_AREAS.md`'s `reconcile_counter` entry.
+
+**2.31.0 - a pull has TWO checkboxes.** Marko: "do pulls taktiez mali by byt
+2 veci dane co sa daju checknut a to je payment ci uz zaplatili a + transfer
+ale ten tam uz je." Migration 030 adds `pulls.paid`/`paid_at`, shaped exactly
+like `transfer_done`/`transfer_done_at`. They are independent on purpose -
+"transferred but not paid" is the state he needs to see - and both follow one
+three-way timestamp rule (`commands/pulls.rs::stamp_sql`): stamp on a real
+false->true flip, clear on true->false, never touched on a plain re-save.
+`set_pull_paid` is the quick action behind the list's new checkbox;
+`PullEditInput` carries `paid` so the edit form can correct it. The
+"Completed" badge now needs BOTH, so every existing pull reads "Not paid"
+until it is ticked. The Google Sheet has no Paid column and is not given one -
+`pulls_sheet_sync` passes the app's own value straight back through, which is
+the only thing stopping a sync from silently un-ticking a paid pull. Pulls
+(Received) is untouched: it has no transfer flag either, so there was nothing
+to pair a payment flag with.
+
+**Next new migration is 031.**
 
 ## Stack / layout
 

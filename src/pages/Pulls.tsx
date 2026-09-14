@@ -47,12 +47,16 @@ import { completionStatus } from "../lib/completion";
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
 
 // 2.0.66: the new "Completed" indicator (see REDESIGN-2.0.66-REPORT.md),
-// unified in style with Orders/Sales - but Pulls (Given) only has ONE
-// underlying condition (transferDone), unlike those pages' 3. Pulls
-// (Received) has no completion-like field at all yet, so it doesn't get this
-// column - see the report's own note asking marko what that should mean.
+// unified in style with Orders/Sales. 2.31.0: TWO conditions now, not one -
+// marko asked for payment to be tickable alongside transfer, and a pull is
+// only actually finished when both are. The order here is the order they are
+// shown in the table. Pulls (Received) has no completion-like field at all
+// yet, so it doesn't get this column.
 function pullCompletionChecks(p: Pull) {
-  return [{ label: "Transferred", done: p.transferDone }];
+  return [
+    { label: "Paid", done: p.paid },
+    { label: "Transferred", done: p.transferDone },
+  ];
 }
 
 // Same safety-cap convention as Orders.tsx/Tickets.tsx/Sales.tsx - mirrors
@@ -333,6 +337,18 @@ function GivenPulls() {
     }
   };
 
+  // 2.31.0: same shape as the transfer toggle above rather than one generic
+  // helper - each calls its own backend command, and the two flags are
+  // deliberately independent.
+  const togglePaid = async (p: Pull) => {
+    try {
+      const updated = await api.setPullPaid(p.id, !p.paid);
+      setPulls((prev) => (prev ? prev.map((x) => (x.id === updated.id ? updated : x)) : prev));
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   return (
     <>
       {/* 2.0.65: buttons moved to their own row, filters below now follow
@@ -496,12 +512,17 @@ function GivenPulls() {
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[10.732%]" />
                 <col className="w-[9.146%]" />
-                <col className="w-[15.634%]" />
+                <col className="w-[12.89%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[9.634%]" />
-                <col className="w-[17.317%]" />
+                <col className="w-[14.573%]" />
                 <col className="w-[4.39%]" />
                 <col className="w-[10%]" />
+                {/* 2.31.0: the new "Paid" column gets exactly Done's width -
+                    they hold the same control. Its 5.488 came off the two
+                    widest columns above (Event and More info, 2.744 each), so
+                    this colgroup still sums to 100. */}
+                <col className="w-[5.488%]" />
                 <col className="w-[5.488%]" />
                 {/* 2.0.66: new "Completed" column - width is my own estimate
                     (not measured against real content like the rest of this
@@ -517,11 +538,14 @@ function GivenPulls() {
                 <col className="w-[11.527%]" />
                 <col className="w-[6.884%]" />
                 <col className="w-[6.175%]" />
-                <col className="w-[14.123%]" />
+                <col className="w-[12.136%]" />
                 <col className="w-[3.691%]" />
-                <col className="w-[11.781%]" />
+                <col className="w-[9.794%]" />
                 <col className="w-[7.807%]" />
                 <col className="w-[8.943%]" />
+                {/* 2.31.0: see the narrow colgroup's note - here the 3.974 for
+                    Paid came off More info and Platform, 1.987 each. */}
+                <col className="w-[3.974%]" />
                 <col className="w-[3.974%]" />
                 {/* 2.0.66: see the narrow colgroup's identical comment above. */}
                 <col className="w-[6.5%]" />
@@ -550,6 +574,7 @@ function GivenPulls() {
                 {!isNarrow && <th className="th-c">Platform</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Warning</th>}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Paid</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Done</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
               </tr>
@@ -636,6 +661,15 @@ function GivenPulls() {
                         )}
                       </td>
                     )}
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
+                      <input
+                        type="checkbox"
+                        className={CHECKBOX_CLASS}
+                        checked={p.paid}
+                        onChange={() => togglePaid(p)}
+                        aria-label={`Mark pull ${p.code} as ${p.paid ? "not paid" : "paid"}`}
+                      />
+                    </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
                       <input
                         type="checkbox"
@@ -734,6 +768,7 @@ function PullFormModal({
   const [currency, setCurrency] = useState("EUR");
   const [customCurrency, setCustomCurrency] = useState(false);
   const [transferDone, setTransferDone] = useState(false);
+  const [paid, setPaid] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -754,6 +789,7 @@ function PullFormModal({
       setCurrency(pull.currency);
       setCustomCurrency(!CURRENCIES.includes(pull.currency));
       setTransferDone(pull.transferDone);
+      setPaid(pull.paid);
     } else {
       setBuyerName("");
       setEventName("");
@@ -768,6 +804,7 @@ function PullFormModal({
       setCurrency("EUR");
       setCustomCurrency(false);
       setTransferDone(false);
+      setPaid(false);
     }
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -800,6 +837,7 @@ function PullFormModal({
           priceCents,
           currency,
           transferDone,
+          paid,
         };
         const updated = await api.updatePull(pull.id, input);
         toast.success(`Pull ${updated.code} updated`);
@@ -940,15 +978,30 @@ function PullFormModal({
           </div>
           <div className="col-span-2">
             {editing ? (
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className={CHECKBOX_CLASS}
-                  checked={transferDone}
-                  onChange={(e) => setTransferDone(e.target.checked)}
-                />
-                <span className="text-sm text-slate-700 dark:text-slate-300">Transfer done</span>
-              </label>
+              // 2.31.0: both of the pull's checkboxes, in the same order the
+              // table shows them. A new pull still gets neither - it starts
+              // unpaid and untransferred, which is why this whole block is
+              // edit-only.
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={paid}
+                    onChange={(e) => setPaid(e.target.checked)}
+                  />
+                  <span className="text-sm text-slate-700 dark:text-slate-300">Paid</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={transferDone}
+                    onChange={(e) => setTransferDone(e.target.checked)}
+                  />
+                  <span className="text-sm text-slate-700 dark:text-slate-300">Transfer done</span>
+                </label>
+              </div>
             ) : (
               <p className="text-xs text-slate-400 dark:text-slate-500">
                 A warning appears automatically starting {WARNING_WINDOW_DAYS} days before the event date, and every

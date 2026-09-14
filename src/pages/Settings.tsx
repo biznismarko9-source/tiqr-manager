@@ -93,8 +93,8 @@ import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 // 2.0.2: Integrations - connect Pulls (Tickets later) to a Google Sheet. See
 // SheetsConnectionCard below and REDESIGN-2.0.2-REPORT.md.
 const SECTIONS = [
-  { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists used across orders and sales.", icon: IconTag },
-  { key: "data", title: "Data", description: "Import CSV, export CSV, backup and restore your database.", icon: IconDatabase },
+  { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists.", icon: IconTag },
+  { key: "data", title: "Data", description: "Import, export, backup and restore.", icon: IconDatabase },
   {
     key: "integrations",
     title: "Integrations",
@@ -105,7 +105,7 @@ const SECTIONS = [
     // 2.2.9: re-worded from "...for AI-assisted price reading" - marko's own
     // request, since the same key now powers (or will power) more than one
     // AI feature - see AnthropicApiKeyCard's own doc comment below.
-    description: "Connect Pulls, Orders and Tickets to a Google Sheet, or add an Anthropic API key to power AI features across the app.",
+    description: "Google Sheets, and your Anthropic API key.",
     icon: IconLink,
   },
   // 2.0.76: desktop/mobile-push alerts for the same 4 things the Dashboard's
@@ -113,12 +113,12 @@ const SECTIONS = [
   // REPORT.md. 2.0.77 removed the email channel this shipped with at
   // marko's own request; 2.0.78 switched the mobile-push channel from
   // Pushover to ntfy - see NotificationsCard's own doc comment.
-  { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts for the things that need your attention.", icon: IconBell },
+  { key: "notifications", title: "Notifications", description: "Desktop and ntfy alerts.", icon: IconBell },
   // 2.4.4: the old "Appearance" section (Light/System/Dark) moved out of
   // Settings entirely - marko's own request for a one-click light/dark
   // toggle right above the sidebar's profile widget instead (Layout.tsx,
   // reusing the same lib/theme.ts useTheme() hook this used to call here).
-  { key: "software", title: "Software", description: "Check for updates and see your current version.", icon: IconDownload },
+  { key: "software", title: "Software", description: "Updates and your current version.", icon: IconDownload },
   // 2.0.44: your name/email/sign-in + Log out - see the profile widget at
   // the bottom of the sidebar (Layout.tsx), whose "Account settings" item
   // links straight to /settings/account.
@@ -135,8 +135,8 @@ const SECTIONS = [
   // is something you come to Settings to change. Order here is the only thing
   // that decides the Settings home list AND the section rail, so this one
   // move covers both.
-  { key: "insights", title: "Insights", description: "Ticket and Finance recaps - how a period actually went, in one screen.", icon: IconGauge },
-  { key: "support", title: "Support", description: "A guided walkthrough of the app, and a direct line for anything missing.", icon: IconInfo },
+  { key: "insights", title: "Insights", description: "Ticket and Finance recaps.", icon: IconGauge },
+  { key: "support", title: "Support", description: "A walkthrough, and a way to reach marko.", icon: IconInfo },
 ];
 
 /** 2.18.0: the seven states marko asked to be able to see at a glance, in his
@@ -881,8 +881,7 @@ export default function Settings() {
               added (see EventCategoryBadge.tsx) - nothing to pick here. */}
           <Modal open={openLookup === "eventCategories"} onClose={() => setOpenLookup(null)} title="Event categories">
             <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-              Tag events (football, concert, etc.) to filter and color-code them on Events, Orders and Sales. Not
-              hardcoded — add as many as you like, each gets its own color automatically.
+              Tag events to filter and color-code them. Each gets its own color.
             </p>
             <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
           </Modal>
@@ -893,8 +892,7 @@ export default function Settings() {
               `kind` decides which list(s) it shows in). */}
           <Modal open={openLookup === "financeCategories"} onClose={() => setOpenLookup(null)} title="Finance categories" width="max-w-3xl">
             <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-              Categories for the Finance section's entries (personal and business money). Each gets its own color
-              automatically - not hardcoded, add as many as you like.
+              Used by Finance entries, personal and business. Each gets its own color.
             </p>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
               <FinanceCategoryList
@@ -926,11 +924,12 @@ export default function Settings() {
                   machinery those two cards use. */}
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Sync between your computers</h3>
+                {/* 2.30.1: one line instead of four sentences. What it does is
+                    visible from the controls; the only thing that genuinely
+                    needed explaining is the both-changed case, and that has
+                    its own warning below when it actually happens. */}
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                  Keeps one copy of your database in your own Google Drive, so what you write on one computer shows up
-                  on the other. It syncs the whole database at once. With sync on, this happens by itself: changes go
-                  up every few minutes, and anything new is pulled down when you open the app. The buttons below stay
-                  for the one case that can't be decided for you - when both computers changed since the last sync.
+                  One copy in your own Google Drive, kept level by itself.
                 </p>
 
                 {sync && !sync.signedIn ? (
@@ -1026,8 +1025,8 @@ export default function Settings() {
                           <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:ring-amber-500/25">
                             <p className="flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
                               <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              Both sides may have changed. Combining keeps everything - the two older buttons each
-                              throw one side's changes away, and are only here for when that is what you want.
+                              Both sides may have changed. Combining keeps everything; the two below each throw one
+                              side away.
                             </p>
                             <div className="mt-2.5 flex flex-wrap items-center gap-2">
                               <Button
@@ -1093,9 +1092,8 @@ export default function Settings() {
                               <p className="mt-1.5 rounded bg-amber-50 px-2 py-1.5 text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/25">
                                 {mergeResult.totalIdentityClashes} record{mergeResult.totalIdentityClashes === 1 ? "" : "s"}{" "}
                                 on your other computer could not be told apart from {mergeResult.totalIdentityClashes === 1 ? "one of" : "some of"}{" "}
-                                yours, so {mergeResult.totalIdentityClashes === 1 ? "it" : "they"} did not come across. This happens when both
-                                computers were used before the update that added record identities. Fix it once: sync down on
-                                whichever computer is behind, then combine again.
+                                yours, so {mergeResult.totalIdentityClashes === 1 ? "it" : "they"} did not come across.
+                                Sync down on whichever computer is behind, then combine again.
                               </p>
                             )}
                             {mergeResult.totalSkipped > 0 && (
@@ -1196,8 +1194,7 @@ export default function Settings() {
                         </dl>
 
                         <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
-                          Syncing down replaces this computer's data with the copy from Drive. A safety backup of what
-                          was here is always taken first, and you'll be told where it went.
+                          Replaces this computer's data. A backup is taken first.
                         </p>
                       </>
                     )}
@@ -1213,18 +1210,14 @@ export default function Settings() {
                     Import itself (Preview -> Validate -> Confirm -> Import,
                     still transactional/all-or-nothing) and Download template
                     below are unchanged - this is a text-only simplification. */}
-                <div className="mb-3 space-y-1 text-xs text-slate-400 dark:text-slate-500">
-                  <p>
-                    <span className="font-medium text-slate-500 dark:text-slate-400">Required format:</span> event,
-                    purchase_date, supplier, platform, quantity, unit_price, fees, other_costs, currency,
-                    payment_status, ticket_type, section, row, tier, seats, notes.
-                  </p>
-                  <p>
-                    "seats" is a comma-separated list matching quantity (e.g. "11,12,13,14") - leave it out to import
-                    without seat numbers.
-                  </p>
-                  <p>Import is all-or-nothing.</p>
-                </div>
+                {/* 2.30.1: the sixteen column names moved into the template
+                    file, which is where marko actually reads them - he opens
+                    it to build the CSV. Kept on screen: that an import either
+                    lands whole or not at all, which changes what he does if
+                    it fails. */}
+                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                  All-or-nothing. Download the template for the exact columns.
+                </p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="primary" onClick={() => setImportOpen(true)}>
                     <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
@@ -1239,8 +1232,7 @@ export default function Settings() {
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h3>
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                  Save part of your data as a CSV file - each button opens a picker so you can choose exactly which
-                  records to include (one, several, or all).
+                  Each button opens a picker.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {[
@@ -1261,7 +1253,7 @@ export default function Settings() {
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h3>
                 <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                  Your database lives only on this device. Back it up regularly, especially before big imports.
+                  This database lives only on this device.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="secondary" disabled={busyAction === "backup"} onClick={doBackup}>
@@ -1286,9 +1278,7 @@ export default function Settings() {
                     Earlier versions in Google Drive
                   </p>
                   <p className="mb-2 mt-1 text-xs text-slate-400 dark:text-slate-500">
-                    Every sync up left one. Restoring one replaces this computer&apos;s data - it takes its own backup
-                    first, and then syncs the older version to your other computer too. Google decides how long it
-                    keeps them.
+                    Restoring replaces this computer&apos;s data. A backup is taken first.
                   </p>
                   {revisions.length === 0 ? (
                     <Button variant="secondary" size="sm" disabled={revisionsBusy} onClick={loadRevisions}>
@@ -1367,8 +1357,7 @@ export default function Settings() {
                       Restore points
                     </p>
                     <p className="mb-1 mt-1 text-xs text-slate-400 dark:text-slate-500">
-                      Saved automatically right before anything replaced your data - including every sync down. Newest
-                      first. Restoring one takes its own backup first, so this is undoable too.
+                      Taken before anything replaced your data. Newest first, and undoable.
                     </p>
                     <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                       {(restoreExpanded ? restorePoints : restorePoints.slice(0, RESTORE_POINTS_COLLAPSED)).map((rp) => {
@@ -2112,9 +2101,9 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
       ) : signedIn ? (
         <>
           <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-            Connecting or creating a sheet below now uses your own Google account (
-            <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.signedInEmail}</span>)
-            instead of the app&apos;s shared account - no separate sharing step needed for a sheet you create.
+            Sheets below use your own account (
+            <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.signedInEmail}</span>).
+            A sheet you create needs no sharing step.
           </p>
           <Button variant="ghost" disabled={busy === "out"} onClick={doSignOut}>
             {busy === "out" ? <Spinner className="h-4 w-4" /> : null}
@@ -2124,9 +2113,8 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
       ) : (
         <>
           <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-            Optional. Sign in with your own Google account so connecting or creating a Pulls sheet below uses your
-            identity instead of the app&apos;s shared one. Opens your own browser - nothing happens inside the app
-            itself, and nobody but you sees your Google password.
+            Optional. Use your own Google account for the Pulls sheet instead of the app&apos;s shared one. Opens in
+            your browser.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="primary" disabled={busy === "in"} onClick={doSignIn}>
@@ -2267,10 +2255,8 @@ function AnthropicApiKeyCard() {
         <Badge tone={configured ? "sold" : "available"}>{configured ? "On" : "Off"}</Badge>
       </div>
       <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
-        Optional. Add your Anthropic API key here once and every AI-assisted feature in the app can use it - for
-        example, Price Checker&apos;s Auto-check can ask Claude (Anthropic&apos;s AI) to read a page&apos;s prices
-        when it can&apos;t recognize them on its own, only as a last resort. AI-derived results are always shown
-        clearly marked, so you can double-check them before saving.
+        Optional. One key, used by every AI feature in the app - always as a last resort, and always marked as
+        AI-derived so you can check it before saving.
       </p>
       <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
         {/* 2.2.9: see this component's own doc comment above for why this is
@@ -2309,8 +2295,7 @@ function AnthropicApiKeyCard() {
             ))}
           </ul>
           <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500">
-            Estimated from the tokens each import actually used, at Claude Opus 5 list price ($5 / $25 per million
-            tokens). USD, because that is what Anthropic bills.
+            Estimated from real token use at Claude Opus 5 list price. USD, as Anthropic bills.
           </p>
         </div>
       )}
@@ -2900,9 +2885,8 @@ function SheetsConnectionCard({
                   below, not a per-action explanation. */}
               <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
                 Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.
-                {!onSync &&
-                  ` Reading and writing ${label.toLowerCase()} rows comes in a future update - this only sets up and tests the connection itself.`}
-                {oauthEmail && " Uses your own signed-in Google account above, not the app's shared one."}
+                {!onSync && ` Sets up and tests the connection only - ${label.toLowerCase()} rows come later.`}
+                {oauthEmail && " Uses your signed-in account."}
               </p>
 
               <div className="grid grid-cols-1 gap-3">
@@ -3267,9 +3251,8 @@ function SheetsConnectionCard({
           {(!connected || editingConnection) &&
             (oauthEmail ? (
               <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
-                Pasting an existing sheet&apos;s URL above needs that sheet to already be yours or shared with{" "}
-                <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> (Editor
-                access) - the same as sharing with any other collaborator in Google Sheets.
+                An existing sheet must be yours, or shared with{" "}
+                <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> as Editor.
               </p>
             ) : (
               status?.serviceAccountEmail && (
@@ -3484,9 +3467,8 @@ function CsvImportModal({
                 it back to CSV content, so there's no signal to compare against.
                 Saying so here rather than showing a count that would just be
                 guessing. */}
-            Duplicate rows aren&apos;t flagged - imported orders always get a fresh code, so there&apos;s no reliable
-            way to tell whether a row matches something you already imported. Review the file itself if you&apos;re
-            re-importing.
+            Duplicates aren&apos;t flagged - every imported order gets a fresh code, so check the file yourself if
+            you&apos;re re-importing.
           </p>
 
           <div className="table-flush max-h-80 rounded-lg border border-slate-200 dark:border-slate-800">
@@ -3687,9 +3669,8 @@ function NotificationsCard() {
         <Badge tone={configured ? "sold" : "available"}>{configured ? "Enabled" : "Off"}</Badge>
       </div>
       <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-        Get notified about the same things the Dashboard&apos;s bell already tracks - unpaid orders, pending sales,
-        missing listing prices, and events coming up soon - even when you&apos;re not looking at the app. Each
-        channel sends at most one notification per category per day, and only while TIQR Manager is running.
+        The same things the Dashboard&apos;s bell tracks. At most one per category per day, and only while TIQR
+        Manager is running.
       </p>
 
       {configured && !editing ? (
@@ -3736,10 +3717,8 @@ function NotificationsCard() {
               ntfy (mobile push)
             </label>
             <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-              Needs the free ntfy app on your phone (search &quot;ntfy&quot; on the App Store/Google Play) - no
-              account or sign-up either there or here. Pick your own private, hard-to-guess phrase below (this is
-              your &quot;topic&quot; - anyone who knows it can see your notifications, so don&apos;t use something
-              obvious), then subscribe to that exact same phrase in the app.
+              Needs the free ntfy app on your phone - no account. Pick a hard-to-guess topic below and subscribe to
+              that exact phrase in the app; anyone who knows it can read your notifications.
             </p>
             <div className="mt-2 max-w-sm">
               <Field
@@ -3908,9 +3887,7 @@ function SupportCards() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/70">Guide</p>
           <h3 className="mt-2 text-[22px] font-semibold leading-tight text-white">Let the app show you itself</h3>
           <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-white/80">
-            Fourteen steps that walk through the real screens - the Dashboard&apos;s headline numbers, then events,
-            orders, tickets, sales and everything after them. Each step dims the app and points at the thing it is
-            talking about, so nothing has to be found from a description.
+            Fourteen steps through the real screens, each one pointing at the thing it is talking about.
           </p>
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
@@ -3938,8 +3915,7 @@ function SupportCards() {
       <Card className="p-5">
         <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suggest a change</h3>
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-          Something missing, something in the way, something that behaves oddly - write it here and it goes straight to
-          marko. There's no reply thread: this is a postbox, not a chat.
+          Goes straight to marko. A postbox, not a chat - there is no reply thread.
         </p>
         <div className="mb-3 flex flex-wrap gap-2">
           {([

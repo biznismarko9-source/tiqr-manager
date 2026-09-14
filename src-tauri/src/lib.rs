@@ -147,6 +147,7 @@ pub fn run() {
             commands::pulls::delete_pull,
             commands::pulls::bulk_delete_pulls,
             commands::pulls::set_pull_transfer_done,
+            commands::pulls::set_pull_paid,
             commands::pulls_received::list_pulls_received,
             commands::pulls_received::get_pull_received,
             commands::pulls_received::create_pull_received,

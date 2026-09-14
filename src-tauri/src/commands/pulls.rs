@@ -25,7 +25,7 @@ const BASE_SQL: &str = "
     SELECT p.id, p.code, p.buyer_name, p.event_name, p.event_date, p.quantity,
       p.platform_id, pl.name as platform_name, p.section, p.row_label, p.seat,
       p.more_info, p.price_cents, p.currency, p.transfer_deadline, p.transfer_done,
-      p.transfer_done_at, p.is_demo, p.created_at, p.updated_at
+      p.transfer_done_at, p.paid, p.paid_at, p.is_demo, p.created_at, p.updated_at
     FROM pulls p
     LEFT JOIN platforms pl ON pl.id = p.platform_id
 ";
@@ -49,6 +49,8 @@ fn map_pull(row: &Row) -> rusqlite::Result<Pull> {
         transfer_deadline: row.get("transfer_deadline")?,
         transfer_done: row.get("transfer_done")?,
         transfer_done_at: row.get("transfer_done_at")?,
+        paid: row.get("paid")?,
+        paid_at: row.get("paid_at")?,
         is_demo: row.get("is_demo")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -218,16 +220,57 @@ pub fn create_pull(state: State<AppState>, input: PullInput) -> AppResult<Pull> 
     create_pull_impl(&conn, &input, false)
 }
 
+/// The three-way timestamp rule both of a pull's checkboxes follow, in one
+/// place so they can never drift apart: stamp on an actual false->true flip,
+/// clear on true->false, and leave the existing value completely alone on a
+/// plain re-save (which is what makes re-saving the edit form non-destructive).
+///
+/// Returns a literal SQL fragment rather than a bound value. It is never user
+/// input - one of exactly three hardcoded strings, the third being the column's
+/// own name - so every `?N` placeholder in the caller's statement is still used
+/// exactly once, the convention every query in this codebase follows.
+fn stamp_sql(was: bool, now: bool, column: &'static str) -> &'static str {
+    match (was, now) {
+        (false, true) => "strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        (true, false) => "NULL",
+        _ => column,
+    }
+}
+
+/// Flips one of a pull's two boolean flags and keeps its timestamp consistent,
+/// without needing the full edit form. `flag`/`stamp` are hardcoded column
+/// names from the two call sites below, never anything user-supplied.
+fn set_pull_flag(
+    conn: &Connection,
+    id: i64,
+    flag: &'static str,
+    stamp: &'static str,
+    value: bool,
+) -> AppResult<Pull> {
+    let was: bool = conn
+        .query_row(&format!("SELECT {flag} FROM pulls WHERE id = ?1"), [id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Pull #{id} not found")))?;
+
+    let stamp_expr = stamp_sql(was, value, stamp);
+    let sql = format!(
+        "UPDATE pulls SET {flag} = ?1, {stamp} = {stamp_expr},
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?2"
+    );
+    conn.execute(&sql, params![value as i64, id])?;
+    fetch_one(conn, id)
+}
+
 /// Full-edit path (buyer/event/quantity/platform/section/row/seat/more info/
-/// price/currency, AND transfer_done - see `PullEditInput`'s doc comment for
-/// why the checkbox is correctable here too). `transfer_done_at` is kept
-/// consistent with whatever `transfer_done` ends up being via the same
-/// three-way rule `set_pull_transfer_done_impl` uses below: only touched on
-/// an actual false->true or true->false flip, left exactly as it was on a
-/// plain re-save. Spliced as a literal SQL fragment (never user input, one
-/// of exactly 3 hardcoded strings this function chooses) rather than a bound
-/// parameter, so every `?N` placeholder below is still used exactly once -
-/// same convention as every other query in this codebase.
+/// price/currency, AND both checkboxes - see `PullEditInput`'s doc comment for
+/// why they are correctable here too). Each flag's timestamp is kept consistent
+/// with it by `stamp_sql` above, the same helper the two quick-action commands
+/// use, so no code path can disagree about what a timestamp should be.
+/// 2.31.0: `paid` joined `transfer_done` here; both are read in ONE query
+/// before the write, since either may be flipping in either direction.
 pub(crate) fn update_pull_impl(conn: &Connection, id: i64, input: &PullEditInput) -> AppResult<Pull> {
     validate_pull_fields(
         &input.buyer_name,
@@ -237,27 +280,25 @@ pub(crate) fn update_pull_impl(conn: &Connection, id: i64, input: &PullEditInput
         &input.currency,
     )?;
 
-    let was_done: bool = conn
-        .query_row("SELECT transfer_done FROM pulls WHERE id = ?1", [id], |r| {
-            r.get(0)
+    let (was_done, was_paid): (bool, bool) = conn
+        .query_row("SELECT transfer_done, paid FROM pulls WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
         })
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("Pull #{id} not found")))?;
 
-    let transfer_done_at_sql = match (was_done, input.transfer_done) {
-        (false, true) => "strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        (true, false) => "NULL",
-        _ => "transfer_done_at",
-    };
+    let transfer_done_at_sql = stamp_sql(was_done, input.transfer_done, "transfer_done_at");
+    let paid_at_sql = stamp_sql(was_paid, input.paid, "paid_at");
 
     let sql = format!(
         "UPDATE pulls SET
             buyer_name = ?1, event_name = ?2, event_date = ?3, quantity = ?4,
             platform_id = ?5, section = ?6, row_label = ?7, seat = ?8, more_info = ?9,
-            price_cents = ?10, currency = ?11, transfer_done = ?12,
+            price_cents = ?10, currency = ?11, transfer_done = ?12, paid = ?13,
             transfer_done_at = {transfer_done_at_sql},
+            paid_at = {paid_at_sql},
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?13"
+         WHERE id = ?14"
     );
     let updated = conn.execute(
         &sql,
@@ -274,6 +315,7 @@ pub(crate) fn update_pull_impl(conn: &Connection, id: i64, input: &PullEditInput
             input.price_cents,
             input.currency,
             input.transfer_done as i64,
+            input.paid as i64,
             id,
         ],
     )?;
@@ -296,31 +338,25 @@ pub fn update_pull(state: State<AppState>, id: i64, input: PullEditInput) -> App
 /// doc comment) so the two code paths can never disagree about what the
 /// timestamp should be after either one runs.
 pub(crate) fn set_pull_transfer_done_impl(conn: &Connection, id: i64, done: bool) -> AppResult<Pull> {
-    let was_done: bool = conn
-        .query_row("SELECT transfer_done FROM pulls WHERE id = ?1", [id], |r| {
-            r.get(0)
-        })
-        .optional()?
-        .ok_or_else(|| AppError::NotFound(format!("Pull #{id} not found")))?;
-
-    let transfer_done_at_sql = match (was_done, done) {
-        (false, true) => "strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        (true, false) => "NULL",
-        _ => "transfer_done_at",
-    };
-    let sql = format!(
-        "UPDATE pulls SET transfer_done = ?1, transfer_done_at = {transfer_done_at_sql},
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?2"
-    );
-    conn.execute(&sql, params![done as i64, id])?;
-    fetch_one(conn, id)
+    set_pull_flag(conn, id, "transfer_done", "transfer_done_at", done)
 }
 
 #[tauri::command]
 pub fn set_pull_transfer_done(state: State<AppState>, id: i64, done: bool) -> AppResult<Pull> {
     let conn = state.db.lock().unwrap();
     set_pull_transfer_done_impl(&conn, id, done)
+}
+
+/// 2.31.0: the same quick action for the second checkbox - has the buyer paid
+/// marko's fee? Marko asked for both to be tickable straight from the list.
+pub(crate) fn set_pull_paid_impl(conn: &Connection, id: i64, paid: bool) -> AppResult<Pull> {
+    set_pull_flag(conn, id, "paid", "paid_at", paid)
+}
+
+#[tauri::command]
+pub fn set_pull_paid(state: State<AppState>, id: i64, paid: bool) -> AppResult<Pull> {
+    let conn = state.db.lock().unwrap();
+    set_pull_paid_impl(&conn, id, paid)
 }
 
 #[tauri::command]
@@ -388,6 +424,9 @@ mod tests {
         }
     }
 
+    /// 2.31.0: `paid` carries the pull's CURRENT value, so every existing
+    /// test still describes a re-save that leaves the payment flag untouched -
+    /// which is the whole point of the three-way stamp rule.
     fn edit_input_from(p: &Pull, transfer_done: bool) -> PullEditInput {
         PullEditInput {
             buyer_name: p.buyer_name.clone(),
@@ -402,6 +441,7 @@ mod tests {
             price_cents: p.price_cents,
             currency: p.currency.clone(),
             transfer_done,
+            paid: p.paid,
         }
     }
 
@@ -817,6 +857,132 @@ mod tests {
     fn set_pull_transfer_done_rejects_a_missing_pull() {
         let conn = test_conn();
         assert!(set_pull_transfer_done_impl(&conn, 999_999, true).is_err());
+    }
+
+    // ---- paid (2.31.0) --------------------------------------------------------
+
+    #[test]
+    fn create_pull_defaults_paid_to_false() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        assert!(!p.paid);
+        assert!(p.paid_at.is_none());
+    }
+
+    #[test]
+    fn set_pull_paid_stamps_timestamp_on_first_true() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let updated = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        assert!(updated.paid);
+        assert!(updated.paid_at.is_some());
+    }
+
+    #[test]
+    fn set_pull_paid_clears_timestamp_when_set_back_to_false() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        set_pull_paid_impl(&conn, p.id, true).unwrap();
+        let reverted = set_pull_paid_impl(&conn, p.id, false).unwrap();
+        assert!(!reverted.paid);
+        assert!(reverted.paid_at.is_none());
+    }
+
+    #[test]
+    fn set_pull_paid_does_not_restamp_when_already_true() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let first = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        let stamp = first.paid_at.clone().unwrap();
+        let second = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        assert_eq!(second.paid_at, Some(stamp));
+    }
+
+    #[test]
+    fn set_pull_paid_rejects_a_missing_pull() {
+        let conn = test_conn();
+        assert!(set_pull_paid_impl(&conn, 999_999, true).is_err());
+    }
+
+    #[test]
+    fn paid_and_transfer_done_never_touch_each_other() {
+        // The reason `paid` is its own column rather than a second meaning for
+        // `transfer_done`: "transferred but not paid" has to be expressible,
+        // and neither quick action may disturb the other's timestamp.
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+
+        let transferred = set_pull_transfer_done_impl(&conn, p.id, true).unwrap();
+        assert!(transferred.transfer_done && !transferred.paid);
+        assert!(transferred.paid_at.is_none());
+        let transfer_stamp = transferred.transfer_done_at.clone().unwrap();
+
+        let paid = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        assert!(paid.paid && paid.transfer_done);
+        assert_eq!(
+            paid.transfer_done_at,
+            Some(transfer_stamp.clone()),
+            "paying must not re-stamp the transfer"
+        );
+
+        // ...and flipping payment back off leaves the transfer alone.
+        let unpaid = set_pull_paid_impl(&conn, p.id, false).unwrap();
+        assert!(!unpaid.paid && unpaid.transfer_done);
+        assert!(unpaid.paid_at.is_none());
+        assert_eq!(unpaid.transfer_done_at, Some(transfer_stamp));
+    }
+
+    #[test]
+    fn update_pull_via_edit_form_can_mark_paid() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let mut edit = edit_input_from(&p, false);
+        edit.paid = true;
+        let updated = update_pull_impl(&conn, p.id, &edit).unwrap();
+        assert!(updated.paid);
+        assert!(updated.paid_at.is_some());
+        assert!(!updated.transfer_done);
+    }
+
+    #[test]
+    fn update_pull_preserves_paid_at_when_resaving_without_changing_the_checkbox() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let paid = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        let stamp = paid.paid_at.clone().unwrap();
+
+        let mut edit = edit_input_from(&paid, paid.transfer_done);
+        edit.more_info = Some("changed something else".to_string());
+        let resaved = update_pull_impl(&conn, p.id, &edit).unwrap();
+        assert!(resaved.paid);
+        assert_eq!(resaved.paid_at, Some(stamp));
+    }
+
+    #[test]
+    fn update_pull_clears_paid_at_when_payment_is_switched_back_off() {
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let paid = set_pull_paid_impl(&conn, p.id, true).unwrap();
+        assert!(paid.paid_at.is_some());
+
+        let mut edit = edit_input_from(&paid, paid.transfer_done);
+        edit.paid = false;
+        let reverted = update_pull_impl(&conn, p.id, &edit).unwrap();
+        assert!(!reverted.paid);
+        assert!(reverted.paid_at.is_none());
+    }
+
+    #[test]
+    fn one_edit_form_save_can_flip_both_checkboxes_at_once() {
+        // Both stamps come from the same UPDATE, so this is the case where a
+        // single-flag rule written twice would have been easiest to get wrong.
+        let conn = test_conn();
+        let p = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
+        let mut edit = edit_input_from(&p, true);
+        edit.paid = true;
+        let updated = update_pull_impl(&conn, p.id, &edit).unwrap();
+        assert!(updated.paid && updated.transfer_done);
+        assert!(updated.paid_at.is_some() && updated.transfer_done_at.is_some());
     }
 
     // ---- delete ---------------------------------------------------------------

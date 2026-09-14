@@ -298,12 +298,16 @@ up, billed and secured separately for one attachment.
   pass `max-h-*`. The class's own doc comment already says it belongs on a box
   that scrolls - honour that, or use `.table-shell`, which brings its own
   height.
-- **`shortCode` is for DISPLAY in lists and nothing else.** The stored `code`
-  keeps its full `PREFIX-000000` form because other things read it: a connected
-  Google Sheet shows it, `codes::next_code` mints it, and the merge parses its
-  numeric tail to keep two machines' counters in step (see 2.16.0). Never
-  rewrite stored codes to the short form, and never shorten one on a detail
-  screen - that is where the full value has to stay reachable.
+- **One code, shown in full, everywhere.** `shortCode` is gone (2.30.0): it
+  rendered `ORD-000014` as `#14` in three list views and nowhere else, which is
+  the "91 in one place, 0091 in another" marko reported. Codes are now derived
+  from the event - `CELINE-001`, `OASIS-012` - minted per event from a
+  `counters` row named `order:CELINE` (`codes::scoped_counter`). Things outside
+  this app read these strings: a connected Google Sheet shows them, and the
+  merge parses the numeric tail to keep two machines' counters in step. So:
+  never shorten a code for display, and never rewrite stored codes again
+  without also writing the old value to `legacy_code` - that column is the only
+  reason an already-synced sheet kept matching its rows through 2.30.0.
 - **Lists show the EVENT date; detail screens show the purchase/sale date.**
   Both are kept, one is chosen per screen by what that screen is for. A list is
   scanned for what is coming up. Do not "fix" this by adding both columns to
@@ -464,13 +468,31 @@ up, billed and secured separately for one attachment.
   an orphan and is dropped: records would vanish for the sole reason that both
   machines had once typed the same platform name. There is a test named for
   exactly this.
+- **A pull's two checkboxes are independent, and the sheet knows about only
+  one of them.** `transfer_done` (marko handed the tickets over) and `paid`
+  (the buyer paid marko's fee, 2.31.0) are separate columns because they
+  finish in either order and "transferred but not paid" has to be visible.
+  Both use `commands/pulls.rs::stamp_sql` for their `*_at` column - stamp on
+  a real false->true flip, clear on true->false, LEAVE ALONE on a plain
+  re-save - so never write one of those timestamps from a new code path
+  without going through that helper. The Google Sheet has a `Transfer` column
+  and no `Paid` one: `pulls_sheet_sync` therefore reads `paid` off the local
+  pull and passes it straight back into `PullEditInput`. Drop that one line
+  and every sheet sync silently un-ticks every paid pull, with nothing on
+  screen to explain it. Giving the sheet a real `Paid` column means changing
+  marko's live spreadsheet - his call, not a refactor's.
 - **`reconcile_counter` is not housekeeping.** `codes::next_code` hands out
   `counters.value + 1` and never checks that it is free, because on one machine
   it always is. A merge breaks that: `ORD-000009` can arrive while the counter
   reads 5, and then everything works until the counter climbs back to 9 and
   ORDER CREATION fails on a UNIQUE constraint, days later, with nothing on
   screen connecting it to a sync. It runs before and after every coded table
-  and only ever raises the counter.
+  and only ever raises the counter. **It has to cover every counter a table
+  mints from, not just the fixed one.** 2.30.0 added the event-scoped rows
+  (`order:CELINE`) and did not extend this function, so the same failure came
+  straight back one counter row over - fixed in 2.30.1, with a test named for
+  it. `counters` is deliberately NOT in `MERGE_TABLES`: each machine owns its
+  own numbering, and this function is the only thing that keeps it honest.
 - **Natural-key matching follows the schema's own `UNIQUE(name)`, never a
   hunch.** platforms, suppliers, event_categories, finance_categories declare
   it; `accounts` does not, so two same-named accounts stay two rows. Following
