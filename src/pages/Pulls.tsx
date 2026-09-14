@@ -1444,7 +1444,7 @@ function OrderLinkPicker({
         onBlur={() => setTimeout(() => setOpen(false), 150)}
       />
       {open && query.trim() && (
-        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-overlay">
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 shadow-overlay">
           {searching ? (
             <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">Searching...</p>
           ) : results.length === 0 ? (

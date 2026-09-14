@@ -41,35 +41,41 @@
      those utilities out pick this up with no page edit - the same mechanism
      the 2.6.0 redesign used. */
   :root {
+    /* 2.29.1: the ground and the surface are no longer the SAME value.
+       A perfectly flat pair is soft-UI orthodoxy and it reads as washed-out
+       in light mode - marko's "farby niesu take pekne". The card is now a
+       step LIGHTER than the ground, which is what a surface lifted toward a
+       top-left light source actually does, and the shadow pair is measured
+       against the card's own colour rather than the page's. */
     --app-bg: theme("colors.slate.50");
-    --surface: theme("colors.slate.50");
-    --surface-muted: theme("colors.slate.100");
-    --surface-raised: theme("colors.slate.50");
+    --surface: #eef0f5;
+    --surface-muted: #e1e2ea;
+    --surface-raised: #f3f4f8;
     --line: theme("colors.slate.200");
     --line-soft: theme("colors.slate.100");
     --scroll-thumb: theme("colors.slate.300");
     --highlight: transparent;
-    --sh-card: 7px 7px 16px #c9c9d0, -7px -7px 16px #ffffff;
-    --sh-raised: 10px 10px 22px #c5c5cd, -10px -10px 22px #ffffff;
-    --sh-overlay: 0 26px 70px rgb(60 60 72 / 0.28), 10px 10px 24px #c5c5cd;
-    --sh-inset: inset 4px 4px 9px #c9c9d0, inset -4px -4px 9px #ffffff;
+    --sh-card: 6px 6px 14px #cdcfd9, -6px -6px 14px #ffffff;
+    --sh-raised: 9px 9px 20px #c7c9d5, -9px -9px 20px #ffffff;
+    --sh-overlay: 0 24px 64px rgb(40 42 58 / 0.26), 9px 9px 20px #c7c9d5;
+    --sh-inset: inset 4px 4px 9px #d2d4de, inset -4px -4px 9px #ffffff;
   }
   .dark {
     --app-bg: theme("colors.slate.950");
     --surface: theme("colors.slate.900");
-    --surface-muted: #202127;
-    --surface-raised: theme("colors.slate.900");
+    --surface-muted: #24252d;
+    --surface-raised: #232430;
     --line: theme("colors.slate.800");
-    --line-soft: #232429;
+    --line-soft: #26272f;
     --scroll-thumb: theme("colors.slate.700");
     /* The soft pair replaces the 2.6.0 top-highlight trick entirely: on a
        dark ground the LIGHT half of the pair is the highlight, and it has to
        be a genuinely lighter grey (#26272f), not a translucent white. */
     --highlight: transparent;
-    --sh-card: 7px 7px 16px #121317, -7px -7px 16px #26272f;
-    --sh-raised: 10px 10px 22px #101115, -10px -10px 22px #282932;
-    --sh-overlay: 0 26px 70px rgb(0 0 0 / 0.6), 10px 10px 24px #101115;
-    --sh-inset: inset 4px 4px 9px #121317, inset -4px -4px 9px #26272f;
+    --sh-card: 6px 6px 14px #121318, -6px -6px 14px #292a34;
+    --sh-raised: 9px 9px 20px #0f1014, -9px -9px 20px #2c2d38;
+    --sh-overlay: 0 24px 64px rgb(0 0 0 / 0.62), 9px 9px 20px #0f1014;
+    --sh-inset: inset 4px 4px 9px #141519, inset -4px -4px 9px #282932;
   }
 
   body {
@@ -122,8 +128,8 @@
      as it was (a soft shadow, not a hard ring) and simply stacks on top of
      the inset, which is why `focus:` still reads clearly. */
   .input {
-    @apply w-full rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-900 shadow-inset transition placeholder:text-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-400
-      dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:disabled:text-slate-500;
+    @apply w-full rounded-lg bg-surface px-3 py-2.5 text-sm text-slate-900 shadow-inset transition placeholder:text-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-400
+      dark:text-slate-100 dark:placeholder:text-slate-500 dark:disabled:text-slate-500;
     border: 0;
     outline: none;
   }
@@ -199,7 +205,7 @@
   }
 
   /* The bordered surface every list table sits in. Replaces the identical
-     "overflow-x-auto rounded-xl border ... bg-white ... shadow-sm" wrapper
+     "overflow-x-auto rounded-xl border ... bg-surface ... shadow-sm" wrapper
      that was copy-pasted around ~14 tables, so the surface, the sticky
      header, the row rhythm and the hover state are defined once.
 
@@ -213,7 +219,7 @@
      cap, the contained overscroll, the sticky header below) is untouched:
      that behaviour was fixed against a real bug and is not a style. */
   .table-shell {
-    @apply overflow-auto rounded-xl bg-slate-50 shadow-card dark:bg-slate-900;
+    @apply overflow-auto rounded-xl bg-surface shadow-card;
     border: 0;
     max-height: calc(100vh - var(--table-inset, 13.5rem));
     overscroll-behavior: contain;
@@ -287,7 +293,7 @@
      app ground, because in this material the card and the page are one
      sheet. */
   .card {
-    @apply rounded-xl bg-slate-50 shadow-card dark:bg-slate-900;
+    @apply rounded-xl bg-surface shadow-card;
     border: 0;
   }
   /* Opt-in lift for cards that are actually clickable (KPI tiles, the

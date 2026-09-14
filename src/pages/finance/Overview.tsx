@@ -260,7 +260,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               <button
                 key={c.currency}
                 type="button"
-                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setConvertConfirm({ currency: c.currency, label: c.currency })}
               >
                 {c.currency} ({c.count})
@@ -269,7 +269,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             {nonEurCurrencies.length > 1 && (
               <button
                 type="button"
-                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setConvertConfirm({ currency: null, label: nonEurCurrencies.map((c) => c.currency).join(", ") })}
               >
                 All
@@ -281,7 +281,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
       )}
 
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
           {PERIODS.map((p) => (
             <button
               key={p.key}
@@ -294,7 +294,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
           {SCOPES.map((s) => (
             <button
               key={s.key}

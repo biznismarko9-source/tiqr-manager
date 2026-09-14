@@ -26,18 +26,21 @@ export default {
         // 2.29.0 (Onyx): the blue becomes the lavender marko picked. Same
         // job, same 600-is-the-action-colour convention - every `bg-brand-600`
         // across the pages picks this up with no page edit.
+        // 2.29.1: a little more pigment. The first pass was so desaturated
+        // that a primary button read as another grey panel - the accent is
+        // the ONE saturated thing on screen and has to earn that.
         brand: {
-          50: "#f0eefb",
-          100: "#ddd9f5",
-          200: "#c6c0ee",
-          300: "#aea6e6",
-          400: "#9d94df",
-          500: "#8f86d8",
-          600: "#7f76cd",
-          700: "#6d64b8",
-          800: "#574f94",
-          900: "#443e73",
-          950: "#2a2648",
+          50: "#f1effc",
+          100: "#dfdaf8",
+          200: "#c7c0f1",
+          300: "#ada3e9",
+          400: "#9a8ee3",
+          500: "#8878dc",
+          600: "#7563cf",
+          700: "#6151b4",
+          800: "#4e418f",
+          900: "#3e346f",
+          950: "#271f47",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -69,18 +72,28 @@ export default {
         // The hue also loses the blue: these are near-neutral greys so the
         // lavender brand below is the only colour on screen.
         slate: {
-          50: "#e9e9ec",
-          100: "#e3e3e8",
-          200: "#dcdce1",
-          300: "#c9c9d0",
-          400: "#8b8b99",
-          500: "#6f6f7d",
-          600: "#55555f",
-          700: "#3a3b45",
-          800: "#2a2b32",
-          900: "#1c1d22",
-          950: "#1a1b20",
+          50: "#e6e7ec",
+          100: "#dfe0e7",
+          200: "#d5d7e0",
+          300: "#c0c2ce",
+          400: "#84869a",
+          500: "#6a6c80",
+          600: "#515367",
+          700: "#383a49",
+          800: "#2b2c35",
+          900: "#1e1f26",
+          950: "#16171c",
         },
+        // 2.29.1: the surface a card actually sits on, as its own token
+        // rather than a literal. `bg-white` was the single biggest reason the
+        // real app looked nothing like the preview - 39 places painted a pure
+        // white box on the new grey ground, which is the exact opposite of
+        // "the card and the page are one sheet". These resolve to the same
+        // `--surface` variables index.css already defines per theme, so one
+        // class is correct in both.
+        surface: "var(--surface)",
+        "surface-muted": "var(--surface-muted)",
+        "surface-raised": "var(--surface-raised)",
       },
       fontFamily: {
         sans: [
@@ -117,7 +130,7 @@ export default {
         // Focus ring used by inputs/selects/textareas - a soft brand halo
         // rather than Tailwind's hard 2px ring, so a focused field in a
         // dense form doesn't shout.
-        focus: "0 0 0 3px rgb(143 134 216 / 0.28)",
+        focus: "0 0 0 3px rgb(136 120 220 / 0.34)",
         "focus-danger": "0 0 0 3px rgb(220 38 38 / 0.16)",
       },
       borderRadius: {

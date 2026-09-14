@@ -149,7 +149,7 @@ const SEVERITY_TEXT: Record<CalendarSeverity, string> = {
   info: "",
   neutral: "",
 };
-const LEGEND_INACTIVE = "bg-white text-slate-400 ring-slate-200 dark:bg-slate-900 dark:text-slate-500 dark:ring-slate-800";
+const LEGEND_INACTIVE = "bg-surface text-slate-400 ring-slate-200 dark:bg-slate-900 dark:text-slate-500 dark:ring-slate-800";
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_CELL_CAP = 3;

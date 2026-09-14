@@ -335,7 +335,7 @@ export function Tour() {
 
       <div
         style={cardStyle}
-        className="z-[92] rounded-2xl border border-slate-200 bg-white p-5 shadow-raised dark:border-slate-700 dark:bg-slate-900"
+        className="z-[92] rounded-2xl border border-slate-200 bg-surface p-5 shadow-raised dark:border-slate-700 dark:bg-slate-900"
       >
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-600 dark:text-brand-400">

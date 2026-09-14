@@ -177,7 +177,7 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
   return (
     <div>
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
           {PERIODS.map((p) => (
             <button
               key={p.key}

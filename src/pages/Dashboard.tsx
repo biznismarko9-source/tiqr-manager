@@ -847,7 +847,7 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
               <button
                 key={c.currency}
                 type="button"
-                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setPending({ currencies: [c.currency], label: c.currency })}
               >
                 {c.currency} ({c.orderCount})
@@ -856,7 +856,7 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
             {nonEur.length > 1 && (
               <button
                 type="button"
-                className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setPending({ currencies: null, label: nonEur.map((c) => c.currency).join(", ") })}
               >
                 All
@@ -1258,7 +1258,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Attention summary"
-        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-surface text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
       >
         <IconBell className="h-4 w-4" />
         {activeCount > 0 && (
@@ -1272,7 +1272,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-overlay dark:border-slate-800 dark:bg-slate-900">
+        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-surface shadow-overlay dark:border-slate-800 dark:bg-slate-900">
           {activeCount === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</p>
           ) : (

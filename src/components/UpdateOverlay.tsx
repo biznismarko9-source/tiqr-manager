@@ -25,9 +25,9 @@ export function UpdateOverlay({ version, progress }: { version?: string; progres
         Installing {version}
         {pct !== null ? ` - ${pct}%` : "..."}
       </p>
-      <div className="mt-6 h-1.5 w-64 max-w-[80vw] overflow-hidden rounded-full bg-white/20">
+      <div className="mt-6 h-1.5 w-64 max-w-[80vw] overflow-hidden rounded-full bg-surface/20">
         <div
-          className="h-full rounded-full bg-white transition-all"
+          className="h-full rounded-full bg-surface transition-all"
           style={{ width: pct !== null ? `${pct}%` : "30%" }}
         />
       </div>

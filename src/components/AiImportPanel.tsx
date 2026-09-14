@@ -228,7 +228,7 @@ export default function AiImportPanel({
           className={`flex w-full flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-4 text-center transition ${
             dragging
               ? "border-brand-500 bg-brand-50/70 dark:bg-brand-500/10"
-              : "border-slate-300 hover:border-slate-400 hover:bg-white dark:border-slate-700 dark:hover:border-slate-600 dark:hover:bg-slate-900/50"
+              : "border-slate-300 hover:border-slate-400 hover:bg-surface dark:border-slate-700 dark:hover:border-slate-600 dark:hover:bg-slate-900/50"
           }`}
         >
           <IconUpload className="h-4 w-4 text-slate-400 dark:text-slate-500" />
@@ -347,7 +347,7 @@ export default function AiImportPanel({
               </div>
 
               {groups.length > 0 && activeGroup && (
-                <div className="mt-3 rounded-lg border border-slate-200 bg-white p-2.5 dark:border-slate-700 dark:bg-slate-900/60">
+                <div className="mt-3 rounded-lg border border-slate-200 bg-surface p-2.5 dark:border-slate-700 dark:bg-slate-900/60">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <p className="section-title">
                       {groups.length === 1 ? "Tickets" : `Ticket group ${groupIndex + 1} of ${groups.length}`}

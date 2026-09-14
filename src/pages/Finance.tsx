@@ -75,7 +75,7 @@ export default function Finance() {
     <div>
       <PageHeader title="Finance" subtitle="Personal and business money, tracked in one place." />
 
-      <div className="mb-6 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+      <div className="mb-6 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
         {TABS.map((t) => (
           <button
             key={t.key}

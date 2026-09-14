@@ -582,7 +582,7 @@ export default function Sales() {
           the opposite direction. No `max-w` here anymore for the same
           reason there's none on the table wrapper - see that comment. */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 px-4 py-2.5 text-sm">
           {totals && groups ? (
             <>
               {/* 2.0.59: visibleGroups, not groups - this sits directly beside

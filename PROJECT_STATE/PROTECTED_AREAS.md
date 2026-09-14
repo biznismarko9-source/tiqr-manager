@@ -40,11 +40,27 @@ languages on the same element - the pair already defines the edge.
 dark end because the card and the page ARE one sheet here. Re-opening that gap
 to give cards "contrast" undoes the material.
 
-**Still exactly four files.** The whole look lives in `tailwind.config.js`,
-`src/index.css`, `components/ui.tsx` and `components/Layout.tsx`. 2.29.0 was
-only possible as a two-file change because no page had ever defined its own
-look. If a page ever needs a new visual pattern it belongs in these four, not
-inlined - that rule is now load-bearing, not advice.
+**Four files, and `ui.tsx` is the one that bites.** The look lives in
+`tailwind.config.js`, `src/index.css`, `components/ui.tsx` and
+`components/Layout.tsx`. 2.29.0 changed the first two and I called it a
+two-file change - it was not, and marko found the gap immediately: **`ui.tsx`
+does not use `.card`.** Modal, ConfirmDialog, the shared panel, the secondary
+button, the tab strip and the empty state each declare their own surface
+inline, so every dialog in the app kept the old flat white box. Anything that
+restyles surfaces has to go through `ui.tsx` by hand as well as through the
+tokens. Check a dialog, not just a page, before calling a restyle done.
+
+**`bg-surface`, never `bg-white`.** A literal white box on this ground is the
+opposite of one sheet of material, and it is what made the real app look
+nothing like the approved preview. The semantic colours (`surface`,
+`surface-muted`, `surface-raised`) resolve to the per-theme variables and are
+correct in both; `text-white` and `ring-offset-white` are genuinely white and
+stay.
+
+**The ground and the surface must NOT be the same colour.** 2.29.0 made them
+identical - textbook soft UI, and washed out in practice. The card sits a step
+lighter than the page, and each shadow pair is measured against the card's own
+colour, not the page's.
 
 ## 2.27.0 - Comments whose content is also syntax
 

@@ -358,7 +358,7 @@ export default function Layout() {
           2.6.0: width deliberately UNCHANGED - the redesign buys its extra
           breathing room from tighter internal padding and a smaller nav type
           size, not by taking width back off the tables. */}
-      <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <aside className="flex w-48 shrink-0 flex-col border-r border-slate-200 bg-surface dark:border-slate-800 dark:bg-slate-900">
         {/* Brand lockup. The hairline under it is what separates the app's
             identity from its navigation - the same "one quiet rule per
             section boundary" the sidebar uses throughout, rather than
@@ -467,7 +467,7 @@ export default function Layout() {
             // the button it's anchored to (this menu opens upward) instead
             // of scaling from its own center, which would look like it's
             // growing out of thin air above the button.
-            <div className="absolute inset-x-2 bottom-full mb-1.5 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-overlay dark:border-slate-700 dark:bg-slate-800">
+            <div className="absolute inset-x-2 bottom-full mb-1.5 origin-bottom animate-[pop-in_.16s_ease-out] overflow-hidden rounded-xl border border-slate-200 bg-surface p-1 shadow-overlay dark:border-slate-700 dark:bg-slate-800">
               <Link
                 to="/settings"
                 onClick={() => setProfileOpen(false)}
@@ -585,7 +585,7 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
         // sitting in the same corner underneath it - every toast hid the one
         // thing that was supposed to say the app is busy, which is the exact
         // opposite of what it is for.
-        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
+        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-surface/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
       >
         <Spinner className="h-3.5 w-3.5 text-brand-500" />
         {activity.label}...
@@ -602,7 +602,7 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
       // outranks everything because it ends the process.
       className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm"
     >
-      <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-white px-7 py-6 text-center shadow-raised dark:border-slate-700 dark:bg-slate-900">
+      <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-surface px-7 py-6 text-center shadow-raised dark:border-slate-700 dark:bg-slate-900">
         <Spinner className="h-7 w-7 text-brand-500" />
         <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{activity.label}...</p>
         <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">

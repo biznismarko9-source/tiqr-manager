@@ -3905,7 +3905,7 @@ function SupportCards() {
             <button
               type="button"
               onClick={startTour}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-50"
+              className="rounded-lg bg-surface px-4 py-2 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-50"
             >
               Start the tour
             </button>
@@ -3960,7 +3960,7 @@ function SupportCards() {
           rows={4}
           maxLength={2000}
           placeholder="Napíš, čo by si zmenil alebo pridal…"
-          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
+          className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
         />
         {/* 2.25.0: one optional picture. A screenshot says in one look what a
             paragraph gets wrong - and it is resized here before it is sent,

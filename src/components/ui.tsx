@@ -35,10 +35,10 @@ export function Button({
   };
   const variants: Record<ButtonVariant, string> = {
     primary:
-      "bg-brand-600 text-white shadow-card hover:bg-brand-700 active:bg-brand-700 focus-visible:ring-brand-500",
+      "bg-brand-600 text-white shadow-card hover:bg-brand-500 active:shadow-inset focus-visible:ring-brand-500",
     secondary:
-      "border border-slate-300 bg-white text-slate-700 shadow-card hover:border-slate-400 hover:bg-slate-50 focus-visible:ring-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800 dark:focus-visible:ring-slate-500",
-    danger: "bg-red-600 text-white shadow-card hover:bg-red-700 focus-visible:ring-red-500",
+      "bg-surface text-slate-700 shadow-card hover:shadow-raised active:shadow-inset focus-visible:ring-slate-400 dark:text-slate-200 dark:focus-visible:ring-slate-500",
+    danger: "bg-red-600 text-white shadow-card hover:bg-red-500 active:shadow-inset focus-visible:ring-red-500",
     ghost:
       "text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-slate-400 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100",
   };
@@ -203,7 +203,7 @@ export function PageHeader({
     // (components/Tour.tsx), which is how one edit here gives every page in
     // the app a place for the tour to point at instead of a dozen page edits.
     // No behaviour, no styling, no prop.
-    <div data-tour="page-header" className="mb-5 border-b border-slate-200 pb-4 dark:border-slate-800">
+    <div data-tour="page-header" className="mb-5 pb-4">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h1 className="truncate text-[19px] font-semibold leading-tight text-slate-900 dark:text-slate-50">
@@ -244,8 +244,8 @@ export function Skeleton({ className = "" }: { className?: string }) {
  * widths, because every table in this app sets its own `colgroup`. */
 export function TableSkeleton({ rows = 8, className = "" }: { rows?: number; className?: string }) {
   return (
-    <div className={`overflow-hidden rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900 ${className}`}>
-      <div className="flex items-center gap-4 border-b border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-800 dark:bg-slate-800/40">
+    <div className={`overflow-hidden rounded-xl bg-surface shadow-card ${className}`}>
+      <div className="flex items-center gap-4 bg-surface-muted px-3 py-3">
         <Skeleton className="h-2.5 w-24" />
         <Skeleton className="h-2.5 w-16" />
         <Skeleton className="ml-auto h-2.5 w-20" />
@@ -292,9 +292,9 @@ export function EmptyState({
   // floating as a large grey glyph, and the whole block sits on a real
   // (dashed) surface. Same props, same call sites.
   return (
-    <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900/50">
+    <div className="flex flex-col items-center justify-center gap-1 rounded-xl px-6 py-14 text-center shadow-inset">
       {icon && (
-        <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-card dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500">
+        <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-surface text-slate-400 shadow-card dark:text-slate-500">
           {icon}
         </div>
       )}
@@ -631,9 +631,9 @@ export function Modal({
     // the header no longer scrolls away with the content.
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-slate-950/70">
       <div
-        className={`w-full ${width} overflow-hidden rounded-xl border border-slate-200 bg-white shadow-overlay animate-[pop-in_.18s_ease-out] dark:border-slate-800 dark:bg-slate-900`}
+        className={`w-full ${width} overflow-hidden rounded-xl bg-surface shadow-overlay animate-[pop-in_.18s_ease-out]`}
       >
-        <div className="flex items-center justify-between gap-4 border-b border-slate-200 bg-slate-50/70 px-5 py-3.5 dark:border-slate-800 dark:bg-slate-800/30">
+        <div className="flex items-center justify-between gap-4 bg-surface-muted px-5 py-3.5">
           <h2 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-50">{title}</h2>
           <button
             onClick={onClose}
@@ -651,7 +651,7 @@ export function Modal({
 
 export function ModalFooter({ children }: { children: ReactNode }) {
   return (
-    <div className="-mx-5 -mb-4 mt-5 flex justify-end gap-2 border-t border-slate-200 bg-slate-50/70 px-5 py-3.5 dark:border-slate-800 dark:bg-slate-800/30">
+    <div className="-mx-5 -mb-4 mt-5 flex justify-end gap-2 bg-surface-muted px-5 py-3.5">
       {children}
     </div>
   );
@@ -683,7 +683,7 @@ export function ConfirmDialog({
   return (
     // 2.0.74: same entrance treatment as Modal above - see its comment.
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-slate-950/70">
-      <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-overlay animate-[pop-in_.18s_ease-out] dark:border-slate-800 dark:bg-slate-900">
+      <div className="w-full max-w-sm rounded-xl bg-surface p-5 shadow-overlay animate-[pop-in_.18s_ease-out]">
         <div className="flex gap-3.5">
           <div
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ${danger ? "bg-red-50 text-red-600 ring-red-200/70 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-400/20" : "bg-amber-50 text-amber-600 ring-amber-200/70 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-400/20"}`}
@@ -722,12 +722,12 @@ export function ConfirmDialog({
  * active item, replacing the solid brand-blue fill. The blue fill made an
  * ordinary list filter read as the loudest control on the page. */
 export const SEGMENTED_TRACK =
-  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-slate-100/70 p-1 dark:border-slate-800 dark:bg-slate-900/70";
+  "inline-flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg p-1 shadow-inset";
 
 export function segmentedItemClass(active: boolean): string {
   return `rounded-md px-3 py-1.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
     active
-      ? "bg-white text-slate-900 shadow-card dark:bg-slate-700/70 dark:text-slate-50"
+      ? "bg-surface text-slate-900 shadow-card dark:text-slate-50"
       : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
   }`;
 }

@@ -16,6 +16,52 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.1 - Onyx, second pass: the surfaces the first pass missed
+
+Marko, on 2.29.0: the colours are not nice in the layout, New order / pull and
+the settings are not changed, and it looks different in the real app than in
+the preview. All three had the same root cause, and my 2.29.0 note that this
+was "a two-file change" was wrong.
+
+### `bg-white` was painted in 39 places
+
+`ui.tsx` does not use `.card` — **Modal, ConfirmDialog, the shared panel, the
+secondary button, the tab strip and the empty state each define their own
+surface inline**, as `border border-slate-200 bg-white`. So every dialog in the
+app — New order, New pull, New sale, every Settings dialog — kept its old flat
+white box while everything around it went soft. Twenty-five more literals sat
+across fifteen page files.
+
+Fixed properly rather than one class at a time: a semantic **`surface`** colour
+now resolves to the same `--surface` variable index.css already sets per theme,
+and every `bg-white` became `bg-surface`. `text-white` and
+`ring-offset-white` were deliberately left alone — those are genuinely white.
+
+That is also the whole "looks different in the app" answer: on the new grey
+ground a pure white card is the exact opposite of one sheet of material.
+
+### The ground and the surface are no longer the same colour
+
+2.29.0 made them identical, which is soft-UI orthodoxy and reads **washed out**
+in light mode. The card is now a step LIGHTER than the page — which is what a
+surface tilted toward a top-left light actually does — and every shadow pair
+was re-measured against the card's own colour rather than the page's.
+
+### More pigment in the accent
+
+The first lavender was so desaturated that a primary button read as another
+grey panel. The accent is the one saturated thing on screen and has to earn it.
+
+### Also
+
+Modal header and footer bands, tab strips and the empty state now use the
+material's own gestures — a band is a muted surface, a chosen tab presses in —
+instead of borders and tints. The page header's hairline rule went: in a design
+with no borders it was the last stray line.
+
+Checked in a browser against the real token values, in both themes, before
+shipping. No logic, no schema, no migration (next is still 029).
+
 ## 2.29.0 - Onyx: the app becomes one soft material
 
 Marko picked it out of a design lab of eleven, then out of ten siblings of the

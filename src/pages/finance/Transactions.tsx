@@ -150,7 +150,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
   return (
     <div>
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
           {PERIODS.map((p) => (
             <button
               key={p.key}
@@ -163,7 +163,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
           {SCOPES.map((s) => (
             <button
               key={s.key}

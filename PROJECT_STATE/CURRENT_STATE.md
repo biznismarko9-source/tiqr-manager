@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.29.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.29.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -608,7 +608,7 @@ single lavender, no borders on surfaces, fields pressed into the sheet.
 Marko chose it from a design lab (eleven movements, then ten siblings of the
 one he kept).
 
-**Changed: TWO files.** `tailwind.config.js` (slate ramp, brand ramp, shadow
+**Changed (corrected in 2.29.1 - the 2.29.0 claim below was wrong):** `tailwind.config.js` (slate ramp, brand ramp, shadow
 scale, radius) and `src/index.css` (surface tokens, `.card`, `.card-interactive`,
 `.input`, `.table-shell`) — plus four lines in `Layout.tsx` for the sidebar's
 active state. **No page file was touched**, which is exactly what the 2.6.0
@@ -627,6 +627,23 @@ else.
 which undoes marko's 2.6.0 "no obrovské rounded cards". He picked the preview
 that has them; a soft extruded corner needs the room for the two shadows to
 travel around it. Recorded so nobody reads it as drift.
+
+**2.29.1 - the surfaces 2.29.0 missed.** `ui.tsx` does NOT use `.card`: Modal,
+ConfirmDialog, the shared panel, the secondary button, the tab strip and the
+empty state each declared `border border-slate-200 bg-white` inline. That is
+why every dialog (New order, New pull, Settings) stayed flat and white while
+the rest of the app went soft, and why light mode looked nothing like the
+preview - a pure white card on a grey ground is the opposite of one material.
+
+**The fix to know about:** a semantic `surface` / `surface-muted` /
+`surface-raised` colour in tailwind.config.js resolves to the `--surface*`
+variables index.css already sets per theme, and all 39 `bg-white` became
+`bg-surface`. `text-white` and `ring-offset-white` were left alone. **Reach for
+`bg-surface`, never `bg-white`, for anything that is a surface.**
+
+Also: the ground and the surface are no longer the same colour (identical was
+washed out in light mode - the card is now a step lighter, with every shadow
+pair re-measured against the card's own colour), and the accent gained pigment.
 
 **Next new migration is 029.**
 
