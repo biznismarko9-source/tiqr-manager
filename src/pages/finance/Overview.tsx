@@ -170,6 +170,26 @@ export default function Overview({ entries, categories, accounts, loading, reloa
   );
   const hasNonEurAccount = useMemo(() => accounts.some((a) => a.currency !== "EUR" && a.isActive), [accounts]);
 
+  /* 2.29.5 - the gap that made Finance look like it miscounted.
+   *
+   * An entry's account is OPTIONAL, and the three screens then quietly use
+   * three different populations of the same rows: this page's Income/Expenses
+   * count every EUR entry, the account balances only move for entries that
+   * have an account, and Reports skips account-less entries outright. Each is
+   * correct for the question it answers, and nothing on screen said so - so
+   * "Expenses" and the balances below simply refused to reconcile.
+   *
+   * Not fixed by changing which rows count - that would silently alter a
+   * figure marko has been reading. Fixed by naming the difference, the same
+   * way `excludedNonEurCount` right below already handles non-EUR entries. */
+  const unassigned = useMemo(() => {
+    const rows = eurScoped.filter((e) => e.accountId === null);
+    return {
+      count: rows.length,
+      cents: rows.reduce((sum, e) => sum + (e.entryType === "expense" ? -e.amountCents : e.amountCents), 0),
+    };
+  }, [eurScoped]);
+
   // Non-EUR currencies present ANYWHERE in the ledger, not just the current
   // period/scope filter - same "always show the real global picture" scope
   // Dashboard's own MixedCurrencyBanner uses for orders.
@@ -370,6 +390,13 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               tone={netCashFlowCents > 0 ? "positive" : netCashFlowCents < 0 ? "negative" : "default"}
             />
           </div>
+          {unassigned.count > 0 && (
+            <p className="-mt-4 mb-2 text-xs text-slate-400 dark:text-slate-500">
+              {unassigned.count} of these entr{unassigned.count === 1 ? "y has" : "ies have"} no account, so{" "}
+              {unassigned.count === 1 ? "it is" : "they are"} counted here but move no balance - a net{" "}
+              {formatMoney(unassigned.cents, "EUR")} difference between this block and the accounts above.
+            </p>
+          )}
           {excludedNonEurCount > 0 && (
             <p className="-mt-4 mb-6 text-xs text-slate-400 dark:text-slate-500">
               {excludedNonEurCount} entr{excludedNonEurCount === 1 ? "y" : "ies"} in this period{" "}

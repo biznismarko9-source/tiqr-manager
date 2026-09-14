@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.29.5 - Ticket Center stays put, and Finance explains itself
+
+### Ticket Center
+
+The search row and the four category tiles now stay on screen and only the
+table scrolls. `.table-shell` already scrolls inside itself under a sticky
+header - it was just using the default 13.5rem inset, which assumes ordinary
+page chrome. Ticket Center has a filter row AND four tiles above the table, so
+the shell ran past the bottom of the window and the PAGE scrolled instead,
+taking the tiles with it. Measured against the real chrome.
+
+### Finance: the thing that looked like bad arithmetic
+
+I audited it by running the real queries against a real database with edge
+cases rather than reading them, and **the arithmetic is correct**: a
+future-dated entry is correctly excluded from a balance, a transfer is
+subtracted from one account and added to the other from a single row, inactive
+and non-EUR accounts stay out of the EUR totals. Every figure came out exact.
+
+What is NOT obvious is this: **an entry's account is optional**, and the three
+screens then quietly use three different populations of the same rows.
+
+- Overview's *Income / Expenses* count **every** EUR entry
+- **Account balances** only move for entries that **have** an account
+- **Reports** skips account-less entries outright
+
+Each is right for the question it answers, and nothing on screen said so — so
+Expenses and the balances underneath simply refused to reconcile, which reads
+exactly like a miscount.
+
+Fixed by **naming the difference, not by changing which rows count** — altering
+that would silently move a number marko has been reading. Overview now prints,
+in the same style the non-EUR note already uses: how many entries in the period
+have no account, and the exact net difference they cause between that block and
+the accounts above.
+
 ## 2.29.4 - Seven fixes from marko's own screenshots
 
 - **Orders**: the *Tier / Level* field is gone from the New order form, and

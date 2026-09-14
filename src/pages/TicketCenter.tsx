@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, OrderRecord } from "../lib/types";
@@ -299,7 +300,16 @@ export default function TicketCenter() {
               />
             </Card>
           ) : (
-            <div className="table-shell">
+            /* 2.29.5 - marko: "ta hlavna cast stala a posuvat sa da len to
+               co je pod tym". `.table-shell` already scrolls inside itself
+               under a sticky header; it was just using the default 13.5rem
+               inset, which assumes ordinary page chrome. Ticket Center has a
+               search row AND four category tiles above the table, so the
+               shell ran past the bottom of the window and the PAGE scrolled
+               instead - taking the tiles and filters with it. Measured
+               against the real chrome, not guessed. See index.css's own note
+               on this variable. */
+            <div className="table-shell" style={{ "--table-inset": "20rem" } as CSSProperties}>
               <table className="w-full table-fixed border-collapse">
                 {isNarrow ? (
                   <colgroup>
