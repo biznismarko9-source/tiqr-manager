@@ -481,6 +481,18 @@ up, billed and secured separately for one attachment.
   and every sheet sync silently un-ticks every paid pull, with nothing on
   screen to explain it. Giving the sheet a real `Paid` column means changing
   marko's live spreadsheet - his call, not a refactor's.
+- **Price Checker, Ticket Center and Calendar have no UI as of 2.33.0 - but
+  their backend is alive.** Marko asked for the three screens gone; the pages
+  and routes were deleted and nothing else was. Every Rust command still
+  exists and is still registered, `api.ts` still exposes them, and the
+  `price_checks` / `price_check_tiers` / `event_marketplace_links` tables
+  still hold every row they held. So: do NOT "clean up" the unreferenced
+  commands, the api.ts methods, the Calendar/PriceChecker types in
+  `lib/types.ts`, or those tables as dead code - they are the reason bringing
+  a screen back costs a route and a nav entry instead of a rebuild, and the
+  scan history in particular cannot be recreated once dropped. If a future
+  task really is meant to delete the data, that has to be marko's explicit,
+  separate instruction.
 - **`reconcile_counter` is not housekeeping.** `codes::next_code` hands out
   `counters.value + 1` and never checks that it is free, because on one machine
   it always is. A merge breaks that: `ORD-000009` can arrive while the counter

@@ -69,7 +69,7 @@ const STEPS: TourStep[] = [
     route: "/events",
     anchors: ["page-actions", "page-header"],
     title: "Start here: the event",
-    body: "Everything hangs off an event - orders, tickets, sales, the calendar. If the date is not settled yet, leave it empty instead of guessing: the app shows TBD and sorts those separately rather than pretending you know.",
+    body: "Everything hangs off an event - orders, tickets, sales. If the date is not settled yet, leave it empty instead of guessing: the app shows TBD and sorts those separately rather than pretending you know.",
   },
   {
     route: "/orders",
@@ -99,25 +99,13 @@ const STEPS: TourStep[] = [
     route: "/pulls",
     anchors: ["page-actions", "page-header"],
     title: "Pulls - tickets you owe someone",
-    body: "Tickets promised to a buyer with a transfer deadline. The Dashboard and the Calendar both watch these dates, because this is the one part of the job where being late costs you the sale.",
+    body: "Tickets promised to a buyer with a transfer deadline. The Dashboard watches these dates, because this is the one part of the job where being late costs you the sale.",
   },
   {
     route: "/finance",
     anchors: ["page-header"],
     title: "Money that is not a ticket",
     body: "Accounts, transactions and recurring costs - subscriptions, fees, anything that does not belong to one order. It is kept apart from ticket profit on purpose, so neither one flatters the other.",
-  },
-  {
-    route: "/price-checker",
-    anchors: ["page-header"],
-    title: "What the market is asking",
-    body: "Open a marketplace page for an event you hold and the scanner reads the prices on it. It only ever reads: nothing here changes your listing prices, and the app never reprices anything on its own.",
-  },
-  {
-    route: "/calendar",
-    anchors: ["page-header"],
-    title: "Everything with a date on it",
-    body: "Events, purchases, sales, transfer deadlines and recurring costs on one month view - so the next thing that needs you is something you see rather than something you remember.",
   },
   {
     route: "/settings/data",

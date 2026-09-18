@@ -7,14 +7,12 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconGauge,
-  IconLayoutGrid,
   IconLogOut,
   IconMoon,
   IconPackage,
   IconReceipt,
   IconSettings,
   IconSun,
-  IconTag,
   IconTicket,
   IconUsers,
   IconWallet,
@@ -94,21 +92,14 @@ const NAV: NavItem[] = [
   // v sidebar" (must be its own standalone sidebar section), not folded
   // into Events/Settings.
   { heading: "Market & money" },
-  { to: "/price-checker", label: "Price Checker", icon: IconTag },
+  // 2.33.0: Price Checker removed from the sidebar at marko's request, along
+  // with Ticket Center and Calendar. See App.tsx's own 2.33.0 comment.
   { to: "/pulls", label: "Pulls", icon: IconUsers },
   // 2.0.83: same standalone-top-level-section treatment as Price Checker
   // above (not folded into Settings/Dashboard) - Finance is a big enough
   // feature of its own (personal + business money, separate from the
   // Orders/Sales side of the business) to earn its own sidebar entry.
   { to: "/finance", label: "Finance", icon: IconWallet },
-  // 2.5.1: marko's own explicit order - Ticket Center sits right after
-  // Finance, back out as its own top-level page (see TicketCenter.tsx).
-  { heading: "Work" },
-  { to: "/ticket-center", label: "Ticket Center", icon: IconLayoutGrid },
-  // 2.5.0: "TIQR Operations Calendar" - a cross-domain overview page (every
-  // event/order/sale/pull/attention item with a real date). 2.5.1: moved
-  // from right after Dashboard to last, per marko's own exact ordering.
-  { to: "/calendar", label: "Calendar", icon: IconCalendarDays },
 ];
 
 // Shared by every actual NavLink below (both the flat top-level items and

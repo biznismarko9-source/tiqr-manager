@@ -7,7 +7,6 @@ import type {
   InventoryIntelligence,
   Marketplace,
   OrderRecord,
-  PriceCheckerSummary,
   SaleGroup,
   Ticket,
   TicketListing,
@@ -648,7 +647,6 @@ function SalesTab({
 }) {
   const toast = useToast();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
-  const [summary, setSummary] = useState<PriceCheckerSummary | null>(null);
   // 2.2.5: former FinanceTab state/effect, moved here verbatim - see that
   // function's own removed doc comment (still in CHANGELOG/git history) for
   // why this fetches per-order rather than one event-scoped query.
@@ -659,14 +657,6 @@ function SalesTab({
     api
       .listSaleGroups({ eventId: event.id })
       .then(setGroups)
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [event.id]);
-
-  useEffect(() => {
-    api
-      .getPriceCheckerSummary(event.id)
-      .then(setSummary)
       .catch((e) => toast.error(errMsg(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [event.id]);
@@ -749,40 +739,9 @@ function SalesTab({
         </div>
       )}
 
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Market</h2>
-        <button
-          type="button"
-          onClick={() => navigate("/price-checker", { state: { presetEventId: event.id } })}
-          className="text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline"
-        >
-          Open in Price Checker &rarr;
-        </button>
-      </div>
-
-      {summary && summary.marketLowestPriceCents !== null && (
-        <Card className="mb-6 p-4">
-          <p className="mb-3 section-title">Market vs. mine</p>
-          <div className="summary-bar">
-            <StatCard label="Market lowest" value={formatMoney(summary.marketLowestPriceCents, summary.myCurrency ?? "EUR")} />
-            <StatCard label="Market average" value={formatMoney(summary.marketAveragePriceCents, summary.myCurrency ?? "EUR")} />
-            <StatCard
-              label="Recommended price"
-              value={formatMoney(summary.recommendedPriceCents, summary.myCurrency ?? "EUR")}
-              sub="5% below the lowest market price"
-            />
-            <StatCard
-              label="Expected profit"
-              value={formatMoney(summary.expectedProfitCents, summary.myCurrency ?? "EUR")}
-              tone={
-                summary.expectedProfitCents == null ? "default" : summary.expectedProfitCents > 0 ? "positive" : summary.expectedProfitCents < 0 ? "negative" : "default"
-              }
-            />
-            <StatCard label="Expected ROI" value={formatPercent(summary.expectedRoi)} />
-          </div>
-        </Card>
-      )}
-
+      {/* 2.33.0: the "Market vs. mine" card and the Price Checker link that
+          sat here are gone with Price Checker itself. Potential Profit below
+          is this page's own calculation and stays. */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
         <p className="mb-1 section-title">Potential Profit</p>
         <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.32.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.33.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -732,6 +732,31 @@ only data-replacing actions are Restore and Sync down, and both already carry
 their own `danger` confirm dialog. Building the section would have meant either
 relabelling a recovery action as a hazard or inventing a delete button marko
 never asked for.
+
+**2.33.0 - three screens removed, Events cut to eight columns.** Marko's own
+call. **Price Checker, Ticket Center and Calendar are gone from the UI**:
+routes, sidebar entries and the three page files (`PriceChecker.tsx`,
+`TicketCenter.tsx`, `Calendar.tsx`) are deleted, along with everything that
+pointed at them - EventDetail's whole "Market vs. mine" card and its "Open in
+Price Checker" link, the "Check prices" buttons on OrderDetail and SaleDetail,
+OrderDetail's `/ticket-center` back-navigation branch, the Dashboard's MARKET
+ATTENTION box, and the two Tour steps (14 -> 12, and two step bodies reworded
+because they promised a calendar).
+
+**Nothing was removed from the backend or the database.** `commands/
+calendar.rs`, `price_checker.rs`, `price_checker_scanner.rs`,
+`price_checker_analysis.rs` and `attention_center.rs`'s `outside_market_price`
+arm all still exist, are still registered, and `src/lib/api.ts` still exposes
+them. The `price_checks` / `price_check_tiers` / `event_marketplace_links`
+tables and every row in them are untouched - marko asked to remove the
+screens, not to destroy scan history, and that history is not recoverable
+once dropped. Restoring any of the three is a route plus a sidebar entry.
+
+**Events is eight columns:** Event, Date, Status, Tickets, Stock, Cost,
+Revenue, Profit. Days, Available, Margin and ROI are gone from the table, and
+so is the category stripe 2.32.0 added on the left edge (the category badge
+beside the name stays). Both colgroups are now identical - with Margin and ROI
+gone there is nothing left for the wide mode to add.
 
 **Next new migration is 031.**
 

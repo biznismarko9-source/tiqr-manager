@@ -33,7 +33,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTag, IconTrash } from "../components/icons";
+import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { DELIVERY_STATUS_OPTIONS, TicketEditModal } from "./Tickets";
@@ -72,19 +72,13 @@ export default function OrderDetail() {
   // Order-code link on both unconditional - so in practice all three
   // (Orders, Tickets, Inventory) are live entry points again, not just a
   // fallback-labeling relic.
-  // 2.5.1: Ticket Center (rebuilt around orders - see TicketCenter.tsx) is
-  // now a 4th live entry point, same "remember exactly where I came from"
-  // treatment as the other three.
+  // 2.33.0: Ticket Center is gone, so it is no longer an entry point. An old
+  // `from` pointing at it simply falls through to Orders, which is what the
+  // guard was always for.
   const cameFrom = (location.state as { from?: string } | null)?.from;
-  const backTo = cameFrom && ["/tickets", "/inventory", "/orders", "/ticket-center"].includes(cameFrom) ? cameFrom : "/orders";
+  const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
   const backLabel =
-    backTo === "/tickets"
-      ? "Back to tickets"
-      : backTo === "/inventory"
-        ? "Back to inventory"
-        : backTo === "/ticket-center"
-          ? "Back to ticket center"
-          : "Back to orders";
+    backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
   // 1.9.6: marko clarified what he meant by wanting Tickets/Inventory to
   // behave like Event/Order/Sale's own click-through ("more info about that
   // object, not thrown elsewhere") - landing here still FEELS like being
@@ -222,19 +216,6 @@ export default function OrderDetail() {
           </p>
         </div>
         <div className="flex gap-2">
-          {/* 2.2.1: marko's own request - same cross-navigation pattern
-              EventDetail's "Compare to market prices" link already uses
-              (navigate + presetEventId via router state, see
-              PriceChecker.tsx which reads this back out of location.state
-              to preselect the event) - offered here too so checking market
-              prices for this order's event doesn't need a detour through
-              Events first. */}
-          <Button
-            variant="secondary"
-            onClick={() => navigate("/price-checker", { state: { presetEventId: order.eventId } })}
-          >
-            <IconTag className="h-4 w-4" /> Check prices
-          </Button>
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>

@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.33.0 - menej obrazoviek, menej stĺpcov
+
+### Events má osem stĺpcov
+
+Event, Date, Status, Tickets, Stock, Cost, Revenue, Profit. **Days, Available,
+Margin a ROI z tabuľky zmizli** — čísla nezanikli, sú ďalej na stránke eventu.
+Preč je aj **farebný pruh kategórie**, ktorý pridala 2.32.0 na ľavú hranu
+riadku; odznak kategórie vedľa názvu ostáva. Obe colgroupy sú teraz rovnaké —
+keď zmizli Margin a ROI, širokému režimu nezostalo čo pridať.
+
+### Price Checker, Ticket Center a Calendar sú preč z appky
+
+Routy, položky v sidebare aj tri súbory stránok sú zmazané. S nimi aj všetko,
+čo na ne ukazovalo:
+
+* celá karta **„Market vs. mine"** a odkaz „Open in Price Checker" na stránke
+  eventu,
+* tlačidlá **„Check prices"** na detaile objednávky aj predaja,
+* vetva návratu na **`/ticket-center`** z detailu objednávky,
+* box **MARKET ATTENTION** na Dashboarde,
+* dva kroky sprievodcu (zo 14 na 12) — a dva ďalšie som preformuloval, lebo
+  sľubovali kalendár, ktorý už neexistuje.
+
+### Z databázy som nezmazal nič
+
+**Toto si prečítaj, je to jediné rozhodnutie, ktoré som spravil za teba.**
+Povedal si „kompletne odstrániť" — odstránil som **obrazovky**, nie dáta.
+Rust príkazy (`calendar.rs`, `price_checker.rs`, scanner aj analysis) ostávajú
+a sú ďalej zaregistrované, `api.ts` ich ďalej ponúka, a tabuľky
+`price_checks`, `price_check_tiers` a `event_marketplace_links` držia každý
+riadok, ktorý držali.
+
+Dôvod je jednoduchý: história skenov sa po zmazaní už nedá vrátiť. Vrátiť
+obrazovku naopak stojí jednu routu a jednu položku v sidebare. Ak naozaj
+chceš zmazať aj dáta, povedz to zvlášť a spravím migráciu.
+
 ## 2.32.0 - what the table shows you
 
 Z tvojich 31 vybraných návrhov mala táto verzia priniesť trinásť čisto

@@ -1336,18 +1336,10 @@ const ATTENTION_CENTER_CATEGORIES: {
   { key: "no_active_listing", title: "NO ACTIVE LISTING", subtext: "Unsold tickets not listed on any marketplace" },
   { key: "sold_undelivered", title: "NOT DELIVERED YET", subtext: "Sold tickets still waiting on delivery" },
   { key: "event_soon", title: "EVENT COMING SOON", subtext: "Events approaching soon with unsold inventory" },
-  {
-    key: "outside_market_price",
-    title: "MARKET ATTENTION",
-    // 2.2.11: worded to make clear this only ever reflects real Price
-    // Checker data (attention_center.rs's `outside_market_price` arm only
-    // fires when `attention_item.available` is true, i.e. Price Checker
-    // data actually exists for that event) - never an automatic/suggested
-    // price, and section/row/tier are never read as a pricing factor
-    // anywhere in that module. This box can legitimately stay at 0 forever
-    // for a business that never opened Price Checker on any event.
-    subtext: "Listings priced well outside real Price Checker market data",
-  },
+  // 2.33.0: the MARKET ATTENTION box is gone with Price Checker - it was a
+  // readout of Price Checker data and there is no longer a screen to act on
+  // it. The backend still computes `outside_market_price`; it simply is not
+  // rendered, so restoring the box is one entry in this list.
 ];
 
 /** Worst (most urgent) priority currently present among a category's own

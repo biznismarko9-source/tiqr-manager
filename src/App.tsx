@@ -10,7 +10,6 @@ import ResetPassword from "./pages/ResetPassword";
 import PendingApproval from "./pages/PendingApproval";
 import DatabaseError from "./pages/DatabaseError";
 import Dashboard from "./pages/Dashboard";
-import Calendar from "./pages/Calendar";
 import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
@@ -20,9 +19,7 @@ import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
-import PriceChecker from "./pages/PriceChecker";
 import Finance from "./pages/Finance";
-import TicketCenter from "./pages/TicketCenter";
 import Settings from "./pages/Settings";
 
 // 2.0.44: gates the whole app behind sign-in (see Welcome.tsx + lib/auth.tsx)
@@ -140,11 +137,11 @@ export default function App() {
               }
             >
               <Route index element={<Dashboard />} />
-              {/* 2.5.0: "TIQR Operations Calendar" - a new cross-domain
-                  overview page, same level as Dashboard (not nested under
-                  Tickets/Finance) - see Layout.tsx's own 2.5.0 comment and
-                  commands/calendar.rs's module doc comment. */}
-              <Route path="calendar" element={<Calendar />} />
+              {/* 2.33.0: Calendar, Price Checker and Ticket Center were all
+                  removed at marko's request. Their Rust commands and tables
+                  are still there and untouched - nothing was dropped from the
+                  database - so bringing any of them back is a route and a nav
+                  entry, not a rebuild. */}
               <Route path="events" element={<Events />} />
               <Route path="events/:id" element={<EventDetail />} />
               <Route path="orders" element={<Orders />} />
@@ -154,15 +151,7 @@ export default function App() {
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
               <Route path="pulls" element={<Pulls />} />
-              <Route path="price-checker" element={<PriceChecker />} />
               <Route path="finance" element={<Finance />} />
-              {/* 2.5.1: Ticket Center is a standalone top-level route again -
-                  briefly a Finance subtab in 2.4.4 (see Finance.tsx and
-                  Layout.tsx's own 2.5.1 comments), marko asked for it back
-                  out on its own, and rebuilt around orders rather than the
-                  old per-ticket Control Center/Fulfillment Center pages
-                  (both removed this version - see TicketCenter.tsx). */}
-              <Route path="ticket-center" element={<TicketCenter />} />
               <Route path="settings" element={<Settings />} />
               {/* 1.8.2: Settings Home (above) plus one real route per section -
                   HashRouter makes this refresh-stable with zero extra config,
