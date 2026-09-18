@@ -371,6 +371,19 @@ export default function Calendar() {
     return hits[0] ?? null;
   }, [visibleEntries, needle]);
 
+  /** 2.32.0: "4 events · 7 deadlines" for the header. An entry is a deadline
+   *  when it is not the event itself - a pull transfer, an order to pay, a
+   *  sale to chase. Built off `visibleEntries` so it always agrees with the
+   *  filter row and the grid. */
+  const rangeSummary = useMemo(() => {
+    const events = visibleEntries.filter((e) => e.kind === "event").length;
+    const rest = visibleEntries.length - events;
+    const parts: string[] = [];
+    if (events > 0) parts.push(`${events} event${events === 1 ? "" : "s"}`);
+    if (rest > 0) parts.push(`${rest} deadline${rest === 1 ? "" : "s"}`);
+    return parts.length > 0 ? parts.join(" \u00b7 ") : "nothing in this range";
+  }, [visibleEntries]);
+
   const entriesByDate = useMemo(() => {
     const map = new Map<string, CalendarEntry[]>();
     for (const e of visibleEntries) {
@@ -482,6 +495,11 @@ export default function Calendar() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex items-center gap-3">
           <p className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">{rangeLabel}</p>
+          {/* 2.32.0: what this range actually holds, beside its name. Counts
+              `visibleEntries`, not `entries`, so turning a kind off in the
+              filter row below changes this number too - a total that ignored
+              the filters would quietly contradict the grid underneath it. */}
+          <p className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500">{rangeSummary}</p>
           {/* Calendar-local search only - it filters and highlights what is
               already loaded for the current range, and never queries anything
               of its own. Deliberately not a global search (marko's own

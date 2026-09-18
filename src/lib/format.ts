@@ -145,6 +145,22 @@ export function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Whole days between today and `dateIso` (positive = in the future,
+ * negative = already passed). Plain calendar-day difference, not
+ * time-of-day-sensitive - matches how `eventDate` is always a plain
+ * "YYYY-MM-DD" string in this app.
+ *
+ * 2.32.0: lifted out of Pulls.tsx, which owned the only copy. Events and
+ * Tickets now want the same "N days left" rule, and a third hand-written
+ * copy is exactly how two screens end up disagreeing about what "3 days"
+ * means. The Rust mirror (`PULL_WARNING_WINDOW_DAYS` in commands/calendar.rs)
+ * is deliberate and stays - see PROTECTED_AREAS.md. */
+export function daysUntil(dateIso: string): number {
+  const start = new Date(`${todayIso()}T00:00:00`);
+  const end = new Date(dateIso.length <= 10 ? `${dateIso}T00:00:00` : dateIso);
+  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+}
+
 export function titleCase(s: string | null | undefined): string {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.31.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.32.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -710,6 +710,28 @@ until it is ticked. The Google Sheet has no Paid column and is not given one -
 the only thing stopping a sync from silently un-ticking a paid pull. Pulls
 (Received) is untouched: it has no transfer flag either, so there was nothing
 to pair a payment flag with.
+
+**2.32.0 - the display batch.** Thirteen of marko's picks were scoped for
+this release; **five of them turned out to already exist** and one could not
+be built, so seven shipped. Already there before this release, confirmed in
+the source rather than assumed: venue under the event name (Events.tsx renders
+`[venue, city]` as a second line), More info as its own Pulls column, per-kind
+calendar colours (`KIND_ACCENT`) and the calendar's kind-toggle filter row
+(`activeKinds`), and the Events upcoming/completed switch (`EVENT_TABS` +
+`useListTab`). **`daysUntil` moved from Pulls.tsx into lib/format.ts** - Events
+and Price Checker now want the same rule and a third hand-written copy is how
+two screens start disagreeing; the Rust mirror in commands/calendar.rs is
+deliberate and stays. Pulls' Paid and Done are **one column of two dots** now,
+not two checkbox columns - both are still real controls with their own hit
+area. The row stagger lives on `.table-shell` (one CSS rule, not nine file
+edits) and is capped at eight steps.
+
+**A "danger zone" in Settings was dropped, not deferred.** There is no
+destructive command in this app to group: no delete-all, no factory reset. The
+only data-replacing actions are Restore and Sync down, and both already carry
+their own `danger` confirm dialog. Building the section would have meant either
+relabelling a recovery action as a hazard or inventing a delete button marko
+never asked for.
 
 **Next new migration is 031.**
 

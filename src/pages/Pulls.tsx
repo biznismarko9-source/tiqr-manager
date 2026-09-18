@@ -21,7 +21,7 @@ import {
   formatMoney,
   formatSeatsSummary,
   summarizeBulkDeleteSkips,
-  todayIso } from "../lib/format";
+  daysUntil } from "../lib/format";
 import {
   Badge,
   Button,
@@ -108,14 +108,28 @@ const WARNING_WINDOW_DAYS = 3;
 type TransferFilter = "all" | "pending" | "done";
 type PullCategory = "given" | "received";
 
-/** Whole days between today and `dateIso` (positive = in the future,
- * negative = already passed). Plain calendar-day difference, not
- * time-of-day-sensitive - matches how `eventDate`/`todayIso()` are always
- * plain "YYYY-MM-DD" strings in this app. */
-function daysUntil(dateIso: string): number {
-  const start = new Date(`${todayIso()}T00:00:00`);
-  const end = new Date(dateIso.length <= 10 ? `${dateIso}T00:00:00` : dateIso);
-  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+/** 2.32.0: one of a pull's two flags, as a dot you can click. The button
+ *  carries the padding rather than the dot, so the hit area stays a normal
+ *  control size even though what you see is 10px - these get ticked often.
+ *  `title` is the plain-words state, since a dot alone does not say which
+ *  half it is. */
+function PullDot({ on, onClick, label, title }: { on: boolean; onClick: () => void; label: string; title: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={on}
+      title={title}
+      className="rounded-full p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+    >
+      <span
+        className={`block h-2.5 w-2.5 rounded-full ${
+          on ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"
+        }`}
+      />
+    </button>
+  );
 }
 
 function warningLabel(daysLeft: number): string {
@@ -512,18 +526,17 @@ function GivenPulls() {
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[10.732%]" />
                 <col className="w-[9.146%]" />
-                <col className="w-[12.89%]" />
+                <col className="w-[14.878%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[9.634%]" />
-                <col className="w-[14.573%]" />
+                <col className="w-[16.561%]" />
                 <col className="w-[4.39%]" />
                 <col className="w-[10%]" />
-                {/* 2.31.0: the new "Paid" column gets exactly Done's width -
-                    they hold the same control. Its 5.488 came off the two
-                    widest columns above (Event and More info, 2.744 each), so
-                    this colgroup still sums to 100. */}
-                <col className="w-[5.488%]" />
-                <col className="w-[5.488%]" />
+                {/* 2.32.0: Paid and Done merged into one column. 7% for the
+                    pair, and the 3.976 that frees up goes back to Event and
+                    More info (1.988 each), which is where 2.31.0 took it from.
+                    Still sums to 100. */}
+                <col className="w-[7%]" />
                 {/* 2.0.66: new "Completed" column - width is my own estimate
                     (not measured against real content like the rest of this
                     colgroup), taken entirely from Event's share above. Flag
@@ -538,15 +551,15 @@ function GivenPulls() {
                 <col className="w-[11.527%]" />
                 <col className="w-[6.884%]" />
                 <col className="w-[6.175%]" />
-                <col className="w-[12.136%]" />
+                <col className="w-[13.36%]" />
                 <col className="w-[3.691%]" />
-                <col className="w-[9.794%]" />
+                <col className="w-[11.018%]" />
                 <col className="w-[7.807%]" />
                 <col className="w-[8.943%]" />
-                {/* 2.31.0: see the narrow colgroup's note - here the 3.974 for
-                    Paid came off More info and Platform, 1.987 each. */}
-                <col className="w-[3.974%]" />
-                <col className="w-[3.974%]" />
+                {/* 2.32.0: merged, same as the narrow colgroup above. 5.5 for
+                    the pair; the 2.448 freed goes back to More info and
+                    Platform, 1.224 each. */}
+                <col className="w-[5.5%]" />
                 {/* 2.0.66: see the narrow colgroup's identical comment above. */}
                 <col className="w-[6.5%]" />
               </colgroup>
@@ -574,8 +587,11 @@ function GivenPulls() {
                 {!isNarrow && <th className="th-c">Platform</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Warning</th>}
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Paid</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Done</th>
+                {/* 2.32.0: Paid and Done share one column now - marko's own
+                    pick. Both stay real controls, just as two dots instead of
+                    two checkbox columns, so the table gives a row back to the
+                    text columns that were being squeezed. */}
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-center`}>Paid · Done</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
               </tr>
             </thead>
@@ -662,22 +678,20 @@ function GivenPulls() {
                       </td>
                     )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
-                      <input
-                        type="checkbox"
-                        className={CHECKBOX_CLASS}
-                        checked={p.paid}
-                        onChange={() => togglePaid(p)}
-                        aria-label={`Mark pull ${p.code} as ${p.paid ? "not paid" : "paid"}`}
-                      />
-                    </td>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
-                      <input
-                        type="checkbox"
-                        className={CHECKBOX_CLASS}
-                        checked={p.transferDone}
-                        onChange={() => toggleTransferDone(p)}
-                        aria-label={`Mark pull ${p.code} as ${p.transferDone ? "not transferred" : "transferred"}`}
-                      />
+                      <span className="inline-flex items-center gap-0.5">
+                        <PullDot
+                          on={p.paid}
+                          onClick={() => togglePaid(p)}
+                          label={`Mark pull ${p.code} as ${p.paid ? "not paid" : "paid"}`}
+                          title={p.paid ? "Paid" : "Not paid"}
+                        />
+                        <PullDot
+                          on={p.transferDone}
+                          onClick={() => toggleTransferDone(p)}
+                          label={`Mark pull ${p.code} as ${p.transferDone ? "not transferred" : "transferred"}`}
+                          title={p.transferDone ? "Transferred" : "Not transferred"}
+                        />
+                      </span>
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       {(() => {

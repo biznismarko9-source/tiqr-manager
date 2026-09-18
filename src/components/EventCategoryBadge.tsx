@@ -82,6 +82,16 @@ export function EventCategoryBadge({ name, colorSlot }: { name: string; colorSlo
   );
 }
 
+/** 2.32.0: the same category color as a full-height stripe down the left
+ * edge of a table row - marko asked to read the category without reading it.
+ * Reuses `toneFor`'s `dot` class rather than introducing a second palette,
+ * so a category can never be one color as a badge and another as a stripe.
+ * The cell it sits in must be `relative`; it is decorative, so the badge
+ * beside it stays the accessible name. */
+export function EventCategoryStripe({ colorSlot }: { colorSlot: number }) {
+  return <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${toneFor(colorSlot).dot}`} />;
+}
+
 /** A small solid-color dot, no text - for Settings' Event Categories list,
  * where the name is already shown as its own text right next to it (a full
  * badge there would just repeat it, e.g. "Concert [Concert]"). */

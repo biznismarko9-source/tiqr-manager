@@ -16,6 +16,55 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.32.0 - what the table shows you
+
+Z tvojich 31 vybraných návrhov mala táto verzia priniesť trinásť čisto
+zobrazovacích. Sedem z nich je vonku.
+
+### Päť si už mal
+
+Toto nie je výhovorka, je to výsledok čítania kódu pred písaním:
+
+* **Miesto pod názvom eventu** — `Events.tsx` už vykresľuje `[venue, city]`
+  ako druhý riadok pod menom.
+* **Poznámka v Pulls** — „More info" je vlastný stĺpec už dávno.
+* **Farba podľa druhu v kalendári** — `KIND_ACCENT` pokrýva všetkých sedem
+  druhov.
+* **Čipy filtrov v kalendári** — `activeKinds` a prepínacia lišta existujú.
+* **Minulé/budúce v Events** — `EVENT_TABS` s `upcoming`/`completed`.
+
+### Čo pribudlo
+
+**Events** dostali stĺpec **Days** („3d", „today", „passed"), **pruh kategórie**
+po ľavej hrane riadku a **Stock** — predané voči kúpeným ako pásik. Pruh berie
+farbu z tej istej palety ako existujúci odznak kategórie, takže kategória nikdy
+nemôže byť jednou farbou ako pilulka a druhou ako pruh.
+
+**Pulls** majú Paid a Done v **jednom stĺpci ako dva body**. Obidva ostávajú
+klikateľné — bodka má 10 px, ale tlačidlo okolo nej má normálnu veľkosť, lebo
+toto odškrtávaš často. Tabuľka tým vrátila šírku textovým stĺpcom.
+
+**Price Checker** označí sken starší než 7 dní jantárovo. Relatívny čas tam bol
+aj predtým, ale čítal sa rovnako po hodine ako po mesiaci.
+
+**Kalendár** má vedľa názvu obdobia súčet — „4 events · 7 deadlines". Počíta z
+`visibleEntries`, takže keď vypneš druh vo filtri, číslo sa zmení tiež.
+
+**Riadky tabuliek nabiehajú zhora nadol.** Jedno CSS pravidlo na `.table-shell`,
+osem krokov a potom už nie — pri 200 riadkoch by si inak čakal na animáciu dlhšie
+než na dáta. Systémové „obmedziť pohyb" ju vypína úplne.
+
+### Nebezpečnú zónu som nepostavil
+
+V appke nie je čo do nej dať. Neexistuje príkaz na zmazanie všetkého ani
+továrenský reset. Jediné, čo prepisuje dáta, je Obnova a Sync down — a obidve
+už majú vlastný `danger` potvrdzovací dialóg. Postaviť tú sekciu by znamenalo
+buď prelepiť záchrannú akciu ako hrozbu, alebo dorobiť mazacie tlačidlo, ktoré
+si nikdy nechcel. Ani jedno.
+
+**Seats ostávajú ako boli** — pásik sedadiel (`t1`) si zrušil, vypadol z plánu
+úplne.
+
 ## 2.31.0 - a pull is paid AND transferred
 
 Marko: "do pulls taktiez mali by byt 2 veci dane co sa daju checknut a to je

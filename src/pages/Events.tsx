@@ -4,7 +4,7 @@ import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
+import { daysUntil, formatDateNumeric, formatMoneyOrMixed, formatPercentOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
 import {
   Badge,
   Button,
@@ -23,7 +23,7 @@ import {
   Textarea,
   PreviewPanel,
 } from "../components/ui";
-import { EventCategoryBadge } from "../components/EventCategoryBadge";
+import { EventCategoryBadge, EventCategoryStripe } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
@@ -35,6 +35,41 @@ import { useNarrowTables } from "../lib/useNarrowTables";
 // cancelled event is grouped into "Completed" - it isn't upcoming either,
 // and it's just as much "out of the way, no longer needs attention" as a
 // genuinely completed one.
+/** 2.32.0: "in 3 days" instead of a date you subtract in your head. Amber
+ *  inside a week, red inside three days, plain after that - the same three-day
+ *  window Pulls has warned on since 1.9.8 (`WARNING_WINDOW_DAYS` there, and
+ *  `PULL_WARNING_WINDOW_DAYS` in commands/calendar.rs). Past events say so
+ *  rather than showing a negative number. */
+function EventDays({ eventDate }: { eventDate: string | null }) {
+  if (!eventDate) return <span className="text-slate-400 dark:text-slate-500">-</span>;
+  const d = daysUntil(eventDate);
+  if (d < 0) return <span className="text-xs text-slate-400 dark:text-slate-500">passed</span>;
+  const tone =
+    d <= 3
+      ? "text-red-600 dark:text-red-400"
+      : d <= 7
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-slate-500 dark:text-slate-400";
+  return <span className={`text-xs font-medium tabular-nums ${tone}`}>{d === 0 ? "today" : `${d}d`}</span>;
+}
+
+/** 2.32.0: sold against bought, as a bar. Reads off the two count columns
+ *  next to it and adds nothing new - an event with no tickets shows an empty
+ *  track rather than a full one, which is what a divide-by-zero would have
+ *  drawn. */
+function StockBar({ purchased, available }: { purchased: number; available: number }) {
+  const sold = Math.max(0, purchased - available);
+  const pct = purchased > 0 ? Math.round((sold / purchased) * 100) : 0;
+  return (
+    <span className="flex items-center gap-2" title={`${sold} of ${purchased} sold`}>
+      <span className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+        <span className="block h-full rounded-full bg-brand-600" style={{ width: `${pct}%` }} />
+      </span>
+      <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">{pct}%</span>
+    </span>
+  );
+}
+
 const EVENT_TABS: { key: "upcoming" | "completed"; label: string }[] = [
   { key: "upcoming", label: "Upcoming" },
   { key: "completed", label: "Completed" },
@@ -404,8 +439,11 @@ export default function Events() {
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[30%]" />
+                {/* 2.32.0: Days (6%) comes out of Event's 30, which was the
+                    one column with room to give. Still sums to 100. */}
+                <col className="w-[24%]" />
                 <col className="w-[8.659%]" />
+                <col className="w-[6%]" />
                 <col className="w-[10.122%]" />
                 <col className="w-[7.561%]" />
                 <col className="w-[9.512%]" />
@@ -416,11 +454,15 @@ export default function Events() {
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[37.341%]" />
+                {/* 2.32.0: Days (4.5%) and Stock (8.5%) both come out of
+                    Event's 37.341 - same reasoning as the narrow colgroup. */}
+                <col className="w-[24.341%]" />
                 <col className="w-[6.86%]" />
+                <col className="w-[4.5%]" />
                 <col className="w-[6.436%]" />
                 <col className="w-[5.233%]" />
                 <col className="w-[6.506%]" />
+                <col className="w-[8.5%]" />
                 <col className="w-[8.699%]" />
                 <col className="w-[8.699%]" />
                 <col className="w-[9.052%]" />
@@ -443,9 +485,16 @@ export default function Events() {
                 )}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
+                {/* 2.32.0: how long you actually have, not a date to subtract
+                    in your head. Same `daysUntil` rule Pulls has used since
+                    1.9.8, now shared from lib/format. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Days</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Tickets</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
+                {/* 2.32.0: sold vs bought as one bar. Both numbers are already
+                    in the two columns beside it - this is the shape of them. */}
+                {!isNarrow && <th className="th-c">Stock</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
@@ -489,7 +538,12 @@ export default function Events() {
                       />
                     </td>
                   )}
-                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} relative ${ev.category && ev.categoryColorSlot !== null ? "pl-3" : ""}`}>
+                    {/* 2.32.0: the stripe and the padding that makes room for
+                        it share one condition - an event with a colour slot
+                        but no category name would otherwise get indented text
+                        and no stripe to explain it. */}
+                    {ev.category && ev.categoryColorSlot !== null && <EventCategoryStripe colorSlot={ev.categoryColorSlot} />}
                     <div className="flex items-center gap-1.5">
                       <Link
                         to={`/events/${ev.id}`}
@@ -514,11 +568,19 @@ export default function Events() {
                     </p>
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(ev.eventDate)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                    <EventDays eventDate={ev.eventDate} />
+                  </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.availableTickets}</td>
+                  {!isNarrow && (
+                    <td className="td-c">
+                      <StockBar purchased={ev.stats.purchasedTickets} available={ev.stats.availableTickets} />
+                    </td>
+                  )}
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td

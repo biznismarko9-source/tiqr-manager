@@ -233,6 +233,54 @@
     max-height: calc(100vh - var(--table-inset, 13.5rem));
     overscroll-behavior: contain;
   }
+  /* 2.32.0: rows arrive top-down instead of appearing all at once. marko
+     picked this one out of ten effects.
+
+     Scoped to `.table-shell` on purpose - that is the shared container every
+     list table already sits in (Events, Orders, Tickets, Sales, Pulls, Ticket
+     Center, the detail pages), so this is one rule rather than an edit in
+     nine files.
+
+     It only plays for rows React has actually mounted. Every list here keys
+     its rows by record id, so re-sorting or re-filtering reuses the DOM nodes
+     that survive and animates only the ones that genuinely arrive - typing in
+     a search box does not replay the whole table.
+
+     Capped at eight steps: past that the delay would be more wait than
+     effect, and a 200-row table would finish animating long after you have
+     started reading it. Rows beyond the eighth simply appear. */
+  .table-shell tbody tr {
+    animation: tiqr-row-in 0.26s cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  }
+  .table-shell tbody tr:nth-child(1) { animation-delay: 0ms; }
+  .table-shell tbody tr:nth-child(2) { animation-delay: 22ms; }
+  .table-shell tbody tr:nth-child(3) { animation-delay: 44ms; }
+  .table-shell tbody tr:nth-child(4) { animation-delay: 66ms; }
+  .table-shell tbody tr:nth-child(5) { animation-delay: 88ms; }
+  .table-shell tbody tr:nth-child(6) { animation-delay: 110ms; }
+  .table-shell tbody tr:nth-child(7) { animation-delay: 132ms; }
+  .table-shell tbody tr:nth-child(n + 8) { animation-delay: 154ms; }
+
+  @keyframes tiqr-row-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* The system setting wins outright - no fade, no shift, no delay. */
+  @media (prefers-reduced-motion: reduce) {
+    .table-shell tbody tr,
+    .table-shell tbody tr:nth-child(n) {
+      animation: none;
+      animation-delay: 0ms;
+    }
+  }
+
   /* Two `.table-shell`s stacked on one screen (Event Detail's Overview and
      Sales tabs) can't each claim most of the viewport, so those opt into a
      fixed, shorter cap instead of the viewport-relative one. */

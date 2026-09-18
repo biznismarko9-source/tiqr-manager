@@ -47,6 +47,7 @@ import type {
   YourTicketGroup,
 } from "../lib/types";
 import {
+  daysUntil,
   decimalStringToCents,
   formatDateNumeric,
   formatDateTime,
@@ -295,6 +296,11 @@ const OVERVIEW_FILTERS: { key: OverviewFilter; label: string }[] = [
   { key: "scanned", label: "Scanned" },
 ];
 
+/** 2.32.0: how old a scan has to be before the age itself is worth
+ * flagging. Seven days is a judgement call, not a measured one - say so if it
+ * turns out to be wrong for how you actually work. */
+const STALE_SCAN_DAYS = 7;
+
 /** "2h ago" / "3d ago" / "just now" from an ISO timestamp. Relative time is
  * the thing marko actually asked to see on a card ("Last scan 2h ago"); the
  * exact timestamp stays available as the element's title. */
@@ -468,7 +474,18 @@ function EventOverviewRow({
       </td>
       <td className="td-c whitespace-nowrap text-right">
         {row.lastCheckedAt ? (
-          <span className="tabular-nums text-slate-500 dark:text-slate-400" title={row.lastCheckedAt}>
+          // 2.32.0: an old scan now looks old. Market prices move, and the
+          // number beside it is only as good as when it was fetched - the
+          // relative time was already here, but read the same whether it was
+          // an hour ago or a month.
+          <span
+            className={`tabular-nums ${
+              daysUntil(row.lastCheckedAt) <= -STALE_SCAN_DAYS
+                ? "font-medium text-amber-600 dark:text-amber-400"
+                : "text-slate-500 dark:text-slate-400"
+            }`}
+            title={row.lastCheckedAt}
+          >
             {relativeTime(row.lastCheckedAt)}
           </span>
         ) : (
