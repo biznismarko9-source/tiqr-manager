@@ -206,6 +206,19 @@ export function MetricChart({
   const linePts = points.map((p, i) => ({ x: xAt(i), y: yToPixel(valueOf(p, metric)) }));
   const linePath = segmentsPath(smoothSegments(linePts));
 
+  // 2.34.0: the same curve, closed down to the baseline and filled - marko
+  // picked the area chart out of ten. It reuses `linePath` exactly, so the
+  // fill can never trace a different line than the stroke above it. The
+  // baseline is the zero row, which on a P&L chart is the line that matters;
+  // a negative stretch therefore fills upward from zero, not off the bottom.
+  // Empty when there is no line to close (`segmentsPath` returns "" for a
+  // series with nothing in it).
+  const baselineY = yToPixel(canBeNegative ? 0 : yMin);
+  const areaPath =
+    linePath && linePts.length > 0
+      ? `${linePath} L ${linePts[linePts.length - 1].x} ${baselineY} L ${linePts[0].x} ${baselineY} Z`
+      : "";
+
   // Non-negative metrics: unchanged [max, mid, 0] grid, same as before.
   // Profit & Loss: anchor on the meaningful reference points (max, the
   // break-even zero line, min) rather than an arithmetic midpoint, since 0
@@ -288,6 +301,17 @@ export function MetricChart({
               transition: "opacity 600ms ease-out, transform 600ms ease-out",
             }}
           >
+            {areaPath && (
+              <>
+                <defs>
+                  <linearGradient id="tiqr-metric-area" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" className="text-brand-500" stopColor="currentColor" stopOpacity={0.34} />
+                    <stop offset="100%" className="text-brand-500" stopColor="currentColor" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <path d={areaPath} fill="url(#tiqr-metric-area)" stroke="none" />
+              </>
+            )}
             {linePath && (
               <path
                 d={linePath}

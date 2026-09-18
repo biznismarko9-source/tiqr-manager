@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.33.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.34.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -757,6 +757,37 @@ Revenue, Profit. Days, Available, Margin and ROI are gone from the table, and
 so is the category stripe 2.32.0 added on the left edge (the category badge
 beside the name stays). Both colgroups are now identical - with Margin and ROI
 gone there is nothing left for the wide mode to add.
+
+**2.34.0 - Vapor.** Marko picked one combination out of sixteen directions,
+ten chart types and ten Finance layouts. Three of the four picks shipped.
+
+**The theme is the whole change, and it is two ramps.** `tailwind.config.js`'s
+`brand` and `slate` are retuned - brand from lavender to pink, slate from
+blue-grey to violet-grey at the same lightness steps - plus four literal hexes
+in `index.css`'s `.dark`/`:root` var blocks. Nothing else was touched, because
+every `bg-brand-600` / `text-slate-400` across ~23k lines picks the new values
+up on its own. `brand-600` is chosen for white-on-it contrast (~4.6:1), not for
+the brightest pink; the saturated end lives at 400/500 where dark mode surfaces
+it as text-on-dark.
+
+**The font stack no longer lies.** It led with `"Inter"`, which is not bundled,
+has no `@font-face`, and is not linked from anywhere - so every screen has
+silently rendered in system-ui since the beginning. Marko picked Spline Sans
+Mono, which cannot ship: TIQR is offline-by-default and a runtime webfont
+fetch would break that. The stack is now the OS mono face (SF Mono / Consolas),
+which is the honest version of what he chose. **Do not add a webfont link
+here** without solving the offline case first.
+
+**`MetricChart` draws an area.** The same `linePath`, closed to the zero
+baseline and filled with a brand gradient - the fill reuses the path rather
+than recomputing it, so it can never trace a different curve than the stroke.
+
+**Finance was left alone, deliberately.** Marko picked the "Mix" layout, and
+`finance/Overview.tsx` already has that exact shape: a KPI band, a second KPI
+band, then a two-column row of category breakdown + income/expense chart.
+What differs from the preview is proportion, not structure. Re-proportioning
+591 lines blind, with no build available, was not worth the risk for a
+cosmetic gain - this is a deferral, not an oversight.
 
 **Next new migration is 031.**
 

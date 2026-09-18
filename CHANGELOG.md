@@ -16,6 +16,50 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.34.0 - Vapor
+
+Vybral si si: Vapor, Spline Mono hrubší, graf Plocha, Finance Mix. Tri zo
+štyroch sú vonku, štvrtá nebola treba.
+
+### Celá appka je ružová
+
+Levanduľa je preč. Prepísal som dve rampy v `tailwind.config.js` — `brand` na
+ružovú, `slate` z modrosivej na fialovosivú pri rovnakých stupňoch svetlosti —
+plus štyri hexy v `index.css`. Nič iné som nechytal: každý `bg-brand-600` a
+`text-slate-400` naprieč appkou si nové hodnoty vezme sám.
+
+`brand-600` som **nedal na najkrajšiu ružovú, ale na tú s kontrastom** — biely
+text na nej má ~4,6:1. Sýty koniec rampy je na 400/500, kde ho tmavý režim
+používa ako text na tmavom, nie ako text na akcente.
+
+### Font: zlá správa a dobrá
+
+**Zlá:** Spline Sans Mono do appky poslať nejde. TIQR neťahá žiadny webový font
+a nemá zabundlovaný ani jeden — stiahnuť ho z Googlu by rozbilo offline chod.
+
+**Dobrá:** pri hľadaní som zistil, že stack viedol `"Inter"`, ktorý **nikde
+nie je**. Žiadny `@font-face`, žiadny súbor, žiadny odkaz. Appka celý čas ticho
+padala na systémové písmo. Takže si doteraz Inter nikdy nevidel.
+
+Teraz je tam **systémový mono** — SF Mono na Macu, Consolas na PC. Vyzerá
+takmer ako Spline Mono a nepotrebuje sieť.
+
+### Graf je plocha
+
+`MetricChart` kreslí pod krivkou výplň s prechodom. Používa **tú istú cestu**
+ako čiara, takže výplň nikdy nemôže ísť inokade než ťah nad ňou. Základňa je
+nula — na P&L grafe je to tá čiara, na ktorej záleží.
+
+### Finance som nechal tak, a je to zámer
+
+Vybral si Mix. `finance/Overview.tsx` **ten tvar už má**: KPI pás, druhý KPI
+pás, pod tým dvojstĺpec s rozpadom kategórií a grafom príjem/výdaj. To je
+presne poradie z Mixu.
+
+Rozdiel oproti ukážke sú proporcie, nie štruktúra. Prestavovať 591 riadkov
+naslepo, bez možnosti zbuildovať, za kozmetický zisk sa mi nezdalo. Je to
+odložené, nie prehliadnuté — povedz a spravím to ako ďalšiu verziu.
+
 ## 2.33.0 - menej obrazoviek, menej stĺpcov
 
 ### Events má osem stĺpcov

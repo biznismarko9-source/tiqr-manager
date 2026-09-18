@@ -61,7 +61,7 @@
     /* 2.29.4: DARKER than the page, not lighter. For the chrome that sits
        under the content rather than on top of it - the sidebar and the
        segmented tracks. Marko asked for both to be darker. */
-    --surface-sunken: #e2e5ea;
+    --surface-sunken: #e0dbee;
     --line: theme("colors.slate.200");
     --line-soft: theme("colors.slate.100");
     --scroll-thumb: theme("colors.slate.300");
@@ -74,11 +74,11 @@
   .dark {
     --app-bg: theme("colors.slate.950");
     --surface: theme("colors.slate.900");
-    --surface-muted: #1e2028;
-    --surface-raised: #20222b;
-    --surface-sunken: #0a0b0e;
+    --surface-muted: #1e1a2e;
+    --surface-raised: #221d33;
+    --surface-sunken: #0a0811;
     --line: theme("colors.slate.800");
-    --line-soft: #24262e;
+    --line-soft: #241e36;
     --scroll-thumb: theme("colors.slate.700");
     --highlight: transparent;
     --sh-card: 0 0 0 1px theme("colors.slate.800");

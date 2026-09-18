@@ -29,18 +29,24 @@ export default {
         // 2.29.1: a little more pigment. The first pass was so desaturated
         // that a primary button read as another grey panel - the accent is
         // the ONE saturated thing on screen and has to earn that.
+        // 2.34.0 (Vapor): marko picked the Vapor direction out of sixteen.
+        // The lavender is now pink. 600 stays "the action colour" every
+        // `bg-brand-600` in the app already uses, and is chosen for white-on-it
+        // contrast (~4.6:1) rather than for the brightest possible pink - the
+        // saturated end of the ramp lives at 400/500, which is what dark mode
+        // surfaces and where it is text-on-dark rather than text-on-accent.
         brand: {
-          50: "#f1effc",
-          100: "#dfdaf8",
-          200: "#c7c0f1",
-          300: "#ada3e9",
-          400: "#9a8ee3",
-          500: "#8878dc",
-          600: "#7563cf",
-          700: "#6151b4",
-          800: "#4e418f",
-          900: "#3e346f",
-          950: "#271f47",
+          50: "#fdeff7",
+          100: "#fbdcee",
+          200: "#f7bbda",
+          300: "#ef93c5",
+          400: "#e56db0",
+          500: "#d8499c",
+          600: "#c02e88",
+          700: "#a12470",
+          800: "#821c5b",
+          900: "#651647",
+          950: "#3f0d2c",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -76,18 +82,22 @@ export default {
         // fills and the lines themselves. The dark end drops further and the
         // ground-to-surface step opens back up; 800 is lifted so a hairline is
         // actually visible against 900, which is what now draws every edge.
+        // 2.34.0 (Vapor): same ladder, same lightness steps, hue pulled off
+        // blue-grey onto violet so the pink accent sits in its own family
+        // instead of fighting a cold ground. 400 keeps its old lightness on
+        // purpose - it is the muted-text step and it cleared 4.5:1 there.
         slate: {
-          50: "#eff1f5",
-          100: "#e4e7ed",
-          200: "#d3d7e1",
-          300: "#b6bbca",
-          400: "#767b8e",
-          500: "#5d6274",
-          600: "#464b5c",
-          700: "#313543",
-          800: "#262935",
-          900: "#15171d",
-          950: "#0d0e12",
+          50: "#ece9f5",
+          100: "#ddd8ec",
+          200: "#c7bfdb",
+          300: "#a79dc2",
+          400: "#7b7396",
+          500: "#655d80",
+          600: "#4e4766",
+          700: "#3a3450",
+          800: "#2a2440",
+          900: "#151221",
+          950: "#0d0b14",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the
@@ -106,15 +116,22 @@ export default {
         line: "var(--line)",
         "line-soft": "var(--line-soft)",
       },
+      // 2.34.0: "Inter" led this stack and was never loaded - no @font-face,
+      // no bundled file, no stylesheet link anywhere in the app - so every
+      // screen has silently rendered in system-ui since the beginning. Marko
+      // picked Spline Sans Mono, which cannot ship either: TIQR is
+      // offline-by-default and pulling a webfont at runtime would break that.
+      // This is the closest thing that needs no network - the OS mono face,
+      // which is SF Mono on his Mac and Consolas on his PC.
       fontFamily: {
         sans: [
-          "Inter",
-          "ui-sans-serif",
-          "system-ui",
-          "-apple-system",
-          "Segoe UI",
-          "Roboto",
-          "sans-serif",
+          "ui-monospace",
+          "SFMono-Regular",
+          "SF Mono",
+          "Menlo",
+          "Consolas",
+          "Liberation Mono",
+          "monospace",
         ],
       },
       // 2.6.0: one shadow scale for the whole app, replacing the mix of
