@@ -32,6 +32,7 @@ import {
   Field,
   Input,
   TableSkeleton,
+  StatusDots,
   Modal,
   ModalFooter,
   PageHeader,
@@ -107,30 +108,6 @@ const WARNING_WINDOW_DAYS = 3;
 
 type TransferFilter = "all" | "pending" | "done";
 type PullCategory = "given" | "received";
-
-/** 2.32.0: one of a pull's two flags, as a dot you can click. The button
- *  carries the padding rather than the dot, so the hit area stays a normal
- *  control size even though what you see is 10px - these get ticked often.
- *  `title` is the plain-words state, since a dot alone does not say which
- *  half it is. */
-function PullDot({ on, onClick, label, title }: { on: boolean; onClick: () => void; label: string; title: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      aria-pressed={on}
-      title={title}
-      className="rounded-full p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
-    >
-      <span
-        className={`block h-2.5 w-2.5 rounded-full ${
-          on ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"
-        }`}
-      />
-    </button>
-  );
-}
 
 function warningLabel(daysLeft: number): string {
   if (daysLeft > 0) return `${daysLeft}d left`;
@@ -678,20 +655,16 @@ function GivenPulls() {
                       </td>
                     )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-center`}>
-                      <span className="inline-flex items-center gap-0.5">
-                        <PullDot
-                          on={p.paid}
-                          onClick={() => togglePaid(p)}
-                          label={`Mark pull ${p.code} as ${p.paid ? "not paid" : "paid"}`}
-                          title={p.paid ? "Paid" : "Not paid"}
-                        />
-                        <PullDot
-                          on={p.transferDone}
-                          onClick={() => toggleTransferDone(p)}
-                          label={`Mark pull ${p.code} as ${p.transferDone ? "not transferred" : "transferred"}`}
-                          title={p.transferDone ? "Transferred" : "Not transferred"}
-                        />
-                      </span>
+                      {/* 2.34.2: the same StatusDots every list now uses. The
+                          checks are `pullCompletionChecks`' own array, so
+                          these dots and the Completed badge beside them read
+                          from one source and cannot disagree. */}
+                      <StatusDots
+                        checks={[
+                          { label: "Paid", done: p.paid, onToggle: () => togglePaid(p) },
+                          { label: "Transferred", done: p.transferDone, onToggle: () => toggleTransferDone(p) },
+                        ]}
+                      />
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       {(() => {

@@ -4,7 +4,6 @@ import { api, errMsg } from "../lib/api";
 import type {
   EventWithStats,
   FinanceEntry,
-  InventoryIntelligence,
   Marketplace,
   OrderRecord,
   SaleGroup,
@@ -107,16 +106,12 @@ import { CURRENCIES } from "./Orders";
 //    "every ticket in the event in one dropdown" picker marko found opaque).
 //    See ListingsTab's own doc comment below for the full design.
 //
-// 2.2.6: "Inventory Intelligence" - a compact block on Overview, above the
-// Orders/Tickets tables, with KPIs/aging/attention/breakdowns. See
-// InventoryIntelligenceBlock's own doc comment below for the full design and
-// commands/inventory_intelligence.rs for which existing definition each
-// number reuses (nothing here is a second implementation of Potential
-// Profit, Listed value, or the Price Checker market comparison - all three
-// already exist elsewhere on this page/app). Clicking a KPI/aging/attention/
-// breakdown row filters THIS tab's own already-rendered Tickets table down
-// to the matching tickets (by id, computed once on the backend) rather than
-// navigating away - Overview already shows that table right below.
+// 2.2.6 added an "Inventory Intelligence" block here - KPIs, aging,
+// attention and breakdowns, with clicking a row filtering the Tickets table
+// below. 2.35.1 removed it at marko's request, along with that filter, which
+// this block was the only thing that could switch on. The backend it called,
+// `commands/inventory_intelligence.rs` / `get_inventory_intelligence`, is
+// still there and still registered - nothing was deleted on that side.
 type WorkspaceTab = "overview" | "listings" | "sales";
 
 const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
@@ -248,19 +243,10 @@ function OverviewTab({
 }) {
   const s = event.stats;
 
-  // 2.2.6: set by InventoryIntelligenceBlock when a KPI/aging/attention/
-  // breakdown row is clicked - filters the Tickets table below down to just
-  // those ticket ids, with a small banner explaining what's shown and a way
-  // to clear it. `null` (the default) shows every ticket, unchanged from
-  // before this feature.
-  const [highlight, setHighlight] = useState<{ ids: number[]; label: string } | null>(null);
-  const ticketsAnchorRef = useRef<HTMLDivElement>(null);
-  const applyHighlight = (ids: number[] | null, label: string | null) => {
-    setHighlight(ids && label ? { ids, label } : null);
-    ticketsAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  const highlightedIds = highlight ? new Set(highlight.ids) : null;
-  const visibleTickets = highlightedIds ? (tickets ?? []).filter((t) => highlightedIds.has(t.id)) : tickets;
+  // 2.35.1: the ticket-highlight filter went with Inventory Intelligence -
+  // that block held every caller of it, so with the block gone the filter
+  // could never be switched on and the "Showing: ..." banner could never
+  // appear. The Tickets table below simply lists every ticket again.
 
   return (
     <div>
@@ -294,8 +280,9 @@ function OverviewTab({
         </Card>
       )}
 
-      <InventoryIntelligenceBlock eventId={event.id} onSwitchTab={onSwitchTab} onHighlight={applyHighlight} />
-
+      {/* 2.35.1: "Inventory Intelligence" removed at marko's request. The
+          Rust command (`get_inventory_intelligence`) and its api.ts method are
+          untouched and still registered - only this screen's block is gone. */}
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Orders ({orders?.length ?? 0})</h2>
         <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
@@ -349,26 +336,13 @@ function OverviewTab({
         </div>
       )}
 
-      <div ref={ticketsAnchorRef} className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-          Tickets ({visibleTickets?.length ?? 0}
-          {highlight ? ` of ${tickets?.length ?? 0}` : ""})
-        </h2>
-        {highlight && (
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Showing: <span className="font-medium text-slate-700 dark:text-slate-300">{highlight.label}</span>{" "}
-            <button type="button" className="font-medium text-brand-600 dark:text-brand-400 hover:underline" onClick={() => applyHighlight(null, null)}>
-              Clear filter
-            </button>
-          </p>
-        )}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets ({tickets?.length ?? 0})</h2>
       </div>
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
         <EmptyState title="No tickets for this event yet" />
-      ) : visibleTickets && visibleTickets.length === 0 ? (
-        <EmptyState title="No tickets match this filter" description="Clear the filter above to see every ticket again." />
       ) : (
         // 2.2.3: max-w-[1400px] removed - see the Orders table above.
         <div className="table-shell table-shell-compact">
@@ -383,7 +357,7 @@ function OverviewTab({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {(visibleTickets ?? []).map((t) => (
+              {tickets.map((t) => (
                 <tr key={t.id}>
                   <td className="td">
                     <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
@@ -407,219 +381,6 @@ function OverviewTab({
         </div>
       )}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Inventory Intelligence (2.2.6) - a compact block on Overview, above the
-// Orders/Tickets tables, built from a single new backend command
-// (`getInventoryIntelligence`) that reuses existing definitions rather than
-// inventing new ones - see commands/inventory_intelligence.rs's own doc
-// comment for exactly which existing computation each number below comes
-// from (finance::compute_summary's own scope for Total tickets/Total
-// invested, ListingsTab's own "Listed value" definition for Current listed
-// value, SalesTab's own "Potential Profit" definition unchanged, and
-// commands::price_checker::get_price_checker_summary_impl - the same
-// function SalesTab's "Market vs. mine" card already calls - for the
-// outside-market-price attention item).
-//
-// Fetches independently, keyed on eventId, same "each piece of the Event
-// Workspace fetches its own data" convention as Sales/Listings above (2.2.2's
-// own doc comment). Every clickable row calls `onHighlight(ticketIds, label)`
-// (filters Overview's own Tickets table, see OverviewTab above) or
-// `onSwitchTab("listings")` for Current listed value, which is fundamentally
-// about `ticket_listings` rows rather than raw tickets.
-//
-// No "by tier" breakdown - flagged explicitly, in the UI itself, rather than
-// invented: see InventoryIntelligence's own doc comment (lib/types.ts).
-//
-// 2.2.9: this block's own per-event "Attention" list (event_soon/missing
-// listing price/no active listing/outside market price rows) was removed -
-// marko's own request, now fully superseded by the Dashboard's GLOBAL
-// Attention Center (2.2.8, reworked in 2.2.9 to group by order - see
-// commands/attention_center.rs), which already covers every one of these
-// same categories across every event from one place. The backend command
-// this block still calls below (`getInventoryIntelligence`) is UNCHANGED -
-// attention_center.rs calls its underlying impl function directly and still
-// depends on it - only this page's own rendering of its `.attention` field
-// was deleted; KPIs/Aging/By tier/section/marketplace below are untouched.
-// ---------------------------------------------------------------------------
-
-/** Small local stand-in for `StatCard` that's actually clickable - `StatCard`
- * itself has no `onClick`, and this block's whole point is that every number
- * drills into something, so a plain non-interactive card would be the wrong
- * primitive here. Copies the exact same `.card` look every other card on
- * this page already uses (see index.css) rather than inventing a new style.
- * `disabled` renders a plain, unclickable version (used for a zero-count
- * bucket - nothing to show). */
-function ClickableStat({ label, value, sub, onClick, disabled }: { label: string; value: string; sub?: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="card p-3 text-left transition hover:ring-2 hover:ring-brand-200 disabled:cursor-default disabled:opacity-60 disabled:hover:ring-0 dark:hover:ring-brand-900"
-    >
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{sub}</p>}
-    </button>
-  );
-}
-
-function InventoryIntelligenceBlock({
-  eventId,
-  onSwitchTab,
-  onHighlight,
-}: {
-  eventId: number;
-  onSwitchTab: (tab: WorkspaceTab) => void;
-  onHighlight: (ids: number[] | null, label: string | null) => void;
-}) {
-  const toast = useToast();
-  const [data, setData] = useState<InventoryIntelligence | null>(null);
-
-  useEffect(() => {
-    setData(null);
-    api
-      .getInventoryIntelligence(eventId)
-      .then(setData)
-      .catch((e) => toast.error(errMsg(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
-
-  if (data === null) {
-    return (
-      <Card className="mb-6 p-4">
-        <LoadingBlock />
-      </Card>
-    );
-  }
-
-  const { kpis, aging, breakdownByTier, breakdownBySection, breakdownByMarketplace, unsoldTicketIds, soldTicketIds } = data;
-  const clearFilter = () => onHighlight(null, null);
-
-  return (
-    <Card className="mb-6 p-4">
-      <p className="mb-3 section-title">Inventory Intelligence</p>
-
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <ClickableStat label="Total tickets" value={String(kpis.totalTickets)} onClick={clearFilter} />
-        <ClickableStat label="Total invested" value={formatMoneyOrMixed(kpis.totalInvestedCents, kpis.currency)} onClick={clearFilter} />
-        <ClickableStat
-          label="Current listed value"
-          value={formatMoneyOrMixed(kpis.currentListedValueCents, kpis.currentListedValueCurrency)}
-          sub="Active listings"
-          onClick={() => onSwitchTab("listings")}
-        />
-        <ClickableStat
-          label="Potential profit"
-          value={formatMoneyOrMixed(kpis.potentialProfitCents, kpis.potentialProfitCurrency)}
-          sub="Unsold inventory"
-          onClick={() => onHighlight(unsoldTicketIds, "Unsold tickets (potential profit)")}
-        />
-        <ClickableStat
-          label="Sell-through"
-          value={formatPercent(kpis.sellThroughPct)}
-          onClick={() => onHighlight(soldTicketIds, "Sold tickets")}
-        />
-        <ClickableStat
-          label="Avg. ticket cost"
-          value={kpis.averageTicketCostCents != null ? formatMoneyOrMixed(kpis.averageTicketCostCents, kpis.currency) : "-"}
-          onClick={clearFilter}
-        />
-      </div>
-
-      <p className="mb-2 section-title">Aging (unsold tickets)</p>
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {aging.map((b) => (
-          <ClickableStat
-            key={b.key}
-            label={b.label}
-            value={String(b.ticketCount)}
-            disabled={b.ticketCount === 0}
-            onClick={() => onHighlight(b.ticketIds, `Aging: ${b.label}`)}
-          />
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <div>
-          {/* 2.2.7: tickets.tier (migration 024) - see InventoryIntelligence's
-              own doc comment (types.ts) for why this used to say "not
-              tracked yet" here. Blank/null groups as "Unknown" (backend-
-              computed, not a frontend fallback) - deliberately different
-              wording from the section breakdown's own "No section" below. */}
-          <p className="mb-2 section-title">By tier</p>
-          {breakdownByTier.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-              {breakdownByTier.map((g) => (
-                <li key={g.label}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                    onClick={() => onHighlight(g.ticketIds, `Tier: ${g.label}`)}
-                  >
-                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
-                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
-                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div>
-          <p className="mb-2 section-title">By section</p>
-          {breakdownBySection.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500">No unsold tickets.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-              {breakdownBySection.map((g) => (
-                <li key={g.label}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                    onClick={() => onHighlight(g.ticketIds, `Section: ${g.label}`)}
-                  >
-                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
-                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
-                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div>
-          <p className="mb-2 section-title">By marketplace</p>
-          {breakdownByMarketplace.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500">No active listings.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-              {breakdownByMarketplace.map((g) => (
-                <li key={g.label}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                    onClick={() => onHighlight(g.ticketIds, `Marketplace: ${g.label}`)}
-                  >
-                    <span className="text-slate-700 dark:text-slate-300">{g.label}</span>
-                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
-                      {g.ticketCount} &middot; {formatMoneyOrMixed(g.totalCents, g.currency)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </Card>
   );
 }
 

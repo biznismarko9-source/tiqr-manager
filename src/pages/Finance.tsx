@@ -73,22 +73,30 @@ export default function Finance() {
 
   return (
     <div>
-      <PageHeader title="Finance" subtitle="Personal and business money, tracked in one place." />
-
-      <div className="mb-6 flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setTab(t.key)}
-            className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
-              tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* 2.34.2: the four tabs moved into PageHeader's own `actions` slot, so
+          they sit to the right of "Finance" instead of on a row of their own
+          underneath it - marko asked for the header band to take less height.
+          Same buttons, same handler; only where they render changed. */}
+      <PageHeader
+        title="Finance"
+        subtitle="Personal and business money, tracked in one place."
+        actions={
+          <div className="flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                  tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
       {tab === "overview" && <Overview {...tabProps} />}
       {tab === "transactions" && <Transactions {...tabProps} />}

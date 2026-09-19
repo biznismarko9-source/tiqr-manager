@@ -412,16 +412,20 @@ export default function SaleDetail() {
               // tradeoff" this file already accepts elsewhere.
               <colgroup>
                 <col className="w-8" />
+                {/* 2.34.2: Fees removed, and the three status columns widened
+                    out of Seat and the actions column - "Not delivered" was
+                    wider than its cell, which is what made the pills collide
+                    on marko's Mac. Sums to 100. */}
                 <col className="w-[9.756%]" />
                 <col className="w-[10.488%]" />
-                <col className="w-[12.317%]" />
+                <col className="w-[10.317%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10.488%]" />
-                <col className="w-[7%]" />
                 <col className="w-[8%]" />
-                <col className="w-[10%]" />
-                <col className="w-[11.951%]" />
+                <col className="w-[13%]" />
+                <col className="w-[9%]" />
+                <col className="w-[8.951%]" />
               </colgroup>
             ) : (
               // 2.0.68: same reasoning as the narrow colgroup above - the new
@@ -431,16 +435,18 @@ export default function SaleDetail() {
               // status is the old "Status" column, unchanged width.
               <colgroup>
                 <col className="w-8" />
-                <col className="w-[7.638%]" />
+                {/* 2.34.2: see the narrow colgroup above. Seat gave up ten
+                    points - it had 26% for "409 · 56 · 23" - and the three
+                    status columns took them. Sums to 100. */}
+                <col className="w-[9.638%]" />
+                <col className="w-[9.912%]" />
+                <col className="w-[19.963%]" />
+                <col className="w-[7.779%]" />
+                <col className="w-[7.779%]" />
                 <col className="w-[8.133%]" />
-                <col className="w-[25.963%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[8.133%]" />
-                <col className="w-[6%]" />
-                <col className="w-[7.5%]" />
-                <col className="w-[6.365%]" />
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+                <col className="w-[8.865%]" />
                 <col className="w-[6.931%]" />
               </colgroup>
             )}
@@ -458,9 +464,13 @@ export default function SaleDetail() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Ticket</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seat</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sale price</th>
-                {!isNarrow && <th className="th-c text-right">Fees</th>}
+                {/* 2.34.2: marko's own list - Ticket, Order, Seat, Cost,
+                    Sale price, Profit, then the three statuses. Fees is gone
+                    from this table (the sale's own header still carries the
+                    total) and Cost leads, so a row reads cost -> what it sold
+                    for -> what is left. */}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sale price</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
                 {/* 2.0.68 (marko's report): this used to be one bare "Status"
                     column showing paymentStatus - now split into the 3
@@ -506,13 +516,10 @@ export default function SaleDetail() {
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={seatLabel}>
                       {seatLabel}
                     </td>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(s.salePriceCents, s.currency)}</td>
-                    {!isNarrow && (
-                      <td className="td-c text-right tabular-nums whitespace-nowrap">{formatMoney(s.sellingFeesCents, s.currency)}</td>
-                    )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>
                       {formatMoneyOrMixed(s.costCents, s.currencyMismatch ? null : s.currency)}
                     </td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(s.salePriceCents, s.currency)}</td>
                     <td
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${
                         s.currencyMismatch
@@ -623,21 +630,21 @@ export default function SaleDetail() {
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
+                        {/* 2.34.2: marko asked for the Refund button to go.
+                            Everything behind it is untouched - RefundDialog,
+                            the command, the refunded payment status and the
+                            "Refunded" block above all still exist - but this
+                            was the ONLY way to reach a refund from the UI
+                            (see OrderDetail.tsx's own note), so refunding is
+                            not currently possible. Putting the button back is
+                            this block alone. */}
                         {s.paymentStatus !== "refunded" && (
-                          <>
-                            <button
-                              className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-                              onClick={() => setEditTarget(s)}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
-                              onClick={() => setRefundTarget(s)}
-                            >
-                              Refund
-                            </button>
-                          </>
+                          <button
+                            className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
+                            onClick={() => setEditTarget(s)}
+                          >
+                            Edit
+                          </button>
                         )}
                         <button
                           className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"

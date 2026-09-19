@@ -16,6 +16,198 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.37.0 - dizajnový jazyk 3.0, prvá vrstva
+
+Schválené na celoapkovom náhľade. Toto je **vrstva tokenov** — komponenty a
+texty idú ďalej.
+
+### Hĺbka tónom, nie rámikom
+
+Tmavý koniec sivej rampy je prerezaný: **950 `#08080b`** je podklad appky,
+**900 `#101016`** karta, ktorá nad ním sedí, a **800 `#1e1e27`** vlásočnica
+namiesto rámika. Povrchy v `index.css` to nasledujú.
+
+Karta dostala späť **veľmi jemný tieň** — jednu vrstvu, pätinu toho, čo tam
+bolo pred 2.29.2. Vtedy som tiene odstránil, lebo appka vyzerala 3D. Opačný
+problém — všetko rovnako ploché — rieši toto.
+
+### Hlavičky tabuliek stratili verzálky
+
+`.th`, `.th-c`, `.th-c-narrow` aj `.section-title` idú do normálneho textu,
+váha zo `semibold` na `medium`.
+
+**Rozmery som nechal.** `PROTECTED_AREAS.md` hovorí, že `px-1` a `text-[11px]`
+boli merané proti reálnym dátam v troch jazykoch, aby nikdy nevyskočil
+vodorovný posuvník. Zrušenie verzálok text **zužuje, nikdy nerozširuje**,
+takže tá záruka platí ďalej.
+
+### Kontrast — nameraný, ale neopravený
+
+`slate-400` sa posunul zo **4,44 na 4,56** na bielom. Krok pre tlmený text tak
+prvýkrát prechádza hranicou 4,5 vo svetlom režime.
+
+**Tmavý režim sa v rampe opraviť nedá.** Žiadna hodnota nevyhovie na bielom aj
+na `#101016` naraz — musela by byť zároveň tmavšia aj svetlejšia. Pár teda
+musí byť rôzny podľa režimu. A tu je problém:
+
+**Prevládajúci zápis v appke to má obrátene.** `text-slate-400
+dark:text-slate-500` je na **258 miestach** a na tmavšie pozadie volí tmavší
+krok — vyjde **3,16:1**. Správny tvar `text-slate-500 dark:text-slate-400` je
+na 85 miestach a dáva 4,16:1.
+
+Oprava je mechanická výmena 258 výskytov naprieč všetkými stránkami. To si
+zaslúži **vlastnú verziu**, nie aby sa to prišilo k zmene tokenov.
+
+### Čo z 3.0 ešte príde
+
+`Badge` z vyplnenej pilulky na bodku + text (bodka tam už je a dedí farbu),
+prekreslenie `Skeleton` a `EmptyState`, texty prázdnych stavov po stránkach,
+a tá kontrastná výmena.
+
+## 2.36.0 - Pulls patria k lístkom, akcent je fialový
+
+Oboje si schválil na interaktívnom náhľade skôr, než som sa dotkol jediného
+súboru.
+
+### Navigácia
+
+**Pulls sú v skupine Tickets**, piate za Sales. A nadpis **„Market & money"
+zanikol** — po presune Pulls by stál nad jedinou položkou, čo nie je kategória,
+ale ozdoba.
+
+Finance je samostatná položka najvyššej úrovne a **pod Tickets zámerne
+nepatrí**: pokrýva peniaze, ktoré s lístkami nemajú nič spoločné — nájom,
+poplatky, osobné výdavky — a má vlastné štyri taby, kategórie aj účty.
+
+**Žiadna routa sa nezmenila.** `/pulls` je stále `/pulls`, takže staré odkazy,
+krok sprievodcu aj návraty z detailov fungujú ďalej. Zmenil sa jeden súbor:
+`Layout.tsx`.
+
+### Farba
+
+Ružová z 2.34.0 je preč, rampa sa presunula na odtieň 253 — tá levanduľová
+rodina z Onyxu, o stupeň hlbšie. Presne to, čo si vyklikal v náhľade.
+
+**Dva kroky som nedopočítal, ale doladil — a oba kvôli kontrastu, nie vkusu:**
+
+* **600** nesie po celej appke biely text (`bg-brand-600`) a má **9,1:1**.
+  Predtým mala ružová 4,6:1, čiže toto je výrazne lepšie čitateľné.
+* **400** je v tmavom režime farba odkazov a akcií (`dark:text-brand-400`).
+  Keby som len posunul svetlosť, vyšlo by **4,05:1** na povrchu karty — pod
+  hranicou 4,5. Nastavil som ho na **5,3:1**.
+
+Sivá rampa ostala nedotknutá — už predtým mala fialový nádych a k novému
+akcentu sadá.
+
+### Čo som nerozhodol za teba
+
+Tri veci z design review v náhľade, ktoré stále čakajú:
+
+1. Skupina sa volá **Tickets** a je v nej položka **Inventory** — dve
+   lístkové mená v jednom rail-i. Premenovať skupinu?
+2. **Zabalenie skupiny teraz schová Pulls.** Predtým bol vždy viditeľný.
+3. **Inventory stále vypisuje aj predané a refundované** lístky — filter
+   odišiel s `/inventory` v 2.35.1.
+
+## 2.35.1 - Inventory Intelligence preč, dve stránky lístkov sa zlúčili
+
+### Inventory Intelligence
+
+Celý blok zo stránky eventu je preč. **A s ním aj filter lístkov** — každé
+kliknutie, ktoré ten filter zapínalo, bolo vnútri toho bloku, takže by sa už
+nedal zapnúť a pás „Showing: ..." by sa nikdy neukázal. Tabuľka lístkov pod
+tým zase vypisuje všetky.
+
+Backend som nechal: `get_inventory_intelligence` aj `inventory_intelligence.rs`
+existujú a sú zaregistrované. Zmizla len obrazovka.
+
+### Tickets a Inventory sú jedna položka
+
+Boli to vždy tá istá stránka — Inventory bol `TicketsView` so zamknutým
+filtrom. Teraz je v sidebare jedna položka **Inventory**, a routa, ktorá
+prežila, je `/tickets`. Preto ti fungujú staré odkazy aj návrat z detailu
+objednávky.
+
+Prerobil som **všetky** odkazy na `/inventory`, inak by viedli do prázdna:
+krok sprievodcu, dlaždicu „Missing listing price" na Dashboarde (aj riadok, aj
+kartu) a vetvu návratu v detaile objednávky vrátane popiskov.
+
+### Jedna vec na rozhodnutie
+
+Keďže `/inventory` zmizol, **nikto už neposiela `lockedStatus`** — a tým sú
+tie dve vetvy z 2.35.0 nedostupné: filter „available + listed" a tých sedem
+stĺpcov, ktoré si pre Inventory vypísal.
+
+Nezmazal som ich. Ak má tá premenovaná stránka ukazovať len predajný sklad a
+nie všetky lístky vrátane predaných, je to jeden prop a vrátim to. Povedz.
+
+## 2.35.0 - stĺpce, gulôčky a opravené selecty
+
+### Stĺpce podľa tvojich zoznamov
+
+**Sales:** Sale, Event, Platform, Event date, Seats, Tix, Cost, Revenue,
+Profit, Status, Completed. Fees a Margin/ROI sú preč, Cost je pred Revenue —
+riadok sa číta náklad → čo to prinieslo → čo zostalo.
+
+**Detail predaja:** Ticket, Order, Seat, Cost, Sale price, Profit a tri stavy.
+Fees preč, Cost prvý.
+
+**Inventory:** Event, Purchase date, Seats, Total, Available, Total cost,
+Status. Order a Sold vypadli **len tam** — Inventory a Tickets zdieľajú jeden
+komponent, takže som to podmienil cez `lockedStatus`, na ktorom ten súbor už
+aj tak rozlišuje. Tickets ostalo nedotknuté. Dátum a sedadlá sa v Inventory
+prestali skrývať pri úzkom okne, lebo po dvoch stĺpcoch menej je miesto.
+
+### Tie polia na výber na Macu
+
+Príčina nebola šírka stĺpca. `InlineStatusSelect` je `inline-flex` okolo
+`<select>` s `appearance-none` — a taký select sa roztiahne na **najširšiu
+položku**, nie na tú vybranú. Keďže každá bunka má `whitespace-nowrap`,
+„Not delivered" vytlačilo celú pilulku cez susedný stĺpec. Preto sa ti tri
+prekrývali.
+
+Teraz má obal `min-w-0 max-w-full` a select `w-full min-w-0 truncate` —
+zmestí sa do bunky a v najhoršom prípade sa oreže tromi bodkami. Stĺpce som
+rozšíril tiež, ale to bol príznak; toto je príčina.
+
+### Gulôčky sú teraz všade rovnaké
+
+Vytiahol som ich do jedného zdieľaného komponentu `StatusDots`. Berie **ten
+istý zoznam podmienok**, ktorý si každá stránka už aj tak stavia pre odznak —
+takže bodky a odznak nemôžu tvrdiť nič rozdielne.
+
+**Pulls** má dve (Paid, Transferred) a dajú sa klikať. **Sales** má tri (Sold,
+Delivered, Paid) a klikať sa nedajú, lebo sú odvodené — kliknutie by bolo
+klamstvo. Vzor je rovnaký, počet sa riadi dátami.
+
+**Ako sa to číta bez hoverovania:** hlavička stĺpca ich menuje v poradí
+(„Paid · Done", „Sold · Deliv. · Paid"), zelená znamená hotové, sivá nie.
+Hover vypíše každú slovom.
+
+### Refund
+
+Odstránil som ho, ako si chcel. **Ale bol to jediný spôsob, ako sa v appke
+dalo refundovať** — `OrderDetail.tsx` to má priamo v komentári. Všetko za ním
+(dialóg, príkaz, stav „refunded", blok Refunded) ostáva nedotknuté, zmizlo len
+tlačidlo. Vrátiť ho je ten jeden blok.
+
+### Finance
+
+Taby sú vedľa nadpisu, nie pod ním. O riadok nižšia hlavička.
+
+## 2.34.1 - font naspäť
+
+Mono si videl a nechcel. Stack je **presne ten, čo tam bol** — bajt po bajte
+rovnaký ako vo všetkých verziách po 2.33.0 vrátane. Overil som to diffom proti
+2.33.0 zipu, nie od oka.
+
+Ružová (Vapor) a graf s plochou ostávajú, tých si sa netýkal.
+
+Jedna vec z 2.34.0 platí ďalej a nechal som ju napísanú v kóde aj v
+`CURRENT_STATE.md`, nech ju niekto o pol roka nehľadá znova: **`"Inter"` na
+čele toho stacku sa nikde nenačítava.** Appka vždy kreslila systémovým písmom.
+Nechal som ho tam, lebo jeho odstránenie by na obrazovke nezmenilo nič.
+
 ## 2.34.0 - Vapor
 
 Vybral si si: Vapor, Spline Mono hrubší, graf Plocha, Finance Mix. Tri zo

@@ -1241,7 +1241,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
   const rows = [
     { key: "pulls", label: "Pulls near deadline", count: alerts.pullsNeedingTransferCount, linkTo: "/pulls" },
     { key: "pending", label: "Pending sales", count: alerts.pendingSalesCount, linkTo: "/sales" },
-    { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/inventory" },
+    { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/tickets" },
   ] as const;
 
   const soonestEvent = alerts.upcomingEvents[0];
@@ -1613,7 +1613,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
             label="Missing listing price"
             count={alerts.missingListingPriceOrdersCount}
             description="Orders with a ticket that has no listing price set"
-            linkTo="/inventory"
+            linkTo="/tickets"
             linkLabel="View inventory"
           />
           <RecentCard title={`Upcoming events (next ${UPCOMING_EVENT_WINDOW_DAYS} days)`} icon={<IconCalendarDays className="h-4 w-4" />}>

@@ -26,6 +26,7 @@ import {
   Field,
   Input,
   TableSkeleton,
+  StatusDots,
   Modal,
   ModalFooter,
   PageHeader,
@@ -807,38 +808,37 @@ export default function Sales() {
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[10%]" />
-                <col className="w-[12.098%]" />
-                <col className="w-[15.366%]" />
-                <col className="w-[8.659%]" />
-                <col className="w-[4.39%]" />
-                <col className="w-[10%]" />
-                <col className="w-[10%]" />
-                <col className="w-[10.488%]" />
-                <col className="w-[10%]" />
-                {/* 2.0.66: new "Completed" column - width is my own estimate
-                    (not measured against real content like the rest of this
-                    colgroup), taken entirely from Event's share above. Flag
-                    to marko if this looks visually off. */}
+                {/* 2.34.2: eleven columns, the list marko asked for. Both
+                    colgroups are identical now - nothing is hidden at narrow
+                    width any more, so there is nothing for the wide mode to
+                    add back. */}
                 <col className="w-[9%]" />
+                <col className="w-[13%]" />
+                <col className="w-[11%]" />
+                <col className="w-[8.5%]" />
+                <col className="w-[11%]" />
+                <col className="w-[4.5%]" />
+                <col className="w-[9%]" />
+                <col className="w-[9%]" />
+                <col className="w-[9%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                <col className="w-[7.779%]" />
-                <col className="w-[9.129%]" />
-                <col className="w-[11.74%]" />
-                <col className="w-[6.86%]" />
-                <col className="w-[9.194%]" />
-                <col className="w-[3.678%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[7.779%]" />
-                <col className="w-[8.133%]" />
-                <col className="w-[7.284%]" />
-                <col className="w-[6.365%]" />
-                {/* 2.0.66: see the narrow colgroup's identical comment above. */}
-                <col className="w-[6.5%]" />
+                {/* 2.34.2: see the narrow colgroup above - same eleven. */}
+                <col className="w-[9%]" />
+                <col className="w-[13%]" />
+                <col className="w-[11%]" />
+                <col className="w-[8.5%]" />
+                <col className="w-[11%]" />
+                <col className="w-[4.5%]" />
+                <col className="w-[9%]" />
+                <col className="w-[9%]" />
+                <col className="w-[9%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
               </colgroup>
             )}
             <thead>
@@ -858,20 +858,21 @@ export default function Sales() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Platform</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
-                {!isNarrow && <th className="th-c">Seats</th>}
+                {/* 2.34.2: marko's own column list - Sale, Event, Platform,
+                    Event date, Seats, Tix, Cost, Revenue, Profit, Status,
+                    Completed. Fees, Margin and ROI are gone from this table
+                    and Cost now sits before Revenue, reading cost -> what it
+                    brought -> what is left. The numbers themselves are
+                    untouched; the sale's own page still shows all of them. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`} title="Tickets">Tix</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
-                {!isNarrow && <th className="th-c text-right">Fees</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
-                {!isNarrow && (
-                  <th className="th-c text-right leading-tight">
-                    <div>Margin</div>
-                    <div>ROI</div>
-                  </th>
-                )}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Completed</th>
+                {/* 2.34.2: the header names the dots in order, so the row
+                    below is readable without hovering. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Sold · Deliv. · Paid</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -949,17 +950,12 @@ export default function Sales() {
                   >
                     {formatDateNumeric(g.eventDate)}
                   </td>
-                  {!isNarrow && (
-                    <td className="td-c truncate" title={formatSeatsSummary(g.seats)}>
-                      {formatSeatsSummary(g.seats)}
-                    </td>
-                  )}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={formatSeatsSummary(g.seats)}>
+                    {formatSeatsSummary(g.seats)}
+                  </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{g.ticketCount}</td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
-                  {!isNarrow && (
-                    <td className="td-c text-right tabular-nums whitespace-nowrap">{formatMoneyOrMixed(g.sellingFeesCents, g.currency)}</td>
-                  )}
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(g.costCents, g.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(g.revenueCents, g.currency)}</td>
                   <td
                     className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${
                       g.profitCents > 0
@@ -971,12 +967,6 @@ export default function Sales() {
                   >
                     {formatMoneyOrMixed(g.profitCents, g.currency)}
                   </td>
-                  {!isNarrow && (
-                    <td className="td-c text-right tabular-nums text-xs leading-tight whitespace-nowrap">
-                      <div>{formatPercentOrMixed(g.margin, g.currency)}</div>
-                      <div className="text-slate-400 dark:text-slate-500">{formatPercentOrMixed(g.roi, g.currency)}</div>
-                    </td>
-                  )}
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
                     {g.refundedCount > 0 && (
@@ -989,14 +979,14 @@ export default function Sales() {
                     )}
                   </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                    {(() => {
-                      const c = completionStatus(saleGroupCompletionChecks(g));
-                      return (
-                        <Badge tone={c.tone} title={c.title}>
-                          {c.label}
-                        </Badge>
-                      );
-                    })()}
+                    {/* 2.34.2: the same dots Pulls uses, from the same shared
+                        component and the same `CompletionCheck[]` this page
+                        already built for the badge. Three dots here because a
+                        sale has three conditions, two on Pulls because a pull
+                        has two - the pattern is identical, the count follows
+                        the data. The header names them in order and hovering
+                        spells each one out. */}
+                    <StatusDots checks={saleGroupCompletionChecks(g)} />
                   </td>
                 </tr>
               ))}

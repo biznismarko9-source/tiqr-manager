@@ -35,18 +35,29 @@ export default {
         // contrast (~4.6:1) rather than for the brightest possible pink - the
         // saturated end of the ramp lives at 400/500, which is what dark mode
         // surfaces and where it is text-on-dark rather than text-on-accent.
+        // 2.36.0: marko picked the violet out of the preview's accent
+        // control - hue 253, the Onyx-lavender family, a step deeper than
+        // 2.34.0's pink. Same ladder, same roles, one hue moved.
+        //
+        // Two steps are tuned rather than generated, and both for contrast,
+        // not taste: 600 is the action colour that carries WHITE text
+        // (`bg-brand-600`) and lands at 9.1:1, and 400 is what dark mode
+        // uses for links and inline actions (`dark:text-brand-400`) where a
+        // straight -3 lightness shift measured 4.05:1 on the card surface -
+        // under the 4.5 floor. It sits at 5.3:1 now. Re-measure both if this
+        // ramp is ever regenerated.
         brand: {
-          50: "#fdeff7",
-          100: "#fbdcee",
-          200: "#f7bbda",
-          300: "#ef93c5",
-          400: "#e56db0",
-          500: "#d8499c",
-          600: "#c02e88",
-          700: "#a12470",
-          800: "#821c5b",
-          900: "#651647",
-          950: "#3f0d2c",
+          50: "#e4ddfd",
+          100: "#d5cbfb",
+          200: "#bcacf6",
+          300: "#ac99f0",
+          400: "#9077e9",
+          500: "#5f3fd5",
+          600: "#492cb5",
+          700: "#3e2791",
+          800: "#311f6f",
+          900: "#221358",
+          950: "#140c32",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -86,18 +97,34 @@ export default {
         // blue-grey onto violet so the pink accent sits in its own family
         // instead of fighting a cold ground. 400 keeps its old lightness on
         // purpose - it is the muted-text step and it cleared 4.5:1 there.
+        // 3.0: the neutral ladder is re-cut for the new language. Two
+        // things changed and both are deliberate.
+        //
+        // The DARK end drops much further and de-blues: 950 is the app
+        // ground (#08080b), 900 is the card that sits ABOVE it by tone, and
+        // 800 is a hairline rather than a border. That tonal step is what
+        // replaces the flat 1px-box look - depth now comes from surface
+        // lightness, not from outlining every element.
+        //
+        // The MIDS lose most of their violet so the accent is the only real
+        // colour on screen. 400 is the muted-text step and moved from 4.44:1
+        // to 4.56:1 on white - it was under the 4.5 floor and is not any
+        // more. On the dark card it reads 4.16:1; see CURRENT_STATE.md for
+        // why that one cannot be fixed here (no single value clears 4.5 on
+        // both grounds - the class pairing has to differ per mode, and most
+        // of the app currently pairs them the wrong way round).
         slate: {
-          50: "#ece9f5",
-          100: "#ddd8ec",
-          200: "#c7bfdb",
-          300: "#a79dc2",
-          400: "#7b7396",
-          500: "#655d80",
-          600: "#4e4766",
-          700: "#3a3450",
-          800: "#2a2440",
-          900: "#151221",
-          950: "#0d0b14",
+          50: "#f4f4f8",
+          100: "#e6e6ee",
+          200: "#d0d0dc",
+          300: "#adadbe",
+          400: "#74748a",
+          500: "#62626f",
+          600: "#4b4b57",
+          700: "#34343e",
+          800: "#1e1e27",
+          900: "#101016",
+          950: "#08080b",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the
@@ -116,22 +143,25 @@ export default {
         line: "var(--line)",
         "line-soft": "var(--line-soft)",
       },
-      // 2.34.0: "Inter" led this stack and was never loaded - no @font-face,
-      // no bundled file, no stylesheet link anywhere in the app - so every
-      // screen has silently rendered in system-ui since the beginning. Marko
-      // picked Spline Sans Mono, which cannot ship either: TIQR is
-      // offline-by-default and pulling a webfont at runtime would break that.
-      // This is the closest thing that needs no network - the OS mono face,
-      // which is SF Mono on his Mac and Consolas on his PC.
+      // 2.34.1: back to exactly the stack that shipped in every version up to
+      // 2.33.0 - marko asked for the old font back after seeing the mono one.
+      //
+      // Worth knowing rather than rediscovering: "Inter" at the head of this
+      // list is not loaded anywhere. No @font-face, no bundled file, no
+      // stylesheet link. Every screen has therefore always rendered in
+      // system-ui, and this list behaves as if it started at "ui-sans-serif".
+      // It is left in place because removing it would change nothing on
+      // screen, and a webfont cannot be added without solving TIQR's
+      // offline-by-default case first.
       fontFamily: {
         sans: [
-          "ui-monospace",
-          "SFMono-Regular",
-          "SF Mono",
-          "Menlo",
-          "Consolas",
-          "Liberation Mono",
-          "monospace",
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
         ],
       },
       // 2.6.0: one shadow scale for the whole app, replacing the mix of

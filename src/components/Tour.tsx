@@ -90,7 +90,7 @@ const STEPS: TourStep[] = [
     body: "With the platform and the fee that platform took. The fee is the part people skip, and it is the part that makes your margin real instead of optimistic.",
   },
   {
-    route: "/inventory",
+    route: "/tickets",
     anchors: ["page-header"],
     title: "What is still yours",
     body: "Everything bought and not yet sold, and what it cost you. This is capital sitting still - the app never counts any of it as profit, no matter what it is listed at.",

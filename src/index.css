@@ -54,19 +54,25 @@
        `--sh-overlay` keeps a real shadow and is the ONE exception - a dialog
        genuinely floats above a dimmed page, and without it the modal and the
        backdrop merge. */
-    --app-bg: theme("colors.slate.50");
+    --app-bg: #fbfbfc;
     --surface: #ffffff;
     --surface-muted: theme("colors.slate.100");
     --surface-raised: #ffffff;
     /* 2.29.4: DARKER than the page, not lighter. For the chrome that sits
        under the content rather than on top of it - the sidebar and the
        segmented tracks. Marko asked for both to be darker. */
-    --surface-sunken: #e0dbee;
-    --line: theme("colors.slate.200");
-    --line-soft: theme("colors.slate.100");
+    --surface-sunken: #f0f0f4;
+    /* 3.0: the border is a hairline, not an outline - lighter than slate-200
+       so a table of them stops reading as a grid. */
+    --line: #e6e6ec;
+    --line-soft: #efeff3;
     --scroll-thumb: theme("colors.slate.300");
     --highlight: transparent;
-    --sh-card: 0 0 0 1px theme("colors.slate.200");
+    /* 3.0: hairline PLUS one very soft lift. 2.29.2 removed the shadow
+       entirely to kill a 3D look; this is the opposite problem - everything
+       reads equally flat - so the shadow is back, but at a fifth of the
+       old strength and with no second layer. */
+    --sh-card: 0 0 0 1px #e6e6ec, 0 1px 2px rgb(16 16 28 / 0.05);
     --sh-raised: 0 0 0 1px theme("colors.slate.300");
     --sh-overlay: 0 18px 48px rgb(20 22 34 / 0.22), 0 0 0 1px theme("colors.slate.200");
     --sh-inset: 0 0 0 1px theme("colors.slate.300");
@@ -74,14 +80,16 @@
   .dark {
     --app-bg: theme("colors.slate.950");
     --surface: theme("colors.slate.900");
-    --surface-muted: #1e1a2e;
-    --surface-raised: #221d33;
-    --surface-sunken: #0a0811;
+    --surface-muted: #16161d;
+    --surface-raised: #1a1a22;
+    --surface-sunken: #050507;
     --line: theme("colors.slate.800");
-    --line-soft: #241e36;
+    --line-soft: #17171f;
     --scroll-thumb: theme("colors.slate.700");
     --highlight: transparent;
-    --sh-card: 0 0 0 1px theme("colors.slate.800");
+    /* Dark carries its depth in the tone step (950 ground -> 900 card), so
+       the shadow here is barely there - just enough to seat the card. */
+    --sh-card: 0 0 0 1px theme("colors.slate.800"), 0 1px 2px rgb(0 0 0 / 0.4);
     --sh-raised: 0 0 0 1px theme("colors.slate.700");
     --sh-overlay: 0 18px 48px rgb(0 0 0 / 0.55), 0 0 0 1px theme("colors.slate.800");
     --sh-inset: 0 0 0 1px theme("colors.slate.800");
@@ -107,8 +115,10 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* 3.0: tighter. The modern feel here is the type scale, not a webfont -
+     the app is offline-first and bundles none (see 2.34.1). */
   h1, h2, h3, h4 {
-    letter-spacing: -0.018em;
+    letter-spacing: -0.021em;
   }
 
   ::selection {
@@ -178,8 +188,9 @@
      the redesign changes their color and alignment treatment only, never
      their metrics.
      --------------------------------------------------------------------- */
+  /* 3.0: sentence case, same reasoning as .th-c below. Metrics untouched. */
   .th {
-    @apply px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.055em] text-slate-500 dark:text-slate-400;
+    @apply px-3 py-2.5 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td {
     @apply px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300;
@@ -190,8 +201,15 @@
      font size as .th/.td (never shrunk below readable) - only the padding is
      tighter, which is what actually buys back the horizontal space needed to
      fit these two tables without a horizontal scrollbar. */
+  /* 3.0: sentence case. Tracked-out capitals made every column label read as
+     a heading competing with its own data; lower case at the same size reads
+     as a label. `px-2 py-2` and `text-[11px]` are untouched on purpose - see
+     PROTECTED_AREAS.md, those two were measured against real formatted data
+     and only colour and tracking were ever safe to change here. Dropping
+     `uppercase` makes the text narrower, never wider, so the no-horizontal-
+     scrollbar guarantee those measurements protect still holds. */
   .th-c {
-    @apply px-2 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.055em] text-slate-500 dark:text-slate-400;
+    @apply px-2 py-2 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td-c {
     @apply px-2 py-2 text-sm text-slate-700 dark:text-slate-300;
@@ -207,7 +225,7 @@
      PROTECTED-AREAS-NOTES.md before changing px-1/text-[11px] here, both
      modes were measured against these exact values. */
   .th-c-narrow {
-    @apply px-1 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+    @apply px-1 py-1 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td-c-narrow {
     @apply px-1 py-1.5 text-[11px] text-slate-700 dark:text-slate-300;
@@ -393,8 +411,11 @@
   /* Section label above a group of cards/a table - the one "small heading"
      style in the app, so Dashboard/Finance/Event Detail all title their
      blocks identically. */
+  /* 3.0: the one small-heading style loses its capitals too. It sits above
+     cards on Dashboard/Finance/Event Detail, and tracked-out capitals there
+     were shouting a label that only needs to be read once. */
   .section-title {
-    @apply text-[11px] font-semibold uppercase tracking-[0.07em] text-slate-400 dark:text-slate-500;
+    @apply text-[11.5px] font-medium tracking-normal text-slate-400 dark:text-slate-500;
   }
 
   /* -----------------------------------------------------------------------

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconAlertTriangle,
-  IconBoxes,
   IconCalendarDays,
   IconChevronDown,
   IconChevronUp,
@@ -80,9 +79,20 @@ type NavItem =
 const TICKETS_GROUP_CHILDREN: NavChild[] = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
   { to: "/orders", label: "Orders", icon: IconPackage },
-  { to: "/tickets", label: "Tickets", icon: IconTicket },
+  // 2.35.1: one entry, not two. `/inventory` was `TicketsView` with
+  // `lockedStatus="available,listed"` - the same page with a filter - and
+  // marko asked for the pair collapsed into a single item called Inventory.
+  // The route that survives is `/tickets`, so every existing deep link and
+  // every `from` hand-off in OrderDetail still resolves.
+  { to: "/tickets", label: "Inventory", icon: IconTicket },
   { to: "/sales", label: "Sales", icon: IconReceipt },
-  { to: "/inventory", label: "Inventory", icon: IconBoxes },
+  // 2.36.0: Pulls joins the group. A pull is a ticket bought for someone else
+  // for a fee - same event, same seats, same platform, same transfer deadline
+  // as an order. It was under a "Market & money" heading that implied a
+  // different domain; it is the fifth step of the same job, so it sits with
+  // the other four. Route is unchanged (`/pulls`), so deep links and the tour
+  // step keep working.
+  { to: "/pulls", label: "Pulls", icon: IconUsers },
 ];
 
 const NAV: NavItem[] = [
@@ -91,10 +101,12 @@ const NAV: NavItem[] = [
   // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
   // v sidebar" (must be its own standalone sidebar section), not folded
   // into Events/Settings.
-  { heading: "Market & money" },
-  // 2.33.0: Price Checker removed from the sidebar at marko's request, along
-  // with Ticket Center and Calendar. See App.tsx's own 2.33.0 comment.
-  { to: "/pulls", label: "Pulls", icon: IconUsers },
+  // 2.36.0: the "Market & money" heading is gone. With Pulls moved into the
+  // Tickets group it stood over a single item, which is decoration rather
+  // than a category. Finance is a plain top-level entry now - deliberately
+  // NOT folded into Tickets, because it covers money that has nothing to do
+  // with tickets (rent, fees, personal spend) and owns its own four tabs,
+  // categories and accounts.
   // 2.0.83: same standalone-top-level-section treatment as Price Checker
   // above (not folded into Settings/Dashboard) - Finance is a big enough
   // feature of its own (personal + business money, separate from the

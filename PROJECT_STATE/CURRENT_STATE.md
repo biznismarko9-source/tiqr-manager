@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.34.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.37.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -770,13 +770,15 @@ up on its own. `brand-600` is chosen for white-on-it contrast (~4.6:1), not for
 the brightest pink; the saturated end lives at 400/500 where dark mode surfaces
 it as text-on-dark.
 
-**The font stack no longer lies.** It led with `"Inter"`, which is not bundled,
-has no `@font-face`, and is not linked from anywhere - so every screen has
-silently rendered in system-ui since the beginning. Marko picked Spline Sans
-Mono, which cannot ship: TIQR is offline-by-default and a runtime webfont
-fetch would break that. The stack is now the OS mono face (SF Mono / Consolas),
-which is the honest version of what he chose. **Do not add a webfont link
-here** without solving the offline case first.
+**The font stack is the original one again (2.34.1).** 2.34.0 swapped it for
+the OS mono face; marko saw it and asked for the old font back, so the list is
+byte-for-byte what shipped in every version up to 2.33.0. The finding that
+prompted the swap still stands and is worth not rediscovering: `"Inter"` heads
+that list and **is not loaded anywhere** - no `@font-face`, no bundled file, no
+stylesheet link - so the app has always rendered in system-ui and the stack
+behaves as if it began at `ui-sans-serif`. It is left in place because removing
+it would change nothing on screen. **Do not add a webfont link here** without
+solving TIQR's offline-by-default case first.
 
 **`MetricChart` draws an area.** The same `linePath`, closed to the zero
 baseline and filled with a brand gradient - the fill reuses the path rather
@@ -788,6 +790,132 @@ band, then a two-column row of category breakdown + income/expense chart.
 What differs from the preview is proportion, not structure. Re-proportioning
 591 lines blind, with no build available, was not worth the risk for a
 cosmetic gain - this is a deferral, not an oversight.
+
+**2.35.0 - the tables marko asked for, and one shared dot row.**
+
+**Columns, all marko's own lists.** Sales: Sale, Event, Platform, Event date,
+Seats, Tix, Cost, Revenue, Profit, Status, Completed - Fees and Margin/ROI
+dropped, Cost moved ahead of Revenue. Sale detail's ticket table: Ticket,
+Order, Seat, Cost, Sale price, Profit and the three statuses - Fees dropped,
+Cost first. Inventory: Event, Purchase date, Seats, Total, Available, Total
+cost, Status - Order and Sold dropped there **only**, via the `lockedStatus`
+flag `Tickets.tsx` already branches on, so Tickets itself is untouched and now
+has a third colgroup branch of its own.
+
+**The Mac overlap is fixed at the source.** `InlineStatusSelect` is an
+`inline-flex` wrapping a `<select appearance-none>`, and such a select sizes
+to its WIDEST option, not its value. With every `td` in these tables
+`whitespace-nowrap`, "Not delivered" pushed the pill straight over the next
+column. It now carries `min-w-0 max-w-full` on the box and `w-full min-w-0
+truncate` on the select, so it shrinks to its cell and ellipsises instead of
+escaping. **Do not remove those classes** - the columns were widened too, but
+the width was the symptom and this is the cause.
+
+**`StatusDots` (ui.tsx) is now the one dot row.** It takes the same
+`CompletionCheck[]` each list already builds for `completionStatus()`, so the
+dots can never disagree with the badge. Pulls' hand-rolled `PullDot` is gone
+and Pulls passes `onToggle` (its dots are things you tick); Sales passes none
+(its three are derived). Same component, same look, different interactivity -
+that is deliberate. Orders still shows the badge and could take the same
+treatment.
+
+**`REFUND IS NOT REACHABLE FROM THE UI.`** Marko asked for Sale detail's
+Refund button to go, and it was the only entry point - `OrderDetail.tsx`'s own
+comment says so. `RefundDialog`, the command, the refunded payment status and
+the "Refunded" block all still exist and are untouched; only the button that
+opened them is gone. Restoring it is that one block in SaleDetail's actions
+cell.
+
+**Finance's tabs moved into `PageHeader`'s `actions` slot** - same buttons,
+same handler, one row less of header.
+
+**2.35.1 - Inventory Intelligence gone, and the two ticket pages became one.**
+
+**The Event Workspace's "Inventory Intelligence" block is removed** (marko's
+request), and with it the ticket-highlight filter: that block held every
+caller of `onHighlight`, so once it went the filter could never be switched on
+and the "Showing: ..." banner could never appear. `visibleTickets` collapsed
+back to `tickets`. The backend is untouched - `get_inventory_intelligence`,
+`commands/inventory_intelligence.rs` and the api.ts method all still exist.
+
+**`/inventory` is gone; `/tickets` survived and is labelled "Inventory".**
+They were always one component (`TicketsView`, with Inventory passing
+`lockedStatus="available,listed"`), and marko asked for one sidebar item. The
+surviving route is `/tickets`, so deep links and OrderDetail's `from` hand-off
+still resolve. Every `/inventory` link was repointed: the Tour step, the
+Dashboard's "Missing listing price" alert (both the card and the row), and
+OrderDetail's back-navigation branch and labels.
+
+**Consequence that needs a decision:** nothing passes `lockedStatus` any more,
+so `Tickets.tsx`'s Inventory branches - the available+listed filter and the
+seven-column colgroup added in 2.35.0 - are currently **unreachable**. They
+are deliberately kept, not deleted: turning them back on is one prop if the
+renamed page should show only sellable stock instead of every ticket. Ask
+marko before removing them.
+
+**2.36.0 - Pulls joins Tickets, and the accent turns violet.** Both were
+approved off an interactive preview before any file was touched.
+
+**Navigation.** `Pulls` moved from a top-level item under the "Market & money"
+heading into `TICKETS_GROUP_CHILDREN`, fifth after Sales. The heading itself is
+gone: with Pulls moved it stood over one item, which is decoration, not a
+category. Finance is a plain top-level entry and **stays out of Tickets on
+purpose** - it covers money with no ticket attached (rent, fees, personal
+spend) and owns its own four tabs, categories and accounts. **No route
+changed** - `/pulls` is still `/pulls`, so deep links, the tour step and every
+`from` hand-off keep resolving. Layout.tsx is the only file touched.
+
+**Accent.** The `brand` ramp moved from 2.34.0's pink to hue 253, the
+Onyx-lavender family a step deeper. Two steps are tuned rather than generated,
+and both for contrast: **600** carries white text everywhere (`bg-brand-600`)
+and measures 9.1:1, and **400** is dark mode's link/action colour
+(`dark:text-brand-400`) where a straight lightness shift came out at 4.05:1 on
+the card surface, under the floor - it sits at 5.3:1 now. **Re-measure both if
+this ramp is ever regenerated.** The slate ramp is untouched; it was already
+violet-tinted and suits the new accent.
+
+**Still open, raised in the preview's design review and not decided:** (1) the
+group is called "Tickets" and contains an item called "Inventory" - two
+ticket-ish labels in one rail; (2) collapsing the group now hides Pulls, which
+used to be always visible; (3) Inventory still lists sold and refunded tickets
+because the `lockedStatus` filter went with `/inventory` in 2.35.1.
+
+**2.37.0 - design language 3.0, first layer.** Approved off a full-app
+preview. This release is the TOKEN layer only; components and per-page copy
+follow.
+
+**Surfaces carry depth by tone now.** The `slate` ramp's dark end was re-cut -
+950 `#08080b` is the ground, 900 `#101016` is the card that sits above it, 800
+`#1e1e27` is a hairline rather than a border - and `index.css`'s `--surface-*`
+/ `--line*` vars follow. `--sh-card` gets a very soft lift back (one layer, a
+fifth of the pre-2.29.2 strength); 2.29.2 removed shadows to kill a 3D look,
+and the opposite problem - everything equally flat - is what this fixes.
+
+**Table headers and `.section-title` are sentence case.** `.th`, `.th-c`,
+`.th-c-narrow` and `.section-title` dropped `uppercase` and tracked-out
+letter-spacing; weight went `semibold` -> `medium`. **Their padding and
+`text-[11px]` size are untouched** - PROTECTED_AREAS.md records that those were
+measured against real formatted data in three locales to guarantee no
+horizontal scrollbar, and only colour and tracking were ever safe to change.
+Dropping `uppercase` makes the text narrower, never wider, so that guarantee
+still holds.
+
+**A contrast finding, measured, not fixed here.** `slate-400` moved 4.44 ->
+4.56 on white, so the muted-text step clears 4.5 in light mode for the first
+time. Dark mode cannot be fixed at the ramp: no single value clears 4.5 on
+both `#ffffff` and `#101016` (it would have to be darker than luminance 0.1833
+and lighter than 0.1992 at once). The pairing must therefore differ per mode -
+and **the app's dominant pairing has it backwards**: `text-slate-400
+dark:text-slate-500` appears 258 times and picks the DARKER step for the
+DARKER ground, landing at 3.16:1. The correct form, `text-slate-500
+dark:text-slate-400`, appears 85 times and reads 4.16:1. Fixing this is a
+mechanical sweep of 258 occurrences across every page - **its own release**,
+not a side effect of a token change.
+
+**Still to come in 3.0:** `Badge` from filled pill to dot+label (`ui.tsx`,
+`STATUS_TONES` - the dot already exists and inherits `currentColor`),
+`Skeleton`/`EmptyState` restyle, per-page empty-state copy, and the contrast
+sweep above.
 
 **Next new migration is 031.**
 

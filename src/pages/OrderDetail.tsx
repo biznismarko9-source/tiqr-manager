@@ -76,9 +76,9 @@ export default function OrderDetail() {
   // `from` pointing at it simply falls through to Orders, which is what the
   // guard was always for.
   const cameFrom = (location.state as { from?: string } | null)?.from;
-  const backTo = cameFrom && ["/tickets", "/inventory", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
+  const backTo = cameFrom && ["/tickets", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
   const backLabel =
-    backTo === "/tickets" ? "Back to tickets" : backTo === "/inventory" ? "Back to inventory" : "Back to orders";
+    backTo === "/tickets" ? "Back to inventory" : "Back to orders";
   // 1.9.6: marko clarified what he meant by wanting Tickets/Inventory to
   // behave like Event/Order/Sale's own click-through ("more info about that
   // object, not thrown elsewhere") - landing here still FEELS like being
@@ -91,7 +91,7 @@ export default function OrderDetail() {
   // from Orders (or a direct link/refresh) reads as "Order detail". The
   // order code stays as the heading either way - it's still the one
   // genuinely unique identifier for what's on this page.
-  const detailLabel = backTo === "/tickets" ? "Ticket detail" : backTo === "/inventory" ? "Inventory detail" : "Order detail";
+  const detailLabel = backTo === "/tickets" ? "Inventory detail" : "Order detail";
 
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);

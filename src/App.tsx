@@ -15,7 +15,6 @@ import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
 import Tickets from "./pages/Tickets";
-import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
@@ -147,7 +146,6 @@ export default function App() {
               <Route path="orders" element={<Orders />} />
               <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="tickets" element={<Tickets />} />
-              <Route path="inventory" element={<Inventory />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
               <Route path="pulls" element={<Pulls />} />

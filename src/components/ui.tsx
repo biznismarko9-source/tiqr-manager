@@ -422,7 +422,15 @@ export function InlineStatusSelect({
   const cls = STATUS_TONES[(value ?? "").toLowerCase()] ?? DEFAULT_TONE;
 
   return (
-    <div className={`relative inline-flex items-center rounded-md ring-1 ring-inset ${cls}`}>
+    // 2.34.2: `max-w-full` + `min-w-0` are what stop this from spilling into
+    // the next column. A <select> with `appearance-none` still sizes itself to
+    // its WIDEST <option>, not to its current value, and an inline-flex box
+    // will not shrink below that on its own - so on a narrow cell "Not
+    // delivered" pushed the whole pill past the cell edge, and because every
+    // `td` in these tables is `whitespace-nowrap` there was nothing to stop
+    // it landing on top of the neighbouring one. That is the overlap marko
+    // photographed on his Mac.
+    <div className={`relative inline-flex min-w-0 max-w-full items-center rounded-md ring-1 ring-inset ${cls}`}>
       <span
         className="pointer-events-none absolute left-2 h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70"
         aria-hidden="true"
@@ -442,7 +450,10 @@ export function InlineStatusSelect({
             setSaving(false);
           }
         }}
-        className="cursor-pointer appearance-none rounded-md bg-transparent py-0.5 pl-5 pr-5 text-xs font-medium capitalize text-current transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-wait disabled:opacity-60"
+        // `w-full min-w-0` lets it shrink inside the box above; `truncate`
+        // then ends a label that still does not fit with an ellipsis instead
+        // of letting it escape. The full value stays readable via `title`.
+        className="w-full min-w-0 cursor-pointer truncate appearance-none rounded-md bg-transparent py-0.5 pl-5 pr-5 text-xs font-medium capitalize text-current transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-wait disabled:opacity-60"
       >
         {!value && (
           <option value="" disabled>
@@ -457,6 +468,55 @@ export function InlineStatusSelect({
       </select>
       <IconChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
     </div>
+  );
+}
+
+/** 2.34.2: one row of dots, one per completion check - the shape marko asked
+ *  to have "everywhere the same". Pulls had it hand-rolled; this is that,
+ *  extracted, so Sales and Pulls cannot drift apart.
+ *
+ *  It takes the exact `CompletionCheck[]` every list page already builds for
+ *  `completionStatus()`, so the dots and the badge can never disagree: same
+ *  array, same order, same truth.
+ *
+ *  Reading it without hovering: the column header names the dots in order
+ *  ("Paid · Done", "Sold · Delivered · Paid"), green means done, grey means
+ *  not yet. Hovering spells every one out in words, because a dot on its own
+ *  is a colour, not a sentence.
+ *
+ *  A check with an `onToggle` renders as a real button with a proper hit area
+ *  (Pulls, where these are things you tick); one without renders as plain
+ *  text (Sales, where they are derived and clicking would be a lie). Same
+ *  component either way - that is the point of it. */
+export function StatusDots({
+  checks,
+  title,
+}: {
+  checks: readonly { label: string; done: boolean; onToggle?: () => void }[];
+  title?: string;
+}) {
+  const spelled = title ?? checks.map((c) => `${c.label}: ${c.done ? "done" : "pending"}`).join(" · ");
+  return (
+    <span className="inline-flex items-center gap-0.5" title={spelled} aria-label={spelled}>
+      {checks.map((c) =>
+        c.onToggle ? (
+          <button
+            key={c.label}
+            type="button"
+            onClick={c.onToggle}
+            aria-label={`${c.label}: ${c.done ? "done" : "pending"}`}
+            aria-pressed={c.done}
+            className="rounded-full p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            <span className={`block h-2.5 w-2.5 rounded-full ${c.done ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`} />
+          </button>
+        ) : (
+          <span key={c.label} className="p-1.5">
+            <span className={`block h-2.5 w-2.5 rounded-full ${c.done ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`} />
+          </span>
+        ),
+      )}
+    </span>
   );
 }
 

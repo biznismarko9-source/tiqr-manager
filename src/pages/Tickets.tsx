@@ -66,9 +66,20 @@ export function inventoryStatus(o: OrderRecord): { key: string; label: string } 
 // 1.8.3 (section 8 of the brief): remembers each page's last-used filters
 // for this app session only, same module-level/session-only convention
 // Sales.tsx already established in 1.8.0 (see its own `lastFilters`). Keyed
-// by pathname (not a single shared value) because this one component backs
-// TWO different pages - Tickets ("/tickets") and Inventory ("/inventory") -
-// which must never leak each other's search/filters into one another.
+// by pathname (not a single shared value) because this one component used to
+// back TWO pages - Tickets ("/tickets") and Inventory ("/inventory") - which
+// must never leak each other's search/filters into one another.
+//
+// 2.35.1: "/inventory" is gone. marko asked for the pair collapsed into one
+// sidebar item, so "/tickets" survived and is simply LABELLED "Inventory"
+// now. Keying by pathname costs nothing and is left alone.
+//
+// One consequence worth knowing: nothing passes `lockedStatus` any more, so
+// this file's Inventory branches - the "available,listed" filter and the
+// seven-column colgroup added in 2.35.0 - are currently unreachable. They are
+// kept, not deleted, because turning them back on is a single prop if marko
+// decides the renamed page should show only sellable stock rather than every
+// ticket. Ask before removing them.
 interface TicketsFilterState {
   search: string;
   eventId: number | "";
@@ -425,7 +436,21 @@ export function TicketsView({
         // 1649px (was 1690px) - see useNarrowTables.ts.
         <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
-            {isNarrow ? (
+            {lockedStatus ? (
+              /* 2.34.2: Inventory's seven. Event keeps the lion's share since
+                 it is the only free-text column left, and the rest are spread
+                 wide enough to read at a glance rather than squeezed against
+                 columns that are no longer there. Sums to 100. */
+              <colgroup>
+                <col className="w-[26%]" />
+                <col className="w-[13%]" />
+                <col className="w-[19%]" />
+                <col className="w-[9%]" />
+                <col className="w-[10%]" />
+                <col className="w-[13%]" />
+                <col className="w-[10%]" />
+              </colgroup>
+            ) : isNarrow ? (
               <colgroup>
                 <col className="w-[10.488%]" />
                 <col className="w-[47.439%]" />
@@ -450,13 +475,20 @@ export function TicketsView({
             )}
             <thead>
               <tr>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
+                {/* 2.34.2: Inventory's own column list, marko's words - Event,
+                    Purchase date, Seats, Total, Available, Total cost, Status.
+                    Order and Sold are dropped there and Purchase date/Seats
+                    stop hiding at narrow width, because losing two columns
+                    leaves room for the rest to breathe. `lockedStatus` is the
+                    existing "this is Inventory, not Tickets" signal this file
+                    already branches on - Tickets itself is unchanged. */}
+                {!lockedStatus && <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
-                {!isNarrow && <th className="th-c">Purchase date</th>}
-                {!isNarrow && <th className="th-c">Seats</th>}
+                {(!isNarrow || lockedStatus) && <th className={isNarrow ? "th-c-narrow" : "th-c"}>Purchase date</th>}
+                {(!isNarrow || lockedStatus) && <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>
+                {!lockedStatus && <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total cost</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
               </tr>
@@ -466,11 +498,16 @@ export function TicketsView({
                 const inv = inventoryStatus(o);
                 return (
                   <tr key={o.id}>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={o.code}>
-                      <Link to={`/orders/${o.id}`} className="hover:underline">
-                        {o.code}
-                      </Link>
-                    </td>
+                    {!lockedStatus && (
+                      <td
+                        className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`}
+                        title={o.code}
+                      >
+                        <Link to={`/orders/${o.id}`} className="hover:underline">
+                          {o.code}
+                        </Link>
+                      </td>
+                    )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.eventName}>
                       {allowCrossLinks ? (
                         <Link to={`/events/${o.eventId}`} className="hover:underline">
@@ -480,15 +517,17 @@ export function TicketsView({
                         o.eventName
                       )}
                     </td>
-                    {!isNarrow && <td className="td-c whitespace-nowrap">{formatDateNumeric(o.purchaseDate)}</td>}
-                    {!isNarrow && (
-                      <td className="td-c truncate" title={formatSeatsSummary(o.seats)}>
+                    {(!isNarrow || lockedStatus) && <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(o.purchaseDate)}</td>}
+                    {(!isNarrow || lockedStatus) && (
+                      <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={formatSeatsSummary(o.seats)}>
                         {formatSeatsSummary(o.seats)}
                       </td>
                     )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.quantity}</td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.availableCount + o.listedCount}</td>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.soldCount}</td>
+                    {!lockedStatus && (
+                      <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.soldCount}</td>
+                    )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(o.totalCostCents, o.currency)}</td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={inv.key}>{inv.label}</Badge>
