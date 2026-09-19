@@ -159,7 +159,7 @@ export function BulkTicketEditBar({
             />
           </Field>
         </div>
-        <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Only this ticket detail is changed on every selected ticket - sale price, fees and payment status are not
           affected. Ticket status can&apos;t be changed here; use the Sales screen (create, refund or delete a sale)
           instead.

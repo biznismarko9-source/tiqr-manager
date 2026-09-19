@@ -174,7 +174,7 @@ export function MetricChart({
   if (points.length === 0) {
     return (
       <div
-        className="flex items-center justify-center text-sm text-slate-400 dark:text-slate-500"
+        className="flex items-center justify-center text-sm text-slate-500 dark:text-slate-400"
         style={{ height: CHART_HEIGHT }}
       >
         No sales in this period yet.

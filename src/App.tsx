@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { HashRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./lib/toast";
@@ -14,12 +14,26 @@ import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
-import Tickets from "./pages/Tickets";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
 import Finance from "./pages/Finance";
 import Settings from "./pages/Settings";
+
+/** 2.39.0: `/tickets` was the Inventory list. Orders and Inventory were two
+ *  lists over the same rows, so marko asked for one screen, keeping the name
+ *  Inventory - and `/orders` is the one that survives. This keeps every old
+ *  deep link working, **query string and all**: EventDetail hands off a
+ *  `?code=<ticket code>` here, and Orders' own search resolves it because
+ *  `orders.rs` matches ticket codes as well as order codes (its BUG #5 test).
+ *
+ *  `pages/Tickets.tsx` is NOT deleted - SaleDetail and OrderDetail import
+ *  `DELIVERY_STATUS_OPTIONS`/`RESALE_STATUS_OPTIONS`/`TicketEditModal` from
+ *  it. Only its route and its nav entry are gone. */
+function TicketsRedirect() {
+  const location = useLocation();
+  return <Navigate to={{ pathname: "/orders", search: location.search }} replace />;
+}
 
 // 2.0.44: gates the whole app behind sign-in (see Welcome.tsx + lib/auth.tsx)
 // - anything not logged in gets sent to /welcome instead, no matter what
@@ -145,7 +159,7 @@ export default function App() {
               <Route path="events/:id" element={<EventDetail />} />
               <Route path="orders" element={<Orders />} />
               <Route path="orders/:id" element={<OrderDetail />} />
-              <Route path="tickets" element={<Tickets />} />
+              <Route path="tickets" element={<TicketsRedirect />} />
               <Route path="sales" element={<Sales />} />
               <Route path="sales/:id" element={<SaleDetail />} />
               <Route path="pulls" element={<Pulls />} />

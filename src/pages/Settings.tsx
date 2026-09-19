@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { startTour } from "../components/Tour";
+import { startTour, TOUR_STEP_COUNT } from "../components/Tour";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -62,7 +62,6 @@ import {
   IconChevronDown,
   IconDatabase,
   IconDownload,
-  IconGauge,
   IconInfo,
   IconLink,
   IconLogOut,
@@ -79,7 +78,6 @@ import { useToast } from "../lib/toast";
 import { checkForUpdate, getLastUpdateCheck, installUpdate, type Update, type UpdateProgress } from "../lib/updater";
 import { UpdateOverlay } from "../components/UpdateOverlay";
 import { useAuth } from "../lib/auth";
-import { InsightsCards } from "../components/Recap";
 import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 
 // 1.8.2: Settings Home - one card per category, each a real route
@@ -127,15 +125,15 @@ const SECTIONS = [
   // what they want changed - and for him to see those as admin. Both live in
   // this one section rather than anywhere new; see SupportCards at the bottom
   // of this file.
-  // 2.24.0: Recap lives HERE, not in the sidebar - marko's own call. It is
-  // something you open when you want to see how things are going, not
-  // something in the way of everyday work. See components/Recap.tsx.
-  // 2.25.0: both moved to the VERY END of this list at marko's request. They
-  // are the two things you go looking for on purpose; everything above them
-  // is something you come to Settings to change. Order here is the only thing
-  // that decides the Settings home list AND the section rail, so this one
-  // move covers both.
-  { key: "insights", title: "Insights", description: "Ticket and Finance recaps.", icon: IconGauge },
+  // 2.25.0: moved to the VERY END of this list at marko's request. It is the
+  // thing you go looking for on purpose; everything above it is something you
+  // come to Settings to change. Order here is the only thing that decides the
+  // Settings home list AND the section rail, so this one move covers both.
+  // 2.38.0: the Insights section (Ticket and Finance recaps, 2.24.0) is gone -
+  // marko asked for it removed completely. components/Recap.tsx is left on
+  // disk untouched but nothing imports it any more, so the Recap is out of
+  // the app, not just out of this list. Deleting the file is a separate call
+  // and his to make.
   { key: "support", title: "Support", description: "A walkthrough, and a way to reach marko.", icon: IconInfo },
 ];
 
@@ -804,7 +802,7 @@ export default function Settings() {
                 <IconTag className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
                 <span className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Platforms</h3>
-                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                     {platforms.length} platform{platforms.length === 1 ? "" : "s"} &middot; purchase and selling
                   </p>
                 </span>
@@ -819,7 +817,7 @@ export default function Settings() {
                 <IconTicket className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
                 <span className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Event categories</h3>
-                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                     {categories.length} categor{categories.length === 1 ? "y" : "ies"} &middot; colors and filters Events, Orders, Sales
                   </p>
                 </span>
@@ -834,7 +832,7 @@ export default function Settings() {
                 <IconWallet className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
                 <span className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Finance categories</h3>
-                  <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                     {financeCategories.length} categor{financeCategories.length === 1 ? "y" : "ies"} &middot; expense and income
                   </p>
                 </span>
@@ -852,7 +850,7 @@ export default function Settings() {
                 appears in both lists below, via PlatformList's own filter. */}
             <div className="mb-3 flex items-center gap-1.5">
               <InfoHint text={`Purchase platforms show up when recording an order; Selling platforms show up when recording a sale. Tag a platform "Both" if you use it for either. Not hardcoded — add as many as you like.`} />
-              <p className="text-xs text-slate-400 dark:text-slate-500">Hover the (i) for what Purchase/Selling/Both mean.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Hover the (i) for what Purchase/Selling/Both mean.</p>
             </div>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
               <PlatformList
@@ -880,7 +878,7 @@ export default function Settings() {
               category's color is assigned automatically the first time it's
               added (see EventCategoryBadge.tsx) - nothing to pick here. */}
           <Modal open={openLookup === "eventCategories"} onClose={() => setOpenLookup(null)} title="Event categories">
-            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
               Tag events to filter and color-code them. Each gets its own color.
             </p>
             <EventCategoryList categories={categories} onAdd={addCategory} onDelete={setConfirmDeleteCategory} />
@@ -891,7 +889,7 @@ export default function Settings() {
               same one `finance_categories` table either way (a category's
               `kind` decides which list(s) it shows in). */}
           <Modal open={openLookup === "financeCategories"} onClose={() => setOpenLookup(null)} title="Finance categories" width="max-w-3xl">
-            <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
               Used by Finance entries, personal and business. Each gets its own color.
             </p>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -928,7 +926,7 @@ export default function Settings() {
                     visible from the controls; the only thing that genuinely
                     needed explaining is the both-changed case, and that has
                     its own warning below when it actually happens. */}
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                   One copy in your own Google Drive, kept level by itself.
                 </p>
 
@@ -959,7 +957,7 @@ export default function Settings() {
                             check decided. */}
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                           <Badge tone={SYNC_STATE_TONE[sync.state] ?? "available"}>{SYNC_STATE_LABEL[sync.state] ?? sync.state}</Badge>
-                          <span className="text-slate-400 dark:text-slate-500">
+                          <span className="text-slate-500 dark:text-slate-400">
                             {sync.lastSyncAt ? `Last synced ${formatDateTime(sync.lastSyncAt)}` : "Never synced from this computer"}
                           </span>
                         </div>
@@ -1108,7 +1106,7 @@ export default function Settings() {
                                 </ul>
                               </>
                             )}
-                            <p className="mt-1.5 break-all text-slate-400 dark:text-slate-500">
+                            <p className="mt-1.5 break-all text-slate-500 dark:text-slate-400">
                               Your data from before this was saved to {mergeResult.safetyBackupPath} - it is also in
                               Restore points below.
                             </p>
@@ -1121,13 +1119,13 @@ export default function Settings() {
                             log viewer. */}
                         {mergeHistory.length > 0 && (
                           <div className="mt-3 border-t border-slate-100 pt-3 dark:border-slate-800">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                               What came from your other computer
                             </p>
                             <ul className="mt-1.5 space-y-1">
                               {mergeHistory.slice(0, 3).map((e) => (
                                 <li key={e.at} className="text-xs text-slate-500 dark:text-slate-400">
-                                  <span className="text-slate-400 dark:text-slate-500">{formatDateTime(e.at)}</span>
+                                  <span className="text-slate-500 dark:text-slate-400">{formatDateTime(e.at)}</span>
                                   {" - "}
                                   {e.changed.length === 0 && e.deleted === 0
                                     ? "nothing new"
@@ -1193,7 +1191,7 @@ export default function Settings() {
                           </div>
                         </dl>
 
-                        <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
+                        <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
                           Replaces this computer's data. A backup is taken first.
                         </p>
                       </>
@@ -1202,8 +1200,19 @@ export default function Settings() {
                 )}
               </Card>
 
+              {/* 2.38.0: Import and Export used to be two cards side by side
+                  saying the same word twice. One card, two labelled rows -
+                  marko asked for Settings to be as simple as it can get, and
+                  this is one screen-worth of it. Every handler below
+                  (setImportOpen, doDownloadTemplate, setExportConfig and the
+                  five export configs) is exactly the one it was. */}
               <Card className="p-5">
-                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Import orders from CSV</h3>
+                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">CSV</h3>
+                <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+                  Bring orders in from a spreadsheet, or take any list out as a file.
+                </p>
+
+                <p className="section-title mb-2">Import orders</p>
                 {/* 1.9.2 (section 8): shortened from a single dense paragraph
                     to just the 3 things marko asked to keep - the required
                     columns, the seats note, and the all-or-nothing note.
@@ -1215,10 +1224,10 @@ export default function Settings() {
                     it to build the CSV. Kept on screen: that an import either
                     lands whole or not at all, which changes what he does if
                     it fails. */}
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
                   All-or-nothing. Download the template for the exact columns.
                 </p>
-                <div className="flex flex-wrap gap-2">
+                <div className="mb-4 flex flex-wrap gap-2">
                   <Button variant="primary" onClick={() => setImportOpen(true)}>
                     <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
                   </Button>
@@ -1227,13 +1236,8 @@ export default function Settings() {
                     Download template
                   </Button>
                 </div>
-              </Card>
 
-              <Card className="p-5">
-                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Export CSV</h3>
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
-                  Each button opens a picker.
-                </p>
+                <p className="section-title mb-2">Export</p>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { label: "Events", key: "events", config: eventsExportConfig },
@@ -1252,7 +1256,7 @@ export default function Settings() {
 
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h3>
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                   This database lives only on this device.
                 </p>
                 <div className="flex flex-wrap gap-2">
@@ -1274,10 +1278,10 @@ export default function Settings() {
                     section: it is a network call, and only wanted when marko
                     is actually looking for a version to go back to. */}
                 <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                     Earlier versions in Google Drive
                   </p>
-                  <p className="mb-2 mt-1 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mb-2 mt-1 text-xs text-slate-500 dark:text-slate-400">
                     Restoring replaces this computer&apos;s data. A backup is taken first.
                   </p>
                   {revisions.length === 0 ? (
@@ -1298,7 +1302,7 @@ export default function Settings() {
                           </span>
                           {r.isCurrent && <Badge tone="paid">in Drive now</Badge>}
                           {r.sizeBytes !== null && (
-                            <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                            <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
                               {(r.sizeBytes / 1024 / 1024).toFixed(1)} MB
                             </span>
                           )}
@@ -1353,10 +1357,10 @@ export default function Settings() {
                     them creates nothing and deletes nothing. */}
                 {restorePoints.length > 0 && (
                   <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                       Restore points
                     </p>
-                    <p className="mb-1 mt-1 text-xs text-slate-400 dark:text-slate-500">
+                    <p className="mb-1 mt-1 text-xs text-slate-500 dark:text-slate-400">
                       Taken before anything replaced your data. Newest first, and undoable.
                     </p>
                     <ul className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1371,7 +1375,7 @@ export default function Settings() {
                               <Badge tone={rp.source === "sync" ? "listed" : "available"}>
                                 {rp.source === "sync" ? "before sync down" : "before restore"}
                               </Badge>
-                              <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                              <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
                                 {(rp.sizeBytes / 1024 / 1024).toFixed(1)} MB
                               </span>
                               <Button
@@ -1385,7 +1389,7 @@ export default function Settings() {
                               </Button>
                             </div>
                             {note && (
-                              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{note}</p>
+                              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{note}</p>
                             )}
                           </li>
                         );
@@ -1416,7 +1420,7 @@ export default function Settings() {
                   </div>
                 )}
                 {appInfo && (
-                  <p className="mt-4 break-all text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mt-4 break-all text-xs text-slate-500 dark:text-slate-400">
                     {/* 2.0.72: signed-in email shown alongside the path now
                         that different accounts can have entirely different
                         files - see lib/auth.tsx's `switchDatabaseFor`. */}
@@ -1426,8 +1430,6 @@ export default function Settings() {
               </Card>
             </div>
           )}
-
-          {sec === "insights" && <InsightsCards />}
 
           {sec === "support" && <SupportCards />}
 
@@ -1519,7 +1521,7 @@ export default function Settings() {
           {sec === "software" && (
             <Card className="p-5 lg:max-w-xl">
               <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Software updates</h3>
-              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                 Checks GitHub for a newer signed release. Nothing downloads until you approve it, and everything
                 still works fully offline either way.
               </p>
@@ -1545,7 +1547,7 @@ export default function Settings() {
                     {updateChecking ? <Spinner className="h-4 w-4" /> : null}
                     {updateChecking ? "Checking..." : "Check for updates"}
                   </Button>
-                  {updateChecked && !updateError && <span className="text-xs text-slate-400 dark:text-slate-500">You're on the latest version.</span>}
+                  {updateChecked && !updateError && <span className="text-xs text-slate-500 dark:text-slate-400">You're on the latest version.</span>}
                 </div>
               )}
               {updateError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{updateError}</p>}
@@ -1595,7 +1597,7 @@ export default function Settings() {
                   widget (Layout.tsx) instead - marko wanted it off the
                   sidebar (shown on every page, all the time) and moved to
                   the one place someone would actually go looking for it. */}
-              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">Local-first &middot; your data stays on this device</p>
+              <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">Local-first &middot; your data stays on this device</p>
               <div className="space-y-3">
                 <Field label="Name">
                   <Input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Your name" />
@@ -1843,7 +1845,7 @@ function PlatformList({
           and had to scroll constantly. max-h-[60vh] scales with the window
           instead, same fix applied identically to all 3 lookup lists. */}
       <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-        {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No platforms yet</li>}
+        {visible.length === 0 && <li className="p-3 text-sm text-slate-500 dark:text-slate-400">No platforms yet</li>}
         {visible.map((p) => (
           <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
             <span className="truncate">{p.name}</span>
@@ -1909,7 +1911,7 @@ function EventCategoryList({
           and had to scroll constantly. max-h-[60vh] scales with the window
           instead, same fix applied identically to all 3 lookup lists. */}
       <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-        {categories.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
+        {categories.length === 0 && <li className="p-3 text-sm text-slate-500 dark:text-slate-400">No categories yet</li>}
         {categories.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
             <span className="flex min-w-0 items-center gap-2">
@@ -1979,7 +1981,7 @@ function FinanceCategoryList({
           and had to scroll constantly. max-h-[60vh] scales with the window
           instead, same fix applied identically to all 3 lookup lists. */}
       <ul className="max-h-[60vh] divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
-        {visible.length === 0 && <li className="p-3 text-sm text-slate-400 dark:text-slate-500">No categories yet</li>}
+        {visible.length === 0 && <li className="p-3 text-sm text-slate-500 dark:text-slate-400">No categories yet</li>}
         {visible.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
             <span className="flex min-w-0 items-center gap-2">
@@ -2080,7 +2082,7 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
   if (loading) {
     return (
       <Card className="p-5">
-        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
           <Spinner className="h-4 w-4" /> Loading...
         </div>
       </Card>
@@ -2097,10 +2099,10 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
       </div>
 
       {!status?.signInAvailable ? (
-        <p className="text-xs text-slate-400 dark:text-slate-500">Google sign-in isn&apos;t available in this build.</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">Google sign-in isn&apos;t available in this build.</p>
       ) : signedIn ? (
         <>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Sheets below use your own account (
             <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.signedInEmail}</span>).
             A sheet you create needs no sharing step.
@@ -2112,7 +2114,7 @@ function GoogleSignInCard({ onChange }: { onChange: (status: GoogleSignInStatus)
         </>
       ) : (
         <>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Optional. Use your own Google account for the Pulls sheet instead of the app&apos;s shared one. Opens in
             your browser.
           </p>
@@ -2241,7 +2243,7 @@ function AnthropicApiKeyCard() {
   if (configured === null) {
     return (
       <Card className="p-5">
-        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
           <Spinner className="h-4 w-4" /> Loading...
         </div>
       </Card>
@@ -2254,11 +2256,11 @@ function AnthropicApiKeyCard() {
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">AI features</h3>
         <Badge tone={configured ? "sold" : "available"}>{configured ? "On" : "Off"}</Badge>
       </div>
-      <p className="mb-2 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
         Optional. One key, used by every AI feature in the app - always as a last resort, and always marked as
         AI-derived so you can check it before saving.
       </p>
-      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
         {/* 2.2.9: see this component's own doc comment above for why this is
             a link to Anthropic's own Console rather than a number shown
             here - there's no API that can tell this app a live balance. */}
@@ -2275,7 +2277,7 @@ function AnthropicApiKeyCard() {
 
       {usage.length > 0 && (
         <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
             What this app has used
           </p>
           <ul className="mt-1.5 space-y-1">
@@ -2288,13 +2290,13 @@ function AnthropicApiKeyCard() {
                 <span className="tabular-nums font-medium text-slate-700 dark:text-slate-200">
                   ~${(m.estimatedCostUsdCents / 100).toFixed(2)}
                 </span>
-                <span className="tabular-nums text-slate-400 dark:text-slate-500">
+                <span className="tabular-nums text-slate-500 dark:text-slate-400">
                   {(m.inputTokens / 1000).toFixed(1)}k in / {(m.outputTokens / 1000).toFixed(1)}k out
                 </span>
               </li>
             ))}
           </ul>
-          <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500">
+          <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
             Estimated from real token use at Claude Opus 5 list price. USD, as Anthropic bills.
           </p>
         </div>
@@ -2843,7 +2845,7 @@ function SheetsConnectionCard({
   if (loading) {
     return (
       <Card className="p-5">
-        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
           <Spinner className="h-4 w-4" /> Loading...
         </div>
       </Card>
@@ -2860,7 +2862,7 @@ function SheetsConnectionCard({
       </div>
 
       {!status?.syncAvailable ? (
-        <p className="text-xs text-slate-400 dark:text-slate-500">Google Sheets sync isn&apos;t available in this build.</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">Google Sheets sync isn&apos;t available in this build.</p>
       ) : (
         <>
           {/* 2.0.65: once a connection already works, none of this setup
@@ -2883,7 +2885,7 @@ function SheetsConnectionCard({
                   instead of being force-displayed at all times. One short line
                   stays here since it's an instruction for the fields right
                   below, not a per-action explanation. */}
-              <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+              <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
                 Paste the sheet&apos;s URL (or just its ID) and the exact tab name, then connect.
                 {!onSync && ` Sets up and tests the connection only - ${label.toLowerCase()} rows come later.`}
                 {oauthEmail && " Uses your signed-in account."}
@@ -2915,7 +2917,7 @@ function SheetsConnectionCard({
                   }
                 >
                   {detecting ? (
-                    <div className="input flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
+                    <div className="input flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                       <Spinner className="h-4 w-4" /> Detecting tabs...
                     </div>
                   ) : detectedTabs && detectedTabs.length > 0 && !manualTabEntry ? (
@@ -3122,10 +3124,10 @@ function SheetsConnectionCard({
             <>
               <div className="my-4 flex items-center gap-3">
                 <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                <span className="text-xs text-slate-400 dark:text-slate-500">or</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">or</span>
                 <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
               </div>
-              <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                 {oauthEmail
                   ? "Don't have a sheet yet? The app can create one for you - already set up with the right columns - directly in your own Google Drive."
                   : "Don't have a sheet yet? The app can create one for you - already set up with the right columns - and share it with your Google account. No Google sign-in window."}
@@ -3250,13 +3252,13 @@ function SheetsConnectionCard({
               "Change connection" brings it back, same as the fields. */}
           {(!connected || editingConnection) &&
             (oauthEmail ? (
-              <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
+              <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
                 An existing sheet must be yours, or shared with{" "}
                 <span className="break-all font-mono text-slate-500 dark:text-slate-400">{oauthEmail}</span> as Editor.
               </p>
             ) : (
               status?.serviceAccountEmail && (
-                <p className="mt-4 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
                   Share the sheet with{" "}
                   <span className="break-all font-mono text-slate-500 dark:text-slate-400">{status.serviceAccountEmail}</span>{" "}
                   (Editor access) so the app can read and write it.
@@ -3265,13 +3267,13 @@ function SheetsConnectionCard({
             ))}
 
           {status?.lastPushedAt && (
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Last pushed: {new Date(status.lastPushedAt).toLocaleString()}
             </p>
           )}
 
           {status?.lastSyncedAt && (
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Last synced: {new Date(status.lastSyncedAt).toLocaleString()}
             </p>
           )}
@@ -3427,7 +3429,7 @@ function CsvImportModal({
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400 dark:text-slate-500">
+        <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-500 dark:text-slate-400">
           <Spinner className="h-4 w-4" /> Reading file...
         </div>
       )}
@@ -3459,7 +3461,7 @@ function CsvImportModal({
               Choose a different file
             </button>
           </div>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Click a count above to filter the preview below.{" "}
             {/* 1.8.3 (section 9): the spec asked for a Duplicates count too, but
                 this app has no reliable way to detect one - every imported row
@@ -3487,7 +3489,7 @@ function CsvImportModal({
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {visibleRows.length === 0 ? (
                   <tr>
-                    <td className="td text-center text-slate-400 dark:text-slate-500" colSpan={preview.headers.length + 2}>
+                    <td className="td text-center text-slate-500 dark:text-slate-400" colSpan={preview.headers.length + 2}>
                       No rows match this filter
                     </td>
                   </tr>
@@ -3507,7 +3509,7 @@ function CsvImportModal({
               </tbody>
             </table>
             {visibleRows.length > 100 && (
-              <p className="border-t border-slate-100 dark:border-slate-800 p-2 text-center text-xs text-slate-400 dark:text-slate-500">
+              <p className="border-t border-slate-100 dark:border-slate-800 p-2 text-center text-xs text-slate-500 dark:text-slate-400">
                 Showing first 100 of {visibleRows.length} matching rows
               </p>
             )}
@@ -3645,7 +3647,7 @@ function NotificationsCard() {
   if (loading) {
     return (
       <Card className="p-5">
-        <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
           <Spinner className="h-4 w-4" /> Loading...
         </div>
       </Card>
@@ -3668,7 +3670,7 @@ function NotificationsCard() {
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Notifications</h3>
         <Badge tone={configured ? "sold" : "available"}>{configured ? "Enabled" : "Off"}</Badge>
       </div>
-      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
         The same things the Dashboard&apos;s bell tracks. At most one per category per day, and only while TIQR
         Manager is running.
       </p>
@@ -3694,7 +3696,7 @@ function NotificationsCard() {
               />
               Desktop notifications
             </label>
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Shows a system notification while TIQR Manager is open. No setup needed.
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -3716,7 +3718,7 @@ function NotificationsCard() {
               />
               ntfy (mobile push)
             </label>
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Needs the free ntfy app on your phone - no account. Pick a hard-to-guess topic below and subscribe to
               that exact phrase in the app; anyone who knows it can read your notifications.
             </p>
@@ -3759,7 +3761,7 @@ function NotificationsCard() {
                 Cancel
               </Button>
             )}
-            <span className="text-xs text-slate-400 dark:text-slate-500">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
               &quot;Send test&quot; uses whatever is currently saved - save first if you just changed something.
             </span>
           </div>
@@ -3768,6 +3770,24 @@ function NotificationsCard() {
     </Card>
   );
 }
+
+/** 2.38.0: the three things a new TIQR user gets wrong first, in the order
+ *  they hit them. Kept as data rather than prose so the Guide card can lay
+ *  them out as a row - the same three facts the old paragraph carried. */
+const GUIDE_ESSENTIALS = [
+  {
+    term: "The event comes first",
+    detail: "Orders, tickets and sales all hang off an event, so it is the thing you create before anything else.",
+  },
+  {
+    term: "An order creates its tickets",
+    detail: "It splits the cost across them for you. A per-ticket price is never something you type in.",
+  },
+  {
+    term: "A sale needs the fee",
+    detail: "Leave the platform's cut out and the profit the app shows you is optimistic rather than real.",
+  },
+];
 
 /** 2.23.0: Settings -> Support. Two things marko asked for, in one card each.
  *
@@ -3880,41 +3900,47 @@ function SupportCards() {
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
-      {/* 2.25.0: the guide is now something that HAPPENS, not something you
-          read. See components/Tour.tsx. */}
-      <Card className="overflow-hidden p-0">
-        <div className="bg-gradient-to-br from-brand-600 to-brand-800 px-6 py-7">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/70">Guide</p>
-          <h3 className="mt-2 text-[22px] font-semibold leading-tight text-white">Let the app show you itself</h3>
-          <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-white/80">
-            Fourteen steps through the real screens, each one pointing at the thing it is talking about.
-          </p>
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={startTour}
-              className="rounded-lg bg-surface px-4 py-2 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-50"
-            >
-              Start the tour
-            </button>
-            <span className="text-xs text-white/70">About two minutes · Esc ends it at any point</span>
+      {/* 2.25.0: the guide is something that HAPPENS, not something you
+          read. See components/Tour.tsx.
+          2.38.0: marko asked for it to look better and more professional
+          while staying simple, so the gradient hero is gone - it was the
+          loudest thing in Settings and said the least. What is left is the
+          same two pieces of information it always carried: the tour, and the
+          three things people get wrong before they take it. The three are now
+          a scannable row instead of one run-on sentence, and the step count
+          comes from the tour itself rather than a number typed here. */}
+      <Card className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Guided tour</h3>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              {TOUR_STEP_COUNT} steps through the real screens, each one pointing at the thing it is
+              talking about. About two minutes; Esc ends it at any point.
+            </p>
           </div>
+          <Button variant="primary" onClick={startTour}>
+            Start the tour
+          </Button>
         </div>
-        <div className="px-6 py-4">
-          <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-            The three things people get wrong first, in case you want them now: the{" "}
-            <span className="font-medium text-slate-700 dark:text-slate-300">event comes before everything</span>; the{" "}
-            <span className="font-medium text-slate-700 dark:text-slate-300">order creates its own tickets</span> and
-            splits the cost across them, so a per-ticket price is never typed; and a{" "}
-            <span className="font-medium text-slate-700 dark:text-slate-300">sale needs the platform&apos;s fee</span>{" "}
-            or the margin it shows you is optimistic rather than real.
-          </p>
+
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="section-title mb-2.5">Three things to know before you start</p>
+          <dl className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+            {GUIDE_ESSENTIALS.map((item) => (
+              <div key={item.term} className="rounded-lg bg-surface-sunken p-3">
+                <dt className="text-[12.5px] font-semibold text-slate-800 dark:text-slate-200">{item.term}</dt>
+                <dd className="mt-1 text-[11.5px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {item.detail}
+                </dd>
+              </div>
+            ))}
+          </dl>
         </div>
       </Card>
 
       <Card className="p-5">
         <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Suggest a change</h3>
-        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
           Goes straight to marko. A postbox, not a chat - there is no reply thread.
         </p>
         <div className="mb-3 flex flex-wrap gap-2">
@@ -4004,7 +4030,7 @@ function SupportCards() {
             {sending ? <Spinner className="h-4 w-4" /> : null}
             Send to marko
           </Button>
-          <span className="text-xs text-slate-400 dark:text-slate-500">
+          <span className="text-xs text-slate-500 dark:text-slate-400">
             {sent
               ? "Sent."
               : `${text.trim().length}/2000${image ? " · 1 picture" : ""} · sent with your email and app version`}
@@ -4018,7 +4044,7 @@ function SupportCards() {
             <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Inbox</h3>
             <Badge tone="demo">admin</Badge>
           </div>
-          <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Everything anyone has sent, newest first. Read-only here - marking one handled happens in the Firebase
             Console, the same place approvals do.
           </p>
@@ -4040,7 +4066,7 @@ function SupportCards() {
                     <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
                       {s.name || s.email || "unknown"}
                     </span>
-                    <span className="text-xs text-slate-400 dark:text-slate-500">
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
                       {s.createdAt ? formatDateTime(s.createdAt) : "just now"}
                       {s.appVersion ? ` · v${s.appVersion}` : ""}
                     </span>

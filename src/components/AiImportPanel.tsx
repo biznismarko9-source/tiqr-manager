@@ -231,11 +231,11 @@ export default function AiImportPanel({
               : "border-slate-300 hover:border-slate-400 hover:bg-surface dark:border-slate-700 dark:hover:border-slate-600 dark:hover:bg-slate-900/50"
           }`}
         >
-          <IconUpload className="h-4 w-4 text-slate-400 dark:text-slate-500" />
+          <IconUpload className="h-4 w-4 text-slate-500 dark:text-slate-400" />
           <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
             Drop a screenshot, or click to upload
           </span>
-          <span className="text-[11px] text-slate-400 dark:text-slate-500">
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
             or press Ctrl + V to paste one &middot; PNG, JPG, WebP
           </span>
         </button>
@@ -388,7 +388,7 @@ export default function AiImportPanel({
                       (key) =>
                         activeGroup[key] ? (
                           <div key={key} className="flex items-baseline gap-1.5 overflow-hidden">
-                            <dt className="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">
+                            <dt className="shrink-0 text-[11px] text-slate-500 dark:text-slate-400">
                               {TICKET_GROUP_LABELS[key]}
                             </dt>
                             <dd className="truncate text-xs font-medium text-slate-800 tabular-nums dark:text-slate-200">
@@ -399,7 +399,7 @@ export default function AiImportPanel({
                     )}
                     {activeGroup.seats.length > 0 && (
                       <div className="col-span-2 flex items-baseline gap-1.5 overflow-hidden">
-                        <dt className="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">Seats</dt>
+                        <dt className="shrink-0 text-[11px] text-slate-500 dark:text-slate-400">Seats</dt>
                         <dd className="truncate text-xs font-medium text-slate-800 tabular-nums dark:text-slate-200">
                           {activeGroup.seats.join(", ")}
                         </dd>
@@ -421,7 +421,7 @@ export default function AiImportPanel({
                 <Button size="sm" variant="ghost" onClick={reset}>
                   <IconX className="h-3.5 w-3.5" /> Discard
                 </Button>
-                <span className="ml-auto text-[11px] text-slate-400 dark:text-slate-500">
+                <span className="ml-auto text-[11px] text-slate-500 dark:text-slate-400">
                   Nothing is saved until you submit the form
                 </span>
               </div>

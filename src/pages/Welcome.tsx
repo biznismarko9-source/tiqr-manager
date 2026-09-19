@@ -159,7 +159,7 @@ export default function Welcome() {
             className="h-12 w-12 rounded-xl shadow-raised ring-1 ring-slate-900/5 dark:ring-white/10"
           />
           <h1 className="mt-3.5 text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-50">TIQR Manager</h1>
-          <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Reseller toolkit</p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Reseller toolkit</p>
         </div>
 
         <Card className="p-5">
@@ -277,7 +277,7 @@ export default function Welcome() {
                 </Button>
               </form>
 
-              <div className="my-4 flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
+              <div className="my-4 flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
                 or
                 <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
@@ -312,7 +312,7 @@ export default function Welcome() {
           )}
         </Card>
 
-        <p className="mt-4 text-center text-[11px] text-slate-400 dark:text-slate-500">
+        <p className="mt-4 text-center text-[11px] text-slate-500 dark:text-slate-400">
           Local-first &middot; your data stays on this device
         </p>
       </div>

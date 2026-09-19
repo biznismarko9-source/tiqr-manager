@@ -10,11 +10,11 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
   Modal,
   ModalFooter,
   Select,
   Spinner,
+  TableSkeleton,
   Textarea,
 } from "../../components/ui";
 import { FinanceCategoryBadge } from "../../components/FinanceCategoryBadge";
@@ -211,7 +211,8 @@ export default function Transactions({ entries, categories, accounts, transfers,
       </Card>
 
       {loading ? (
-        <LoadingBlock label="Loading transactions..." />
+        /* 2.40.0: see Dashboard - skeleton in the shape of what loads. */
+        <TableSkeleton rows={8} />
       ) : customDatesMissing ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           Please select at least one date.
@@ -221,7 +222,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
             <h3 className="mr-auto text-sm font-semibold text-slate-800 dark:text-slate-200">Transactions</h3>
             <div className="relative">
-              <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+              <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
               <Input placeholder="Search place / note..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-48 pl-8" />
             </div>
             <div className="w-32">
@@ -354,7 +355,7 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
       <td className="td whitespace-nowrap">{formatDate(entry.entryDate)}</td>
       <td className="td">
         <Badge tone={entry.entryType === "income" ? "sold" : "cancelled"}>{entry.entryType === "income" ? "Income" : "Expense"}</Badge>
-        <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">{entry.scope === "business" ? "Business" : "Personal"}</span>
+        <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{entry.scope === "business" ? "Business" : "Personal"}</span>
       </td>
       <td className="td">
         {entry.categoryName && entry.categoryColorSlot !== null ? (

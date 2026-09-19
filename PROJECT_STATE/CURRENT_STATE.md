@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.37.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.40.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -916,6 +916,148 @@ not a side effect of a token change.
 `STATUS_TONES` - the dot already exists and inherits `currentColor`),
 `Skeleton`/`EmptyState` restyle, per-page empty-state copy, and the contrast
 sweep above.
+
+**2.38.0 - filter row, own calendar, thinner Settings.** Seven of marko's
+requests in one pass, all presentation; no schema, no money maths, no Rust.
+
+**The tab switcher moved into the filter row, pinned right** on Events,
+Orders, Inventory and Sales - the arrangement Pulls already had, which is the
+one he pointed at. `TabSwitcher` no longer carries its own `mb-4`; that margin
+is the caller's now, and the two stand-alone uses (EventDetail ×2) spell it
+out. Any future call site that sits on its own line must pass `mb-4` too.
+
+**Sales lost three things.** The Currency filter (the date range took its slot
+literally); Refund status, and with it the "More filters" toggle that held
+nothing else; and the `Paid/Pending` badge column - the row said the same
+thing twice next to three dots whose third dot IS paid, and marko kept the
+dots. Ten columns now, both colgroups recomputed to 100. The
+"N/M refunded" line moved under the dots rather than going with the badge: it
+is the only place the list says a refund happened at all.
+
+**Inventory lost the Sold column** (Total and Available only). Nothing was
+recalculated - Total is still `o.quantity`, Available still
+`availableCount + listedCount`, so sold reads as the gap. Colgroups recomputed
+to 8 wide / 6 narrow, and Event gave up part of its old 43.5% so Seats and
+Purchase date stop truncating.
+
+**`<input type="date">` now draws its own calendar** (`DateField` in
+`ui.tsx`). The browser's popup is chrome - no CSS reaches it - so in dark mode
+every date field opened a white panel. The replacement is Monday-first, always
+six rows (constant height), today marked, `Today`/`Clear`, and it flips above
+the field or right-aligns when there is no room. **No new dependency.**
+`Input` routes `type="date"` into it, so **none of the ~30 call sites
+changed** - they still pass `YYYY-MM-DD` and still read `e.target.value`; the
+object handed to `onChange` is a stand-in carrying `target.value`/`target.name`
+only, which is all any of them reads. Escape is stopped at the wrapper so
+closing the calendar does not also close the Modal around it. Three hand-rolled
+`<input type="date">` sites (Dashboard ×2, OrderDetail) went through `Input`;
+Recap's two did not - see below.
+
+**Settings: Insights is gone completely.** That section was the only entry
+point to the Recap, so **the Recap leaves the app with it**.
+`components/Recap.tsx` is untouched on disk but nothing imports it any more;
+deleting the file is a separate call and marko's to make. Two consequences
+handled here: the tour's last step pointed at `/settings/insights` (an unknown
+section silently falls back to the FIRST one, so it would have ended on
+Lookups describing recaps that no longer exist) and now ends on Support; and
+`MetricChart` keeps its other caller, Dashboard.
+
+**Settings also got thinner:** Import CSV + Export CSV are one "CSV" card with
+two labelled rows (identical handlers), and the Guide lost its gradient hero -
+the loudest element in Settings, saying the least. It now carries the same two
+things in plainer form: the tour button and the three things people get wrong
+first, as three blocks (`GUIDE_ESSENTIALS`). The step count comes from
+`TOUR_STEP_COUNT` rather than a number typed into the copy.
+
+**Refunds are now invisible in the UI.** 2.35.0 removed the Refund button
+(SaleDetail's was the only one), this release removed the Refund status
+filter. There is no longer any way to make a refund or to filter for one.
+All refund logic, data and columns are untouched, and refunded counts still
+show on the sale row and in the summary totals. Flagged, not fixed - marko
+asked for both removals explicitly.
+
+**2.39.0 - Orders and Inventory are one screen; Margin is gone.**
+
+**The merge.** Orders and Inventory were two lists over the SAME rows: both
+called `api.listOrders`, both rendered `OrderRecord`, both linked to
+`/orders/:id`. Only the column set differed. marko asked for one screen
+keeping the name Inventory, and **no column merge** - `/orders` survives
+unchanged except for its title. `/tickets` redirects to it **preserving the
+query string** (`TicketsRedirect` in App.tsx), which matters because
+EventDetail hands off `?code=<ticket code>` and Orders' search resolves ticket
+codes as well as order codes (orders.rs BUG #5 test). Repointed: Dashboard ×2,
+EventDetail ×2, the tour, and OrderDetail's back-link, which stopped branching
+(one list = one arrival, so "Back to inventory" and "Order detail" always).
+The tour had **two** `/tickets` steps; one would now show the same page twice
+in a row, so it folded into the `/orders` step - 11 steps, and the Guide card
+reads the count from `TOUR_STEP_COUNT`.
+
+**`pages/Tickets.tsx` is NOT deleted.** SaleDetail and OrderDetail import
+`DELIVERY_STATUS_OPTIONS`, `RESALE_STATUS_OPTIONS` and `TicketEditModal` from
+it. Only its route and nav entry are gone; its default export is now unused.
+
+**Margin is removed from every UI surface** - marko's words, "ako keby
+zanikla": the Dashboard Financials card, the Profit card's sub-line (ROI
+only now), the period-comparison row, EventDetail's card, SaleDetail's card
+(and its computation - the summary is five cards in a five-column grid, no
+hole) and the copy in the tour and the Settings Guide that explained it.
+**ROI stays.** The backend still computes and sends `margin` and `types.ts`
+still declares it; nothing reads it. Changing `finance.rs` would mean editing
+the protected shared finance module and its tests with no way to compile here,
+for zero visible gain. `components/Recap.tsx` still references margin and is
+left alone - it has had no importer since 2.38.0.
+
+**Still open, raised by marko and not answered yet:** the Dashboard's
+Financials tab should show only tickets he owns, "not the ones I pulled". The
+schema says given pulls already cannot reach inventory - `pulls` has no
+`order_id` and no ticket link, and its own migration comment says the ticket
+price "is not marko's money or expense"; only `pulls_received` links to an
+order, and those tickets genuinely are his. So either he means
+`pulls_received`, or he is entering pulls as real orders by hand, which would
+need a flag rather than a computation change. **Do not change
+`finance.rs`/`dashboard.rs` until that is settled.**
+
+**2.40.0 - the UI batch out of marko's thirty.** He picked ten things off the
+TIQR Thirty preview; these are the four that are frontend-only. No schema, no
+Rust, no money maths.
+
+**Badge is a dot and a label** (17). No fill, no ring - `quietTone()` strips
+`bg-*`/`ring-*` out of the tone at render time, so `STATUS_TONES` stays the
+single source of truth and no second colour table exists to drift. Verified
+mechanically: all 22 tones plus the default still yield exactly one light and
+one dark text colour, so no status can render invisible. The dot went
+`h-1.5 -> h-2` and lost its `opacity-70` now that it carries identity alone.
+`InlineStatusSelect` keeps the FULL tone deliberately - it is a control.
+
+**The contrast sweep is done** (18). 260 occurrences in 24 files, the exact
+pairing `text-slate-400 dark:text-slate-500` -> `text-slate-500
+dark:text-slate-400`; 3.16:1 -> 4.16:1 on the dark card. Checked first that
+no occurrence carried a glued variant prefix, so nothing else could be caught.
+After: old pairing 0, correct pairing 350. **This closes the item CURRENT_STATE
+has carried since 2.37.0.**
+
+**Skeletons finished the job** (16). List tables have used `TableSkeleton`
+since 2.6.0; Dashboard and all four Finance tabs were still collapsing to a
+centred spinner. Two new shapes in `ui.tsx` - `StatsSkeleton` (a `summary-bar`
+of card placeholders) and `PanelSkeleton` (title band + lines). `LoadingBlock`
+is kept on purpose for modals and short in-panel waits.
+
+**Returning to a list lights the row you left** (20). Half that item - the
+sticky table header - **had already shipped in 2.6.0**; only the row highlight
+was missing. `lib/lastRow.ts` is a module-level Map, the same session-only
+convention as `lastFilters`/`lastOrdersSearch`: `markRow` on the way into a
+record, `takeRow` once at list mount (consumed on read, so it flashes once).
+Wired on Events, Inventory (`/orders`) and Sales; Pulls has no detail route.
+`.row-flash` animates the cells, and stops under `prefers-reduced-motion`.
+
+**Still owed from the same pick list, not started:** 24 (finance entry linked
+to an event), 25 (bank statement CSV import), 26 (recurring income), 29
+(two-period comparison), 30 (balance correction written as a transaction) -
+all Finance, and 24/26 need migration 031. Plus **01, multi-sector orders**,
+where marko has now answered the structural question: **anything whose sector,
+row or seats do not match and are not adjacent becomes its OWN order.** The
+pricing question (one total for the purchase, split across those orders, vs a
+price entered per group) is still open.
 
 **Next new migration is 031.**
 

@@ -41,6 +41,7 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
+import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
 
@@ -101,19 +102,11 @@ const SALES_TABS: { key: "pending" | "completed"; label: string }[] = [
   { key: "completed", label: "Completed" },
 ];
 
-// 1.8.0: preferred/well-known currency codes for the Sales screen's Currency
-// filter (section 4 of the brief) - always offered regardless of whether the
-// database currently has data in them. Any OTHER currency actually present
-// in `sales` (list_sale_currencies) is appended after these, so a "custom"
-// currency the user already sold in still shows up without needing a
-// separate free-text input.
+// 1.8.0: preferred/well-known currency codes. These used to feed the Sales
+// list's own Currency filter too; 2.38.0 removed that filter at marko's
+// request, so the only thing left reading this list is the New Sale modal's
+// currency picker below.
 const PREFERRED_CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
-
-const REFUND_STATUS_LABELS: Record<string, string> = {
-  no_refund: "No refunds",
-  partial_refund: "Partially refunded",
-  full_refund: "Fully refunded",
-};
 
 // 2.0.65: relabeled from "Newest/Oldest first" to "Soonest/Furthest first",
 // and "soonest" (ascending) is now the default sent on load, in place of the
@@ -144,8 +137,6 @@ interface SalesFilterState {
   /** 2.0.27 */
   categoryId: number | "";
   platformId: number | "";
-  currency: string;
-  refundStatus: string;
   dateFrom: string;
   dateTo: string;
   sortBy: string;
@@ -175,9 +166,13 @@ export default function Sales() {
   const navigate = useNavigate();
   const isNarrow = useNarrowTables();
   const [groups, setGroups] = useState<SaleGroup[] | null>(null);
+  // 2.40.0: set when this list navigated into a record, read once here on
+  // the way back - see lib/lastRow.ts. `useState` with an initialiser, not a
+  // bare call, so it is taken exactly once per mount and a re-render never
+  // re-lights a row.
+  const [flashId] = useState(() => takeRow("sales"));
   const [events, setEvents] = useState<EventWithStats[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [currencies, setCurrencies] = useState<string[]>([]);
   const [categories, setCategories] = useState<EventCategory[]>([]);
 
   const [search, setSearch] = useState(lastFilters?.search ?? "");
@@ -186,12 +181,9 @@ export default function Sales() {
   // category), sitting next to the existing Event filter.
   const [categoryId, setCategoryId] = useState<number | "">(lastFilters?.categoryId ?? "");
   const [platformId, setPlatformId] = useState<number | "">(lastFilters?.platformId ?? "");
-  const [currency, setCurrency] = useState(lastFilters?.currency ?? "");
-  const [refundStatus, setRefundStatus] = useState(lastFilters?.refundStatus ?? "");
   const [dateFrom, setDateFrom] = useState(lastFilters?.dateFrom ?? "");
   const [dateTo, setDateTo] = useState(lastFilters?.dateTo ?? "");
   const [sortBy, setSortBy] = useState(lastFilters?.sortBy ?? "soonest");
-  const [showMoreFilters, setShowMoreFilters] = useState(!!lastFilters?.refundStatus);
   // 2.0.59: see SALES_TABS above.
   const [tab, setTab] = useListTab("salesTab", ["pending", "completed"] as const);
 
@@ -207,7 +199,6 @@ export default function Sales() {
   useEffect(() => {
     api.listEvents().then(setEvents).catch(() => {});
     api.listPlatforms().then(setPlatforms).catch(() => {});
-    api.listSaleCurrencies().then(setCurrencies).catch(() => {});
     api.listEventCategories().then(setCategories).catch(() => {});
   }, []);
 
@@ -234,8 +225,8 @@ export default function Sales() {
   // file) so returning from Sale Detail finds the Sales screen exactly as it
   // was left - without touching Sale Detail's own navigation at all.
   useEffect(() => {
-    lastFilters = { search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy };
-  }, [search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy]);
+    lastFilters = { search, eventId, categoryId, platformId, dateFrom, dateTo, sortBy };
+  }, [search, eventId, categoryId, platformId, dateFrom, dateTo, sortBy]);
 
   const load = () => {
     api
@@ -249,8 +240,6 @@ export default function Sales() {
         // filter client-side instead (see visibleGroups) so every group's
         // own paymentStatus - including "Mixed" (null) - can be bucketed by
         // the same rule the tabs themselves document.
-        currency: currency || undefined,
-        refundStatus: refundStatus || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
         sortBy: sortBy || undefined,
@@ -314,7 +303,7 @@ export default function Sales() {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, sortBy]);
+  }, [search, eventId, categoryId, platformId, dateFrom, dateTo, sortBy]);
 
   // 2.0.59: scoped to visibleGroups (the current tab) so this caption always
   // describes what's actually on screen, same choice as Events/Orders/
@@ -385,11 +374,6 @@ export default function Sales() {
     return { paid, outstanding, currency, excludedCount: groups.length - definite.length };
   }, [groups]);
 
-  const currencyOptions = useMemo(() => {
-    const extra = currencies.filter((c) => !PREFERRED_CURRENCIES.includes(c)).sort();
-    return [...PREFERRED_CURRENCIES, ...extra];
-  }, [currencies]);
-
   const activeFilters = useMemo(() => {
     const chips: { key: string; label: string; onRemove: () => void }[] = [];
     if (eventId) {
@@ -404,20 +388,10 @@ export default function Sales() {
       const p = platforms.find((pl) => pl.id === platformId);
       chips.push({ key: "platform", label: `Platform: ${p?.name ?? platformId}`, onRemove: () => setPlatformId("") });
     }
-    if (currency) {
-      chips.push({ key: "currency", label: `Currency: ${currency}`, onRemove: () => setCurrency("") });
-    }
-    if (refundStatus) {
-      chips.push({
-        key: "refund",
-        label: `Refunds: ${REFUND_STATUS_LABELS[refundStatus] ?? refundStatus}`,
-        onRemove: () => setRefundStatus(""),
-      });
-    }
     if (dateFrom) chips.push({ key: "from", label: `From: ${dateFrom}`, onRemove: () => setDateFrom("") });
     if (dateTo) chips.push({ key: "to", label: `To: ${dateTo}`, onRemove: () => setDateTo("") });
     return chips;
-  }, [eventId, categoryId, platformId, currency, refundStatus, dateFrom, dateTo, events, platforms, categories]);
+  }, [eventId, categoryId, platformId, dateFrom, dateTo, events, platforms, categories]);
 
   const hasActiveFilters = activeFilters.length > 0 || !!search;
 
@@ -426,8 +400,6 @@ export default function Sales() {
     setEventId("");
     setCategoryId("");
     setPlatformId("");
-    setCurrency("");
-    setRefundStatus("");
     setDateFrom("");
     setDateTo("");
   };
@@ -451,13 +423,14 @@ export default function Sales() {
         }
       />
 
-      <TabSwitcher tabs={SALES_TABS} active={tab} onChange={setTab} />
-
+      {/* 2.38.0: the tab switcher moved OFF its own line and into the filter
+          row, pinned right (ml-auto) - marko's request, everywhere it exists,
+          following the arrangement Pulls already had. */}
       <div className="mb-2 flex flex-wrap items-end gap-3">
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Sale, ticket, order, buyer..."
               value={search}
@@ -507,17 +480,9 @@ export default function Sales() {
               ))}
           </Select>
         </div>
-        <div className="w-32">
-          <span className="label">Currency</span>
-          <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-            <option value="">All</option>
-            {currencyOptions.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {/* 2.38.0: the Currency filter used to sit here. marko asked for it
+            gone and for the date range to take its place - which it does
+            literally, this pair having moved up into the slot it left. */}
         {/* 1.9.4: marko wanted From/To kept next to each other instead of
             wrapping apart - they used to be two independent items in this
             flex-wrap row, so a narrower window could wrap To onto its own
@@ -534,29 +499,13 @@ export default function Sales() {
             <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </div>
         </div>
-        <button
-          type="button"
-          className="mb-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
-          onClick={() => setShowMoreFilters((v) => !v)}
-        >
-          More filters
-          <IconChevronDown className={`h-3.5 w-3.5 transition-transform ${showMoreFilters ? "rotate-180" : ""}`} />
-        </button>
+        {/* 2.38.0: "More filters" held exactly one control - Refund status -
+            and marko asked for that filter to go completely. With nothing
+            left to disclose, the toggle and the second row went with it. The
+            refund DATA is untouched: the count still shows on every affected
+            row, and the Refunded total still shows in the summary below. */}
+        <TabSwitcher tabs={SALES_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
-
-      {showMoreFilters && (
-        <div className="mb-2 flex flex-wrap items-end gap-3">
-          <div className="w-44">
-            <span className="label">Refund status</span>
-            <Select value={refundStatus} onChange={(e) => setRefundStatus(e.target.value)}>
-              <option value="">All</option>
-              <option value="no_refund">No refunds</option>
-              <option value="partial_refund">Partially refunded</option>
-              <option value="full_refund">Fully refunded</option>
-            </Select>
-          </div>
-        </div>
-      )}
 
       {activeFilters.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">
@@ -565,7 +514,7 @@ export default function Sales() {
           ))}
           <button
             type="button"
-            className="ml-1 text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:underline"
+            className="ml-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:underline"
             onClick={clearAllFilters}
           >
             Clear all
@@ -616,7 +565,7 @@ export default function Sales() {
               )}
             </>
           ) : (
-            <span className="text-slate-400 dark:text-slate-500">Loading…</span>
+            <span className="text-slate-500 dark:text-slate-400">Loading…</span>
           )}
         </div>
         <div className="w-48">
@@ -631,7 +580,7 @@ export default function Sales() {
       </div>
 
       {cashTotals && cashTotals.excludedCount > 0 && (
-        <p className="-mt-2 mb-3 text-xs text-slate-400 dark:text-slate-500">
+        <p className="-mt-2 mb-3 text-xs text-slate-500 dark:text-slate-400">
           {cashTotals.excludedCount} sale{cashTotals.excludedCount === 1 ? "" : "s"} with a mixed payment status
           (some tickets paid, some still pending) {cashTotals.excludedCount === 1 ? "isn't" : "aren't"} counted in
           Paid/Outstanding above - open the sale to see its exact breakdown.
@@ -808,37 +757,40 @@ export default function Sales() {
             {isNarrow ? (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                {/* 2.34.2: eleven columns, the list marko asked for. Both
-                    colgroups are identical now - nothing is hidden at narrow
-                    width any more, so there is nothing for the wide mode to
-                    add back. */}
+                {/* 2.34.2: the column list marko asked for. Both colgroups
+                    are identical - nothing is hidden at narrow width any
+                    more, so there is nothing for the wide mode to add back.
+                    2.38.0: ten, not eleven. The Status badge column is gone
+                    (marko: one status per row, and the dots are the one he
+                    kept) and its 8% went to the four columns that carry text
+                    rather than a fixed-width number - Event, Platform, Seats
+                    and the dots, whose header is the widest label in the
+                    row. Sums to 100. */}
+                <col className="w-[9.5%]" />
+                <col className="w-[16%]" />
+                <col className="w-[12%]" />
                 <col className="w-[9%]" />
-                <col className="w-[13%]" />
-                <col className="w-[11%]" />
-                <col className="w-[8.5%]" />
-                <col className="w-[11%]" />
+                <col className="w-[12%]" />
                 <col className="w-[4.5%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
+                <col className="w-[10%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
-                {/* 2.34.2: see the narrow colgroup above - same eleven. */}
+                {/* 2.34.2: see the narrow colgroup above - same columns. */}
+                <col className="w-[9.5%]" />
+                <col className="w-[16%]" />
+                <col className="w-[12%]" />
                 <col className="w-[9%]" />
-                <col className="w-[13%]" />
-                <col className="w-[11%]" />
-                <col className="w-[8.5%]" />
-                <col className="w-[11%]" />
+                <col className="w-[12%]" />
                 <col className="w-[4.5%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
+                <col className="w-[10%]" />
               </colgroup>
             )}
             <thead>
@@ -863,13 +815,15 @@ export default function Sales() {
                     Completed. Fees, Margin and ROI are gone from this table
                     and Cost now sits before Revenue, reading cost -> what it
                     brought -> what is left. The numbers themselves are
-                    untouched; the sale's own page still shows all of them. */}
+                    untouched; the sale's own page still shows all of them.
+                    2.38.0: Status drops out. A row said the same thing twice -
+                    a Paid/Pending badge beside three dots whose third dot IS
+                    paid - and marko kept the dots. */}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`} title="Tickets">Tix</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
                 {/* 2.34.2: the header names the dots in order, so the row
                     below is readable without hovering. */}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Sold · Deliv. · Paid</th>
@@ -879,7 +833,7 @@ export default function Sales() {
               {visibleGroups.map((g) => (
                 <tr
                   key={g.id}
-                  className={selectionMode ? "cursor-pointer" : ""}
+                  className={`${selectionMode ? "cursor-pointer" : ""} ${flashId === g.id ? "row-flash" : ""}`}
                   onClick={(e) => {
                     // 2.0.28: unlike Events/Orders, this row never navigated
                     // on click before (only the Sale code cell's own <Link>
@@ -906,6 +860,7 @@ export default function Sales() {
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Link
                       to={`/sales/${g.id}`}
+                      onClick={() => markRow("sales", g.id)}
                       title={g.code}
                       className="block truncate font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
@@ -932,7 +887,7 @@ export default function Sales() {
                         )}
                       </div>
                     ) : (
-                      <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>
+                      <span className="italic text-slate-500 dark:text-slate-400">Mixed events</span>
                     )}
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={g.platformName ?? undefined}>
@@ -968,17 +923,6 @@ export default function Sales() {
                     {formatMoneyOrMixed(g.profitCents, g.currency)}
                   </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                    {g.paymentStatus ? <Badge tone={g.paymentStatus}>{g.paymentStatus}</Badge> : <Badge tone="mixed">Mixed</Badge>}
-                    {g.refundedCount > 0 && (
-                      <p
-                        className="mt-0.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
-                        title={`${g.refundedCount} of ${g.ticketCount} refunded`}
-                      >
-                        {g.refundedCount}/{g.ticketCount} refunded
-                      </p>
-                    )}
-                  </td>
-                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     {/* 2.34.2: the same dots Pulls uses, from the same shared
                         component and the same `CompletionCheck[]` this page
                         already built for the badge. Three dots here because a
@@ -987,6 +931,19 @@ export default function Sales() {
                         the data. The header names them in order and hovering
                         spells each one out. */}
                     <StatusDots checks={saleGroupCompletionChecks(g)} />
+                    {/* 2.38.0: this line used to hang under the Status badge.
+                        The badge is gone, the line is not - it is the only
+                        place the list says a sale was refunded at all, and
+                        dropping it would hide real data rather than a
+                        duplicate. */}
+                    {g.refundedCount > 0 && (
+                      <p
+                        className="mt-0.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                        title={`${g.refundedCount} of ${g.ticketCount} refunded`}
+                      >
+                        {g.refundedCount}/{g.ticketCount} refunded
+                      </p>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1361,7 +1318,7 @@ function SaleFormModal({
               </Field>
               <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
                 {orderOptions.length === 0 ? (
-                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                  <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">
                     {orderQuery ? "No matching orders with sellable tickets" : "Start typing to search your orders"}
                   </p>
                 ) : (
@@ -1377,7 +1334,7 @@ function SaleFormModal({
                           <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">
                             {o.code} &middot; {o.eventName}
                           </span>
-                          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                          <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                             {o.platformName ?? "No platform"} · {formatDate(o.purchaseDate)}
                           </span>
                         </span>
@@ -1385,7 +1342,7 @@ function SaleFormModal({
                           <span className="whitespace-nowrap rounded-full bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
                             {sellable} available
                           </span>
-                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-400 dark:text-slate-500" />
+                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-500 dark:text-slate-400" />
                         </span>
                       </button>
                     );
@@ -1403,13 +1360,13 @@ function SaleFormModal({
                 >
                   <IconArrowLeft className="h-3.5 w-3.5" /> Back to orders
                 </button>
-                <span className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">
+                <span className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">
                   {activeOrder.code} &middot; {activeOrder.eventName}
                 </span>
               </div>
               <div className="max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
                 {visibleOptions.length === 0 ? (
-                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                  <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">
                     {orderTicketOptions.length === 0
                       ? "Loading tickets..."
                       : "Every sellable ticket from this order is already selected"}
@@ -1423,7 +1380,7 @@ function SaleFormModal({
                     >
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
-                        <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                        <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                           {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                         </span>
                       </span>
@@ -1552,7 +1509,7 @@ function SaleFormModal({
             <Button type="button" variant="secondary" disabled={!bulkFees.trim()} onClick={applyBulkFees}>
               Apply to all
             </Button>
-            <p className="w-full text-xs text-slate-400 dark:text-slate-500">
+            <p className="w-full text-xs text-slate-500 dark:text-slate-400">
               Applying overwrites any price/fees already entered below for every selected ticket.
             </p>
           </div>
@@ -1564,7 +1521,7 @@ function SaleFormModal({
                 <div key={t.id} className="flex items-center gap-2 px-3 py-2">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
-                    <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">
                       Cost {formatMoney(t.totalCostCents, t.currency)}
                       {[t.section, t.rowLabel, t.seat].some(Boolean) ? ` · ${formatSeatLocation(t.section, t.rowLabel, t.seat)}` : ""}
                     </p>
@@ -1580,7 +1537,7 @@ function SaleFormModal({
                       longer necessarily the same as this ticket's own
                       purchase currency (shown instead in the "Cost" line
                       above, for comparison). */}
-                  <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">
+                  <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-500 dark:text-slate-400">
                     {saleCurrency}
                   </span>
                   <div className="w-24 shrink-0">
@@ -1601,7 +1558,7 @@ function SaleFormModal({
                   </div>
                   <button
                     type="button"
-                    className="shrink-0 text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
+                    className="shrink-0 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400"
                     title="Remove from this sale"
                     onClick={() => removeTicket(t.id)}
                   >
@@ -1620,13 +1577,13 @@ function SaleFormModal({
           <div className="mt-4 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-xs text-slate-400 dark:text-slate-500">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
                   Total revenue ({selected.length} ticket{selected.length === 1 ? "" : "s"})
                 </p>
                 <p className="font-semibold text-slate-900 dark:text-slate-100">{formatMoney(totals.revenue, saleCurrency)}</p>
               </div>
               <div>
-                <p className="text-xs text-slate-400 dark:text-slate-500">Estimated profit</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Estimated profit</p>
                 {profitComputable ? (
                   <p
                     className={`font-semibold ${totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
@@ -1634,13 +1591,13 @@ function SaleFormModal({
                     {formatMoney(totals.profit, saleCurrency)}
                   </p>
                 ) : (
-                  <p className="font-semibold text-slate-400 dark:text-slate-500">Mixed</p>
+                  <p className="font-semibold text-slate-500 dark:text-slate-400">Mixed</p>
                 )}
               </div>
             </div>
             {!profitComputable && (
               <div className="mt-2 border-t border-slate-200 dark:border-slate-700 pt-2">
-                <p className="mb-1.5 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mb-1.5 text-xs text-slate-500 dark:text-slate-400">
                   {costCurrencyUniform === null
                     ? "Selected tickets were bought in different currencies"
                     : `Selected tickets were bought in ${costCurrencyUniform}`}

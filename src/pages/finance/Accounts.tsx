@@ -11,11 +11,12 @@ import {
   EmptyState,
   Field,
   Input,
-  LoadingBlock,
   Modal,
   ModalFooter,
+  PanelSkeleton,
   Select,
   Spinner,
+  StatsSkeleton,
   Textarea,
 } from "../../components/ui";
 import { FinanceCategoryBadge } from "../../components/FinanceCategoryBadge";
@@ -166,7 +167,7 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Accounts</h2>
-          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             Your wallets - balances update automatically from income, expenses and transfers.
           </p>
         </div>
@@ -181,7 +182,11 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
       </div>
 
       {loading ? (
-        <LoadingBlock label="Loading accounts..." />
+        <>
+          {/* 2.40.0: see Dashboard - skeleton in the shape of what loads. */}
+          <StatsSkeleton count={4} />
+          <PanelSkeleton lines={4} />
+        </>
       ) : (
         <>
           {accounts.length === 0 ? (
@@ -218,7 +223,7 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
           <div className="mb-4 mt-8 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Upcoming recurring expenses</h2>
-              <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                 Nothing posts automatically - Create logs today's occurrence as a real expense, Skip just moves on.
               </p>
             </div>
@@ -348,9 +353,9 @@ function AccountRow({ account, onEdit, onDelete }: { account: Account; onEdit: (
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
           {account.name}
-          {!account.isActive && <span className="ml-1.5 text-xs font-normal text-slate-400 dark:text-slate-500">(inactive)</span>}
+          {!account.isActive && <span className="ml-1.5 text-xs font-normal text-slate-500 dark:text-slate-400">(inactive)</span>}
         </p>
-        <p className="text-xs text-slate-400 dark:text-slate-500">
+        <p className="text-xs text-slate-500 dark:text-slate-400">
           {ACCOUNT_TYPE_LABELS[account.accountType]} &middot; {account.currency}
         </p>
       </div>
@@ -432,7 +437,7 @@ function RecurringRow({
       <td className="td">
         <span className="font-medium text-slate-800 dark:text-slate-200">{item.name}</span>
         {item.note && (
-          <span className="block max-w-[200px] truncate text-xs text-slate-400 dark:text-slate-500" title={item.note}>
+          <span className="block max-w-[200px] truncate text-xs text-slate-500 dark:text-slate-400" title={item.note}>
             {item.note}
           </span>
         )}
@@ -440,7 +445,7 @@ function RecurringRow({
       <td className="td tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(item.amountCents, item.currency)}</td>
       <td className="td">
         {FREQUENCY_LABELS[item.frequency]}
-        <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">{item.scope === "business" ? "Business" : "Personal"}</span>
+        <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{item.scope === "business" ? "Business" : "Personal"}</span>
       </td>
       <td className="td">
         {item.categoryName && item.categoryColorSlot !== null ? (

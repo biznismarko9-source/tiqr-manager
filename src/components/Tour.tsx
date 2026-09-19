@@ -57,7 +57,7 @@ const STEPS: TourStep[] = [
     route: "/",
     anchors: ["dash-stats"],
     title: "Your six headline numbers",
-    body: "Profit is what you actually made on tickets that sold. Revenue is what came in, purchase cost is what those same tickets cost you. Margin is profit against revenue; ROI is profit against cost - they answer different questions, which is why both are here.",
+    body: "Profit is what you actually made on tickets that sold. Revenue is what came in, purchase cost is what those same tickets cost you. ROI puts the profit against that cost, so you can compare a cheap flip and an expensive one on the same scale.",
   },
   {
     route: "/",
@@ -72,25 +72,23 @@ const STEPS: TourStep[] = [
     body: "Everything hangs off an event - orders, tickets, sales. If the date is not settled yet, leave it empty instead of guessing: the app shows TBD and sorts those separately rather than pretending you know.",
   },
   {
+    // 2.39.0: this used to be two steps - one here and one on `/tickets`,
+    // which is now the same screen. The listing-price point was the only
+    // thing the second one added, so it moved into this body rather than
+    // leaving the tour to visit one page twice in a row.
     route: "/orders",
     anchors: ["page-actions", "page-header"],
     title: "Then the order - it creates the tickets for you",
-    body: "Enter what you paid for the whole order and how many tickets it was. The app splits that cost across them to the exact cent, so you never type a per-ticket price. Section, row and seat are labels on a ticket, not prices.",
-  },
-  {
-    route: "/tickets",
-    anchors: ["page-header"],
-    title: "Every ticket the orders created",
-    body: "This is where a ticket gets its listing price. A ticket without one cannot sell, and the Dashboard counts those separately instead of quietly leaving them out - so an empty listing price is visible rather than invisible.",
+    body: "Enter what you paid for the whole order and how many tickets it was. The app splits that cost across them to the exact cent, so you never type a per-ticket price. Open an order to give its tickets a listing price - one without a price cannot sell, and the Dashboard counts those separately rather than quietly leaving them out.",
   },
   {
     route: "/sales",
     anchors: ["page-actions", "page-header"],
     title: "When one sells, record it here",
-    body: "With the platform and the fee that platform took. The fee is the part people skip, and it is the part that makes your margin real instead of optimistic.",
+    body: "With the platform and the fee that platform took. The fee is the part people skip, and it is the part that makes the profit real instead of optimistic.",
   },
   {
-    route: "/tickets",
+    route: "/orders",
     anchors: ["page-header"],
     title: "What is still yours",
     body: "Everything bought and not yet sold, and what it cost you. This is capital sitting still - the app never counts any of it as profit, no matter what it is listed at.",
@@ -114,12 +112,21 @@ const STEPS: TourStep[] = [
     body: "Your two computers keep themselves level on their own after that: changes go up every few minutes and come down when you open the app. If both changed, they get combined - nothing is thrown away. Backups, restore points and every earlier version in Drive are on this same screen.",
   },
   {
-    route: "/settings/insights",
+    // 2.38.0: this step used to end on /settings/insights. That section was
+    // removed at marko's request, and an unknown section silently falls back
+    // to the first one - so the tour would have ended on Lookups, describing
+    // recaps that are no longer in the app. It ends where it is started from
+    // instead, which is a real screen and the one you would come back to.
+    route: "/settings/support",
     anchors: ["page-header"],
-    title: "And when you want the story",
-    body: "Ticket and Finance recaps play as a short sequence and then open the full report: what you bought, what it returned, what is still owed to you and what is still sitting in stock. That is the end of the tour - you can start it again from Support whenever you like.",
+    title: "That is the whole app",
+    body: "Everything else is a detail of one of the screens you have just seen. Start this tour again from here whenever you like, and the box below it goes straight to marko if something is wrong or missing.",
   },
 ];
+
+/** How many steps the tour actually has, so the Guide card that offers it
+ *  never quotes a number that has drifted from this list. */
+export const TOUR_STEP_COUNT = STEPS.length;
 
 /* A tour can be started from anywhere (today: Settings -> Support). Rather
    than threading a context through Layout for one button, the component

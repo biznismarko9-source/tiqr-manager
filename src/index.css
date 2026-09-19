@@ -326,6 +326,21 @@
     @apply overflow-auto;
     overscroll-behavior: contain;
   }
+  /* 2.40.0: the row you left this list from, lit for a moment when you come
+     back to it (see lib/lastRow.ts). A wash of the accent that fades to
+     nothing - no border, no jump, nothing to dismiss - so it answers "where
+     was I" without becoming another thing on screen. Stops immediately for
+     anyone who asked for less motion; the row is simply not marked then. */
+  @keyframes rowflash {
+    0% { background-color: rgb(144 119 233 / 0.26); }
+    100% { background-color: rgb(144 119 233 / 0); }
+  }
+  .row-flash > td {
+    animation: rowflash 1.8s ease-out both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .row-flash > td { animation: none; }
+  }
   .table-shell tbody tr,
   .table-flush tbody tr {
     @apply transition-colors;
@@ -415,7 +430,7 @@
      cards on Dashboard/Finance/Event Detail, and tracked-out capitals there
      were shouting a label that only needs to be read once. */
   .section-title {
-    @apply text-[11.5px] font-medium tracking-normal text-slate-400 dark:text-slate-500;
+    @apply text-[11.5px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
 
   /* -----------------------------------------------------------------------

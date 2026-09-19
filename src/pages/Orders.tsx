@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
@@ -29,6 +29,7 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
+import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import type { EventStatus, OrderRecord } from "../lib/types";
 import { completionStatus } from "../lib/completion";
@@ -165,11 +166,21 @@ export default function Orders() {
   const toast = useToast();
   const isNarrow = useNarrowTables();
   const location = useLocation();
+  const [params] = useSearchParams();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
+  // 2.40.0: set when this list navigated into a record, read once here on
+  // the way back - see lib/lastRow.ts. `useState` with an initialiser, not a
+  // bare call, so it is taken exactly once per mount and a re-render never
+  // re-lights a row.
+  const [flashId] = useState(() => takeRow("orders"));
   const [categories, setCategories] = useState<EventCategory[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [search, setSearch] = useState(lastOrdersSearch ?? "");
+  // 2.39.0: `?code=` used to be read by the Inventory page (`/tickets`),
+  // which this screen replaced. EventDetail still hands a TICKET code off
+  // that way, and it resolves here because orders.rs's free-text search
+  // matches ticket codes as well as order codes (its own BUG #5 test).
+  const [search, setSearch] = useState(params.get("code") ?? lastOrdersSearch ?? "");
   // 2.0.27: category filter (marko's request - filter Events/Orders/Sales by
   // category). Deliberately just this one new filter - not also an Event
   // filter, which nobody asked for here.
@@ -331,8 +342,8 @@ export default function Orders() {
   return (
     <div>
       <PageHeader
-        title="Orders"
-        subtitle="Ticket purchases. Each order automatically generates one ticket per unit."
+        title="Inventory"
+        subtitle="Every order you've bought, with the stock it created and what it cost."
         actions={
           <div className="flex items-center gap-2">
             {!selectionMode && orders && orders.length > 0 && (
@@ -353,13 +364,16 @@ export default function Orders() {
         }
       />
 
-      <TabSwitcher tabs={ORDER_TABS} active={tab} onChange={setTab} />
-
+      {/* 2.38.0: the tab switcher moved OFF its own line and into the filter
+          row, pinned right (ml-auto) - marko's request, everywhere it exists,
+          following the arrangement Pulls already had. Its old `mb-4` lived
+          inside TabSwitcher itself; that margin now belongs to the caller, so
+          the two places that still stand alone (EventDetail) spell it out. */}
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Search orders..."
               value={search}
@@ -413,6 +427,7 @@ export default function Orders() {
             ))}
           </Select>
         </div>
+        <TabSwitcher tabs={ORDER_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
 
       {selectionMode && (
@@ -586,7 +601,7 @@ export default function Orders() {
               {visibleOrders.map((o) => (
                 <tr
                   key={o.id}
-                  className="cursor-pointer"
+                  className={`cursor-pointer ${flashId === o.id ? "row-flash" : ""}`}
                   onClick={(e) => {
                     // 2.0.28: excludes the new checkbox too (its own onChange
                     // handles it), and while selectionMode is on, a row click
@@ -596,6 +611,7 @@ export default function Orders() {
                       toggleOne(o.id);
                       return;
                     }
+                    markRow("orders", o.id);
                     navigate(`/orders/${o.id}`, { state: { from: location.pathname } });
                   }}
                 >
@@ -617,6 +633,7 @@ export default function Orders() {
                     <Link
                       to={`/orders/${o.id}`}
                       state={{ from: location.pathname }}
+                      onClick={() => markRow("orders", o.id)}
                       className="font-medium tabular-nums text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
                       {o.code}

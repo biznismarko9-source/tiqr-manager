@@ -16,6 +16,170 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.40.0 - tichšie stavy, čitateľnejší text, skeletony, návrat na riadok
+
+Prvá dávka z tvojho výberu tridsiatich. Všetko je **frontend** — žiadna
+migrácia, žiadny Rust, žiadna zmena v peniazoch.
+
+### 17 · Badge je teraz bodka a text
+
+Stav prestal byť plná farebná pilulka. Zostala **farebná bodka a obyčajný
+popis** — bez výplne, bez rámika. V tabuľke, kde má každý riadok stav, tie
+pilulky prekričali čísla vedľa seba.
+
+Farby sa nemenili ani o odtieň: `STATUS_TONES` je stále jediný zdroj pravdy,
+len sa z neho pri vykreslení vyhodí výplň a rámik (`quietTone`). Bodka je o
+stupeň väčšia a v plnej sile, keďže identitu teraz nesie sama. **Ani jedno
+volanie sa nemenilo.**
+
+`InlineStatusSelect` si plnú pilulku **necháva zámerne** — je to ovládací
+prvok a ten musí vyzerať ako ovládací prvok.
+
+### 18 · Oprava kontrastu — 260 miest
+
+Sivý text v tmavom režime bol na hrane čitateľnosti, a bolo to **prehodené
+naopak**: tmavší odtieň na tmavšom podklade. Zmerané **3,16 : 1**; po oprave
+**4,16 : 1**.
+
+Zámena `text-slate-400 dark:text-slate-500` → `text-slate-500
+dark:text-slate-400` prebehla na **260 miestach v 24 súboroch**. Overené, že
+ani jeden výskyt nemal nalepenú predponu (`hover:`, `group-hover:`), takže
+zámena nemohla nič iné zasiahnuť. Po nej: starý pár **0×**, správny **350×**.
+
+### 16 · Skeletony namiesto „Loading…“
+
+Zoznamy to vedia od 2.6.0. Dorobené tam, kde ešte zostávalo koliesko nad
+prázdnom: **Dashboard** a **všetky štyri karty Finance**. Pribudli dva tvary —
+`StatsSkeleton` (riadok kariet s číslami) a `PanelSkeleton` (karta textu alebo
+grafu). Stránka si drží výšku a neposkočí, keď dáta dorazia.
+
+V modáloch a krátkych čakaniach vnútri panelov `LoadingBlock` **zostáva** —
+tam je koliesko správna odpoveď.
+
+### 20 · Riadok, na ktorom si bol
+
+Prilepená hlavička tabuľky **už v appke bola** (od 2.6.0, `.table-shell thead
+th`). Druhá polovica tej karty nie — a tú robí táto verzia: keď sa vrátiš z
+detailu, **riadok, z ktorého si odišiel, sa na chvíľu rozsvieti**.
+
+`lib/lastRow.ts`, rovnaký dohovor ako `lastFilters` v Sales: modul-level,
+platí do reštartu, databázy sa netýka. Značka sa pri čítaní **spotrebuje**,
+takže riadok bliká raz po návrate, nie pri každej návšteve. Zapnuté na
+**Events, Inventory a Sales** — v Pulls nie, tie vlastný detail nemajú.
+Rešpektuje `prefers-reduced-motion`.
+
+## 2.39.0 - Orders a Inventory sú jedna obrazovka; Margin zaniká
+
+### Jedna obrazovka, volá sa Inventory
+
+Orders a Inventory boli **dva zoznamy nad tými istými riadkami** — obe volali
+`api.listOrders`, obe vykresľovali objednávky, obe viedli na `/orders/:id`.
+Líšila sa len sada stĺpcov. Teraz je to jedna položka v menu, **Inventory**.
+
+Prežil `/orders` (bohatšia stránka — New Order, úpravy, hromadné akcie) a
+dostal názov Inventory. `/tickets` naň **presmeruje aj s query stringom**,
+takže staré odkazy fungujú — vrátane `?code=` z detailu eventu, ktoré Orders
+nájde, lebo jeho vyhľadávanie matchuje aj kódy lístkov.
+
+Čo sa prepojilo: odkazy z Dashboardu (×2), z detailu eventu (×2), spätný odkaz
+z detailu objednávky (už nevetví — vždy „Back to inventory") a prehliadka.
+Prehliadka mala **dva kroky na `/tickets`**; jeden by teraz ukazoval tú istú
+stránku dvakrát za sebou, takže sa zlúčil do kroku o objednávkach (veta o
+listing price sa presunula doň). Zostáva 11 krokov a Guide si to číta sám.
+
+`pages/Tickets.tsx` **nie je zmazaný** — SaleDetail a OrderDetail z neho
+importujú `DELIVERY_STATUS_OPTIONS`, `RESALE_STATUS_OPTIONS` a
+`TicketEditModal`. Odišla len jeho route a položka v menu.
+
+### Margin zaniká
+
+Marko: „margin vsade kde je uplne ju odstranme aj s widgetov proste ako keby
+zanikla." Odišla odvšadiaľ, kde ju bolo vidieť:
+
+- **Dashboard → Financials:** karta „Margin", aj podriadok pri Profite (ten
+  teraz ukazuje len ROI).
+- **Dashboard → porovnanie období:** riadok Margin.
+- **Detail eventu:** karta Margin.
+- **Detail predaja:** karta Margin (súhrn je päť kariet namiesto šiestich,
+  mriežka sa zúžila s ním, nie je tam diera) aj výpočet.
+- **Texty**, ktoré o nej hovorili — prehliadka (dva kroky) a Guide v Settings —
+  hovoria o zisku, nie o marži.
+
+**ROI zostáva.** Backend `margin` ďalej počíta a posiela, len to už nikto
+nečíta — meniť `finance.rs` kvôli zobrazeniu by znamenalo siahať na chránený
+finančný modul bez možnosti to tu preložiť.
+
+`components/Recap.tsx` má maržu tiež, ale ten je od 2.38.0 nedostupný (nič ho
+neimportuje), takže na obrazovku sa nedostane.
+
+## 2.38.0 - riadok filtrov, vlastný kalendár, tenšie Settings
+
+### Prepínač kariet ide do riadku filtrov
+
+`Upcoming / Completed` (a `Pending / Completed`) už nesedí na vlastnom
+riadku nad filtrami — je **vpravo v tom istom riadku, kde je Search a
+Sort**, presne ako to má Pulls. Platí na **Events, Orders, Inventory aj
+Sales**. `TabSwitcher` si prestal nosiť vlastný `mb-4`; tie dve miesta,
+ktoré stoja samostatne (detail eventu), si ho píšu samé.
+
+### Sales
+
+- **Currency filter preč.** Dátumový rozsah **Od / Do** sa posunul presne
+  na jeho miesto.
+- **Refund status preč úplne** — a s ním aj tlačidlo „More filters", pod
+  ktorým to bola jediná vec.
+- **Jeden status na riadok.** Badge `Paid / Pending` zmizol, **guličky
+  zostali** (Sold · Deliv. · Paid) — riadok hovoril to isté dvakrát. Riadok
+  „N/M refunded" sa presunul pod guličky, nezmizol: je to jediné miesto,
+  kde zoznam vôbec povie, že sa niečo vrátilo.
+- Stĺpcov je desať namiesto jedenástich, obe `colgroup` prepočítané na 100.
+
+### Inventory
+
+Stĺpec **Sold preč**, zostáva **Total** a **Available**. Nič sa
+neprepočítavalo — Total je stále počet kusov, Available stále
+`available + listed`, takže predané je čitateľné ako rozdiel medzi nimi.
+Obe `colgroup` prepočítané (8 stĺpcov naširoko, 6 nasúzko) a **Event pustil
+kus zo svojich 43,5 %**, aby sa Seats a Purchase date zmestili celé.
+
+### Vlastný kalendár, všade
+
+`<input type="date">` doteraz otváral **kalendár prehliadača** — biely
+panel, vlastné písmo, o tmavom režime appky nevie nič. Je to chrome
+prehliadača, CSS sa k nemu nedostane. Takže je nakreslený vlastný:
+mesiac + šípky, pondelok prvý, šesť riadkov (výška panela sa nemení),
+dnešok zvýraznený, `Today` a `Clear` dole, otvára sa hore alebo dole podľa
+toho, koľko je miesta. **Žiadna nová knižnica.**
+
+`Input` posiela `type="date"` doň sám, takže **ani jedno z ~30 miest sa
+nemenilo** — stále posielajú `value` ako `YYYY-MM-DD` a stále čítajú
+`e.target.value`. Tri miesta, ktoré si kreslili `<input>` ručne
+(Dashboard ×2, detail objednávky), idú teraz cez `Input`.
+
+### Settings
+
+- **Insights preč úplne.** Bola to jediná cesta k Recapu, takže z appky
+  odchádza aj Recap; `components/Recap.tsx` zostáva na disku nedotknutý,
+  len ho už nič neimportuje. Zmazať ten súbor je samostatné rozhodnutie.
+- **Import CSV + Export CSV = jedna karta „CSV"** s dvoma riadkami.
+  Handlery sú do písmena tie isté.
+- **Guide prerobený.** Gradientový hero preč — bol to najhlasnejší prvok v
+  Settings a hovoril najmenej. Zostalo to isté, čo niesol: tlačidlo na
+  prehliadku a **tri veci, ktoré si nový používateľ pomýli**, teraz ako tri
+  krátke bloky vedľa seba. Počet krokov sa berie z prehliadky samotnej
+  (`TOUR_STEP_COUNT`), nie z čísla napísaného v texte.
+- **Posledný krok prehliadky** mieril na `/settings/insights`. Neznáma
+  sekcia ticho spadne na prvú, takže by prehliadka skončila na Lookups a
+  rozprávala o recapoch, ktoré už neexistujú. Končí na Support, odkiaľ sa
+  spúšťa.
+
+### Čo to znamená pre refundy
+
+Po 2.35.0 (tlačidlo Refund) a tejto verzii (filter Refund status) **už v UI
+nie je ani jedna cesta k refundu — ani ho spraviť, ani si ich vyfiltrovať.**
+Dáta aj logika sú nedotknuté, refundované kusy sa stále počítajú v riadku
+predaja aj v súhrne dole. Píše sa to sem, aby to nebolo prekvapenie.
+
 ## 2.37.0 - dizajnový jazyk 3.0, prvá vrstva
 
 Schválené na celoapkovom náhľade. Toto je **vrstva tokenov** — komponenty a

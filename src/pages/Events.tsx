@@ -28,6 +28,7 @@ import { LookupSelect } from "../components/LookupSelect";
 import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
+import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
 
 // 2.0.59: "Upcoming" vs "Completed" tabs (marko's request - see
@@ -47,7 +48,7 @@ function StockBar({ purchased, available }: { purchased: number; available: numb
       <span className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
         <span className="block h-full rounded-full bg-brand-600" style={{ width: `${pct}%` }} />
       </span>
-      <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">{pct}%</span>
+      <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{pct}%</span>
     </span>
   );
 }
@@ -99,6 +100,11 @@ export default function Events() {
   const location = useLocation();
   const isNarrow = useNarrowTables();
   const [events, setEvents] = useState<EventWithStats[] | null>(null);
+  // 2.40.0: set when this list navigated into a record, read once here on
+  // the way back - see lib/lastRow.ts. `useState` with an initialiser, not a
+  // bare call, so it is taken exactly once per mount and a re-render never
+  // re-lights a row.
+  const [flashId] = useState(() => takeRow("events"));
   const [categories, setCategories] = useState<EventCategory[]>([]);
   const [search, setSearch] = useState("");
   // 2.0.27: event category filter (marko's request - filter Events/Orders/
@@ -301,13 +307,16 @@ export default function Events() {
         }
       />
 
-      <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} />
-
+      {/* 2.38.0: the tab switcher moved OFF its own line and into the filter
+          row, pinned right (ml-auto) - marko's request, everywhere it exists,
+          following the arrangement Pulls already had. Its old `mb-4` lived
+          inside TabSwitcher itself; that margin now belongs to the caller, so
+          the two places that still stand alone (EventDetail) spell it out. */}
       <div className="mb-2 flex flex-wrap items-end gap-3">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Search events..."
               value={search}
@@ -345,6 +354,7 @@ export default function Events() {
             ))}
           </Select>
         </div>
+        <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
 
       {selectionMode && (
@@ -478,7 +488,7 @@ export default function Events() {
               {visibleEvents.map((ev) => (
                 <tr
                   key={ev.id}
-                  className="cursor-pointer"
+                  className={`cursor-pointer ${flashId === ev.id ? "row-flash" : ""}`}
                   onClick={(e) => {
                     // BUG #7 fix: the event name cell already has its own
                     // <Link> below, which performs a single, correct router
@@ -496,6 +506,7 @@ export default function Events() {
                       toggleOne(ev.id);
                       return;
                     }
+                    markRow("events", ev.id);
                     navigate(`/events/${ev.id}`);
                   }}
                 >
@@ -514,6 +525,7 @@ export default function Events() {
                     <div className="flex items-center gap-1.5">
                       <Link
                         to={`/events/${ev.id}`}
+                        onClick={() => markRow("events", ev.id)}
                         title={ev.name}
                         className="truncate font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                       >
@@ -530,7 +542,7 @@ export default function Events() {
                         </span>
                       )}
                     </div>
-                    <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>

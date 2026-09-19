@@ -240,11 +240,6 @@ export function TicketsView({
     <div>
       <PageHeader title={title} subtitle={subtitle} />
 
-      {/* 2.0.59: replaces the old Status dropdown below (Tickets only -
-          Inventory never showed it either, same !lockedStatus guard). See
-          TICKETS_TABS above. */}
-      {!lockedStatus && <TabSwitcher tabs={TICKETS_TABS} active={tab} onChange={setTab} />}
-
       {/* 2.0.32: max-w-[1400px] added, matching the table below it, so the
           "N orders · N tickets · N still sellable" summary caption (ml-auto
           below) sat above the table instead of floating off to the real
@@ -257,7 +252,7 @@ export function TicketsView({
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Order code, event..."
               value={search}
@@ -328,8 +323,13 @@ export function TicketsView({
             ))}
           </Select>
         </div>
+        {/* 2.0.59: replaces the old Status dropdown (Tickets only - Inventory
+            never showed it either, same !lockedStatus guard). See
+            TICKETS_TABS above. 2.38.0: moved off its own line into this row,
+            pinned right - see the Events/Orders/Sales note. */}
+        {!lockedStatus && <TabSwitcher tabs={TICKETS_TABS} active={tab} onChange={setTab} className="ml-auto" />}
         {summary && (
-          <p className="ml-auto text-xs text-slate-400 dark:text-slate-500">
+          <p className="ml-auto text-xs text-slate-500 dark:text-slate-400">
             {summary.orderCount} orders &middot; {summary.totalTickets} tickets &middot; {summary.availableTickets} still
             sellable
           </p>
@@ -451,33 +451,46 @@ export function TicketsView({
                 <col className="w-[10%]" />
               </colgroup>
             ) : isNarrow ? (
+              /* 2.38.0: six, not seven - Sold is gone (marko: keep Total and
+                 Available only) and its share went to the columns either
+                 side of it, which are the ones carrying numbers people
+                 actually compare. Sums to 100. */
               <colgroup>
-                <col className="w-[10.488%]" />
-                <col className="w-[47.439%]" />
-                <col className="w-[5.976%]" />
-                <col className="w-[9.512%]" />
-                <col className="w-[5.244%]" />
-                <col className="w-[11.22%]" />
-                <col className="w-[10.122%]" />
+                <col className="w-[11%]" />
+                <col className="w-[44%]" />
+                <col className="w-[8%]" />
+                <col className="w-[11%]" />
+                <col className="w-[14%]" />
+                <col className="w-[12%]" />
               </colgroup>
             ) : (
+              /* 2.38.0: eight, not nine - Sold is gone. Event gives up a
+                 slice of its old 43.5% at the same time: with one fewer
+                 column there is room for Seats and Purchase date to show
+                 their full value instead of truncating, which is what marko
+                 asked for when he set this column list. Sums to 100. */
               <colgroup>
-                <col className="w-[8.133%]" />
-                <col className="w-[43.564%]" />
-                <col className="w-[9.335%]" />
-                <col className="w-[9.194%]" />
-                <col className="w-[4.314%]" />
-                <col className="w-[6.506%]" />
-                <col className="w-[3.819%]" />
-                <col className="w-[8.699%]" />
-                <col className="w-[6.436%]" />
+                <col className="w-[9%]" />
+                <col className="w-[33%]" />
+                <col className="w-[11%]" />
+                <col className="w-[14%]" />
+                <col className="w-[6.5%]" />
+                <col className="w-[8.5%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
               </colgroup>
             )}
             <thead>
               <tr>
                 {/* 2.34.2: Inventory's own column list, marko's words - Event,
                     Purchase date, Seats, Total, Available, Total cost, Status.
-                    Order and Sold are dropped there and Purchase date/Seats
+                    2.38.0: Sold is dropped from BOTH now - marko asked for
+                    Total and Available only. Nothing was recalculated: Total
+                    is still o.quantity and Available is still available +
+                    listed, so "sold" remains readable as the gap between
+                    them. `soldCount` is still on the record and still shown
+                    on the order's own page.
+                    Order is dropped on Inventory and Purchase date/Seats
                     stop hiding at narrow width, because losing two columns
                     leaves room for the rest to breathe. `lockedStatus` is the
                     existing "this is Inventory, not Tickets" signal this file
@@ -488,7 +501,6 @@ export function TicketsView({
                 {(!isNarrow || lockedStatus) && <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Available</th>
-                {!lockedStatus && <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Total cost</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
               </tr>
@@ -525,9 +537,6 @@ export function TicketsView({
                     )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.quantity}</td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.availableCount + o.listedCount}</td>
-                    {!lockedStatus && (
-                      <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{o.soldCount}</td>
-                    )}
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(o.totalCostCents, o.currency)}</td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                       <Badge tone={inv.key}>{inv.label}</Badge>
@@ -657,7 +666,7 @@ export function TicketEditModal({
           {locked ? (
             <div>
               <div className="input flex items-center bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">Sold</div>
-              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Refund or delete the sale on the Sales screen to make this available again.</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Refund or delete the sale on the Sales screen to make this available again.</p>
             </div>
           ) : (
             <Select value={status} onChange={(e) => setStatus(e.target.value as TicketStatus)}>

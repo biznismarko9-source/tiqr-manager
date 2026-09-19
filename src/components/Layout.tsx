@@ -78,13 +78,17 @@ type NavItem =
 
 const TICKETS_GROUP_CHILDREN: NavChild[] = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
-  { to: "/orders", label: "Orders", icon: IconPackage },
   // 2.35.1: one entry, not two. `/inventory` was `TicketsView` with
   // `lockedStatus="available,listed"` - the same page with a filter - and
   // marko asked for the pair collapsed into a single item called Inventory.
-  // The route that survives is `/tickets`, so every existing deep link and
-  // every `from` hand-off in OrderDetail still resolves.
-  { to: "/tickets", label: "Inventory", icon: IconTicket },
+  // 2.39.0: one entry again, for the same reason one level up. Orders and
+  // Inventory were TWO LISTS OVER THE SAME ROWS - both called
+  // `api.listOrders`, both rendered `OrderRecord`, both linked to
+  // `/orders/:id`; only the column set differed. marko asked for the pair
+  // collapsed, keeping the name Inventory. `/orders` is what survives (it is
+  // the richer page - New Order, edit, bulk actions) and `/tickets`
+  // redirects to it, query string and all.
+  { to: "/orders", label: "Inventory", icon: IconPackage },
   { to: "/sales", label: "Sales", icon: IconReceipt },
   // 2.36.0: Pulls joins the group. A pull is a ticket bought for someone else
   // for a fee - same event, same seats, same platform, same transfer deadline
@@ -372,7 +376,7 @@ export default function Layout() {
             <p className="truncate text-[13px] font-semibold leading-tight tracking-tight text-slate-900 dark:text-slate-50">
               TIQR Manager
             </p>
-            <p className="truncate text-[11px] leading-tight text-slate-400 dark:text-slate-500">Reseller toolkit</p>
+            <p className="truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">Reseller toolkit</p>
           </div>
         </div>
 
@@ -382,7 +386,7 @@ export default function Layout() {
             "heading" in item ? (
               <p
                 key={item.heading}
-                className="px-3 pb-1 pt-3.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500"
+                className="px-3 pb-1 pt-3.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400"
               >
                 {item.heading}
               </p>
@@ -518,7 +522,7 @@ export default function Layout() {
               <span className="block truncate text-xs font-semibold text-slate-800 dark:text-slate-200">
                 {user?.name ?? "Account"}
               </span>
-              <span className="block truncate text-[11px] text-slate-400 dark:text-slate-500">{user?.email ?? ""}</span>
+              <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">{user?.email ?? ""}</span>
             </span>
             <IconChevronUp
               className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${profileOpen ? "" : "rotate-180"}`}

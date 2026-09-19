@@ -1,5 +1,6 @@
-import { useEffect, useState, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
-import { IconAlertTriangle, IconChevronDown, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ChangeEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { formatDateNumeric } from "../lib/format";
 import type { TrendInfo } from "../lib/format";
 
 // ---------------------------------------------------------------------------
@@ -52,8 +53,268 @@ export function Button({
 // ---------------------------------------------------------------------------
 // Form inputs
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Date field
+// ---------------------------------------------------------------------------
+
+/** 2.38.0: every `<input type="date">` in the app dropped the BROWSER's own
+ * calendar - a white panel with its own type, its own week layout and no idea
+ * the app is in dark mode (marko sent a screenshot of exactly that). It is
+ * browser chrome, so no amount of CSS reaches it; the only way to make that
+ * panel ours is to draw it ourselves.
+ *
+ * `Input` routes `type="date"` here automatically, so not one of the ~30 call
+ * sites changed: they still pass `value` as "YYYY-MM-DD" and still read
+ * `e.target.value` inside onChange. The object handed to onChange is a minimal
+ * stand-in carrying `target.value`/`target.name` - checked against every date
+ * call site in the app, that is the only thing any of them reads off it.
+ *
+ * Deliberately NOT a dependency: TIQR ships offline-first and adds no packages.
+ */
+const WEEKDAY_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const MONTH_LABELS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** Roughly what the open panel needs, used only to decide which way it opens. */
+const PANEL_H = 330;
+const PANEL_W = 280;
+
+/** "YYYY-MM-DD" -> parts, or null for anything else (including ""). Parsed by
+ * hand rather than through `new Date(s)`: that reads a bare ISO date as UTC
+ * midnight and then renders it in local time, which west of Greenwich shows
+ * the day BEFORE the one that is stored. */
+function parseIsoDate(s: string): { y: number; m: number; d: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return { y, m: mo, d };
+}
+
+function isoOf(y: number, m: number, d: number): string {
+  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/** Day 0 of the NEXT month is the last day of this one. `m` is 1-based. */
+function daysInMonth(y: number, m: number): number {
+  return new Date(y, m, 0).getDate();
+}
+
+/** Monday-first index (0 = Monday) of the 1st of the given month. */
+function mondayFirstOffset(y: number, m: number): number {
+  return (new Date(y, m - 1, 1).getDay() + 6) % 7;
+}
+
+function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
+  const { className = "", value, onChange, disabled, placeholder, id, name } = props;
+  const ariaLabel = props["aria-label"];
+  const text = typeof value === "string" ? value : "";
+  const selected = parseIsoDate(text);
+
+  const [open, setOpen] = useState(false);
+  const [above, setAbove] = useState(false);
+  const [alignRight, setAlignRight] = useState(false);
+  const [view, setView] = useState(() => {
+    const p = parseIsoDate(typeof value === "string" ? value : "");
+    const now = new Date();
+    return p ? { y: p.y, m: p.m } : { y: now.getFullYear(), m: now.getMonth() + 1 };
+  });
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // A value set from OUTSIDE (Clear all, loading a record into a form) moves
+  // the visible month with it, so re-opening never starts somewhere else.
+  useEffect(() => {
+    const p = parseIsoDate(text);
+    if (p) setView({ y: p.y, m: p.m });
+  }, [text]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const emit = (next: string) => {
+    if (!onChange) return;
+    onChange({ target: { value: next, name: name ?? "" } } as unknown as ChangeEvent<HTMLInputElement>);
+  };
+
+  const openPanel = () => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (r) {
+      setAbove(r.bottom + PANEL_H > window.innerHeight && r.top > PANEL_H);
+      setAlignRight(r.left + PANEL_W > window.innerWidth);
+    }
+    setOpen(true);
+  };
+
+  const shiftMonth = (by: number) => {
+    setView((v) => {
+      const raw = v.m - 1 + by;
+      return { y: v.y + Math.floor(raw / 12), m: (((raw % 12) + 12) % 12) + 1 };
+    });
+  };
+
+  // Always six rows, so the panel never changes height as you page through
+  // months - the days either side are real dates and pick like any other.
+  const cells = useMemo(() => {
+    const lead = mondayFirstOffset(view.y, view.m);
+    const prevM = view.m === 1 ? 12 : view.m - 1;
+    const prevY = view.m === 1 ? view.y - 1 : view.y;
+    const prevDim = daysInMonth(prevY, prevM);
+    const nextM = view.m === 12 ? 1 : view.m + 1;
+    const nextY = view.m === 12 ? view.y + 1 : view.y;
+    const out: { y: number; m: number; d: number; outside: boolean }[] = [];
+    for (let i = lead - 1; i >= 0; i--) out.push({ y: prevY, m: prevM, d: prevDim - i, outside: true });
+    const dim = daysInMonth(view.y, view.m);
+    for (let d = 1; d <= dim; d++) out.push({ y: view.y, m: view.m, d, outside: false });
+    for (let d = 1; out.length < 42; d++) out.push({ y: nextY, m: nextM, d, outside: true });
+    return out;
+  }, [view]);
+
+  const now = new Date();
+  const todayKey = isoOf(now.getFullYear(), now.getMonth() + 1, now.getDate());
+  const navClass =
+    "rounded-md p-1.5 text-slate-500 transition hover:bg-surface-sunken hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
+  const footClass =
+    "rounded-md px-2 py-1 text-[11.5px] font-medium text-slate-500 transition hover:bg-surface-sunken hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
+
+  return (
+    <div
+      ref={wrapRef}
+      className="relative"
+      onKeyDown={(e) => {
+        // Stopped here on purpose: Modal listens for Escape on `window`, and
+        // without this, closing the calendar would close the form under it.
+        if (e.key === "Escape" && open) {
+          e.stopPropagation();
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        type="button"
+        id={id}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openPanel())}
+        className={`input flex items-center justify-between gap-2 text-left ${className}`}
+      >
+        <span className={selected ? "truncate" : "truncate text-slate-500 dark:text-slate-400"}>
+          {selected ? formatDateNumeric(text) : placeholder || "dd.mm.yyyy"}
+        </span>
+        <IconCalendarDays className="h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" />
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          className={`absolute z-40 w-[17.5rem] rounded-xl bg-surface-raised p-3 shadow-overlay ${
+            above ? "bottom-full mb-1.5" : "top-full mt-1.5"
+          } ${alignRight ? "right-0" : "left-0"}`}
+        >
+          <div className="mb-2 flex items-center justify-between gap-1">
+            <button type="button" aria-label="Previous month" onClick={() => shiftMonth(-1)} className={navClass}>
+              <IconChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+              {MONTH_LABELS[view.m - 1]} {view.y}
+            </span>
+            <button type="button" aria-label="Next month" onClick={() => shiftMonth(1)} className={navClass}>
+              <IconChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-7 gap-0.5">
+            {WEEKDAY_LABELS.map((w) => (
+              <span
+                key={w}
+                className="py-1 text-center text-[10.5px] font-medium text-slate-500 dark:text-slate-400"
+              >
+                {w}
+              </span>
+            ))}
+            {cells.map((c) => {
+              const iso = isoOf(c.y, c.m, c.d);
+              const isSelected = iso === text;
+              const isToday = iso === todayKey;
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  aria-current={isSelected ? "date" : undefined}
+                  onClick={() => {
+                    emit(iso);
+                    setView({ y: c.y, m: c.m });
+                    setOpen(false);
+                  }}
+                  className={`h-8 rounded-md text-[12.5px] tabular-nums transition ${
+                    isSelected
+                      ? "bg-brand-600 font-semibold text-white"
+                      : isToday
+                        ? "font-semibold text-brand-600 hover:bg-surface-sunken dark:text-brand-400"
+                        : c.outside
+                          ? "text-slate-400 hover:bg-surface-sunken dark:text-slate-600"
+                          : "text-slate-700 hover:bg-surface-sunken dark:text-slate-200"
+                  }`}
+                >
+                  {c.d}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-2 flex items-center justify-between border-t border-line pt-2">
+            <button
+              type="button"
+              className={footClass}
+              onClick={() => {
+                emit(todayKey);
+                setOpen(false);
+              }}
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              className={footClass}
+              onClick={() => {
+                emit("");
+                setOpen(false);
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className = "", ...rest } = props;
+  // See DateField above: the native date popup cannot be themed, so we draw it.
+  if (props.type === "date") return <DateField {...props} />;
   return <input className={`input ${className}`} {...rest} />;
 }
 
@@ -160,7 +421,7 @@ export function Field({
         {required && <span className="text-red-500"> *</span>}
       </span>
       <div className={error ? "field-invalid" : ""}>{children}</div>
-      {hint && !error && <span className="mt-1.5 block text-xs text-slate-400 dark:text-slate-500">{hint}</span>}
+      {hint && !error && <span className="mt-1.5 block text-xs text-slate-500 dark:text-slate-400">{hint}</span>}
       {error && <span className="mt-1.5 block text-xs font-medium text-red-600 dark:text-red-400">{error}</span>}
     </label>
   );
@@ -268,6 +529,39 @@ export function TableSkeleton({ rows = 8, className = "" }: { rows?: number; cla
   );
 }
 
+/** 2.40.0: the loading state for a row of StatCards - same `summary-bar`
+ * grid the real row uses, so the page does not resize when the numbers
+ * arrive. Counterpart to TableSkeleton above, for the pages whose first
+ * screenful is figures rather than a table. */
+export function StatsSkeleton({ count = 5 }: { count?: number }) {
+  return (
+    <div className="summary-bar">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="rounded-xl bg-surface p-3 shadow-card">
+          <Skeleton className="h-2.5 w-16" />
+          <Skeleton className="mt-2.5 h-4 w-24" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 2.40.0: a card-shaped placeholder - a title band and `lines` rows. Used
+ * where the thing loading is a panel of text or a chart rather than a table
+ * or a figure row. */
+export function PanelSkeleton({ lines = 4, className = "" }: { lines?: number; className?: string }) {
+  return (
+    <div className={`rounded-xl bg-surface p-4 shadow-card ${className}`}>
+      <Skeleton className="h-2.5 w-28" />
+      <div className="mt-4 flex flex-col gap-3">
+        {Array.from({ length: lines }).map((_, i) => (
+          <Skeleton key={i} className={i === lines - 1 ? "h-3 w-2/3" : "h-3"} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function LoadingBlock({ label = "Loading..." }: { label?: string }) {
   return (
     <div className="flex items-center justify-center gap-2.5 py-16 text-sm text-slate-400 animate-[fadein_.15s_ease-out] dark:text-slate-500">
@@ -360,17 +654,40 @@ const STATUS_TONES: Record<string, string> = {
 const DEFAULT_TONE =
   "bg-slate-100 text-slate-700 ring-slate-200 dark:bg-slate-100/5 dark:text-slate-300 dark:ring-slate-100/10";
 
+/** 2.40.0: strips the fill and the ring out of a tone, leaving only its text
+ * colours. There is deliberately no second colour table - one source of
+ * truth (STATUS_TONES above) still decides every tone, and this just drops
+ * the two parts of it a quiet badge does not wear. `InlineStatusSelect`
+ * below keeps the FULL tone on purpose: it is a control, and a control has
+ * to look like one. */
+function quietTone(cls: string): string {
+  return cls
+    .split(" ")
+    .filter((c) => {
+      const base = c.startsWith("dark:") ? c.slice(5) : c;
+      return !base.startsWith("bg-") && !base.startsWith("ring-");
+    })
+    .join(" ");
+}
+
 export function Badge({ tone, title, children }: { tone: string; title?: string; children: ReactNode }) {
   const cls = STATUS_TONES[tone] ?? DEFAULT_TONE;
   // The leading dot inherits `currentColor`, so it is automatically the
   // right color for every tone above (and for the fallback) without a
   // second per-tone table to keep in sync.
+  //
+  // 2.40.0 (marko picked this out of thirty): no fill, no ring - a coloured
+  // DOT beside a plain label. In a table where every row carries a status,
+  // the filled pills were the loudest thing on screen and drowned out the
+  // numbers beside them. The dot goes full-strength and one step larger now
+  // that it carries the identity on its own. Nothing about which tone means
+  // what has changed, and no call site changed.
   return (
     <span
       title={title}
-      className={`inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset ${cls}`}
+      className={`inline-flex max-w-full items-center gap-1.5 py-0.5 text-xs font-medium capitalize ${quietTone(cls)}`}
     >
-      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden="true" />
+      <span className="h-2 w-2 shrink-0 rounded-full bg-current" aria-hidden="true" />
       <span className="truncate">{children}</span>
     </span>
   );
@@ -582,7 +899,7 @@ export function StatCard({
         : "text-slate-900 dark:text-slate-50";
   const trendTone =
     !trend || !trendColored || trend.direction === "flat"
-      ? "text-slate-400 dark:text-slate-500"
+      ? "text-slate-500 dark:text-slate-400"
       : trend.direction === "up"
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
@@ -610,10 +927,10 @@ export function StatCard({
         <p className={`mt-2 flex items-center gap-1 text-[11px] font-medium ${trendTone}`}>
           {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
           {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
-          {trend.label} <span className="font-normal text-slate-400 dark:text-slate-500">vs. previous</span>
+          {trend.label} <span className="font-normal text-slate-500 dark:text-slate-400">vs. previous</span>
         </p>
       )}
-      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{sub}</p>}
+      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-500 dark:text-slate-400">{sub}</p>}
     </Card>
   );
 }
@@ -644,7 +961,7 @@ export function SummaryStat({
         : "text-slate-900 dark:text-slate-100";
   return (
     <span className="whitespace-nowrap">
-      <span className="text-slate-400 dark:text-slate-500">{label}: </span>
+      <span className="text-slate-500 dark:text-slate-400">{label}: </span>
       <span className={`font-medium tabular-nums ${toneCls}`}>{value}</span>
       {extra}
     </span>
@@ -873,7 +1190,7 @@ export function TabSwitcher<T extends string>({
   className?: string;
 }) {
   return (
-    <div className={`${SEGMENTED_TRACK} mb-4 ${className}`}>
+    <div className={`${SEGMENTED_TRACK} ${className}`}>
       {tabs.map((t) => (
         <button
           key={t.key}

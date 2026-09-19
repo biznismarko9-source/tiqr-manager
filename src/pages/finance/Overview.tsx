@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../../lib/api";
 import type { CashflowForecast, FinanceEntry, FinanceEntryInput } from "../../lib/types";
 import { formatMoney, formatMoneyOrMixed } from "../../lib/format";
-import { Button, Card, ConfirmDialog, EmptyState, Input, LoadingBlock, StatCard } from "../../components/ui";
+import { Button, Card, ConfirmDialog, EmptyState, Input, PanelSkeleton, StatCard, StatsSkeleton } from "../../components/ui";
 import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
 import { IconBarChart, IconPlus, IconTrendingUp } from "../../components/icons";
 import { useToast } from "../../lib/toast";
@@ -353,7 +353,11 @@ export default function Overview({ entries, categories, accounts, loading, reloa
       </Card>
 
       {loading ? (
-        <LoadingBlock label="Loading Finance..." />
+        <>
+          {/* 2.40.0: see Dashboard - skeleton in the shape of what loads. */}
+          <StatsSkeleton count={5} />
+          <PanelSkeleton lines={5} />
+        </>
       ) : customDatesMissing ? (
         <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           Please select at least one date.
@@ -391,14 +395,14 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             />
           </div>
           {unassigned.count > 0 && (
-            <p className="-mt-4 mb-2 text-xs text-slate-400 dark:text-slate-500">
+            <p className="-mt-4 mb-2 text-xs text-slate-500 dark:text-slate-400">
               {unassigned.count} of these entr{unassigned.count === 1 ? "y has" : "ies have"} no account, so{" "}
               {unassigned.count === 1 ? "it is" : "they are"} counted here but move no balance - a net{" "}
               {formatMoney(unassigned.cents, "EUR")} difference between this block and the accounts above.
             </p>
           )}
           {excludedNonEurCount > 0 && (
-            <p className="-mt-4 mb-6 text-xs text-slate-400 dark:text-slate-500">
+            <p className="-mt-4 mb-6 text-xs text-slate-500 dark:text-slate-400">
               {excludedNonEurCount} entr{excludedNonEurCount === 1 ? "y" : "ies"} in this period{" "}
               {excludedNonEurCount === 1 ? "isn't" : "aren't"} in EUR yet, so{" "}
               {excludedNonEurCount === 1 ? "it isn't" : "they aren't"} included above - convert with the banner up top.
@@ -452,7 +456,7 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
   return (
     <Card>
       <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
-        <IconBarChart className="h-4 w-4 text-slate-400 dark:text-slate-500" />
+        <IconBarChart className="h-4 w-4 text-slate-500 dark:text-slate-400" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Expenses by category</h3>
       </div>
       {rows.length === 0 ? (
@@ -489,7 +493,7 @@ const CHART_ROW_HEIGHT = 160;
 function IncomeExpenseChart({ buckets }: { buckets: MonthBucket[] }) {
   if (buckets.length === 0) {
     return (
-      <div className="flex items-center justify-center text-sm text-slate-400 dark:text-slate-500" style={{ height: CHART_ROW_HEIGHT + 28 }}>
+      <div className="flex items-center justify-center text-sm text-slate-500 dark:text-slate-400" style={{ height: CHART_ROW_HEIGHT + 28 }}>
         No entries in this period yet.
       </div>
     );
@@ -520,7 +524,7 @@ function IncomeExpenseChart({ buckets }: { buckets: MonthBucket[] }) {
                 title={`${b.label} - Expenses ${formatMoney(b.expenseCents, "EUR")}`}
               />
             </div>
-            <span className="whitespace-nowrap text-[10px] text-slate-400 dark:text-slate-500">{b.label}</span>
+            <span className="whitespace-nowrap text-[10px] text-slate-500 dark:text-slate-400">{b.label}</span>
           </div>
         ))}
       </div>
@@ -539,33 +543,33 @@ function ForecastCard({ forecast, loading }: { forecast: CashflowForecast | null
   return (
     <Card className="mt-6 p-4">
       <div className="mb-3 flex items-center gap-2">
-        <IconTrendingUp className="h-4 w-4 text-slate-400 dark:text-slate-500" />
+        <IconTrendingUp className="h-4 w-4 text-slate-500 dark:text-slate-400" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Cashflow Forecast</h3>
         <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700 dark:bg-brand-500/10 dark:text-brand-400">
           Forecast
         </span>
       </div>
       {loading ? (
-        <LoadingBlock label="Calculating forecast..." />
+        <PanelSkeleton lines={3} className="shadow-none" />
       ) : !forecast || !forecast.available ? (
         <EmptyState title="Forecast unavailable" description="Add an active EUR account on the Accounts tab to see a forecast." />
       ) : (
         <div>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
             <div>
-              <dt className="text-xs text-slate-400 dark:text-slate-500">Current balance</dt>
+              <dt className="text-xs text-slate-500 dark:text-slate-400">Current balance</dt>
               <dd className="tabular-nums text-slate-800 dark:text-slate-200">{formatMoney(forecast.currentBalanceCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-400 dark:text-slate-500">Expected income</dt>
+              <dt className="text-xs text-slate-500 dark:text-slate-400">Expected income</dt>
               <dd className="tabular-nums text-emerald-600 dark:text-emerald-400">+{formatMoney(forecast.expectedIncomeCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-400 dark:text-slate-500">Recurring expenses</dt>
+              <dt className="text-xs text-slate-500 dark:text-slate-400">Recurring expenses</dt>
               <dd className="tabular-nums text-rose-600 dark:text-rose-400">-{formatMoney(forecast.recurringExpensesCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-400 dark:text-slate-500">Upcoming expenses</dt>
+              <dt className="text-xs text-slate-500 dark:text-slate-400">Upcoming expenses</dt>
               <dd className="tabular-nums text-rose-600 dark:text-rose-400">-{formatMoney(forecast.upcomingExpensesCents, "EUR")}</dd>
             </div>
           </dl>
@@ -580,7 +584,7 @@ function ForecastCard({ forecast, loading }: { forecast: CashflowForecast | null
             </span>
           </div>
           {forecast.excludesNonEurData && (
-            <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               Some non-EUR balances, sales or entries exist and aren't included above (no exchange rate is guessed).
             </p>
           )}

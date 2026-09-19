@@ -139,7 +139,8 @@ export default function SaleDetail() {
     // lines don't, via the same `uniform()` helper used for every other
     // group-level field on this page, so reuse that instead of computing a
     // currency-blind ratio across e.g. EUR + USD.
-    const margin = currency !== null && revenueCents !== 0 ? profitCents / revenueCents : null;
+    // 2.39.0: `margin` was computed here too; Margin is gone from the whole
+    // app at marko's request. ROI keeps the identical currency guard.
     const roi = currency !== null && costCents !== 0 ? profitCents / costCents : null;
     // The representative code is always the group's own lowest-id surviving
     // line's code (see backend GROUP_BASE_SELECT's MIN(s.code) - lines here
@@ -184,7 +185,6 @@ export default function SaleDetail() {
       feesCents,
       costCents,
       profitCents,
-      margin,
       roi,
     };
   }, [lines]);
@@ -258,21 +258,21 @@ export default function SaleDetail() {
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 lg:grid-cols-6">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{header.platformName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Sale date</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sale date</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {header.saleDate ? formatDate(header.saleDate) : "Mixed"}
           </p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Currency</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{header.currency ?? "Mixed"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Refunded</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Refunded</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {header.refundedCount} of {lines.length}
           </p>
@@ -281,44 +281,46 @@ export default function SaleDetail() {
             above for how these are derived (paid-only / pending-only line
             subsets, refunded lines counted in neither). */}
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Paid</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Paid</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {formatMoneyOrMixed(header.paidCents, header.paidCurrency)}
           </p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Outstanding</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Outstanding</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {formatMoneyOrMixed(header.outstandingCents, header.outstandingCurrency)}
           </p>
         </div>
       </Card>
 
-      {/* 1.8.2: SUMMARY - the 6 numbers the brief calls out by name (Revenue,
-          Fees, Cost, Profit, Margin, ROI), each its own card so the page
-          answers "how much / what did it cost / what did I make" at a
-          glance without reading a table. All 6 values were already computed
-          in the `header` useMemo above (including costCents, which existed
-          but had no card before this) - this is a display-only change, nothing
-          about how these numbers are calculated has moved. `lg:` in this
+      {/* 1.8.2: SUMMARY - the numbers the brief calls out by name (Revenue,
+          Fees, Cost, Profit, ROI), each its own card so the page answers
+          "how much / what did it cost / what did I make" at a glance without
+          reading a table. Every value was already computed in the `header`
+          useMemo above (including costCents, which existed but had no card
+          before this) - this is a display-only change, nothing about how
+          these numbers are calculated has moved.
+          2.39.0: five cards, not six - Margin left the app, so the column
+          count follows it down rather than leaving a hole. `lg:` in this
           app's fixed 1080px-minimum window is effectively always active (see
           REDESIGN-1.8.2-REPORT.md), so this reads as one row on every real
           window size; the plain/sm classes are a defensive fallback only. */}
-      <div className="mb-8 grid grid-cols-3 gap-3 lg:grid-cols-6">
+      <div className="mb-8 grid grid-cols-3 gap-3 lg:grid-cols-5">
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Revenue</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Revenue</p>
           <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.revenueCents, header.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Fees</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Fees</p>
           <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.feesCents, header.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Cost</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Cost</p>
           <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.costCents, header.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Profit</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Profit</p>
           <p
             className={`mt-1 text-lg font-semibold ${header.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : header.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
           >
@@ -326,16 +328,12 @@ export default function SaleDetail() {
           </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Margin</p>
-          <p className="mt-1 text-lg font-semibold">{formatPercentOrMixed(header.margin, header.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">ROI</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">ROI</p>
           <p className="mt-1 text-lg font-semibold">{formatPercentOrMixed(header.roi, header.currency)}</p>
         </Card>
       </div>
-      <p className="-mt-5 mb-8 text-xs text-slate-400 dark:text-slate-500">
-        Revenue, fees, cost, profit, margin and ROI above exclude any refunded ticket in this sale - they are never
+      <p className="-mt-5 mb-8 text-xs text-slate-500 dark:text-slate-400">
+        Revenue, fees, cost, profit and ROI above exclude any refunded ticket in this sale - they are never
         counted as realized.
       </p>
 
@@ -523,7 +521,7 @@ export default function SaleDetail() {
                     <td
                       className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${
                         s.currencyMismatch
-                          ? "text-slate-400 dark:text-slate-500"
+                          ? "text-slate-500 dark:text-slate-400"
                           : s.profitCents > 0
                             ? "text-emerald-600 dark:text-emerald-400"
                             : s.profitCents < 0
@@ -620,7 +618,7 @@ export default function SaleDetail() {
                       )}
                       {s.paymentStatus === "refunded" && s.refundedAt && (
                         <p
-                          className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500"
+                          className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400"
                           title={`${formatDate(s.refundedAt)}${s.refundReason ? ` · ${s.refundReason}` : ""}`}
                         >
                           {formatDate(s.refundedAt)}
@@ -647,7 +645,7 @@ export default function SaleDetail() {
                           </button>
                         )}
                         <button
-                          className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
+                          className="text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400"
                           title={
                             s.paymentStatus === "refunded"
                               ? "Delete refund record (ticket status is not affected)"

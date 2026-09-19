@@ -21,6 +21,101 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.40.0 - one tone table, two renderings; and the contrast pairing is now correct
+
+**`STATUS_TONES` is still the only status colour table, and it still carries
+`bg-*`/`ring-*` classes even though `Badge` no longer draws them.** `Badge`
+filters them out at render (`quietTone`); `InlineStatusSelect` uses the string
+whole, because it is a control and needs the fill. Do not "clean up" the table
+by deleting the fills - that silently flattens every editable status badge on
+Sale Detail and Order Detail. Equally, do not add a second, dot-only colour
+table: the whole point is that one table decides every tone.
+
+Any tone added here needs **both** a `text-*` and a `dark:text-*` class. With
+the fill gone, those two are the only thing making a quiet badge visible; a
+tone with only a fill renders as an invisible label. (All 22 existing tones
+were checked when this shipped.)
+
+**The muted-text pairing is `text-slate-500 dark:text-slate-400`.** 2.40.0
+swept 260 occurrences of the reverse pairing out of the app; it was picking
+the darker step for the darker ground and measured 3.16:1. New code must use
+this order. Writing `text-slate-400 dark:text-slate-500` re-introduces the bug
+one file at a time, and there is no longer a sweep pending to catch it.
+
+**`lib/lastRow.ts` is session-only and consumed on read.** It is not state, not
+a cache and not persisted - `takeRow` deletes the mark so a row flashes once
+per departure. Making it survive a restart, or reading it without consuming,
+turns a helpful nudge into a row that lights up every time you open the list.
+
+## 2.39.0 - the Inventory screen is `/orders`, and `pages/Tickets.tsx` is still load-bearing
+
+**There is ONE order list and its route is `/orders`.** It is labelled
+Inventory. `/tickets` is a redirect that **must keep forwarding the query
+string** - EventDetail links `/orders?code=<ticket code>` today, but older
+saved links and any future hand-off still arrive at `/tickets?code=`. A
+redirect that drops `search` silently turns those into "show me everything".
+
+**`pages/Tickets.tsx` has no route and no nav entry, and must not be
+deleted.** `SaleDetail` imports `DELIVERY_STATUS_OPTIONS` and
+`RESALE_STATUS_OPTIONS` from it; `OrderDetail` imports
+`DELIVERY_STATUS_OPTIONS` and `TicketEditModal`. Its default export
+(`Tickets`) is the only dead part. Anything that "tidies up the unused page"
+takes the ticket status lists and the ticket edit modal with it.
+
+**Ticket-code search lives in `orders.rs`, not in the page.** The Inventory
+screen finds an order by a TICKET's code because `list_orders_impl` applies
+the free-text search as a semi-join on `tickets` (its own BUG #5 test,
+`search_finds_order_by_exact_ticket_code`). Narrowing that search to order
+codes breaks every `?code=` link in the app.
+
+**Margin is removed from the UI but still computed in the backend.**
+`finance::compute_summary` fills `FinanceSummary.margin` and every screen
+still receives it; nothing renders it, on purpose (marko: "ako keby
+zanikla"). Do not "clean up" by deleting the field from `finance.rs` - that
+is the shared financial module every screen calls, it has tests asserting the
+struct, and the saving is zero. Equally, do not re-add a Margin card because
+the data is there.
+
+## 2.38.0 - two component contracts changed under every call site
+
+**`TabSwitcher` no longer carries `mb-4`.** The margin lives at the call site
+now, because four pages needed the switcher INSIDE their filter row (where a
+bottom margin is wrong) and two needed it standing alone (where it is right).
+A new stand-alone call site that forgets `className="mb-4"` will sit flush
+against whatever is under it. Do not "fix" this by putting the margin back in
+the component - `mb-4` and a caller's `mb-0` do not reliably override each
+other in Tailwind (utilities of the same property sort by value, not by the
+order you wrote them in the string), which is exactly why the default was
+removed rather than overridden.
+
+**`Input` intercepts `type="date"`** and renders `DateField` (a hand-drawn
+calendar) instead of a real `<input type="date">`. Consequences to know before
+relying on native behaviour:
+
+- The rendered element is a `<button>`, so **native form validation, `min`,
+  `max`, `step`, `required` and typing a date do not apply.** No date field in
+  the app used any of them when this shipped (checked); if one needs them,
+  extend `DateField`, do not route around `Input`.
+- `onChange` receives a **stand-in object**, not a real React change event -
+  it carries `target.value` and `target.name` and nothing else. Every date
+  call site in the app reads only `e.target.value`. A new one that reaches
+  for `e.currentTarget`, `e.preventDefault()` or `e.target.checked` will
+  break at runtime, not at compile time.
+- `value` must stay `"YYYY-MM-DD"` or the field shows its placeholder.
+  Anything else parses to null by design - the parser is deliberately
+  hand-written rather than `new Date(s)`, which reads a bare ISO date as UTC
+  midnight and renders it in local time, showing the previous day west of
+  Greenwich.
+- Escape inside the calendar is stopped at the wrapper so it does not also
+  reach `Modal`'s own `window` keydown listener. Do not move that handler to
+  `document`/`window` - closing the calendar would close the form under it.
+
+**`components/Recap.tsx` has no importer any more.** Settings -> Insights was
+its only entry point and 2.38.0 removed that section at marko's request. The
+file is intact on disk. It is not dead weight to be tidied away on a whim -
+deleting it is marko's call, and anything that re-adds a Recap entry point
+should re-read that file first rather than rebuilding it.
+
 ## 2.29.2 - Flat, and the one shadow that stays
 
 **The design is FLAT. `--sh-card`, `--sh-raised` and `--sh-inset` are 1px

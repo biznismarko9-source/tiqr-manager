@@ -298,7 +298,7 @@ export function ExportPickerModal<T>({
   return (
     <Modal open={open} onClose={onClose} title={config.title} width="max-w-lg">
       <div className="relative mb-3">
-        <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+        <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
         <Input
           autoFocus
           placeholder={config.searchPlaceholder}
@@ -327,7 +327,7 @@ export function ExportPickerModal<T>({
             Inventory) instead of a plain count - selectedGroupCount is
             derived from the same `selected` Set flat mode already uses, so
             this can never disagree with the per-group checkboxes below. */}
-        <span className="text-xs text-slate-400 dark:text-slate-500">
+        <span className="text-xs text-slate-500 dark:text-slate-400">
           {groups
             ? `Selected: ${selected.size} ticket${selected.size === 1 ? "" : "s"} / ${selectedGroupCount} order${selectedGroupCount === 1 ? "" : "s"}`
             : `Selected: ${selected.size}`}
@@ -340,7 +340,7 @@ export function ExportPickerModal<T>({
             <LoadingBlock />
           </div>
         ) : items.length === 0 ? (
-          <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+          <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">
             {search ? "No matches" : "Nothing to export yet"}
           </p>
         ) : groups ? (
@@ -374,10 +374,10 @@ export function ExportPickerModal<T>({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{g.primary}</span>
                       {g.secondary && (
-                        <span className="block truncate text-xs text-slate-400 dark:text-slate-500">{g.secondary}</span>
+                        <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{g.secondary}</span>
                       )}
                     </span>
-                    <span className="shrink-0 text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                    <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
                       {selectedInGroup.length > 0 ? `${selectedInGroup.length}/${groupIds.length}` : groupIds.length} ticket
                       {groupIds.length === 1 ? "" : "s"}
                     </span>
@@ -402,7 +402,7 @@ export function ExportPickerModal<T>({
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm text-slate-800 dark:text-slate-200">{primary}</span>
                             {secondary && (
-                              <span className="block truncate text-xs text-slate-400 dark:text-slate-500">{secondary}</span>
+                              <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{secondary}</span>
                             )}
                           </span>
                         </label>
@@ -431,7 +431,7 @@ export function ExportPickerModal<T>({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-slate-800 dark:text-slate-200">{primary}</span>
                   {secondary && (
-                    <span className="block truncate text-xs text-slate-400 dark:text-slate-500">{secondary}</span>
+                    <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{secondary}</span>
                   )}
                 </span>
               </label>

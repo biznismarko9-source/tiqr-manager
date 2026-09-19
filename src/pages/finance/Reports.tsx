@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Account, FinanceEntry, Transfer } from "../../lib/types";
 import { formatMoney, formatPercent, todayIso } from "../../lib/format";
-import { Card, EmptyState, Input, LoadingBlock } from "../../components/ui";
+import { Card, EmptyState, Input, PanelSkeleton } from "../../components/ui";
 import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
 import { IconBarChart, IconTrendingUp, IconUsers, IconWallet } from "../../components/icons";
 import { PERIODS, periodBounds, type FinanceData, type PeriodKey } from "./shared";
@@ -205,7 +205,14 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
       </Card>
 
       {loading ? (
-        <LoadingBlock label="Loading reports..." />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* 2.40.0: see Dashboard - skeleton in the shape of what loads.
+              Four cards, because Reports always draws exactly four. */}
+          <PanelSkeleton lines={5} />
+          <PanelSkeleton lines={5} />
+          <PanelSkeleton lines={4} />
+          <PanelSkeleton lines={4} />
+        </div>
       ) : customDatesMissing ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           Please select at least one date.
@@ -213,25 +220,25 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
       ) : (
         <>
           {excludedNonEurCount > 0 && (
-            <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+            <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
               {excludedNonEurCount} entr{excludedNonEurCount === 1 ? "y" : "ies"} in this period{" "}
               {excludedNonEurCount === 1 ? "isn't" : "aren't"} in EUR yet, so {excludedNonEurCount === 1 ? "it isn't" : "they aren't"} included
               below - convert {excludedNonEurCount === 1 ? "it" : "them"} on the Overview tab.
             </p>
           )}
 
-          <ReportCard title="Profit &amp; Loss" icon={<IconTrendingUp className="h-4 w-4 text-slate-400 dark:text-slate-500" />}>
+          <ReportCard title="Profit &amp; Loss" icon={<IconTrendingUp className="h-4 w-4 text-slate-500 dark:text-slate-400" />}>
             <dl className="grid grid-cols-3 gap-4 text-sm">
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Income</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Income</dt>
                 <dd className="mt-1 text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{formatMoney(incomeCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Expenses</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Expenses</dt>
                 <dd className="mt-1 text-lg font-semibold tabular-nums text-rose-600 dark:text-rose-400">{formatMoney(expenseCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Net</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Net</dt>
                 <dd className={`mt-1 text-lg font-semibold tabular-nums ${netCents >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
                   {formatMoney(netCents, "EUR")}
                 </dd>
@@ -241,51 +248,51 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
 
           <ReportCard
             title="Cash Flow"
-            icon={<IconWallet className="h-4 w-4 text-slate-400 dark:text-slate-500" />}
+            icon={<IconWallet className="h-4 w-4 text-slate-500 dark:text-slate-400" />}
             note="Only entries and transfers linked to an active EUR account are counted, so Opening + Inflows - Outflows + Transfers always equals Closing. Entries with no account are in Profit & Loss above but not here - see Expenses by Account below."
           >
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-5">
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Opening</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Opening</dt>
                 <dd className="mt-1 tabular-nums text-slate-800 dark:text-slate-200">{formatMoney(openingCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Inflows</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Inflows</dt>
                 <dd className="mt-1 tabular-nums text-emerald-600 dark:text-emerald-400">+{formatMoney(inflowsCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Outflows</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Outflows</dt>
                 <dd className="mt-1 tabular-nums text-rose-600 dark:text-rose-400">-{formatMoney(outflowsCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Transfers</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Transfers</dt>
                 <dd className="mt-1 tabular-nums text-slate-500 dark:text-slate-400">{formatMoney(transfersNetCents, "EUR")}</dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Closing</dt>
+                <dt className="text-xs text-slate-500 dark:text-slate-400">Closing</dt>
                 <dd className="mt-1 font-semibold tabular-nums text-slate-900 dark:text-slate-100">{formatMoney(closingCents, "EUR")}</dd>
               </div>
             </dl>
           </ReportCard>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <ReportCard title="Expenses by Category" icon={<IconBarChart className="h-4 w-4 text-slate-400 dark:text-slate-500" />}>
+            <ReportCard title="Expenses by Category" icon={<IconBarChart className="h-4 w-4 text-slate-500 dark:text-slate-400" />}>
               <BreakdownList rows={byCategory} showSwatch />
             </ReportCard>
-            <ReportCard title="Expenses by Account" icon={<IconWallet className="h-4 w-4 text-slate-400 dark:text-slate-500" />}>
+            <ReportCard title="Expenses by Account" icon={<IconWallet className="h-4 w-4 text-slate-500 dark:text-slate-400" />}>
               <BreakdownList rows={byAccount} />
             </ReportCard>
           </div>
 
-          <ReportCard title="Business vs Personal" icon={<IconUsers className="h-4 w-4 text-slate-400 dark:text-slate-500" />}>
+          <ReportCard title="Business vs Personal" icon={<IconUsers className="h-4 w-4 text-slate-500 dark:text-slate-400" />}>
             <div className="table-flush max-h-[calc(100vh-24rem)]">
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800">
-                    <th className="py-1.5 pr-3 text-left font-medium text-slate-400 dark:text-slate-500" />
-                    <th className="px-3 py-1.5 text-right font-medium text-slate-400 dark:text-slate-500">Personal</th>
-                    <th className="px-3 py-1.5 text-right font-medium text-slate-400 dark:text-slate-500">Business</th>
-                    <th className="py-1.5 pl-3 text-right font-medium text-slate-400 dark:text-slate-500">Total</th>
+                    <th className="py-1.5 pr-3 text-left font-medium text-slate-500 dark:text-slate-400" />
+                    <th className="px-3 py-1.5 text-right font-medium text-slate-500 dark:text-slate-400">Personal</th>
+                    <th className="px-3 py-1.5 text-right font-medium text-slate-500 dark:text-slate-400">Business</th>
+                    <th className="py-1.5 pl-3 text-right font-medium text-slate-500 dark:text-slate-400">Total</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -347,7 +354,7 @@ function BreakdownList({ rows, showSwatch }: { rows: BreakdownRow[]; showSwatch?
             </span>
             <span className="shrink-0 tabular-nums text-slate-600 dark:text-slate-400">
               {formatMoney(r.totalCents, "EUR")}
-              <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">{totalCents > 0 ? formatPercent(r.totalCents / totalCents) : ""}</span>
+              <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{totalCents > 0 ? formatPercent(r.totalCents / totalCents) : ""}</span>
             </span>
           </div>
           <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800">

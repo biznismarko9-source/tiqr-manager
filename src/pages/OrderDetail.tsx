@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type {
   Account,
@@ -56,42 +56,28 @@ export default function OrderDetail() {
   const { id } = useParams();
   const orderId = Number(id);
   const navigate = useNavigate();
-  const location = useLocation();
   const toast = useToast();
   const isNarrow = useNarrowTables();
 
-  // 1.8.3 (section 8): if the user arrived from Orders - which passes
-  // state={{ from: location.pathname }} on its link into Order Detail (see
-  // Orders.tsx) - Back returns to that exact page (which itself remembers
-  // its last search, see lastOrdersSearch) instead of always landing on the
-  // plain Orders list. Allowlisted rather than trusting state.from blindly,
-  // and falls back to the pre-1.8.3 default when absent (e.g. a direct link
-  // or a page refresh).
-  // 1.9.1 removed Tickets/Inventory's links into this page entirely; 1.9.2
-  // (Inventory) and 1.9.3 (Tickets) brought them back, and 1.9.5 made the
-  // Order-code link on both unconditional - so in practice all three
-  // (Orders, Tickets, Inventory) are live entry points again, not just a
-  // fallback-labeling relic.
-  // 2.33.0: Ticket Center is gone, so it is no longer an entry point. An old
-  // `from` pointing at it simply falls through to Orders, which is what the
-  // guard was always for.
-  const cameFrom = (location.state as { from?: string } | null)?.from;
-  const backTo = cameFrom && ["/tickets", "/orders"].includes(cameFrom) ? cameFrom : "/orders";
-  const backLabel =
-    backTo === "/tickets" ? "Back to inventory" : "Back to orders";
-  // 1.9.6: marko clarified what he meant by wanting Tickets/Inventory to
-  // behave like Event/Order/Sale's own click-through ("more info about that
-  // object, not thrown elsewhere") - landing here still FEELS like being
-  // thrown to a different section ("Order") even though the data shown
-  // (this order's tickets) genuinely is what a Tickets/Inventory row's own
-  // detail view would show. There's no separate underlying data to show -
-  // the tickets ARE the order's tickets - so instead of a duplicate page,
-  // this eyebrow label reframes the same page contextually: arriving from
-  // Tickets/Inventory reads as "Ticket detail"/"Inventory detail", arriving
-  // from Orders (or a direct link/refresh) reads as "Order detail". The
-  // order code stays as the heading either way - it's still the one
-  // genuinely unique identifier for what's on this page.
-  const detailLabel = backTo === "/tickets" ? "Inventory detail" : "Order detail";
+  // 1.8.3 (section 8) through 2.33.0, this was an allowlist over
+  // `location.state.from`, because THREE different lists linked in here -
+  // Orders, Tickets and Inventory - and Back had to return to the right one
+  // with its search intact.
+  // 2.39.0: there is one list now. Orders and Inventory were the same rows
+  // twice (same command, same records, same detail link), so marko asked for
+  // one screen keeping the name Inventory, and `/orders` is what survives.
+  // With one entry point there is nothing to branch on: Back always goes
+  // there, and `/orders` remembers its own last search (lastOrdersSearch)
+  // exactly as before, so nothing is lost by dropping the hand-off.
+  const backTo = "/orders";
+  const backLabel = "Back to inventory";
+  // 1.9.6: this eyebrow used to reframe the same page depending on where you
+  // came from - "Inventory detail" from Inventory, "Order detail" from
+  // Orders - because there was no separate underlying data to show either
+  // way: the tickets ARE the order's tickets.
+  // 2.39.0: with one list there is one arrival, so it reads "Order detail"
+  // always. The record genuinely is an order; only the LIST was renamed.
+  const detailLabel = "Order detail";
 
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -189,7 +175,7 @@ export default function OrderDetail() {
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">{detailLabel}</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">{detailLabel}</p>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{order.code}</h1>
             <Badge tone={order.paymentStatus}>{order.paymentStatus}</Badge>
@@ -227,21 +213,21 @@ export default function OrderDetail() {
 
       <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Quantity</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Quantity</p>
           <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Unit price</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Unit price</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.unitPriceCents, order.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Fees + other</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Fees + other</p>
           <p className="mt-1 text-lg font-semibold">
             {formatMoney(order.feesCents + order.otherCostsCents, order.currency)}
           </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Total cost</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Total cost</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
         </Card>
         {/* 1.9.0 (section 5): Paid/Outstanding - see the orderPaidCents/
@@ -249,23 +235,23 @@ export default function OrderDetail() {
             never a fabricated number - the order model has no field to back
             one (see the 1.9.0 report's audit). */}
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Paid</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Paid</p>
           <p className={`mt-1 text-lg font-semibold ${orderPaidCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}>
             {orderPaidCents !== null ? formatMoney(orderPaidCents, order.currency) : "Partial"}
           </p>
           {orderPaidCents === null && (
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Exact amount not tracked</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Exact amount not tracked</p>
           )}
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Outstanding</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Outstanding</p>
           <p
             className={`mt-1 text-lg font-semibold ${orderOutstandingCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}
           >
             {orderOutstandingCents !== null ? formatMoney(orderOutstandingCents, order.currency) : "Partial"}
           </p>
           {orderOutstandingCents === null && (
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Exact amount not tracked</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Exact amount not tracked</p>
           )}
         </Card>
       </div>
@@ -282,15 +268,15 @@ export default function OrderDetail() {
           this 4 items now. */}
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Platform</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Notes</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Notes</p>
           <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{order.notes || "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Currency</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Currency</p>
           <div className="mt-1 flex items-center gap-2">
             <p className="text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
             {/* 2.0.51: marko's own follow-up to 2.0.50 - that version only
@@ -315,14 +301,14 @@ export default function OrderDetail() {
             yet" - the button already works either way, this just avoids a
             flash of "Not recorded" before the real answer arrives. */}
         <div>
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Finance</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Finance</p>
           <div className="mt-1 flex items-center gap-2">
             {financeEntriesForOrder && financeEntriesForOrder.length > 0 ? (
               <span className="text-sm text-emerald-600 dark:text-emerald-400">
                 Recorded ({financeEntriesForOrder.length})
               </span>
             ) : (
-              <span className="text-sm text-slate-400 dark:text-slate-500">Not recorded</span>
+              <span className="text-sm text-slate-500 dark:text-slate-400">Not recorded</span>
             )}
             <button
               type="button"
@@ -356,7 +342,7 @@ export default function OrderDetail() {
         {pullsReceived === null ? (
           <LoadingBlock />
         ) : pullsReceived.length === 0 ? (
-          <p className="text-sm text-slate-400 dark:text-slate-500">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             Nobody pulled this order for you yet - or it just hasn&apos;t been recorded.
           </p>
         ) : (
@@ -369,14 +355,14 @@ export default function OrderDetail() {
                 onClick={() => setEditPull(p)}
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <IconLink className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" />
+                  <IconLink className="h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" />
                   <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{p.pullerName}</span>
                   {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
                 </span>
                 <span className="flex shrink-0 items-center gap-3 text-sm text-slate-500 dark:text-slate-400">
                   <span className="tabular-nums">{p.quantity}&times;</span>
                   <span className="tabular-nums">{formatMoney(p.amountCents, p.currency)}</span>
-                  <IconPencil className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                  <IconPencil className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
                 </span>
               </button>
             ))}
@@ -387,29 +373,29 @@ export default function OrderDetail() {
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
       <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Total tickets</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Total tickets</p>
           <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Available</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Available</p>
           <p className="mt-1 text-lg font-semibold">{order.availableCount + order.listedCount}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Sold</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sold</p>
           <p className="mt-1 text-lg font-semibold">{order.soldCount}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Purchase cost</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Purchase cost</p>
           <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Sales revenue</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sales revenue</p>
           <p className="mt-1 text-lg font-semibold">
             {salesSummary ? formatMoney(salesSummary.revenueCents, order.currency) : "..."}
           </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Realized profit</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Realized profit</p>
           <p
             className={`mt-1 text-lg font-semibold ${
               salesSummary && salesSummary.profitCents > 0
@@ -423,7 +409,7 @@ export default function OrderDetail() {
           </p>
         </Card>
       </div>
-      <p className="-mt-5 mb-8 text-xs text-slate-400 dark:text-slate-500">
+      <p className="-mt-5 mb-8 text-xs text-slate-500 dark:text-slate-400">
         Revenue and realized profit only count tickets that are actually sold and not refunded - not-yet-sold
         tickets are never included.
       </p>
@@ -668,7 +654,7 @@ export default function OrderDetail() {
                           }}
                         />
                       ) : (
-                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                        <span className="text-slate-500 dark:text-slate-400">-</span>
                       )}
                     </td>
                     <td className={isNarrow ? "td-c-narrow" : "td-c"}>
@@ -995,11 +981,11 @@ function RecordInFinanceModal({
     <Modal open={open} onClose={onClose} title="Record in Finance">
       <div className="space-y-3">
         <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
-          <p className="text-xs font-medium uppercase text-slate-400 dark:text-slate-500">Amount</p>
+          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Amount</p>
           <p className="mt-0.5 text-lg font-semibold text-slate-800 dark:text-slate-200">
             {formatMoney(order.totalCostCents, order.currency)}
           </p>
-          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             This order's total cost - fixed, so the two always match. Edit the order itself to change it.
           </p>
         </div>
@@ -1168,7 +1154,7 @@ function OrderEditModal({
 
   return (
     <Modal open={open} onClose={onClose} title={`Edit ${order.code}`}>
-      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
         Quantity and pricing are locked after creation because they&apos;ve already been allocated to
         individual tickets. Edit ticket cost/listing price directly if you need to fix a mistake.
       </p>
@@ -1227,12 +1213,7 @@ function OrderEditModal({
           </p>
         )}
         <Field label="Purchase date" required>
-          <input
-            type="date"
-            className="input"
-            value={purchaseDate}
-            onChange={(e) => setPurchaseDate(e.target.value)}
-          />
+          <Input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
         </Field>
         <Field label="Currency">
           <input
@@ -1326,7 +1307,7 @@ function AddOrderPullModal({
 
   return (
     <Modal open={open} onClose={onClose} title="Add pull info">
-      <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
         Event, quantity and currency are copied from this order automatically - just fill in who pulled it and what
         you paid them.
       </p>

@@ -206,7 +206,7 @@ function Figure({
       <p className={`mt-1.5 truncate font-semibold tabular-nums ${big ? "text-[34px]" : "text-[22px]"} leading-none ${color}`}>
         {value}
       </p>
-      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{sub}</p>}
+      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-500 dark:text-slate-400">{sub}</p>}
     </div>
   );
 }
@@ -219,10 +219,10 @@ function Grid({ children }: { children: React.ReactNode }) {
  *  helpers, same up/down colouring, same "vs. previous" wording, so a reader
  *  never has to learn a second visual language for the same idea. */
 function Delta({ trend, colored = true }: { trend: TrendInfo | null; colored?: boolean }) {
-  if (!trend) return <span className="text-slate-400 dark:text-slate-500">-</span>;
+  if (!trend) return <span className="text-slate-500 dark:text-slate-400">-</span>;
   const cls =
     !colored || trend.direction === "flat"
-      ? "text-slate-400 dark:text-slate-500"
+      ? "text-slate-500 dark:text-slate-400"
       : trend.direction === "up"
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
@@ -308,7 +308,7 @@ function SummaryTable({ rows, note }: { rows: SummaryRow[]; note: string }) {
               <tr key={r.label}>
                 <td className="td">{r.label}</td>
                 <td className="td text-right tabular-nums">{r.now}</td>
-                <td className="td text-right tabular-nums text-slate-400 dark:text-slate-500">{r.prev}</td>
+                <td className="td text-right tabular-nums text-slate-500 dark:text-slate-400">{r.prev}</td>
                 <td className="td text-right">
                   <Delta trend={r.trend} colored={r.colored !== false} />
                 </td>
@@ -317,7 +317,7 @@ function SummaryTable({ rows, note }: { rows: SummaryRow[]; note: string }) {
           </tbody>
         </table>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-slate-400 dark:text-slate-500">{note}</p>
+      <p className="mt-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{note}</p>
     </div>
   );
 }
@@ -1035,7 +1035,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
             {range.unbounded ? "All time" : `${formatDate(range.from)} — ${formatDate(range.to)}`} · {range.note}
           </p>
           {nothingHappened ? (
-            <p className="mt-6 text-[30px] font-semibold leading-none text-slate-400 dark:text-slate-500">
+            <p className="mt-6 text-[30px] font-semibold leading-none text-slate-500 dark:text-slate-400">
               Nothing bought or sold in this period
             </p>
           ) : (
@@ -1222,7 +1222,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
                 Best channel this period
               </p>
               {data.salesByPlatform.length === 0 ? (
-                <p className="mt-2 text-sm text-slate-400 dark:text-slate-500">No sales in this period.</p>
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No sales in this period.</p>
               ) : (
                 (() => {
                   const best = data.salesByPlatform.reduce((a, b) => (b.profitCents > a.profitCents ? b : a));
@@ -1244,7 +1244,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
                 Best event · all time
               </p>
               {bestEventAllTime === null ? (
-                <p className="mt-2 text-sm text-slate-400 dark:text-slate-500">Nothing sold yet.</p>
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Nothing sold yet.</p>
               ) : (
                 <p className="mt-2">
                   <Link
@@ -1261,7 +1261,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
               )}
             </div>
           </div>
-          <p className="mt-4 text-xs leading-relaxed text-slate-400 dark:text-slate-500">
+          <p className="mt-4 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
             The event figure is all-time, because that is the scope the app already keeps per event. Biggest single
             sale, fastest-selling event and best tier are deliberately absent: none of them exist as an aggregation
             today, and inventing one would make this a reporting engine rather than a recap.
@@ -1274,7 +1274,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
             This period vs. previous
           </h3>
           {prev === null ? (
-            <p className="text-sm text-slate-400 dark:text-slate-500">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
               This range has nothing before it to compare against.
             </p>
           ) : (
@@ -1413,7 +1413,7 @@ export function InsightsCards() {
           </button>
         ))}
       </div>
-      <p className="mt-4 max-w-3xl text-xs leading-relaxed text-slate-400 dark:text-slate-500">
+      <p className="mt-4 max-w-3xl text-xs leading-relaxed text-slate-500 dark:text-slate-400">
         Both read the same figures the Dashboard uses - nothing here is calculated a second way. Realized, pending and
         potential money are kept apart on purpose: unsold stock is never counted as profit.
       </p>

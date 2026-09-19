@@ -366,7 +366,7 @@ function GivenPulls() {
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Search pulls..."
               value={search}
@@ -990,7 +990,7 @@ function PullFormModal({
                 </label>
               </div>
             ) : (
-              <p className="text-xs text-slate-400 dark:text-slate-500">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 A warning appears automatically starting {WARNING_WINDOW_DAYS} days before the event date, and every
                 day after that, until this pull is marked as transferred.
               </p>
@@ -1170,7 +1170,7 @@ function ReceivedPulls() {
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
             <Input
               placeholder="Search received pulls..."
               value={search}
@@ -1354,7 +1354,7 @@ function ReceivedPulls() {
                           {p.source === "sheet_sync" && <Badge tone="synced">Synced</Badge>}
                         </div>
                       ) : (
-                        <span className="text-slate-400 dark:text-slate-500">Standalone</span>
+                        <span className="text-slate-500 dark:text-slate-400">Standalone</span>
                       )}
                     </td>
                   )}
@@ -1453,7 +1453,7 @@ function OrderLinkPicker({
       <div>
         <span className="label mb-1 block">Linked order</span>
         <div className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-          <IconLink className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500" />
+          <IconLink className="h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" />
           <Link
             to={`/orders/${orderId}`}
             className="flex-1 truncate text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline"
@@ -1488,9 +1488,9 @@ function OrderLinkPicker({
       {open && query.trim() && (
         <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 shadow-overlay">
           {searching ? (
-            <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">Searching...</p>
+            <p className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">Searching...</p>
           ) : results.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">No matching orders</p>
+            <p className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">No matching orders</p>
           ) : (
             results.map((o) => (
               <button
@@ -1505,7 +1505,7 @@ function OrderLinkPicker({
                 }}
               >
                 <span className="font-medium text-slate-800 dark:text-slate-200">{o.code}</span>
-                <span className="ml-2 text-slate-400 dark:text-slate-500">
+                <span className="ml-2 text-slate-500 dark:text-slate-400">
                   {o.eventName} · {formatDate(o.purchaseDate)}
                 </span>
               </button>
@@ -1513,7 +1513,7 @@ function OrderLinkPicker({
           )}
         </div>
       )}
-      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
         Optional - link this to the order these tickets became, or leave it standalone.
       </p>
     </div>

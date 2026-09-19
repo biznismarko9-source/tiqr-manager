@@ -87,7 +87,7 @@ export default function ResetPassword() {
         <div className="mb-6 flex flex-col items-center text-center">
           <img src={logo} alt="TIQR Manager" className="h-12 w-12 rounded-xl shadow-card" />
           <h1 className="mt-3 text-lg font-semibold text-slate-900 dark:text-slate-100">TIQR Manager</h1>
-          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">Reset your password</p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Reset your password</p>
         </div>
 
         <Card className="p-5">

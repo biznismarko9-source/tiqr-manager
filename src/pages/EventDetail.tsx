@@ -177,7 +177,7 @@ export default function EventDetail() {
         </div>
       </div>
 
-      <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} />
+      <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} className="mb-4" />
 
       {tab === "overview" && <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} onSwitchTab={setTab} />}
       {tab === "listings" && <ListingsTab eventId={eventId} tickets={tickets} orders={orders} />}
@@ -269,7 +269,7 @@ function OverviewTab({
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
           tone={s.profitCents > 0 ? "positive" : s.profitCents < 0 ? "negative" : "default"}
         />
-        <StatCard label="Margin" value={formatPercentOrMixed(s.margin, s.currency)} />
+        {/* 2.39.0: Margin removed app-wide at marko's request. */}
         <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
       </div>
 
@@ -323,7 +323,7 @@ function OverviewTab({
                   </td>
                   <td className="td">{formatDate(o.purchaseDate)}</td>
                   <td className="td text-right tabular-nums">
-                    {o.quantity} <span className="text-slate-400 dark:text-slate-500">({o.soldCount} sold)</span>
+                    {o.quantity} <span className="text-slate-500 dark:text-slate-400">({o.soldCount} sold)</span>
                   </td>
                   <td className="td text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
                   <td className="td">
@@ -360,7 +360,7 @@ function OverviewTab({
               {tickets.map((t) => (
                 <tr key={t.id}>
                   <td className="td">
-                    <Link to={`/tickets?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
+                    <Link to={`/orders?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
                       {t.code}
                     </Link>
                   </td>
@@ -505,7 +505,7 @@ function SalesTab({
           is this page's own calculation and stays. */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
         <p className="mb-1 section-title">Potential Profit</p>
-        <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
         <div className="summary-bar">
@@ -514,7 +514,7 @@ function SalesTab({
           <StatCard label="Potential profit" value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)} sub="Listing value minus inventory cost" />
         </div>
         {missingListingPriceCount > 0 && (
-          <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
             {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
             {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what full inventory
             could be worth once priced.
@@ -771,7 +771,7 @@ function ListingsTab({
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <div>
             <span className="label">Status</span>
-            <TabSwitcher tabs={LISTING_STATUS_TABS} active={statusFilter} onChange={setStatusFilter} />
+            <TabSwitcher tabs={LISTING_STATUS_TABS} active={statusFilter} onChange={setStatusFilter} className="mb-4" />
           </div>
           <div className="w-48">
             <span className="label">Marketplace</span>
@@ -787,7 +787,7 @@ function ListingsTab({
           <div className="w-56">
             <span className="label">Search</span>
             <div className="relative">
-              <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+              <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
               <Input
                 placeholder="Ticket, marketplace, listing id/URL..."
                 value={search}
@@ -857,13 +857,13 @@ function ListingsTab({
                   </td>
                   <td className="td">
                     <Link
-                      to={`/tickets?code=${encodeURIComponent(l.ticketCode)}`}
+                      to={`/orders?code=${encodeURIComponent(l.ticketCode)}`}
                       className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
                     >
                       {l.ticketCode}
                     </Link>
                     {[l.ticketSection, l.ticketRowLabel, l.ticketSeat].filter(Boolean).length > 0 && (
-                      <div className="text-xs text-slate-400 dark:text-slate-500">
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
                         {formatSeatLocation(l.ticketSection, l.ticketRowLabel, l.ticketSeat)}
                       </div>
                     )}
@@ -884,7 +884,7 @@ function ListingsTab({
                         <IconLink className="h-3.5 w-3.5" /> Open
                       </a>
                     ) : (
-                      <span className="text-slate-400 dark:text-slate-500">-</span>
+                      <span className="text-slate-500 dark:text-slate-400">-</span>
                     )}
                   </td>
                   <td className="td text-slate-500 dark:text-slate-400">{formatDateTime(l.updatedAt)}</td>
@@ -1134,7 +1134,7 @@ function ListingsBulkBar({
         <Field label={`New price${uniformCurrency ? ` (${uniformCurrency})` : ""}`} required>
           <Input autoFocus inputMode="decimal" placeholder="0.00" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} />
         </Field>
-        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
           Currency stays {uniformCurrency} for every selected listing - only the amount changes.
         </p>
         {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
@@ -1433,7 +1433,7 @@ function TicketListingFormModal({
               </Field>
               <div className="mt-3 max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
                 {orderOptions.length === 0 ? (
-                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">
+                  <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">
                     {eventOrders.length === 0
                       ? "This event has no orders yet"
                       : orderQuery
@@ -1452,7 +1452,7 @@ function TicketListingFormModal({
                       >
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</span>
-                          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                          <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                             {o.platformName ?? "No platform"} · {formatDate(o.purchaseDate)}
                           </span>
                         </span>
@@ -1460,7 +1460,7 @@ function TicketListingFormModal({
                           <span className="whitespace-nowrap rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">
                             {ticketCount} ticket{ticketCount === 1 ? "" : "s"}
                           </span>
-                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-400 dark:text-slate-500" />
+                          <IconChevronDown className="h-4 w-4 -rotate-90 text-slate-500 dark:text-slate-400" />
                         </span>
                       </button>
                     );
@@ -1478,11 +1478,11 @@ function TicketListingFormModal({
                 >
                   <IconArrowLeft className="h-3.5 w-3.5" /> Back to orders
                 </button>
-                <span className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">{activeOrder.code}</span>
+                <span className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">{activeOrder.code}</span>
               </div>
               <div className="max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
                 {visibleOrderTickets.length === 0 ? (
-                  <p className="p-4 text-center text-sm text-slate-400 dark:text-slate-500">Every ticket from this order is already selected</p>
+                  <p className="p-4 text-center text-sm text-slate-500 dark:text-slate-400">Every ticket from this order is already selected</p>
                 ) : (
                   visibleOrderTickets.map((t) => (
                     <button
@@ -1493,7 +1493,7 @@ function TicketListingFormModal({
                     >
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</span>
-                        <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+                        <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                           {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                         </span>
                       </span>
@@ -1552,7 +1552,7 @@ function TicketListingFormModal({
               <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
                 {initial.ticketCode}
                 {[initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat].filter(Boolean).length > 0 && (
-                  <span className="text-slate-400 dark:text-slate-500">
+                  <span className="text-slate-500 dark:text-slate-400">
                     {" "}
                     ({formatSeatLocation(initial.ticketSection, initial.ticketRowLabel, initial.ticketSeat)})
                   </span>
@@ -1606,7 +1606,7 @@ function TicketListingFormModal({
                 <Button type="button" variant="secondary" disabled={!bulkPriceQuickFill.trim()} onClick={applyBulkPriceToAll}>
                   Apply to all
                 </Button>
-                <p className="w-full text-xs text-slate-400 dark:text-slate-500">
+                <p className="w-full text-xs text-slate-500 dark:text-slate-400">
                   Applying overwrites any price already entered below for every selected ticket.
                 </p>
               </div>
@@ -1616,11 +1616,11 @@ function TicketListingFormModal({
                   <div key={t.id} className="flex items-center gap-2 px-3 py-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{t.code}</p>
-                      <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+                      <p className="truncate text-xs text-slate-500 dark:text-slate-400">
                         {formatSeatLocation(t.section, t.rowLabel, t.seat)}
                       </p>
                     </div>
-                    <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-400 dark:text-slate-500">{currency}</span>
+                    <span className="w-9 shrink-0 text-center text-xs font-medium text-slate-500 dark:text-slate-400">{currency}</span>
                     <div className="w-24 shrink-0">
                       <Input
                         inputMode="decimal"
@@ -1691,7 +1691,7 @@ function TicketListingFormModal({
             </>
           )}
           {!initial && selectedTickets.length > 1 && (
-            <p className="text-xs text-slate-400 dark:text-slate-500">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               Listing ID/URL aren&apos;t set here for a multi-ticket batch - each marketplace posting has its own, so add them
               afterward by editing each created listing.
             </p>

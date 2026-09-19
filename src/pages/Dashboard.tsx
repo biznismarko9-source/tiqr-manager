@@ -19,11 +19,13 @@ import {
   Card,
   ConfirmDialog,
   EmptyState,
-  LoadingBlock,
+  Input,
   PageHeader,
+  PanelSkeleton,
   SEGMENTED_TRACK,
   segmentedItemClass,
   StatCard,
+  StatsSkeleton,
 } from "../components/ui";
 import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
 import { getLastUpdateCheck } from "../lib/updater";
@@ -339,16 +341,11 @@ export default function Dashboard() {
             <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
               <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
                 From
-                <input
-                  type="date"
-                  value={from}
-                  onChange={(e) => setFrom(e.target.value)}
-                  className="input mt-1"
-                />
+                <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="mt-1" />
               </label>
               <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
                 To
-                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input mt-1" />
+                <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="mt-1" />
               </label>
             </Card>
           )}
@@ -356,7 +353,15 @@ export default function Dashboard() {
       )}
 
       {loading || !data ? (
-        <LoadingBlock label="Loading dashboard..." />
+        <>
+          {/* 2.40.0: a skeleton in the shape of what is coming, not a spinner
+              over nothing. The list tables have worked this way since 2.6.0
+              (TableSkeleton); this page was still collapsing to a centred
+              "Loading..." and then jumping to its full height. */}
+          <StatsSkeleton count={6} />
+          <PanelSkeleton lines={6} className="mb-5" />
+          <PanelSkeleton lines={4} />
+        </>
       ) : (
         <>
           {tab === "overview" && (
@@ -389,7 +394,7 @@ export default function Dashboard() {
                       line instead, so it is a card again - just a louder one.
                       `emphasis` is what keeps it findable without taking its
                       own band of the page: bigger figure, brand-tinted border,
-                      and margin/ROI as its sub-line so nothing that was in the
+                      and ROI as its sub-line so nothing that was in the
                       headline is lost. */}
                   <div data-tour="dash-stats" className="summary-bar">
                     <StatCard
@@ -397,7 +402,7 @@ export default function Dashboard() {
                       value={formatMoney(data.period.profitCents, data.primaryCurrency)}
                       tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
                       trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
-                      sub={`${formatPercent(data.period.margin)} margin · ${formatPercent(data.period.roi)} ROI`}
+                      sub={`${formatPercent(data.period.roi)} ROI`}
                       emphasis
                     />
                     <StatCard
@@ -411,11 +416,10 @@ export default function Dashboard() {
                       trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
                       trendColored={false}
                     />
-                    <StatCard
-                      label="Margin"
-                      value={formatPercent(data.period.margin)}
-                      trend={computeTrendPoints(data.period.margin, data.previousPeriod?.margin)}
-                    />
+                  {/* 2.39.0: Margin is gone from the whole app - marko's
+                      words: "ako keby zanikla". Profit and ROI stay; the
+                      backend still computes `margin` and still sends it,
+                      nothing reads it. */}
                     <StatCard
                       label="ROI"
                       value={formatPercent(data.period.roi)}
@@ -476,7 +480,7 @@ export default function Dashboard() {
                     <Card className="p-4">
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
                             {METRICS.find((m) => m.key === metric)?.label} over time
                           </p>
                           <p
@@ -604,7 +608,7 @@ export default function Dashboard() {
                 <p className="mb-1 section-title">
                   Inventory &amp; Potential Profit
                 </p>
-                <p className="mb-3 text-xs text-slate-400 dark:text-slate-500">
+                <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
                   Current unsold stock (available + listed), not affected by the period filter above. This is an
                   estimate, not realized profit.
                 </p>
@@ -626,7 +630,7 @@ export default function Dashboard() {
                   />
                 </div>
                 {data.alerts.missingListingPriceCount > 0 && (
-                  <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
                     {data.alerts.missingListingPriceCount} unsold ticket{data.alerts.missingListingPriceCount === 1 ? "" : "s"} still{" "}
                     {data.alerts.missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit
                     understates what full inventory could be worth once priced - see Attention on the Activity tab.
@@ -656,7 +660,7 @@ export default function Dashboard() {
                             >
                               <div className="min-w-0">
                                 <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{ev.name}</p>
-                                <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(ev.eventDate)}</p>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(ev.eventDate)}</p>
                               </div>
                               <Badge tone={ev.status}>{ev.status}</Badge>
                             </Link>
@@ -686,7 +690,7 @@ export default function Dashboard() {
                             >
                               <div className="min-w-0">
                                 <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.code}</p>
-                                <p className="truncate text-xs text-slate-400 dark:text-slate-500">{o.eventName}</p>
+                                <p className="truncate text-xs text-slate-500 dark:text-slate-400">{o.eventName}</p>
                               </div>
                               <p className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
                                 {formatMoney(o.totalCostCents, o.currency)}
@@ -714,9 +718,9 @@ export default function Dashboard() {
                         <li key={s.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
-                              {s.eventName ?? <span className="italic text-slate-400 dark:text-slate-500">Mixed events</span>}
+                              {s.eventName ?? <span className="italic text-slate-500 dark:text-slate-400">Mixed events</span>}
                             </p>
-                            <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(s.saleDate)}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(s.saleDate)}</p>
                           </div>
                           {/* 2.0.54: one row per sale ACTION now (a single
                               ticket, or a whole multi-ticket batch) - a
@@ -899,7 +903,7 @@ function RecentCard({
   return (
     <Card className={className}>
       <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
-        <span className="text-slate-400 dark:text-slate-500">{icon}</span>
+        <span className="text-slate-500 dark:text-slate-400">{icon}</span>
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{title}</h3>
       </div>
       {children}
@@ -994,7 +998,7 @@ function SalesByPlatformCard({
                     style={{ width: `${Math.max(4, (r.revenueCents / maxRevenue) * 100)}%` }}
                   />
                 </div>
-                <span className="shrink-0 text-xs tabular-nums text-slate-400 dark:text-slate-500">{r.soldTickets} sold</span>
+                <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{r.soldTickets} sold</span>
               </div>
             </li>
           ))}
@@ -1041,7 +1045,7 @@ function PeriodComparisonCard({ data }: { data: DashboardData }) {
   // decision `trendColored={false}` already makes on its card.
   const tone = (trend: TrendInfo | null, colored: boolean) =>
     !trend || !colored || trend.direction === "flat"
-      ? "text-slate-400 dark:text-slate-500"
+      ? "text-slate-500 dark:text-slate-400"
       : trend.direction === "up"
         ? "text-emerald-600 dark:text-emerald-400"
         : "text-red-600 dark:text-red-400";
@@ -1053,7 +1057,7 @@ function PeriodComparisonCard({ data }: { data: DashboardData }) {
     // rendering six dashes and letting it read as broken.
     return (
       <RecentCard title="This period vs. previous" icon={<IconTrendingUp className="h-4 w-4" />}>
-        <p className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500">
+        <p className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
           This range has nothing before it to compare against - pick a fixed period (1 Wk through 5 Yr) and the
           same range immediately before it shows up here.
         </p>
@@ -1089,14 +1093,6 @@ function PeriodComparisonCard({ data }: { data: DashboardData }) {
       trend: computeTrend(now.profitCents, prev.profitCents),
     },
     {
-      // A ratio, so a percentage-POINT delta - "+50%" of a 20% margin reads
-      // as if margin had jumped to 30 points. Same reasoning as the card.
-      label: "Margin",
-      now: formatPercent(now.margin),
-      prev: formatPercent(prev.margin),
-      trend: computeTrendPoints(now.margin, prev.margin),
-    },
-    {
       label: "Tickets sold",
       now: String(now.soldTickets),
       prev: String(prev.soldTickets),
@@ -1130,7 +1126,7 @@ function PeriodComparisonCard({ data }: { data: DashboardData }) {
               <tr key={r.label}>
                 <td className="td">{r.label}</td>
                 <td className="td text-right tabular-nums">{r.now}</td>
-                <td className="td text-right tabular-nums text-slate-400 dark:text-slate-500">{r.prev}</td>
+                <td className="td text-right tabular-nums text-slate-500 dark:text-slate-400">{r.prev}</td>
                 <td className={`td text-right tabular-nums font-medium ${tone(r.trend, r.colored !== false)}`}>
                   {r.trend ? (
                     <span className="inline-flex items-center gap-1">
@@ -1200,7 +1196,7 @@ function UpdateStatusPill() {
   if (!update) {
     return (
       <span
-        className="inline-flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500"
+        className="inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
         title={`Last checked ${new Date(at).toLocaleString()}`}
       >
         <IconCheck className="h-3.5 w-3.5" /> Up to date
@@ -1241,7 +1237,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
   const rows = [
     { key: "pulls", label: "Pulls near deadline", count: alerts.pullsNeedingTransferCount, linkTo: "/pulls" },
     { key: "pending", label: "Pending sales", count: alerts.pendingSalesCount, linkTo: "/sales" },
-    { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/tickets" },
+    { key: "missing", label: "Missing listing price", count: alerts.missingListingPriceOrdersCount, linkTo: "/orders" },
   ] as const;
 
   const soonestEvent = alerts.upcomingEvents[0];
@@ -1287,7 +1283,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
                       className="flex items-center justify-between gap-2 px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60"
                     >
                       <span className="font-medium text-slate-700 dark:text-slate-300">{r.label}</span>
-                      <span className="tabular-nums text-slate-400 dark:text-slate-500">{r.count}</span>
+                      <span className="tabular-nums text-slate-500 dark:text-slate-400">{r.count}</span>
                     </Link>
                   </li>
                 ))}
@@ -1305,7 +1301,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
                       {upcomingCritical && <IconAlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-500" />}
                       Upcoming events
                     </span>
-                    <span className="tabular-nums text-slate-400 dark:text-slate-500">{alerts.upcomingEventsCount}</span>
+                    <span className="tabular-nums text-slate-500 dark:text-slate-400">{alerts.upcomingEventsCount}</span>
                   </button>
                 </li>
               )}
@@ -1401,7 +1397,7 @@ function AttentionCategoryCard({
       <p className="mt-2 text-[22px] font-semibold leading-none tabular-nums text-slate-900 dark:text-slate-50">
         {count}
       </p>
-      <p className="mt-2 truncate text-xs text-slate-400 dark:text-slate-500">{subtext}</p>
+      <p className="mt-2 truncate text-xs text-slate-500 dark:text-slate-400">{subtext}</p>
     </button>
   );
 }
@@ -1434,14 +1430,14 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
             {item.eventName}
             {item.orderCode && (
-              <span className="font-normal text-slate-400 dark:text-slate-500">
+              <span className="font-normal text-slate-500 dark:text-slate-400">
                 {" "}
                 · Order {item.orderCode}
                 {ticketCount > 1 && ` · ${ticketCount} tickets`}
               </span>
             )}
           </p>
-          <p className="truncate text-xs text-slate-400 dark:text-slate-500">{item.reason}</p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">{item.reason}</p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-0.5">
           {item.amountCents != null && (
@@ -1460,7 +1456,7 @@ function AttentionCenterRow({ item }: { item: AttentionCenterItem }) {
                 {warningLabel(daysLeft as number)}
               </span>
             ) : (
-              <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">{formatDate(item.eventDate)}</span>
+              <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{formatDate(item.eventDate)}</span>
             ))}
         </div>
       </Link>
@@ -1531,7 +1527,7 @@ function AttentionCenterBlock({ items }: { items: AttentionCenterItem[] }) {
           <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{activeCategory.title}</h3>
-              <p className="truncate text-xs text-slate-400 dark:text-slate-500">{activeCategory.subtext}</p>
+              <p className="truncate text-xs text-slate-500 dark:text-slate-400">{activeCategory.subtext}</p>
             </div>
             <button
               type="button"
@@ -1613,7 +1609,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
             label="Missing listing price"
             count={alerts.missingListingPriceOrdersCount}
             description="Orders with a ticket that has no listing price set"
-            linkTo="/tickets"
+            linkTo="/orders"
             linkLabel="View inventory"
           />
           <RecentCard title={`Upcoming events (next ${UPCOMING_EVENT_WINDOW_DAYS} days)`} icon={<IconCalendarDays className="h-4 w-4" />}>
@@ -1627,7 +1623,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
                   ))}
                 </ul>
                 {alerts.upcomingEventsCount > alerts.upcomingEvents.length && (
-                  <p className="px-4 py-2 text-xs text-slate-400 dark:text-slate-500">
+                  <p className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
                     Showing the soonest {alerts.upcomingEvents.length} of {alerts.upcomingEventsCount}.
                   </p>
                 )}
@@ -1662,7 +1658,7 @@ function UpcomingEventRow({ event }: { event: UpcomingEventAlert }) {
       >
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{event.name}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500">{formatDate(event.eventDate)}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{formatDate(event.eventDate)}</p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-0.5">
           {urgent && (
@@ -1706,7 +1702,7 @@ function AlertCard({
       >
         {count}
       </p>
-      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{description}</p>
+      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{description}</p>
       <Link to={linkTo} className="mt-3 inline-block text-xs font-medium text-brand-700 hover:underline dark:text-brand-400">
         {linkLabel} &rarr;
       </Link>
