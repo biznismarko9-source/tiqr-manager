@@ -283,61 +283,20 @@ function OverviewTab({
       {/* 2.35.1: "Inventory Intelligence" removed at marko's request. The
           Rust command (`get_inventory_intelligence`) and its api.ts method are
           untouched and still registered - only this screen's block is gone. */}
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Orders ({orders?.length ?? 0})</h2>
-        <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
-          <IconPlus className="h-4 w-4" /> New order for this event
-        </Button>
-      </div>
-      {orders === null ? (
-        <LoadingBlock />
-      ) : orders.length === 0 ? (
-        <EmptyState title="No orders for this event yet" />
-      ) : (
-        // 2.2.3: max-w-[1400px] removed - marko noticed these tables
-        // stopped short of the window edge on a wide screen (the same
-        // "visible empty space on both sides" complaint that got the page
-        // shell itself de-capped back in 2.0.31 - see Layout.tsx's own
-        // comment). No colgroup/percentage-width system here unlike
-        // Sales.tsx's own table (2.0.35+) - if a specific column ends up
-        // looking oddly stretched on an ultra-wide window, that's the
-        // next thing to fix, same iterative path Sales.tsx took.
-        <div className="table-shell table-shell-compact mb-8">
-          <table className="w-full min-w-[700px] border-collapse">
-            <thead>
-              <tr>
-                <th className="th">Order</th>
-                <th className="th">Purchase date</th>
-                <th className="th text-right">Qty</th>
-                <th className="th text-right">Total cost</th>
-                <th className="th">Payment</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {orders.map((o) => (
-                <tr key={o.id}>
-                  <td className="td">
-                    <Link to={`/orders/${o.id}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
-                      {o.code}
-                    </Link>
-                  </td>
-                  <td className="td">{formatDate(o.purchaseDate)}</td>
-                  <td className="td text-right tabular-nums">
-                    {o.quantity} <span className="text-slate-500 dark:text-slate-400">({o.soldCount} sold)</span>
-                  </td>
-                  <td className="td text-right tabular-nums">{formatMoney(o.totalCostCents, o.currency)}</td>
-                  <td className="td">
-                    <Badge tone={o.paymentStatus}>{o.paymentStatus}</Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
+      {/* 2.41.0: the Orders table that used to sit here is gone - marko:
+          "v events ked to prekliknes tak tam mas aj orders a tickets, mali
+          by tam byt len tickets". An order is how stock was BOUGHT; when
+          you open an event you want to know what you HAVE on it, and every
+          ticket already names its order. `orders` is still loaded - the
+          Listings tab below takes it as a prop - and /orders still lists
+          them all. Only this second table is gone. The "New order for this
+          event" action moved onto the Tickets heading below, so the way in
+          is where you are already looking. */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets ({tickets?.length ?? 0})</h2>
+        <Button variant="secondary" onClick={() => navigate(`/orders/new?event=${event.id}`)}>
+          <IconPlus className="h-4 w-4" /> New order for this event
+        </Button>
       </div>
       {tickets === null ? (
         <LoadingBlock />

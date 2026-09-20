@@ -443,9 +443,13 @@ export default function Sales() {
           <span className="label">Event</span>
           <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">All events</option>
+            {/* 2.41.0: name AND date - marko's request. Same reasoning as the
+                New Order picker: the name alone cannot tell two nights of one
+                tour apart. */}
             {events.map((ev) => (
               <option key={ev.id} value={ev.id}>
                 {ev.name}
+                {ev.eventDate ? ` · ${formatDateNumeric(ev.eventDate)}` : ""}
               </option>
             ))}
           </Select>

@@ -16,6 +16,104 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.43.0 - bočný panel je plochý
+
+Skupina **Tickets** z bočného panela odišla. **Events, Inventory, Sales a
+Pulls sú vždy vidieť** — nič sa neotvára a nezatvára, nič sa neskrýva.
+
+Panel má teraz šesť riadkov v poradí, v akom práca beží: Dashboard · Events ·
+Inventory · Sales · Pulls · Finance. Settings zostáva dole, kde bol.
+
+**Čo to upratalo popri tom:** s rámčekom zmizol aj rozbaľovací stav, výpočet
+„som niekde v tejto skupine" a nepoužitý typ riadku-nadpisu, ktorý nemal ani
+jednu položku od 2.36.0. Vykresľovanie panela je jedna vetva namiesto troch.
+
+Otázka, či zvýrazniť skupinu spolu s položkou (2.29.4 → 2.41.0), tým padá
+sama: skupina už nie je.
+
+## 2.42.0 - nová objednávka je stránka a riadky
+
+Presne tá kombinácia, ktorú si vybral v preview: **celá stránka**, tabuľkové
+**riadky**, pridávanie tlačidlom, **event raz hore**, mena/pull/poznámka
+viditeľné.
+
+### Jeden riadok = jedno miesto
+
+Vyberieš event a pridávaš riadky. **Jedenásť polí, nič viac** — ks, typ,
+sektor, rad, sedadlá, platforma, cena za kus, mena, pull, poznámka.
+
+**Pull je gulička.** Zhasnutá = nie. Rozsvietená = pullnuté a vedľa vyskočí
+políčko na meno. Meno prežije vypnutie.
+
+### Čo nesedí, je vlastná objednávka
+
+Dva riadky sa zlúčia do jednej objednávky **len vtedy**, keď sa zhoduje
+všetko — sektor, rad, cena, mena, typ, platforma, pull — **a sedadlá idú tesne
+za sebou**. `14-15` a `16` je jedna objednávka 14-16; `14-15` a `19` sú dve.
+Cena sa porovnáva ako **peniaze**, nie ako text, takže „201,00" a „201.00" je
+tá istá cena.
+
+Tlačidlo dole rovno povie, koľko objednávok vznikne.
+
+### Dátum nákupu sa nepýta
+
+Stavia sa dnešným dátumom, opečiatkovaný raz pri otvorení stránky. Prepísať sa
+dá naďalej na detaile objednávky.
+
+### Čo sa už nepýta
+
+**Poplatky a „ostatné náklady"** formulár nezbiera — cena, ktorú napíšeš, je
+celý náklad na kus. **Stav platby** zostáva „paid", ako bol predvolený od
+2.0.70. **Poplatok za pull** sa zadáva tam, kde vždy patril — na detaile
+objednávky.
+
+### Kam to vedie
+
+`/orders/new`. Tlačidlá **New Order** v Inventory aj **New order for this
+event** v detaile eventu smerujú sem; starý odkaz so `state` sa presmeruje,
+takže nič nekončí naslepo.
+
+Stará modálka `OrderFormModal` zostáva v súbore **nepoužitá, jednu verziu**,
+aby sa dalo porovnať. Povedz a zmizne.
+
+## 2.41.0 - jedna vec svieti, o tabuľku menej, panel preč
+
+Štyri veci z tvojho zadania, ktoré sú rozhodnuté a nezávisia na ničom
+otvorenom. Všetko frontend — žiadna migrácia, žiadny Rust.
+
+### Svieti len položka
+
+V ľavom paneli sa už nezvýrazňuje skupina **Tickets** spolu s položkou.
+Svieti jedna vec: tá, na ktorej si.
+
+**Toto je návrat k tomu, čo bolo pred 2.29.4** — vtedy si písal opak
+(„ked mam nieco vybrate v tickets tak tickets niesu oznacene"). Napísané v
+`PROTECTED_AREAS.md`, aby to o pol roka nikto „neopravil" späť podľa starého
+komentára v kóde.
+
+### Detail eventu: len lístky
+
+Tabuľka **Orders** z detailu eventu odchádza. Objednávka je spôsob, akým si
+zásobu kúpil; keď otvoríš event, zaujíma ťa, **čo na ňom máš** — a každý
+lístok aj tak nesie kód svojej objednávky.
+
+Tlačidlo **New order for this event** sa presunulo na hlavičku Tickets, takže
+cesta dnu je tam, kam sa aj tak pozeráš. Objednávky sa nikam nestratili —
+zoznam `/orders` je nedotknutý a karta Listings ich stále dostáva.
+
+### Pravý panel preč
+
+„What this will create" zmizol z **novej objednávky** aj z **nového eventu**.
+Prepisoval polia, ktoré si práve vyplnil, o stĺpec vedľa — a kvôli tomu bol
+každý formulár dvojstĺpcový. Formulár je zase jeden stĺpec. Komponent
+`PreviewPanel` aj `preview` prop na modále sú zmazané, nie len nepoužité.
+
+### Event ukazuje aj dátum
+
+V **novej objednávke** bol dátum v surovom tvare `(2026-12-12)` — teraz je
+`· 12.12.2026`. A **filter Event v Sales** dátum nemal vôbec; teraz ho má.
+Dva koncerty tej istej šnúry sa inak v zozname nedajú rozoznať.
+
 ## 2.40.0 - tichšie stavy, čitateľnejší text, skeletony, návrat na riadok
 
 Prvá dávka z tvojho výberu tridsiatich. Všetko je **frontend** — žiadna

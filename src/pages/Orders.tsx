@@ -21,7 +21,6 @@ import {
   Select,
   TabSwitcher,
   Textarea,
-  PreviewPanel,
 } from "../components/ui";
 import { BulkCompletionBar } from "../components/BulkCompletionBar";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
@@ -104,7 +103,7 @@ export const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK
 // typed via "Other..." here (or found in a synced sheet cell) shows up as a
 // real option next time, everywhere this list is used - both here and in
 // the Orders & Sales sheet's own Ticket Type dropdown.
-const TICKET_TYPES = ["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"];
+export const TICKET_TYPES = ["E-ticket", "PDF", "Mobile transfer", "Physical", "Will call"];
 
 // 1.8.3 (section 8): remembers the last-used search for this app session
 // only, same convention as Sales.tsx's `lastFilters` / Tickets.tsx's
@@ -144,7 +143,7 @@ const ORDER_SORT_LABELS: Record<string, string> = {
 /** Turns the free-form "Seats" input into one label per ticket.
  * Accepts a numeric range ("12-15" -> 12,13,14,15, either direction) or a
  * comma-separated list ("12, 14, 16A"). Blank input -> no seats assigned. */
-function parseSeats(raw: string): string[] {
+export function parseSeats(raw: string): string[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -330,11 +329,13 @@ export default function Orders() {
     // the Dashboard's "New Order" Quick Action open this same modal without
     // pinning it to one event - purely additive, presetEventId's own
     // behavior below is unchanged.
+    // 2.42.0: the same two hand-offs, forwarded to the new page instead of
+    // opening a modal here. EventDetail links straight to `/orders/new?event=`
+    // now, but an older in-app link (or a Dashboard Quick Action) can still
+    // arrive carrying state, and it must not land on a dead end.
     const state = location.state as { presetEventId?: number; openCreate?: boolean } | null;
     if (state?.presetEventId || state?.openCreate) {
-      setPresetEventId(state.presetEventId);
-      setModalOpen(true);
-      navigate(location.pathname, { replace: true, state: null });
+      navigate(state.presetEventId ? `/orders/new?event=${state.presetEventId}` : "/orders/new", { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
@@ -351,13 +352,12 @@ export default function Orders() {
                 <IconTrash className="h-4 w-4" /> Delete
               </Button>
             )}
-            <Button
-              variant="primary"
-              onClick={() => {
-                setPresetEventId(undefined);
-                setModalOpen(true);
-              }}
-            >
+            {/* 2.42.0: creating an order is a PAGE now (pages/OrderNew.tsx),
+                not this file's modal - marko picked the full-page, row-based
+                shape out of a preview. `OrderFormModal` below is left in
+                place, unreferenced, for one release so he can compare; say
+                the word and it goes. */}
+            <Button variant="primary" onClick={() => navigate("/orders/new")}>
               <IconPlus className="h-4 w-4" /> New Order
             </Button>
           </div>
@@ -484,7 +484,7 @@ export default function Orders() {
           title="No orders yet"
           description="Record a ticket purchase to automatically generate its individual tickets."
           action={
-            <Button variant="primary" onClick={() => setModalOpen(true)}>
+            <Button variant="primary" onClick={() => navigate("/orders/new")}>
               <IconPlus className="h-4 w-4" /> New Order
             </Button>
           }
@@ -1067,35 +1067,13 @@ function OrderFormModal({
       onClose={onClose}
       title="New order"
       width="max-w-5xl"
-      /* 2.29.3 - split preview, marko's chosen form style. Every value here
-         is read from this form's OWN existing state and from `summary`, the
-         same memo the cost bar already used - no second calculation, so the
-         panel can never disagree with what `submit()` sends. */
-      preview={
-        <PreviewPanel
-          rows={[
-            { label: "Event", value: events.find((e) => e.id === eventId)?.name ?? "" },
-            { label: "Purchase date", value: purchaseDate ? formatDateNumeric(purchaseDate) : "" },
-            { label: "Tickets", value: qNum || "" },
-            { label: "Unit price", value: unitPrice ? formatMoney(decimalStringToCents(unitPrice) ?? 0, currency) : "" },
-            { label: "Fees", value: formatMoney(summary.feesCents, currency) },
-            { label: "Other costs", value: formatMoney(summary.otherCents, currency) },
-            ...(pulled ? [{ label: "Pull fee", value: formatMoney(summary.pullFeeCents, currency) }] : []),
-            { label: "Total", value: formatMoney(summary.totalCents, currency) },
-            { label: "Payment", value: paymentStatus },
-            { label: "Section / row", value: [section, rowLabel].filter(Boolean).join(" · ") },
-          ]}
-          note={
-            qNum > 0
-              ? `Creates ${qNum} ticket${qNum === 1 ? "" : "s"}, each costing ${formatMoney(
-                  Math.round(summary.totalCents / qNum),
-                  currency,
-                )} once the total is split across them.`
-              : "Enter a quantity and the cost is split across that many tickets, to the cent."
-          }
-        />
-      }
     >
+      {/* 2.41.0: the right-hand "What this will create" panel is gone -
+          marko: "tu vec na pravo co ti to zobrazi ako to bude vyzerat
+          kompletne odstranit". It restated fields he had just typed, one
+          column to the right of where he typed them, and it made every form
+          a two-column modal for the sake of an echo. The form is one column
+          again. `PreviewPanel` and the Modal's `preview` prop went with it. */}
       <div className="flex flex-col gap-4">
         {/* 2.7.0: AI Import Assistant. Every line below sets one of THIS
             form's own existing useState values and nothing else - there is
@@ -1157,7 +1135,11 @@ function OrderFormModal({
                 <option value="">Select an event...</option>
                 {events.map((ev) => (
                   <option key={ev.id} value={ev.id}>
-                    {ev.name} {ev.eventDate ? `(${ev.eventDate})` : ""}
+                    {/* 2.41.0: the date is formatted now, not raw ISO -
+                        marko wants it readable beside the name, because two
+                        nights of the same tour are otherwise one line twice. */}
+                    {ev.name}
+                    {ev.eventDate ? ` · ${formatDateNumeric(ev.eventDate)}` : ""}
                   </option>
                 ))}
               </Select>

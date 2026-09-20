@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.40.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.43.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1058,6 +1058,102 @@ where marko has now answered the structural question: **anything whose sector,
 row or seats do not match and are not adjacent becomes its OWN order.** The
 pricing question (one total for the purchase, split across those orders, vs a
 price entered per group) is still open.
+
+**2.41.0 - the decided half of marko's entry-form brief.** He is reviewing a
+preview of the new row-based creation form (TIQR Entry artifact) and answered
+one question outright; these four changes are the parts that are settled and
+depend on nothing still open.
+
+**Only the item is highlighted in the nav** (`Layout.tsx`). The group header
+no longer takes `NAV_ACTIVE` or the accent bar when a child is open.
+**This reverses 2.29.4, which marko himself asked for** - his words then were
+"ked mam nieco vybrate v tickets tak tickets niesu oznacene", his words now
+are "zvyraznena ma byt len polozka". Both are recorded, in the code comment
+and in PROTECTED_AREAS, so the next session does not restore 2.29.4 from its
+own comment. `ticketsGroupActive` is kept - it still auto-opens the group.
+
+**EventDetail's Orders table is gone**, Tickets stays. `orders` is still
+fetched (ListingsTab and SalesTab take it) and `/orders` is untouched; only
+the second table on the Overview tab went. The "New order for this event"
+button moved onto the Tickets heading so the entry point survives.
+
+**`PreviewPanel` is deleted**, along with the Modal's `preview` prop and the
+split-column branch that used it. New Order and New Event are single-column
+forms again.
+
+**Event pickers carry the date.** New Order formatted it as raw ISO
+(`(2026-12-12)`) and Sales' Event filter had no date at all; both now read
+`Name · 12.12.2026` via `formatDateNumeric`.
+
+**Explicitly NOT done, and why:**
+- **Pulls removed from the nav** - marko asked, but a pull he does FOR someone
+  else never becomes an order (`pulls` has no `order_id`; only
+  `pulls_received` does), so removing the screen orphans that whole half of
+  the feature. Asked, unanswered.
+- **The row-based creation form** - he has saved a combination in the preview
+  (full page / table rows / add by button / event once at the top / rare
+  fields always visible / no split summary / normal density) but two answers
+  are still missing: where the required `purchase_date` goes, and the given-
+  pulls question above. It is also a rewrite of `OrderFormModal`, which
+  creates orders AND their tickets AND allocates cost - not something to land
+  half-specified.
+
+**2.42.0 - New Order is a page of rows.** `pages/OrderNew.tsx`, routed at
+`/orders/new`. marko picked the shape out of a ten-option preview: full page,
+table rows, add-by-button, event once at the top, rare fields visible.
+
+**Eleven fields, his list, nothing else** - quantity, type, section, row,
+seats, platform, price per ticket, currency, pull, notes, plus the event above
+them. What that leaves out is documented in the file's own header: purchase
+date is stamped automatically ("datum nakupu by mal byt automaticky"), fees
+and other costs are no longer collected (0 - the typed price IS the per-ticket
+cost), payment status keeps 2.0.70's "paid" default, and the pull FEE is still
+only editable on Order Detail.
+
+**The split rule, and it is tested.** Two rows merge into one order only when
+section, row, price, currency, type, platform and pull all match AND their
+seats are contiguous. Price is compared as CENTS, not text, so "201,00" and
+"201.00" are one price. The rule was ported to Python and run against nine
+cases (adjacent merge, gap, duplicate seat, differing price, differing pull,
+no-seats quantity, three-way merge) - all pass, and every group's seat count
+equals its quantity, which is what `insert_order_with_tickets` requires.
+
+**Nothing about storage changed.** Each group is one ordinary
+`api.createOrder` with the same `OrderInput` the modal always sent, then the
+same `linkPullReceivedToOrder` call Order Detail has always used. If a later
+group fails, the error names the codes already created rather than implying a
+rollback that did not happen.
+
+**`OrderFormModal` is still in `Orders.tsx`, unreferenced**, for one release
+so marko can compare. `modalOpen`/`setPresetEventId` are now dead with it.
+Both New Order buttons and EventDetail's "New order for this event" navigate
+to the page; a stale `location.state` hand-off is forwarded there too.
+
+**`parseSeats` and `TICKET_TYPES` are now exported from `Orders.tsx`** - one
+definition, shared with the new page, same page-imports-page convention
+SaleDetail/OrderDetail already use with `Tickets.tsx`.
+
+**Still open from the same brief:** the same row form for Sales and Pulls
+("nieco taketo podobne daj na vsetky aj pulls sales"). Pulls keeps its screen
+- marko: "nechaj ich tam kde su".
+
+**2.43.0 - the sidebar is flat.** marko: "odstran tuto zalozku ze bude tam
+vzdy ukazovat vsetko events inventory sales pulls". The collapsible "Tickets"
+group is gone; its four children are top-level links that are always visible.
+Six rows in the order the job runs - Dashboard, Events, Inventory, Sales,
+Pulls, Finance - plus Settings, which has always rendered separately at the
+bottom.
+
+**What went with it:** `ticketsOpen`, `ticketsGroupActive`,
+`TICKETS_GROUP_CHILDREN`, the `NavChild` type, and the `heading` variant of
+`NavItem` (which had had no entries since 2.36.0 removed "Market & money").
+`NavItem` is one shape now and the nav renders in one branch instead of
+three. `IconTicket` and `IconChevronDown` became unused in this file and were
+dropped from its import.
+
+**This retires the 2.29.4 / 2.41.0 argument about whether a group header
+should light up with its child** - there is no group header. PROTECTED_AREAS
+keeps both entries as history; neither describes live code any more.
 
 **Next new migration is 031.**
 

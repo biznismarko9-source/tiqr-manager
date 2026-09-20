@@ -21,6 +21,71 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.43.0 - the sidebar has no groups, and that is the point
+
+**Every row in the sidebar is a real `NavLink`.** There is no collapsible
+group, no group header, and no `heading` row. marko asked for all four ticket
+screens to be visible at all times ("bude tam vzdy ukazovat vsetko"), so
+anything that hides a destination behind a disclosure undoes that.
+
+**The 2.29.4 and 2.41.0 entries below are now history, not guidance.** They
+argued about whether a group header should carry the active state; there is
+no header to carry it. Do not reinstate a group in order to settle that
+argument.
+
+`NavItem` is deliberately ONE shape (`{to, label, icon, end?}`). Adding a
+variant back - a group, a heading, a divider - brings back the three-branch
+render this release removed, so it needs marko's word first.
+
+## 2.42.0 - one row is one place, and the split rule is the feature
+
+**`groupRows` in `pages/OrderNew.tsx` is the whole point of that screen.** It
+decides how many orders a form submit creates. Two rows merge ONLY when
+section, row, price, currency, ticket type, platform and pull all match and
+their seats are contiguous with no gap and no duplicate. Loosening any part of
+that silently merges purchases that were not one purchase - different prices
+into one unit price, someone else's pull onto marko's own order.
+
+**Price is compared as cents, never as the typed string.** "201,00" and
+"201.00" are the same price; a string compare would split them into two
+orders and nobody would know why.
+
+**Every group's seat list length must equal its quantity.** The backend
+(`insert_order_with_tickets`) requires one seat per ticket. `rowQty` therefore
+lets the seat list win over the typed quantity - do not "fix" that by
+trusting the number field.
+
+**The form does not collect fees, other costs or a pull fee, on purpose.**
+The price field is the complete per-ticket cost. Re-adding fees here means
+re-deciding whether the typed price is net or gross, which is a money
+question, not a form question - ask marko first.
+
+**Order creation is not transactional across groups.** Three groups are three
+`createOrder` calls. If the second fails, the first is already real - the
+error message says which codes exist. Do not wrap this in something that
+implies a rollback the backend does not offer.
+
+## 2.41.0 - the nav group is NOT a destination (this reverses 2.29.4)
+
+**Only one nav row is ever highlighted: the one you are on.** The "Tickets"
+group header renders with `NAV_IDLE` always, and draws no `NAV_ACTIVE_BAR`,
+even when one of its children is the current route.
+
+**This is a deliberate reversal of 2.29.4, which marko asked for in those
+words** ("ked mam nieco vybrate v tickets tak tickets niesu oznacene"). He
+looked at the result and asked for the opposite in 2.41.0 ("zvyraznena ma byt
+len polozka"), after seeing all three options side by side in a preview. Do
+not restore the 2.29.4 behaviour because an old comment argues for it - both
+decisions are his, and the later one stands.
+
+`ticketsGroupActive` still exists and must stay: it decides whether the group
+auto-opens. It just no longer feeds any styling.
+
+**EventDetail deliberately shows tickets and NOT orders.** The `orders` prop
+is still fetched and passed to ListingsTab/SalesTab - do not "clean it up" as
+unused, and do not add the Orders table back. Every ticket row already names
+its order, and `/orders` lists them in full.
+
 ## 2.40.0 - one tone table, two renderings; and the contrast pairing is now correct
 
 **`STATUS_TONES` is still the only status colour table, and it still carries

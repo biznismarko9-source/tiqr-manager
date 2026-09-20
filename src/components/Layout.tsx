@@ -3,7 +3,6 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconAlertTriangle,
   IconCalendarDays,
-  IconChevronDown,
   IconChevronUp,
   IconGauge,
   IconLogOut,
@@ -12,7 +11,6 @@ import {
   IconReceipt,
   IconSettings,
   IconSun,
-  IconTicket,
   IconUsers,
   IconWallet,
 } from "./icons";
@@ -66,63 +64,34 @@ function initialsFor(name: string): string {
 // NAV array literal below) so the "children" in item check in the render
 // below narrows cleanly - a plain inferred type here widens to one merged
 // shape with every field optional instead of a real A | B union.
-type NavChild = { to: string; label: string; icon: typeof IconGauge };
-type NavItem =
-  | { to: string; label: string; icon: typeof IconGauge; end?: boolean }
-  | { group: string; icon: typeof IconGauge; children: NavChild[] }
-  // 2.13.0: a quiet section label between groups of items. Not a link and
-  // not clickable - it exists so the eleven entries read as three short
-  // lists instead of one long one. Nothing about which items exist, their
-  // order, or where they link changed.
-  | { heading: string };
-
-const TICKETS_GROUP_CHILDREN: NavChild[] = [
-  { to: "/events", label: "Events", icon: IconCalendarDays },
-  // 2.35.1: one entry, not two. `/inventory` was `TicketsView` with
-  // `lockedStatus="available,listed"` - the same page with a filter - and
-  // marko asked for the pair collapsed into a single item called Inventory.
-  // 2.39.0: one entry again, for the same reason one level up. Orders and
-  // Inventory were TWO LISTS OVER THE SAME ROWS - both called
-  // `api.listOrders`, both rendered `OrderRecord`, both linked to
-  // `/orders/:id`; only the column set differed. marko asked for the pair
-  // collapsed, keeping the name Inventory. `/orders` is what survives (it is
-  // the richer page - New Order, edit, bulk actions) and `/tickets`
-  // redirects to it, query string and all.
-  { to: "/orders", label: "Inventory", icon: IconPackage },
-  { to: "/sales", label: "Sales", icon: IconReceipt },
-  // 2.36.0: Pulls joins the group. A pull is a ticket bought for someone else
-  // for a fee - same event, same seats, same platform, same transfer deadline
-  // as an order. It was under a "Market & money" heading that implied a
-  // different domain; it is the fifth step of the same job, so it sits with
-  // the other four. Route is unchanged (`/pulls`), so deep links and the tour
-  // step keep working.
-  { to: "/pulls", label: "Pulls", icon: IconUsers },
-];
+// 2.43.0: ONE shape. The collapsible "Tickets" group and the unused
+// `heading` row are both gone - marko: "odstran tuto zalozku ze bude tam
+// vzdy ukazovat vsetko events inventory sales pulls". Every entry is a plain
+// link now, always visible, nothing to open or close before you can click.
+// (The `heading` variant had had no entries since 2.36.0 removed "Market &
+// money"; it went with the group rather than sitting here unused.)
+type NavItem = { to: string; label: string; icon: typeof IconGauge; end?: boolean };
 
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: IconGauge, end: true },
-  { group: "Tickets", icon: IconTicket, children: TICKETS_GROUP_CHILDREN },
-  // 2.0.81: marko's own request - "Price Checker musí byť samostatná sekcia
-  // v sidebar" (must be its own standalone sidebar section), not folded
-  // into Events/Settings.
-  // 2.36.0: the "Market & money" heading is gone. With Pulls moved into the
-  // Tickets group it stood over a single item, which is decoration rather
-  // than a category. Finance is a plain top-level entry now - deliberately
-  // NOT folded into Tickets, because it covers money that has nothing to do
-  // with tickets (rent, fees, personal spend) and owns its own four tabs,
-  // categories and accounts.
-  // 2.0.83: same standalone-top-level-section treatment as Price Checker
-  // above (not folded into Settings/Dashboard) - Finance is a big enough
-  // feature of its own (personal + business money, separate from the
-  // Orders/Sales side of the business) to earn its own sidebar entry.
+  // 2.35.1 folded /inventory into /tickets; 2.39.0 folded Orders and
+  // Inventory into one list at /orders; 2.43.0 takes the wrapper off
+  // entirely. The five working screens sit flat, in the order the job runs:
+  // the event exists, you buy stock for it, you sell it, and a pull is the
+  // variant where you bought it for someone else.
+  { to: "/events", label: "Events", icon: IconCalendarDays },
+  { to: "/orders", label: "Inventory", icon: IconPackage },
+  { to: "/sales", label: "Sales", icon: IconReceipt },
+  { to: "/pulls", label: "Pulls", icon: IconUsers },
+  // Finance is deliberately last and deliberately NOT grouped with the four
+  // above: it covers money that has nothing to do with tickets (rent, fees,
+  // personal spend) and owns its own four tabs, categories and accounts.
   { to: "/finance", label: "Finance", icon: IconWallet },
 ];
 
-// Shared by every actual NavLink below (both the flat top-level items and
-// the Tickets group's own children) so the active/hover look can never
-// drift between the two - only the group HEADER button (not a real
-// NavLink, since "Tickets" has no single route of its own) computes its own
-// equivalent class inline, from `ticketsGroupActive` below.
+// Shared by every NavLink below, so the active/hover look is defined in
+// exactly one place. 2.43.0: there is no longer a group header computing an
+// equivalent class of its own - every row in the sidebar is a real link.
 // 2.6.0 (visual redesign): the active state is now a tinted surface plus a
 // short accent bar pinned to the item's left edge (see `NAV_ACTIVE_BAR`
 // below), instead of a flat brand-tinted pill. The bar is what makes the
@@ -183,11 +152,6 @@ export default function Layout() {
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
-  // 2.4.4: Tickets group starts expanded (matches every other nav item
-  // already always being visible) - purely local, session-only UI state,
-  // same convention as e.g. Dashboard's own eventsExpanded/ordersExpanded
-  // (not persisted to disk either).
-  const [ticketsOpen, setTicketsOpen] = useState(true);
   // 2.13.1 checked and told; 2.14.0 acts - marko asked for the hand-off
   // between his Mac and his Windows PC to stop needing a click. This holds
   // the one sentence the backend could NOT decide by itself (see
@@ -204,9 +168,6 @@ export default function Layout() {
   // is happening quietly" from "this ends in a restart, there is nothing
   // useful to click".
   const [syncActivity, setSyncActivity] = useState<{ label: string; blocking: boolean } | null>(null);
-  const ticketsGroupActive = TICKETS_GROUP_CHILDREN.some(
-    (c) => location.pathname === c.to || location.pathname.startsWith(`${c.to}/`),
-  );
   // 2.4.4: one-click light/dark toggle above the profile widget - replaces
   // Settings -> Appearance's old 3-way Light/System/Dark picker (marko's own
   // request). Reuses the exact same lib/theme.ts useTheme() hook that picker
@@ -382,72 +343,17 @@ export default function Layout() {
 
         {/* 2.25.0: `data-tour` anchors only - see components/Tour.tsx. */}
         <nav data-tour="nav" className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
-          {NAV.map((item) =>
-            "heading" in item ? (
-              <p
-                key={item.heading}
-                className="px-3 pb-1 pt-3.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400"
-              >
-                {item.heading}
-              </p>
-            ) : "children" in item ? (
-              /* 2.13.0 (GRP-06): the group gets its own surface, so its five
-                 children read as one object rather than five loose rows that
-                 happen to be indented. Replaces the 2.6.0 hairline guide rail
-                 - the card IS the grouping cue now, so the rail and the deep
-                 indent both go. */
-              <div
-                key="tickets-group"
-                className="my-1.5 rounded-xl border border-slate-200 bg-slate-50/70 p-1 dark:border-slate-800 dark:bg-slate-800/30"
-              >
-                <button
-                  type="button"
-                  onClick={() => setTicketsOpen((o) => !o)}
-                  aria-expanded={ticketsOpen}
-                  /* 2.29.4: marko - "ked mam nieco vybrate v tickets tak
-                     tickets niesu oznacene". The group carries the SAME
-                     active treatment as a real nav item when any child is
-                     open, so the rail always shows both where you are and
-                     which group it belongs to. */
-                  className={`${NAV_BASE} w-full ${
-                    ticketsGroupActive ? `${NAV_ACTIVE} text-brand-700 dark:text-brand-300` : NAV_IDLE
-                  }`}
-                >
-                  {ticketsGroupActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
+          {NAV.map((item) => (
+            <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
+              {({ isActive }) => (
+                <>
+                  {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
                   <item.icon className="h-[17px] w-[17px] shrink-0" />
-                  <span className="flex-1 truncate text-left">{item.group}</span>
-                  <IconChevronDown
-                    className={`h-3.5 w-3.5 shrink-0 opacity-60 transition-transform ${ticketsOpen ? "" : "-rotate-90"}`}
-                  />
-                </button>
-                {ticketsOpen && (
-                  <div className="mt-0.5 space-y-0.5">
-                    {item.children.map((child) => (
-                      <NavLink key={child.to} data-tour={`nav:${child.to}`} to={child.to} className={navLinkClass}>
-                        {({ isActive }) => (
-                          <>
-                            {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
-                            <child.icon className="h-[17px] w-[17px] shrink-0" />
-                            <span className="truncate">{child.label}</span>
-                          </>
-                        )}
-                      </NavLink>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
-                {({ isActive }) => (
-                  <>
-                    {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
-                    <item.icon className="h-[17px] w-[17px] shrink-0" />
-                    <span className="truncate">{item.label}</span>
-                  </>
-                )}
-              </NavLink>
-            ),
-          )}
+                  <span className="truncate">{item.label}</span>
+                </>
+              )}
+            </NavLink>
+          ))}
         </nav>
 
         {/* 2.4.4: one-click light/dark toggle - see the isDark/setThemeMode
