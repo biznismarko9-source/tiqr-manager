@@ -59,6 +59,12 @@ export const IconTrash = (p: SVGProps<SVGSVGElement>) => (
     <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
   </Svg>
 );
+export const IconCopy = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <rect x="9" y="9" width="12" height="12" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </Svg>
+);
 export const IconPencil = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
     <path d="M12 20h9" />

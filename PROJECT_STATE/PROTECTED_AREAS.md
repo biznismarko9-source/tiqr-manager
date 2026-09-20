@@ -21,6 +21,37 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.46.0 - a chart's window is the period, never wider
+
+`buildSeries` in `pages/finance/Overview.tsx` may change the BUCKET SIZE to
+suit the span (day up to 92 days, month beyond). It may not change the
+WINDOW. The entries it receives are already period-filtered, so any bucket
+drawn outside the selected period renders as zero while real money sits in it
+- a chart that lies about a month marko actually traded in.
+
+Empty buckets INSIDE the window are fine and are the point: nothing was booked
+that day, and the zeros are what give the line an axis to run along.
+
+"Today" drawing a single point is correct, not a bug. Do not pad it.
+
+## 2.46.0 - row-form validation lives in the shared shell
+
+`RowProblem` / `cellError` / `visibleProblems` / `RowNumber` in `ui.tsx` are
+shared for the same reason `RowFormTable` is: the four forms must not drift.
+A new form-specific rule belongs in that form's own `validate(rows)`, not in a
+second error mechanism.
+
+**The two kinds are not interchangeable.** `missing` is an empty required
+field and stays invisible until Create is pressed - flagging a blank form on
+open is how a form starts out looking broken. `invalid` is something typed
+that cannot be what it claims, and shows immediately.
+
+**Do not re-add a seats-vs-qty mismatch check to OrderRowsModal.** 2.46.0 had
+one for about ten minutes. `qty` defaults to `"1"` and `rowQty` lets seats win,
+so typing `14-15` into a fresh row is normal, correct usage that the check
+called an error. The Ks cell shows the derived seat count read-only instead -
+the two cannot disagree, so there is nothing to check.
+
 ## 2.45.0 - creating anything is a ROW FORM, in a MODAL over its list
 
 **All four create flows have the same shape and it was asked for twice.**

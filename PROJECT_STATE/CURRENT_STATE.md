@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.45.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.46.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1212,6 +1212,49 @@ with the Income/Expenses/Net Cash Flow cards on the same screen.
 **The four row forms are in Slovak** while the pages around them are English -
 they were built from the Slovak preview marko picked from. Easy to flip if he
 wants; nothing else changed language.
+
+**2.46.0 - the four fillers got precise.** marko: "to nove vyplnovanie textov
+urobme to modernejsie a presnejsie, urobme to viac profesionalne". Everything
+here went into the SHARED shell in `ui.tsx`, so the four cannot drift apart -
+that is 2.45.0's own invariant.
+
+- **Every problem, on the cell it belongs to.** `validate(rows)` in each form
+  returns `RowProblem[]` (`{row, field, message, kind}`) instead of the old
+  "first bad row, as one sentence". Bad cells wear `.input-error`, the red
+  halo `<Field error>` has always drawn - no new error style. `kind: "missing"`
+  stays quiet until Create is pressed (a blank form is not yet wrong);
+  `kind: "invalid"` shows the moment it is true. Create no longer stops at the
+  first problem and hides the rest.
+- **`RowNumber`** - a `#` column, so "riadok 3" can be found without counting.
+- **Sticky header** - `.table-shell` already scrolls, so this cost nothing.
+- **Duplicate row** (`RowRemove`'s new optional `onDuplicate`). Order clears
+  `seats` on the copy, Event clears `name`, Pull clears `buyerName`. Sales has
+  no duplicate at all: a Sales row IS a real ticket.
+- **Focus and keyboard** - adding a row moves the cursor into it
+  (`RowFormTable` owns this, one place for all four); ⌘/Ctrl+Enter creates.
+  Plain Enter is deliberately left alone - inside a date field or a select it
+  already means something.
+- **`IconCopy`** added to `icons.tsx`, the only new glyph.
+
+**One real bug found while doing it:** the new per-row check flagged "2 seats
+but 1 ticket" as an error - but `qty` defaults to `"1"` and `rowQty` lets seats
+win, so typing `14-15` was normal, correct usage. The check is gone; instead
+the Ks cell now shows the seat count read-only once seats are present, so the
+two can no longer disagree.
+
+**2.46.0 - the Finance chart has an axis again.** marko: "nech uz tam vidno aj
+nejaky ten graf nieze on je prazdny nech tam je od nejakej po nejaku dobu". The
+default period is "This month", which under monthly bucketing was exactly ONE
+bucket - the chart drew a single dot. `buildMonthlySeries` became
+`buildSeries`, which picks the bucket from the span: **a day up to 92 days, a
+month beyond** - the same rule the Dashboard's own series follows. "This month"
+is now ~30 daily points.
+
+**What it deliberately does NOT do** is widen the window past the selected
+period to make the line longer. `entries` arrives already period-filtered, so a
+month outside the period would draw as zero while real money sat in it. The
+window IS the period; only the bucket size changes. Empty buckets inside the
+window are real zeros. "Today" is still one point, and that is honest.
 
 **Next new migration is 031.**
 

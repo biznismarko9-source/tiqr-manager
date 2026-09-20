@@ -3,7 +3,18 @@ import { api, errMsg } from "../lib/api";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { Platform, Pull, PullInput } from "../lib/types";
 import { decimalStringToCents, formatMoney } from "../lib/format";
-import { Input, Modal, RowFormFooter, RowFormTable, RowRemove, Select } from "../components/ui";
+import {
+  cellError,
+  Input,
+  Modal,
+  RowFormFooter,
+  RowFormTable,
+  RowNumber,
+  RowRemove,
+  Select,
+  visibleProblems,
+  type RowProblem,
+} from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
 import { useToast } from "../lib/toast";
 
@@ -61,6 +72,26 @@ function blankRow(prev?: Row): Row {
   };
 }
 
+/** Every problem with every row, not just the first. */
+function validate(rows: Row[]): RowProblem[] {
+  const out: RowProblem[] = [];
+  rows.forEach((r, i) => {
+    if (!r.buyerName.trim()) out.push({ row: i, field: "buyerName", message: "chýba, pre koho ťaháš", kind: "missing" });
+    if (!r.eventName.trim()) out.push({ row: i, field: "eventName", message: "chýba event", kind: "missing" });
+    const q = parseInt(r.quantity, 10);
+    if (!r.quantity.trim()) out.push({ row: i, field: "quantity", message: "chýba počet kusov", kind: "missing" });
+    else if (!Number.isFinite(q) || q < 1)
+      out.push({ row: i, field: "quantity", message: "počet kusov musí byť aspoň 1", kind: "invalid" });
+    if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba tvoja odmena", kind: "missing" });
+    else if (decimalStringToCents(r.price) === null)
+      out.push({ row: i, field: "price", message: `odmena „${r.price}“ nie je platná suma`, kind: "invalid" });
+    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "chýba mena", kind: "missing" });
+    if (r.eventDate && !isIsoDate(r.eventDate))
+      out.push({ row: i, field: "eventDate", message: "dátum eventu nie je platný", kind: "invalid" });
+  });
+  return out;
+}
+
 export default function PullRowsModal({
   open,
   onClose,
@@ -75,6 +106,7 @@ export default function PullRowsModal({
   const [rows, setRows] = useState<Row[]>([blankRow()]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -87,6 +119,7 @@ export default function PullRowsModal({
     if (!open) return;
     setRows([blankRow()]);
     setError(null);
+    setSubmitted(false);
   }, [open]);
 
   // A pull is bought on a marketplace - the same purchase side an order uses.
@@ -94,6 +127,9 @@ export default function PullRowsModal({
     () => platforms.filter((p) => p.kind === "purchase" || p.kind === "both"),
     [platforms],
   );
+
+  const problems = useMemo(() => validate(rows), [rows]);
+  const shown = visibleProblems(problems, submitted);
 
   const totalTickets = rows.reduce((s, r) => s + (parseInt(r.quantity, 10) || 0), 0);
   const oneCurrency = rows.length > 0 && rows.every((r) => r.currency === rows[0].currency);
@@ -105,16 +141,9 @@ export default function PullRowsModal({
 
   async function submit() {
     setError(null);
-    for (const r of rows) {
-      const who = r.buyerName.trim() || "riadok";
-      if (!r.buyerName.trim()) return setError("Každý riadok potrebuje meno, pre koho ťaháš");
-      if (!r.eventName.trim()) return setError(`${who}: chýba event`);
-      const q = parseInt(r.quantity, 10);
-      if (!Number.isFinite(q) || q < 1) return setError(`${who}: počet kusov musí byť aspoň 1`);
-      if (decimalStringToCents(r.price) === null) return setError(`${who}: odmena "${r.price}" nie je platná suma`);
-      if (!r.currency.trim()) return setError(`${who}: chýba mena`);
-      if (r.eventDate && !isIsoDate(r.eventDate)) return setError(`${who}: dátum eventu nie je platný`);
-    }
+    setSubmitted(true);
+    // Every bad cell is already outlined and the footer counts them.
+    if (problems.length > 0) return;
 
     setSaving(true);
     const made: Pull[] = [];
@@ -183,21 +212,29 @@ export default function PullRowsModal({
       >
         {rows.map((r, i) => (
           <tr key={i}>
+            <RowNumber n={i + 1} />
             <td className="td w-[140px]">
               <Input
                 value={r.buyerName}
                 onChange={(e) => patch(i, { buyerName: e.target.value })}
+                className={cellError(shown, i, "buyerName")}
                 aria-label={`Pre koho, riadok ${i + 1}`}
               />
             </td>
             <td className="td w-[170px]">
-              <Input value={r.eventName} onChange={(e) => patch(i, { eventName: e.target.value })} aria-label="Event" />
+              <Input
+                value={r.eventName}
+                onChange={(e) => patch(i, { eventName: e.target.value })}
+                className={cellError(shown, i, "eventName")}
+                aria-label="Event"
+              />
             </td>
             <td className="td w-[150px]">
               <Input
                 type="date"
                 value={r.eventDate}
                 onChange={(e) => patch(i, { eventDate: e.target.value })}
+                className={cellError(shown, i, "eventDate")}
                 aria-label="Dátum eventu"
               />
             </td>
@@ -207,6 +244,7 @@ export default function PullRowsModal({
                 min={1}
                 value={r.quantity}
                 onChange={(e) => patch(i, { quantity: e.target.value })}
+                className={`text-right ${cellError(shown, i, "quantity")}`}
                 aria-label="Ks"
               />
             </td>
@@ -243,6 +281,7 @@ export default function PullRowsModal({
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
                 placeholder="15,00"
+                className={`text-right ${cellError(shown, i, "price")}`}
                 aria-label="Tvoja odmena"
               />
             </td>
@@ -250,6 +289,7 @@ export default function PullRowsModal({
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
+                className={cellError(shown, i, "currency")}
                 aria-label="Mena"
               />
             </td>
@@ -260,6 +300,10 @@ export default function PullRowsModal({
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
               label={`Zmazať riadok ${i + 1}`}
+              onDuplicate={() =>
+                setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], buyerName: "" }, ...rs.slice(i + 1)])
+              }
+              duplicateLabel={`Duplikovať riadok ${i + 1}`}
             />
           </tr>
         ))}
@@ -267,6 +311,7 @@ export default function PullRowsModal({
 
       <RowFormFooter
         error={error}
+        problems={shown}
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}

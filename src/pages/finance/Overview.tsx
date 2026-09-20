@@ -40,15 +40,32 @@ import { AccountFormModal } from "./Accounts";
 // data at once, so no new data-loading was needed either.
 
 // ---------------------------------------------------------------------------
-// Monthly bucketing for the "Income vs Expenses" chart.
+// Bucketing for the "Income vs Expenses" chart.
+//
+// 2.46.0: the bucket is a DAY on a short period and a MONTH on a long one -
+// the same rule the Dashboard's own series follows. marko: "nech uz tam vidno
+// aj nejaky ten graf nieze on je prazdny nech tam je od nejakej po nejaku
+// dobu", and he was right: the default period is "This month", which under
+// monthly bucketing was exactly ONE bucket, so the chart drew a single dot.
+//
+// What this does NOT do is widen the window past the selected period to make
+// the line longer. `entries` arrives already period-filtered, so a month
+// outside the period would draw as zero while real money sat in it - a chart
+// that lies. The window IS the period; only the bucket size changes.
+//
+// Empty buckets inside the window are real zeros, not invented data: nothing
+// was booked that day. They are what gives the line an axis to run along.
 // ---------------------------------------------------------------------------
 
-interface MonthBucket {
-  key: string; // YYYY-MM
-  label: string;
+interface SeriesBucket {
+  /** Always a real calendar date - the day itself, or the 1st of its month.
+   *  This is what MetricChart reads as `bucketStart`. */
+  bucketStart: string;
   incomeCents: number;
   expenseCents: number;
 }
+
+type Granularity = "day" | "month";
 
 function monthKey(iso: string): string {
   return iso.slice(0, 7);
@@ -62,41 +79,73 @@ function addMonths(key: string, n: number): string {
   return `${ny}-${String(nm).padStart(2, "0")}`;
 }
 
-function monthLabel(key: string): string {
-  const [y, m] = key.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { year: "numeric", month: "short" });
+function addDays(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// A genuinely "All time" ledger spanning years would otherwise render an
-// unreadable wall of bars - capped to the most recent 24 months.
+function daysApart(a: string, b: string): number {
+  const ms = new Date(`${b}T00:00:00`).getTime() - new Date(`${a}T00:00:00`).getTime();
+  return Math.round(ms / 86400000);
+}
+
+// Past a quarter, one dot per day is a smear rather than a line - that is
+// where months take over. Both caps keep an "All time" ledger readable.
+const DAY_GRANULARITY_MAX_DAYS = 92;
+const MAX_CHART_DAYS = 92;
 const MAX_CHART_MONTHS = 24;
 
-function buildMonthlySeries(entries: FinanceEntry[], from: string | null, to: string | null): MonthBucket[] {
+function buildSeries(
+  entries: FinanceEntry[],
+  from: string | null,
+  to: string | null,
+): { buckets: SeriesBucket[]; granularity: Granularity } {
+  const dates = entries.map((e) => e.entryDate).sort();
+  // An unbounded period ("All time") takes its window from the ledger itself.
+  // With no entries at all there is genuinely nothing to draw, and saying so
+  // beats drawing a flat line through a period marko never had.
+  const startDay = from ?? dates[0] ?? null;
+  const endDay = to ?? dates[dates.length - 1] ?? null;
+  if (!startDay || !endDay || endDay < startDay) return { buckets: [], granularity: "month" };
+
+  const granularity: Granularity = daysApart(startDay, endDay) <= DAY_GRANULARITY_MAX_DAYS ? "day" : "month";
+  const keyOf = (iso: string) => (granularity === "day" ? iso : monthKey(iso));
+
   const sums = new Map<string, { incomeCents: number; expenseCents: number }>();
   for (const e of entries) {
-    const key = monthKey(e.entryDate);
+    const key = keyOf(e.entryDate);
     const cur = sums.get(key) ?? { incomeCents: 0, expenseCents: 0 };
     if (e.entryType === "income") cur.incomeCents += e.amountCents;
     else cur.expenseCents += e.amountCents;
     sums.set(key, cur);
   }
-  if (sums.size === 0) return [];
-  const keys = Array.from(sums.keys()).sort();
-  const startKey = from ? monthKey(from) : keys[0];
-  const endKey = to ? monthKey(to) : keys[keys.length - 1];
-  const allMonths: string[] = [];
-  for (let cursor = startKey; cursor <= endKey; cursor = addMonths(cursor, 1)) {
-    allMonths.push(cursor);
-    if (allMonths.length > 1000) break; // sanity guard, never realistically hit
+
+  const keys: string[] = [];
+  if (granularity === "day") {
+    for (let c = startDay; c <= endDay; c = addDays(c, 1)) {
+      keys.push(c);
+      if (keys.length > 1000) break; // sanity guard, never realistically hit
+    }
+  } else {
+    for (let c = monthKey(startDay); c <= monthKey(endDay); c = addMonths(c, 1)) {
+      keys.push(c);
+      if (keys.length > 1000) break;
+    }
   }
-  const shown = allMonths.length > MAX_CHART_MONTHS ? allMonths.slice(-MAX_CHART_MONTHS) : allMonths;
-  return shown.map((key) => ({
-    key,
-    label: monthLabel(key),
-    incomeCents: sums.get(key)?.incomeCents ?? 0,
-    expenseCents: sums.get(key)?.expenseCents ?? 0,
-  }));
+  const cap = granularity === "day" ? MAX_CHART_DAYS : MAX_CHART_MONTHS;
+  const shown = keys.length > cap ? keys.slice(-cap) : keys;
+
+  return {
+    granularity,
+    buckets: shown.map((key) => ({
+      bucketStart: granularity === "day" ? key : `${key}-01`,
+      incomeCents: sums.get(key)?.incomeCents ?? 0,
+      expenseCents: sums.get(key)?.expenseCents ?? 0,
+    })),
+  };
 }
+
 
 interface CategoryBreakdownRow {
   key: string;
@@ -230,7 +279,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
     return Array.from(map.values()).sort((a, b) => b.totalCents - a.totalCents);
   }, [eurScoped]);
 
-  const monthlySeries = useMemo(() => buildMonthlySeries(eurScoped, from, to), [eurScoped, from, to]);
+  const series = useMemo(() => buildSeries(eurScoped, from, to), [eurScoped, from, to]);
 
   // Reuses the existing generic `convertCurrency` command as-is (same one
   // the Dashboard's own mixed-currency banner and the New Order form already
@@ -425,7 +474,8 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             <CategoryBreakdownCard rows={categoryBreakdown} />
             <Card className="p-4">
               <IncomeExpenseChart
-                buckets={monthlySeries}
+                buckets={series.buckets}
+                granularity={series.granularity}
                 incomeCents={incomeCents}
                 expenseCents={expenseCents}
               />
@@ -508,12 +558,12 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
 // wording - a ledger calls these three series Income / Expenses / Net, and
 // MetricChart takes those as `labels` (see its 2.45.0 prop comment).
 //
-// The numbers are the SAME ones the paired bar chart drew: `buildMonthlySeries`
-// is untouched, and each month maps onto one RevenueTimeSeriesPoint, which is
-// the shape MetricChart already reads. `profitCents` is income - expenses,
-// i.e. exactly the "Net Cash Flow" card above, per month. `sellingFeesCents`
-// and `soldTickets` have no meaning in a ledger and are never plotted here
-// (no "Sales" pill), so they are zero rather than invented.
+// The numbers are the SAME ones the paired bar chart drew: each bucket maps
+// onto one RevenueTimeSeriesPoint, which is the shape MetricChart already
+// reads. `profitCents` is income - expenses, i.e. exactly the "Net Cash Flow"
+// card above, per bucket. `sellingFeesCents` and `soldTickets` have no meaning
+// in a ledger and are never plotted here (no "Sales" pill), so they are zero
+// rather than invented.
 const FINANCE_METRICS: { key: MetricKey; label: string }[] = [
   { key: "revenue", label: "Income" },
   { key: "cost", label: "Expenses" },
@@ -528,10 +578,12 @@ const FINANCE_METRIC_LABELS: Partial<Record<MetricKey, string>> = {
 
 function IncomeExpenseChart({
   buckets,
+  granularity,
   incomeCents,
   expenseCents,
 }: {
-  buckets: MonthBucket[];
+  buckets: SeriesBucket[];
+  granularity: Granularity;
   incomeCents: number;
   expenseCents: number;
 }) {
@@ -539,7 +591,7 @@ function IncomeExpenseChart({
   const points = useMemo<RevenueTimeSeriesPoint[]>(
     () =>
       buckets.map((b) => ({
-        bucketStart: `${b.key}-01`,
+        bucketStart: b.bucketStart,
         revenueCents: b.incomeCents,
         sellingFeesCents: 0,
         cogsCents: b.expenseCents,
@@ -549,10 +601,10 @@ function IncomeExpenseChart({
     [buckets],
   );
   // The headline number is the period's own total, handed down from the
-  // cards above - NOT a sum of the plotted buckets. `buildMonthlySeries` caps
-  // an "All time" ledger at the most recent 24 months, so summing the bars
-  // would quietly disagree with the Income/Expenses/Net Cash Flow cards on
-  // the same screen.
+  // cards above - NOT a sum of the plotted buckets. `buildSeries` caps an
+  // "All time" ledger at the most recent 24 months (or 92 days), so summing
+  // the plotted points would quietly disagree with the Income/Expenses/Net
+  // Cash Flow cards on the same screen.
   const total = metric === "cost" ? expenseCents : metric === "profit" ? incomeCents - expenseCents : incomeCents;
 
   return (
@@ -560,7 +612,7 @@ function IncomeExpenseChart({
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            {FINANCE_METRIC_LABELS[metric]} by month
+            {FINANCE_METRIC_LABELS[metric]} {granularity === "day" ? "by day" : "by month"}
           </p>
           <p
             className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${
@@ -591,7 +643,7 @@ function IncomeExpenseChart({
       </div>
       <MetricChart
         points={points}
-        granularity="month"
+        granularity={granularity}
         currency="EUR"
         metric={metric}
         labels={FINANCE_METRIC_LABELS}

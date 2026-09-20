@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventInput, EventRecord, EventStatus } from "../lib/types";
-import { Input, Modal, RowFormFooter, RowFormTable, RowRemove, Select } from "../components/ui";
+import {
+  cellError,
+  Input,
+  Modal,
+  RowFormFooter,
+  RowFormTable,
+  RowNumber,
+  RowRemove,
+  Select,
+  visibleProblems,
+  type RowProblem,
+} from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
 import { useToast } from "../lib/toast";
 
@@ -59,6 +70,20 @@ function blankRow(prev?: Row): Row {
   };
 }
 
+/** Every problem with every row, not just the first. `missing` stays quiet
+ *  until Create is pressed; `invalid` shows the moment it is true. */
+function validate(rows: Row[]): RowProblem[] {
+  const out: RowProblem[] = [];
+  rows.forEach((r, i) => {
+    if (!r.name.trim()) out.push({ row: i, field: "name", message: "chýba názov eventu", kind: "missing" });
+    // An event whose date is not settled yet is a real state here - empty is
+    // allowed, a half-typed date is not.
+    if (r.eventDate && !isIsoDate(r.eventDate))
+      out.push({ row: i, field: "eventDate", message: "dátum nie je platný", kind: "invalid" });
+  });
+  return out;
+}
+
 export default function EventRowsModal({
   open,
   onClose,
@@ -73,6 +98,7 @@ export default function EventRowsModal({
   const [rows, setRows] = useState<Row[]>([blankRow()]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -85,9 +111,12 @@ export default function EventRowsModal({
     if (!open) return;
     setRows([blankRow()]);
     setError(null);
+    setSubmitted(false);
   }, [open]);
 
   const dated = useMemo(() => rows.filter((r) => r.eventDate).length, [rows]);
+  const problems = useMemo(() => validate(rows), [rows]);
+  const shown = visibleProblems(problems, submitted);
 
   function patch(i: number, change: Partial<Row>) {
     setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...change } : r)));
@@ -95,12 +124,10 @@ export default function EventRowsModal({
 
   async function submit() {
     setError(null);
-    for (const r of rows) {
-      if (!r.name.trim()) return setError("Každý riadok potrebuje názov eventu");
-      // An event whose date is not settled yet is a real state here - empty
-      // is allowed, a half-typed date is not.
-      if (r.eventDate && !isIsoDate(r.eventDate)) return setError(`${r.name.trim()}: dátum nie je platný`);
-    }
+    setSubmitted(true);
+    // Every bad cell is already outlined and the footer counts them - nothing
+    // to say here that the form is not already saying.
+    if (problems.length > 0) return;
 
     setSaving(true);
     const made: EventRecord[] = [];
@@ -170,10 +197,12 @@ export default function EventRowsModal({
       >
         {rows.map((r, i) => (
           <tr key={i}>
+            <RowNumber n={i + 1} />
             <td className="td w-[220px]">
               <Input
                 value={r.name}
                 onChange={(e) => patch(i, { name: e.target.value })}
+                className={cellError(shown, i, "name")}
                 aria-label={`Názov, riadok ${i + 1}`}
               />
             </td>
@@ -182,6 +211,7 @@ export default function EventRowsModal({
                 type="date"
                 value={r.eventDate}
                 onChange={(e) => patch(i, { eventDate: e.target.value })}
+                className={cellError(shown, i, "eventDate")}
                 aria-label="Dátum"
               />
             </td>
@@ -225,6 +255,8 @@ export default function EventRowsModal({
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
               label={`Zmazať riadok ${i + 1}`}
+              onDuplicate={() => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], name: "" }, ...rs.slice(i + 1)])}
+              duplicateLabel={`Duplikovať riadok ${i + 1}`}
             />
           </tr>
         ))}
@@ -232,6 +264,7 @@ export default function EventRowsModal({
 
       <RowFormFooter
         error={error}
+        problems={shown}
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}

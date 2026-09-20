@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ChangeEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
-import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconPlus, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconCopy, IconPlus, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
 import { formatDateNumeric } from "../lib/format";
 import type { TrendInfo } from "../lib/format";
 
@@ -1057,12 +1057,32 @@ export function RowFormTable({
   onAdd: () => void;
   addLabel: string;
 }) {
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+
+  // 2.46.0: adding a row moves the cursor into it. Typing the next ticket
+  // should never cost a mouse trip back to the first column - and without
+  // this, a long form scrolls the new row into view but leaves focus behind
+  // on the button.
+  function handleAdd() {
+    onAdd();
+    requestAnimationFrame(() => {
+      const rows = bodyRef.current?.querySelectorAll("tr");
+      const last = rows?.[rows.length - 1];
+      last?.querySelector<HTMLElement>("input, select, textarea, button")?.focus();
+      last?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
   return (
     <>
       <div className="table-shell table-shell-compact mb-3">
         <table className="w-full border-collapse">
-          <thead>
+          {/* The shell already scrolls (see .table-shell in index.css), so a
+              sticky header costs nothing and a twenty-row tour keeps its
+              column names. */}
+          <thead className="sticky top-0 z-10 bg-surface">
             <tr>
+              <th className="th w-[34px] text-right tabular-nums" aria-label="Riadok" />
               {head.map((h, i) => (
                 <th key={`${h}-${i}`} className="th whitespace-nowrap">
                   {h}
@@ -1071,38 +1091,105 @@ export function RowFormTable({
               <th className="th" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody>
+          <tbody ref={bodyRef} className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody>
         </table>
       </div>
-      <Button variant="secondary" onClick={onAdd}>
+      <Button variant="secondary" onClick={handleAdd}>
         <IconPlus className="h-4 w-4" /> {addLabel}
       </Button>
     </>
   );
 }
 
+/** The row number, first cell of every row. It exists so a problem can name
+ *  a row ("riadok 3") and be found without counting. */
+export function RowNumber({ n }: { n: number }) {
+  return <td className="td w-[34px] text-right text-xs tabular-nums text-slate-400 dark:text-slate-500">{n}</td>;
+}
+
+/** One problem with one cell. `missing` is an empty required field - shown
+ *  only once Create has been pressed, because a blank form is not yet wrong.
+ *  `invalid` is something actually typed that cannot be what it claims, and
+ *  that is shown the moment it is true. */
+export interface RowProblem {
+  row: number;
+  field: string;
+  message: string;
+  kind: "missing" | "invalid";
+}
+
+/** `.input-error` for a cell with a problem - the same red halo <Field error>
+ *  already draws everywhere else in the app, so a bad cell looks like a bad
+ *  field rather than inventing a second error style. */
+export function cellError(problems: RowProblem[], row: number, field: string): string {
+  return problems.some((p) => p.row === row && p.field === field) ? "input-error" : "";
+}
+
+/** What the footer shows and what submit is blocked on: everything once
+ *  Create has been pressed, only the genuinely malformed before that. */
+export function visibleProblems(problems: RowProblem[], submitted: boolean): RowProblem[] {
+  return submitted ? problems : problems.filter((p) => p.kind === "invalid");
+}
+
 /** The last cell of every row. Hidden - not disabled - on a one-row form,
  *  because a form you cannot empty needs no explanation. */
-export function RowRemove({ show, onRemove, label }: { show: boolean; onRemove: () => void; label: string }) {
+export function RowRemove({
+  show,
+  onRemove,
+  label,
+  onDuplicate,
+  duplicateLabel,
+}: {
+  show: boolean;
+  onRemove: () => void;
+  label: string;
+  /** 2.46.0: six nights of one tour, or four tickets that differ by a seat
+   *  number, are faster to duplicate and edit than to retype. Omitted by a
+   *  form where a row is a real record that cannot be copied (Sales rows ARE
+   *  tickets). */
+  onDuplicate?: () => void;
+  duplicateLabel?: string;
+}) {
   return (
-    <td className="td w-[46px]">
-      {show && (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={label}
-          className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-red-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-red-400"
-        >
-          <IconX className="h-4 w-4" />
-        </button>
-      )}
+    <td className="td w-[72px]">
+      <div className="flex items-center gap-0.5">
+        {onDuplicate && (
+          <button
+            type="button"
+            onClick={onDuplicate}
+            aria-label={duplicateLabel ?? "Duplikovať riadok"}
+            title={duplicateLabel ?? "Duplikovať riadok"}
+            className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <IconCopy className="h-4 w-4" />
+          </button>
+        )}
+        {show && (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={label}
+            title={label}
+            className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-red-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-red-400"
+          >
+            <IconX className="h-4 w-4" />
+          </button>
+        )}
+      </div>
     </td>
   );
 }
 
 /** One footer for all four: what is about to be created on the left, the two
  *  buttons on the right. Sits flush with the modal edge, same as
- *  `ModalFooter` below - a row form IS the modal's content. */
+ *  `ModalFooter` below - a row form IS the modal's content.
+ *
+ *  2.46.0: it also reports what is wrong and where. `problems` replaces the
+ *  old "first bad row, as one sentence" behaviour - Create no longer stops at
+ *  the first problem and hides the rest, and every bad cell is already
+ *  outlined in the table above. `error` stays for what the BACKEND said,
+ *  which is a different thing from a field being wrong.
+ */
 export function RowFormFooter({
   summary,
   error,
@@ -1110,6 +1197,7 @@ export function RowFormFooter({
   submitLabel,
   onCancel,
   onSubmit,
+  problems = [],
 }: {
   summary: ReactNode;
   error?: string | null;
@@ -1117,9 +1205,39 @@ export function RowFormFooter({
   submitLabel: string;
   onCancel: () => void;
   onSubmit: () => void;
+  problems?: RowProblem[];
 }) {
+  // Cmd/Ctrl+Enter creates, from any cell. A plain Enter is left alone on
+  // purpose: inside a date field or a select it already means something.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !saving) {
+        e.preventDefault();
+        onSubmit();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onSubmit, saving]);
+
+  const first = problems[0];
+
   return (
     <>
+      {problems.length > 0 && (
+        <p className="mt-4 flex flex-wrap items-baseline gap-x-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+          <span className="font-medium">
+            {problems.length === 1
+              ? "1 vec treba opraviť"
+              : `${problems.length} ${problems.length < 5 ? "veci" : "vecí"} treba opraviť`}
+          </span>
+          {first && (
+            <span className="text-amber-700 dark:text-amber-300">
+              riadok {first.row + 1}: {first.message}
+            </span>
+          )}
+        </p>
+      )}
       {error && (
         <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
           {error}
@@ -1127,7 +1245,10 @@ export function RowFormFooter({
       )}
       <div className="-mx-5 -mb-4 mt-5 flex flex-wrap items-center gap-3 bg-surface-muted px-5 py-3.5">
         <span className="text-sm text-slate-500 dark:text-slate-400">{summary}</span>
-        <span className="ml-auto flex gap-2">
+        <span className="ml-auto flex items-center gap-2">
+          <kbd className="hidden rounded border border-line px-1.5 py-0.5 text-[11px] text-slate-400 sm:inline dark:text-slate-500">
+            ⌘↵
+          </kbd>
           <Button variant="secondary" onClick={onCancel} disabled={saving}>
             Zrušiť
           </Button>

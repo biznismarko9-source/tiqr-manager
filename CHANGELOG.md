@@ -16,6 +16,44 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.46.0 - vyplňovače vedia presne, čo je zle, a graf má os
+
+### Chyba svieti na políčku, nie vo vete dole
+
+Doteraz ti formulár povedal prvú chybu ako vetu a zvyšok zamlčal. Teraz
+**každé zlé políčko zčervenie** — tým istým červeným krúžkom, aký má zvyšok
+appky — a dole je napísané, koľko vecí treba opraviť a kde začať.
+
+**Kedy to zasvieti:** ak si niečo napísal zle (cena „201,0x"), hneď. Ak niečo
+len chýba, až keď klikneš Vytvoriť — prázdny formulár ešte nie je chybný.
+
+### Ďalšie drobnosti, ktoré to robia rýchlejším
+
+- **Čísla riadkov** — chyba vie povedať „riadok 3" a ty ho nájdeš bez počítania.
+- **Hlavička zostáva** pri rolovaní dlhého zoznamu.
+- **Duplikovať riadok** — šesť miest toho istého turné alebo štyri lístky, čo
+  sa líšia sedadlom, sú rýchlejšie skopírované ako prepísané.
+- **Kurzor ide do nového riadku**, keď ho pridáš.
+- **⌘↵ / Ctrl+↵ vytvorí** odkiaľkoľvek z formulára.
+
+### Ks a sedadlá si už neodporujú
+
+Keď napíšeš sedadlá, počet kusov **z nich vychádza** — políčko to teraz ukáže
+a nedá sa prepísať. Predtým tam ticho ostávala jednotka, ktorú appka aj tak
+ignorovala.
+
+### Finance: graf už nie je bodka
+
+Default je „This month" a ten mal presne **jeden mesačný stĺpec** — takže graf
+vyzeral prázdny. Teraz sa veľkosť kroku riadi podľa obdobia: **do 92 dní po
+dňoch, nad to po mesiacoch**, rovnako ako to robí graf na Dashboarde. „This
+month" je tým pádom ~30 bodov, teda skutočná krivka.
+
+**Čo som zámerne neurobil:** nerozťahujem graf mimo zvoleného obdobia, len aby
+bola čiara dlhšia. Mesiace mimo obdobia by sa kreslili ako nula, hoci v nich
+reálne peniaze boli — to by bol graf, ktorý klame. Prázdne dni vnútri obdobia
+sú naozajstné nuly.
+
 ## 2.45.0 - jeden vyplňovač všade, a otvára sa NAD zoznamom
 
 Tvoja požiadavka mala dve časti a obe sú hotové.

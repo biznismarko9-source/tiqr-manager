@@ -3,7 +3,18 @@ import { api, errMsg } from "../lib/api";
 import { matchByName } from "../lib/aiImport";
 import type { EventWithStats, OrderInput, OrderRecord, Platform } from "../lib/types";
 import { decimalStringToCents, formatDateNumeric, formatMoney, todayIso } from "../lib/format";
-import { Input, Modal, RowFormFooter, RowFormTable, RowRemove, Select } from "../components/ui";
+import {
+  cellError,
+  Input,
+  Modal,
+  RowFormFooter,
+  RowFormTable,
+  RowNumber,
+  RowRemove,
+  Select,
+  visibleProblems,
+  type RowProblem,
+} from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
 import { parseSeats, TICKET_TYPES } from "./Orders";
 import { useToast } from "../lib/toast";
@@ -104,6 +115,32 @@ function sameShape(a: Row, b: Row): boolean {
 
 type Group = { head: Row; rows: Row[]; seats: string[]; qty: number };
 
+/** Every problem with every row, not just the first. Deliberately per ROW:
+ *  a group is something this form derives, so an error that named one would
+ *  point at nothing you could click. */
+function validate(rows: Row[]): RowProblem[] {
+  const out: RowProblem[] = [];
+  rows.forEach((r, i) => {
+    const seats = parseSeats(r.seats);
+    // Seats win over the typed count - that is `rowQty`'s own rule, and the
+    // Ks cell shows the seat count read-only when they are present, so the
+    // two can no longer disagree and there is nothing here to check.
+    if (seats.length === 0) {
+      const qty = parseInt(r.qty, 10);
+      if (!r.qty.trim()) out.push({ row: i, field: "qty", message: "chýba počet kusov alebo sedadlá", kind: "missing" });
+      else if (!Number.isFinite(qty) || qty < 1)
+        out.push({ row: i, field: "qty", message: "počet kusov musí byť aspoň 1", kind: "invalid" });
+    }
+    if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba cena za kus", kind: "missing" });
+    else if (decimalStringToCents(r.price) === null)
+      out.push({ row: i, field: "price", message: `cena „${r.price}“ nie je platná suma`, kind: "invalid" });
+    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "chýba mena", kind: "missing" });
+    if (r.pulled && !r.puller.trim())
+      out.push({ row: i, field: "puller", message: "pri zapnutom pulle treba meno", kind: "missing" });
+  });
+  return out;
+}
+
 export function groupRows(rows: Row[]): Group[] {
   const out: Group[] = [];
   for (const r of rows) {
@@ -154,6 +191,7 @@ export default function OrderRowsModal({
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   // Stamped when the form opens. marko: "datum nakupu by mal byt
   // automaticky" - so it is never a field, and never moves under him while
   // he is still typing.
@@ -184,6 +222,8 @@ export default function OrderRowsModal({
   );
 
   const groups = useMemo(() => groupRows(rows), [rows]);
+  const problems = useMemo(() => validate(rows), [rows]);
+  const shown = visibleProblems(problems, submitted);
   const totalTickets = groups.reduce((s, g) => s + g.qty, 0);
   const totalCost = groups.reduce((s, g) => s + g.qty * (decimalStringToCents(g.head.price) ?? 0), 0);
   const oneCurrency = groups.length > 0 && groups.every((g) => g.head.currency === groups[0].head.currency);
@@ -194,19 +234,11 @@ export default function OrderRowsModal({
 
   async function submit() {
     setError(null);
+    setSubmitted(true);
     if (!eventId) return setError("Vyber event");
     if (rows.length === 0) return setError("Pridaj aspoň jedno miesto");
-
-    for (const g of groups) {
-      const cents = decimalStringToCents(g.head.price);
-      if (cents === null) return setError(`Cena "${g.head.price}" nie je platná suma`);
-      if (g.qty < 1) return setError("Každý riadok potrebuje počet kusov alebo sedadlá");
-      if (g.seats.length > 0 && g.seats.length !== g.qty) {
-        return setError(`Sektor ${g.head.section || "?"}: ${g.seats.length} sedadiel, ale ${g.qty} kusov`);
-      }
-      if (g.head.pulled && !g.head.puller.trim()) return setError("Pri zapnutom pulle treba meno");
-      if (!g.head.currency.trim()) return setError("Mena je povinná");
-    }
+    // Every bad cell is already outlined and the footer counts them.
+    if (problems.length > 0) return;
 
     setSaving(true);
     const made: OrderRecord[] = [];
@@ -331,14 +363,30 @@ export default function OrderRowsModal({
       >
         {rows.map((r, i) => (
           <tr key={i}>
+            <RowNumber n={i + 1} />
             <td className="td w-[70px]">
-              <Input
-                type="number"
-                min={1}
-                value={r.qty}
-                onChange={(e) => patch(i, { qty: e.target.value })}
-                aria-label={`Počet kusov, riadok ${i + 1}`}
-              />
+              {/* 2.46.0: once seats are typed, the count IS the number of
+                  seats (see rowQty) - so the cell shows that instead of
+                  quietly ignoring whatever stands here. */}
+              {parseSeats(r.seats).length > 0 ? (
+                <Input
+                  value={String(parseSeats(r.seats).length)}
+                  readOnly
+                  tabIndex={-1}
+                  className="text-right"
+                  title="Počet vychádza zo sedadiel"
+                  aria-label={`Počet kusov zo sedadiel, riadok ${i + 1}`}
+                />
+              ) : (
+                <Input
+                  type="number"
+                  min={1}
+                  value={r.qty}
+                  onChange={(e) => patch(i, { qty: e.target.value })}
+                  className={`text-right ${cellError(shown, i, "qty")}`}
+                  aria-label={`Počet kusov, riadok ${i + 1}`}
+                />
+              )}
             </td>
             <td className="td w-[130px]">
               <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Typ">
@@ -361,6 +409,7 @@ export default function OrderRowsModal({
                 value={r.seats}
                 onChange={(e) => patch(i, { seats: e.target.value })}
                 placeholder="23-24"
+                className={cellError(shown, i, "seats")}
                 aria-label="Sedadlá"
               />
             </td>
@@ -383,6 +432,7 @@ export default function OrderRowsModal({
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
                 placeholder="135,00"
+                className={`text-right ${cellError(shown, i, "price")}`}
                 aria-label="Cena za kus"
               />
             </td>
@@ -390,6 +440,7 @@ export default function OrderRowsModal({
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
+                className={cellError(shown, i, "currency")}
                 aria-label="Mena"
               />
             </td>
@@ -416,7 +467,8 @@ export default function OrderRowsModal({
                     value={r.puller}
                     onChange={(e) => patch(i, { puller: e.target.value })}
                     placeholder="kto ťahal"
-                    aria-label="Kto pullol"
+                    className={cellError(shown, i, "puller")}
+                  aria-label="Kto pullol"
                   />
                 ) : (
                   <span className="text-xs text-slate-500 dark:text-slate-400">nie</span>
@@ -430,6 +482,11 @@ export default function OrderRowsModal({
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
               label={`Zmazať riadok ${i + 1}`}
+              // Seats are cleared on purpose: a duplicated row is the same
+              // block at a different seat, and two rows with identical seats
+              // would be the same tickets twice.
+              onDuplicate={() => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], seats: "" }, ...rs.slice(i + 1)])}
+              duplicateLabel={`Duplikovať riadok ${i + 1}`}
             />
           </tr>
         ))}
@@ -437,6 +494,7 @@ export default function OrderRowsModal({
 
       <RowFormFooter
         error={error}
+        problems={shown}
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}

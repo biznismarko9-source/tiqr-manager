@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import type { OrderRecord, Platform, SaleBatchInput, SalePaymentStatus, Ticket } from "../lib/types";
 import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatLocation, todayIso } from "../lib/format";
-import { Input, Modal, RowFormFooter, RowFormTable, RowRemove, Select } from "../components/ui";
+import {
+  cellError,
+  Input,
+  Modal,
+  RowFormFooter,
+  RowFormTable,
+  RowNumber,
+  RowRemove,
+  Select,
+  visibleProblems,
+  type RowProblem,
+} from "../components/ui";
 import { useToast } from "../lib/toast";
 
 /**
@@ -61,6 +72,7 @@ export default function SaleRowsModal({
   const [saleDate, setSaleDate] = useState(() => todayIso());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [loadingTickets, setLoadingTickets] = useState(false);
 
   useEffect(() => {
@@ -71,6 +83,7 @@ export default function SaleRowsModal({
   useEffect(() => {
     if (!open) return;
     setRows([]);
+    setSubmitted(false);
     setPickOrderId("");
     setOrderQuery("");
     setPlatformId(null);
@@ -148,14 +161,29 @@ export default function SaleRowsModal({
     return { revenue, fees, cost, profit: revenue - fees - cost };
   }, [rows]);
 
+  // Every problem with every row, not just the first. A Sales row IS a real
+  // ticket, so the only things that can be wrong here are the two amounts
+  // typed into it.
+  const problems = useMemo<RowProblem[]>(() => {
+    const out: RowProblem[] = [];
+    rows.forEach((r, i) => {
+      if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba predajná cena", kind: "missing" });
+      else if (decimalStringToCents(r.price) === null)
+        out.push({ row: i, field: "price", message: `cena „${r.price}“ nie je platná suma`, kind: "invalid" });
+      if (r.fee.trim() && decimalStringToCents(r.fee) === null)
+        out.push({ row: i, field: "fee", message: `poplatok „${r.fee}“ nie je platná suma`, kind: "invalid" });
+    });
+    return out;
+  }, [rows]);
+  const shown = visibleProblems(problems, submitted);
+
   async function submit() {
     setError(null);
+    setSubmitted(true);
     if (rows.length === 0) return setError("Pridaj aspoň jeden lístok z objednávky");
     if (!currency.trim()) return setError("Mena je povinná");
-    for (const r of rows) {
-      if (decimalStringToCents(r.price) === null) return setError(`${r.ticket.code}: cena "${r.price}" nie je platná suma`);
-      if (decimalStringToCents(r.fee) === null) return setError(`${r.ticket.code}: poplatok "${r.fee}" nie je platná suma`);
-    }
+    // Every bad cell is already outlined and the footer counts them.
+    if (problems.length > 0) return;
 
     const input: SaleBatchInput = {
       lines: rows.map((r) => ({
@@ -278,6 +306,7 @@ export default function SaleRowsModal({
             const profit = price - fee - r.ticket.totalCostCents;
             return (
               <tr key={r.ticket.id}>
+                <RowNumber n={i + 1} />
                 <td className="td w-[150px] font-medium text-slate-900 dark:text-slate-100">{r.ticket.code}</td>
                 <td className="td w-[170px] truncate" title={r.ticket.eventName}>
                   {r.ticket.eventName}
@@ -291,6 +320,7 @@ export default function SaleRowsModal({
                     value={r.price}
                     onChange={(e) => patch(i, { price: e.target.value })}
                     placeholder="245,00"
+                    className={`text-right ${cellError(shown, i, "price")}`}
                     aria-label={`Cena, ${r.ticket.code}`}
                   />
                 </td>
@@ -298,6 +328,7 @@ export default function SaleRowsModal({
                   <Input
                     value={r.fee}
                     onChange={(e) => patch(i, { fee: e.target.value })}
+                    className={`text-right ${cellError(shown, i, "fee")}`}
                     aria-label={`Poplatok, ${r.ticket.code}`}
                   />
                 </td>
@@ -321,6 +352,7 @@ export default function SaleRowsModal({
 
       <RowFormFooter
         error={error}
+        problems={shown}
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}
