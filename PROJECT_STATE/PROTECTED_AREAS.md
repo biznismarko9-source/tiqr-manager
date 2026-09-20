@@ -21,6 +21,52 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.45.0 - creating anything is a ROW FORM, in a MODAL over its list
+
+**All four create flows have the same shape and it was asked for twice.**
+marko: "vsade events, inventory, sales a pulls budu podobne tie vyplnovace
+udajov", and separately "nechcem aby to ked kliknes na new order, sales, pull
+atd ako svoje okno ale tak aby to bolo nad orders, sales pulls atd a podtym
+rozmazane vidis ostatne orders". So:
+
+- Do not turn any of the four back into a page. **This already reversed
+  2.42.0**, which had made New Order a full page one release earlier;
+  `/orders/new` has now been added and removed twice. Nothing goes back
+  without marko saying so in as many words.
+- Do not give one of the four a different shell. `RowFormTable`, `RowRemove`
+  and `RowFormFooter` in `ui.tsx` exist so the four cannot drift apart; a
+  form-specific tweak belongs in that form's columns, not in the shell.
+- The blurred backdrop is `Modal`'s own (`backdrop-blur-[2px]` +
+  `bg-slate-950/70`). It is not decoration - it is the thing he described.
+
+**Editing is a separate question and was not part of this.** `EventFormModal`
+(EventDetail) and `PullFormModal` (editing a pull) are untouched and still
+per-field. `OrderFormModal` and `SaleFormModal` are now unreferenced; they
+were deliberately LEFT in place rather than deleted.
+
+## 2.45.0 - MetricChart has two callers' worth of wording, one set of maths
+
+`MetricChart`'s `labels` and `emptyLabel` props exist so Finance can call the
+same three series Income / Expenses / Net without touching `METRICS`, which is
+the **Dashboard's own tab list**. Dashboard and Recap pass neither prop.
+Renaming a metric is presentation; if a caller ever needs a different NUMBER,
+that is a new series in `valueOf`, not a label.
+
+**The number above a chart must come from the same source as the cards beside
+it.** Finance's headline is the period total handed down from the Income /
+Expenses / Net Cash Flow stat cards, NOT a sum of the plotted buckets -
+`buildMonthlySeries` caps at 24 months, so summing bars would silently
+disagree with the cards on the same screen.
+
+## 2.45.0 - 2.44.0 is a burned version number
+
+A 2.44.0 build (Finance migration 031, `finance_entries.event_id`,
+`recurring_expenses.kind`) was assembled and zipped, then abandoned when marko
+pointed the session back at the 2.43.0 zip. **`tiqr-manager-2.44.0.zip` is
+still on his Mac with those contents**, so 2.45.0 skipped the number rather
+than put a second, different 2.44.0 into his Downloads - the same reasoning as
+the 2.4.0 -> 2.4.1 filename collision. Do not "reclaim" 2.44.0 later.
+
 ## 2.43.0 - the sidebar has no groups, and that is the point
 
 **Every row in the sidebar is a real `NavLink`.** There is no collapsible

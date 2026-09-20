@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ChangeEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
-import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconPlus, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
 import { formatDateNumeric } from "../lib/format";
 import type { TrendInfo } from "../lib/format";
 
@@ -984,10 +984,6 @@ export function Modal({
   title: string;
   children: ReactNode;
   width?: string;
-  /** 2.29.3 - marko's chosen form style: the form on the left, and what it is
-   *  about to create on the right, updating as he types. Optional, so every
-   *  one of the app's existing modals keeps rendering exactly as it did and
-   *  only the create forms opt in. */
 }) {
   useEffect(() => {
     if (!open) return;
@@ -1029,6 +1025,119 @@ export function Modal({
         <div className="max-h-[75vh] overflow-y-auto px-5 py-4">{children}</div>
       </div>
     </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Row forms
+
+   2.45.0: marko - "vsade events, inventory, sales a pulls budu podobne tie
+   vyplnovace udajov". Creating anything in this app is now the same gesture:
+   a table of rows inside a modal, one row per thing, an "add another" button
+   under it and one footer that says what is about to happen.
+
+   These three pieces are what make the four forms LOOK the same rather than
+   four tables that merely resemble each other. Each caller still writes its
+   own cells - the fields genuinely differ - but the shell, the header band,
+   the remove column and the footer come from here, so a change to the look
+   is one edit, not four.
+   --------------------------------------------------------------------------- */
+
+/** The table shell plus the "add another" button underneath it. `head` is the
+ *  visible column labels; the trailing remove column is added here so no
+ *  caller has to remember it. */
+export function RowFormTable({
+  head,
+  children,
+  onAdd,
+  addLabel,
+}: {
+  head: string[];
+  children: ReactNode;
+  onAdd: () => void;
+  addLabel: string;
+}) {
+  return (
+    <>
+      <div className="table-shell table-shell-compact mb-3">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr>
+              {head.map((h, i) => (
+                <th key={`${h}-${i}`} className="th whitespace-nowrap">
+                  {h}
+                </th>
+              ))}
+              <th className="th" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody>
+        </table>
+      </div>
+      <Button variant="secondary" onClick={onAdd}>
+        <IconPlus className="h-4 w-4" /> {addLabel}
+      </Button>
+    </>
+  );
+}
+
+/** The last cell of every row. Hidden - not disabled - on a one-row form,
+ *  because a form you cannot empty needs no explanation. */
+export function RowRemove({ show, onRemove, label }: { show: boolean; onRemove: () => void; label: string }) {
+  return (
+    <td className="td w-[46px]">
+      {show && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={label}
+          className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-red-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-red-400"
+        >
+          <IconX className="h-4 w-4" />
+        </button>
+      )}
+    </td>
+  );
+}
+
+/** One footer for all four: what is about to be created on the left, the two
+ *  buttons on the right. Sits flush with the modal edge, same as
+ *  `ModalFooter` below - a row form IS the modal's content. */
+export function RowFormFooter({
+  summary,
+  error,
+  saving,
+  submitLabel,
+  onCancel,
+  onSubmit,
+}: {
+  summary: ReactNode;
+  error?: string | null;
+  saving?: boolean;
+  submitLabel: string;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <>
+      {error && (
+        <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
+          {error}
+        </p>
+      )}
+      <div className="-mx-5 -mb-4 mt-5 flex flex-wrap items-center gap-3 bg-surface-muted px-5 py-3.5">
+        <span className="text-sm text-slate-500 dark:text-slate-400">{summary}</span>
+        <span className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={onCancel} disabled={saving}>
+            Zrušiť
+          </Button>
+          <Button variant="primary" onClick={onSubmit} disabled={saving}>
+            {saving ? <Spinner className="h-4 w-4" /> : null}
+            {submitLabel}
+          </Button>
+        </span>
+      </div>
+    </>
   );
 }
 

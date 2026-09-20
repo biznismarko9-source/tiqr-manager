@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import OrderRowsModal from "./OrderRowsModal";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
@@ -329,13 +330,14 @@ export default function Orders() {
     // the Dashboard's "New Order" Quick Action open this same modal without
     // pinning it to one event - purely additive, presetEventId's own
     // behavior below is unchanged.
-    // 2.42.0: the same two hand-offs, forwarded to the new page instead of
-    // opening a modal here. EventDetail links straight to `/orders/new?event=`
-    // now, but an older in-app link (or a Dashboard Quick Action) can still
-    // arrive carrying state, and it must not land on a dead end.
+    // The two hand-offs that open this form from elsewhere: EventDetail's
+    // "New order for this event" and the Dashboard's Quick Action. Both
+    // arrive carrying state and open the modal over this list.
     const state = location.state as { presetEventId?: number; openCreate?: boolean } | null;
     if (state?.presetEventId || state?.openCreate) {
-      navigate(state.presetEventId ? `/orders/new?event=${state.presetEventId}` : "/orders/new", { replace: true });
+      setPresetEventId(state.presetEventId);
+      setModalOpen(true);
+      navigate(location.pathname, { replace: true, state: null });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
@@ -352,12 +354,17 @@ export default function Orders() {
                 <IconTrash className="h-4 w-4" /> Delete
               </Button>
             )}
-            {/* 2.42.0: creating an order is a PAGE now (pages/OrderNew.tsx),
-                not this file's modal - marko picked the full-page, row-based
-                shape out of a preview. `OrderFormModal` below is left in
-                place, unreferenced, for one release so he can compare; say
-                the word and it goes. */}
-            <Button variant="primary" onClick={() => navigate("/orders/new")}>
+            {/* 2.45.0: the row-based form is back in a modal over this
+                list (pages/OrderRowsModal.tsx). `OrderFormModal` further
+                down this file is the pre-2.42.0 single-order form, now
+                unreferenced - kept one more release so he can compare. */}
+            <Button
+              variant="primary"
+              onClick={() => {
+                setPresetEventId(undefined);
+                setModalOpen(true);
+              }}
+            >
               <IconPlus className="h-4 w-4" /> New Order
             </Button>
           </div>
@@ -484,7 +491,7 @@ export default function Orders() {
           title="No orders yet"
           description="Record a ticket purchase to automatically generate its individual tickets."
           action={
-            <Button variant="primary" onClick={() => navigate("/orders/new")}>
+            <Button variant="primary" onClick={() => setModalOpen(true)}>
               <IconPlus className="h-4 w-4" /> New Order
             </Button>
           }
@@ -710,14 +717,18 @@ export default function Orders() {
         </div>
       )}
 
-      <OrderFormModal
+      <OrderRowsModal
         open={modalOpen}
         presetEventId={presetEventId}
         onClose={() => setModalOpen(false)}
-        onCreated={(order) => {
+        onCreated={(created) => {
           setModalOpen(false);
           load();
-          navigate(`/orders/${order.id}`, { state: { from: location.pathname } });
+          // One order created -> straight into it, same as before. Several ->
+          // stay on the list, because there is no single one to open.
+          if (created.length === 1) {
+            navigate(`/orders/${created[0].id}`, { state: { from: location.pathname } });
+          }
         }}
       />
 

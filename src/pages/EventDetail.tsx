@@ -294,7 +294,7 @@ function OverviewTab({
           is where you are already looking. */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets ({tickets?.length ?? 0})</h2>
-        <Button variant="secondary" onClick={() => navigate(`/orders/new?event=${event.id}`)}>
+        <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
           <IconPlus className="h-4 w-4" /> New order for this event
         </Button>
       </div>

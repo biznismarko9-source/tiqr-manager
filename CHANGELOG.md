@@ -16,6 +16,49 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.45.0 - jeden vyplňovač všade, a otvára sa NAD zoznamom
+
+Tvoja požiadavka mala dve časti a obe sú hotové.
+
+### 1. Rovnaké riadky na všetkom
+
+**Events, Inventory, Sales aj Pulls** majú teraz ten istý vyplňovač: tabuľka
+riadkov, pod ňou tlačidlo „pridaj ďalší", dole jedna lišta, ktorá hovorí, čo
+vznikne, a vedľa nej Zrušiť/Vytvoriť.
+
+- **Inventory** — 11 polí, gulička na pull, dátum nákupu automaticky. Čo
+  nesedí sektorom, radom, cenou, menou, typom, platformou či pullom — alebo
+  nemá sedadlá tesne za sebou — je vlastná objednávka.
+- **Pulls** — jeden riadok = jeden pull. Event sa píše (nie je to tvoja
+  objednávka) a ďalší riadok si ho aj s dátumom prevezme.
+- **Sales** — riadky sú skutočné lístky, takže „ďalší riadok" znamená
+  „prihoď lístky z ďalšej objednávky". Zisk sa ráta hneď v riadku.
+- **Events** — jeden riadok = jeden event, takže turné napíšeš na jeden raz.
+  Ďalší riadok prevezme kategóriu a krajinu.
+
+### 2. Žiadne vlastné okno — otvára sa nad zoznamom
+
+New Order už nie je stránka. Všetky štyri sú okno **nad** svojím zoznamom a
+pod ním vidíš rozmazané ostatné riadky — presne ako to robili Sales a Pulls
+predtým. `/orders/new` zmizlo; stará linka ťa pošle na Inventory.
+
+Editovanie sa nemenilo: event upravuješ na jeho detaile, pull v jeho okne,
+oba pôvodné formuláre sú nedotknuté.
+
+### 3. Finance: Income vs Expenses je graf z Dashboardu
+
+Dvojité stĺpce sú preč. Je tam **ten istý graf ako na Dashboard → Overview** —
+tá istá plynulá krivka, to isté zvýraznenie pri prejdení myšou, tie isté
+prepínače. Tri: **Income · Expenses · Net**. Čísla sú tie isté, čo kreslili
+stĺpce; veľké číslo nad grafom je súčet za obdobie z kariet nad ním, aby si
+nikdy neukazovali dve rôzne sumy.
+
+### Prečo 2.45.0 a nie 2.44.0
+
+Zip s názvom `tiqr-manager-2.44.0.zip` už máš v Downloads a má iný obsah
+(finance migrácia, ktorú sme opustili). Aby ti v Downloads neležali dva rôzne
+súbory s tým istým názvom, táto verzia ide o krok ďalej.
+
 ## 2.43.0 - bočný panel je plochý
 
 Skupina **Tickets** z bočného panela odišla. **Events, Inventory, Sales a

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.43.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.45.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -66,6 +66,16 @@ above. **2.4.1** shipped as "Price Checker Live Market Monitor," all
 online/live-market functionality folded directly into Price Checker
 instead of a separate feature - see "Current focus" below and
 `CHANGELOG.md`'s own entries for all of them.)
+
+**2.44.0 does not exist as a release.** A 2.44.0 build (Finance: migration
+031, `finance_entries.event_id`, `recurring_expenses.kind`) was assembled and
+zipped, then marko pointed the session back at the 2.43.0 zip and the working
+tree was restored to exactly 2.43.0. That zip is still on his Mac under the
+2.44.0 filename with different contents, so the next release skipped the
+number and shipped as **2.45.0** - the same filename-collision reasoning as
+2.4.0 -> 2.4.1 above, not an auto-updater concern. The 2.44.0 Finance work is
+NOT in this tree; it survives only as `tiqr-manager-2.44.0.zip` in marko's
+Downloads.
 
 **2.4.2** removes 2.4.1's "Price Checker Live Market Monitor" entirely, at
 marko's explicit request ("TÚTO FUNKCIU NECHCEM V APLIKÁCII VÔBEC" - "I
@@ -1154,6 +1164,54 @@ dropped from its import.
 **This retires the 2.29.4 / 2.41.0 argument about whether a group header
 should light up with its child** - there is no group header. PROTECTED_AREAS
 keeps both entries as history; neither describes live code any more.
+
+**2.45.0 - one filler everywhere, and it opens over the list.** marko: "vsade
+events, inventory, sales a pulls budu podobne tie vyplnovace udajov" and "ked
+kliknes na new order, sales, pull atd ... nad orders, sales pulls atd a podtym
+rozmazane vidis ostatne orders". Two things, and they pull in opposite
+directions from 2.42.0, which had just made New Order a full page.
+
+**Four row forms, one shell.** `RowFormTable`, `RowRemove` and `RowFormFooter`
+in `ui.tsx` are the whole shared part: a compact table, an "add another"
+button under it, and one footer that carries the summary on the left and
+Cancel/Create on the right. Each form owns only its own columns.
+
+- `OrderRowsModal.tsx` - 2.42.0's page, back in a modal. Eleven fields, the
+  pull dot, the purchase date stamped on open, and the same split rule (rows
+  merge into one order only when section/row/price/currency/type/platform/pull
+  all match AND the seats are contiguous).
+- `PullRowsModal.tsx` - one row per pull; the event is typed, not picked, and
+  a new row inherits it.
+- `SaleRowsModal.tsx` - the rows ARE real tickets, so "add rows" means "bring
+  in another order's tickets"; one `createSalesBatch` for the lot.
+- `EventRowsModal.tsx` - one row per event, so a tour is typed once. A new row
+  inherits category and country.
+
+**Nothing became a page.** All four are `Modal`, which has blurred the
+background since long before this task - that blur IS what marko asked for.
+`/orders/new` and `OrderNew.tsx` are gone again; `EventDetail`'s "New order
+for this event" hands `presetEventId` to `/orders` instead.
+
+**The old per-field modals:** `EventFormModal` (used by EventDetail) and
+`PullFormModal` (editing) are still live. `OrderFormModal` and `SaleFormModal`
+are now unreferenced but left in place, unchanged.
+
+**Finance's Income vs Expenses is the Dashboard's chart now.** marko: "vo
+finance ako je income vs expense widget tak urobit taky isty graf ako ktory je
+na dashboarde v overview". The paired bar chart is replaced by `MetricChart`
+itself - same smooth area line, same hover crosshair, same segmented pills -
+with three of them: Income / Expenses / Net. `buildMonthlySeries` is untouched;
+each month maps onto one `RevenueTimeSeriesPoint`. `MetricChart` gained two
+optional props, `labels` and `emptyLabel`, so a caller can rename the series
+without touching `METRICS` (the Dashboard's own tab list); Dashboard and Recap
+pass neither and render exactly as before. The headline number above the chart
+is the period total handed down from the stat cards, NOT a sum of the plotted
+buckets - the series is capped at 24 months, so summing bars would disagree
+with the Income/Expenses/Net Cash Flow cards on the same screen.
+
+**The four row forms are in Slovak** while the pages around them are English -
+they were built from the Slovak preview marko picked from. Easy to flip if he
+wants; nothing else changed language.
 
 **Next new migration is 031.**
 

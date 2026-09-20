@@ -14,7 +14,6 @@ import Events from "./pages/Events";
 import EventDetail from "./pages/EventDetail";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
-import OrderNew from "./pages/OrderNew";
 import Sales from "./pages/Sales";
 import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
@@ -159,12 +158,11 @@ export default function App() {
               <Route path="events" element={<Events />} />
               <Route path="events/:id" element={<EventDetail />} />
               <Route path="orders" element={<Orders />} />
-              {/* 2.42.0: creating an order is its own PAGE now, not a modal -
-                  marko picked the full-page shape out of a preview of ten.
-                  Listed before the `:id` route for readability only; React
-                  Router ranks a static segment above a dynamic one on its
-                  own, so "new" can never be read as an id. */}
-              <Route path="orders/new" element={<OrderNew />} />
+              {/* 2.42.0 gave creating an order its own page. 2.45.0 takes
+                  it back into a modal over the list, at marko's request -
+                  the ROWS were what he wanted, the full page was not. There
+                  is no /orders/new route any more; an old link to it simply
+                  falls through to the list. */}
               <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="tickets" element={<TicketsRedirect />} />
               <Route path="sales" element={<Sales />} />

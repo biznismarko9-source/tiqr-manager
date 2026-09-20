@@ -130,11 +130,22 @@ export function MetricChart({
   granularity,
   currency,
   metric,
+  labels,
+  emptyLabel,
 }: {
   points: RevenueTimeSeriesPoint[];
   granularity: string;
   currency: string;
   metric: MetricKey;
+  /** 2.45.0: rename a metric for one caller without touching METRICS, which
+   * is the Dashboard's own tab list. Finance calls the same three series
+   * Income / Expenses / Net - the same numbers a ledger names differently,
+   * not new maths. Omitted everywhere else, so Dashboard and Recap render
+   * exactly the labels they always did. */
+  labels?: Partial<Record<MetricKey, string>>;
+  /** Likewise: "No sales in this period yet." is the Dashboard's sentence.
+   * A ledger with no entries has not failed to sell anything. */
+  emptyLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(FALLBACK_WIDTH);
@@ -177,7 +188,7 @@ export function MetricChart({
         className="flex items-center justify-center text-sm text-slate-500 dark:text-slate-400"
         style={{ height: CHART_HEIGHT }}
       >
-        No sales in this period yet.
+        {emptyLabel ?? "No sales in this period yet."}
       </div>
     );
   }
@@ -232,7 +243,7 @@ export function MetricChart({
   // shows the exact bucket, so nothing is lost, just decluttered.
   const labelEvery = n <= 8 ? 1 : Math.ceil(n / 8);
   const hoveredPoint = hovered !== null ? points[hovered] : null;
-  const metricLabel = METRICS.find((m) => m.key === metric)?.label ?? "Value";
+  const metricLabel = labels?.[metric] ?? METRICS.find((m) => m.key === metric)?.label ?? "Value";
 
   return (
     <div>

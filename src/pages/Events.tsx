@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import AiImportPanel from "../components/AiImportPanel";
+import EventRowsModal from "./EventRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
 import { formatDateNumeric, formatMoneyOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
@@ -123,8 +124,11 @@ export default function Events() {
   const [sortBy, setSortBy] = useState("");
   // 2.0.59: see EVENT_TABS above.
   const [tab, setTab] = useListTab("eventsTab", ["upcoming", "completed"] as const);
+  // 2.45.0: `modalOpen` now drives EventRowsModal (the row form). The old
+  // `editing` state went with it - every setEditing call on this page passed
+  // null, because editing an event happens on EventDetail, which imports
+  // EventFormModal (still exported below) for itself.
   const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<EventWithStats | null>(null);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
   // column sitting there all the time; the "Delete" toggle button below
   // reveals it, and it disappears again the moment you confirm or cancel.
@@ -263,7 +267,6 @@ export default function Events() {
   useEffect(() => {
     const state = location.state as { openCreate?: boolean } | null;
     if (state?.openCreate) {
-      setEditing(null);
       setModalOpen(true);
       navigate(location.pathname, { replace: true, state: null });
     }
@@ -296,7 +299,6 @@ export default function Events() {
             <Button
               variant="primary"
               onClick={() => {
-                setEditing(null);
                 setModalOpen(true);
               }}
             >
@@ -567,11 +569,15 @@ export default function Events() {
         </div>
       )}
 
-      <EventFormModal
+      {/* 2.45.0: New Event is now the same row form as New Order / New Sale /
+          New Pull - marko's request that all four fillers look alike, and that
+          they open OVER the list (Modal already blurs what is behind it)
+          rather than as a page of their own. EventFormModal stays exactly as
+          it was, for editing one event from EventDetail. */}
+      <EventRowsModal
         open={modalOpen}
-        initial={editing}
         onClose={() => setModalOpen(false)}
-        onSaved={() => {
+        onCreated={() => {
           setModalOpen(false);
           load();
         }}

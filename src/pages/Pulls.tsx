@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import AiImportPanel from "../components/AiImportPanel";
+import PullRowsModal from "./PullRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
@@ -201,6 +202,9 @@ function GivenPulls() {
   const [sortBy, setSortBy] = useState(lastPullsSortBy);
   // undefined = modal closed, null = create mode, a Pull = edit mode.
   const [modalPull, setModalPull] = useState<Pull | null | undefined>(undefined);
+  // 2.45.0: creating is the row form (PullRowsModal, several pulls at once);
+  // `modalPull` now only ever carries a pull being EDITED.
+  const [newOpen, setNewOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Pull | null>(null);
   const [deleting, setDeleting] = useState(false);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
@@ -359,7 +363,7 @@ function GivenPulls() {
               <IconTrash className="h-4 w-4" /> Delete
             </Button>
           )}
-          <Button variant="primary" onClick={() => setModalPull(null)}>
+          <Button variant="primary" onClick={() => setNewOpen(true)}>
             <IconPlus className="h-4 w-4" /> New Pull
           </Button>
         </div>
@@ -444,7 +448,7 @@ function GivenPulls() {
           title="No pulls yet"
           description="Record a pull when you queue up to buy tickets on someone else's behalf."
           action={
-            <Button variant="primary" onClick={() => setModalPull(null)}>
+            <Button variant="primary" onClick={() => setNewOpen(true)}>
               <IconPlus className="h-4 w-4" /> New Pull
             </Button>
           }
@@ -684,8 +688,19 @@ function GivenPulls() {
         </div>
       )}
 
+      <PullRowsModal
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onCreated={() => {
+          setNewOpen(false);
+          load(search);
+        }}
+      />
+
+      {/* Editing keeps the original one-pull form - it carries fields the
+          create rows deliberately leave out (transfer done, paid). */}
       <PullFormModal
-        open={modalPull !== undefined}
+        open={!!modalPull}
         pull={modalPull ?? null}
         onClose={() => setModalPull(undefined)}
         onSaved={() => {

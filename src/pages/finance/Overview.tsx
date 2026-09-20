@@ -1,8 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../../lib/api";
-import type { CashflowForecast, FinanceEntry, FinanceEntryInput } from "../../lib/types";
+import type { CashflowForecast, FinanceEntry, FinanceEntryInput, RevenueTimeSeriesPoint } from "../../lib/types";
 import { formatMoney, formatMoneyOrMixed } from "../../lib/format";
-import { Button, Card, ConfirmDialog, EmptyState, Input, PanelSkeleton, StatCard, StatsSkeleton } from "../../components/ui";
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+  PanelSkeleton,
+  SEGMENTED_TRACK,
+  segmentedItemClass,
+  StatCard,
+  StatsSkeleton,
+} from "../../components/ui";
+import { MetricChart, type MetricKey } from "../../components/MetricChart";
 import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
 import { IconBarChart, IconPlus, IconTrendingUp } from "../../components/icons";
 import { useToast } from "../../lib/toast";
@@ -412,10 +424,11 @@ export default function Overview({ entries, categories, accounts, loading, reloa
           <div className="mb-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
             <CategoryBreakdownCard rows={categoryBreakdown} />
             <Card className="p-4">
-              <p className="mb-3 section-title">
-                Income vs Expenses by month
-              </p>
-              <IncomeExpenseChart buckets={monthlySeries} />
+              <IncomeExpenseChart
+                buckets={monthlySeries}
+                incomeCents={incomeCents}
+                expenseCents={expenseCents}
+              />
             </Card>
           </div>
 
@@ -488,46 +501,102 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
   );
 }
 
-const CHART_ROW_HEIGHT = 160;
+// 2.45.0: marko - "vo finance ako je income vs expense widget tak urobit
+// taky isty graf ako ktory je na dashboarde v overview". So this is now
+// literally the Dashboard's chart: the same MetricChart component, the same
+// segmented pill row, the same big number above it. What changed is only the
+// wording - a ledger calls these three series Income / Expenses / Net, and
+// MetricChart takes those as `labels` (see its 2.45.0 prop comment).
+//
+// The numbers are the SAME ones the paired bar chart drew: `buildMonthlySeries`
+// is untouched, and each month maps onto one RevenueTimeSeriesPoint, which is
+// the shape MetricChart already reads. `profitCents` is income - expenses,
+// i.e. exactly the "Net Cash Flow" card above, per month. `sellingFeesCents`
+// and `soldTickets` have no meaning in a ledger and are never plotted here
+// (no "Sales" pill), so they are zero rather than invented.
+const FINANCE_METRICS: { key: MetricKey; label: string }[] = [
+  { key: "revenue", label: "Income" },
+  { key: "cost", label: "Expenses" },
+  { key: "profit", label: "Net" },
+];
 
-function IncomeExpenseChart({ buckets }: { buckets: MonthBucket[] }) {
-  if (buckets.length === 0) {
-    return (
-      <div className="flex items-center justify-center text-sm text-slate-500 dark:text-slate-400" style={{ height: CHART_ROW_HEIGHT + 28 }}>
-        No entries in this period yet.
-      </div>
-    );
-  }
-  const maxVal = Math.max(1, ...buckets.flatMap((b) => [b.incomeCents, b.expenseCents]));
+const FINANCE_METRIC_LABELS: Partial<Record<MetricKey, string>> = {
+  revenue: "Income",
+  cost: "Expenses",
+  profit: "Net",
+};
+
+function IncomeExpenseChart({
+  buckets,
+  incomeCents,
+  expenseCents,
+}: {
+  buckets: MonthBucket[];
+  incomeCents: number;
+  expenseCents: number;
+}) {
+  const [metric, setMetric] = useState<MetricKey>("revenue");
+  const points = useMemo<RevenueTimeSeriesPoint[]>(
+    () =>
+      buckets.map((b) => ({
+        bucketStart: `${b.key}-01`,
+        revenueCents: b.incomeCents,
+        sellingFeesCents: 0,
+        cogsCents: b.expenseCents,
+        soldTickets: 0,
+        profitCents: b.incomeCents - b.expenseCents,
+      })),
+    [buckets],
+  );
+  // The headline number is the period's own total, handed down from the
+  // cards above - NOT a sum of the plotted buckets. `buildMonthlySeries` caps
+  // an "All time" ledger at the most recent 24 months, so summing the bars
+  // would quietly disagree with the Income/Expenses/Net Cash Flow cards on
+  // the same screen.
+  const total = metric === "cost" ? expenseCents : metric === "profit" ? incomeCents - expenseCents : incomeCents;
+
   return (
     <div>
-      <div className="mb-3 flex items-center gap-4 text-xs">
-        <span className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
-          <span className="h-2 w-2 rounded-full bg-emerald-500" /> Income
-        </span>
-        <span className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
-          <span className="h-2 w-2 rounded-full bg-rose-500" /> Expenses
-        </span>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            {FINANCE_METRIC_LABELS[metric]} by month
+          </p>
+          <p
+            className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${
+              metric !== "profit"
+                ? ""
+                : total > 0
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : total < 0
+                    ? "text-red-600 dark:text-red-400"
+                    : ""
+            }`}
+          >
+            {formatMoney(total, "EUR")}
+          </p>
+        </div>
+        <div className={SEGMENTED_TRACK}>
+          {FINANCE_METRICS.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => setMetric(m.key)}
+              aria-pressed={metric === m.key}
+              className={segmentedItemClass(metric === m.key)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="flex items-end gap-3 overflow-x-auto px-1 pb-1" style={{ height: CHART_ROW_HEIGHT }}>
-        {buckets.map((b) => (
-          <div key={b.key} className="flex h-full shrink-0 flex-col items-center justify-end gap-1" style={{ width: 56 }}>
-            <div className="flex items-end gap-0.5" style={{ height: CHART_ROW_HEIGHT - 20 }}>
-              <div
-                className="w-3.5 rounded-t bg-emerald-500"
-                style={{ height: `${Math.max(2, (b.incomeCents / maxVal) * (CHART_ROW_HEIGHT - 20))}px` }}
-                title={`${b.label} - Income ${formatMoney(b.incomeCents, "EUR")}`}
-              />
-              <div
-                className="w-3.5 rounded-t bg-rose-500"
-                style={{ height: `${Math.max(2, (b.expenseCents / maxVal) * (CHART_ROW_HEIGHT - 20))}px` }}
-                title={`${b.label} - Expenses ${formatMoney(b.expenseCents, "EUR")}`}
-              />
-            </div>
-            <span className="whitespace-nowrap text-[10px] text-slate-500 dark:text-slate-400">{b.label}</span>
-          </div>
-        ))}
-      </div>
+      <MetricChart
+        points={points}
+        granularity="month"
+        currency="EUR"
+        metric={metric}
+        labels={FINANCE_METRIC_LABELS}
+        emptyLabel="No entries in this period yet."
+      />
     </div>
   );
 }

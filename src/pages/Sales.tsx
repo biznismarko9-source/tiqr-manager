@@ -42,6 +42,7 @@ import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, Icon
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { markRow, takeRow } from "../lib/lastRow";
+import SaleRowsModal from "./SaleRowsModal";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
 
@@ -956,7 +957,10 @@ export default function Sales() {
         </div>
       )}
 
-      <SaleFormModal
+      {/* 2.45.0: the row form, over this list. `SaleFormModal` further down
+          this file is the pre-2.45.0 two-step version, now unreferenced -
+          kept one more release so marko can compare. */}
+      <SaleRowsModal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         onCreated={() => {
