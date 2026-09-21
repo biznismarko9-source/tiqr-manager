@@ -16,6 +16,26 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.47.2 - vypĺňovač je širší a stĺpce sa roztiahli
+
+Okno malo **napevno 1152 px** bez ohľadu na to, aký veľký máš monitor — preto
+Typ ukazoval len „—" a Sektor s Radom boli užšie než ich vlastné nadpisy.
+
+Teraz je **až 1560 px**, respektíve 94 % šírky okna, keď máš menšie. Rozpočet
+na stĺpce narástol z 1112 na **1520 px** a najviac dostali tie, čo boli
+najstlačenejšie:
+
+| Stĺpec | Predtým | Teraz |
+|---|---|---|
+| Typ | 110 px | **150 px** |
+| Sektor | 92 px | **130 px** |
+| Rad | 64 px | **90 px** |
+| Sedadlá | 108 px | **150 px** |
+| Platforma | 130 px | **190 px** |
+| Poznámka | 126 px | **230 px** |
+
+Platí to na všetkých štyroch — order, pull, sale aj event.
+
 ## 2.47.1 - dátum, Ks a rozpoznávanie mien
 
 ### Dátum nebol pokazený, bol orezaný

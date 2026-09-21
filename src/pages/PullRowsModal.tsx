@@ -182,7 +182,7 @@ export default function PullRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový pull" width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="Nový pull" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="pull"
         className="mb-4"
@@ -237,7 +237,7 @@ export default function PullRowsModal({
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td-c w-[116px]">
+            <td className="td-c w-[160px]">
               <Input
                 value={r.buyerName}
                 onChange={(e) => patch(i, { buyerName: e.target.value })}
@@ -245,7 +245,7 @@ export default function PullRowsModal({
                 aria-label={`Pre koho, riadok ${i + 1}`}
               />
             </td>
-            <td className="td-c w-[130px]">
+            <td className="td-c w-[190px]">
               <Input
                 value={r.eventName}
                 onChange={(e) => patch(i, { eventName: e.target.value })}
@@ -253,7 +253,7 @@ export default function PullRowsModal({
                 aria-label="Event"
               />
             </td>
-            <td className="td-c w-[118px]">
+            <td className="td-c w-[150px]">
               <Input
                 type="date"
                 value={r.eventDate}
@@ -262,7 +262,7 @@ export default function PullRowsModal({
                 aria-label="Dátum eventu"
               />
             </td>
-            <td className="td-c w-[70px]">
+            <td className="td-c w-[78px]">
               <Input
                 /* 2.47.1: no stepper - see OrderRowsModal's Ks cell. */
                 inputMode="numeric"
@@ -272,13 +272,13 @@ export default function PullRowsModal({
                 aria-label="Ks"
               />
             </td>
-            <td className="td-c w-[76px]">
+            <td className="td-c w-[110px]">
               <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
             </td>
-            <td className="td-c w-[56px]">
+            <td className="td-c w-[80px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
             </td>
-            <td className="td-c w-[92px]">
+            <td className="td-c w-[130px]">
               <Input
                 value={r.seat}
                 onChange={(e) => patch(i, { seat: e.target.value })}
@@ -286,7 +286,7 @@ export default function PullRowsModal({
                 aria-label="Sedadlá"
               />
             </td>
-            <td className="td-c w-[114px]">
+            <td className="td-c w-[170px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
@@ -300,7 +300,7 @@ export default function PullRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td-c w-[88px]">
+            <td className="td-c w-[120px]">
               <Input
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
@@ -309,7 +309,7 @@ export default function PullRowsModal({
                 aria-label="Tvoja odmena"
               />
             </td>
-            <td className="td-c w-[64px]">
+            <td className="td-c w-[90px]">
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
@@ -317,7 +317,7 @@ export default function PullRowsModal({
                 aria-label="Mena"
               />
             </td>
-            <td className="td-c w-[96px]">
+            <td className="td-c w-[150px]">
               <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove

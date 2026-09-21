@@ -164,7 +164,7 @@ export default function EventRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový event" width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="Nový event" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="event"
         className="mb-4"
@@ -198,7 +198,7 @@ export default function EventRowsModal({
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td-c w-[232px]">
+            <td className="td-c w-[330px]">
               <Input
                 value={r.name}
                 onChange={(e) => patch(i, { name: e.target.value })}
@@ -206,7 +206,7 @@ export default function EventRowsModal({
                 aria-label={`Názov, riadok ${i + 1}`}
               />
             </td>
-            <td className="td-c w-[126px]">
+            <td className="td-c w-[160px]">
               <Input
                 type="date"
                 value={r.eventDate}
@@ -215,16 +215,16 @@ export default function EventRowsModal({
                 aria-label="Dátum"
               />
             </td>
-            <td className="td-c w-[166px]">
+            <td className="td-c w-[240px]">
               <Input value={r.venue} onChange={(e) => patch(i, { venue: e.target.value })} aria-label="Miesto" />
             </td>
-            <td className="td-c w-[136px]">
+            <td className="td-c w-[190px]">
               <Input value={r.city} onChange={(e) => patch(i, { city: e.target.value })} aria-label="Mesto" />
             </td>
-            <td className="td-c w-[106px]">
+            <td className="td-c w-[150px]">
               <Input value={r.country} onChange={(e) => patch(i, { country: e.target.value })} aria-label="Krajina" />
             </td>
-            <td className="td-c w-[140px]">
+            <td className="td-c w-[200px]">
               <Select
                 value={r.categoryId}
                 onChange={(e) => patch(i, { categoryId: e.target.value ? Number(e.target.value) : "" })}
@@ -238,7 +238,7 @@ export default function EventRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td-c w-[114px]">
+            <td className="td-c w-[158px]">
               <Select
                 value={r.status}
                 onChange={(e) => patch(i, { status: e.target.value as EventStatus })}

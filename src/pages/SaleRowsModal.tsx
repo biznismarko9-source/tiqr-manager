@@ -218,7 +218,7 @@ export default function SaleRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový predaj" width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="Nový predaj" width="max-w-[min(1560px,94vw)]">
       {/* 2.47.0: marko asked for the photo import on ALL four forms, not just
           New Order. A sale's rows ARE real tickets, so a screenshot cannot
           conjure them - what it CAN fill is everything that describes the
@@ -341,17 +341,17 @@ export default function SaleRowsModal({
             return (
               <tr key={r.ticket.id}>
                 <RowNumber n={i + 1} />
-                <td className="td-c w-[130px] font-medium text-slate-900 dark:text-slate-100">{r.ticket.code}</td>
-                <td className="td-c w-[236px] truncate" title={r.ticket.eventName}>
+                <td className="td-c w-[170px] font-medium text-slate-900 dark:text-slate-100">{r.ticket.code}</td>
+                <td className="td-c w-[360px] truncate" title={r.ticket.eventName}>
                   {r.ticket.eventName}
                 </td>
-                <td className="td-c w-[152px]">
+                <td className="td-c w-[220px]">
                   {formatSeatLocation(r.ticket.section, r.ticket.rowLabel, r.ticket.seat)}
                 </td>
-                <td className="td-c w-[112px] text-right tabular-nums">
+                <td className="td-c w-[150px] text-right tabular-nums">
                   {formatMoney(r.ticket.totalCostCents, r.ticket.currency)}
                 </td>
-                <td className="td-c w-[116px]">
+                <td className="td-c w-[160px]">
                   <Input
                     value={r.price}
                     onChange={(e) => patch(i, { price: e.target.value })}
@@ -360,7 +360,7 @@ export default function SaleRowsModal({
                     aria-label={`Cena, ${r.ticket.code}`}
                   />
                 </td>
-                <td className="td-c w-[104px]">
+                <td className="td-c w-[150px]">
                   <Input
                     value={r.fee}
                     onChange={(e) => patch(i, { fee: e.target.value })}
@@ -369,7 +369,7 @@ export default function SaleRowsModal({
                   />
                 </td>
                 <td
-                  className={`td-c w-[112px] text-right tabular-nums ${
+                  className={`td-c w-[160px] text-right tabular-nums ${
                     profit > 0 ? "text-emerald-600 dark:text-emerald-400" : profit < 0 ? "text-red-600 dark:text-red-400" : ""
                   }`}
                 >

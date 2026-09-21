@@ -299,7 +299,7 @@ export default function OrderRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nová objednávka" width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="Nová objednávka" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="order"
         className="mb-4"
@@ -394,7 +394,7 @@ export default function OrderRowsModal({
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td-c w-[72px]">
+            <td className="td-c w-[78px]">
               {/* 2.46.1: once seats are typed, the count IS the number of
                   seats (see rowQty). marko: "odstran tam to puzdro a urob to
                   tak ze tam vidno ten pocet" - so it is the number itself, not
@@ -422,7 +422,7 @@ export default function OrderRowsModal({
                 />
               )}
             </td>
-            <td className="td-c w-[110px]">
+            <td className="td-c w-[150px]">
               <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Typ">
                 <option value="">—</option>
                 {ticketTypeOptions.map((t) => (
@@ -432,13 +432,13 @@ export default function OrderRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td-c w-[92px]">
+            <td className="td-c w-[130px]">
               <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
             </td>
-            <td className="td-c w-[64px]">
+            <td className="td-c w-[90px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
             </td>
-            <td className="td-c w-[108px]">
+            <td className="td-c w-[150px]">
               <Input
                 value={r.seats}
                 onChange={(e) => patch(i, { seats: e.target.value })}
@@ -447,7 +447,7 @@ export default function OrderRowsModal({
                 aria-label="Sedadlá"
               />
             </td>
-            <td className="td-c w-[130px]">
+            <td className="td-c w-[190px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
@@ -461,7 +461,7 @@ export default function OrderRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td-c w-[96px]">
+            <td className="td-c w-[120px]">
               <Input
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
@@ -470,7 +470,7 @@ export default function OrderRowsModal({
                 aria-label="Cena za kus"
               />
             </td>
-            <td className="td-c w-[70px]">
+            <td className="td-c w-[90px]">
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
@@ -478,7 +478,7 @@ export default function OrderRowsModal({
                 aria-label="Mena"
               />
             </td>
-            <td className="td-c w-[152px]">
+            <td className="td-c w-[200px]">
               {/* A switch first, a name only when the answer is yes - marko:
                   "daj na pull nejak ze viem kliknut ci ano alebo nie... a ked
                   ano tak si vies napisat meno". The typed name is kept when
@@ -509,7 +509,7 @@ export default function OrderRowsModal({
                 )}
               </div>
             </td>
-            <td className="td-c w-[126px]">
+            <td className="td-c w-[230px]">
               <Input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove

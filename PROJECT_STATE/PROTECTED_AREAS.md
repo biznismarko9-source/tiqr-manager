@@ -84,10 +84,13 @@ status dots, avatars and pills. Sharpening it would put corners on a dot.
 marko said "nech su viac ostre **nie uplne**".
 
 ## 2.46.1 - the row forms have a width budget, and it is measured
+##            (2.47.2: the budget is now 1520, not 1112)
 
-A row form's modal is `max-w-6xl` with `px-5`, so **~1112px is the whole
-budget**. `RowNumber` takes 28 and `RowRemove` takes 64, leaving **1020 for
-the data columns**. Every one of the four sums to exactly that (Sales less).
+A row form's modal is `max-w-[min(1560px,94vw)]` with `px-5`, so **1520px is
+the whole budget**. `RowNumber` takes 28 and `RowRemove` takes 64, leaving
+**1428 for the data columns**. Every one of the four sums to exactly that
+(Sales less). It was 1112/1020 until 2.47.2, when marko pointed out the form
+was ignoring most of his monitor.
 
 **Before adding a column to any of them, subtract it from the others.** 2.46.0
 added a row-number column without re-measuring and Pull ended up 314px over -

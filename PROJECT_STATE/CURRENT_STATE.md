@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.47.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.47.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1355,6 +1355,22 @@ release.yml) from "AI analysis failed. Try again." (everything else), so the
 next session should ask which message appears rather than guessing. The wire
 shape was checked against the model in use and is correct: no `temperature`,
 no `budget_tokens`, `output_config` carrying `effort` and `format` as siblings.
+
+**2.47.2 - the row forms use the monitor they are on.** marko: "tuto cast kde
+sa to vyplna kludne urobme sirsiu nech sa tam vojde viac info a aby bolo to
+info vidiet cele", with a screenshot of New Order sitting at 1152px in the
+middle of a much wider window while Typ showed "—" and Sektor/Rad were barely
+wider than their labels.
+
+**`max-w-6xl` -> `max-w-[min(1560px,94vw)]`** on all four row modals. Fixed at
+1152px it ignored the screen; the `min()` takes the space when there is space
+and still fits a laptop, where the table scrolls sideways as it always did.
+
+**The width budget moved with it: 1112px -> 1520px** (28 for the row number,
+1428 for data, 64 for the actions). Every column grew, and the ones that were
+actually squeezed grew most - Order's Typ 110->150, Sektor 92->130,
+Platforma 130->190, Poznámka 126->230. All four still sum to exactly their
+budget, and head-column count still equals data-cell count in each.
 
 **Next new migration is 031.**
 
