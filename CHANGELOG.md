@@ -16,6 +16,37 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.47.1 - dátum, Ks a rozpoznávanie mien
+
+### Dátum nebol pokazený, bol orezaný
+
+Kalendár sa otváral ako `absolute` vnútri tabuľky, ktorá sa posúva — a taký
+kontajner absolútne umiestnené okno **oreže**. Takže sa otvoril do neviditeľna.
+
+Teraz je `fixed` a počíta si vlastnú pozíciu. **Opravené naraz pri order, pull
+aj event** — je to jeden komponent, bola to jedna chyba.
+
+### Ks: šípky preč, políčko väčšie
+
+`type="number"` kreslí šípky **dovnútra** políčka a pri 56 px sadli rovno na
+číslo — presne ako na tvojej fotke. Teraz je to obyčajné políčko, píšeš doň len
+číslice a je širšie (order 56 → 72 px, pull 50 → 70 px). Šírku som vzal
+z Poznámky, takže sa stále všetko zmestí.
+
+### AI: meno eventu a platformy sa konečne trafí
+
+Porovnávalo sa **presne znak po znaku**. Takže „Karpatské Chalupy 2026"
+z fotky nenašlo event „Karpatské Chalupy" a „TICKETPORTAL.SK" nenašlo
+„Ticketportal" — pole ostalo prázdne a nikto ti nepovedal prečo.
+
+Teraz sa ignoruje diakritika, veľkosť písmen aj medzery navyše, a skúsi sa aj
+začiatok a obsiahnutie. **Keď sedia dve možnosti, nevyberie ani jednu** —
+tipovať medzi dvoma eventmi je horšie než prázdne pole.
+
+### Dátum nákupu z fotky sa už nezahadzuje
+
+AI ho z účtenky čítala vždy, formulár ho ignoroval a dal dnešný. Už nie.
+
 ## 2.47.0 - fotka vyplní viac objednávok naraz, rohy sú ostrejšie
 
 Vybral si si **mriežku** — riadková tabuľka zostáva na všetkých štyroch.

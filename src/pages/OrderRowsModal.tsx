@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
-import { matchByName } from "../lib/aiImport";
+import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventWithStats, OrderInput, OrderRecord, Platform } from "../lib/types";
 import { decimalStringToCents, formatDateNumeric, formatMoney, todayIso } from "../lib/format";
 import {
@@ -307,6 +307,10 @@ export default function OrderRowsModal({
         onApply={({ fields, groups }) => {
           const ev = matchByName(events, fields.eventName);
           if (ev) setEventId(ev.id);
+          // 2.47.1: the receipt's own purchase date, which the AI has always
+          // extracted and this form used to throw away - it stamped today and
+          // ignored what the image said.
+          if (isIsoDate(fields.purchaseDate)) setPurchaseDate(fields.purchaseDate);
           if (fields.orderReference) {
             setNotes((prev) =>
               prev.includes(fields.orderReference!)
@@ -390,7 +394,7 @@ export default function OrderRowsModal({
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td-c w-[56px]">
+            <td className="td-c w-[72px]">
               {/* 2.46.1: once seats are typed, the count IS the number of
                   seats (see rowQty). marko: "odstran tam to puzdro a urob to
                   tak ze tam vidno ten pocet" - so it is the number itself, not
@@ -405,10 +409,14 @@ export default function OrderRowsModal({
                 </span>
               ) : (
                 <Input
-                  type="number"
-                  min={1}
+                  /* 2.47.1: NOT type="number". marko sent a screenshot of the
+                     Ks cell showing nothing but the stepper arrows - WebKit
+                     draws them inside the box, and in a narrow cell they sit
+                     on top of the digits. A text field with a numeric keypad
+                     hint has no stepper and no hidden number. */
+                  inputMode="numeric"
                   value={r.qty}
-                  onChange={(e) => patch(i, { qty: e.target.value })}
+                  onChange={(e) => patch(i, { qty: e.target.value.replace(/[^\d]/g, "") })}
                   className={`text-right ${cellError(shown, i, "qty")}`}
                   aria-label={`Počet kusov, riadok ${i + 1}`}
                 />
@@ -501,7 +509,7 @@ export default function OrderRowsModal({
                 )}
               </div>
             </td>
-            <td className="td-c w-[142px]">
+            <td className="td-c w-[126px]">
               <Input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove

@@ -267,14 +267,63 @@ export function isIsoDate(value: string | undefined | null): value is string {
  * app already has (event categories, platforms, ...). Returns null on no
  * match, and the caller then leaves that field alone - the AI is never
  * allowed to create a new lookup row, only to point at one that exists. */
+/** Lower-cased, diacritic-folded, whitespace-collapsed. "Karpatské  Chalupy"
+ *  and "karpatske chalupy" are the same string to this. */
+function fold(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * 2.47.1: still never invents a row, but no longer demands the model quote
+ * the name byte for byte.
+ *
+ * The old version was exact-match only, so a screenshot reading "Karpatské
+ * Chalupy 2026" or "TICKETPORTAL.SK" matched nothing and the field was left
+ * blank with no explanation - which is a large part of what marko meant by
+ * "AI import nefunguje spravne": it HAD read the name, and the form dropped
+ * it on the floor.
+ *
+ * Three passes, each stricter about ambiguity than the last:
+ *   1. exact, folded,
+ *   2. one option whose name STARTS the text (or vice versa),
+ *   3. one option contained in the text (or vice versa).
+ *
+ * **A pass that finds more than one candidate returns null rather than
+ * picking.** Guessing between two events is worse than leaving the picker
+ * empty, because a wrong event silently books tickets against the wrong
+ * night. Two-character names are skipped in the fuzzy passes for the same
+ * reason - "AC" would contain-match half a list.
+ */
 export function matchByName<T extends { id: number; name: string }>(
   options: T[],
   raw: string | undefined,
 ): T | null {
   if (!raw) return null;
-  const needle = raw.trim().toLowerCase();
+  const needle = fold(raw);
   if (!needle) return null;
-  return options.find((o) => o.name.trim().toLowerCase() === needle) ?? null;
+
+  const exact = options.filter((o) => fold(o.name) === needle);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+
+  const usable = options.filter((o) => fold(o.name).length >= 3);
+  const starts = usable.filter((o) => {
+    const n = fold(o.name);
+    return n.startsWith(needle) || needle.startsWith(n);
+  });
+  if (starts.length === 1) return starts[0];
+  if (starts.length > 1) return null;
+
+  const contains = usable.filter((o) => {
+    const n = fold(o.name);
+    return n.includes(needle) || needle.includes(n);
+  });
+  return contains.length === 1 ? contains[0] : null;
 }
 
 /** What the panel hands back once marko presses "Fill form". Nothing has

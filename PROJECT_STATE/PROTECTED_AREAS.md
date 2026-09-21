@@ -21,6 +21,35 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.47.1 - a popup inside a scrolling table must be FIXED, not absolute
+
+`DateField`'s panel is `position:fixed` with coordinates computed from the
+trigger's `getBoundingClientRect()`. **Do not "simplify" it back to
+`absolute`.** `.table-shell` has `overflow:auto` and the Modal body has
+`overflow-y-auto`; either one clips an absolutely-positioned descendant, which
+is how the calendar silently stopped working in all three row forms at once.
+
+The scroll/resize listener that closes it is part of the fix, not tidying: a
+fixed panel does not move with the field underneath it.
+
+The same trap applies to anything else that ever floats out of a row - a
+combobox list, a tooltip, a menu.
+
+## 2.47.1 - never `type="number"` in a row-form cell
+
+WebKit draws the stepper INSIDE the box. In a cell narrow enough to fit ten
+columns it covers the digits, which is what marko photographed. Row-form
+numeric cells use a plain field with `inputMode="numeric"` and a digits-only
+filter on change.
+
+## 2.47.1 - `matchByName` may be fuzzy, never ambiguous
+
+Each pass (exact, starts-with, contains) returns null when MORE THAN ONE option
+matches. This is deliberate and is the whole safety property: an empty picker
+costs marko one click, while a wrongly matched event books tickets against the
+wrong night and looks correct. Options shorter than three characters are exempt
+from the fuzzy passes.
+
 ## 2.47.0 - the AI lays down rows; `groupRows` decides what is an order
 
 `AiImportPanel` hands the form **every** group it read. The row forms turn each

@@ -245,7 +245,7 @@ export default function PullRowsModal({
                 aria-label={`Pre koho, riadok ${i + 1}`}
               />
             </td>
-            <td className="td-c w-[140px]">
+            <td className="td-c w-[130px]">
               <Input
                 value={r.eventName}
                 onChange={(e) => patch(i, { eventName: e.target.value })}
@@ -262,12 +262,12 @@ export default function PullRowsModal({
                 aria-label="Dátum eventu"
               />
             </td>
-            <td className="td-c w-[50px]">
+            <td className="td-c w-[70px]">
               <Input
-                type="number"
-                min={1}
+                /* 2.47.1: no stepper - see OrderRowsModal's Ks cell. */
+                inputMode="numeric"
                 value={r.quantity}
-                onChange={(e) => patch(i, { quantity: e.target.value })}
+                onChange={(e) => patch(i, { quantity: e.target.value.replace(/[^\d]/g, "") })}
                 className={`text-right ${cellError(shown, i, "quantity")}`}
                 aria-label="Ks"
               />
@@ -317,7 +317,7 @@ export default function PullRowsModal({
                 aria-label="Mena"
               />
             </td>
-            <td className="td-c w-[106px]">
+            <td className="td-c w-[96px]">
               <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove

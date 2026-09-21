@@ -126,8 +126,12 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
   const selected = parseIsoDate(text);
 
   const [open, setOpen] = useState(false);
-  const [above, setAbove] = useState(false);
-  const [alignRight, setAlignRight] = useState(false);
+  // 2.47.1: the panel is POSITION-FIXED and carries its own viewport
+  // coordinates. It used to be `absolute`, which an ancestor with
+  // `overflow:auto` clips - and that is exactly what `.table-shell` is. Inside
+  // the row forms (New Order / New Pull / New Event) the calendar therefore
+  // opened into a clipped box and read as "the date doesn't work".
+  const [rect, setRect] = useState<{ top: number; left: number } | null>(null);
   const [view, setView] = useState(() => {
     const p = parseIsoDate(typeof value === "string" ? value : "");
     const now = new Date();
@@ -159,11 +163,28 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
   const openPanel = () => {
     const r = wrapRef.current?.getBoundingClientRect();
     if (r) {
-      setAbove(r.bottom + PANEL_H > window.innerHeight && r.top > PANEL_H);
-      setAlignRight(r.left + PANEL_W > window.innerWidth);
+      // Flip up when there is no room below, and pull left when the panel
+      // would run off the right edge - the same two decisions as before, now
+      // expressed as real viewport coordinates instead of CSS sides.
+      const above = r.bottom + PANEL_H > window.innerHeight && r.top > PANEL_H;
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - PANEL_W - 8));
+      setRect({ top: above ? r.top - PANEL_H - 6 : r.bottom + 6, left });
     }
     setOpen(true);
   };
+
+  // A fixed panel does not travel with its field, so any scroll or resize
+  // closes it rather than leaving a calendar floating over the wrong row.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
 
   const shiftMonth = (by: number) => {
     setView((v) => {
@@ -228,9 +249,8 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
       {open && (
         <div
           role="dialog"
-          className={`absolute z-40 w-[17.5rem] rounded-xl bg-surface-raised p-3 shadow-overlay ${
-            above ? "bottom-full mb-1.5" : "top-full mt-1.5"
-          } ${alignRight ? "right-0" : "left-0"}`}
+          className="fixed z-[60] w-[17.5rem] rounded-xl bg-surface-raised p-3 shadow-overlay"
+          style={{ top: rect?.top ?? 0, left: rect?.left ?? 0 }}
         >
           <div className="mb-2 flex items-center justify-between gap-1">
             <button type="button" aria-label="Previous month" onClick={() => shiftMonth(-1)} className={navClass}>

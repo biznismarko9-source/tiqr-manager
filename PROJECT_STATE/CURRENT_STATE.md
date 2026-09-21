@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.47.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.47.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1318,6 +1318,43 @@ app picks it up with no page edit, Finance included. `rounded-full` is
 untouched: its 46 uses are status dots, avatars and pills, and a dot with a
 corner is a bug. This reverses 2.29.0's growth, and NOT to zero - marko said
 "nie uplne".
+
+**2.47.1 - three bugs marko hit the moment he opened 2.47.0.**
+
+**The date picker was clipped, not broken.** `DateField`'s panel was
+`position:absolute`, and an ancestor with `overflow:auto` clips exactly that -
+which is what `.table-shell` is. So inside every row form the calendar opened
+into a box that was cut off, and read as "the date doesn't work". It is now
+`position:fixed` and carries its own viewport coordinates, computed from the
+trigger's rect, with the same flip-up/pull-left decisions as before. A scroll
+or resize closes it, because a fixed panel does not travel with its field.
+This fixes Order, Pull AND Event at once - one component, one bug.
+
+**The Ks cell showed the stepper and hid the number.** `type="number"` draws
+WebKit's arrows inside the box; at 56px they sat on top of the digits, which is
+what marko's screenshot showed. Both Ks cells are now plain fields with
+`inputMode="numeric"` and a digits-only filter, and the column grew (Order
+56->72px, Pull 50->70px). **The width came out of Poznámka**, so the 1112px
+budget still holds exactly - see the 2.46.1 entry in PROTECTED_AREAS.
+
+**`matchByName` was exact-match only**, so an image reading "Karpatské Chalupy
+2026" or "TICKETPORTAL.SK" matched nothing and the field stayed empty with no
+explanation. It now folds diacritics/case/whitespace and falls back to a
+starts-with and then a contains pass - **each of which returns null when more
+than one option matches**, because guessing between two events is worse than an
+empty picker. Names under three characters are exempt from the fuzzy passes.
+
+**`purchaseDate` was being thrown away.** The AI has always extracted the
+receipt's own purchase date for the "order" kind; New Order stamped today and
+ignored it. It now takes it when it is a real ISO date.
+
+**Still unknown and NOT fixed:** what marko actually sees when he says the AI
+import does not work. The backend already distinguishes "AI import isn't
+available in this build." (no `ANTHROPIC_API_KEY` embedded - see build.rs and
+release.yml) from "AI analysis failed. Try again." (everything else), so the
+next session should ask which message appears rather than guessing. The wire
+shape was checked against the model in use and is correct: no `temperature`,
+no `budget_tokens`, `output_config` carrying `effort` and `format` as siblings.
 
 **Next new migration is 031.**
 
