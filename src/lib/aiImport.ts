@@ -288,8 +288,22 @@ export function matchByName<T extends { id: number; name: string }>(
 export interface AiImportApplied {
   fields: Record<string, string>;
   /** The ticket group marko chose, for the "order" kind. Null everywhere
-   * else, and null for an order whose screenshot showed no ticket detail. */
+   * else, and null for an order whose screenshot showed no ticket detail.
+   *
+   * Kept for the older per-field forms, which carry ONE section/row/price for
+   * the whole order and so can only ever take one group. */
   group: AiImportTicketGroup | null;
+  /** 2.47.0: EVERY group the screenshot showed, in the order it read them.
+   *
+   * marko: "ked vo fotke bude viac sektorov rows atd tam to bude vediet pekne
+   * priradit ku inej objednavke aby sa to nemiesalo". A row form can hold all
+   * of them - one row each - and the existing split rule then turns rows that
+   * differ in section/row/price, or whose seats are not contiguous, into
+   * separate orders by itself. Nothing is thrown away and nothing is merged
+   * that should not be.
+   *
+   * Empty when the image showed no ticket detail at all. */
+  groups: AiImportTicketGroup[];
 }
 
 // ---------------------------------------------------------------------------

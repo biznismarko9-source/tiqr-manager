@@ -1051,11 +1051,15 @@ export function RowFormTable({
   children,
   onAdd,
   addLabel,
+  rightAlign = [],
 }: {
   head: string[];
   children: ReactNode;
   onAdd: () => void;
   addLabel: string;
+  /** Column indices whose values are numbers. A right-aligned figure under a
+   *  left-aligned label is the classic tell of a table nobody set properly. */
+  rightAlign?: number[];
 }) {
   const bodyRef = useRef<HTMLTableSectionElement>(null);
 
@@ -1082,13 +1086,16 @@ export function RowFormTable({
               column names. */}
           <thead className="sticky top-0 z-10 bg-surface">
             <tr>
-              <th className="th w-[34px] text-right tabular-nums" aria-label="Riadok" />
+              <th className="th-c w-[28px]" aria-label="Riadok" />
               {head.map((h, i) => (
-                <th key={`${h}-${i}`} className="th whitespace-nowrap">
+                <th
+                  key={`${h}-${i}`}
+                  className={`th-c whitespace-nowrap ${rightAlign.includes(i) ? "text-right" : ""}`}
+                >
                   {h}
                 </th>
               ))}
-              <th className="th" />
+              <th className="th-c w-[64px]" />
             </tr>
           </thead>
           <tbody ref={bodyRef} className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody>
@@ -1104,7 +1111,9 @@ export function RowFormTable({
 /** The row number, first cell of every row. It exists so a problem can name
  *  a row ("riadok 3") and be found without counting. */
 export function RowNumber({ n }: { n: number }) {
-  return <td className="td w-[34px] text-right text-xs tabular-nums text-slate-400 dark:text-slate-500">{n}</td>;
+  return (
+    <td className="td-c w-[28px] text-right text-[11px] tabular-nums text-slate-400 dark:text-slate-500">{n}</td>
+  );
 }
 
 /** One problem with one cell. `missing` is an empty required field - shown
@@ -1151,7 +1160,7 @@ export function RowRemove({
   duplicateLabel?: string;
 }) {
   return (
-    <td className="td w-[72px]">
+    <td className="td-c w-[64px]">
       <div className="flex items-center gap-0.5">
         {onDuplicate && (
           <button
@@ -1159,7 +1168,7 @@ export function RowRemove({
             onClick={onDuplicate}
             aria-label={duplicateLabel ?? "Duplikovať riadok"}
             title={duplicateLabel ?? "Duplikovať riadok"}
-            className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+            className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-100"
           >
             <IconCopy className="h-4 w-4" />
           </button>
@@ -1170,7 +1179,7 @@ export function RowRemove({
             onClick={onRemove}
             aria-label={label}
             title={label}
-            className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-red-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-red-400"
+            className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-red-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-red-400"
           >
             <IconX className="h-4 w-4" />
           </button>

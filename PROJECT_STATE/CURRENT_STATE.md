@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.46.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.47.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1255,6 +1255,69 @@ period to make the line longer. `entries` arrives already period-filtered, so a
 month outside the period would draw as zero while real money sat in it. The
 window IS the period; only the bucket size changes. Empty buckets inside the
 window are real zeros. "Today" is still one point, and that is honest.
+
+**2.46.1 - the row forms actually fit, and Ks is a number again.** marko: "tie
+ks su zle nastavene odstran tam to puzdro a urob to tak ze tam vidno ten pocet
+a urob to tak aby sa tam vsetko zmestilo miesta je tam dost a kus pomen ten
+design nech je taky ostry a profesionalny".
+
+**They genuinely did not fit.** Measured: the modal is `max-w-6xl` with `px-5`,
+so ~1112px of usable width. Column totals were Order 1296, Pull **1426**,
+Event 1206 - Pull overflowed by 314px. Every form is now exactly 1112 or less
+(Sales 1054), with the row-number column at 28px and the actions column at
+64px.
+
+**Compact density everywhere.** The cells moved from `.td`/`.th` to the
+`.td-c`/`.th-c` step the app already owns (`px-2 py-2` instead of
+`px-3 py-2.5`). That is the existing compact class being USED, not changed -
+its measured values are untouched. It buys back width and is what makes a
+data-entry grid read as a grid.
+
+**Ks is a figure, not a disabled box.** 2.46.0 showed the seat-derived count in
+a read-only `<Input>`; a greyed-out control reads as something refusing you.
+It is now the number itself, right-aligned and tabular. The typed-count input
+is still there whenever no seats are entered.
+
+**Numeric headers right-align** with their values (`RowFormTable`'s new
+optional `rightAlign` prop, a list of column indices). Order passes `[0, 6]`,
+Pull `[3, 8]`, Sales `[3, 4, 5, 6]`, Events none. Sales' Nákup and Zisk columns
+are right-aligned too.
+
+**2.47.0 - the grid stays, the photo fills every form, and the corners got
+sharper.** marko picked the row grid out of ten entry-form designs, then:
+"nechajme to kde si vies dat fotku a ai ti to spracuje ... ked vo fotke bude
+viac sektorov rows atd tam to bude vediet pekne priradit ku inej objednavke aby
+sa to nemiesalo ... urob nielen pri orders ale pri vsetkom ... nerob tie
+okienka tak oble ale nech su viac ostre nie uplne".
+
+**One AI group is now one ROW, not one form.** `AiImportResult.ticketGroups`
+has always been an array - the backend read every seat block - but the panel
+made marko pick ONE and told him to create the rest by hand. `AiImportApplied`
+gained `groups` (all of them, `group` stays for the older per-field forms) and
+the row forms lay down one row each. **Nothing here decides what is one order**:
+the rows go in as the image read them and `groupRows` applies the same split
+rule it applies to rows marko typed - same section/row/price/currency/type/
+platform/pull AND contiguous seats, or it is a separate order.
+
+- An **untouched** form is replaced by the read rows; a form marko has already
+  typed into keeps what he typed and the read rows are appended.
+- An image with **no ticket detail** fills only the field-level values into the
+  row already on screen - it never wipes it.
+- `AiImportPanel` gained `multiGroup`, which ONLY changes the sentence it
+  shows. The old per-field forms still get the honest "an order holds one".
+
+**The photo import is on all four now.** Sales was the one without it. A sale's
+rows ARE real tickets so a screenshot cannot conjure them, but it fills the
+sale itself - date, marketplace, buyer, payment state - and prefills the price
+and fee into every row that has none yet, never over a price marko typed.
+`multiGroup` is deliberately NOT passed there: no rows for groups to become.
+
+**Radius: 13/20/24px -> 6/8/10px** in `tailwind.config.js`, which is the same
+one-file mechanism the colour ramps use - every `rounded-lg`/`xl`/`2xl` in the
+app picks it up with no page edit, Finance included. `rounded-full` is
+untouched: its 46 uses are status dots, avatars and pills, and a dot with a
+corner is a bug. This reverses 2.29.0's growth, and NOT to zero - marko said
+"nie uplne".
 
 **Next new migration is 031.**
 

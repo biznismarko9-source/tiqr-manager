@@ -16,6 +16,83 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.47.0 - fotka vyplní viac objednávok naraz, rohy sú ostrejšie
+
+Vybral si si **mriežku** — riadková tabuľka zostáva na všetkých štyroch.
+
+### Fotka teraz vytvorí toľko riadkov, koľko skupín na nej je
+
+Doteraz appka zo screenshotu prečítala všetky bloky sedadiel, ale **dala ti
+vybrať jeden** a o zvyšku napísala, že si druhú objednávku máš spraviť ručne.
+Preč.
+
+Teraz **každá skupina = jeden riadok**. A čo je jedna objednávka a čo dve,
+rozhodne **to isté pravidlo, aké platí, keď riadky píšeš sám**: musí sedieť
+sektor, rad, cena, mena, typ, platforma aj pull — **a sedadlá musia ísť tesne
+za sebou**. Inak vzniknú samostatné objednávky.
+
+Takže screenshot s troma blokmi:
+
+| Na fotke | Riadky | Objednávky |
+|---|---|---|
+| A/12 14–15 · A/12 16–18 · VIP/1 22 (rovnaká cena) | 3 | **2** — A/12 sa spojí na 14–18, VIP zvlášť |
+| A/12 14–15 @201 · A/12 16–18 **@185** | 2 | **2** — iná cena sa nezlučuje |
+| A/12 14–15 · A/12 **19** | 2 | **2** — sedadlá nie sú vedľa seba |
+| A/12 · **B/3** | 2 | **2** — iný sektor vždy zvlášť |
+
+**Prázdny formulár sa nahradí**, rozpísaný sa **doplní** — čo si už napísal,
+sa nestratí. A fotka bez detailu lístkov ti riadok **nezmaže**, len doplní to,
+čo z nej vyčítala.
+
+### Fotka je teraz na všetkých štyroch
+
+Sales bol jediný bez nej. Riadky v predaji sú **skutočné lístky**, takže tie zo
+screenshotu vyčarovať nejde — ale vyplní sa dátum, platforma, kupec, stav
+platby, a **cena aj poplatok sa predvyplnia do riadkov, ktoré ešte žiadnu
+nemajú**. Cenu, ktorú si napísal ty, neprepíše.
+
+### Ostrejšie rohy
+
+Z **13 / 20 / 24 px** na **6 / 8 / 10 px**. Jedna zmena v jednom súbore, takže
+to chytí celá appka vrátane Finance — netreba sa nikde inde hrabať.
+
+Guličky, avatary a pilulky (`rounded-full`) som nechal okrúhle. Bodka s rohom
+nie je ostrejší design, to je chyba.
+
+## 2.46.1 - riadky sa zmestia a Ks je zase číslo
+
+Mal si pravdu dvakrát.
+
+### Ks už nie je zhasnuté políčko
+
+Keď napíšeš sedadlá, počet z nich vychádza — ale v 2.46.0 som to ukazoval v
+**read-only políčku**, čo vyzerá ako niečo, čo ťa odmieta. Teraz je tam
+**samotné číslo**, zarovnané doprava. Keď sedadlá nenapíšeš, políčko na
+písanie počtu je tam normálne ďalej.
+
+### Naozaj sa to nezmestilo — zmeral som to
+
+Okno má ~1112 px využiteľnej šírky. Stĺpce mali:
+
+| Formulár | Predtým | Teraz |
+|---|---|---|
+| Inventory | 1296 px | 1112 px |
+| **Pulls** | **1426 px** | 1112 px |
+| Events | 1206 px | 1112 px |
+| Sales | 966 px | 1054 px |
+
+Pull pretekal o **314 px**. Teraz sedí každý.
+
+### Ostrejší design
+
+- **Hustejšie bunky** — prepnuté na kompaktný krok, ktorý appka už má
+  (`px-2 py-2` namiesto `px-3 py-2.5`). Nič nového som nevymýšľal, len som
+  použil to, čo tu bolo. Tým sa aj získala tá šírka.
+- **Čísla a ich hlavičky sú zarovnané rovnako** — doprava. Číslo vpravo pod
+  nadpisom vľavo je klasická známka tabuľky, ktorú nikto poriadne nenastavil.
+- Užšie číslo riadku (28 px) a užší stĺpec s ikonkami (64 px), drobnejšie
+  ikonky.
+
 ## 2.46.0 - vyplňovače vedia presne, čo je zle, a graf má os
 
 ### Chyba svieti na políčku, nie vo vete dole

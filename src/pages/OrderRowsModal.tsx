@@ -303,7 +303,8 @@ export default function OrderRowsModal({
       <AiImportPanel
         kind="order"
         className="mb-4"
-        onApply={({ fields, group }) => {
+        multiGroup
+        onApply={({ fields, groups }) => {
           const ev = matchByName(events, fields.eventName);
           if (ev) setEventId(ev.id);
           if (fields.orderReference) {
@@ -313,23 +314,47 @@ export default function OrderRowsModal({
                 : [prev.trim(), `Order ref: ${fields.orderReference}`].filter(Boolean).join("\n"),
             );
           }
-          // The AI reads one seat block at a time, so it fills the FIRST row
-          // rather than guessing how many rows marko meant.
           const platform = matchByName(platforms, fields.platform);
+          const currency = fields.currency ? fields.currency.trim().toUpperCase() : null;
+
           setRows((rs) => {
-            const first = { ...rs[0] };
-            if (platform) first.platformId = platform.id;
-            if (fields.currency) first.currency = fields.currency.trim().toUpperCase();
-            if (group?.quantity) first.qty = group.quantity;
-            if (group?.unitPrice) first.price = group.unitPrice;
-            if (group?.section) first.section = group.section;
-            if (group?.row) first.rowLabel = group.row;
-            if (group?.ticketType) first.ticketType = group.ticketType;
-            // `group.seats` arrives already expanded to one label per ticket
-            // ("21","22",...); this field is the text the user edits, so it
-            // is joined back into the same comma form parseSeats reads.
-            if (group?.seats?.length) first.seats = group.seats.join(", ");
-            return [first, ...rs.slice(1)];
+            // 2.47.0: ONE ROW PER GROUP. marko: "ked vo fotke bude viac
+            // sektorov rows atd tam to bude vediet pekne priradit ku inej
+            // objednavke aby sa to nemiesalo". Nothing merges them here - the
+            // rows are laid down as the image read them, and `groupRows`
+            // below decides what is one order and what is two, by exactly the
+            // same rule it applies to rows marko typed himself.
+            const made: Row[] = groups.map((g) => {
+              const r = blankRow();
+              if (platform) r.platformId = platform.id;
+              if (currency) r.currency = currency;
+              if (g.quantity) r.qty = g.quantity;
+              if (g.unitPrice) r.price = g.unitPrice;
+              if (g.section) r.section = g.section;
+              if (g.row) r.rowLabel = g.row;
+              if (g.ticketType) r.ticketType = g.ticketType;
+              // `g.seats` arrives already expanded to one label per ticket
+              // ("21","22",...); this field is the text marko edits, so it is
+              // joined back into the same comma form parseSeats reads.
+              if (g.seats?.length) r.seats = g.seats.join(", ");
+              return r;
+            });
+
+            // No ticket detail in the image: fill only what the fields gave,
+            // into the row already on screen, rather than wiping it.
+            if (made.length === 0) {
+              const first = { ...rs[0] };
+              if (platform) first.platformId = platform.id;
+              if (currency) first.currency = currency;
+              return [first, ...rs.slice(1)];
+            }
+
+            // A form marko has already typed into keeps what he typed; the
+            // read rows are appended. An untouched form is replaced outright,
+            // so the image does not leave an empty row sitting on top.
+            const untouched =
+              rs.length === 1 && !rs[0].section && !rs[0].rowLabel && !rs[0].seats && !rs[0].price;
+            return untouched ? made : [...rs, ...made];
           });
         }}
       />
@@ -358,25 +383,26 @@ export default function OrderRowsModal({
 
       <RowFormTable
         head={["Ks", "Typ", "Sektor", "Rad", "Sedadlá", "Platforma", "Cena/ks", "Mena", "Pull", "Poznámka"]}
+        rightAlign={[0, 6]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
         addLabel="Ďalšie miesto"
       >
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td w-[70px]">
-              {/* 2.46.0: once seats are typed, the count IS the number of
-                  seats (see rowQty) - so the cell shows that instead of
-                  quietly ignoring whatever stands here. */}
+            <td className="td-c w-[56px]">
+              {/* 2.46.1: once seats are typed, the count IS the number of
+                  seats (see rowQty). marko: "odstran tam to puzdro a urob to
+                  tak ze tam vidno ten pocet" - so it is the number itself, not
+                  a box holding a number you cannot edit. A greyed-out input is
+                  a control that refuses you; a figure is just the answer. */}
               {parseSeats(r.seats).length > 0 ? (
-                <Input
-                  value={String(parseSeats(r.seats).length)}
-                  readOnly
-                  tabIndex={-1}
-                  className="text-right"
+                <span
+                  className="block px-1 text-right text-sm font-medium tabular-nums text-slate-900 dark:text-slate-100"
                   title="Počet vychádza zo sedadiel"
-                  aria-label={`Počet kusov zo sedadiel, riadok ${i + 1}`}
-                />
+                >
+                  {parseSeats(r.seats).length}
+                </span>
               ) : (
                 <Input
                   type="number"
@@ -388,7 +414,7 @@ export default function OrderRowsModal({
                 />
               )}
             </td>
-            <td className="td w-[130px]">
+            <td className="td-c w-[110px]">
               <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Typ">
                 <option value="">—</option>
                 {ticketTypeOptions.map((t) => (
@@ -398,13 +424,13 @@ export default function OrderRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td w-[100px]">
+            <td className="td-c w-[92px]">
               <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
             </td>
-            <td className="td w-[80px]">
+            <td className="td-c w-[64px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
             </td>
-            <td className="td w-[120px]">
+            <td className="td-c w-[108px]">
               <Input
                 value={r.seats}
                 onChange={(e) => patch(i, { seats: e.target.value })}
@@ -413,7 +439,7 @@ export default function OrderRowsModal({
                 aria-label="Sedadlá"
               />
             </td>
-            <td className="td w-[150px]">
+            <td className="td-c w-[130px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
@@ -427,7 +453,7 @@ export default function OrderRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td w-[110px]">
+            <td className="td-c w-[96px]">
               <Input
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
@@ -436,7 +462,7 @@ export default function OrderRowsModal({
                 aria-label="Cena za kus"
               />
             </td>
-            <td className="td w-[90px]">
+            <td className="td-c w-[70px]">
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
@@ -444,7 +470,7 @@ export default function OrderRowsModal({
                 aria-label="Mena"
               />
             </td>
-            <td className="td w-[170px]">
+            <td className="td-c w-[152px]">
               {/* A switch first, a name only when the answer is yes - marko:
                   "daj na pull nejak ze viem kliknut ci ano alebo nie... a ked
                   ano tak si vies napisat meno". The typed name is kept when
@@ -475,7 +501,7 @@ export default function OrderRowsModal({
                 )}
               </div>
             </td>
-            <td className="td w-[170px]">
+            <td className="td-c w-[142px]">
               <Input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove

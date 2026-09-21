@@ -14,6 +14,8 @@ import {
   visibleProblems,
   type RowProblem,
 } from "../components/ui";
+import AiImportPanel from "../components/AiImportPanel";
+import { isIsoDate, matchByName } from "../lib/aiImport";
 import { useToast } from "../lib/toast";
 
 /**
@@ -217,6 +219,37 @@ export default function SaleRowsModal({
 
   return (
     <Modal open={open} onClose={onClose} title="Nový predaj" width="max-w-6xl">
+      {/* 2.47.0: marko asked for the photo import on ALL four forms, not just
+          New Order. A sale's rows ARE real tickets, so a screenshot cannot
+          conjure them - what it CAN fill is everything that describes the
+          sale itself (date, marketplace, buyer, payment state) plus the price
+          per ticket, which is otherwise typed once per row. `multiGroup` is
+          deliberately not passed: there are no rows here for groups to
+          become. */}
+      <AiImportPanel
+        kind="sale"
+        className="mb-4"
+        onApply={({ fields }) => {
+          if (isIsoDate(fields.saleDate)) setSaleDate(fields.saleDate);
+          if (fields.currency) setCurrency(fields.currency.trim().toUpperCase());
+          if (fields.buyerReference) setBuyer(fields.buyerReference);
+          const platform = matchByName(platforms, fields.marketplace ?? fields.platform);
+          if (platform) setPlatformId(platform.id);
+          // Only one of the app's own two states is ever taken, never inferred.
+          if (PAYMENT_STATUSES.includes((fields.paymentStatus ?? "") as SalePaymentStatus)) {
+            setPaymentStatus(fields.paymentStatus as SalePaymentStatus);
+          }
+          // A price read off the screenshot fills every row that has none yet;
+          // a price marko already typed is never overwritten.
+          if (fields.salePrice) {
+            setRows((rs) => rs.map((r) => (r.price.trim() ? r : { ...r, price: fields.salePrice })));
+          }
+          if (fields.sellingFees) {
+            setRows((rs) => rs.map((r) => (r.fee.trim() ? r : { ...r, fee: fields.sellingFees })));
+          }
+          toast.info("Údaje o predaji vyplnené z obrázka - skontroluj ich a potom zapíš.");
+        }}
+      />
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="min-w-[210px] flex-1">
           <span className="label">Hľadať objednávku</span>
@@ -297,6 +330,7 @@ export default function SaleRowsModal({
       ) : (
         <RowFormTable
           head={["Lístok", "Event", "Sedadlo", "Nákup", "Predaj/ks", "Poplatok", "Zisk"]}
+        rightAlign={[3, 4, 5, 6]}
           onAdd={addFromOrder}
           addLabel="Pridať lístky z ďalšej objednávky"
         >
@@ -307,15 +341,17 @@ export default function SaleRowsModal({
             return (
               <tr key={r.ticket.id}>
                 <RowNumber n={i + 1} />
-                <td className="td w-[150px] font-medium text-slate-900 dark:text-slate-100">{r.ticket.code}</td>
-                <td className="td w-[170px] truncate" title={r.ticket.eventName}>
+                <td className="td-c w-[130px] font-medium text-slate-900 dark:text-slate-100">{r.ticket.code}</td>
+                <td className="td-c w-[236px] truncate" title={r.ticket.eventName}>
                   {r.ticket.eventName}
                 </td>
-                <td className="td w-[140px]">
+                <td className="td-c w-[152px]">
                   {formatSeatLocation(r.ticket.section, r.ticket.rowLabel, r.ticket.seat)}
                 </td>
-                <td className="td w-[110px] tabular-nums">{formatMoney(r.ticket.totalCostCents, r.ticket.currency)}</td>
-                <td className="td w-[120px]">
+                <td className="td-c w-[112px] text-right tabular-nums">
+                  {formatMoney(r.ticket.totalCostCents, r.ticket.currency)}
+                </td>
+                <td className="td-c w-[116px]">
                   <Input
                     value={r.price}
                     onChange={(e) => patch(i, { price: e.target.value })}
@@ -324,7 +360,7 @@ export default function SaleRowsModal({
                     aria-label={`Cena, ${r.ticket.code}`}
                   />
                 </td>
-                <td className="td w-[110px]">
+                <td className="td-c w-[104px]">
                   <Input
                     value={r.fee}
                     onChange={(e) => patch(i, { fee: e.target.value })}
@@ -333,7 +369,7 @@ export default function SaleRowsModal({
                   />
                 </td>
                 <td
-                  className={`td w-[110px] tabular-nums ${
+                  className={`td-c w-[112px] text-right tabular-nums ${
                     profit > 0 ? "text-emerald-600 dark:text-emerald-400" : profit < 0 ? "text-red-600 dark:text-red-400" : ""
                   }`}
                 >

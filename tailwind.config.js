@@ -201,9 +201,18 @@ export default {
         // extruded surface at a 10px radius reads as a mistake rather than a
         // material: the corner has to be round enough for the two shadows to
         // travel around it. The ratio between the two steps is unchanged.
-        lg: "0.8125rem",
-        xl: "1.25rem",
-        "2xl": "1.5rem",
+        // 2.47.0: SHARPER. marko: "nerob tie okienka tak oble ale nech su
+        // viac ostre nie uplne". So this reverses 2.29.0's growth (13/20/24px)
+        // without going square - a 0 radius was explicitly not what he asked
+        // for. Controls land at 6px, containers at 8px, the widest at 10px.
+        //
+        // `full` is deliberately NOT touched: the 46 `rounded-full` uses are
+        // status dots, avatars and pills, and a dot with a corner is a bug,
+        // not a sharper design.
+        md: "0.3125rem",
+        lg: "0.375rem",
+        xl: "0.5rem",
+        "2xl": "0.625rem",
       },
       transitionDuration: {
         // 2.6.0: the app's motion budget - marko asked for 120-180ms and

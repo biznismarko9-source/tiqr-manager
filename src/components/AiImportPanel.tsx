@@ -72,11 +72,16 @@ export default function AiImportPanel({
   kind,
   onApply,
   className = "",
+  multiGroup = false,
 }: {
   kind: AiImportKind;
   /** Called only when marko presses "Fill form". Never called automatically. */
   onApply: (applied: AiImportApplied) => void;
   className?: string;
+  /** 2.47.0: true when the form receiving this can hold every group at once -
+   *  i.e. a row form. It only changes what this panel SAYS about a
+   *  multi-group screenshot; `onApply` always hands over all of them. */
+  multiGroup?: boolean;
 }) {
   // One session per mounted panel - this is what makes "the same image is
   // never analyzed twice" true across a close/reopen of the review step.
@@ -173,7 +178,7 @@ export default function AiImportPanel({
       const trimmed = value.trim();
       if (trimmed) fields[key] = trimmed;
     }
-    onApply({ fields, group: activeGroup });
+    onApply({ fields, group: activeGroup, groups });
   };
 
   return (
@@ -350,7 +355,11 @@ export default function AiImportPanel({
                 <div className="mt-3 rounded-lg border border-slate-200 bg-surface p-2.5 dark:border-slate-700 dark:bg-slate-900/60">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <p className="section-title">
-                      {groups.length === 1 ? "Tickets" : `Ticket group ${groupIndex + 1} of ${groups.length}`}
+                      {groups.length === 1
+                        ? "Tickets"
+                        : multiGroup
+                          ? `Skupina ${groupIndex + 1} z ${groups.length} · náhľad`
+                          : `Ticket group ${groupIndex + 1} of ${groups.length}`}
                     </p>
                     {groups.length > 1 && (
                       <div className="flex flex-wrap gap-1">
@@ -372,15 +381,14 @@ export default function AiImportPanel({
                     )}
                   </div>
                   {groups.length > 1 && (
-                    // Two groups can't be one order: OrderInput carries a
-                    // single section/row/tier/price for the whole order (see
-                    // ai_import.rs's AiImportTicketGroup comment). Saying so
-                    // out loud beats silently filling one and losing the
-                    // other.
+                    // A per-field form carries ONE section/row/tier/price, so
+                    // it really can only take one group - that warning stays.
+                    // A row form takes all of them, and 2.47.0 hands it all of
+                    // them, so there it would be a lie.
                     <p className="mb-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-                      This screenshot has {groups.length} groups with different seating or prices.
-                      An order holds one, so fill this group first, then create a second order for
-                      the next.
+                      {multiGroup
+                        ? `Na obrázku je ${groups.length} skupín s rôznymi sedadlami alebo cenou. Vyplnia sa všetky, každá ako vlastný riadok – čo k sebe nepatrí, skončí vo vlastnej objednávke.`
+                        : `This screenshot has ${groups.length} groups with different seating or prices. An order holds one, so fill this group first, then create a second order for the next.`}
                     </p>
                   )}
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-1">

@@ -21,6 +21,59 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.47.0 - the AI lays down rows; `groupRows` decides what is an order
+
+`AiImportPanel` hands the form **every** group it read. The row forms turn each
+into one row and **stop there**. What becomes one order and what becomes two is
+`groupRows`' decision, by the same rule it applies to rows marko typed himself.
+
+**Do not add a second, AI-specific merge rule.** If the image's grouping and
+the typed grouping could ever disagree, the same screenshot would produce
+different orders depending on whether it arrived by photo or by keyboard.
+
+`group` (singular) stays on `AiImportApplied` because the older per-field forms
+carry ONE section/row/price for the whole order and genuinely cannot take more.
+`multiGroup` changes only the sentence the panel shows - never what it sends.
+
+**Two fill rules that are easy to break:**
+- An untouched form is REPLACED by the read rows; a form already typed into is
+  APPENDED to. Wiping typed work because a photo arrived is the bug this
+  prevents.
+- An image with no ticket detail fills field-level values into the existing row
+  and never empties it.
+
+## 2.47.0 - the radius scale is one file, and `full` is not part of it
+
+`tailwind.config.js`'s `borderRadius` is the whole radius system - every
+`rounded-lg`/`xl`/`2xl` across the app resolves through it, the same one-file
+mechanism the colour ramps use. Change it there, never per page.
+
+**`rounded-full` is deliberately absent from that block.** Its 46 uses are
+status dots, avatars and pills. Sharpening it would put corners on a dot.
+
+6/8/10px reverses 2.29.0's 13/20/24px. It is NOT zero, and that was explicit:
+marko said "nech su viac ostre **nie uplne**".
+
+## 2.46.1 - the row forms have a width budget, and it is measured
+
+A row form's modal is `max-w-6xl` with `px-5`, so **~1112px is the whole
+budget**. `RowNumber` takes 28 and `RowRemove` takes 64, leaving **1020 for
+the data columns**. Every one of the four sums to exactly that (Sales less).
+
+**Before adding a column to any of them, subtract it from the others.** 2.46.0
+added a row-number column without re-measuring and Pull ended up 314px over -
+which is what marko saw. A form that overflows does not fail loudly; it just
+squeezes every cell until the whole thing looks cheap.
+
+`.td-c`/`.th-c` is the density these forms use. That class's own values
+(`px-2 py-2`, `text-[11px]`) were measured against real data years earlier and
+are still not to be edited - the row forms USE it, they do not change it.
+
+**A derived value is a figure, not a disabled control.** The Ks cell shows the
+seat-derived count as plain text. It was a read-only `<Input>` for exactly one
+release and marko called it out: a greyed-out box reads as a control refusing
+you, where a number reads as the answer.
+
 ## 2.46.0 - a chart's window is the period, never wider
 
 `buildSeries` in `pages/finance/Overview.tsx` may change the BUCKET SIZE to

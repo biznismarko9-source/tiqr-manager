@@ -198,7 +198,7 @@ export default function EventRowsModal({
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td w-[220px]">
+            <td className="td-c w-[232px]">
               <Input
                 value={r.name}
                 onChange={(e) => patch(i, { name: e.target.value })}
@@ -206,7 +206,7 @@ export default function EventRowsModal({
                 aria-label={`Názov, riadok ${i + 1}`}
               />
             </td>
-            <td className="td w-[150px]">
+            <td className="td-c w-[126px]">
               <Input
                 type="date"
                 value={r.eventDate}
@@ -215,16 +215,16 @@ export default function EventRowsModal({
                 aria-label="Dátum"
               />
             </td>
-            <td className="td w-[170px]">
+            <td className="td-c w-[166px]">
               <Input value={r.venue} onChange={(e) => patch(i, { venue: e.target.value })} aria-label="Miesto" />
             </td>
-            <td className="td w-[140px]">
+            <td className="td-c w-[136px]">
               <Input value={r.city} onChange={(e) => patch(i, { city: e.target.value })} aria-label="Mesto" />
             </td>
-            <td className="td w-[120px]">
+            <td className="td-c w-[106px]">
               <Input value={r.country} onChange={(e) => patch(i, { country: e.target.value })} aria-label="Krajina" />
             </td>
-            <td className="td w-[160px]">
+            <td className="td-c w-[140px]">
               <Select
                 value={r.categoryId}
                 onChange={(e) => patch(i, { categoryId: e.target.value ? Number(e.target.value) : "" })}
@@ -238,7 +238,7 @@ export default function EventRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td w-[140px]">
+            <td className="td-c w-[114px]">
               <Select
                 value={r.status}
                 onChange={(e) => patch(i, { status: e.target.value as EventStatus })}

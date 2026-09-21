@@ -186,34 +186,58 @@ export default function PullRowsModal({
       <AiImportPanel
         kind="pull"
         className="mb-4"
-        onApply={({ fields, group }) => {
+        multiGroup
+        onApply={({ fields, groups }) => {
           const platform = matchByName(platforms, fields.platform);
           setRows((rs) => {
-            const first = { ...rs[0] };
-            if (fields.eventName) first.eventName = fields.eventName;
-            if (isIsoDate(fields.eventDate)) first.eventDate = fields.eventDate;
-            if (fields.currency) first.currency = fields.currency.trim().toUpperCase();
-            if (platform) first.platformId = platform.id;
-            if (group?.quantity) first.quantity = group.quantity;
-            if (group?.section) first.section = group.section;
-            if (group?.row) first.rowLabel = group.row;
-            // `pulls.seat` is one free-text column, not a row per ticket - so
-            // the expanded labels are joined rather than parsed.
-            if (group?.seats?.length) first.seat = group.seats.join(", ");
-            return [first, ...rs.slice(1)];
+            // 2.47.0: one row per group, same rule as New Order. Three seat
+            // blocks on one screenshot are three pulls, not one pull with the
+            // first block's seats and the rest quietly dropped.
+            const base = (): Row => {
+              const r = blankRow();
+              if (fields.eventName) r.eventName = fields.eventName;
+              if (isIsoDate(fields.eventDate)) r.eventDate = fields.eventDate;
+              if (fields.currency) r.currency = fields.currency.trim().toUpperCase();
+              if (platform) r.platformId = platform.id;
+              return r;
+            };
+            const made: Row[] = groups.map((g) => {
+              const r = base();
+              if (g.quantity) r.quantity = g.quantity;
+              if (g.section) r.section = g.section;
+              if (g.row) r.rowLabel = g.row;
+              // `pulls.seat` is one free-text column, not a row per ticket -
+              // so the expanded labels are joined rather than parsed.
+              if (g.seats?.length) r.seat = g.seats.join(", ");
+              return r;
+            });
+
+            if (made.length === 0) {
+              const first = { ...rs[0] };
+              if (fields.eventName) first.eventName = fields.eventName;
+              if (isIsoDate(fields.eventDate)) first.eventDate = fields.eventDate;
+              if (fields.currency) first.currency = fields.currency.trim().toUpperCase();
+              if (platform) first.platformId = platform.id;
+              return [first, ...rs.slice(1)];
+            }
+
+            const untouched =
+              rs.length === 1 && !rs[0].buyerName && !rs[0].section && !rs[0].seat && !rs[0].price;
+            return untouched ? made : [...rs, ...made];
           });
         }}
       />
 
       <RowFormTable
         head={["Pre koho", "Event", "Dátum eventu", "Ks", "Sektor", "Rad", "Sedadlá", "Platforma", "Tvoja odmena", "Mena", "Poznámka"]}
+        rightAlign={[3, 8]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
         addLabel="Ďalší pull"
       >
         {rows.map((r, i) => (
           <tr key={i}>
             <RowNumber n={i + 1} />
-            <td className="td w-[140px]">
+            <td className="td-c w-[116px]">
               <Input
                 value={r.buyerName}
                 onChange={(e) => patch(i, { buyerName: e.target.value })}
@@ -221,7 +245,7 @@ export default function PullRowsModal({
                 aria-label={`Pre koho, riadok ${i + 1}`}
               />
             </td>
-            <td className="td w-[170px]">
+            <td className="td-c w-[140px]">
               <Input
                 value={r.eventName}
                 onChange={(e) => patch(i, { eventName: e.target.value })}
@@ -229,7 +253,7 @@ export default function PullRowsModal({
                 aria-label="Event"
               />
             </td>
-            <td className="td w-[150px]">
+            <td className="td-c w-[118px]">
               <Input
                 type="date"
                 value={r.eventDate}
@@ -238,7 +262,7 @@ export default function PullRowsModal({
                 aria-label="Dátum eventu"
               />
             </td>
-            <td className="td w-[70px]">
+            <td className="td-c w-[50px]">
               <Input
                 type="number"
                 min={1}
@@ -248,13 +272,13 @@ export default function PullRowsModal({
                 aria-label="Ks"
               />
             </td>
-            <td className="td w-[95px]">
+            <td className="td-c w-[76px]">
               <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
             </td>
-            <td className="td w-[75px]">
+            <td className="td-c w-[56px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
             </td>
-            <td className="td w-[110px]">
+            <td className="td-c w-[92px]">
               <Input
                 value={r.seat}
                 onChange={(e) => patch(i, { seat: e.target.value })}
@@ -262,7 +286,7 @@ export default function PullRowsModal({
                 aria-label="Sedadlá"
               />
             </td>
-            <td className="td w-[150px]">
+            <td className="td-c w-[114px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
@@ -276,7 +300,7 @@ export default function PullRowsModal({
                 ))}
               </Select>
             </td>
-            <td className="td w-[110px]">
+            <td className="td-c w-[88px]">
               <Input
                 value={r.price}
                 onChange={(e) => patch(i, { price: e.target.value })}
@@ -285,7 +309,7 @@ export default function PullRowsModal({
                 aria-label="Tvoja odmena"
               />
             </td>
-            <td className="td w-[90px]">
+            <td className="td-c w-[64px]">
               <Input
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
@@ -293,7 +317,7 @@ export default function PullRowsModal({
                 aria-label="Mena"
               />
             </td>
-            <td className="td w-[160px]">
+            <td className="td-c w-[106px]">
               <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Poznámka" />
             </td>
             <RowRemove
