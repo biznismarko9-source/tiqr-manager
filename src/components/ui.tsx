@@ -880,10 +880,21 @@ export function StatCard({
    * never pass this) stays visually unchanged. */
   trend?: TrendInfo | null;
   /** 2.13.3: the one figure on a row that is the answer, not the context -
-   * Dashboard's Profit. A slightly larger number and a brand-tinted border,
-   * which is enough to find it without giving it a band of the page to
-   * itself (DSH-01 did that; marko wanted everything on one line instead).
-   * At most one card per row should set this, or none of them stands out. */
+   * Dashboard's Profit. A slightly larger number and a ring, which is enough
+   * to find it without giving it a band of the page to itself (DSH-01 did
+   * that; marko wanted everything on one line instead).
+   * At most one card per row should set this, or none of them stands out.
+   *
+   * 2.47.4: the ring is NEUTRAL, and it is a ring rather than a border.
+   * Two separate bugs lived in the old `border-brand-300 bg-brand-50/40`:
+   *   - `.card` sets `border: 0`, so the border colour drew NOTHING. The only
+   *     thing that ever rendered was the fill.
+   *   - `brand-50` (#e4ddfd) is a saturated lavender, so in light mode that
+   *     fill turned the whole card purple next to four white ones - it read
+   *     as "selected", and it fought the emerald profit figure sitting on it.
+   *     marko: "na light mode je tam chybna farba pri tom profit widgete".
+   * A ring needs no border width to exist and cannot be beaten by `.card`'s
+   * own `bg-surface`, which is what made the old fill unpredictable too. */
   emphasis?: boolean;
   /** false = the trend arrow/text always render in neutral slate regardless
    * of direction - for a metric where "up" isn't unambiguously good (e.g.
@@ -934,7 +945,7 @@ export function StatCard({
     // flex row (see SummaryStat's note below) - it is inert inside the grid.
     <Card
       className={`min-w-0 flex-1 p-3 ${
-        emphasis ? "border-brand-300 bg-brand-50/40 dark:border-brand-500/40 dark:bg-brand-500/[0.06]" : ""
+        emphasis ? "ring-1 ring-slate-300 dark:ring-slate-600" : ""
       }`}
     >
       <p className="section-title truncate">{label}</p>
@@ -1106,7 +1117,7 @@ export function RowFormTable({
               column names. */}
           <thead className="sticky top-0 z-10 bg-surface">
             <tr>
-              <th className="th-c w-[28px]" aria-label="Riadok" />
+              <th className="th-c w-[28px]" aria-label="Row" />
               {head.map((h, i) => (
                 <th
                   key={`${h}-${i}`}
@@ -1186,8 +1197,8 @@ export function RowRemove({
           <button
             type="button"
             onClick={onDuplicate}
-            aria-label={duplicateLabel ?? "Duplikovať riadok"}
-            title={duplicateLabel ?? "Duplikovať riadok"}
+            aria-label={duplicateLabel ?? "Duplicate row"}
+            title={duplicateLabel ?? "Duplicate row"}
             className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-100"
           >
             <IconCopy className="h-4 w-4" />
@@ -1256,13 +1267,11 @@ export function RowFormFooter({
       {problems.length > 0 && (
         <p className="mt-4 flex flex-wrap items-baseline gap-x-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
           <span className="font-medium">
-            {problems.length === 1
-              ? "1 vec treba opraviť"
-              : `${problems.length} ${problems.length < 5 ? "veci" : "vecí"} treba opraviť`}
+            {problems.length === 1 ? "1 thing to fix" : `${problems.length} things to fix`}
           </span>
           {first && (
             <span className="text-amber-700 dark:text-amber-300">
-              riadok {first.row + 1}: {first.message}
+              row {first.row + 1}: {first.message}
             </span>
           )}
         </p>
@@ -1279,7 +1288,7 @@ export function RowFormFooter({
             ⌘↵
           </kbd>
           <Button variant="secondary" onClick={onCancel} disabled={saving}>
-            Zrušiť
+            Cancel
           </Button>
           <Button variant="primary" onClick={onSubmit} disabled={saving}>
             {saving ? <Spinner className="h-4 w-4" /> : null}

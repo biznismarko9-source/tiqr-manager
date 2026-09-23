@@ -138,7 +138,7 @@ export default function SaleRowsModal({
             price: tk.listingPriceCents !== null ? centsToDecimalString(tk.listingPriceCents) : "",
             fee: "0",
           }));
-        if (add.length === 0) toast.error("Z tejto objednávky už máš všetky voľné lístky v zozname.");
+        if (add.length === 0) toast.error("Every free ticket from that order is already in the list.");
         return [...rs, ...add];
       });
       setPickOrderId("");
@@ -169,11 +169,11 @@ export default function SaleRowsModal({
   const problems = useMemo<RowProblem[]>(() => {
     const out: RowProblem[] = [];
     rows.forEach((r, i) => {
-      if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba predajná cena", kind: "missing" });
+      if (!r.price.trim()) out.push({ row: i, field: "price", message: "sale price is missing", kind: "missing" });
       else if (decimalStringToCents(r.price) === null)
-        out.push({ row: i, field: "price", message: `cena „${r.price}“ nie je platná suma`, kind: "invalid" });
+        out.push({ row: i, field: "price", message: `price “${r.price}” is not a valid amount`, kind: "invalid" });
       if (r.fee.trim() && decimalStringToCents(r.fee) === null)
-        out.push({ row: i, field: "fee", message: `poplatok „${r.fee}“ nie je platná suma`, kind: "invalid" });
+        out.push({ row: i, field: "fee", message: `fees “${r.fee}” is not a valid amount`, kind: "invalid" });
     });
     return out;
   }, [rows]);
@@ -182,8 +182,8 @@ export default function SaleRowsModal({
   async function submit() {
     setError(null);
     setSubmitted(true);
-    if (rows.length === 0) return setError("Pridaj aspoň jeden lístok z objednávky");
-    if (!currency.trim()) return setError("Mena je povinná");
+    if (rows.length === 0) return setError("Add at least one ticket from an order");
+    if (!currency.trim()) return setError("Currency is required");
     // Every bad cell is already outlined and the footer counts them.
     if (problems.length > 0) return;
 
@@ -206,8 +206,8 @@ export default function SaleRowsModal({
       const sales = await api.createSalesBatch(input);
       toast.success(
         sales.length === 1
-          ? `${sales[0].code} zapísaný`
-          : `${sales.length} predajov zapísaných (${sales[0].code}–${sales[sales.length - 1].code})`,
+          ? `${sales[0].code} recorded`
+          : `${sales.length} sales recorded (${sales[0].code}–${sales[sales.length - 1].code})`,
       );
       onCreated();
     } catch (e) {
@@ -218,7 +218,7 @@ export default function SaleRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový predaj" width="max-w-[min(1560px,94vw)]">
+    <Modal open={open} onClose={onClose} title="New sale" width="max-w-[min(1560px,94vw)]">
       {/* 2.47.0: marko asked for the photo import on ALL four forms, not just
           New Order. A sale's rows ARE real tickets, so a screenshot cannot
           conjure them - what it CAN fill is everything that describes the
@@ -247,22 +247,22 @@ export default function SaleRowsModal({
           if (fields.sellingFees) {
             setRows((rs) => rs.map((r) => (r.fee.trim() ? r : { ...r, fee: fields.sellingFees })));
           }
-          toast.info("Údaje o predaji vyplnené z obrázka - skontroluj ich a potom zapíš.");
+          toast.info("Sale details filled in from the image - check them, then record.");
         }}
       />
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="min-w-[210px] flex-1">
-          <span className="label">Hľadať objednávku</span>
+          <span className="label">Find an order</span>
           <Input
             value={orderQuery}
             onChange={(e) => setOrderQuery(e.target.value)}
-            placeholder="Kód objednávky, event, kód lístka…"
+            placeholder="Order code, event, ticket code…"
           />
         </div>
         <div className="min-w-[230px] flex-1">
-          <span className="label">Objednávka</span>
+          <span className="label">Order</span>
           <Select value={pickOrderId} onChange={(e) => setPickOrderId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">Vyber objednávku...</option>
+            <option value="">Select an order…</option>
             {orderOptions.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.code} · {o.eventName} · {o.availableCount + o.listedCount} voľných
@@ -276,7 +276,7 @@ export default function SaleRowsModal({
           disabled={!pickOrderId || loadingTickets}
           className="mb-0.5 rounded-lg bg-brand-600 px-3 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loadingTickets ? "Načítavam…" : "Pridať jej lístky"}
+          {loadingTickets ? "Loading…" : "Add its tickets"}
         </button>
         <span className="pb-2 text-xs text-slate-500 dark:text-slate-400">
           Dátum predaja: {formatDateNumeric(saleDate)}
@@ -285,7 +285,7 @@ export default function SaleRowsModal({
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="w-44">
-          <span className="label">Platforma</span>
+          <span className="label">Platform</span>
           <Select
             value={platformId ?? ""}
             onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : null)}
@@ -299,40 +299,40 @@ export default function SaleRowsModal({
           </Select>
         </div>
         <div className="w-28">
-          <span className="label">Mena</span>
+          <span className="label">Currency</span>
           <Input value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />
         </div>
         <div className="w-40">
-          <span className="label">Stav platby</span>
+          <span className="label">Payment status</span>
           <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value as SalePaymentStatus)}>
             {PAYMENT_STATUSES.map((s) => (
               <option key={s} value={s}>
-                {s === "paid" ? "Zaplatené" : "Čaká na platbu"}
+                {s === "paid" ? "Paid" : "Awaiting payment"}
               </option>
             ))}
           </Select>
         </div>
         <div className="min-w-[150px] flex-1">
-          <span className="label">Kupec</span>
-          <Input value={buyer} onChange={(e) => setBuyer(e.target.value)} placeholder="nepovinné" />
+          <span className="label">Buyer</span>
+          <Input value={buyer} onChange={(e) => setBuyer(e.target.value)} placeholder="optional" />
         </div>
         <div className="min-w-[150px] flex-1">
-          <span className="label">Poznámka</span>
-          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="nepovinné" />
+          <span className="label">Notes</span>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
         </div>
       </div>
 
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
-          Zatiaľ žiadne lístky. Vyber objednávku hore a pridaj jej voľné lístky — môžeš ich pridať aj z viacerých
-          objednávok do jedného predaja.
+          No tickets yet. Pick an order above and add its free tickets — you can pull them from several orders
+          into one sale.
         </div>
       ) : (
         <RowFormTable
-          head={["Lístok", "Event", "Sedadlo", "Nákup", "Predaj/ks", "Poplatok", "Zisk"]}
+          head={["Ticket", "Event", "Seat", "Cost", "Sale/ea", "Fees", "Profit"]}
         rightAlign={[3, 4, 5, 6]}
           onAdd={addFromOrder}
-          addLabel="Pridať lístky z ďalšej objednávky"
+          addLabel="Add tickets from another order"
         >
           {rows.map((r, i) => {
             const price = decimalStringToCents(r.price) ?? 0;
@@ -357,7 +357,7 @@ export default function SaleRowsModal({
                     onChange={(e) => patch(i, { price: e.target.value })}
                     placeholder="245,00"
                     className={`text-right ${cellError(shown, i, "price")}`}
-                    aria-label={`Cena, ${r.ticket.code}`}
+                    aria-label={`Price, ${r.ticket.code}`}
                   />
                 </td>
                 <td className="td-c w-[150px]">
@@ -365,7 +365,7 @@ export default function SaleRowsModal({
                     value={r.fee}
                     onChange={(e) => patch(i, { fee: e.target.value })}
                     className={`text-right ${cellError(shown, i, "fee")}`}
-                    aria-label={`Poplatok, ${r.ticket.code}`}
+                    aria-label={`Fees, ${r.ticket.code}`}
                   />
                 </td>
                 <td
@@ -378,7 +378,7 @@ export default function SaleRowsModal({
                 <RowRemove
                   show
                   onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
-                  label={`Odobrať ${r.ticket.code}`}
+                  label={`Remove ${r.ticket.code}`}
                 />
               </tr>
             );
@@ -392,16 +392,16 @@ export default function SaleRowsModal({
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}
-        submitLabel={rows.length > 1 ? `Zapísať ${rows.length} predajov` : "Zapísať predaj"}
+        submitLabel={rows.length > 1 ? `Record ${rows.length} sales` : "Record sale"}
         summary={
           rows.length === 0 ? (
-            "Žiadne lístky"
+            "No tickets"
           ) : (
             <>
-              {rows.length} {rows.length === 1 ? "lístok" : rows.length < 5 ? "lístky" : "lístkov"} ·{" "}
-              {formatMoney(totals.revenue, currency)} tržba ·{" "}
+              {rows.length} {rows.length === 1 ? "ticket" : "tickets"} ·{" "}
+              {formatMoney(totals.revenue, currency)} revenue ·{" "}
               <span className={totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>
-                {formatMoney(totals.profit, currency)} zisk
+                {formatMoney(totals.profit, currency)} profit
               </span>
             </>
           )

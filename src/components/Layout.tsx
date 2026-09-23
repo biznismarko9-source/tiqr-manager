@@ -17,7 +17,8 @@ import {
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Spinner } from "./ui";
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
+import { recordAutoSync } from "../lib/autoSyncLog";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -158,6 +159,11 @@ export default function Layout() {
   // cloud_sync.rs's `decide_auto`); everything it could decide happens
   // without ever reaching this banner.
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  // 2.48.0: what automatic sync did last, and whether it FAILED. Until now
+  // the tick swallowed every error (`catch {}`), so a machine whose upload was
+  // being refused looked exactly like a machine with nothing to send - marko:
+  // "AUTOSYNC NEFUNGUJE". It could not have told him, on either machine.
+  const [syncFailure, setSyncFailure] = useState<string | null>(null);
   // Guards against a tick starting while the previous one is still
   // uploading - a slow upload on a slow connection must not stack.
   const autoSyncBusy = useRef(false);
@@ -275,12 +281,20 @@ export default function Layout() {
         } else if (plan.action === "pull" || plan.action === "merge") {
           setSyncNotice(plan.reason);
         }
-      } catch {
-        // Offline, signed out, or the remote moved in the moment between
-        // deciding and acting: all normal for a local-first app, none of them
-        // worth interrupting marko over, and the next tick simply tries
-        // again. Real failures are still shown where he asked for them - the
-        // Sync buttons in Settings.
+        // Whatever happened, it happened - including "nothing to do", which is
+        // the answer marko most needs to be able to see when he believes sync
+        // is dead.
+        recordAutoSync({ at: Date.now(), action: plan.action, reason: plan.reason, error: null });
+        setSyncFailure(null);
+      } catch (e) {
+        // 2.48.0: no longer silent. `Off` and `Offline` are decided by the
+        // backend and arrive as a plan, not as a throw - so anything landing
+        // HERE is a real failure: a refused upload, a poisoned lock, a broken
+        // token refresh. Those used to vanish, which is the whole reason
+        // automatic sync could be dead for days without saying so.
+        const message = errMsg(e);
+        recordAutoSync({ at: Date.now(), action: "error", reason: message, error: message });
+        setSyncFailure(message);
       } finally {
         autoSyncBusy.current = false;
         // Left standing on purpose when a restart or reload is already
@@ -449,6 +463,24 @@ export default function Layout() {
             2.6.0: still no max-width cap (that decision stands) - only the
             gutter changed, 24px -> 28px horizontal / 20px vertical, which is
             the app's page inset every screen now shares. */}
+        {syncFailure && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-red-200 bg-red-50 px-7 py-2 text-xs text-red-800 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-300">
+            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              <strong className="font-semibold">Automatic sync failed.</strong> {syncFailure}
+            </span>
+            <Link to="/settings/data" className="font-semibold underline underline-offset-2">
+              Open sync
+            </Link>
+            <button
+              type="button"
+              onClick={() => setSyncFailure(null)}
+              className="ml-auto text-red-700/70 hover:text-red-900 dark:text-red-400/70 dark:hover:text-red-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {syncNotice && (
           <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />

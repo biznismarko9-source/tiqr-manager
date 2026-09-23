@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.47.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.48.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1371,6 +1371,106 @@ and still fits a laptop, where the table scrolls sideways as it always did.
 actually squeezed grew most - Order's Typ 110->150, Sektor 92->130,
 Platforma 130->190, Poznámka 126->230. All four still sum to exactly their
 budget, and head-column count still equals data-cell count in each.
+
+**2.47.3 - the app is English-only again.** marko: "vsetko by malo byt v apke
+v anglictine, nie v ziadnom inom jazyku, pri tych vyplnovatkach je vsade
+slovensky". The four row forms shipped in Slovak from 2.45.0 because they were
+built from a Slovak preview; CURRENT_STATE flagged it at the time and he has
+now decided.
+
+**127 user-facing strings across 8 files**, found by scanning every string and
+JSX text node in `src/` for Slovak diacritics or vocabulary with comments
+stripped first, then re-running the same scan to prove none were missed. The
+row forms, `RowFormFooter`/`RowRemove` in ui.tsx, the two Slovak lines
+`AiImportPanel` picked up in 2.47.0, one Settings placeholder and one Finance
+example name.
+
+**Slovak plural triples collapsed.** `x === 1 ? "lístok" : x < 5 ? "lístky" :
+"lístkov"` is now `x === 1 ? "ticket" : "tickets"` - the same for orders,
+events, pulls, sales and "veci/vecí". Fewer branches, and no Slovak grammar
+left to maintain in a form nobody reads in Slovak.
+
+**What deliberately stayed Slovak: the code comments.** They quote marko's own
+wording for why a thing is the way it is, and no user ever sees them. The only
+other survivor is `priceParse.ts`'s currency regex, where `Kč`/`zł`/`лв`/`Ft`/
+`lei` are tokens the parser MATCHES, not text it shows.
+
+**2.47.4 - the Profit card stopped being purple.** marko: "na light mode je tam
+chybna farba pri tom profit widgete", with a screenshot of the Dashboard's
+Profit tile sitting lavender among four white ones.
+
+`StatCard`'s `emphasis` was `border-brand-300 bg-brand-50/40`. **Two separate
+bugs in one string:**
+- `.card` sets `border: 0`, so `border-brand-300` drew NOTHING. The only thing
+  that ever rendered from that pair was the fill.
+- `brand-50` is `#e4ddfd`, a saturated lavender. As the only tinted tile in a
+  row of white ones it read as "selected", and the emerald profit figure sat on
+  top of it fighting it.
+
+It is now `ring-1 ring-slate-300 dark:ring-slate-600` - neutral, and a ring
+rather than a border because a ring needs no border width to exist and cannot
+be beaten by `.card`'s own `bg-surface` the way a background utility can. The
+24px figure (vs 19px) still marks it as the headline.
+
+**Only one caller has `emphasis`** (Dashboard's Profit), so the blast radius is
+exactly that tile. The app's other `bg-brand-50` uses - selection bars, chips,
+banners - are deliberately brand-coloured and were left alone: they are
+actions and notices, not data tiles.
+
+**2.47.5 - the four Slovak words a diacritics scan cannot see.** marko reported
+Slovak still showing in the new-record forms after 2.47.3 claimed zero.
+
+**2.47.3's scan had a hole**: it detected Slovak by diacritics or by a word
+list. A Slovak word spelled in plain ASCII and absent from that list passed
+straight through. Four did:
+
+- `nie` - the Pull toggle's "off" label in **New Order**. Plain ASCII.
+- `Kupec` - the Buyer label in **New Sale**.
+- `Ks` x2 - a column header on the **Pulls list page**.
+- `e.g. Doprava` - a Finance category placeholder in Settings.
+
+**The method that actually worked** was not a smarter word list: it was dumping
+EVERY user-visible string in the app (733 of them - JSX text nodes plus
+label/placeholder/title/aria-label attributes) and reading the 399 short,
+label-sized ones by eye. A future language sweep should do that, not grep for
+diacritics.
+
+**EventRowsModal and PullRowsModal were already fully English** - machine-checked
+again here. If marko still sees Slovak in New Event or New Pull, he is running a
+build from 2.47.2 or earlier; Settings -> Software updates -> "Current version"
+is where to confirm.
+
+**2.48.0 - automatic sync can finally say what it is doing.** marko, in
+capitals: "AUTOSYNC NEFUNGUJE, OKAMZITE HO OPRAVIT NA OBOCH STRANACH".
+
+**What was read and found CORRECT** (so the next session does not re-walk it):
+`cloud_sync_auto`/`cloud_sync_push`/`cloud_sync_pull`/`cloud_merge_pull` are all
+registered in `lib.rs`'s handler and their names match `api.ts` exactly;
+`decide_auto`'s table is right in all seven branches; `LOCAL_DIRTY` is set by a
+SQLite `update_hook` on every non-bookkeeping write; `SyncGuard` clears
+`SYNC_IN_PROGRESS` through `Drop`, so it cannot stick. **No logic defect was
+found by reading.**
+
+**What WAS broken, provably:** `Layout.tsx`'s tick ended in a bare `catch {}`.
+Every failure - a refused upload, a token refresh that died, a poisoned lock -
+vanished. A machine whose sync was failing every five minutes looked exactly
+like a machine with nothing to send, on both machines, for as long as it kept
+happening. That is why it could be dead for days without a word.
+
+Now: real failures raise a red banner naming the actual error, and EVERY tick
+(including "nothing to do") is written to `lib/autoSyncLog.ts` - localStorage,
+per-machine on purpose, last 8 attempts. Settings -> Data shows them under
+"Automatic sync on this computer", which is the per-machine answer the existing
+"Last synced" line could never give: that line counts hand-pressed syncs too,
+so it could read "an hour ago" while the timer had failed twelve times since.
+
+**NOT changed, and it needs marko's decision** (see PROTECTED_AREAS): automatic
+**download** still only happens at launch. Mid-session a newer remote raises the
+banner instead, because a pull replaces the database and relaunches, and a merge
+reloads the page - either one under a half-typed form is a bug, not a feature.
+If his mental model is "leave both machines open and they converge", they never
+will, by design. Making **merge** (which only adds rows) run mid-session is the
+contained version of that change if he wants it.
 
 **Next new migration is 031.**
 

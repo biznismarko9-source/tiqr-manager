@@ -16,6 +16,81 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.48.0 - autosync konečne povie, čo robí
+
+Prešiel som celú cestu autosyncu a **v samotnej logike som chybu nenašiel** —
+príkazy sú zaregistrované, názvy sedia, rozhodovacia tabuľka je správna,
+príznak „mám neodoslané zmeny" sa nastavuje pri každom zápise a zámok sa
+nemôže zaseknúť.
+
+**Čo bolo naozaj pokazené:** autosync **prehĺtal každú chybu**. V kóde bol
+prázdny `catch {}`. Takže počítač, ktorému sa upload každých 5 minút odmietal,
+vyzeral úplne rovnako ako počítač, ktorý nemá čo poslať — **na oboch stranách,
+koľko chcelo dní**.
+
+Teraz:
+
+- **Červený pruh hore** s konkrétnou chybou, keď autosync zlyhá.
+- **Každý pokus sa zapíše** — aj ten, čo nemal čo robiť — a v **Settings → Data**
+  vidíš posledných 8 pokusov aj s časom a dôvodom, zvlášť na každom počítači.
+
+Ten existujúci riadok „Last synced" ti to povedať nevedel: počíta aj ručné
+synchronizácie, takže mohol hlásiť „pred hodinou", kým automatika medzitým
+zlyhala dvanásťkrát.
+
+## 2.47.5 - štyri slovenské slová, ktoré sken nevidel
+
+Mal si pravdu. Môj sken v 2.47.3 hľadal slovenčinu **podľa diakritiky** — takže
+slovo bez dĺžňov a mäkčeňov mu prešlo popod ruky. Štyri také tam boli:
+
+| Slovo | Kde |
+|---|---|
+| `nie` | prepínač Pull v **New Order** |
+| `Kupec` | popis poľa v **New Sale** |
+| `Ks` (2×) | hlavička stĺpca v zozname **Pulls** |
+| `e.g. Doprava` | placeholder v Settings |
+
+Teraz je to `no`, `Buyer`, `Qty` a `e.g. Transport`.
+
+**Ako som to našiel poriadne:** nie lepším zoznamom slov, ale tak, že som
+vypísal **všetkých 733 textov**, ktoré appka zobrazuje, a tých 399 krátkych
+(nadpisy, tlačidlá, popisy polí) som prečítal.
+
+## 2.47.4 - Profit karta už nie je fialová
+
+Na light mode svietila karta Profit levanduľovo medzi štyrmi bielymi — vyzerala
+ako označená, a zelené číslo na nej sa s tou farbou bilo.
+
+Boli to **dve chyby v jednom riadku**:
+
+- `border-brand-300` **nikdy nič nenakreslilo** — karta má nastavené
+  `border: 0`, takže farba rámika nemala čo zafarbiť. Jediné, čo bolo vidieť,
+  bola tá výplň.
+- `brand-50` je sýta levanduľa. Ako jediná zafarbená dlaždica v rade bielych
+  pôsobila ako výber, nie ako dôležitý údaj.
+
+Teraz je tam **neutrálny tenký krúžok** a číslo zostáva väčšie (24 px oproti
+19 px) — nájdeš ho hneď, ale nebije sa to.
+
+Ostatné fialové miesta v appke (lišty výberu, čipy, oznamy) som nechal — tie
+majú byť fialové, sú to akcie.
+
+## 2.47.3 - celá appka je po anglicky
+
+Vypĺňovače boli od 2.45.0 po slovensky, lebo vznikli z toho slovenského
+preview. Teraz je všetko po anglicky.
+
+**127 reťazcov v 8 súboroch** — štyri vypĺňovače, spodná lišta a ikonky
+v `ui.tsx`, dve hlášky v AI paneli, jeden placeholder v Settings a jeden
+príklad mena vo Finance.
+
+Našiel som ich tak, že som preskenoval **každý reťazec a každý text v celom
+`src/`** na slovenskú diakritiku a slová — a po oprave som ten istý sken
+spustil znova. Vrátil nulu.
+
+**Čo zostalo po slovensky: komentáre v kóde.** Tie citujú tvoje vlastné
+zadania, prečo je niečo tak, ako je — a nikto ich v appke nevidí.
+
 ## 2.47.2 - vypĺňovač je širší a stĺpce sa roztiahli
 
 Okno malo **napevno 1152 px** bez ohľadu na to, aký veľký máš monitor — preto

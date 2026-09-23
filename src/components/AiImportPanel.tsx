@@ -358,7 +358,7 @@ export default function AiImportPanel({
                       {groups.length === 1
                         ? "Tickets"
                         : multiGroup
-                          ? `Skupina ${groupIndex + 1} z ${groups.length} · náhľad`
+                          ? `Group ${groupIndex + 1} of ${groups.length} · preview`
                           : `Ticket group ${groupIndex + 1} of ${groups.length}`}
                     </p>
                     {groups.length > 1 && (
@@ -387,7 +387,7 @@ export default function AiImportPanel({
                     // them, so there it would be a lie.
                     <p className="mb-2 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
                       {multiGroup
-                        ? `Na obrázku je ${groups.length} skupín s rôznymi sedadlami alebo cenou. Vyplnia sa všetky, každá ako vlastný riadok – čo k sebe nepatrí, skončí vo vlastnej objednávke.`
+                        ? `This screenshot has ${groups.length} groups with different seating or prices. All of them are filled in, one row each — whatever does not belong together ends up as its own order.`
                         : `This screenshot has ${groups.length} groups with different seating or prices. An order holds one, so fill this group first, then create a second order for the next.`}
                     </p>
                   )}

@@ -28,6 +28,7 @@ import {
   type SpreadsheetTabsResult,
 } from "../lib/types";
 import { formatDateTime } from "../lib/format";
+import { readAutoSyncLog } from "../lib/autoSyncLog";
 import { addDoc, collection, getDocs, limit, orderBy, query, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import {
@@ -244,6 +245,42 @@ const SYNC_STATE_TONE: Record<string, string> = {
   failed: "cancelled",
   off: "available",
 };
+
+/** The last few automatic-sync attempts on this machine, newest first.
+ *  Reads localStorage on mount only: the tick runs every five minutes, so a
+ *  live subscription would buy nothing a panel re-open does not. */
+function AutoSyncHistory() {
+  const [log] = useState(() => readAutoSyncLog());
+  if (log.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        Automatic sync hasn&apos;t run on this computer yet - it checks at launch and every 5 minutes.
+      </p>
+    );
+  }
+  const failures = log.filter((r) => r.error).length;
+  return (
+    <div className="mt-3">
+      <p className="mb-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
+        Automatic sync on this computer
+        {failures > 0 ? ` · ${failures} of the last ${log.length} failed` : ""}
+      </p>
+      <ul className="space-y-1">
+        {log.map((r, i) => (
+          <li key={i} className="flex flex-wrap items-baseline gap-2 text-[11px]">
+            <span className="tabular-nums text-slate-500 dark:text-slate-400">
+              {new Date(r.at).toLocaleString()}
+            </span>
+            <span className={r.error ? "font-medium text-red-600 dark:text-red-400" : "text-slate-600 dark:text-slate-300"}>
+              {r.action}
+            </span>
+            <span className="text-slate-500 dark:text-slate-400">{r.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export default function Settings() {
   const { section } = useParams();
@@ -964,6 +1001,15 @@ export default function Settings() {
                         {sync.lastError && sync.state !== "syncing" && (
                           <p className="mt-2 text-xs text-red-600 dark:text-red-400">{sync.lastError}</p>
                         )}
+                        {/* 2.48.0: what the five-minute timer has actually been
+                            doing ON THIS COMPUTER. The line above is the last
+                            sync of any kind, including ones marko pressed
+                            himself - which is why it could read "synced an hour
+                            ago" while the automatic one had been failing every
+                            five minutes since. This is per-machine on purpose:
+                            "is autosync alive here" is a question about here.
+                            See lib/autoSyncLog.ts. */}
+                        <AutoSyncHistory />
                         {/* 2.19.0: "Combine both" used to live only inside the
                             prompt that appears after a push is refused, so a
                             conflict recorded by a merge had no button at all -
@@ -1969,7 +2015,7 @@ function FinanceCategoryList({
       <h4 className="mb-2 section-title">{heading}</h4>
       <div className="mb-2 flex gap-2">
         <Input
-          placeholder="e.g. Doprava"
+          placeholder="e.g. Transport"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
@@ -3972,7 +4018,7 @@ function SupportCards() {
           }}
           rows={4}
           maxLength={2000}
-          placeholder="Napíš, čo by si zmenil alebo pridal…"
+          placeholder="Tell us what you would change or add…"
           className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
         />
         {/* 2.25.0: one optional picture. A screenshot says in one look what a

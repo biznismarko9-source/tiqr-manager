@@ -75,11 +75,11 @@ function blankRow(prev?: Row): Row {
 function validate(rows: Row[]): RowProblem[] {
   const out: RowProblem[] = [];
   rows.forEach((r, i) => {
-    if (!r.name.trim()) out.push({ row: i, field: "name", message: "chýba názov eventu", kind: "missing" });
+    if (!r.name.trim()) out.push({ row: i, field: "name", message: "name is missing", kind: "missing" });
     // An event whose date is not settled yet is a real state here - empty is
     // allowed, a half-typed date is not.
     if (r.eventDate && !isIsoDate(r.eventDate))
-      out.push({ row: i, field: "eventDate", message: "dátum nie je platný", kind: "invalid" });
+      out.push({ row: i, field: "eventDate", message: "date is not valid", kind: "invalid" });
   });
   return out;
 }
@@ -147,7 +147,7 @@ export default function EventRowsModal({
         made.push(await api.createEvent(input));
       }
       toast.success(
-        made.length === 1 ? `Event ${made[0].name} vytvorený` : `Vytvorených ${made.length} eventov`,
+        made.length === 1 ? `Event ${made[0].name} created` : `${made.length} events created`,
       );
       onCreated(made);
     } catch (e) {
@@ -155,7 +155,7 @@ export default function EventRowsModal({
       // rollback the backend does not offer.
       setError(
         made.length > 0
-          ? `${errMsg(e)} — už vytvorené a ponechané: ${made.map((m) => m.name).join(", ")}`
+          ? `${errMsg(e)} — already created and kept: ${made.map((m) => m.name).join(", ")}`
           : errMsg(e),
       );
     } finally {
@@ -164,7 +164,7 @@ export default function EventRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový event" width="max-w-[min(1560px,94vw)]">
+    <Modal open={open} onClose={onClose} title="New event" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="event"
         className="mb-4"
@@ -186,14 +186,14 @@ export default function EventRowsModal({
             }
             return [first, ...rs.slice(1)];
           });
-          toast.info("Prvý riadok vyplnený z obrázka - skontroluj ho a potom vytvor.");
+          toast.info("First row filled in from the image - check it, then create.");
         }}
       />
 
       <RowFormTable
-        head={["Názov", "Dátum", "Miesto", "Mesto", "Krajina", "Kategória", "Stav"]}
+        head={["Name", "Date", "Venue", "City", "Country", "Category", "Status"]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
-        addLabel="Ďalší event"
+        addLabel="Add event"
       >
         {rows.map((r, i) => (
           <tr key={i}>
@@ -203,7 +203,7 @@ export default function EventRowsModal({
                 value={r.name}
                 onChange={(e) => patch(i, { name: e.target.value })}
                 className={cellError(shown, i, "name")}
-                aria-label={`Názov, riadok ${i + 1}`}
+                aria-label={`Name, row ${i + 1}`}
               />
             </td>
             <td className="td-c w-[160px]">
@@ -212,23 +212,23 @@ export default function EventRowsModal({
                 value={r.eventDate}
                 onChange={(e) => patch(i, { eventDate: e.target.value })}
                 className={cellError(shown, i, "eventDate")}
-                aria-label="Dátum"
+                aria-label="Date"
               />
             </td>
             <td className="td-c w-[240px]">
-              <Input value={r.venue} onChange={(e) => patch(i, { venue: e.target.value })} aria-label="Miesto" />
+              <Input value={r.venue} onChange={(e) => patch(i, { venue: e.target.value })} aria-label="Venue" />
             </td>
             <td className="td-c w-[190px]">
-              <Input value={r.city} onChange={(e) => patch(i, { city: e.target.value })} aria-label="Mesto" />
+              <Input value={r.city} onChange={(e) => patch(i, { city: e.target.value })} aria-label="City" />
             </td>
             <td className="td-c w-[150px]">
-              <Input value={r.country} onChange={(e) => patch(i, { country: e.target.value })} aria-label="Krajina" />
+              <Input value={r.country} onChange={(e) => patch(i, { country: e.target.value })} aria-label="Country" />
             </td>
             <td className="td-c w-[200px]">
               <Select
                 value={r.categoryId}
                 onChange={(e) => patch(i, { categoryId: e.target.value ? Number(e.target.value) : "" })}
-                aria-label="Kategória"
+                aria-label="Category"
               >
                 <option value="">—</option>
                 {categories.map((c) => (
@@ -242,7 +242,7 @@ export default function EventRowsModal({
               <Select
                 value={r.status}
                 onChange={(e) => patch(i, { status: e.target.value as EventStatus })}
-                aria-label="Stav"
+                aria-label="Status"
               >
                 {STATUSES.map((st) => (
                   <option key={st} value={st}>
@@ -254,9 +254,9 @@ export default function EventRowsModal({
             <RowRemove
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
-              label={`Zmazať riadok ${i + 1}`}
+              label={`Delete row ${i + 1}`}
               onDuplicate={() => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], name: "" }, ...rs.slice(i + 1)])}
-              duplicateLabel={`Duplikovať riadok ${i + 1}`}
+              duplicateLabel={`Duplicate row ${i + 1}`}
             />
           </tr>
         ))}
@@ -269,12 +269,12 @@ export default function EventRowsModal({
         onCancel={onClose}
         onSubmit={submit}
         submitLabel={
-          rows.length > 1 ? `Vytvoriť ${rows.length} ${rows.length < 5 ? "eventy" : "eventov"}` : "Vytvoriť event"
+          rows.length > 1 ? `Create ${rows.length} events` : "Create event"
         }
         summary={
           <>
-            {rows.length} {rows.length === 1 ? "event" : rows.length < 5 ? "eventy" : "eventov"}
-            {dated < rows.length ? ` · ${rows.length - dated} bez dátumu` : ""}
+            {rows.length} {rows.length === 1 ? "event" : "events"}
+            {dated < rows.length ? ` · ${rows.length - dated} without a date` : ""}
           </>
         }
       />

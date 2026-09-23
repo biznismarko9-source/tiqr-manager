@@ -76,18 +76,18 @@ function blankRow(prev?: Row): Row {
 function validate(rows: Row[]): RowProblem[] {
   const out: RowProblem[] = [];
   rows.forEach((r, i) => {
-    if (!r.buyerName.trim()) out.push({ row: i, field: "buyerName", message: "chýba, pre koho ťaháš", kind: "missing" });
-    if (!r.eventName.trim()) out.push({ row: i, field: "eventName", message: "chýba event", kind: "missing" });
+    if (!r.buyerName.trim()) out.push({ row: i, field: "buyerName", message: "who it is for is missing", kind: "missing" });
+    if (!r.eventName.trim()) out.push({ row: i, field: "eventName", message: "event is missing", kind: "missing" });
     const q = parseInt(r.quantity, 10);
-    if (!r.quantity.trim()) out.push({ row: i, field: "quantity", message: "chýba počet kusov", kind: "missing" });
+    if (!r.quantity.trim()) out.push({ row: i, field: "quantity", message: "quantity is missing", kind: "missing" });
     else if (!Number.isFinite(q) || q < 1)
-      out.push({ row: i, field: "quantity", message: "počet kusov musí byť aspoň 1", kind: "invalid" });
-    if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba tvoja odmena", kind: "missing" });
+      out.push({ row: i, field: "quantity", message: "quantity must be at least 1", kind: "invalid" });
+    if (!r.price.trim()) out.push({ row: i, field: "price", message: "your fee is missing", kind: "missing" });
     else if (decimalStringToCents(r.price) === null)
-      out.push({ row: i, field: "price", message: `odmena „${r.price}“ nie je platná suma`, kind: "invalid" });
-    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "chýba mena", kind: "missing" });
+      out.push({ row: i, field: "price", message: `fee “${r.price}” is not a valid amount`, kind: "invalid" });
+    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "currency is missing", kind: "missing" });
     if (r.eventDate && !isIsoDate(r.eventDate))
-      out.push({ row: i, field: "eventDate", message: "dátum eventu nie je platný", kind: "invalid" });
+      out.push({ row: i, field: "eventDate", message: "event date is not valid", kind: "invalid" });
   });
   return out;
 }
@@ -165,7 +165,7 @@ export default function PullRowsModal({
         made.push(await api.createPull(input));
       }
       toast.success(
-        made.length === 1 ? `Pull ${made[0].code} vytvorený` : `Vytvorené: ${made.map((m) => m.code).join(", ")}`,
+        made.length === 1 ? `Pull ${made[0].code} created` : `Created: ${made.map((m) => m.code).join(", ")}`,
       );
       onCreated(made);
     } catch (e) {
@@ -173,7 +173,7 @@ export default function PullRowsModal({
       // rollback the backend does not offer.
       setError(
         made.length > 0
-          ? `${errMsg(e)} — už vytvorené a ponechané: ${made.map((m) => m.code).join(", ")}`
+          ? `${errMsg(e)} — already created and kept: ${made.map((m) => m.code).join(", ")}`
           : errMsg(e),
       );
     } finally {
@@ -182,7 +182,7 @@ export default function PullRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nový pull" width="max-w-[min(1560px,94vw)]">
+    <Modal open={open} onClose={onClose} title="New pull" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="pull"
         className="mb-4"
@@ -229,10 +229,10 @@ export default function PullRowsModal({
       />
 
       <RowFormTable
-        head={["Pre koho", "Event", "Dátum eventu", "Ks", "Sektor", "Rad", "Sedadlá", "Platforma", "Tvoja odmena", "Mena", "Poznámka"]}
+        head={["For whom", "Event", "Event date", "Qty", "Section", "Row", "Seats", "Platform", "Your fee", "Currency", "Notes"]}
         rightAlign={[3, 8]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
-        addLabel="Ďalší pull"
+        addLabel="Add pull"
       >
         {rows.map((r, i) => (
           <tr key={i}>
@@ -242,7 +242,7 @@ export default function PullRowsModal({
                 value={r.buyerName}
                 onChange={(e) => patch(i, { buyerName: e.target.value })}
                 className={cellError(shown, i, "buyerName")}
-                aria-label={`Pre koho, riadok ${i + 1}`}
+                aria-label={`For whom, row ${i + 1}`}
               />
             </td>
             <td className="td-c w-[190px]">
@@ -259,7 +259,7 @@ export default function PullRowsModal({
                 value={r.eventDate}
                 onChange={(e) => patch(i, { eventDate: e.target.value })}
                 className={cellError(shown, i, "eventDate")}
-                aria-label="Dátum eventu"
+                aria-label="Event date"
               />
             </td>
             <td className="td-c w-[78px]">
@@ -269,28 +269,28 @@ export default function PullRowsModal({
                 value={r.quantity}
                 onChange={(e) => patch(i, { quantity: e.target.value.replace(/[^\d]/g, "") })}
                 className={`text-right ${cellError(shown, i, "quantity")}`}
-                aria-label="Ks"
+                aria-label="Qty"
               />
             </td>
             <td className="td-c w-[110px]">
-              <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
+              <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Section" />
             </td>
             <td className="td-c w-[80px]">
-              <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
+              <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Row" />
             </td>
             <td className="td-c w-[130px]">
               <Input
                 value={r.seat}
                 onChange={(e) => patch(i, { seat: e.target.value })}
                 placeholder="23-24"
-                aria-label="Sedadlá"
+                aria-label="Seats"
               />
             </td>
             <td className="td-c w-[170px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
-                aria-label="Platforma"
+                aria-label="Platform"
               >
                 <option value="">—</option>
                 {purchaseSide.map((p) => (
@@ -306,7 +306,7 @@ export default function PullRowsModal({
                 onChange={(e) => patch(i, { price: e.target.value })}
                 placeholder="15,00"
                 className={`text-right ${cellError(shown, i, "price")}`}
-                aria-label="Tvoja odmena"
+                aria-label="Your fee"
               />
             </td>
             <td className="td-c w-[90px]">
@@ -314,20 +314,20 @@ export default function PullRowsModal({
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
                 className={cellError(shown, i, "currency")}
-                aria-label="Mena"
+                aria-label="Currency"
               />
             </td>
             <td className="td-c w-[150px]">
-              <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Poznámka" />
+              <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Notes" />
             </td>
             <RowRemove
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
-              label={`Zmazať riadok ${i + 1}`}
+              label={`Delete row ${i + 1}`}
               onDuplicate={() =>
                 setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], buyerName: "" }, ...rs.slice(i + 1)])
               }
-              duplicateLabel={`Duplikovať riadok ${i + 1}`}
+              duplicateLabel={`Duplicate row ${i + 1}`}
             />
           </tr>
         ))}
@@ -340,12 +340,12 @@ export default function PullRowsModal({
         onCancel={onClose}
         onSubmit={submit}
         submitLabel={
-          rows.length > 1 ? `Vytvoriť ${rows.length} ${rows.length < 5 ? "pully" : "pullov"}` : "Vytvoriť pull"
+          rows.length > 1 ? `Create ${rows.length} pulls` : "Create pull"
         }
         summary={
           <>
-            {totalTickets} {totalTickets === 1 ? "lístok" : totalTickets < 5 ? "lístky" : "lístkov"}
-            {oneCurrency && totalFee > 0 ? ` · odmena spolu ${formatMoney(totalFee, rows[0].currency)}` : ""}
+            {totalTickets} {totalTickets === 1 ? "ticket" : "tickets"}
+            {oneCurrency && totalFee > 0 ? ` · fees ${formatMoney(totalFee, rows[0].currency)}` : ""}
           </>
         }
       />

@@ -564,7 +564,7 @@ function GivenPulls() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seats</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Qty</th>
                 {!isNarrow && <th className="th-c">Platform</th>}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Warning</th>}
@@ -1307,7 +1307,7 @@ function ReceivedPulls() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>From</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
-                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Ks</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Qty</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
                 {!isNarrow && <th className="th-c">Order</th>}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>

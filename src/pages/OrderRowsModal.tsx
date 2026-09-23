@@ -127,16 +127,16 @@ function validate(rows: Row[]): RowProblem[] {
     // two can no longer disagree and there is nothing here to check.
     if (seats.length === 0) {
       const qty = parseInt(r.qty, 10);
-      if (!r.qty.trim()) out.push({ row: i, field: "qty", message: "chýba počet kusov alebo sedadlá", kind: "missing" });
+      if (!r.qty.trim()) out.push({ row: i, field: "qty", message: "quantity or seats are missing", kind: "missing" });
       else if (!Number.isFinite(qty) || qty < 1)
-        out.push({ row: i, field: "qty", message: "počet kusov musí byť aspoň 1", kind: "invalid" });
+        out.push({ row: i, field: "qty", message: "quantity must be at least 1", kind: "invalid" });
     }
-    if (!r.price.trim()) out.push({ row: i, field: "price", message: "chýba cena za kus", kind: "missing" });
+    if (!r.price.trim()) out.push({ row: i, field: "price", message: "price per ticket is missing", kind: "missing" });
     else if (decimalStringToCents(r.price) === null)
-      out.push({ row: i, field: "price", message: `cena „${r.price}“ nie je platná suma`, kind: "invalid" });
-    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "chýba mena", kind: "missing" });
+      out.push({ row: i, field: "price", message: `price “${r.price}” is not a valid amount`, kind: "invalid" });
+    if (!r.currency.trim()) out.push({ row: i, field: "currency", message: "currency is missing", kind: "missing" });
     if (r.pulled && !r.puller.trim())
-      out.push({ row: i, field: "puller", message: "pri zapnutom pulle treba meno", kind: "missing" });
+      out.push({ row: i, field: "puller", message: "a pull needs a name", kind: "missing" });
   });
   return out;
 }
@@ -235,8 +235,8 @@ export default function OrderRowsModal({
   async function submit() {
     setError(null);
     setSubmitted(true);
-    if (!eventId) return setError("Vyber event");
-    if (rows.length === 0) return setError("Pridaj aspoň jedno miesto");
+    if (!eventId) return setError("Select an event");
+    if (rows.length === 0) return setError("Add at least one seat block");
     // Every bad cell is already outlined and the footer counts them.
     if (problems.length > 0) return;
 
@@ -274,15 +274,15 @@ export default function OrderRowsModal({
           try {
             await api.linkPullReceivedToOrder(created.id, g.head.puller.trim(), 0);
           } catch (e) {
-            toast.error(`${created.code}: objednávka je vytvorená, pull sa nepodarilo prepojiť - ${errMsg(e)}`);
+            toast.error(`${created.code}: the order was created, but linking the pull failed - ${errMsg(e)}`);
           }
         }
       }
 
       toast.success(
         made.length === 1
-          ? `Objednávka ${made[0].code} vytvorená`
-          : `Vytvorené: ${made.map((m) => m.code).join(", ")}`,
+          ? `Order ${made[0].code} created`
+          : `Created: ${made.map((m) => m.code).join(", ")}`,
       );
       onCreated(made);
     } catch (e) {
@@ -290,7 +290,7 @@ export default function OrderRowsModal({
       // him guessing which half landed.
       setError(
         made.length > 0
-          ? `${errMsg(e)} — už vytvorené a ponechané: ${made.map((m) => m.code).join(", ")}`
+          ? `${errMsg(e)} — already created and kept: ${made.map((m) => m.code).join(", ")}`
           : errMsg(e),
       );
     } finally {
@@ -299,7 +299,7 @@ export default function OrderRowsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Nová objednávka" width="max-w-[min(1560px,94vw)]">
+    <Modal open={open} onClose={onClose} title="New order" width="max-w-[min(1560px,94vw)]">
       <AiImportPanel
         kind="order"
         className="mb-4"
@@ -367,7 +367,7 @@ export default function OrderRowsModal({
         <div className="min-w-[250px] flex-1">
           <span className="label">Event</span>
           <Select value={eventId} onChange={(e) => setEventId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">Vyber event...</option>
+            <option value="">Select an event…</option>
             {events.map((ev) => (
               <option key={ev.id} value={ev.id}>
                 {ev.name}
@@ -377,19 +377,19 @@ export default function OrderRowsModal({
           </Select>
         </div>
         <div className="min-w-[200px] flex-1">
-          <span className="label">Poznámka k celému nákupu</span>
-          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="nepovinné" />
+          <span className="label">Note for the whole purchase</span>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
         </div>
         <span className="pb-2 text-xs text-slate-500 dark:text-slate-400">
-          Dátum nákupu: {formatDateNumeric(purchaseDate)}
+          Purchase date: {formatDateNumeric(purchaseDate)}
         </span>
       </div>
 
       <RowFormTable
-        head={["Ks", "Typ", "Sektor", "Rad", "Sedadlá", "Platforma", "Cena/ks", "Mena", "Pull", "Poznámka"]}
+        head={["Qty", "Type", "Section", "Row", "Seats", "Platform", "Price/ea", "Currency", "Pull", "Notes"]}
         rightAlign={[0, 6]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
-        addLabel="Ďalšie miesto"
+        addLabel="Add seats"
       >
         {rows.map((r, i) => (
           <tr key={i}>
@@ -403,7 +403,7 @@ export default function OrderRowsModal({
               {parseSeats(r.seats).length > 0 ? (
                 <span
                   className="block px-1 text-right text-sm font-medium tabular-nums text-slate-900 dark:text-slate-100"
-                  title="Počet vychádza zo sedadiel"
+                  title="The count comes from the seats"
                 >
                   {parseSeats(r.seats).length}
                 </span>
@@ -418,12 +418,12 @@ export default function OrderRowsModal({
                   value={r.qty}
                   onChange={(e) => patch(i, { qty: e.target.value.replace(/[^\d]/g, "") })}
                   className={`text-right ${cellError(shown, i, "qty")}`}
-                  aria-label={`Počet kusov, riadok ${i + 1}`}
+                  aria-label={`Quantity, row ${i + 1}`}
                 />
               )}
             </td>
             <td className="td-c w-[150px]">
-              <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Typ">
+              <Select value={r.ticketType} onChange={(e) => patch(i, { ticketType: e.target.value })} aria-label="Type">
                 <option value="">—</option>
                 {ticketTypeOptions.map((t) => (
                   <option key={t} value={t}>
@@ -433,10 +433,10 @@ export default function OrderRowsModal({
               </Select>
             </td>
             <td className="td-c w-[130px]">
-              <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Sektor" />
+              <Input value={r.section} onChange={(e) => patch(i, { section: e.target.value })} aria-label="Section" />
             </td>
             <td className="td-c w-[90px]">
-              <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Rad" />
+              <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Row" />
             </td>
             <td className="td-c w-[150px]">
               <Input
@@ -444,14 +444,14 @@ export default function OrderRowsModal({
                 onChange={(e) => patch(i, { seats: e.target.value })}
                 placeholder="23-24"
                 className={cellError(shown, i, "seats")}
-                aria-label="Sedadlá"
+                aria-label="Seats"
               />
             </td>
             <td className="td-c w-[190px]">
               <Select
                 value={r.platformId ?? ""}
                 onChange={(e) => patch(i, { platformId: e.target.value ? Number(e.target.value) : null })}
-                aria-label="Platforma"
+                aria-label="Platform"
               >
                 <option value="">—</option>
                 {purchaseSide.map((p) => (
@@ -467,7 +467,7 @@ export default function OrderRowsModal({
                 onChange={(e) => patch(i, { price: e.target.value })}
                 placeholder="135,00"
                 className={`text-right ${cellError(shown, i, "price")}`}
-                aria-label="Cena za kus"
+                aria-label="Price per ticket"
               />
             </td>
             <td className="td-c w-[90px]">
@@ -475,7 +475,7 @@ export default function OrderRowsModal({
                 value={r.currency}
                 onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
                 className={cellError(shown, i, "currency")}
-                aria-label="Mena"
+                aria-label="Currency"
               />
             </td>
             <td className="td-c w-[200px]">
@@ -488,8 +488,8 @@ export default function OrderRowsModal({
                   type="button"
                   onClick={() => patch(i, { pulled: !r.pulled })}
                   aria-pressed={r.pulled}
-                  aria-label={`Pullnuté cez niekoho, riadok ${i + 1}`}
-                  title="Pullnuté cez niekoho?"
+                  aria-label={`Pulled by someone else, row ${i + 1}`}
+                  title="Pulled by someone else?"
                   className={`h-5 w-5 shrink-0 rounded-full transition ${
                     r.pulled
                       ? "bg-brand-600 shadow-[inset_0_0_0_1px_theme(colors.brand.400)]"
@@ -500,27 +500,27 @@ export default function OrderRowsModal({
                   <Input
                     value={r.puller}
                     onChange={(e) => patch(i, { puller: e.target.value })}
-                    placeholder="kto ťahal"
+                    placeholder="who pulled"
                     className={cellError(shown, i, "puller")}
-                  aria-label="Kto pullol"
+                  aria-label="Who pulled it"
                   />
                 ) : (
-                  <span className="text-xs text-slate-500 dark:text-slate-400">nie</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">no</span>
                 )}
               </div>
             </td>
             <td className="td-c w-[230px]">
-              <Input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} aria-label="Poznámka" />
+              <Input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} aria-label="Notes" />
             </td>
             <RowRemove
               show={rows.length > 1}
               onRemove={() => setRows((rs) => rs.filter((_, k) => k !== i))}
-              label={`Zmazať riadok ${i + 1}`}
+              label={`Delete row ${i + 1}`}
               // Seats are cleared on purpose: a duplicated row is the same
               // block at a different seat, and two rows with identical seats
               // would be the same tickets twice.
               onDuplicate={() => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i], seats: "" }, ...rs.slice(i + 1)])}
-              duplicateLabel={`Duplikovať riadok ${i + 1}`}
+              duplicateLabel={`Duplicate row ${i + 1}`}
             />
           </tr>
         ))}
@@ -533,13 +533,11 @@ export default function OrderRowsModal({
         onCancel={onClose}
         onSubmit={submit}
         submitLabel={
-          groups.length > 1
-            ? `Vytvoriť ${groups.length} ${groups.length < 5 ? "objednávky" : "objednávok"}`
-            : "Vytvoriť objednávku"
+          groups.length > 1 ? `Create ${groups.length} orders` : "Create order"
         }
         summary={
           <>
-            {totalTickets} {totalTickets === 1 ? "lístok" : totalTickets < 5 ? "lístky" : "lístkov"}
+            {totalTickets} {totalTickets === 1 ? "ticket" : "tickets"}
             {oneCurrency && totalCost > 0 ? ` · ${formatMoney(totalCost, groups[0].head.currency)}` : ""}
           </>
         }

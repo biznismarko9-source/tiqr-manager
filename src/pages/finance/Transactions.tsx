@@ -632,7 +632,7 @@ export function EntryFormModal({
         </Field>
 
         <Field label="Place / who">
-          <Input placeholder="e.g. Tesco, Ján..." value={place} onChange={(e) => setPlace(e.target.value)} />
+          <Input placeholder="e.g. Tesco, John…" value={place} onChange={(e) => setPlace(e.target.value)} />
         </Field>
 
         <Field label="Note">

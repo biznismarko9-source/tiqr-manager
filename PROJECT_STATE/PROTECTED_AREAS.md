@@ -21,6 +21,82 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.48.0 - a background task may never swallow its errors
+
+`Layout.tsx`'s automatic-sync tick used to end in `catch {}` with a comment
+explaining that offline and signed-out are normal. They are - but they arrive
+as a PLAN from the backend (`Off`, `Offline`), not as a throw. Anything that
+actually throws is a real failure, and swallowing it made automatic sync
+undiagnosable on both machines at once.
+
+**Any timer that moves marko's data must record every outcome and surface its
+failures.** Silence is indistinguishable from success, and for sync that is the
+worst possible failure mode.
+
+`lib/autoSyncLog.ts` is per-machine (localStorage) ON PURPOSE. "Is autosync
+alive here" is a question about *here*, and putting it in the database would
+make it one more thing sync has to carry between the two machines.
+
+## 2.48.0 - automatic DOWNLOAD is launch-only, by design
+
+Automatic upload happens any time: it only adds a version to Drive and the
+backend's lost-update guard refuses it if the other machine got there first.
+
+Automatic download does NOT. A pull replaces the database and relaunches; a
+merge reloads the page. Either one, fired under a half-typed order form, loses
+work. So mid-session a newer remote raises the banner and waits.
+
+**This is a deliberate trade, not an oversight** - do not "fix" it by making
+pull automatic mid-session. If marko wants convergence while both machines are
+open, the contained change is to let **merge** run mid-session (it only adds
+rows), and that is his call to make, not a tidy-up.
+
+## 2.47.5 - do not audit language with a diacritics grep
+
+2.47.3 swept the app for Slovak by looking for diacritics and a word list, got
+zero, and shipped. Four Slovak words were still on screen: `nie`, `Kupec`, `Ks`
+and `Doprava` - all plain ASCII, none in the list.
+
+**The sweep that works**: dump every user-visible string (JSX text nodes plus
+`placeholder` / `title` / `aria-label` / `label` / `addLabel` / `submitLabel`
+attributes), filter to the short label-sized ones, and READ them. It was ~400
+strings and took one pass.
+
+A word list can only find what you already thought of.
+
+## 2.47.4 - `.card` has NO border width; use a ring
+
+`.card` in index.css is `rounded-xl bg-surface shadow-card` with an explicit
+`border: 0`. **A `border-<colour>` class on a Card therefore renders nothing** -
+that is how `StatCard`'s emphasis shipped a border nobody ever saw from 2.13.3
+to 2.47.3, leaving only its fill doing the work.
+
+Use `ring-1 ring-<colour>` on a Card instead. A ring needs no width class, and
+unlike a background utility it cannot lose to `.card`'s own `bg-surface`.
+
+**Brand tint belongs on actions and notices, not on data tiles.** `brand-50`
+is a saturated lavender; one tinted tile in a row of neutral ones reads as
+"selected" and fights a coloured figure sitting on it. The app's other
+`bg-brand-50` uses (selection bars, chips, banners) are correct - they ARE
+actions.
+
+## 2.47.3 - the UI is English. All of it.
+
+marko decided this outright: "vsetko by malo byt v apke v anglictine, nie
+v ziadnom inom jazyku". Every string a user can see - labels, placeholders,
+buttons, toasts, validation messages, `aria-label`s and `title`s - is English.
+
+**Code comments are exempt and should stay as they are.** Many quote marko's
+own Slovak wording for why a decision was made; that is the record of intent,
+and nobody sees it in the app.
+
+`priceParse.ts`'s currency regex keeps `Kč`, `zł`, `лв`, `Ft` and `lei`. Those
+are tokens it MATCHES in pasted prices, not text it renders.
+
+**Do not reintroduce a second language in a new form** because a preview was
+mocked up in Slovak - that is exactly how 2.45.0's four row forms ended up
+needing this pass.
+
 ## 2.47.1 - a popup inside a scrolling table must be FIXED, not absolute
 
 `DateField`'s panel is `position:fixed` with coordinates computed from the
