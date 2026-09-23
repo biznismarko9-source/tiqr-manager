@@ -167,6 +167,20 @@ export default function Layout() {
   // Guards against a tick starting while the previous one is still
   // uploading - a slow upload on a slow connection must not stack.
   const autoSyncBusy = useRef(false);
+  // 2.48.1: the `atStartup` flag is GONE, and that is the fix.
+  //
+  // It used to be true for exactly one tick, at mount, and only that tick was
+  // allowed to pull or merge. Two things went wrong with that. At mount the
+  // Google token is usually not ready, so the one privileged tick returned
+  // `off` and the chance was spent having never had one. And every later tick
+  // was unprivileged, so two machines holding different data raised a banner
+  // every five minutes and never combined - marko: "stale sa nespajaju tie
+  // info ... a stale to nieje automaticke".
+  //
+  // Now every tick may pull or merge. The only thing that ever defers it is
+  // `busyEditing()` below, which is the real question anyway: not "how long
+  // has the app been open" but "would a reload throw away something he is
+  // typing right now".
   // 2.17.0: what the app is doing with marko's data right now, in words. It
   // exists because a whole database crossing the internet takes real seconds
   // and, until this release, they were seconds of nothing - see SyncActivity
@@ -240,7 +254,20 @@ export default function Layout() {
   //   underneath whatever is already on screen, so it reloads the page.
   useEffect(() => {
     let cancelled = false;
-    const tick = async (atStartup: boolean) => {
+    // Is marko in the middle of something a reload would destroy? A merge only
+    // ADDS rows, so the database is never the risk - the page reload that
+    // follows it is. An open modal or a field he has typed into is the whole
+    // list of things worth waiting for.
+    const busyEditing = () => {
+      if (document.querySelector(".fixed.inset-0.z-50")) return true;
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (tag === "INPUT") return (el as HTMLInputElement).value.trim().length > 0;
+      return el.isContentEditable;
+    };
+    const tick = async () => {
       if (autoSyncBusy.current) return;
       autoSyncBusy.current = true;
       try {
@@ -249,12 +276,18 @@ export default function Layout() {
         if (plan.action === "push") {
           setSyncActivity({ label: "Saving your changes to Google Drive", blocking: false });
           await api.cloudSyncPush();
-        } else if (plan.action === "pull" && atStartup) {
+        } else if (plan.action === "off" || plan.action === "offline") {
+          // Both are normal states for a local-first app: recorded so the
+          // history in Settings shows the timer IS alive, but never shown.
+          recordAutoSync({ at: Date.now(), action: plan.action, reason: plan.reason, error: null });
+          setSyncFailure(null);
+          return;
+        } else if (plan.action === "pull" && !busyEditing()) {
           setSyncActivity({ label: "Getting newer data from your other computer", blocking: true });
           const safetyPath = await api.cloudSyncPull();
           toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
           setTimeout(() => relaunch(), 900);
-        } else if (plan.action === "merge" && atStartup) {
+        } else if (plan.action === "merge" && !busyEditing()) {
           // 2.16.0: the case that used to stop and ask which machine wins.
           // Nothing is replaced and nothing is deleted, so there is no
           // question left to put to marko - but the page still has to reload,
@@ -279,7 +312,10 @@ export default function Layout() {
           toast.success(parts.join(" "));
           setTimeout(() => window.location.reload(), 1200);
         } else if (plan.action === "pull" || plan.action === "merge") {
-          setSyncNotice(plan.reason);
+          // 2.48.1: only reached when marko IS mid-edit. The work is real and
+          // waiting; it happens on the next tick once he is done, and the
+          // banner is there so a long form is not a silent stall.
+          setSyncNotice(`${plan.reason} It will finish once you're done editing.`);
         }
         // Whatever happened, it happened - including "nothing to do", which is
         // the answer marko most needs to be able to see when he believes sync
@@ -303,11 +339,26 @@ export default function Layout() {
         setSyncActivity((current) => (current?.blocking ? current : null));
       }
     };
-    tick(true);
-    const interval = setInterval(() => tick(false), AUTO_SYNC_INTERVAL_MS);
+    // marko: "bolo tak ze len si zapol appku a uz automaticky zacalo robit
+    // sync". One at launch, then every five minutes, then every time he comes
+    // back to this window.
+    const run = () => void tick();
+    run();
+    const interval = setInterval(run, AUTO_SYNC_INTERVAL_MS);
+    // 2.48.1: and the moment he comes back to this machine. Waiting up to five
+    // minutes after alt-tabbing from the other computer is the difference
+    // between "automatic" and "eventually".
+    const onFocus = () => run();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

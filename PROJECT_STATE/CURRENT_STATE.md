@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.48.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.48.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1471,6 +1471,36 @@ reloads the page - either one under a half-typed form is a bug, not a feature.
 If his mental model is "leave both machines open and they converge", they never
 will, by design. Making **merge** (which only adds rows) run mid-session is the
 contained version of that change if he wants it.
+
+**2.48.1 - automatic sync is actually automatic, and THIS is the bug 2.48.0
+did not find.** marko: "stale sa nespajaju tie info ked su na oboch zariadeniach
+rozdielne a stale to nieje automaticke", then "bolo tak ze len si zapol appku a
+uz automaticky zacalo robit sync".
+
+**The defect: `atStartup` was true for exactly one tick, at mount.** Only that
+tick was allowed to pull or merge. Two failures fell out of it:
+
+1. **At mount the Google token is usually not ready**, so the one privileged
+   tick came back `off` - the single startup chance was spent on a tick that
+   never had one. Nothing in the session could pull or merge after that.
+2. Even when it did fire, **every later tick was unprivileged**, so two machines
+   holding different data raised a banner every five minutes forever and never
+   combined. That is the "nespajaju sa" half, exactly.
+
+**The flag is gone.** Every tick may now pull or merge. The only thing that
+defers either is `busyEditing()` - an open modal (`.fixed.inset-0.z-50`) or a
+field with typed content - because a merge only ADDS rows and the database is
+never the risk; the page reload that follows it is. When it defers, the banner
+now says so and the next tick finishes the job.
+
+**Plus a tick on `focus` and `visibilitychange`.** Alt-tabbing back from the
+other machine used to mean waiting up to five minutes; that gap is most of what
+"not automatic" felt like.
+
+**Why this cannot loop, checked in `cloud_merge.rs`**: a merge writes
+`REMOTE_VERSION_KEY` (so `remote_newer` goes false) and `LAST_SYNC_KEY`, and
+deliberately does NOT call `mark_local_clean` - the inserts left the DB dirty.
+So the sequence terminates: merge -> Push (the union goes up) -> Idle.
 
 **Next new migration is 031.**
 

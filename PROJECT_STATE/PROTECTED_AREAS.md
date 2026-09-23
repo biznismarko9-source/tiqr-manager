@@ -37,7 +37,22 @@ worst possible failure mode.
 alive here" is a question about *here*, and putting it in the database would
 make it one more thing sync has to carry between the two machines.
 
-## 2.48.0 - automatic DOWNLOAD is launch-only, by design
+## 2.48.1 - automatic download is NOT launch-only any more (reverses 2.48.0)
+
+The entry below was the design until marko reported, twice, that the two
+machines never combine. It was also built on a false premise: the "launch"
+window was one tick at mount, and at mount the Google token is usually not
+ready, so in practice there often WAS no launch sync either.
+
+Pull and merge now run on any tick. **The one and only deferral is
+`busyEditing()`** in `Layout.tsx`: an open modal or a field with typed content.
+Keep that guard - a merge is safe for the database (it only adds rows), but the
+reload behind it is not safe for a half-typed form.
+
+**Do not re-introduce a time-based gate.** The question is never "how long has
+the app been open", it is "would this throw away what he is typing".
+
+## 2.48.0 - automatic DOWNLOAD is launch-only, by design (SUPERSEDED by 2.48.1)
 
 Automatic upload happens any time: it only adds a version to Drive and the
 backend's lost-update guard refuses it if the other machine got there first.

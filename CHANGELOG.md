@@ -16,6 +16,28 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.48.1 - a toto bola tá chyba
+
+Našiel som ju. **Zlučovanie a sťahovanie smelo bežať len pri jednom jedinom
+tiku — hneď po otvorení appky.** A práve vtedy ešte zvyčajne nie je pripravené
+prihlásenie do Googlu, takže ten jediný pokus vrátil „vypnuté" a **minul sa,
+hoci nikdy žiadnu šancu nedostal**. Každý ďalší tik už právo zlučovať nemal —
+len ukázal pruh a čakal. Donekonečna.
+
+Preto sa ti tie dva počítače nikdy nespojili.
+
+**Teraz to smie každý tik.** Jediné, čo to odloží, je keď máš **otvorené okno
+alebo rozpísané políčko** — zlúčenie totiž do databázy iba pridáva riadky a tá
+nie je v ohrození, ale obnovenie stránky po ňom by ti zmazalo rozrobené. Vtedy
+ti to napíše a dokončí sa hneď, ako dopíšeš.
+
+**Plus: syncuje sa aj vtedy, keď sa na okno vrátiš.** Predtým si po prepnutí
+z druhého počítača čakal aj päť minút — a práve to je ten pocit „nie je to
+automatické".
+
+**Nezacyklí sa to:** po zlúčení sa uloží verzia a databáza zostane „špinavá",
+takže ďalší krok je nahranie spojených dát hore a potom pokoj.
+
 ## 2.48.0 - autosync konečne povie, čo robí
 
 Prešiel som celú cestu autosyncu a **v samotnej logike som chybu nenašiel** —
