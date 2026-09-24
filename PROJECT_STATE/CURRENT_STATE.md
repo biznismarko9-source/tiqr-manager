@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.49.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.49.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1527,6 +1527,42 @@ the field's right edge. Both routes work and neither is second-class.
 Orders.tsx (13 options, already what Orders and EventDetail offer). A row
 holding something outside the list keeps it, pinned at the front, rather than
 being silently rewritten - the same pattern those two pages already use.
+
+**2.49.1 - the 403 was a MISSING PERMISSION, and the app had no way to know.**
+marko pasted the real error at last (2.48.0's whole point): Drive answering
+`403 insufficientPermissions` / "Request had insufficient authentication
+scopes".
+
+**That is not a disabled API and not an expired token.** `OAUTH_SCOPE` does
+include `drive.file`, and `build_authorization_url` does send
+`access_type=offline` + `prompt=consent` - all checked. The token simply does
+not carry Drive.
+
+**How that happens, and the hole it fell through:** Google's consent screen
+shows every permission as its own tick box. Untick one and the token endpoint
+still returns a perfectly valid token - with a `scope` field listing only what
+was granted. **`TokenResponse` had no `scope` field at all**, so the app never
+looked. A Sheets-only token was stored as a successful sign-in and every Drive
+call 403'd from then on, with nothing anywhere pointing at the cause.
+
+Now `scope` is captured, `missing_api_scopes` compares it against what was
+requested, and a sign-in missing Drive (or Sheets) **fails with that sentence**
+instead of being stored. Only the two API scopes are compared, by substring:
+`openid` comes back as `openid` while `email` comes back as
+`.../auth/userinfo.email`, so a whole-string comparison would fail every
+successful sign-in. An absent `scope` is NOT treated as a refusal.
+
+**The 403 message was also actively misleading** - it led with "the Drive API
+is not switched on for this app's Google Cloud project", which sent marko to
+the Cloud Console for a problem that was not there. `forbidden_hint` now reads
+the body: `insufficientPermissions` -> sign in again and tick every box;
+`accessNotConfigured`/`SERVICE_DISABLED` -> the console link genuinely applies;
+401 got its own arm (expired sign-in), which it never should have shared with
+403 in the first place.
+
+**Four new unit tests** cover it: Drive unticked is refused and names only
+Drive; an absent scope still signs in; the identity-only Firebase flow is never
+measured against Sheets/Drive; everything granted means nothing missing.
 
 **Next new migration is 031.**
 

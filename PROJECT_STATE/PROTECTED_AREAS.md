@@ -37,6 +37,29 @@ worst possible failure mode.
 alive here" is a question about *here*, and putting it in the database would
 make it one more thing sync has to carry between the two machines.
 
+## 2.49.1 - a granted scope is not the requested scope
+
+Google's consent screen lets a person untick individual permissions. The token
+endpoint then returns a valid token whose `scope` field lists only what was
+actually granted. **Always compare the two.** Storing a token that is missing a
+scope produces a sign-in that looks successful and an API that refuses every
+call afterwards - which is exactly how marko lost days to a 403.
+
+**Compare the API scopes by substring, never the whole string.** `openid` comes
+back as `openid`, `email` comes back as `https://.../auth/userinfo.email`. A
+literal comparison reports failure on every successful sign-in.
+
+**An absent `scope` is not a refusal.** Failing a sign-in over a field Google
+simply did not send would be worse than the bug being fixed.
+
+## 2.49.1 - 401, 403-no-permission and 403-API-off are three different bugs
+
+`drive_error` used to give 401 and 403 one shared sentence that led with "the
+Drive API is not switched on". Only one of the three causes is fixed in the
+Cloud Console; the other two are fixed by signing in again, and one of those
+cannot be fixed at all without re-ticking a permission. Keep them apart -
+`forbidden_hint` reads the response body to tell which it is.
+
 ## 2.49.0 - a half-typed date must never reach `value`
 
 `DateField` keeps what is being typed in `draft` and only calls `emit` once

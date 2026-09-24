@@ -161,14 +161,32 @@ pub(crate) fn http() -> AppResult<reqwest::blocking::Client> {
 }
 
 /// Turns any non-2xx Drive response into a message worth showing a person.
+/// Which of the three very different 403s Drive can answer with this is.
+///
+/// 2.49.1: they used to share one sentence that led with "the Drive API is not
+/// switched on", which sent marko to the Google Cloud Console for a problem
+/// that was not there. His body said `insufficientPermissions` / "Request had
+/// insufficient authentication scopes" - a permission that was never granted,
+/// fixed only by signing in again and ticking it.
+fn forbidden_hint(body: &str) -> &'static str {
+    let b = body.to_ascii_lowercase();
+    if b.contains("insufficientpermissions")
+        || b.contains("insufficient authentication scopes")
+        || b.contains("insufficient permission")
+    {
+        return " - your Google sign-in does not include permission for Drive, so this can never succeed as it stands. Settings -> Integrations -> sign in with Google again, and on Google's screen leave EVERY permission ticked (each line has its own tick box).";
+    }
+    if b.contains("accessnotconfigured") || b.contains("service_disabled") || b.contains("has not been used in project") {
+        return " - the Google Drive API is not switched on for this app's Google Cloud project. That is a one-time step; the link below opens the exact page.";
+    }
+    " - Google refused the request. If you have just changed your Google account or its permissions, sign in again from Settings -> Integrations."
+}
+
+/// Turns any non-2xx Drive response into a message worth showing a person.
 fn drive_error(context: &str, status: reqwest::StatusCode, body: &str) -> AppError {
     let hint = match status.as_u16() {
-        // Two very different causes share this status. The Google Drive API
-        // not being enabled on the OAuth client's Cloud project is a
-        // one-time, project-wide setting and by far the more common of the
-        // two on a fresh setup - Google's own message (passed through below)
-        // carries the exact console URL, which the UI turns into a button.
-        401 | 403 => " - either the Google Drive API is not switched on for this app's Google Cloud project (a one-time step, see the link below), or your sign-in needs renewing: Settings -> Integrations -> sign in with Google again and allow Drive access.",
+        401 => " - your sign-in has expired: Settings -> Integrations -> sign in with Google again.",
+        403 => forbidden_hint(body),
         404 => " - the sync file no longer exists in your Drive. Turn sync off and on again to start a new one.",
         507 => " - your Google Drive is full.",
         _ => "",

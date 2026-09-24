@@ -368,6 +368,16 @@ struct TokenResponse {
     /// above, even though it is expected every time this scope is used.
     #[serde(default)]
     id_token: Option<String>,
+    /// 2.49.1: the scopes Google ACTUALLY granted, which is not necessarily
+    /// the set that was asked for. Google's consent screen shows every
+    /// permission as its own tick box, and a person who unticks one gets a
+    /// perfectly valid token that is simply missing it. Until now this field
+    /// was not read at all, so that token was stored as a successful sign-in
+    /// and every Drive call afterwards failed with 403 "Request had
+    /// insufficient authentication scopes" - marko's exact error - with
+    /// nothing anywhere pointing at the cause.
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -446,6 +456,9 @@ pub struct SignedInAccount {
     /// simply ignores it) - see this module's own doc comment for why one
     /// shared `run_sign_in` serves both flows rather than two copies.
     pub id_token: String,
+    /// 2.49.1: what Google granted, verbatim, or empty when it did not say.
+    /// Kept so a later failure can be explained without another round trip.
+    pub granted_scope: String,
 }
 
 /// The pure, offline part of turning a raw token-endpoint response into
@@ -458,14 +471,53 @@ pub struct SignedInAccount {
 /// an external failure, not a `None`/silent skip, so a caller never
 /// half-completes a sign-in with a `SignedInAccount` missing a field it
 /// actually needs.
-fn signed_in_account_from_tokens(tokens: TokenResponse, email: String) -> AppResult<SignedInAccount> {
+/// Which of the API permissions this sign-in asked for did NOT come back.
+///
+/// Only the two API scopes are checked, by substring. The identity scopes are
+/// deliberately left alone: `openid` comes back as `openid` while `email`
+/// comes back as `https://www.googleapis.com/auth/userinfo.email`, so a
+/// literal comparison of the whole string would report a failure on every
+/// successful sign-in.
+fn missing_api_scopes(requested: &str, granted: &str) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    for (needle, label) in [
+        ("auth/spreadsheets", "Google Sheets"),
+        ("auth/drive.file", "Google Drive"),
+    ] {
+        if requested.contains(needle) && !granted.contains(needle) {
+            missing.push(label);
+        }
+    }
+    missing
+}
+
+fn signed_in_account_from_tokens(
+    tokens: TokenResponse,
+    email: String,
+    requested_scope: &str,
+) -> AppResult<SignedInAccount> {
     let refresh_token = tokens.refresh_token.ok_or_else(|| {
         AppError::External("Google did not return a long-lived sign-in - please try signing in again.".to_string())
     })?;
     let id_token = tokens
         .id_token
         .ok_or_else(|| AppError::External("Google did not return a sign-in token - please try signing in again.".to_string()))?;
-    Ok(SignedInAccount { email, refresh_token, id_token })
+    // Only enforced when Google actually told us what it granted. An absent
+    // `scope` is not evidence of a refusal, and failing a sign-in on a field
+    // that simply was not sent would be worse than the bug being fixed.
+    let granted = tokens.scope.unwrap_or_default();
+    if !granted.is_empty() {
+        let missing = missing_api_scopes(requested_scope, &granted);
+        if !missing.is_empty() {
+            return Err(AppError::External(format!(
+                "Signed in as {email}, but {} access was not allowed, so syncing cannot work. \
+                 On Google's permission screen each line has its own tick box - sign in again \
+                 and leave every box ticked.",
+                missing.join(" and ")
+            )));
+        }
+    }
+    Ok(SignedInAccount { email, refresh_token, id_token, granted_scope: granted })
 }
 
 /// Runs one full "Sign in with Google" round trip end to end: opens the
@@ -513,7 +565,7 @@ pub fn run_sign_in(client: &OAuthClient, scope: &str, app: &tauri::AppHandle, ca
     let tokens = exchange_code_for_tokens(client, &code, &pkce.verifier, &uri)?;
     let email = fetch_email(&tokens.access_token)?;
 
-    signed_in_account_from_tokens(tokens, email)
+    signed_in_account_from_tokens(tokens, email, scope)
 }
 
 #[cfg(test)]
@@ -619,18 +671,28 @@ mod tests {
     }
 
     fn token_response(access_token: &str, refresh_token: Option<&str>, id_token: Option<&str>) -> TokenResponse {
+        scoped_token_response(access_token, refresh_token, id_token, Some(OAUTH_SCOPE))
+    }
+
+    fn scoped_token_response(
+        access_token: &str,
+        refresh_token: Option<&str>,
+        id_token: Option<&str>,
+        scope: Option<&str>,
+    ) -> TokenResponse {
         TokenResponse {
             access_token: access_token.to_string(),
             refresh_token: refresh_token.map(str::to_string),
             expires_in: 3600,
             id_token: id_token.map(str::to_string),
+            scope: scope.map(str::to_string),
         }
     }
 
     #[test]
     fn signed_in_account_from_tokens_succeeds_when_both_refresh_and_id_tokens_are_present() {
         let tokens = token_response("access", Some("refresh"), Some("id"));
-        let account = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap();
+        let account = signed_in_account_from_tokens(tokens, "marko@example.com".to_string(), OAUTH_SCOPE).unwrap();
         assert_eq!(account.email, "marko@example.com");
         assert_eq!(account.refresh_token, "refresh");
         assert_eq!(account.id_token, "id");
@@ -639,7 +701,7 @@ mod tests {
     #[test]
     fn signed_in_account_from_tokens_fails_cleanly_when_google_omits_the_refresh_token() {
         let tokens = token_response("access", None, Some("id"));
-        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap_err();
+        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string(), OAUTH_SCOPE).unwrap_err();
         assert!(err.to_string().contains("long-lived sign-in"));
     }
 
@@ -650,8 +712,50 @@ mod tests {
         // SignedInAccount whose id_token is empty, and the Google sign-in
         // button would silently hand Firebase a token that always fails.
         let tokens = token_response("access", Some("refresh"), None);
-        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string()).unwrap_err();
+        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string(), OAUTH_SCOPE).unwrap_err();
         assert!(err.to_string().contains("sign-in token"));
+    }
+
+    #[test]
+    fn sign_in_is_refused_when_drive_was_not_allowed() {
+        // marko's exact failure: Sheets ticked, Drive not. Google returns a
+        // perfectly valid token; every later Drive call answers 403
+        // "insufficient authentication scopes".
+        let tokens = scoped_token_response(
+            "access",
+            Some("refresh"),
+            Some("id"),
+            Some("https://www.googleapis.com/auth/spreadsheets openid email"),
+        );
+        let err = signed_in_account_from_tokens(tokens, "marko@example.com".to_string(), OAUTH_SCOPE).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("Google Drive"), "{text}");
+        assert!(!text.contains("Google Sheets"), "only the missing one is named: {text}");
+    }
+
+    #[test]
+    fn sign_in_is_allowed_when_google_does_not_report_a_scope_at_all() {
+        // An absent `scope` is not a refusal, and failing on a field that was
+        // simply not sent would be worse than the bug being fixed.
+        let tokens = scoped_token_response("access", Some("refresh"), Some("id"), None);
+        let account = signed_in_account_from_tokens(tokens, "m@example.com".to_string(), OAUTH_SCOPE).unwrap();
+        assert_eq!(account.granted_scope, "");
+    }
+
+    #[test]
+    fn identity_only_sign_in_never_demands_api_scopes() {
+        // The Firebase button asks for "openid email profile" and must not be
+        // measured against Sheets or Drive.
+        assert!(missing_api_scopes(
+            FIREBASE_SIGN_IN_SCOPE,
+            "openid https://www.googleapis.com/auth/userinfo.email"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn every_api_scope_granted_means_nothing_missing() {
+        assert!(missing_api_scopes(OAUTH_SCOPE, OAUTH_SCOPE).is_empty());
     }
 
     /// Test-only helper: pulls one query parameter's value back out of a

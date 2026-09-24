@@ -16,6 +16,32 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.49.1 - to 403 bolo chýbajúce povolenie
+
+Tá chyba, čo si poslal, je jednoznačná: **`insufficientPermissions`**. Nie je to
+vypnuté API ani expirovaný token — **tvoj prihlasovací token nemá povolenie na
+Drive**.
+
+Ako sa to stane: na tej Google obrazovke má **každé povolenie vlastné
+zaškrtávacie políčko**. Keď jedno odškrtneš, Google ti aj tak vráti úplne
+platný token — len bez toho povolenia.
+
+**A appka sa nikdy nepozrela, čo Google naozaj povolil.** Uložila taký token ako
+úspešné prihlásenie a každé ďalšie volanie na Drive padlo na 403. Bez stopy,
+bez vysvetlenia.
+
+Teraz sa to kontroluje: ak pri prihlásení chýba Drive (alebo Sheets),
+**prihlásenie rovno zlyhá a povie ktoré** — namiesto toho, aby sa uložilo
+a lámalo sa to až potom.
+
+**A tá hláška ťa posielala na zlé miesto.** Začínala tým, že „Drive API nie je
+zapnuté v Google Cloud projekte" — čo nebol tvoj problém. Teraz sa číta
+odpoveď od Googlu a podľa nej sa povie buď „prihlás sa znova a nechaj všetko
+zaškrtnuté", alebo „zapni API, tu je odkaz".
+
+**Čo s tým máš spraviť ty:** Settings → Integrations → prihlásiť sa Googlom
+znova a na tej obrazovke **nechať zaškrtnuté všetky políčka**.
+
 ## 2.49.0 - dátum sa dá písať, mena sa vyberá
 
 ### Dátum: píš alebo klikni, oboje
