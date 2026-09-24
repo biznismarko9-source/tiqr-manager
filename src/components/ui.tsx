@@ -105,6 +105,30 @@ function parseIsoDate(s: string): { y: number; m: number; d: number } | null {
   return { y, m: mo, d };
 }
 
+/** 2.49.0: what marko types, as he types it. Digits only, dots inserted for
+ *  him: "2" -> "2", "2109" -> "21.09", "21092026" -> "21.09.2026". Anything
+ *  that is not a digit is dropped rather than fought over. */
+function maskDayFirst(raw: string): string {
+  const d = raw.replace(/\D/g, "").slice(0, 8);
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return `${d.slice(0, 2)}.${d.slice(2)}`;
+  return `${d.slice(0, 2)}.${d.slice(2, 4)}.${d.slice(4)}`;
+}
+
+/** A typed dd.mm.yyyy to ISO, or null. Rejects a date that does not exist -
+ *  31.02.2026 is eight perfectly good digits and still not a day. */
+function dayFirstToIso(typed: string): string | null {
+  const d = typed.replace(/\D/g, "");
+  if (d.length !== 8) return null;
+  const day = Number(d.slice(0, 2));
+  const mon = Number(d.slice(2, 4));
+  const yr = Number(d.slice(4));
+  if (mon < 1 || mon > 12 || day < 1 || yr < 1000) return null;
+  const probe = new Date(yr, mon - 1, day);
+  if (probe.getFullYear() !== yr || probe.getMonth() !== mon - 1 || probe.getDate() !== day) return null;
+  return isoOf(yr, mon, day);
+}
+
 function isoOf(y: number, m: number, d: number): string {
   return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
@@ -132,6 +156,12 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
   // the row forms (New Order / New Pull / New Event) the calendar therefore
   // opened into a clipped box and read as "the date doesn't work".
   const [rect, setRect] = useState<{ top: number; left: number } | null>(null);
+  // 2.49.0: what is being TYPED right now, or null when the field is simply
+  // showing `value`. marko: "ked kliknem na policko a zacnem klikat cisla tak
+  // mi to bude vypisovat ale taktiez moznost pri tom aj vyberat z kalendara".
+  // A half-typed "21.0" is not a date, so it cannot live in `value` - it lives
+  // here until it either becomes one or the field loses focus.
+  const [draft, setDraft] = useState<string | null>(null);
   const [view, setView] = useState(() => {
     const p = parseIsoDate(typeof value === "string" ? value : "");
     const now = new Date();
@@ -230,20 +260,44 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
         }
       }}
     >
-      <button
-        type="button"
+      <input
+        type="text"
+        inputMode="numeric"
         id={id}
+        name={name}
         disabled={disabled}
         aria-label={ariaLabel}
+        autoComplete="off"
+        placeholder={placeholder || "dd.mm.yyyy"}
+        value={draft ?? (selected ? formatDateNumeric(text) : "")}
+        onChange={(e) => {
+          const typed = maskDayFirst(e.target.value);
+          setDraft(typed);
+          // Emitted the moment it becomes a real date, so the row's summary and
+          // its validation update while he types - but the draft stays put so
+          // the caret does not jump out from under him.
+          const iso = dayFirstToIso(typed);
+          if (iso) emit(iso);
+          else if (typed === "") emit("");
+        }}
+        onBlur={() => {
+          // Anything left half-typed reverts to the last good value rather than
+          // being silently kept as rubbish or silently thrown away.
+          setDraft(null);
+        }}
+        className={`input pr-9 ${className}`}
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        disabled={disabled}
+        aria-label="Open calendar"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openPanel())}
-        className={`input flex items-center justify-between gap-2 text-left ${className}`}
+        className="absolute right-0 top-0 flex h-full w-9 items-center justify-center text-slate-500 transition hover:text-slate-900 disabled:cursor-not-allowed dark:text-slate-400 dark:hover:text-slate-100"
       >
-        <span className={selected ? "truncate" : "truncate text-slate-500 dark:text-slate-400"}>
-          {selected ? formatDateNumeric(text) : placeholder || "dd.mm.yyyy"}
-        </span>
-        <IconCalendarDays className="h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" />
+        <IconCalendarDays className="h-4 w-4 shrink-0" />
       </button>
 
       {open && (
@@ -283,6 +337,7 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
                   type="button"
                   aria-current={isSelected ? "date" : undefined}
                   onClick={() => {
+                    setDraft(null);
                     emit(iso);
                     setView({ y: c.y, m: c.m });
                     setOpen(false);
@@ -308,6 +363,7 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
               type="button"
               className={footClass}
               onClick={() => {
+                setDraft(null);
                 emit(todayKey);
                 setOpen(false);
               }}
@@ -318,6 +374,7 @@ function DateField(props: InputHTMLAttributes<HTMLInputElement>) {
               type="button"
               className={footClass}
               onClick={() => {
+                setDraft(null);
                 emit("");
                 setOpen(false);
               }}

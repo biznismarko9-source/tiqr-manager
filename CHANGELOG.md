@@ -16,6 +16,28 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.49.0 - dátum sa dá písať, mena sa vyberá
+
+### Dátum: píš alebo klikni, oboje
+
+Ono to nebolo pokazené — **ono sa doň nikdy nedalo písať**. To políčko bolo
+v skutočnosti tlačidlo, ktoré len otváralo kalendár.
+
+Teraz je to **normálne políčko**. Klikneš, píšeš číslice a bodky si doplní samo:
+`21092026` → `21.09.2026`. Kalendár zostáva — je to tá ikonka vpravo v políčku.
+
+Nezoberie dátum, ktorý neexistuje: **31.02.2026** je osem správnych číslic a aj
+tak to nie je deň. Priestupný rok sedí — 29.02.2024 áno, 29.02.2026 nie.
+
+Rozpísané `21.0` sa do formulára nedostane. Keď odklikneš preč bez dokončenia,
+vráti sa posledná platná hodnota.
+
+### Mena sa vyberá zo zoznamu
+
+Pri **order, sale aj pull** je mena rozbaľovačka s tými istými 13 menami, aké
+ponúka zvyšok appky. Keby si mal niekde menu mimo zoznamu, zostane ti —
+appka ti ju ticho neprepíše na EUR.
+
 ## 2.48.1 - a toto bola tá chyba
 
 Našiel som ju. **Zlučovanie a sťahovanie smelo bežať len pri jednom jedinom

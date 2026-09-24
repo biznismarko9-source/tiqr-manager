@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.48.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.49.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1501,6 +1501,32 @@ other machine used to mean waiting up to five minutes; that gap is most of what
 `REMOTE_VERSION_KEY` (so `remote_newer` goes false) and `LAST_SYNC_KEY`, and
 deliberately does NOT call `mark_local_clean` - the inserts left the DB dirty.
 So the sequence terminates: merge -> Push (the union goes up) -> Idle.
+
+**2.49.0 - the date field can be TYPED, and currency is picked.** marko: "ked
+kliknem na policko a zacnem klikat cisla tak mi to bude vypisovat ale taktiez
+moznost pri tom aj vyberat z kalendara", plus "pri vytvarani order a sales aj
+pull by mala byt kolonka na vyber meny taktiez z toho zoznamu".
+
+**`DateField`'s trigger was a `<button>`** - there was no text input anywhere in
+it, so typing was not "broken", it was never possible. It is now a real
+`<input inputMode="numeric">` with the calendar moved to a small button inside
+the field's right edge. Both routes work and neither is second-class.
+
+- `maskDayFirst` inserts the dots as he types (`21092026` -> `21.09.2026`) and
+  drops everything that is not a digit.
+- `dayFirstToIso` rejects a date that does not exist: 31.02.2026 is eight valid
+  digits and still not a day. Leap years are checked by round-tripping through
+  `Date`, not by a rule table.
+- A half-typed value lives in `draft`, never in `value` - "21.0" is not a date
+  and must not reach the form. It emits the moment it becomes real (so the row
+  summary and validation keep up) and reverts to the last good value on blur.
+- Every other way of setting the date - a calendar day, Today, Clear - clears
+  `draft` too, or the field would keep showing what he had half-typed.
+
+**Currency is a `Select` in all three row forms**, from `CURRENCIES` in
+Orders.tsx (13 options, already what Orders and EventDetail offer). A row
+holding something outside the list keeps it, pinned at the front, rather than
+being silently rewritten - the same pattern those two pages already use.
 
 **Next new migration is 031.**
 

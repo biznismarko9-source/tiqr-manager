@@ -16,7 +16,7 @@ import {
   type RowProblem,
 } from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
-import { parseSeats, TICKET_TYPES } from "./Orders";
+import { CURRENCIES, parseSeats, TICKET_TYPES } from "./Orders";
 import { useToast } from "../lib/toast";
 
 /**
@@ -471,12 +471,25 @@ export default function OrderRowsModal({
               />
             </td>
             <td className="td-c w-[90px]">
-              <Input
+              {/* 2.49.0: picked, not typed - marko asked for the same list the
+                  rest of the app already offers. A row that somehow holds a
+                  currency outside the list keeps it, at the front, rather than
+                  being silently rewritten to EUR. */}
+              <Select
                 value={r.currency}
-                onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
+                onChange={(e) => patch(i, { currency: e.target.value })}
                 className={cellError(shown, i, "currency")}
                 aria-label="Currency"
-              />
+              >
+                {(CURRENCIES.includes(r.currency) || !r.currency
+                  ? CURRENCIES
+                  : [r.currency, ...CURRENCIES]
+                ).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Select>
             </td>
             <td className="td-c w-[200px]">
               {/* A switch first, a name only when the answer is yes - marko:

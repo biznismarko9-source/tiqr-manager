@@ -16,6 +16,7 @@ import {
   type RowProblem,
 } from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
+import { CURRENCIES } from "./Orders";
 import { useToast } from "../lib/toast";
 
 /**
@@ -310,12 +311,22 @@ export default function PullRowsModal({
               />
             </td>
             <td className="td-c w-[90px]">
-              <Input
+              {/* 2.49.0: the same picked list as New Order - see its comment. */}
+              <Select
                 value={r.currency}
-                onChange={(e) => patch(i, { currency: e.target.value.toUpperCase() })}
+                onChange={(e) => patch(i, { currency: e.target.value })}
                 className={cellError(shown, i, "currency")}
                 aria-label="Currency"
-              />
+              >
+                {(CURRENCIES.includes(r.currency) || !r.currency
+                  ? CURRENCIES
+                  : [r.currency, ...CURRENCIES]
+                ).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Select>
             </td>
             <td className="td-c w-[150px]">
               <Input value={r.moreInfo} onChange={(e) => patch(i, { moreInfo: e.target.value })} aria-label="Notes" />

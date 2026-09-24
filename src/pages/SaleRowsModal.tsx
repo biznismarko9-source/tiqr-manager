@@ -15,6 +15,7 @@ import {
   type RowProblem,
 } from "../components/ui";
 import AiImportPanel from "../components/AiImportPanel";
+import { CURRENCIES } from "./Orders";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import { useToast } from "../lib/toast";
 
@@ -298,9 +299,16 @@ export default function SaleRowsModal({
             ))}
           </Select>
         </div>
-        <div className="w-28">
+        <div className="w-32">
           <span className="label">Currency</span>
-          <Input value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />
+          {/* 2.49.0: the same picked list as New Order - see its comment. */}
+          <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            {(CURRENCIES.includes(currency) || !currency ? CURRENCIES : [currency, ...CURRENCIES]).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </Select>
         </div>
         <div className="w-40">
           <span className="label">Payment status</span>

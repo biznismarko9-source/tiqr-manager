@@ -37,6 +37,27 @@ worst possible failure mode.
 alive here" is a question about *here*, and putting it in the database would
 make it one more thing sync has to carry between the two machines.
 
+## 2.49.0 - a half-typed date must never reach `value`
+
+`DateField` keeps what is being typed in `draft` and only calls `emit` once
+`dayFirstToIso` says it is a real calendar day. "21.0" is not a date, and a
+form that receives it would store rubbish or blank a good value.
+
+**Every path that sets the date must clear `draft`** - a calendar day, Today,
+Clear. Miss one and the field keeps displaying the abandoned keystrokes over a
+value that has already changed underneath.
+
+`dayFirstToIso` validates by round-tripping through `Date`, not by a
+days-per-month table. That is what makes 29.02.2024 pass and 29.02.2026 fail
+without anybody maintaining leap-year rules.
+
+## 2.49.0 - one currency list: `CURRENCIES` in Orders.tsx
+
+All three row forms, Orders and EventDetail read the same 13-item list. **A
+value outside it is kept and pinned at the front, never rewritten.** Marko has
+real orders in currencies the list does not carry, and silently turning one of
+them into EUR would be a money bug wearing a UI fix.
+
 ## 2.48.1 - automatic download is NOT launch-only any more (reverses 2.48.0)
 
 The entry below was the design until marko reported, twice, that the two
