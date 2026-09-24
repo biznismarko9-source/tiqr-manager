@@ -164,6 +164,16 @@ export default function Layout() {
   // being refused looked exactly like a machine with nothing to send - marko:
   // "AUTOSYNC NEFUNGUJE". It could not have told him, on either machine.
   const [syncFailure, setSyncFailure] = useState<string | null>(null);
+  // 2.49.2: true when Drive refused for the ONE reason no retry can ever fix -
+  // the signed-in Google account never granted Drive. marko: "doteraz to
+  // fungovalo, urob to tak aby to fungovalo aj teraz bez zmien". A permission
+  // that was never granted cannot be conjured from this side; what CAN be
+  // removed is the hunt for it, so the banner carries the sign-in itself.
+  const [needsGoogleConsent, setNeedsGoogleConsent] = useState(false);
+  const [reconsenting, setReconsenting] = useState(false);
+  // The banner re-runs the SAME tick the timer does, rather than a second
+  // copy of the logic that could drift from it.
+  const tickRef = useRef<null | (() => Promise<void>)>(null);
   // Guards against a tick starting while the previous one is still
   // uploading - a slow upload on a slow connection must not stack.
   const autoSyncBusy = useRef(false);
@@ -331,6 +341,9 @@ export default function Layout() {
         const message = errMsg(e);
         recordAutoSync({ at: Date.now(), action: "error", reason: message, error: message });
         setSyncFailure(message);
+        // The backend already classifies this (cloud_sync::forbidden_hint);
+        // matching its own words keeps the two from drifting apart.
+        setNeedsGoogleConsent(/does not include permission for Drive/i.test(message));
       } finally {
         autoSyncBusy.current = false;
         // Left standing on purpose when a restart or reload is already
@@ -342,6 +355,7 @@ export default function Layout() {
     // marko: "bolo tak ze len si zapol appku a uz automaticky zacalo robit
     // sync". One at launch, then every five minutes, then every time he comes
     // back to this window.
+    tickRef.current = tick;
     const run = () => void tick();
     run();
     const interval = setInterval(run, AUTO_SYNC_INTERVAL_MS);
@@ -356,6 +370,7 @@ export default function Layout() {
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      tickRef.current = null;
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
@@ -520,9 +535,38 @@ export default function Layout() {
             <span>
               <strong className="font-semibold">Automatic sync failed.</strong> {syncFailure}
             </span>
-            <Link to="/settings/data" className="font-semibold underline underline-offset-2">
-              Open sync
-            </Link>
+            {needsGoogleConsent ? (
+              // 2.49.2: the fix for THIS failure is one Google consent, and
+              // nothing else will do - a permission that was never granted
+              // cannot be produced from this side. So the button is here
+              // rather than three screens away, and the sync it was blocking
+              // runs the moment it succeeds.
+              <button
+                type="button"
+                disabled={reconsenting}
+                onClick={async () => {
+                  setReconsenting(true);
+                  try {
+                    await api.startGoogleSignIn();
+                    setSyncFailure(null);
+                    setNeedsGoogleConsent(false);
+                    toast.success("Google access renewed - syncing now.");
+                    void tickRef.current?.();
+                  } catch (e) {
+                    toast.error(errMsg(e));
+                  } finally {
+                    setReconsenting(false);
+                  }
+                }}
+                className="rounded-md bg-red-600 px-2 py-1 font-semibold text-white transition hover:bg-red-500 disabled:opacity-60"
+              >
+                {reconsenting ? "Waiting for Google…" : "Allow Google Drive access"}
+              </button>
+            ) : (
+              <Link to="/settings/data" className="font-semibold underline underline-offset-2">
+                Open sync
+              </Link>
+            )}
             <button
               type="button"
               onClick={() => setSyncFailure(null)}

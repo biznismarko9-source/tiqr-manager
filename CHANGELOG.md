@@ -16,6 +16,25 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.49.2 - povolenie sa dá dať jedným klikom priamo z hlášky
+
+Preveril som ešte dve veci, ktoré by boli naozajstné chyby v kóde — a **obe sú
+čisté**: appka si pri obnove tokenu nepýta užší rozsah, a to druhé prihlásenie
+(„Continue with Google") ti ten prvý token neprepisuje.
+
+**Zostáva to, čo sa z mojej strany opraviť nedá.** Aké povolenia token má, sa
+rozhodlo v momente, keď si ho schválil — a **žiadny kód nevie do tokenu pridať
+povolenie, ktoré mu nikdy nikto nedal.** To je pravidlo Googlu, nie chyba appky.
+Takže úplne „bez zmien" to nejde a nebudem ti tvrdiť opak.
+
+**Čo som spravil:** zrušil som to hľadanie. V tej červenej hláške je teraz
+tlačidlo **„Allow Google Drive access"** — klikneš, otvorí sa Google, schváliš,
+a **sync sa rozbehne hneď**. Žiadne chodenie do Settings.
+
+Spolu s 2.49.1 je to uzavreté: ak by si pri tom schvaľovaní niektoré políčko
+odškrtol, appka to **odmietne uložiť** a povie ti to — takže sa to nemôže
+potichu zopakovať.
+
 ## 2.49.1 - to 403 bolo chýbajúce povolenie
 
 Tá chyba, čo si poslal, je jednoznačná: **`insufficientPermissions`**. Nie je to

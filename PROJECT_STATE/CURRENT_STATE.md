@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.49.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.49.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1563,6 +1563,33 @@ the body: `insufficientPermissions` -> sign in again and tick every box;
 **Four new unit tests** cover it: Drive unticked is refused and names only
 Drive; an absent scope still signs in; the identity-only Firebase flow is never
 measured against Sheets/Drive; everything granted means nothing missing.
+
+**2.49.2 - the re-consent is one button, in the banner.** marko, after 2.49.1
+named the cause: "doteraz to fungovalo, urob to tak aby to fungovalo aj teraz
+bez zmien".
+
+**What was ruled out first** (so nobody re-walks it): `active_oauth_access_token`
+does a plain `refresh_access_token` with NO scope parameter, so it cannot be
+narrowing the token on refresh; and `REFRESH_TOKEN_KEY` is written in exactly
+one place (`google_auth.rs:118`, the Integrations flow) - the Firebase
+"Continue with Google" button does not touch it, so the two sign-ins are not
+overwriting each other. Both were real suspects and both are clean.
+
+**What is left is not fixable from this side.** A refresh token's granted
+scopes are fixed at consent time. Marko's predates `drive.file` (added in
+2.12.0), and no code can add a permission to a token that was never granted
+one - that is Google's design, not an app bug. "Bez zmien" in the literal sense
+is impossible, and saying otherwise would be a lie.
+
+**So the change removes the hunt instead.** The red banner now recognises this
+one failure (by matching `forbidden_hint`'s own wording, so the two cannot
+drift) and carries an **"Allow Google Drive access"** button that runs
+`startGoogleSignIn` right there and re-runs the very same tick the timer uses -
+via `tickRef`, not a second copy of the logic. One click, in the place the
+error appeared, and the blocked sync completes immediately.
+
+Paired with 2.49.1, the loop is now closed: a consent that is missing Drive is
+refused at sign-in rather than stored, so this cannot silently recur.
 
 **Next new migration is 031.**
 
