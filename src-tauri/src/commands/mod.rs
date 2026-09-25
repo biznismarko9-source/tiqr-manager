@@ -20,6 +20,7 @@ pub mod firebase_google_auth;
 pub mod google_auth;
 pub mod inventory_intelligence;
 pub mod lookups;
+pub mod notes;
 pub mod notifications;
 pub mod orders;
 pub mod orders_sheet_sync;

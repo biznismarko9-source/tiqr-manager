@@ -223,6 +223,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "030_pull_paid",
         include_str!("../migrations/030_pull_paid.sql"),
     ),
+    (
+        "031_notes",
+        include_str!("../migrations/031_notes.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

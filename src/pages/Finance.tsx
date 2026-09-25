@@ -7,6 +7,7 @@ import Overview from "./finance/Overview";
 import Transactions from "./finance/Transactions";
 import Accounts from "./finance/Accounts";
 import Reports from "./finance/Reports";
+import Notes from "./finance/Notes";
 
 // 2.1.0: marko's own "FINANCE 2.1" request - Finance is now 4 simple tabs
 // (Overview/Transactions/Accounts/Reports, Overview shown by default) rather
@@ -30,13 +31,17 @@ import Reports from "./finance/Reports";
 // no longer shares any code with the old per-ticket pages it replaced (see
 // TicketCenter.tsx's own module doc comment). Back to the original 4 tabs.
 
-type FinanceTab = "overview" | "transactions" | "accounts" | "reports";
+type FinanceTab = "overview" | "transactions" | "accounts" | "reports" | "notes";
 
 const TABS: { key: FinanceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "transactions", label: "Transactions" },
   { key: "accounts", label: "Accounts" },
   { key: "reports", label: "Reports" },
+  // 2.51.1: marko asked for Notes to live here rather than as its own sidebar
+  // entry. It carries no FinanceData - it is the one tab that is not about
+  // money - so it is rendered without `tabProps`.
+  { key: "notes", label: "Notes" },
 ];
 
 export default function Finance() {
@@ -102,6 +107,7 @@ export default function Finance() {
       {tab === "transactions" && <Transactions {...tabProps} />}
       {tab === "accounts" && <Accounts {...tabProps} />}
       {tab === "reports" && <Reports {...tabProps} />}
+      {tab === "notes" && <Notes />}
     </div>
   );
 }

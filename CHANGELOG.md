@@ -16,6 +16,47 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.51.1 - Notes je teraz pod Finance
+
+Presunuté z vlastnej položky v paneli na **piatu záložku vo Finance**:
+Overview · Transactions · Accounts · Reports · **Notes**.
+
+**S dátami sa nestalo nič** — tie isté tabuľky, tá istá migrácia, to isté
+synchronizovanie. Čo si stihol napísať v 2.51.0, tam ostáva.
+
+## 2.51.0 - Notes: miesto na všetko dôležité
+
+Nová položka v paneli: **Notes**. Hárky, ktorým si **sám pomenuješ stĺpce** —
+ako v Google Sheets, ale vnútri appky a synchronizované medzi oboma počítačmi.
+
+### Ako to funguje
+
+Vytvoríš si hárok a píšeš riadky. Stĺpce si kedykoľvek **pridáš, premenuješ
+alebo zmažeš**. Každá bunka sa **uloží sama**, hneď ako z nej klikneš preč —
+žiadne tlačidlo Uložiť, takže nikdy nie je nič „ešte neuložené".
+
+### Aby to nebol prázdny papier
+
+Nový hárok vieš začať zo **šablóny**:
+
+- **Buyers** — Nick · Ticket code · Event · Paid · Contact · Note
+- **Accounts** — Platform · Account · Email · Note
+- **Plans** — What · By when · Status · Note
+- **Blank** — jeden stĺpec, pomenuj si ho
+
+Stĺpce sú len začiatok, hárok je potom tvoj.
+
+### Nájdeš v tom všetko
+
+Hore je **jedno hľadanie cez všetky hárky naraz**. Napíšeš nick, kód lístka
+alebo kus mena — a vypíše ti to riadok, **v ktorom hárku** je a **v ktorom
+stĺpci** sa to našlo. Klikneš a si tam.
+
+### Synchronizuje sa
+
+Zápisky idú medzi Macom a Windowsom rovnako ako objednávky — vrátane zlučovania,
+keď si na oboch počítačoch napísal niečo iné, aj mazania.
+
 ## 2.50.1 - sync sa už nespúšťa pri každom kliknutí na okno
 
 Moja regresia z 2.48.1. Vtedy som pridal, že sa syncuje aj keď sa vrátiš na

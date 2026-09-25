@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.50.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.51.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1644,7 +1644,54 @@ deliberately kept - removing it would re-break the convergence marko complained
 about in 2.48.1 ("stale sa nespajaju tie info"), and unlike a focus trigger it
 is silent unless there is actually something to move.
 
-**Next new migration is 031.**
+**2.51.0 - Notes: sheets whose columns marko names himself.** His brief:
+"miesto na ktore sa mozem spolahnut, nieco kde si viem zapisat napr aky kod a
+co som komu predal, aky je jeho nick ... mozno nejake plany, ulozit si ucty,
+prehlad, najst vsetky jednoducho". Offered three shapes, he picked sheets with
+his own columns over free-text pages, and standalone over notes attached to an
+event or order.
+
+**Migration 031** adds `note_sheets` and `note_rows`. A sheet holds
+`columns_json`; a row holds `cells_json`, a list of strings **positionally
+aligned** with it. That beats a third `note_cells` table because nothing here
+will ever query one column across rows - it is a notepad, read a row at a time.
+
+**The alignment is the invariant.** Columns are never changed by handing the
+backend a new list to diff: there are exactly three operations - add, rename,
+delete - and the two that touch rows rewrite every row of the sheet inside one
+transaction (`reshape_rows`). Rows shorter or longer than the columns are
+padded/trimmed **on read** (`fit`), because a merge from the other machine or
+an older row must still display, never error.
+
+**It merges between the two machines.** Both tables carry `uid` + the insert
+trigger from 027 and the delete tombstone from 028, and both are in
+`MERGE_TABLES` (parent before child, `note_rows.sheet_id -> note_sheets`).
+Without all three, a merge would silently keep only the local copy - for the
+one place he keeps "vsetky dolezite info" that is the worst possible failure.
+
+**Three things make it relyable rather than a second inbox:** one search across
+every sheet that names the sheet AND the column that matched; templates
+(Buyers / Accounts / Plans / Blank) so a new sheet is useful immediately; and
+cells that save on blur, so nothing typed is ever unsaved.
+
+**2.51.1 - Notes moved under Finance.** marko: "to urob ako vlastnu zlozku pod
+finance a tam to bude cele". It shipped in 2.51.0 as its own sidebar entry and
+is now Finance's fifth tab (Overview · Transactions · Accounts · Reports ·
+Notes).
+
+The page is `pages/finance/Notes.tsx`, the `/notes` route and the sidebar entry
+are gone, and `IconClipboard` went with them - it existed only for that entry.
+**Nothing about the data changed**: same tables, same commands, same migration
+031, same merge wiring. Anything he typed in 2.51.0 is still there.
+
+**It is the one Finance tab rendered without `tabProps`** - it carries no
+`FinanceData` because it is not about money. Finance owns the page header, so
+the tab keeps only its own toolbar (search + New sheet).
+
+**The sidebar stays flat**, which is the 2.43.0 invariant: this removes a row
+rather than adding one.
+
+**Next new migration is 032.**
 
 ## Stack / layout
 

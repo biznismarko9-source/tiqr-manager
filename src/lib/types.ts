@@ -2372,3 +2372,35 @@ export interface CloudSyncStatus {
   /** How the last sync failed, in one sentence - null when it worked. */
   lastError: string | null;
 }
+
+/** 2.51.0: Notes - sheets whose columns marko names himself. See
+ *  commands/notes.rs and migration 031 for why cells are a positional list
+ *  rather than a keyed object: the sheet's `columns` IS the key. */
+export interface NoteSheet {
+  id: number;
+  name: string;
+  columns: string[];
+  position: number;
+  rowCount: number;
+  updatedAt: string;
+}
+
+export interface NoteRow {
+  id: number;
+  sheetId: number;
+  position: number;
+  /** Always exactly as long as the sheet's `columns` - the backend pads and
+   *  trims on the way out, so the UI never has to guard for a short row. */
+  cells: string[];
+  updatedAt: string;
+}
+
+/** One row that matched a search, and which of its cells did. */
+export interface NoteHit {
+  sheetId: number;
+  sheetName: string;
+  rowId: number;
+  cells: string[];
+  matchedColumn: number;
+  columnName: string;
+}

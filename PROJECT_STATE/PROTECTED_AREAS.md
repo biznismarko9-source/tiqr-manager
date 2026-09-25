@@ -37,6 +37,31 @@ worst possible failure mode.
 alive here" is a question about *here*, and putting it in the database would
 make it one more thing sync has to carry between the two machines.
 
+## 2.51.0 - a note row's cells are POSITIONAL; keep them aligned
+
+`note_rows.cells_json` is a list aligned by index with its sheet's
+`columns_json`. There is no key on a cell - the position IS the key.
+
+**Never change a sheet's columns by diffing a new list against the old one.**
+The three operations (`add_note_column`, `rename_note_column`,
+`delete_note_column`) each know exactly what they do to every row, and the two
+that touch rows do it in ONE transaction. A generic reshape would have to guess
+whether a column was renamed or replaced, and a wrong guess silently moves
+what marko wrote into the wrong column.
+
+`fit()` pads and trims on read. Keep it: a row can legitimately be the wrong
+length after a merge from the other machine, and a notepad that refuses to show
+what is in it is worse than one showing a blank cell.
+
+## 2.51.0 - a new synced table needs all THREE pieces
+
+`note_sheets`/`note_rows` carry `uid` + the insert trigger (027 pattern), the
+delete tombstone (028 pattern), AND an entry in `cloud_merge::MERGE_TABLES`.
+
+Miss any one and whole-file push/pull still carries the table - so it looks
+fine - while a MERGE silently keeps only the local copy. Any future table that
+holds something marko types must do all three.
+
 ## 2.50.0 - normalize a currency before comparing it, always
 
 `orders.currency` is NOT normalized at write time - CSV import stores a cell

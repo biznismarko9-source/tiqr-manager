@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  NoteHit,
+  NoteRow,
+  NoteSheet,
   Account,
   AccountInput,
   AiImportKind,
@@ -606,6 +609,23 @@ export const api = {
   /** 2.50.0: Settings -> Preferred currency. What every "Convert to ..."
    *  action converts into, and the currency the app treats as already fine.
    *  Defaults to EUR, which is what the whole app assumed before. */
+  // Notes (2.51.0) - see commands/notes.rs.
+  listNoteSheets: () => invoke<NoteSheet[]>("list_note_sheets"),
+  createNoteSheet: (name: string, columns: string[]) =>
+    invoke<NoteSheet>("create_note_sheet", { name, columns }),
+  renameNoteSheet: (id: number, name: string) => invoke<NoteSheet>("rename_note_sheet", { id, name }),
+  deleteNoteSheet: (id: number) => invoke<void>("delete_note_sheet", { id }),
+  addNoteColumn: (sheetId: number, name: string) => invoke<NoteSheet>("add_note_column", { sheetId, name }),
+  renameNoteColumn: (sheetId: number, index: number, name: string) =>
+    invoke<NoteSheet>("rename_note_column", { sheetId, index, name }),
+  deleteNoteColumn: (sheetId: number, index: number) =>
+    invoke<NoteSheet>("delete_note_column", { sheetId, index }),
+  listNoteRows: (sheetId: number) => invoke<NoteRow[]>("list_note_rows", { sheetId }),
+  createNoteRow: (sheetId: number, cells: string[]) => invoke<NoteRow>("create_note_row", { sheetId, cells }),
+  updateNoteRow: (id: number, cells: string[]) => invoke<NoteRow>("update_note_row", { id, cells }),
+  deleteNoteRow: (id: number) => invoke<void>("delete_note_row", { id }),
+  /** One search across every sheet - marko: "najst vsetky jednoducho". */
+  searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
   getPreferredCurrency: () => invoke<string>("get_preferred_currency"),
   setPreferredCurrency: (currency: string) => invoke<string>("set_preferred_currency", { currency }),
 
