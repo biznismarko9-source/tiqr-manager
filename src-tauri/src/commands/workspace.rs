@@ -27,6 +27,7 @@ use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::State;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -422,7 +423,38 @@ pub fn search_workspace(state: State<AppState>, query: String) -> AppResult<Vec<
         }
     }
 
-    // ...and the tables from migration 031.
+    // ...the tables from migration 031, by NAME first. 2.53.0: the brief asks
+    // search to cover "table names" as well as table cells, and a table whose
+    // name is the match must be findable even when it is still empty.
+    //
+    // A table gets ONE line in the results however many of its rows match -
+    // twenty lines all saying "Oasis Codes" is not finding something, it is
+    // burying it. `table_hit_at` is where that table's single line lives.
+    let mut table_hit_at: HashMap<i64, usize> = HashMap::new();
+    let mut table_extra: HashMap<i64, usize> = HashMap::new();
+    {
+        let mut nstmt =
+            conn.prepare("SELECT id, name, columns_json FROM note_sheets WHERE archived = 0 ORDER BY position, id")?;
+        let sheets = nstmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for sheet in sheets {
+            let (id, name, columns_json) = sheet?;
+            if name.to_lowercase().contains(&needle) {
+                let columns: Vec<String> = from_json(&columns_json);
+                table_hit_at.insert(id, hits.len());
+                hits.push(WorkspaceHit {
+                    kind: "table".to_string(),
+                    id,
+                    title: name,
+                    preview: columns.join(" · "),
+                    where_found: "Table name".to_string(),
+                });
+            }
+        }
+    }
+
+    // ...and their cells.
     let mut tstmt = conn.prepare(
         "SELECT r.cells_json, s.id, s.name, s.columns_json
          FROM note_rows r JOIN note_sheets s ON s.id = r.sheet_id
@@ -441,6 +473,11 @@ pub fn search_workspace(state: State<AppState>, query: String) -> AppResult<Vec<
         let columns: Vec<String> = from_json(&columns_json);
         let cells: Vec<String> = from_json(&cells_json);
         if let Some(idx) = cells.iter().position(|c| c.to_lowercase().contains(&needle)) {
+            if table_hit_at.contains_key(&sheet_id) {
+                *table_extra.entry(sheet_id).or_insert(0) += 1;
+                continue;
+            }
+            table_hit_at.insert(sheet_id, hits.len());
             hits.push(WorkspaceHit {
                 kind: "table".to_string(),
                 id: sheet_id,
@@ -448,6 +485,19 @@ pub fn search_workspace(state: State<AppState>, query: String) -> AppResult<Vec<
                 preview: cells.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>().join(" · "),
                 where_found: columns.get(idx).cloned().unwrap_or_else(|| "Cell".to_string()),
             });
+        }
+    }
+
+    // "Code · 3 more rows" - the count is the useful part, the other rows are
+    // there when the table opens.
+    for (sheet_id, extra) in table_extra {
+        if let Some(hit) = table_hit_at.get(&sheet_id).and_then(|at| hits.get_mut(*at)) {
+            hit.where_found = format!(
+                "{} · {} more row{}",
+                hit.where_found,
+                extra,
+                if extra == 1 { "" } else { "s" }
+            );
         }
     }
 

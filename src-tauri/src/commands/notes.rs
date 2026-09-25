@@ -307,6 +307,48 @@ pub fn delete_note_column(state: State<AppState>, sheet_id: i64, index: usize) -
     read_sheet(&conn, sheet_id)
 }
 
+/// Moves one column to another position, taking that column's cell with it in
+/// every row.
+///
+/// 2.53.0. Like the other three column operations this one knows exactly what
+/// it does to every row rather than diffing an old list against a new one -
+/// see `PROTECTED_AREAS.md`, "a note row's cells are POSITIONAL". A row is
+/// fitted to the column count first, so a short row from a merge cannot make
+/// the move land on the wrong index.
+#[tauri::command]
+pub fn reorder_note_column(
+    state: State<AppState>,
+    sheet_id: i64,
+    from_index: usize,
+    to_index: usize,
+) -> AppResult<NoteSheet> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let mut columns = sheet_columns(&tx, sheet_id)?;
+    let width = columns.len();
+    if from_index >= width || to_index >= width {
+        return Err(AppError::Validation("That column no longer exists.".to_string()));
+    }
+    if from_index == to_index {
+        drop(tx);
+        return read_sheet(&conn, sheet_id);
+    }
+    let moved = columns.remove(from_index);
+    columns.insert(to_index, moved);
+    tx.execute(
+        "UPDATE note_sheets SET columns_json = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, dump_list(&columns), now_iso()],
+    )?;
+    reshape_rows(&tx, sheet_id, |cells| {
+        let mut cells = fit(cells, width);
+        let moved = cells.remove(from_index);
+        cells.insert(to_index, moved);
+        cells
+    })?;
+    tx.commit()?;
+    read_sheet(&conn, sheet_id)
+}
+
 /// Rewrites every row of one sheet through `f`, inside the caller's
 /// transaction. Read fully before writing: rewriting while iterating a live
 /// statement on the same table is the classic way to half-apply a change.
@@ -529,5 +571,26 @@ mod tests {
         let r = row(&conn, s, &["a"]);
         reshape_rows(&conn, s, |cells| fit(cells, 2)).unwrap();
         assert_eq!(cells_of(&conn, r), vec!["a".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn moving_a_column_takes_its_cell_along_in_every_row() {
+        let conn = test_conn();
+        let s = sheet(&conn, &["A", "B", "C"]);
+        let r1 = row(&conn, s, &["a1", "b1", "c1"]);
+        // A short row from a merge must survive the move, not shift by one.
+        let r2 = row(&conn, s, &["a2"]);
+
+        // Move the last column to the front: C, A, B.
+        reshape_rows(&conn, s, |cells| {
+            let mut cells = fit(cells, 3);
+            let moved = cells.remove(2);
+            cells.insert(0, moved);
+            cells
+        })
+        .unwrap();
+
+        assert_eq!(cells_of(&conn, r1), vec!["c1".to_string(), "a1".to_string(), "b1".to_string()]);
+        assert_eq!(cells_of(&conn, r2), vec![String::new(), "a2".to_string(), String::new()]);
     }
 }

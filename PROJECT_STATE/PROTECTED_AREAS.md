@@ -21,6 +21,54 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.53.0 - a table cell input is UNCONTROLLED; remount it when columns move
+
+The cells are `<Input defaultValue={...}>`, not controlled inputs, so typing is
+never fought by a re-render and a cell can save on blur. The cost is that an
+uncontrolled input **ignores a new `defaultValue`** - React only reads it on
+mount.
+
+So whenever the COLUMNS change shape, the `<td key={i}>` elements re-key 0..n
+and React happily reuses the old DOM at those keys. Delete the middle column of
+A/B/C and the screen keeps showing `a, b` under the headers `A, C` while the
+database holds `a, c`. **This was a real bug in 2.51.0 and 2.52.0.**
+
+`NoteTable` fixes it with a `structure` counter in the row key
+(`${r.id}:${structure}`), bumped by `afterColumnChange()`. **Any future column
+operation must bump it**, or the same silent mismatch comes back.
+
+Sort and filter do NOT bump it and must not: they only change which rows are
+drawn and in what order, and each `<Input>` travels with its row's `key={r.id}`
+part, carrying the right value with it.
+
+## 2.53.0 - Notes writes `kind='note'` and ONLY that, but must not drop the rest
+
+2.52.0 wrote records and tasks into `workspace_items`; 2.53.0's UI has neither.
+The table, the `kind` column and `fields_json` / `checklist_json` all stayed -
+nothing was migrated away, and no migration was added.
+
+**`NoteEditor.save()` passes `note.fields` and `note.checklist` straight back
+untouched.** That is what keeps a 2.52.0 record from being silently emptied the
+first time marko opens it. If a future editor stops round-tripping those, it
+must migrate them into `content` first, not just stop sending them - a save
+with `fields: []` overwrites the stored list.
+
+`search_workspace` still reads `fields_json` and still masks secret-looking
+field values, so an old record stays findable.
+
+## 2.53.0 - two names for one feature: `/notes` in the UI, `workspace` in Rust
+
+The section is **Notes** at **`/notes`**. The Rust module, its commands
+(`list_workspace_items`, `save_workspace_item`, `search_workspace`, …), the
+table `workspace_items` and its `MERGE_TABLES` entry all still say
+**workspace**, from 2.52.0.
+
+**This is deliberate and must stay.** Renaming the table would orphan the
+tombstones in `deleted_rows` that name it by string (same reason the 031 note
+tables kept their names - see below), and renaming the commands buys nothing
+but a diff across `lib.rs`, `mod.rs` and `api.ts`. Internal names do not have
+to match the label on the sidebar.
+
 ## 2.52.0 - Workspace masking is presentation, NOT security
 
 `looks_secret()` (Rust, `commands/workspace.rs`) and `looksSecret()` (TS,

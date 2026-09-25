@@ -16,6 +16,67 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.53.0 - Notes
+
+Workspace z 2.52.0 bol na teba prikomplikovaný, tak som ho **zjednodušil na to,
+čo si pýtal**: jedno čisté miesto, kam si zapíšeš čokoľvek dôležité.
+
+Volá sa **Notes**, je to vlastná položka v paneli, s Finance nemá nič spoločné.
+
+### Sú tam už len dve veci
+
+- **Note** — normálne písanie, čokoľvek.
+- **Table** — tabuľka so stĺpcami, ktoré si sám pomenuješ.
+
+Records, Tasks, kategórie, štatistiky a Upcoming sú **preč**. `+ New` ti ponúkne
+len Note alebo Table.
+
+### Note
+
+Veľké pole na písanie. Nad ním lišta: **nadpis, tučné, kurzíva, odrážky,
+číslovanie, checkbox, odkaz**. Tlačidlo **Preview** ti to ukáže vysádzané a
+**checkboxy sa dajú rovno odkliknúť**.
+
+Nie je to žiadny komplikovaný editor — je to obyčajný text, takže to, čo napíšeš,
+tak presne to sa aj uloží.
+
+**Ukladá sa samo** — chvíľu po tom, ako prestaneš písať, keď klikneš preč, aj
+keď odídeš späť na zoznam. Žiadne tlačidlo Uložiť.
+
+Každá poznámka má názov, dátum (nepovinný), tagy a vieš si ju **pripnúť hore**.
+
+### Table
+
+Funguje ako doteraz (bunka sa uloží sama), ale pribudlo:
+
+- **triedenie** — klikneš na stĺpec, druhý klik otočí, tretí zruší
+- **filtrovanie** — políčko nad tabuľkou, píšeš a riadky sa zúžia
+- **presúvanie stĺpcov** — šípky vľavo/vpravo v hlavičke
+
+**Opravil som aj chybu z 2.51.0/2.52.0:** keď si zmazal stĺpec v strede,
+na obrazovke ostali staré hodnoty pod novými hlavičkami. Dáta v databáze boli v
+poriadku, zobrazenie nie. Už je to správne.
+
+### Hľadanie
+
+Jedno políčko hore, hľadá naraz v **názvoch poznámok, texte poznámok, názvoch
+tabuliek aj v bunkách tabuliek**. Výsledky sú rozdelené na Notes a Tables.
+
+Tabuľka dostane **jeden riadok** vo výsledkoch, aj keď jej sedí dvadsať riadkov —
+zvyšok ti len spočíta („Code · 3 more rows").
+
+### Usporiadanie
+
+**Pinned → Recent → Tables → All notes**, plus triedenie zoznamu podľa
+**naposledy upravené / najnovšie / najstaršie / abecedne** a filtrovanie podľa
+tagov.
+
+### Čo som nechytal
+
+Synchronizáciu, Dashboard, Events, Inventory, Sales, Pulls, Finance,
+prihlásenie, nastavenia, tému, navigáciu. **Databázu som nemenil** — žiadna nová
+migrácia. Čo si prípadne stihol napísať v 2.52.0, ostáva a otvorí sa.
+
 ## 2.52.0 - Workspace
 
 Nová vlastná položka v paneli: **Workspace**. Miesto, kam si zapíšeš všetko,

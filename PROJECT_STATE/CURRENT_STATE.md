@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.52.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.53.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1737,6 +1737,65 @@ The app does not claim to be a password manager and must not start claiming it.
 is written but never read (every table cell is still free text), keyboard
 shortcuts, sort/filter inside a table, URL auto-linkification, column
 reordering, and any Move/Convert action beyond the kind dropdown in the editor.
+
+**2.53.0 - Workspace cut back to Notes.** marko read 2.52.0 and wrote a
+second, much shorter brief: "Create one clean place where I can write down and
+organize anything important I need to remember", "Apple Notes simplicity +
+Google Sheets structure", "Keep it extremely simple", "Do NOT overengineer",
+and the test he set for it - opening the page should make you think *"I can
+just write something here."*
+
+**So there are two things now, not four: a note and a table.** Records with
+custom fields, tasks with statuses and due dates, categories, the stat cards
+and the Upcoming panel are all gone from the UI. The section is **`Notes` at
+`/notes`**, still its own top-level sidebar row, still nothing to do with
+Finance.
+
+**Nothing was migrated and no migration was added.** `workspace_items` (032) is
+still the store; `kind` is still a column; this screen simply only ever writes
+`'note'`. A row written by 2.52.0 as a record or a task still lists, still
+opens, and `NoteEditor` hands `fields_json` / `checklist_json` straight back on
+save instead of dropping them - so nothing typed into 2.52.0 is lost by opening
+it in 2.53.0. **Next migration is still 033.**
+
+**A note is a plain textarea**, deliberately. The toolbar inserts markers into
+the text (`# `, `**bold**`, `*italic*`, `- `, `1. `, `[ ] `, `[label](url)`)
+and Preview renders them read-only, with clickable checkboxes that write back
+into the text. `☐`/`☑` are accepted on read because marko's brief wrote them
+that way. There is no rich-text model and no contentEditable, so what is stored
+is exactly what he typed and a note stays readable as plain text. It autosaves:
+700 ms after typing stops, on blur, and once more on the way out.
+
+**Tables gained sort, filter and column reorder.** Sort and filter are
+display-only and never touch stored positions. Reorder is real and goes through
+the new `reorder_note_column` command, which moves the column and the matching
+cell in every row in one transaction, like the other three column operations.
+
+**The cell inputs are keyed by a `structure` counter** (`${r.id}:${structure}`),
+bumped on every column change. They are uncontrolled (`defaultValue`), and an
+uncontrolled input ignores a new `defaultValue` - so before this, deleting a
+middle column left the OLD cell values on screen next to the new column
+headers while the database held the new ones. That was a real bug in 2.51.0 and
+2.52.0; the key remounts the row and fixes it for delete and reorder alike.
+
+**Search is one field on the home**, covering note titles, note content, note
+fields, tags, **table names** (new in 2.53.0) and table cells. A table gets
+**one** result line however many of its rows match, with the rest counted
+("Code · 3 more rows") - twenty lines all saying "Oasis Codes" is burying a
+result, not finding it.
+
+**Archiving is kept but demoted** to a "Show archived (n)" link at the bottom.
+The brief does not mention archiving; 2.52.0 could archive a note, so dropping
+it outright would have made those rows invisible rather than gone.
+
+**`search_notes` and `duplicate_workspace_item` are now called by nothing.**
+Both are still registered and still work; they are left in place rather than
+removed, like the other 26 already-orphaned api helpers from removed features.
+
+**Deliberately NOT in v1**, same as before plus the new ones: `column_types_json`
+is still written and never read (every table cell is free text), no keyboard
+shortcuts, no drag-and-drop column reorder (it is two arrow buttons), no
+nesting or folders, no calendar.
 
 **Next new migration is 033.**
 

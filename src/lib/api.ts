@@ -623,6 +623,8 @@ export const api = {
     invoke<NoteSheet>("rename_note_column", { sheetId, index, name }),
   deleteNoteColumn: (sheetId: number, index: number) =>
     invoke<NoteSheet>("delete_note_column", { sheetId, index }),
+  reorderNoteColumn: (sheetId: number, fromIndex: number, toIndex: number) =>
+    invoke<NoteSheet>("reorder_note_column", { sheetId, fromIndex, toIndex }),
   listNoteRows: (sheetId: number) => invoke<NoteRow[]>("list_note_rows", { sheetId }),
   createNoteRow: (sheetId: number, cells: string[]) => invoke<NoteRow>("create_note_row", { sheetId, cells }),
   updateNoteRow: (id: number, cells: string[]) => invoke<NoteRow>("update_note_row", { id, cells }),

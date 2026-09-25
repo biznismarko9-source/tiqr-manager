@@ -278,6 +278,7 @@ pub fn run() {
             commands::notes::add_note_column,
             commands::notes::rename_note_column,
             commands::notes::delete_note_column,
+            commands::notes::reorder_note_column,
             commands::notes::list_note_rows,
             commands::notes::create_note_row,
             commands::notes::update_note_row,
