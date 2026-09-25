@@ -421,7 +421,7 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
                           <td
                             key={c}
                             onMouseDown={() => {
-                              if (isEditing) return;
+                              if (cellEdit) return;
                               if (editing) void finishEdit("none");
                               setSel({ r, c });
                               focusBox();

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.54.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.54.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1858,6 +1858,34 @@ like the other already-orphaned helpers from removed features.
 API is unverified in this webview), multi-cell selection, formulas, column
 resizing, drag-to-reorder columns (it is two arrow buttons), frozen columns,
 undo. `column_types_json` is still written and never read - every cell is text.
+
+**2.54.1 - the build fix for 2.54.0.** 2.54.0's CI failed on both runners:
+`src/pages/sheets/Grid.tsx(424,35): error TS2552: Cannot find name 'isEditing'`
+- one occurrence left behind when `isEditing` was renamed to `cellEdit`.
+**2.54.0 is a burned version number**; nothing of it ever built.
+
+Two things came out of it that matter beyond the one-line fix:
+
+**The frontend build runs FIRST** (`beforeBuildCommand: npm run build`, i.e.
+`tsc -b && vite build`), so a TypeScript error means **cargo never runs and no
+Rust is ever compiled**. A green CI on a release whose TS failed proves nothing
+about the Rust in it. 2.54.1 therefore also hardened two pieces of Rust that
+had never reached a compiler: `search_workspace`'s hit-collapsing loop used
+`map.get(..).and_then(|at| vec.get_mut(*at))`, which returns a `&mut` derived
+from a mutable capture and would not have borrow-checked, and
+`reorder_note_column` leaned on `drop(tx)` to release a borrow - both are now
+written long-hand with no borrow subtlety.
+
+**`scratchpad/orphan.py` is the check that would have caught it**: it lists
+camelCase identifiers appearing EXACTLY ONCE in a file, which is what a rename
+leftover looks like. It was self-tested by reintroducing the exact CI error.
+Run it on every changed page before building. The bracket/import/export checks
+that did pass cannot see this class of error at all.
+
+Also verified this round, and worth keeping up: **every SQL statement in
+`workspace.rs` (8) and `notes.rs` (26) executed against a real in-memory
+database built from all 32 migrations**, plus the `format!()`-built query, whose
+column names are what `row_to_item` reads by name.
 
 **Next new migration is 033.**
 

@@ -491,13 +491,14 @@ pub fn search_workspace(state: State<AppState>, query: String) -> AppResult<Vec<
     // "Code · 3 more rows" - the count is the useful part, the other rows are
     // there when the table opens.
     for (sheet_id, extra) in table_extra {
-        if let Some(hit) = table_hit_at.get(&sheet_id).and_then(|at| hits.get_mut(*at)) {
-            hit.where_found = format!(
-                "{} · {} more row{}",
-                hit.where_found,
-                extra,
-                if extra == 1 { "" } else { "s" }
-            );
+        let at = match table_hit_at.get(&sheet_id) {
+            Some(at) => *at,
+            None => continue,
+        };
+        if let Some(hit) = hits.get_mut(at) {
+            let found = hit.where_found.clone();
+            let plural = if extra == 1 { "" } else { "s" };
+            hit.where_found = format!("{found} · {extra} more row{plural}");
         }
     }
 

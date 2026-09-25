@@ -21,6 +21,35 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.54.1 - a green CI does not mean the Rust compiled
+
+`beforeBuildCommand` is `npm run build` = `tsc -b && vite build`, and it runs
+**before** cargo. A TypeScript error stops the whole build, so **no Rust is
+compiled at all**. 2.52.0, 2.53.0 and 2.54.0 all shipped Rust that had never
+reached a compiler.
+
+So: a release whose only CI failure was a TS error tells you nothing about its
+Rust. Fix the TS, and then look at the Rust again before assuming it is fine -
+particularly anything touching borrows, which is where the two real problems
+were (`and_then(|at| vec.get_mut(*at))` returning a `&mut` out of a closure,
+and a `drop(tx)` used to release a borrow early). Both are now long-hand.
+
+## 2.54.1 - a rename leftover is invisible to every structural check
+
+2.54.0 failed on `Cannot find name 'isEditing'` - one occurrence missed when
+`isEditing` became `cellEdit`. Balanced brackets, resolved imports, exported
+symbols, registered commands and matched invoke targets were all green.
+
+`scratchpad/orphan.py` exists for exactly this: it lists **camelCase
+identifiers used exactly once** in a file. A rename leftover is used once and
+declared nowhere, so it surfaces; English prose in JSX text is not camelCase,
+so it does not. **Run it on every changed page**, and treat a name you do not
+recognise as a bug until proven otherwise.
+
+Do not try to replace it with a general scope checker built from regexes -
+that was attempted and is unusable: `=>` breaks JSX-text stripping, and
+`useState` array destructuring defeats declaration collection.
+
 ## 2.54.0 - a selection move after a write must know the grid grew
 
 `Grid.commit()` returns `true` when it turned the blank bottom row into a real

@@ -323,15 +323,20 @@ pub fn reorder_note_column(
     to_index: usize,
 ) -> AppResult<NoteSheet> {
     let mut conn = state.db.lock().unwrap();
+    {
+        let width = sheet_columns(&conn, sheet_id)?.len();
+        if from_index >= width || to_index >= width {
+            return Err(AppError::Validation("That column no longer exists.".to_string()));
+        }
+        if from_index == to_index {
+            return read_sheet(&conn, sheet_id);
+        }
+    }
     let tx = conn.transaction()?;
     let mut columns = sheet_columns(&tx, sheet_id)?;
     let width = columns.len();
     if from_index >= width || to_index >= width {
         return Err(AppError::Validation("That column no longer exists.".to_string()));
-    }
-    if from_index == to_index {
-        drop(tx);
-        return read_sheet(&conn, sheet_id);
     }
     let moved = columns.remove(from_index);
     columns.insert(to_index, moved);

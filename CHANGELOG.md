@@ -16,6 +16,18 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.54.1 - oprava buildu 2.54.0
+
+2.54.0 sa nezostavilo — moja chyba. Pri premenovaní jednej premennej v mriežke
+mi ostal jeden starý názov (`isEditing`), a TypeScript to zastavil.
+
+**Obsahovo je to to isté ako 2.54.0** (Sheets), len sa to teraz zostaví.
+
+Pri tom som si všimol ešte jednu vec: build najprv spúšťa TypeScript a až
+potom Rust. Keďže TypeScript padal, **Rust sa nikdy nekompiloval** — ani v
+2.52.0, ani v 2.53.0. Tak som ho prešiel a dve miesta prepísal tak, aby si
+Rust nemohol sťažovať.
+
 ## 2.54.0 - Sheets
 
 Povedal si, že by si to radšej mal **ako naozajstný Google Sheets, úplne
