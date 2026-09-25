@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.49.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.50.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1590,6 +1590,59 @@ error appeared, and the blocked sync completes immediately.
 
 Paired with 2.49.1, the loop is now closed: a consent that is missing Drive is
 refused at sign-in rather than stored, so this cannot silently recur.
+
+**2.50.0 - a currency SYMBOL is not a currency code, and the target is now a
+setting.** marko: "2 skipped: 2x Could not fetch a € -> EUR rate ... je tam
+nejaky bug ze convert to eur ale ono to uz je v eurach", plus "do settings daj
+moznost preffered currency ... na vyber gbp, eur, usd, tiez ten convert bude
+podla toho co mas zapnute".
+
+**The bug, exactly:** the column held `"€"`. `resolve_currency_order_ids`
+filtered with `UPPER(TRIM(currency)) != 'EUR'`, which turns `"€"` into `"€"` -
+not `"EUR"` - so an order entered in euros was offered up to be converted from
+euros into euros, and the rate service answered 404 for a currency called "€".
+`fx::fetch_rate`'s own `from == to` shortcut missed it for the same reason.
+
+**`fx::normalize_currency`** now maps unambiguous symbols to ISO codes
+(€ $ £ ₺ zł лв, plus Kč/Ft/lei) and upper-cases everything else. `fetch_rate`
+normalizes both sides, so a symbol can never reach the service again.
+**`kr` is deliberately absent** - Swedish, Norwegian AND Danish; guessing
+would be inventing a fact about somebody's money.
+
+**`resolve_currency_order_ids` normalizes in RUST, not SQL**, in one pass over
+`SELECT id, currency`, grouped by real code. SQL can fix casing but not a
+symbol. It also takes a `target` now instead of assuming EUR.
+
+**Preferred currency** lives in `commands::currency`: `preferred_currency()`
+reads the `preferred_currency` setting, validates it against
+`PREFERRED_CURRENCIES` (EUR/USD/GBP) and **falls back to EUR** - so an install
+that never touches it behaves exactly as every version before this one.
+`convert_currencies_to_eur` keeps its historical name (renaming a registered
+command breaks every caller for no behavioural gain) but converts to the
+preference and excludes it.
+
+**Frontend:** `lib/preferredCurrency.ts` caches it module-wide and notifies
+every mounted screen on save, so Dashboard, Orders, OrderDetail, Sales and
+Finance all relabel at once and can never disagree with what the conversion
+does. The picker is a card at the top of Settings -> Lookups.
+
+**Four new Rust tests**, including marko's exact case: an order stored as "€"
+resolves to nothing to convert, and a GBP preference flips which orders are
+targets.
+
+**2.50.1 - sync no longer fires on window focus (reverses 2.48.1's triggers).**
+marko: "vzdy ked kliknem na tiqr tak sa spusti sync, ked vyjdem na par sekund a
+vratim sa tak tiez, sync by sa mal robit vzdy iba pri prvotnom otvoreni apky".
+
+2.48.1 added `focus` and `visibilitychange` listeners to make the two-machine
+hand-off feel immediate. They worked, and they were too eager: alt-tabbing is
+not an event worth moving a database for, and each one announced itself in the
+header. Both listeners are gone.
+
+**What remains: one tick at launch, then the five-minute timer.** The timer is
+deliberately kept - removing it would re-break the convergence marko complained
+about in 2.48.1 ("stale sa nespajaju tie info"), and unlike a focus trigger it
+is silent unless there is actually something to move.
 
 **Next new migration is 031.**
 

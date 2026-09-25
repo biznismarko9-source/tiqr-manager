@@ -42,6 +42,7 @@ import {
   IconTrendingUp,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { usePreferredCurrency } from "../lib/preferredCurrency";
 
 // 2.0.47 (DIR-001 signature idea #01): the exact same "warning starting N
 // days before, escalating daily, gone once resolved" mechanism Pulls.tsx
@@ -787,6 +788,7 @@ export default function Dashboard() {
  * numbers - same reasoning as Order Detail's own version of this dialog. */
 function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onConverted: () => void }) {
   const toast = useToast();
+  const preferredCurrency = usePreferredCurrency();
   const [pending, setPending] = useState<{ currencies: string[] | null; label: string } | null>(null);
   const [converting, setConverting] = useState(false);
 
@@ -846,7 +848,7 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
         )}
         {nonEur.length > 0 && (
           <div className={`flex flex-wrap items-center gap-2 ${data.mixedCurrencies ? "mt-2" : ""}`}>
-            <span className="font-medium">Convert to EUR:</span>
+            <span className="font-medium">Convert to {preferredCurrency}:</span>
             {nonEur.map((c) => (
               <button
                 key={c.currency}
@@ -872,9 +874,9 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
 
       <ConfirmDialog
         open={pending !== null}
-        title="Convert to EUR?"
+        title={`Convert to ${preferredCurrency}?`}
         message={`Fetches today's live conversion rate(s) to EUR and converts every order currently in ${pending?.label} - plus its tickets and every sale on them, including refunded ones. Orders that can't be safely converted are skipped and reported, never guessed at. This cannot be undone.`}
-        confirmLabel="Convert to EUR"
+        confirmLabel={`Convert to ${preferredCurrency}`}
         danger
         busy={converting}
         onCancel={() => setPending(null)}

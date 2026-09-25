@@ -28,6 +28,7 @@ import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconPackage, IconPlus, IconSearch, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { usePreferredCurrency } from "../lib/preferredCurrency";
 import { useListTab } from "../lib/useListTab";
 import { markRow, takeRow } from "../lib/lastRow";
 import { useNarrowTables } from "../lib/useNarrowTables";
@@ -806,6 +807,7 @@ function OrderFormModal({
   // button can show "Converting..." and disable itself without touching any
   // other part of the form.
   const [convertingCurrency, setConvertingCurrency] = useState(false);
+  const preferredCurrency = usePreferredCurrency();
   // 2.0.50, review fix: this modal never actually unmounts when it's closed
   // (only the inner <Modal> stops rendering - see its own component), so
   // this component's state, including anything an in-flight
@@ -962,7 +964,7 @@ function OrderFormModal({
     setConvertingCurrency(true);
     try {
       const amountsCents = parsedAmounts as number[];
-      const result = await api.convertCurrency(currency, "EUR", amountsCents);
+      const result = await api.convertCurrency(currency, preferredCurrency, amountsCents);
       if (conversionToken.current !== myToken) return; // stale - this modal moved on to something else while the request was in flight
       if (result.convertedCents.length !== fields.length) {
         throw new Error("Currency conversion returned an unexpected number of amounts");
@@ -1302,7 +1304,7 @@ function OrderFormModal({
                     onClick={convertToEur}
                     disabled={convertingCurrency}
                   >
-                    {convertingCurrency ? "Converting..." : "Convert to EUR"}
+                    {convertingCurrency ? "Converting..." : `Convert to ${preferredCurrency}`}
                   </button>
                 )}
                 <button

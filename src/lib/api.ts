@@ -603,6 +603,11 @@ export const api = {
    * only on a real machine. */
   convertCurrency: (fromCurrency: string, toCurrency: string, amountsCents: number[]) =>
     invoke<CurrencyConversion>("convert_currency", { fromCurrency, toCurrency, amountsCents }),
+  /** 2.50.0: Settings -> Preferred currency. What every "Convert to ..."
+   *  action converts into, and the currency the app treats as already fine.
+   *  Defaults to EUR, which is what the whole app assumed before. */
+  getPreferredCurrency: () => invoke<string>("get_preferred_currency"),
+  setPreferredCurrency: (currency: string) => invoke<string>("set_preferred_currency", { currency }),
 
   // Outbound notifications (2.0.76; email channel removed again in 2.0.77;
   // mobile-push channel switched from Pushover to ntfy in 2.0.78 - see

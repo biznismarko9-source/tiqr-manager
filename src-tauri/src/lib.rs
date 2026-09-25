@@ -270,6 +270,8 @@ pub fn run() {
             commands::firebase_google_auth::start_firebase_google_sign_in,
             commands::firebase_google_auth::cancel_firebase_google_sign_in,
             commands::currency::convert_currency,
+            commands::currency::get_preferred_currency,
+            commands::currency::set_preferred_currency,
             commands::price_checker::list_marketplaces,
             commands::price_checker::create_marketplace,
             commands::price_checker::delete_marketplace,

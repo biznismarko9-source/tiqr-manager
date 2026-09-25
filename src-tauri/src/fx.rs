@@ -64,9 +64,44 @@ pub struct RateQuote {
 /// straight through rather than guessed at (same "surface the real
 /// service's own message" approach `google_sheets::describe_error_response`
 /// already uses for Google's errors).
+/// A currency as this app wants to store and compare it: an ISO code.
+///
+/// 2.50.0. marko hit "Could not fetch a € -> EUR rate (404)" on an order he
+/// had entered in euros. The cause was literal: the column held the SYMBOL
+/// "€", the "is it already EUR?" test compared against the string "EUR", "€"
+/// is not "EUR", so the order was sent off to be converted from euros into
+/// euros - and the rate service, correctly, has no such thing as "€".
+///
+/// Only unambiguous symbols are mapped. `kr` is deliberately absent: it is
+/// Swedish, Norwegian AND Danish, and guessing which would be inventing data
+/// about somebody's money. Anything unrecognised is returned trimmed and
+/// upper-cased, exactly as before.
+pub fn normalize_currency(raw: &str) -> String {
+    let t = raw.trim();
+    match t {
+        "€" => return "EUR".to_string(),
+        "$" => return "USD".to_string(),
+        "£" => return "GBP".to_string(),
+        "₺" => return "TRY".to_string(),
+        "zł" | "ZŁ" => return "PLN".to_string(),
+        "лв" => return "BGN".to_string(),
+        _ => {}
+    }
+    let upper = t.to_uppercase();
+    match upper.as_str() {
+        "KČ" | "KC" => "CZK".to_string(),
+        "FT" => "HUF".to_string(),
+        "LEI" => "RON".to_string(),
+        _ => upper,
+    }
+}
+
 pub fn fetch_rate(from: &str, to: &str) -> AppResult<RateQuote> {
-    let from = from.trim().to_ascii_uppercase();
-    let to = to.trim().to_ascii_uppercase();
+    // Normalized, not merely upper-cased: a symbol that slipped through from
+    // an older row must resolve to its code here too, or the `from == to`
+    // shortcut below would miss it again.
+    let from = normalize_currency(from);
+    let to = normalize_currency(to);
 
     if from == to {
         // No real request needed, and nothing downstream should ever hit

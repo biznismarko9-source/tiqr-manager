@@ -37,6 +37,33 @@ worst possible failure mode.
 alive here" is a question about *here*, and putting it in the database would
 make it one more thing sync has to carry between the two machines.
 
+## 2.50.0 - normalize a currency before comparing it, always
+
+`orders.currency` is NOT normalized at write time - CSV import stores a cell
+verbatim, and an AI-filled or pasted value can be a symbol. So `"€"`, `"eur"`
+and `"EUR"` all mean euros and only one of them equals the string `"EUR"`.
+
+**Compare through `fx::normalize_currency`, never with `=` or `UPPER(TRIM())`.**
+Upper-casing fixes casing and does nothing to a symbol, which is exactly how
+euros ended up being offered for conversion into euros.
+
+**`kr` is deliberately NOT mapped.** It is Swedish, Norwegian and Danish. A
+guess there would silently convert money at the wrong rate.
+
+## 2.50.0 - EUR is a DEFAULT, no longer an assumption
+
+The conversion target is `commands::currency::preferred_currency` (EUR/USD/GBP,
+default EUR). Anything that used to hard-code "EUR" as the destination now
+reads it, and **the currency equal to the target is never a conversion
+candidate**.
+
+`convert_currencies_to_eur` keeps its name on purpose - it is a registered
+Tauri command, and the rename would touch every caller to change nothing.
+
+Frontend labels come from `lib/preferredCurrency.ts`, which is cached and
+notifies on save. **Do not re-hard-code "Convert to EUR" in a new screen** -
+the label and the behaviour must come from the same place.
+
 ## 2.49.1 - a granted scope is not the requested scope
 
 Google's consent screen lets a person untick individual permissions. The token

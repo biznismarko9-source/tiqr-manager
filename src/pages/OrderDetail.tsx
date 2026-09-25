@@ -35,6 +35,7 @@ import {
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { usePreferredCurrency } from "../lib/preferredCurrency";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { DELIVERY_STATUS_OPTIONS, TicketEditModal } from "./Tickets";
 import { orderCompletionChecks } from "./Orders";
@@ -53,6 +54,7 @@ const TICKET_STATUS_OPTIONS = ["available", "listed", "cancelled"];
 const PAYOUT_STATUS_OPTIONS = ["pending", "paid"];
 
 export default function OrderDetail() {
+  const preferredCurrency = usePreferredCurrency();
   const { id } = useParams();
   const orderId = Number(id);
   const navigate = useNavigate();
@@ -291,7 +293,7 @@ export default function OrderDetail() {
                 className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline"
                 onClick={() => setConvertOpen(true)}
               >
-                Convert to EUR
+                Convert to {preferredCurrency}
               </button>
             )}
           </div>
@@ -745,7 +747,7 @@ export default function OrderDetail() {
         open={convertOpen}
         title="Convert this order to EUR?"
         message={`Fetches today's live ${order.currency} → EUR rate and converts this order's amounts, every one of its tickets, and every sale on those tickets (including refunded/historical ones) to EUR, so the numbers stay consistent everywhere. This cannot be undone.`}
-        confirmLabel="Convert to EUR"
+        confirmLabel={`Convert to ${preferredCurrency}`}
         danger
         busy={converting}
         onCancel={() => setConvertOpen(false)}

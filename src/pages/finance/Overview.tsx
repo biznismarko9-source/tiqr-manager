@@ -18,6 +18,7 @@ import { MetricChart, type MetricKey } from "../../components/MetricChart";
 import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
 import { IconBarChart, IconPlus, IconTrendingUp } from "../../components/icons";
 import { useToast } from "../../lib/toast";
+import { usePreferredCurrency } from "../../lib/preferredCurrency";
 import { PERIODS, SCOPES, periodBounds, type FinanceData, type PeriodKey, type ScopeFilter } from "./shared";
 import { EntryFormModal } from "./Transactions";
 import { AccountFormModal } from "./Accounts";
@@ -168,6 +169,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
 
   const [convertConfirm, setConvertConfirm] = useState<{ currency: string | null; label: string } | null>(null);
+  const preferredCurrency = usePreferredCurrency();
   const [converting, setConverting] = useState(false);
 
   // 2.2.9: quick-action modals - see this file's own top-of-file doc comment.
@@ -296,7 +298,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
       const matching = entries.filter((e) => e.currency === cur);
       if (matching.length === 0) continue;
       try {
-        const result = await api.convertCurrency(cur, "EUR", matching.map((e) => e.amountCents));
+        const result = await api.convertCurrency(cur, preferredCurrency, matching.map((e) => e.amountCents));
         for (let i = 0; i < matching.length; i++) {
           const e = matching[i];
           const input: FinanceEntryInput = {

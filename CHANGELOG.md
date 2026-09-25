@@ -16,6 +16,47 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.50.1 - sync sa už nespúšťa pri každom kliknutí na okno
+
+Moja regresia z 2.48.1. Vtedy som pridal, že sa syncuje aj keď sa vrátiš na
+okno — aby bolo prepnutie medzi počítačmi okamžité. Fungovalo to až príliš
+dobre: **každé alt-tabnutie spustilo sync** a zakaždým to o sebe dalo vedieť
+v hlavičke.
+
+Preč. Zostáva **jeden sync pri spustení appky** a potom ticho na pozadí každých
+5 minút.
+
+Ten časovač som nechal naschvál — keby som zrušil aj jeho, vrátila by sa presne
+tá vec, na ktorú si sa sťažoval predtým (že sa počítače nespoja, keď necháš
+appku otvorenú). Na rozdiel od toho focusu je ale **neviditeľný**, kým naozaj
+nie je čo preniesť.
+
+## 2.50.0 - euro sa už nekonvertuje na euro + preferovaná mena
+
+### Tá chyba
+
+V databáze bol uložený **symbol `€`**, nie kód `EUR`. A kontrola „je to už
+v eurách?" porovnávala doslova s textom `"EUR"` — `"€"` sa mu nerovná, takže
+objednávka zadaná v eurách išla konvertovať **z eur na eurá**. A služba na
+kurzy, celkom správne, žiadnu menu `€` nepozná. Odtiaľ to 404.
+
+Teraz appka rozpoznáva symboly ako kódy: **€ = EUR, $ = USD, £ = GBP**, aj
+`Kč`, `zł`, `Ft`, `lei`, `лв`, `₺`. Čo je už v cieľovej mene, sa **nikdy
+neponúkne na konverziu**.
+
+`kr` som naschvál nechal tak — je to švédska, nórska **aj** dánska koruna.
+Tipovať by znamenalo prepočítať ti peniaze zlým kurzom.
+
+### Preferovaná mena
+
+**Settings → Lookups → Preferred currency**: na výber **EUR, USD, GBP**.
+
+Všetko „Convert to…" v celej appke sa riadi podľa toho — Dashboard, obe
+tlačidlá pri objednávke, Sales aj Finance. Keď to prepneš, **popisky sa zmenia
+naraz všade** a nemôžu sa rozísť s tým, čo konverzia naozaj spraví.
+
+Default je EUR, takže ak to nikdy neotvoríš, appka sa správa presne ako doteraz.
+
 ## 2.49.2 - povolenie sa dá dať jedným klikom priamo z hlášky
 
 Preveril som ešte dve veci, ktoré by boli naozajstné chyby v kóde — a **obe sú

@@ -808,13 +808,14 @@ pub fn convert_order_currency(state: State<AppState>, id: i64) -> AppResult<Orde
 pub(crate) fn apply_bulk_currency_conversion(
     conn: &mut Connection,
     order_ids_by_currency: &[(Vec<i64>, fx::RateQuote)],
+    target: &str,
 ) -> AppResult<BulkCurrencyConversionResult> {
     let mut converted = Vec::new();
     let mut skipped = Vec::new();
     for (order_ids, quote) in order_ids_by_currency {
         for &order_id in order_ids {
             let tx = conn.transaction()?;
-            match convert_order_currency_impl(&tx, order_id, "EUR", quote.rate, &quote.date) {
+            match convert_order_currency_impl(&tx, order_id, target, quote.rate, &quote.date) {
                 Ok(summary) => {
                     tx.commit()?;
                     // 2.0.53: same rule as the single-order path - only
@@ -863,33 +864,62 @@ pub(crate) fn apply_bulk_currency_conversion(
 pub(crate) fn resolve_currency_order_ids(
     conn: &Connection,
     currencies: &Option<Vec<String>>,
+    target: &str,
 ) -> AppResult<Vec<(String, Vec<i64>)>> {
-    let target_currencies: Vec<String> = match currencies {
-        Some(list) if !list.is_empty() => list
-            .iter()
-            .map(|c| c.trim().to_uppercase())
-            .filter(|c| c != "EUR")
-            .collect(),
-        _ => {
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT UPPER(TRIM(currency)) FROM orders WHERE currency != 'EUR' ORDER BY 1")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        }
-    };
+    let target = fx::normalize_currency(target);
 
-    let mut result = Vec::with_capacity(target_currencies.len());
-    for currency in target_currencies {
-        let order_ids: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT id FROM orders WHERE UPPER(TRIM(currency)) = ?1 ORDER BY id")?;
-            let rows = stmt.query_map([&currency], |r| r.get::<_, i64>(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        if !order_ids.is_empty() {
-            result.push((currency, order_ids));
+    // 2.50.0: every currency is normalized IN RUST now, not by SQL.
+    //
+    // `UPPER(TRIM(currency))` could fix casing but not a symbol: it turns "€"
+    // into "€", which is not "EUR", so an order entered in euros was offered
+    // up to be converted into euros and the rate service answered 404. That
+    // is marko's exact error. One pass over the rows, grouped by their real
+    // code, also costs less than the two statements this replaced.
+    let wanted: Option<Vec<String>> = currencies.as_ref().and_then(|list| {
+        let v: Vec<String> = list
+            .iter()
+            .map(|c| fx::normalize_currency(c))
+            .filter(|c| *c != target)
+            .collect();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
         }
+    });
+
+    let mut stmt = conn.prepare("SELECT id, currency FROM orders ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+
+    // Insertion-ordered so the result is stable: orders come back by id, so
+    // the currencies come out in the order they are first met.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_currency: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    for row in rows {
+        let (id, raw) = row?;
+        let code = fx::normalize_currency(&raw);
+        if code == target {
+            continue;
+        }
+        if let Some(list) = &wanted {
+            if !list.contains(&code) {
+                continue;
+            }
+        }
+        if !by_currency.contains_key(&code) {
+            order.push(code.clone());
+        }
+        by_currency.entry(code).or_default().push(id);
     }
-    Ok(result)
+
+    Ok(order
+        .into_iter()
+        .map(|code| {
+            let ids = by_currency.remove(&code).unwrap_or_default();
+            (code, ids)
+        })
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect())
 }
 
 /// The Dashboard mixed-currency banner's bulk "Convert to EUR" action -
@@ -905,12 +935,18 @@ pub fn convert_currencies_to_eur(
 ) -> AppResult<BulkCurrencyConversionResult> {
     let mut conn = state.db.lock().unwrap();
 
-    let currency_order_ids = resolve_currency_order_ids(&conn, &currencies)?;
+    // 2.50.0: the command name is historical. It converts to whichever
+    // currency marko picked in Settings (Preferred currency), which defaults
+    // to EUR - so for everyone who never changes it, this is what it always
+    // was. Renaming a registered Tauri command would break every caller for
+    // no behavioural gain.
+    let target = crate::commands::currency::preferred_currency(&conn)?;
+    let currency_order_ids = resolve_currency_order_ids(&conn, &currencies, &target)?;
 
     let mut order_ids_by_currency: Vec<(Vec<i64>, fx::RateQuote)> = Vec::new();
     let mut rate_fetch_skips: Vec<BulkDeleteSkip> = Vec::new();
     for (currency, order_ids) in currency_order_ids {
-        match fx::fetch_rate(&currency, "EUR") {
+        match fx::fetch_rate(&currency, &target) {
             Ok(quote) => order_ids_by_currency.push((order_ids, quote)),
             Err(e) => {
                 // The rate lookup itself failed - every order in this
@@ -919,14 +955,14 @@ pub fn convert_currencies_to_eur(
                 for id in order_ids {
                     rate_fetch_skips.push(BulkDeleteSkip {
                         id,
-                        reason: format!("Could not fetch a {currency} -> EUR rate: {e}"),
+                        reason: format!("Could not fetch a {currency} -> {target} rate: {e}"),
                     });
                 }
             }
         }
     }
 
-    let mut result = apply_bulk_currency_conversion(&mut conn, &order_ids_by_currency)?;
+    let mut result = apply_bulk_currency_conversion(&mut conn, &order_ids_by_currency, &target)?;
     result.skipped.splice(0..0, rate_fetch_skips);
     Ok(result)
 }
@@ -1864,6 +1900,40 @@ mod tests {
     // rows - no error, no skip, just nothing happening.
 
     #[test]
+    fn an_order_stored_with_the_euro_SYMBOL_is_never_offered_for_conversion() {
+        // marko's exact bug: "2 skipped: 2x Could not fetch a € -> EUR rate
+        // (404)". The column held "€", the old filter compared against the
+        // literal "EUR", so euros were sent off to be converted into euros.
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut input = base_input(event_id, 1);
+        input.currency = "\u{20ac}".to_string();
+        insert_order_with_tickets(&conn, &input, false).unwrap();
+
+        let resolved = resolve_currency_order_ids(&conn, &None, "EUR").unwrap();
+
+        assert!(resolved.is_empty(), "an order already in euros has nothing to convert: {resolved:?}");
+    }
+
+    #[test]
+    fn a_different_preferred_currency_flips_which_orders_are_targets() {
+        // With GBP preferred, the pounds are left alone and the euros become
+        // the thing to convert - the exact inverse of the default.
+        let conn = test_conn();
+        let event_id = seed_event(&conn);
+        let mut eur = base_input(event_id, 1);
+        eur.currency = "EUR".to_string();
+        let eur_id = insert_order_with_tickets(&conn, &eur, false).unwrap();
+        let mut gbp = base_input(event_id, 1);
+        gbp.currency = "GBP".to_string();
+        insert_order_with_tickets(&conn, &gbp, false).unwrap();
+
+        let resolved = resolve_currency_order_ids(&conn, &None, "GBP").unwrap();
+
+        assert_eq!(resolved, vec![("EUR".to_string(), vec![eur_id])]);
+    }
+
+    #[test]
     fn resolve_currency_order_ids_matches_a_currency_regardless_of_stored_casing() {
         let conn = test_conn();
         let event_id = seed_event(&conn);
@@ -1871,7 +1941,7 @@ mod tests {
         input.currency = "usd".to_string(); // lower-case, exactly like an un-normalized CSV import cell.
         let order_id = insert_order_with_tickets(&conn, &input, false).unwrap();
 
-        let resolved = resolve_currency_order_ids(&conn, &Some(vec!["USD".to_string()])).unwrap();
+        let resolved = resolve_currency_order_ids(&conn, &Some(vec!["USD".to_string()]), "EUR").unwrap();
 
         assert_eq!(resolved, vec![("USD".to_string(), vec![order_id])]);
     }
@@ -1890,7 +1960,7 @@ mod tests {
         other.currency = "GBP".to_string();
         let order_c = insert_order_with_tickets(&conn, &other, false).unwrap();
 
-        let resolved = resolve_currency_order_ids(&conn, &None).unwrap();
+        let resolved = resolve_currency_order_ids(&conn, &None, "EUR").unwrap();
 
         assert_eq!(resolved.len(), 2, "usd/USD must collapse into one normalized USD entry, not two");
         let usd_entry = resolved.iter().find(|(c, _)| c == "USD").unwrap();
@@ -1914,6 +1984,7 @@ mod tests {
         let resolved = resolve_currency_order_ids(
             &conn,
             &Some(vec!["eur".to_string(), "gbp".to_string(), "jpy".to_string()]),
+            "EUR",
         )
         .unwrap();
 
@@ -1965,6 +2036,7 @@ mod tests {
         let result = apply_bulk_currency_conversion(
             &mut conn,
             &[(vec![order_a, order_bad], gbp_quote), (vec![order_c], usd_quote)],
+            "EUR",
         )
         .unwrap();
 

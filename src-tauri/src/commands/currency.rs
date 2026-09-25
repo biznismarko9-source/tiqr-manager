@@ -6,9 +6,64 @@
 //! equivalent (amounts AND the currency field together, in one click)
 //! before the order is created - see Orders.tsx's `OrderFormModal`.
 
-use crate::error::AppResult;
+use crate::commands::sheets_sync::{get_setting, set_setting};
+use crate::db::AppState;
+use crate::error::{AppError, AppResult};
 use crate::fx;
+use rusqlite::Connection;
 use serde::Serialize;
+use tauri::State;
+
+/// 2.50.0, marko's request: "do settings daj moznost preffered currency podla
+/// toho co clovek chce, na vyber gbp, eur, usd, tiez ten convert bude podla
+/// toho co mas zapnute".
+const PREFERRED_CURRENCY_KEY: &str = "preferred_currency";
+
+/// The three marko asked for, and the only values this will store. A code
+/// outside the list is refused rather than written - the whole point of this
+/// setting is that the convert action can trust it.
+pub const PREFERRED_CURRENCIES: [&str; 3] = ["EUR", "USD", "GBP"];
+
+/// What the app converts INTO, and the currency it treats as "already fine".
+/// Defaults to EUR, so an install that never touches this setting behaves
+/// exactly as every version before 2.50.0 did.
+pub(crate) fn preferred_currency(conn: &Connection) -> AppResult<String> {
+    let stored = get_setting(conn, PREFERRED_CURRENCY_KEY)?;
+    Ok(match stored {
+        Some(raw) => {
+            let code = fx::normalize_currency(&raw);
+            // A stored value that is somehow not one of the three is ignored
+            // rather than trusted - it would otherwise decide where real money
+            // gets converted to.
+            if PREFERRED_CURRENCIES.contains(&code.as_str()) {
+                code
+            } else {
+                "EUR".to_string()
+            }
+        }
+        None => "EUR".to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn get_preferred_currency(state: State<AppState>) -> AppResult<String> {
+    let conn = state.db.lock().unwrap();
+    preferred_currency(&conn)
+}
+
+#[tauri::command]
+pub fn set_preferred_currency(state: State<AppState>, currency: String) -> AppResult<String> {
+    let code = fx::normalize_currency(&currency);
+    if !PREFERRED_CURRENCIES.contains(&code.as_str()) {
+        return Err(AppError::Validation(format!(
+            "{code} is not one of the currencies this can be set to ({}).",
+            PREFERRED_CURRENCIES.join(", ")
+        )));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, PREFERRED_CURRENCY_KEY, &code)?;
+    Ok(code)
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -352,28 +352,24 @@ export default function Layout() {
         setSyncActivity((current) => (current?.blocking ? current : null));
       }
     };
-    // marko: "bolo tak ze len si zapol appku a uz automaticky zacalo robit
-    // sync". One at launch, then every five minutes, then every time he comes
-    // back to this window.
+    // Once at launch, then quietly every five minutes.
+    //
+    // 2.50.1 REMOVES 2.48.1's focus/visibilitychange triggers. They were added
+    // to make the hand-off between his two machines feel immediate, and they
+    // did - but marko: "vzdy ked kliknem na tiqr tak sa spusti sync, ked
+    // vyjdem na par sekund a vratim sa tak tiez". Alt-tabbing is not an event
+    // worth moving a database for, and every one of those syncs announced
+    // itself in the header. The five-minute timer already covers the same
+    // hand-off within a few minutes, without turning every click on the
+    // window into activity.
     tickRef.current = tick;
     const run = () => void tick();
     run();
     const interval = setInterval(run, AUTO_SYNC_INTERVAL_MS);
-    // 2.48.1: and the moment he comes back to this machine. Waiting up to five
-    // minutes after alt-tabbing from the other computer is the difference
-    // between "automatic" and "eventually".
-    const onFocus = () => run();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") run();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       tickRef.current = null;
       clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

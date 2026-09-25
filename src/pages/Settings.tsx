@@ -29,6 +29,7 @@ import {
 } from "../lib/types";
 import { formatDateTime } from "../lib/format";
 import { readAutoSyncLog } from "../lib/autoSyncLog";
+import { PREFERRED_CURRENCIES, savePreferredCurrency, usePreferredCurrency } from "../lib/preferredCurrency";
 import { addDoc, collection, getDocs, limit, orderBy, query, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import {
@@ -92,7 +93,7 @@ import { firebaseAuthErrorMessage } from "../lib/firebaseErrors";
 // 2.0.2: Integrations - connect Pulls (Tickets later) to a Google Sheet. See
 // SheetsConnectionCard below and REDESIGN-2.0.2-REPORT.md.
 const SECTIONS = [
-  { key: "lookups", title: "Lookups", description: "Platforms and other lookup lists.", icon: IconTag },
+  { key: "lookups", title: "Lookups", description: "Your currency, platforms and other lookup lists.", icon: IconTag },
   { key: "data", title: "Data", description: "Import, export, backup and restore.", icon: IconDatabase },
   {
     key: "integrations",
@@ -278,6 +279,66 @@ function AutoSyncHistory() {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * 2.50.0: the one currency the app converts INTO. marko: "do settings daj
+ * moznost preffered currency podla toho co clovek chce, na vyber gbp, eur,
+ * usd, tiez ten convert bude podla toho co mas zapnute".
+ *
+ * Every "Convert to ..." in the app reads this - the Dashboard's mixed-currency
+ * banner, both single-order buttons and Finance - so the label and what the
+ * conversion actually does can never disagree. Saving it updates them all at
+ * once without a reload (see lib/preferredCurrency.ts).
+ */
+function PreferredCurrencyCard() {
+  const toast = useToast();
+  const current = usePreferredCurrency();
+  const [saving, setSaving] = useState<string | null>(null);
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-4">
+        <IconWallet className="h-6 w-6 shrink-0 text-brand-600 dark:text-brand-400" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Preferred currency</h3>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            What &ldquo;Convert to&rdquo; converts into, everywhere in the app. Nothing already in this currency is
+            ever converted.
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {PREFERRED_CURRENCIES.map((c) => (
+          <button
+            key={c}
+            type="button"
+            disabled={saving !== null}
+            onClick={async () => {
+              if (c === current) return;
+              setSaving(c);
+              try {
+                await savePreferredCurrency(c);
+                toast.success(`Preferred currency is now ${c}.`);
+              } catch (e) {
+                toast.error(errMsg(e));
+              } finally {
+                setSaving(null);
+              }
+            }}
+            aria-pressed={c === current}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              c === current
+                ? "bg-brand-600 text-white"
+                : "bg-surface-sunken text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+            } disabled:opacity-60`}
+          >
+            {saving === c ? "Saving…" : c}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -831,6 +892,7 @@ export default function Settings() {
               changed, from "always visible" to "opens on click". */}
           {sec === "lookups" && (
             <div className="flex flex-col gap-2 lg:max-w-2xl">
+              <PreferredCurrencyCard />
               <button
                 type="button"
                 onClick={() => setOpenLookup("platforms")}

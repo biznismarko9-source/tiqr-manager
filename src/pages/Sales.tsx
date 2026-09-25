@@ -40,6 +40,7 @@ import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconArrowLeft, IconChevronDown, IconPlus, IconReceipt, IconSearch, IconTrash, IconX } from "../components/icons";
 import { useToast } from "../lib/toast";
+import { usePreferredCurrency } from "../lib/preferredCurrency";
 import { useListTab } from "../lib/useListTab";
 import { markRow, takeRow } from "../lib/lastRow";
 import SaleRowsModal from "./SaleRowsModal";
@@ -1036,6 +1037,7 @@ function SaleFormModal({
   // including the same stale-request guard (this modal doesn't unmount on
   // close either).
   const [convertingCurrency, setConvertingCurrency] = useState(false);
+  const preferredCurrency = usePreferredCurrency();
   const conversionToken = useRef(0);
   // True once marko has deliberately set a sale currency himself (by hand,
   // or via "Convert to EUR") - once true, goToDetails() must never silently
@@ -1120,7 +1122,7 @@ function SaleFormModal({
     setConvertingCurrency(true);
     try {
       const amountsCents = parsedAmounts as number[];
-      const result = await api.convertCurrency(saleCurrency, "EUR", amountsCents);
+      const result = await api.convertCurrency(saleCurrency, preferredCurrency, amountsCents);
       if (conversionToken.current !== myToken) return;
       if (result.convertedCents.length !== fields.length) {
         throw new Error("Currency conversion returned an unexpected number of amounts");
@@ -1500,7 +1502,7 @@ function SaleFormModal({
             </div>
             {saleCurrency !== "EUR" && (
               <Button type="button" variant="secondary" disabled={convertingCurrency} onClick={convertToEur}>
-                {convertingCurrency ? "Converting..." : "Convert to EUR"}
+                {convertingCurrency ? "Converting..." : `Convert to ${preferredCurrency}`}
               </Button>
             )}
             <div className="ml-4 w-28">
