@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.53.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.54.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1796,6 +1796,68 @@ removed, like the other 26 already-orphaned api helpers from removed features.
 is still written and never read (every table cell is free text), no keyboard
 shortcuts, no drag-and-drop column reorder (it is two arrow buttons), no
 nesting or folders, no calendar.
+
+**2.54.0 - Sheets: a real spreadsheet, and nothing else.** marko, after
+reading 2.53.0: *"naozaj by som radsej urobil to ako realne google sheets
+uplne jednoduche"*. Asked whether that meant tables only or tables plus notes,
+he chose **tables only**.
+
+**The section is `Sheets` at `/sheets`.** Third name in three versions
+(Workspace 2.52.0 → Notes 2.53.0 → Sheets 2.54.0) because the content changed
+each time and the label should say what the thing is. Sidebar icon is now
+`IconLayoutGrid`.
+
+**Free-text notes are gone from the UI.** `NoteEditor.tsx`, the marker
+language, Preview, tags, pinning and archiving for items all went with them.
+`workspace_items` (032) is still in the database and still syncs - nothing was
+migrated and no migration was added, so **the next migration is still 033**.
+
+**`Sheets.tsx` offers a one-click import** if `list_workspace_items` returns
+anything non-empty: it creates a sheet "Notes from the old version" with
+columns Title / Text / Date / Tags, one row per note, and **deletes nothing**.
+With no old notes the banner never appears. This is the only thing left that
+reads `workspace_items`.
+
+**`pages/sheets/Grid.tsx` is the spreadsheet.** The 2.51.0-2.53.0 table put an
+`<input>` in every cell, which worked and felt like a form. The grid instead:
+
+- a cell is **plain text**; the box exists only in the cell being edited
+- **keyboard first**: arrows move, Enter edits then goes down, Tab right
+  (Shift+Tab left), Esc cancels, Delete/Backspace clears, Home/End jump to the
+  ends of the row, and **typing a printable character replaces the cell**
+- **row numbers** down the left, borders on all four sides of every cell
+- **one blank row always waits at the bottom**; typing in it calls
+  `create_note_row` and a new blank row appears. There is no "Add row" button.
+  It is hidden while a filter is on, because a row that does not match the
+  filter would vanish the moment it was typed into.
+
+**`commit()` returns whether it created a row, and `moveTo()` takes a `grown`
+offset.** Without that, Enter on the blank row clamps against the *stale*
+`rowCount` from the render it is still standing in and lands back on the row it
+just created instead of the new blank one below. Any future code that grows the
+grid and then moves the selection has the same problem.
+
+**Sort and filter stay display-only.** An edit while sorted writes to
+`display[r]`, the row on screen, never to a stored position - verified.
+
+**The `structure` remount key from 2.53.0 is gone and is not needed**: the grid
+renders cells as text from state, not as uncontrolled inputs, so a column
+change cannot leave stale values on screen. That bug class is closed by the
+design rather than patched.
+
+**Search is one field over `search_workspace`, filtered to `kind === "table"`**
+- sheet names and cells, one result line per sheet.
+
+**Now called by nothing:** `duplicate_workspace_item`, `search_notes`,
+`set_workspace_item_flags`, `save_workspace_item`, `delete_workspace_item`,
+`set_note_sheet_flags`. All still registered and still working; left in place
+like the other already-orphaned helpers from removed features.
+`list_workspace_items` is still used, by the import above.
+
+**Deliberately NOT in v1:** copy/paste between cells or to Excel (the clipboard
+API is unverified in this webview), multi-cell selection, formulas, column
+resizing, drag-to-reorder columns (it is two arrow buttons), frozen columns,
+undo. `column_types_json` is still written and never read - every cell is text.
 
 **Next new migration is 033.**
 

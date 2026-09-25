@@ -16,6 +16,46 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.54.0 - Sheets
+
+Povedal si, že by si to radšej mal **ako naozajstný Google Sheets, úplne
+jednoducho**. A keď som sa spýtal, vybral si si **len tabuľky**.
+
+Tak je to tak. Sekcia sa volá **Sheets**, poznámky (voľné písanie) sú preč.
+
+### Tabuľka sa konečne správa ako tabuľka
+
+Doteraz bolo v každej bunke políčko na písanie. Fungovalo to, ale vyzeralo to
+ako formulár so stovkou okienok. Teraz:
+
+- **bunka je obyčajný text** — rámček sa objaví len v tej jednej, v ktorej si
+- **klávesnica**: šípky posúvajú, **Enter** otvorí a ide dole, **Tab** doprava
+  (Shift+Tab doľava), **Esc** zruší, **Delete** vymaže
+- **začneš písať a bunka sa rovno prepíše** — nemusíš nič otvárať
+- **čísla riadkov vľavo**, mriežka okolo každej bunky
+- **dole vždy čaká prázdny riadok** — napíšeš doň a riadok vznikne. Žiadne
+  tlačidlo „Add row".
+
+Ukladá sa to samo, po každej bunke, tak ako doteraz.
+
+### Ostalo
+
+Triedenie (klik na stĺpec), filtrovanie, pridávanie/premenovanie/mazanie/
+presúvanie stĺpcov, mazanie riadkov, hľadanie cez všetky hárky naraz.
+
+### Poznámky z 2.52/2.53
+
+Ak si si do nich niečo stihol napísať, appka ti hore ponúkne **„Import as a
+sheet"** — spraví z nich hárok so stĺpcami Title / Text / Date / Tags.
+**Nič nemaže**, originál zostáva v databáze. Ak si tam nič nemal, nič sa
+neukáže.
+
+### Čo som nechytal
+
+Synchronizáciu, Dashboard, Events, Inventory, Sales, Pulls, Finance,
+prihlásenie, nastavenia, tému, navigáciu. **Žiadna nová migrácia** — databáza
+je nezmenená.
+
 ## 2.53.0 - Notes
 
 Workspace z 2.52.0 bol na teba prikomplikovaný, tak som ho **zjednodušil na to,

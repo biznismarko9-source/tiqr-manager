@@ -21,6 +21,44 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.54.0 - a selection move after a write must know the grid grew
+
+`Grid.commit()` returns `true` when it turned the blank bottom row into a real
+one, and `moveTo(r, c, grown)` adds that to its upper clamp.
+
+This is not a nicety. `rowCount` is read from the render that is still on
+screen while the write is in flight, so Enter on the blank row clamps back onto
+the row it has only just created and the selection appears stuck. **Anything
+that adds rows and then moves the selection has to pass `grown`**, or wait for
+the re-render.
+
+## 2.54.0 - the grid is text, not inputs - keep it that way
+
+Cells render as plain `<div>` text; exactly one `<input>` exists at a time, in
+the cell being edited. This is what makes it read as a spreadsheet instead of a
+form, and it also closes the 2.53.0 bug below by construction: there is no
+uncontrolled input holding a stale `defaultValue`, so a column change cannot
+leave old values sitting under new headers.
+
+**Do not go back to an input per cell** to save a click. If a future change
+needs one, the `structure` remount key from 2.53.0 has to come back with it.
+
+The grid keeps focus on ONE element - the scroll container, `tabIndex={0}`.
+Keys are handled there and `onGridKey` returns early while `editing` is set, so
+the open cell's own input owns the keyboard. Putting `tabIndex` on cells would
+break that and give Tab the browser's meaning instead of the spreadsheet's.
+
+## 2.54.0 - `workspace_items` is still live data with no reader
+
+Migration 032's table is still created, still written by nothing, still carried
+by sync and still listed in `MERGE_TABLES`. The only code that reads it is the
+"Import as a sheet" banner in `Sheets.tsx`.
+
+**Do not drop the table, the merge entry or the commands** on the grounds that
+the UI stopped using them - a database that marko has been running since 2.52.0
+may hold rows, and the import is how they get out. If the table is ever really
+retired, the tombstone and merge wiring go with it in the same change.
+
 ## 2.53.0 - a table cell input is UNCONTROLLED; remount it when columns move
 
 The cells are `<Input defaultValue={...}>`, not controlled inputs, so typing is

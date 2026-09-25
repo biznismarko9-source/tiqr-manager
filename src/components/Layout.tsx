@@ -3,9 +3,9 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconAlertTriangle,
   IconCalendarDays,
-  IconClipboard,
   IconChevronUp,
   IconGauge,
+  IconLayoutGrid,
   IconLogOut,
   IconMoon,
   IconPackage,
@@ -89,12 +89,12 @@ const NAV: NavItem[] = [
   // above: it covers money that has nothing to do with tickets (rent, fees,
   // personal spend) and owns its own four tabs, categories and accounts.
   { to: "/finance", label: "Finance", icon: IconWallet },
-  // 2.53.0: Notes - free writing and small tables. Its own top-level row,
+  // 2.54.0: Sheets - his own tables, nothing else. Its own top-level row,
   // separate from Finance, which also keeps the rail flat: every row is a real
   // destination, no groups (PROTECTED_AREAS, 2.43.0). Shipped as "Workspace"
-  // at /workspace in 2.52.0; marko's second brief cut it back to notes and
-  // tables, so it carries the name of what it actually is.
-  { to: "/notes", label: "Notes", icon: IconClipboard },
+  // (2.52.0) then "Notes" (2.53.0); marko asked for "realne google sheets
+  // uplne jednoduche" and chose tables only, so the label says what it is.
+  { to: "/sheets", label: "Sheets", icon: IconLayoutGrid },
 ];
 
 // Shared by every NavLink below, so the active/hover look is defined in
