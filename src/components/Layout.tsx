@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   IconAlertTriangle,
   IconCalendarDays,
+  IconClipboard,
   IconChevronUp,
   IconGauge,
   IconLogOut,
@@ -88,6 +89,11 @@ const NAV: NavItem[] = [
   // above: it covers money that has nothing to do with tickets (rent, fees,
   // personal spend) and owns its own four tabs, categories and accounts.
   { to: "/finance", label: "Finance", icon: IconWallet },
+  // 2.52.0: Workspace - notes, records, tasks and tables. Its own top-level
+  // row at marko's explicit request ("Workspace must be completely separate
+  // from Finance"), which also keeps the rail flat: every row is a real
+  // destination, no groups (PROTECTED_AREAS, 2.43.0).
+  { to: "/workspace", label: "Workspace", icon: IconClipboard },
 ];
 
 // Shared by every NavLink below, so the active/hover look is defined in

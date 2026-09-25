@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.51.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.52.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1691,7 +1691,54 @@ the tab keeps only its own toolbar (search + New sheet).
 **The sidebar stays flat**, which is the 2.43.0 invariant: this removes a row
 rather than adding one.
 
-**Next new migration is 032.**
+**2.52.0 - Workspace.** marko's brief, written out in full: a place he can
+rely on, where he writes down "aky kod a co som komu predal, aky je jeho nick,
+ake info treba mat ulozene", plans, accounts, an overview, and finds all of it
+again easily. Philosophy: **Capture -> Organize -> Find -> Use**.
+
+It is a **new top-level sidebar entry at `/workspace`**, not a Finance tab. The
+2.51.1 move under Finance was the wrong home once this grew past tables - a
+buyer's nickname is not a Finance record. The sidebar therefore gains one row
+back (the 2.43.0 "stay flat" invariant is about not nesting, not about never
+adding), and Finance returns to its four money tabs.
+
+**The data model is one table, `workspace_items` (migration 032), with a `kind`
+column: `note | record | task`.** This is the central decision and it is
+deliberate. marko does not know, at the moment he types something, whether it
+will turn out to be a note, a record with fields, or a task with a date - so a
+quick note BECOMES a task with one `UPDATE kind='task'`, keeping its id, its
+tags, its history and its uid. Three tables would have made that a delete plus
+an insert, and the item would have lost its identity every time he changed his
+mind. `fields_json` (record fields), `checklist_json`, `status` and `due_date`
+simply stop being rendered by the kinds that have no use for them; nothing
+typed is ever discarded by a kind change.
+
+**Custom tables are the 2.51.0 `note_sheets` / `note_columns` / `note_rows`
+tables, unchanged and unrenamed.** They already carry uids, tombstones and
+`MERGE_TABLES` entries, and existing tombstones name them by string - a rename
+would have orphaned real rows on his other machine. `Notes.tsx` moved to
+`pages/workspace/NoteTables.tsx` and took two props (`openSheetId`, `onBack`);
+the tables, commands and data are untouched. 032 only ADDS columns to
+`note_sheets`: `description`, `tags_json`, `pinned`, `archived`,
+`column_types_json`.
+
+**Search is Rust-side** (`search_workspace`), covers title / content / fields /
+tags / table names, skips archived items, and returns an excerpt window around
+the hit. A field whose NAME looks secret (`looks_secret`: password, heslo,
+pass, pin, secret, token, api key, apikey, 2fa, seed) has its value replaced by
+dots in every search result and is rendered `type="password"` with a Show/Hide
+toggle in the editor.
+
+**This masking is presentation, not security** - see `PROTECTED_AREAS.md`. The
+database is a plain unencrypted file, the same one Sales and Finance live in.
+The app does not claim to be a password manager and must not start claiming it.
+
+**Deliberately NOT in v1**, so nobody goes looking for them: `column_types_json`
+is written but never read (every table cell is still free text), keyboard
+shortcuts, sort/filter inside a table, URL auto-linkification, column
+reordering, and any Move/Convert action beyond the kind dropdown in the editor.
+
+**Next new migration is 033.**
 
 ## Stack / layout
 

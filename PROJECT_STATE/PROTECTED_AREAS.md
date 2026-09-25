@@ -21,6 +21,57 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.52.0 - Workspace masking is presentation, NOT security
+
+`looks_secret()` (Rust, `commands/workspace.rs`) and `looksSecret()` (TS,
+`pages/workspace/ItemEditor.tsx`) exist so a password-ish field is not on
+screen when nobody asked to see it: dots in search results, `type="password"`
+with a Show toggle in the editor.
+
+**The value is stored in plain text in `workspace_items.fields_json`**, in the
+same unencrypted SQLite file as Sales and Finance, and it travels through
+Google Drive sync like every other row. This is the app-wide trust boundary
+already recorded under "Secrets stay plain text in `app_settings`" below.
+
+**Do not describe Workspace as a password manager, and do not let the UI imply
+it.** If encryption is ever wanted, that is its own task marko has to ask for -
+not something to bolt on because a field is called "password".
+
+The two keyword lists are duplicated on purpose (one per language, no shared
+source). If either grows, grow both, or a field masked in search shows up in
+the clear in the editor.
+
+## 2.52.0 - Workspace is ONE table with a `kind`; never split it
+
+`workspace_items` (migration 032) holds notes, records and tasks in one table.
+`kind` is `note | record | task`, and changing it is a plain `UPDATE` that
+keeps the row's `id`, `uid`, tags, timestamps and everything already typed.
+
+That is the whole point: marko does not know at typing time what a thing will
+become. **Splitting this into three tables would turn every conversion into a
+delete + insert**, which loses the uid, writes a tombstone for a row that still
+exists, and re-syncs as a different object on the other machine.
+
+`fields_json`, `checklist_json`, `status` and `due_date` are never cleared by a
+kind change - the kinds that have no use for them simply stop rendering them.
+Keep it that way; clearing them makes a mis-click destructive.
+
+All four JSON columns default to a valid empty value (`'[]'`) and are read
+through `from_json`, which falls back to an empty default instead of failing
+the whole list. A single unreadable row must never make Workspace unopenable.
+
+## 2.52.0 - the 031 note table names are load-bearing; do not rename them
+
+`note_sheets` / `note_columns` / `note_rows` keep their 2.51.0 names even
+though the UI now calls them Workspace tables. They already carry uids,
+tombstones and `MERGE_TABLES` entries, and **existing `deleted_rows` rows name
+them by string** - a rename orphans real deletions on marko's other machine.
+
+032 only ADDS columns to `note_sheets` (`description`, `tags_json`, `pinned`,
+`archived`, `column_types_json`). `column_types_json` is written and **not read
+by anything yet** - every table cell is still free text. It is there so adding
+types later does not need another migration; do not assume a cell is validated.
+
 ## 2.48.0 - a background task may never swallow its errors
 
 `Layout.tsx`'s automatic-sync tick used to end in `catch {}` with a comment

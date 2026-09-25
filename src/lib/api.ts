@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  WorkspaceHit,
+  WorkspaceItem,
+  WorkspaceItemInput,
   NoteHit,
   NoteRow,
   NoteSheet,
@@ -626,6 +629,18 @@ export const api = {
   deleteNoteRow: (id: number) => invoke<void>("delete_note_row", { id }),
   /** One search across every sheet - marko: "najst vsetky jednoducho". */
   searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
+  setNoteSheetFlags: (id: number, flags: { pinned?: boolean; archived?: boolean; description?: string }) =>
+    invoke<NoteSheet>("set_note_sheet_flags", { id, ...flags }),
+  // Workspace items (2.52.0) - see commands/workspace.rs.
+  listWorkspaceItems: (includeArchived: boolean) =>
+    invoke<WorkspaceItem[]>("list_workspace_items", { includeArchived }),
+  saveWorkspaceItem: (item: WorkspaceItemInput) => invoke<WorkspaceItem>("save_workspace_item", { item }),
+  setWorkspaceItemFlags: (id: number, flags: { pinned?: boolean; archived?: boolean; status?: string }) =>
+    invoke<WorkspaceItem>("set_workspace_item_flags", { id, ...flags }),
+  deleteWorkspaceItem: (id: number) => invoke<void>("delete_workspace_item", { id }),
+  duplicateWorkspaceItem: (id: number) => invoke<WorkspaceItem>("duplicate_workspace_item", { id }),
+  /** One search over notes, records, tasks AND table cells. */
+  searchWorkspace: (query: string) => invoke<WorkspaceHit[]>("search_workspace", { query }),
   getPreferredCurrency: () => invoke<string>("get_preferred_currency"),
   setPreferredCurrency: (currency: string) => invoke<string>("set_preferred_currency", { currency }),
 

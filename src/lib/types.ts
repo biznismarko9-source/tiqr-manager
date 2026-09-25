@@ -2383,6 +2383,9 @@ export interface NoteSheet {
   position: number;
   rowCount: number;
   updatedAt: string;
+  description: string;
+  pinned: boolean;
+  archived: boolean;
 }
 
 export interface NoteRow {
@@ -2403,4 +2406,63 @@ export interface NoteHit {
   cells: string[];
   matchedColumn: number;
   columnName: string;
+}
+
+/** 2.52.0 Workspace - notes, records and tasks are one row wearing three
+ *  hats, so a quick note can become a task later without being retyped.
+ *  See commands/workspace.rs and migration 032. */
+export type WorkspaceKind = "note" | "record" | "task";
+
+export interface WorkspaceField {
+  name: string;
+  value: string;
+}
+
+export interface ChecklistItem {
+  text: string;
+  done: boolean;
+}
+
+export interface WorkspaceItem {
+  id: number;
+  kind: WorkspaceKind;
+  title: string;
+  content: string;
+  category: string | null;
+  /** Lower-case, no leading '#' - the backend normalises them. */
+  tags: string[];
+  fields: WorkspaceField[];
+  checklist: ChecklistItem[];
+  /** "open" | "done", only on a task. */
+  status: string | null;
+  dueDate: string | null;
+  pinned: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `id` absent = create. */
+export interface WorkspaceItemInput {
+  id?: number;
+  kind: WorkspaceKind;
+  title: string;
+  content: string;
+  category: string | null;
+  tags: string[];
+  fields: WorkspaceField[];
+  checklist: ChecklistItem[];
+  status: string | null;
+  dueDate: string | null;
+  pinned: boolean;
+  archived: boolean;
+}
+
+/** One search result. `kind` is a WorkspaceKind or "table". */
+export interface WorkspaceHit {
+  kind: string;
+  id: number;
+  title: string;
+  preview: string;
+  whereFound: string;
 }

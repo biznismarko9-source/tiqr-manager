@@ -37,6 +37,13 @@ pub struct NoteSheet {
     pub position: i64,
     pub row_count: i64,
     pub updated_at: String,
+    /// 2.52.0 (Workspace): a table is an item like any other, so it carries
+    /// the same handles - what it is for, and whether it is pinned or put
+    /// away. Column TYPES exist as a column in migration 032 but are not read
+    /// yet; every cell is still free text.
+    pub description: String,
+    pub pinned: bool,
+    pub archived: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -91,7 +98,8 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
     let row = conn
         .query_row(
             "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
-                    (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id)
+                    (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
+                    s.description, s.pinned, s.archived
              FROM note_sheets s WHERE s.id = ?1",
             [id],
             |r| {
@@ -102,18 +110,24 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
                     r.get::<_, i64>(3)?,
                     r.get::<_, String>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
                 ))
             },
         )
         .optional()?;
     match row {
-        Some((id, name, columns_json, position, updated_at, row_count)) => Ok(NoteSheet {
+        Some((id, name, columns_json, position, updated_at, row_count, description, pinned, archived)) => Ok(NoteSheet {
             id,
             name,
             columns: parse_list(&columns_json),
             position,
             row_count,
             updated_at,
+            description,
+            pinned: pinned != 0,
+            archived: archived != 0,
         }),
         None => Err(AppError::NotFound(format!("Note sheet {id} no longer exists."))),
     }
@@ -124,8 +138,9 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
     let conn = state.db.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
-                (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id)
-         FROM note_sheets s ORDER BY s.position, s.id",
+                (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
+                s.description, s.pinned, s.archived
+         FROM note_sheets s ORDER BY s.pinned DESC, s.position, s.id",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(NoteSheet {
@@ -135,6 +150,9 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
             position: r.get(3)?,
             row_count: r.get(5)?,
             updated_at: r.get(4)?,
+            description: r.get(6)?,
+            pinned: r.get::<_, i64>(7)? != 0,
+            archived: r.get::<_, i64>(8)? != 0,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -179,6 +197,31 @@ pub fn rename_note_sheet(state: State<AppState>, id: i64, name: String) -> AppRe
     if changed == 0 {
         return Err(AppError::NotFound(format!("Note sheet {id} no longer exists.")));
     }
+    read_sheet(&conn, id)
+}
+
+/// Pin / put away / describe a table, without opening it. Each field is
+/// `Option`: absent means leave it as it is, so one command serves all three.
+#[tauri::command]
+pub fn set_note_sheet_flags(
+    state: State<AppState>,
+    id: i64,
+    pinned: Option<bool>,
+    archived: Option<bool>,
+    description: Option<String>,
+) -> AppResult<NoteSheet> {
+    let conn = state.db.lock().unwrap();
+    let current = read_sheet(&conn, id)?;
+    conn.execute(
+        "UPDATE note_sheets SET pinned=?2, archived=?3, description=?4, updated_at=?5 WHERE id=?1",
+        rusqlite::params![
+            id,
+            i64::from(pinned.unwrap_or(current.pinned)),
+            i64::from(archived.unwrap_or(current.archived)),
+            description.unwrap_or(current.description),
+            now_iso()
+        ],
+    )?;
     read_sheet(&conn, id)
 }
 

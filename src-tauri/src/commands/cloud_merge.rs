@@ -101,6 +101,7 @@ const MERGE_TABLES: &[MergeTable] = &[
     // 2.51.0: Notes. Standalone (no fks out of note_sheets), and note_rows
     // names its parent so the other machine's sheet ids are translated to
     // this one's - parent before child, same as every pair below.
+    MergeTable { name: "workspace_items", fks: &[], natural_key: None, code: None },
     MergeTable { name: "note_sheets", fks: &[], natural_key: None, code: None },
     MergeTable { name: "note_rows", fks: &[("sheet_id", Some("note_sheets"))], natural_key: None, code: None },
     MergeTable { name: "event_categories", fks: &[], natural_key: Some("name"), code: None },

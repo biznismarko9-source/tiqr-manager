@@ -16,8 +16,7 @@ import { useToast } from "../../lib/toast";
 import { formatDateNumeric } from "../../lib/format";
 
 /**
- * Notes - the place marko keeps everything the rest of the app has no column
- * for.
+ * Workspace tables - the lightweight spreadsheet.
  *
  * 2.51.0. His own brief: "miesto na ktore sa mozem spolahnut, nieco kde si
  * viem zapisat napr aky kod a co som komu predal, aky je jeho nick, ake info
@@ -63,14 +62,21 @@ const TEMPLATES: { key: string; label: string; description: string; columns: str
   { key: "blank", label: "Blank", description: "One column, name it yourself.", columns: ["Note"] },
 ];
 
-export default function Notes() {
+export default function NoteTables({
+  openSheetId,
+  onBack,
+}: {
+  /** The sheet to open, or 0 to arrive with the "new sheet" dialog already up. */
+  openSheetId: number;
+  onBack: () => void;
+}) {
   const toast = useToast();
   const [sheets, setSheets] = useState<NoteSheet[] | null>(null);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [rows, setRows] = useState<NoteRow[] | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<NoteHit[] | null>(null);
-  const [newOpen, setNewOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(openSheetId === 0);
   const [confirmSheet, setConfirmSheet] = useState<NoteSheet | null>(null);
   const [confirmColumn, setConfirmColumn] = useState<number | null>(null);
 
@@ -90,6 +96,11 @@ export default function Notes() {
   useEffect(() => {
     void loadSheets();
   }, [loadSheets]);
+
+  // Arriving from Workspace with a table chosen opens that one, not the first.
+  useEffect(() => {
+    if (openSheetId > 0) setActiveId(openSheetId);
+  }, [openSheetId]);
 
   useEffect(() => {
     if (activeId === null) {
@@ -207,10 +218,10 @@ export default function Notes() {
 
   return (
     <div>
-      {/* 2.51.1: Notes moved from its own sidebar entry to a tab inside
-          Finance - marko: "to urob ako vlastnu zlozku pod finance a tam to
-          bude cele". Finance owns the page header, so this keeps only its own
-          toolbar and the sidebar stays flat (PROTECTED_AREAS, 2.43.0). */}
+      {/* 2.52.0: the table engine, now one of Workspace's four content kinds.
+          Workspace owns the page header, so this keeps only its own toolbar.
+          Everything below is unchanged from 2.51.0 - same tables, same
+          commands, same data. */}
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div className="w-full max-w-md">
           <span className="label">Search every sheet</span>
@@ -224,9 +235,14 @@ export default function Notes() {
             />
           </div>
         </div>
-        <Button variant="primary" onClick={() => setNewOpen(true)}>
-          <IconPlus className="h-4 w-4" /> New sheet
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onBack}>
+            ← Back to Workspace
+          </Button>
+          <Button variant="primary" onClick={() => setNewOpen(true)}>
+            <IconPlus className="h-4 w-4" /> New table
+          </Button>
+        </div>
       </div>
 
       {hits !== null ? (

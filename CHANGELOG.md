@@ -16,6 +16,57 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.52.0 - Workspace
+
+Nová vlastná položka v paneli: **Workspace**. Miesto, kam si zapíšeš všetko,
+čo potrebuješ mať poruke — komu si čo predal, aký kód, aký nick, heslá k
+účtom, plány, úlohy s termínom — a hlavne to celé vieš zas nájsť.
+
+Finance sa vracia na svoje štyri záložky. Workspace je samostatná sekcia,
+nie je to súčasť Finance.
+
+### Štyri veci, ktoré si vieš vytvoriť
+
+- **Note** — obyčajná poznámka, text.
+- **Record** — poznámka s vlastnými políčkami (Nick, Kód, Cena, čokoľvek).
+- **Task** — úloha s termínom a stavom (Open / Done).
+- **Table** — tabuľka s vlastnými stĺpcami (to sú tie hárky z 2.51.0,
+  nezmenené, aj s tým, čo si do nich napísal).
+
+**Nemusíš vopred vedieť, čo z toho to bude.** Napíšeš rýchlu poznámku a
+kedykoľvek ju v editore prepneš na Record alebo Task — nič sa nestratí, je to
+stále tá istá položka.
+
+### Rýchly zápis
+
+Hore je jeden riadok: napíšeš a dáš Enter. Hotovo. Nič sa neotvára, nič
+nevypĺňaš. Detaily doplníš, keď budeš chcieť.
+
+### Nájsť to
+
+Vyhľadávanie prehľadá **názvy, text, políčka, tagy aj názvy tabuliek** naraz
+a výsledky poukladá podľa typu. Vidíš kúsok textu okolo toho, čo si hľadal.
+
+Ďalej: **tagy**, **kategórie**, **pripnutie** hore, **archív** (nemažeš, len
+odložíš), **Upcoming** s najbližšími termínmi a prehľad naposledy upraveného.
+
+### Heslá
+
+Ak políčko pomenuješ ako heslo (password, heslo, pin, token, 2fa…), jeho
+hodnota sa **automaticky skryje na bodky** — v editore aj vo vyhľadávaní — a
+odkryje sa až keď klikneš Show.
+
+**Dôležité a hovorím to na rovinu:** toto je len o tom, aby ti heslo
+nesvietilo na obrazovke. **Nie je to šifrované.** Databáza je ten istý
+obyčajný súbor ako Sales a Finance. Workspace nie je správca hesiel.
+
+### Čo sa nezmenilo
+
+Dashboard, Events, Inventory, Sales, Pulls, Finance, prihlásenie,
+synchronizácia, nastavenia, téma, navigácia — nič z toho som nechytal.
+Synchronizácia funguje presne tak ako doteraz, len navyše prenáša aj
+Workspace.
+
 ## 2.51.1 - Notes je teraz pod Finance
 
 Presunuté z vlastnej položky v paneli na **piatu záložku vo Finance**:
