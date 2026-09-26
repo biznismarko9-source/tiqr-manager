@@ -16,6 +16,38 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.56.0 - farby, veľkosti, viac miesta
+
+### Číslovanie je maličké
+
+Písmená stĺpcov aj čísla riadkov sú teraz **miniatúrne** a majú vlastnú
+veľkosť — ostanú malé, aj keď si riadky zväčšíš.
+
+### Farba textu
+
+Nad tabuľkou je lišta: **7 farieb**, **B** (tučné), **I** (kurzíva). Klikneš na
+bunku a na farbu. Druhý klik na tú istú farbu ju zruší.
+
+Farba **drží sa bunky** — keď stĺpec presunieš alebo zmažeš iný, farba ide s
+tým, čo si ofarbil. Nikam sa neposunie.
+
+### Veľkosti
+
+- **Výška riadku** — `−` / `+` na lište, alebo `reset` späť na východziu
+- **Šírka stĺpca** — `−` / `+` na lište
+- **Výška všetkých riadkov** naraz — Format → All rows 20/24/30/40 px
+
+### Viac riadkov a stĺpcov
+
+Prázdnych riadkov je teraz **60** namiesto 40. Na lište sú **+ 50 rows** a
+**+ column**, v menu Insert aj **+200 riadkov** a **+5 stĺpcov** naraz.
+
+### Čo sa nezmenilo
+
+Tvoje hárky, riadky ani text. Migrácia len **pridáva** štyri stĺpce s
+východzími hodnotami — čo si mal, vyzerá presne tak ako predtým, kým sám niečo
+neofarbíš.
+
 ## 2.55.0 - Sheets: tmavý, voľný, s alertmi
 
 Vybral si si návrh **01 Classic** a chcel ho tmavší. Tu je — aj s tým ostatným,

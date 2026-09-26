@@ -2386,6 +2386,10 @@ export interface NoteSheet {
   description: string;
   pinned: boolean;
   archived: boolean;
+  /** 2.56.0: per-column widths in px, aligned with `columns`. 0 = default. */
+  widths: number[];
+  /** The sheet's default row height in px. */
+  rowHeight: number;
 }
 
 export interface NoteRow {
@@ -2395,6 +2399,11 @@ export interface NoteRow {
   /** Always exactly as long as the sheet's `columns` - the backend pads and
    *  trims on the way out, so the UI never has to guard for a short row. */
   cells: string[];
+  /** Flag strings aligned with `cells` - see migration 034. "" is plain,
+   *  otherwise one colour letter (rogbpm) plus optional B/I. */
+  formats: string[];
+  /** Per-row height in px; 0 means "use the sheet's rowHeight". */
+  height: number;
   updatedAt: string;
 }
 

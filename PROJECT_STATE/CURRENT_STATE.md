@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.55.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.56.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1951,7 +1951,53 @@ off the bottom of the grid.
 formulas, column resizing by dragging, undo, recurring reminders, per-column
 types. `column_types_json` is still written and never read.
 
-**Next new migration is 034.**
+**2.56.0 - the grid gets formatting.** marko: *"urob to tak ze tie cislovania
+riadkov a stlpocv budu miniaturne, ze si vies pridat taktiez viac stlpcov aj
+riadkov, vies si zvacsit zmensit riadok, jeho velkost, farba textu, proste nech
+je to viac komplxnejsie"*.
+
+**Migration 034 adds four columns, no new tables**: `note_rows.formats_json`
+and `note_rows.height`, `note_sheets.widths_json` and `note_sheets.row_height`.
+Nothing new to wire for sync - both tables already carry uid, tombstones and
+MERGE_TABLES entries, and every pre-034 row reads back exactly as before.
+
+**Formats are stored in the CELLS' shape, and that is the whole point.**
+`formats_json` is a JSON array of flag strings aligned by index with
+`cells_json`, so `reshape_rows` now runs the SAME closure over both arrays in
+the same transaction. A column moved, deleted or added takes its colours with
+it **by construction** rather than by a second rule somebody could forget.
+`widths_json` is reshaped alongside `columns_json` in the same three
+operations. Verified: after move → delete → add, every colour and width was
+still on its own column.
+
+**A format is a short flag string**, not an object: one optional colour letter
+(`r o g b p m`) plus optional `B`/`I`. `clean_format` drops letters it does not
+know instead of rejecting them, so a newer version writing an unknown flag
+cannot make a cell unreadable on the other machine. `toggleFlag` in the UI and
+`clean_format` in Rust were checked against each other - everything the UI
+produces survives the backend byte for byte.
+
+**`set_note_cell_format` is its own command**, deliberately not part of
+`update_note_row`: the grid saves a cell on blur, and a colour picked while
+that write is in flight must not be lost to it.
+
+**Numbering is miniature** (`GUTTER_W` 30px, `LETTER_H` 15px, `MICRO_FONT` 9px)
+and sized independently of the cells, so it stays small when rows are made
+tall. `MIN_ROWS` went 40 → 60.
+
+**Sizes**: per-column width (`set_note_column_width`, 40-900px, 0 = default),
+per-row height (`set_note_row_height`, 16-400px, 0 = the sheet's), and a sheet
+default (`set_note_sheet_row_height`). All three clamp in Rust, not in the UI.
+
+**A format bar sits above the value bar** - seven colour chips, B, I, row
+−/+/reset, column −/+, "+ 50 rows", "+ column". Colour and size are what you
+reach for while reading a sheet, so they are visible rather than in a menu; the
+menus carry them too.
+
+**Colouring needs a stored row.** A row the grid is only drawing has nothing to
+colour, and the UI says so rather than doing nothing.
+
+**Next new migration is 035.**
 
 ## Stack / layout
 

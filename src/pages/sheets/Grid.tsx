@@ -34,9 +34,59 @@ import { useToast } from "../../lib/toast";
  * as lit cells on dark chrome rather than one flat black sheet.
  */
 
-const MIN_ROWS = 40;
-const BASE_ROW_H = 24;
+const MIN_ROWS = 60;
 const BASE_FONT = 12.5;
+const DEFAULT_COL_W = 118;
+/** 2.56.0: marko asked for the numbering to be miniature. The gutter and the
+ *  letter strip are sized independently of the cells so they stay small even
+ *  when the rows are made tall. */
+const GUTTER_W = 30;
+const LETTER_H = 15;
+const MICRO_FONT = 9;
+
+/** One colour letter from migration 034 to the class that draws it. Both
+ *  themes, because the grid follows the app's light/dark switch. */
+const COLOUR_CLASS: Record<string, string> = {
+  r: "text-red-600 dark:text-red-400",
+  o: "text-amber-600 dark:text-amber-400",
+  g: "text-green-700 dark:text-green-400",
+  b: "text-blue-600 dark:text-blue-400",
+  p: "text-purple-600 dark:text-purple-400",
+  m: "text-slate-400 dark:text-slate-500",
+};
+
+export const COLOURS: { flag: string; label: string; dot: string }[] = [
+  { flag: "", label: "Default", dot: "bg-slate-400" },
+  { flag: "r", label: "Red", dot: "bg-red-500" },
+  { flag: "o", label: "Amber", dot: "bg-amber-500" },
+  { flag: "g", label: "Green", dot: "bg-green-500" },
+  { flag: "b", label: "Blue", dot: "bg-blue-500" },
+  { flag: "p", label: "Purple", dot: "bg-purple-500" },
+  { flag: "m", label: "Grey", dot: "bg-slate-400" },
+];
+
+/** A stored flag string to the classes that draw it. An unknown letter draws
+ *  nothing rather than breaking the cell - same forgiving rule as the backend. */
+export function formatClass(f: string): string {
+  let out = "";
+  for (const ch of f) {
+    if (COLOUR_CLASS[ch]) out += ` ${COLOUR_CLASS[ch]}`;
+    else if (ch === "B") out += " font-semibold";
+    else if (ch === "I") out += " italic";
+  }
+  return out;
+}
+
+/** Toggling one flag on a cell: a colour REPLACES the old colour (there is
+ *  only ever one), a style toggles on and off. */
+export function toggleFlag(current: string, flag: string): string {
+  if (flag === "") return current.replace(/[rogbpm]/g, "");
+  if ("BI".includes(flag)) {
+    return current.includes(flag) ? current.replace(flag, "") : current + flag;
+  }
+  const without = current.replace(/[rogbpm]/g, "");
+  return current.includes(flag) ? without : flag + without;
+}
 
 export type Sel = { r: number; c: number };
 type Sort = { index: number; dir: "asc" | "desc" } | null;
@@ -69,6 +119,13 @@ export type GridHandle = {
   insertToday: () => void;
   clearCell: () => void;
   sortBySelected: (dir: "asc" | "desc" | null) => void;
+  /** 2.56.0 */
+  applyFormat: (flag: string) => void;
+  currentFormat: () => string;
+  nudgeRowHeight: (delta: number) => void;
+  resetRowHeight: () => void;
+  nudgeColumnWidth: (delta: number) => void;
+  setSheetRowHeight: (h: number) => void;
 };
 
 export default function Grid({
@@ -106,9 +163,13 @@ export default function Grid({
   const boxRef = useRef<HTMLDivElement>(null);
 
   const columns = sheet.columns;
-  const rowH = Math.round(BASE_ROW_H * zoom);
+  const baseRowH = sheet.rowHeight > 0 ? sheet.rowHeight : 24;
   const font = (BASE_FONT * zoom).toFixed(1);
-  const smallFont = ((BASE_FONT - 1.5) * zoom).toFixed(1);
+  /** A row's own height if it has one, otherwise the sheet's. */
+  const heightOf = (row: NoteRow | undefined) =>
+    Math.round((row && row.height > 0 ? row.height : baseRowH) * zoom);
+  const widthOf = (i: number) => Math.round(((sheet.widths[i] ?? 0) > 0 ? sheet.widths[i] : DEFAULT_COL_W) * zoom);
+  const rowH = Math.round(baseRowH * zoom);
 
   useEffect(() => {
     setSort(null);
@@ -359,8 +420,77 @@ export default function Grid({
       },
       clearCell: () => void commit(sel.r, sel.c, ""),
       sortBySelected: (dir) => setSort(dir ? { index: sel.c, dir } : null),
+
+      currentFormat: () => display[sel.r]?.formats[sel.c] ?? "",
+      applyFormat: (flag) => {
+        const row = display[sel.r];
+        // Colour belongs to a stored cell. A row the grid is only drawing has
+        // nothing to colour yet, and saying so beats doing nothing silently.
+        if (!row) {
+          toast.error("Type something in that row first, then colour it.");
+          return;
+        }
+        const next = toggleFlag(row.formats[sel.c] ?? "", flag);
+        void (async () => {
+          try {
+            const saved = await api.setNoteCellFormat(row.id, sel.c, next);
+            setRows((rs) => rs.map((x) => (x.id === saved.id ? saved : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      nudgeRowHeight: (delta) => {
+        const row = display[sel.r];
+        if (!row) {
+          toast.error("Type something in that row first, then resize it.");
+          return;
+        }
+        const next = Math.max(16, Math.min(400, (row.height > 0 ? row.height : baseRowH) + delta));
+        void (async () => {
+          try {
+            await api.setNoteRowHeight(row.id, next);
+            setRows((rs) => rs.map((x) => (x.id === row.id ? { ...x, height: next } : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      resetRowHeight: () => {
+        const row = display[sel.r];
+        if (!row) return;
+        void (async () => {
+          try {
+            await api.setNoteRowHeight(row.id, 0);
+            setRows((rs) => rs.map((x) => (x.id === row.id ? { ...x, height: 0 } : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      setSheetRowHeight: (h) => {
+        void (async () => {
+          try {
+            await api.setNoteSheetRowHeight(sheet.id, h);
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      nudgeColumnWidth: (delta) => {
+        const cur = (sheet.widths[sel.c] ?? 0) > 0 ? sheet.widths[sel.c] : DEFAULT_COL_W;
+        void (async () => {
+          try {
+            await api.setNoteColumnWidth(sheet.id, sel.c, Math.max(40, Math.min(900, cur + delta)));
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
     });
-  }, [bind, sheet.id, columns, sel, display, rows.length, reload, commit, moveTo, setRows, setSel, toast, onSheetChanged]);
+  }, [bind, sheet, columns, sel, display, rows.length, baseRowH, reload, commit, moveTo, setRows, setSel, toast, onSheetChanged]);
 
   /* ------------------------------- render ------------------------------- */
 
@@ -378,27 +508,27 @@ export default function Grid({
       <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
         <thead className="sticky top-0 z-20">
           <tr>
-            <th className={`w-[42px] border-b border-r ${line} ${chrome}`} style={{ height: rowH - 4 }} />
+            <th className={`border-b border-r ${line} ${chrome}`} style={{ width: GUTTER_W, height: LETTER_H }} />
             {columns.map((_, i) => (
               <th
                 key={i}
-                className={`border-b border-r ${line} text-center font-normal ${
+                className={`border-b border-r ${line} text-center font-normal leading-none tracking-wider ${
                   sel.c === i ? "bg-brand-600 text-white" : chrome
                 }`}
-                style={{ width: 118, height: rowH - 4, fontSize: `${smallFont}px` }}
-                title={`Column ${colLetter(i)}`}
+                style={{ width: widthOf(i), height: LETTER_H, fontSize: `${MICRO_FONT}px` }}
+                title={`Column ${colLetter(i)} — ${(sheet.widths[i] ?? 0) > 0 ? sheet.widths[i] : DEFAULT_COL_W}px`}
               >
                 {colLetter(i)}
               </th>
             ))}
           </tr>
           <tr>
-            <th className={`border-b border-r ${line} ${chrome}`} style={{ height: rowH }} />
+            <th className={`border-b border-r ${line} ${chrome}`} style={{ width: GUTTER_W, height: rowH }} />
             {columns.map((label, i) => (
               <th
                 key={i}
                 className={`truncate border-b border-r ${line} bg-surface px-1.5 text-left font-semibold text-slate-700 dark:text-slate-200`}
-                style={{ height: rowH }}
+                style={{ width: widthOf(i), height: rowH }}
                 title={label || `No label — column ${colLetter(i)} takes anything`}
               >
                 {label || <span className="font-normal text-slate-300 dark:text-slate-700">·</span>}
@@ -409,13 +539,15 @@ export default function Grid({
         <tbody>
           {Array.from({ length: rowCount }, (_, r) => {
             const row = display[r];
+            const h = heightOf(row);
             return (
               <tr key={row?.id ?? `blank-${r}`}>
                 <th
-                  className={`border-b border-r ${line} text-center font-normal ${
+                  className={`border-b border-r ${line} text-center align-middle font-normal leading-none ${
                     sel.r === r ? "bg-brand-600 text-white" : chrome
                   }`}
-                  style={{ height: rowH, fontSize: `${smallFont}px` }}
+                  style={{ width: GUTTER_W, height: h, fontSize: `${MICRO_FONT}px` }}
+                  title={row && row.height > 0 ? `${row.height}px` : undefined}
                 >
                   {r + 1}
                 </th>
@@ -437,7 +569,7 @@ export default function Grid({
                       className={`relative border-b border-r ${line} bg-surface p-0 align-middle ${
                         isSel && !cellEdit ? "ring-2 ring-inset ring-brand-500" : ""
                       }`}
-                      style={{ height: rowH }}
+                      style={{ width: widthOf(c), height: h }}
                     >
                       {cellEdit ? (
                         <input
@@ -460,10 +592,13 @@ export default function Grid({
                           }}
                           aria-label={cellRef(r, c)}
                           className="w-full bg-surface px-1.5 text-slate-900 outline-none ring-2 ring-inset ring-brand-500 dark:text-slate-50"
-                          style={{ height: rowH, fontSize: `${font}px` }}
+                          style={{ height: h, fontSize: `${font}px` }}
                         />
                       ) : (
-                        <div className="truncate px-1.5 text-slate-800 dark:text-slate-200" title={text || undefined}>
+                        <div
+                          className={`truncate px-1.5 text-slate-800 dark:text-slate-200${formatClass(row?.formats[c] ?? "")}`}
+                          title={text || undefined}
+                        >
                           {text || " "}
                         </div>
                       )}

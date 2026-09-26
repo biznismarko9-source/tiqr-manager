@@ -4,7 +4,7 @@ import type { NoteRow, NoteSheet, SheetAlert, WorkspaceHit, WorkspaceItem } from
 import { Button, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
 import { IconBell, IconLayoutGrid, IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
-import Grid, { cellRef, colLetter } from "./sheets/Grid";
+import Grid, { cellRef, colLetter, COLOURS, formatClass } from "./sheets/Grid";
 import type { GridHandle, Sel } from "./sheets/Grid";
 import MenuBar from "./sheets/MenuBar";
 import type { Menu } from "./sheets/MenuBar";
@@ -45,6 +45,7 @@ export default function Sheets() {
   const [sel, setSel] = useState<Sel>({ r: 0, c: 0 });
   const [cellValue, setCellValue] = useState("");
   const [selRowId, setSelRowId] = useState<number | null>(null);
+  const [cellFormat, setCellFormat] = useState("");
   const [zoom, setZoom] = useState(1);
   const [filter, setFilter] = useState("");
   const [query, setQuery] = useState("");
@@ -222,7 +223,10 @@ export default function Sheets() {
       items: [
         { kind: "item", label: "10 rows below", onClick: () => g()?.addRows(10) },
         { kind: "item", label: "50 rows below", onClick: () => g()?.addRows(50) },
+        { kind: "item", label: "200 rows below", onClick: () => g()?.addRows(200) },
+        { kind: "sep" },
         { kind: "item", label: "Column at the end", onClick: () => g()?.addColumn() },
+        { kind: "item", label: "5 columns at the end", onClick: () => { for (let i = 0; i < 5; i += 1) g()?.addColumn(); } },
         { kind: "sep" },
         { kind: "item", label: "Today's date", hint: "into the cell", onClick: () => g()?.insertToday() },
         { kind: "item", label: "Reminder…", onClick: () => setAlertsOpen(true) },
@@ -235,6 +239,20 @@ export default function Sheets() {
         { kind: "sep" },
         { kind: "item", label: "Move column left", onClick: () => g()?.moveColumn(-1) },
         { kind: "item", label: "Move column right", onClick: () => g()?.moveColumn(1) },
+        { kind: "sep" },
+        { kind: "item", label: "Narrower column", hint: "−20 px", onClick: () => g()?.nudgeColumnWidth(-20) },
+        { kind: "item", label: "Wider column", hint: "+20 px", onClick: () => g()?.nudgeColumnWidth(20) },
+        { kind: "sep" },
+        { kind: "item", label: "Shorter row", onClick: () => g()?.nudgeRowHeight(-6) },
+        { kind: "item", label: "Taller row", onClick: () => g()?.nudgeRowHeight(6) },
+        { kind: "item", label: "Row back to default", onClick: () => g()?.resetRowHeight() },
+        { kind: "sep" },
+        ...[20, 24, 30, 40].map((h) => ({
+          kind: "check" as const,
+          label: `All rows ${h} px`,
+          on: (active?.rowHeight ?? 24) === h,
+          onClick: () => g()?.setSheetRowHeight(h),
+        })),
       ],
     },
     {
@@ -406,6 +424,73 @@ export default function Sheets() {
             </div>
           </div>
 
+          {/* 2.56.0: colour and size, always visible rather than buried in a
+              menu - they are the things you reach for while reading a sheet,
+              not while setting one up. */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 py-1 text-[11px] dark:border-slate-800">
+            <span className="text-slate-400 dark:text-slate-500">Text</span>
+            {COLOURS.map((col) => (
+              <button
+                key={col.flag || "none"}
+                type="button"
+                onClick={() => g()?.applyFormat(col.flag)}
+                title={col.label}
+                aria-label={`Text colour ${col.label}`}
+                className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 transition hover:border-slate-400 dark:border-slate-700"
+              >
+                <span className={`h-2.5 w-2.5 rounded-sm ${col.dot}${col.flag ? "" : " opacity-40"}`} />
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => g()?.applyFormat("B")}
+              title="Bold"
+              className="h-5 w-5 rounded border border-slate-200 font-bold text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              B
+            </button>
+            <button
+              type="button"
+              onClick={() => g()?.applyFormat("I")}
+              title="Italic"
+              className="h-5 w-5 rounded border border-slate-200 italic text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              I
+            </button>
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <span className="text-slate-400 dark:text-slate-500">Row</span>
+            <SizeNudge onLess={() => g()?.nudgeRowHeight(-6)} onMore={() => g()?.nudgeRowHeight(6)} label="row height" />
+            <button
+              type="button"
+              onClick={() => g()?.resetRowHeight()}
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-500 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-400"
+              title="Back to the sheet's row height"
+            >
+              reset
+            </button>
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <span className="text-slate-400 dark:text-slate-500">Col {colLetter(sel.c)}</span>
+            <SizeNudge onLess={() => g()?.nudgeColumnWidth(-20)} onMore={() => g()?.nudgeColumnWidth(20)} label="column width" />
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <button
+              type="button"
+              onClick={() => g()?.addRows(50)}
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              + 50 rows
+            </button>
+            <button
+              type="button"
+              onClick={() => g()?.addColumn()}
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              + column
+            </button>
+          </div>
+
           <div className="flex items-stretch border-b border-slate-200 text-[12.5px] dark:border-slate-800">
             <div className="w-[62px] border-r border-slate-200 px-2 py-1 font-semibold text-slate-700 dark:border-slate-800 dark:text-slate-200">
               {cellRef(sel.r, sel.c)}
@@ -413,7 +498,9 @@ export default function Sheets() {
             <div className="border-r border-slate-200 px-2 py-1 italic text-slate-400 dark:border-slate-800 dark:text-slate-500">
               fx
             </div>
-            <div className="min-w-0 flex-1 truncate px-2 py-1 text-slate-700 dark:text-slate-200">{cellValue}</div>
+            <div className={`min-w-0 flex-1 truncate px-2 py-1 text-slate-700 dark:text-slate-200${formatClass(cellFormat)}`}>
+              {cellValue}
+            </div>
           </div>
 
           {/* ── grid ───────────────────────────────────────────────────── */}
@@ -435,6 +522,7 @@ export default function Sheets() {
                 onCellValue={(v, rowId) => {
                   setCellValue(v);
                   setSelRowId(rowId);
+                  setCellFormat(gridRef.current?.currentFormat() ?? "");
                 }}
                 bind={bind}
               />
@@ -492,6 +580,23 @@ export default function Sheets() {
         onChanged={() => void loadAlerts()}
       />
     </div>
+  );
+}
+
+/** A tiny − / + pair. Two of them on the format bar, so it is worth one
+ *  component rather than two copies of the same four classes. */
+function SizeNudge({ onLess, onMore, label }: { onLess: () => void; onMore: () => void; label: string }) {
+  const cls =
+    "h-5 w-5 rounded border border-slate-200 leading-none text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300";
+  return (
+    <span className="flex items-center gap-1">
+      <button type="button" onClick={onLess} className={cls} aria-label={`Decrease ${label}`} title={`Decrease ${label}`}>
+        −
+      </button>
+      <button type="button" onClick={onMore} className={cls} aria-label={`Increase ${label}`} title={`Increase ${label}`}>
+        +
+      </button>
+    </span>
   );
 }
 

@@ -637,6 +637,16 @@ export const api = {
   updateNoteRow: (id: number, cells: string[]) => invoke<NoteRow>("update_note_row", { id, cells }),
   deleteNoteRow: (id: number) => invoke<void>("delete_note_row", { id }),
   /** One search across every sheet - marko: "najst vsetky jednoducho". */
+  // Formatting (2.56.0). Cell format is its own call so that writing text and
+  // writing colour can never overwrite each other.
+  setNoteCellFormat: (rowId: number, colIndex: number, format: string) =>
+    invoke<NoteRow>("set_note_cell_format", { rowId, colIndex, format }),
+  setNoteRowHeight: (rowId: number, height: number) =>
+    invoke<void>("set_note_row_height", { rowId, height }),
+  setNoteSheetRowHeight: (sheetId: number, height: number) =>
+    invoke<NoteSheet>("set_note_sheet_row_height", { sheetId, height }),
+  setNoteColumnWidth: (sheetId: number, index: number, width: number) =>
+    invoke<NoteSheet>("set_note_column_width", { sheetId, index, width }),
   searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
   // Sheet alerts (2.55.0) - see commands/alerts.rs.
   listSheetAlerts: (includeDone: boolean) => invoke<SheetAlert[]>("list_sheet_alerts", { includeDone }),

@@ -44,6 +44,11 @@ pub struct NoteSheet {
     pub description: String,
     pub pinned: bool,
     pub archived: bool,
+    /// 2.56.0 (migration 034). Per-column widths in px, aligned by index with
+    /// `columns` and reshaped with them. A missing or 0 entry means default.
+    pub widths: Vec<i64>,
+    /// The sheet's default row height in px. A row may override it.
+    pub row_height: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -53,6 +58,11 @@ pub struct NoteRow {
     pub sheet_id: i64,
     pub position: i64,
     pub cells: Vec<String>,
+    /// 2.56.0. Flag strings aligned by index with `cells` - see migration 034.
+    /// Padded to the cell count on read, like the cells themselves.
+    pub formats: Vec<String>,
+    /// Per-row height in px; 0 means "use the sheet's `row_height`".
+    pub height: i64,
     pub updated_at: String,
 }
 
@@ -70,6 +80,29 @@ fn dump_list(list: &[String]) -> String {
 /// Every row is shown with exactly as many cells as the sheet has columns -
 /// padded when short, trimmed when long. Both happen legitimately: a column
 /// added while the other machine was offline, or a row merged in from it.
+/// Per-column widths, padded to the column count. Unreadable or short reads
+/// as "all default", the same forgiving rule `parse_list` follows - a sheet
+/// must never refuse to open over a formatting blob.
+fn parse_widths(raw: &str) -> Vec<i64> {
+    serde_json::from_str::<Vec<i64>>(raw).unwrap_or_default()
+}
+
+fn dump_widths(v: &[i64]) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Widths for one sheet, padded/trimmed to `width`. Same positional contract
+/// as `fit()` for cells.
+fn sheet_widths(conn: &Connection, sheet_id: i64, width: usize) -> AppResult<Vec<i64>> {
+    let raw: String = conn.query_row("SELECT widths_json FROM note_sheets WHERE id = ?1", [sheet_id], |r| r.get(0))?;
+    let mut w = parse_widths(&raw);
+    w.truncate(width);
+    while w.len() < width {
+        w.push(0);
+    }
+    Ok(w)
+}
+
 fn fit(cells: Vec<String>, width: usize) -> Vec<String> {
     let mut c = cells;
     c.truncate(width);
@@ -99,7 +132,7 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
         .query_row(
             "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
                     (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
-                    s.description, s.pinned, s.archived
+                    s.description, s.pinned, s.archived, s.widths_json, s.row_height
              FROM note_sheets s WHERE s.id = ?1",
             [id],
             |r| {
@@ -113,12 +146,14 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
                     r.get::<_, String>(6)?,
                     r.get::<_, i64>(7)?,
                     r.get::<_, i64>(8)?,
+                    r.get::<_, String>(9)?,
+                    r.get::<_, i64>(10)?,
                 ))
             },
         )
         .optional()?;
     match row {
-        Some((id, name, columns_json, position, updated_at, row_count, description, pinned, archived)) => Ok(NoteSheet {
+        Some((id, name, columns_json, position, updated_at, row_count, description, pinned, archived, widths_json, row_height)) => Ok(NoteSheet {
             id,
             name,
             columns: parse_list(&columns_json),
@@ -128,6 +163,8 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
             description,
             pinned: pinned != 0,
             archived: archived != 0,
+            widths: parse_widths(&widths_json),
+            row_height,
         }),
         None => Err(AppError::NotFound(format!("Note sheet {id} no longer exists."))),
     }
@@ -139,7 +176,7 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
                 (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
-                s.description, s.pinned, s.archived
+                s.description, s.pinned, s.archived, s.widths_json, s.row_height
          FROM note_sheets s ORDER BY s.pinned DESC, s.position, s.id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -153,6 +190,8 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
             description: r.get(6)?,
             pinned: r.get::<_, i64>(7)? != 0,
             archived: r.get::<_, i64>(8)? != 0,
+            widths: parse_widths(&r.get::<_, String>(9)?),
+            row_height: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -248,10 +287,12 @@ pub fn add_note_column(state: State<AppState>, sheet_id: i64, name: String) -> A
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let mut columns = sheet_columns(&tx, sheet_id)?;
+    let mut widths = sheet_widths(&tx, sheet_id, columns.len())?;
     columns.push(name);
+    widths.push(0); // 0 = default width
     tx.execute(
-        "UPDATE note_sheets SET columns_json = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![sheet_id, dump_list(&columns), now_iso()],
+        "UPDATE note_sheets SET columns_json = ?2, widths_json = ?3, updated_at = ?4 WHERE id = ?1",
+        rusqlite::params![sheet_id, dump_list(&columns), dump_widths(&widths), now_iso()],
     )?;
     // Every row grows by exactly one empty cell, in the same transaction, so
     // cells and columns can never be seen out of step.
@@ -290,10 +331,12 @@ pub fn delete_note_column(state: State<AppState>, sheet_id: i64, index: usize) -
     if columns.len() == 1 {
         return Err(AppError::Validation("A sheet needs at least one column.".to_string()));
     }
+    let mut widths = sheet_widths(&tx, sheet_id, columns.len())?;
     columns.remove(index);
+    widths.remove(index);
     tx.execute(
-        "UPDATE note_sheets SET columns_json = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![sheet_id, dump_list(&columns), now_iso()],
+        "UPDATE note_sheets SET columns_json = ?2, widths_json = ?3, updated_at = ?4 WHERE id = ?1",
+        rusqlite::params![sheet_id, dump_list(&columns), dump_widths(&widths), now_iso()],
     )?;
     // The same index comes out of every row, so what is left still lines up
     // with the columns that remain.
@@ -338,11 +381,14 @@ pub fn reorder_note_column(
     if from_index >= width || to_index >= width {
         return Err(AppError::Validation("That column no longer exists.".to_string()));
     }
+    let mut widths = sheet_widths(&tx, sheet_id, width)?;
     let moved = columns.remove(from_index);
     columns.insert(to_index, moved);
+    let moved_w = widths.remove(from_index);
+    widths.insert(to_index, moved_w);
     tx.execute(
-        "UPDATE note_sheets SET columns_json = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![sheet_id, dump_list(&columns), now_iso()],
+        "UPDATE note_sheets SET columns_json = ?2, widths_json = ?3, updated_at = ?4 WHERE id = ?1",
+        rusqlite::params![sheet_id, dump_list(&columns), dump_widths(&widths), now_iso()],
     )?;
     reshape_rows(&tx, sheet_id, |cells| {
         let mut cells = fit(cells, width);
@@ -402,16 +448,26 @@ fn reshape_rows<F>(conn: &Connection, sheet_id: i64, f: F) -> AppResult<()>
 where
     F: Fn(Vec<String>) -> Vec<String>,
 {
-    let existing: Vec<(i64, String)> = {
-        let mut stmt = conn.prepare("SELECT id, cells_json FROM note_rows WHERE sheet_id = ?1")?;
-        let rows = stmt.query_map([sheet_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let existing: Vec<(i64, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, cells_json, formats_json FROM note_rows WHERE sheet_id = ?1")?;
+        let rows = stmt.query_map([sheet_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
-    for (id, raw) in existing {
-        let next = f(parse_list(&raw));
+    for (id, cells_raw, formats_raw) in existing {
+        let cells = parse_list(&cells_raw);
+        // 2.56.0: the SAME transformation runs over the formats, padded to the
+        // cell count first. That is the whole reason formats are stored in the
+        // cells' shape (migration 034): a column moved or removed takes its
+        // colour with it, by construction, instead of by a second rule that
+        // could be forgotten. Every caller of this gets that for free.
+        let formats = fit(parse_list(&formats_raw), cells.len());
+        let next_cells = f(cells);
+        let next_formats = f(formats);
         conn.execute(
-            "UPDATE note_rows SET cells_json = ?2, updated_at = ?3 WHERE id = ?1",
-            rusqlite::params![id, dump_list(&next), now_iso()],
+            "UPDATE note_rows SET cells_json = ?2, formats_json = ?3, updated_at = ?4 WHERE id = ?1",
+            rusqlite::params![id, dump_list(&next_cells), dump_list(&next_formats), now_iso()],
         )?;
     }
     Ok(())
@@ -424,13 +480,15 @@ where
 fn read_rows(conn: &Connection, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
     let width = sheet_columns(conn, sheet_id)?.len();
     let mut stmt =
-        conn.prepare("SELECT id, sheet_id, position, cells_json, updated_at FROM note_rows WHERE sheet_id = ?1 ORDER BY position, id")?;
+        conn.prepare("SELECT id, sheet_id, position, cells_json, updated_at, formats_json, height FROM note_rows WHERE sheet_id = ?1 ORDER BY position, id")?;
     let rows = stmt.query_map([sheet_id], |r| {
         Ok(NoteRow {
             id: r.get(0)?,
             sheet_id: r.get(1)?,
             position: r.get(2)?,
             cells: fit(parse_list(&r.get::<_, String>(3)?), width),
+            formats: fit(parse_list(&r.get::<_, String>(5)?), width),
+            height: r.get(6)?,
             updated_at: r.get(4)?,
         })
     })?;
@@ -459,7 +517,8 @@ pub fn create_note_row(state: State<AppState>, sheet_id: i64, cells: Vec<String>
     )?;
     let id = conn.last_insert_rowid();
     touch_sheet(&conn, sheet_id)?;
-    Ok(NoteRow { id, sheet_id, position: next_position, cells, updated_at: now_iso() })
+    let formats = vec![String::new(); cells.len()];
+    Ok(NoteRow { id, sheet_id, position: next_position, cells, formats, height: 0, updated_at: now_iso() })
 }
 
 #[tauri::command]
@@ -479,8 +538,115 @@ pub fn update_note_row(state: State<AppState>, id: i64, cells: Vec<String>) -> A
         rusqlite::params![id, dump_list(&cells), now],
     )?;
     touch_sheet(&conn, sheet_id)?;
-    let position: i64 = conn.query_row("SELECT position FROM note_rows WHERE id = ?1", [id], |r| r.get(0))?;
-    Ok(NoteRow { id, sheet_id, position, cells, updated_at: now })
+    let (position, formats_raw, height) = conn.query_row(
+        "SELECT position, formats_json, height FROM note_rows WHERE id = ?1",
+        [id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+    )?;
+    let formats = fit(parse_list(&formats_raw), cells.len());
+    Ok(NoteRow { id, sheet_id, position, cells, formats, height, updated_at: now })
+}
+
+/// Only the letters the UI knows, in a stable order, deduped. An unknown
+/// letter is DROPPED rather than rejected: a newer version writing a flag this
+/// one has never heard of must not make the cell unwritable, and the value is
+/// cosmetic anyway.
+fn clean_format(raw: &str) -> String {
+    const COLOURS: &str = "rogbpm";
+    const STYLES: &str = "BI";
+    let mut colour = None;
+    let mut styles: Vec<char> = Vec::new();
+    for ch in raw.chars() {
+        if COLOURS.contains(ch) {
+            colour = Some(ch); // last colour wins; there is only ever one
+        } else if STYLES.contains(ch) && !styles.contains(&ch) {
+            styles.push(ch);
+        }
+    }
+    styles.sort_unstable();
+    let mut out = String::new();
+    if let Some(c) = colour {
+        out.push(c);
+    }
+    out.extend(styles);
+    out
+}
+
+/// Colour/style for ONE cell. Kept separate from `update_note_row` so writing
+/// text and writing formatting can never overwrite each other: the grid saves
+/// a cell on blur, and a colour picked while that write is in flight must not
+/// be lost to it.
+#[tauri::command]
+pub fn set_note_cell_format(state: State<AppState>, row_id: i64, col_index: usize, format: String) -> AppResult<NoteRow> {
+    let conn = state.db.lock().unwrap();
+    let sheet_id: Option<i64> = conn
+        .query_row("SELECT sheet_id FROM note_rows WHERE id = ?1", [row_id], |r| r.get(0))
+        .optional()?;
+    let Some(sheet_id) = sheet_id else {
+        return Err(AppError::NotFound(format!("Note row {row_id} no longer exists.")));
+    };
+    let width = sheet_columns(&conn, sheet_id)?.len();
+    if col_index >= width {
+        return Err(AppError::Validation("That column no longer exists.".to_string()));
+    }
+    let raw: String = conn.query_row("SELECT formats_json FROM note_rows WHERE id = ?1", [row_id], |r| r.get(0))?;
+    let mut formats = fit(parse_list(&raw), width);
+    formats[col_index] = clean_format(&format);
+    // All-empty stores as an empty list, so a sheet nobody has coloured keeps
+    // the same blob it had before 034.
+    let store = if formats.iter().all(|f| f.is_empty()) { Vec::new() } else { formats };
+    conn.execute(
+        "UPDATE note_rows SET formats_json = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![row_id, dump_list(&store), now_iso()],
+    )?;
+    touch_sheet(&conn, sheet_id)?;
+    let rows = read_rows(&conn, sheet_id)?;
+    rows.into_iter()
+        .find(|r| r.id == row_id)
+        .ok_or_else(|| AppError::NotFound(format!("Note row {row_id} no longer exists.")))
+}
+
+/// Height of ONE row in px. 0 puts it back on the sheet's own height.
+#[tauri::command]
+pub fn set_note_row_height(state: State<AppState>, row_id: i64, height: i64) -> AppResult<()> {
+    let h = if height <= 0 { 0 } else { height.clamp(16, 400) };
+    let conn = state.db.lock().unwrap();
+    let n = conn.execute(
+        "UPDATE note_rows SET height = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![row_id, h, now_iso()],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("Note row {row_id} no longer exists.")));
+    }
+    Ok(())
+}
+
+/// The sheet's default row height, used by every row that has no override.
+#[tauri::command]
+pub fn set_note_sheet_row_height(state: State<AppState>, sheet_id: i64, height: i64) -> AppResult<NoteSheet> {
+    let conn = state.db.lock().unwrap();
+    conn.execute(
+        "UPDATE note_sheets SET row_height = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, height.clamp(16, 400), now_iso()],
+    )?;
+    read_sheet(&conn, sheet_id)
+}
+
+/// Width of ONE column in px. 0 puts it back on the default.
+#[tauri::command]
+pub fn set_note_column_width(state: State<AppState>, sheet_id: i64, index: usize, width: i64) -> AppResult<NoteSheet> {
+    let conn = state.db.lock().unwrap();
+    let count = sheet_columns(&conn, sheet_id)?.len();
+    if index >= count {
+        return Err(AppError::Validation("That column no longer exists.".to_string()));
+    }
+    let mut widths = sheet_widths(&conn, sheet_id, count)?;
+    widths[index] = if width <= 0 { 0 } else { width.clamp(40, 900) };
+    conn.execute(
+        "UPDATE note_sheets SET widths_json = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, dump_widths(&widths), now_iso()],
+    )?;
+    read_sheet(&conn, sheet_id)
 }
 
 #[tauri::command]
@@ -625,6 +791,61 @@ mod tests {
         let r = row(&conn, s, &["a"]);
         reshape_rows(&conn, s, |cells| fit(cells, 2)).unwrap();
         assert_eq!(cells_of(&conn, r), vec!["a".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn a_format_keeps_only_letters_the_ui_knows_in_a_stable_order() {
+        assert_eq!(clean_format("rB"), "rB");
+        assert_eq!(clean_format("Br"), "rB");          // colour first, always
+        assert_eq!(clean_format("IB"), "BI");          // styles sorted
+        assert_eq!(clean_format("BB"), "B");           // deduped
+        assert_eq!(clean_format("rg"), "g");           // one colour; last wins
+        assert_eq!(clean_format(""), "");
+        // An unknown flag from a newer version is dropped, not rejected -
+        // the cell stays readable either way.
+        assert_eq!(clean_format("rZ!9B"), "rB");
+        assert_eq!(clean_format("ZZZ"), "");
+    }
+
+    #[test]
+    fn a_column_change_moves_the_formats_with_the_cells() {
+        let conn = test_conn();
+        let s = sheet(&conn, &["A", "B", "C"]);
+        let r = row(&conn, s, &["a", "b", "c"]);
+        conn.execute("UPDATE note_rows SET formats_json = ?2 WHERE id = ?1",
+                     rusqlite::params![r, r#"["r","g","b"]"#]).unwrap();
+
+        // Move the last column to the front: the colours must follow.
+        reshape_rows(&conn, s, |mut v| {
+            let m = v.remove(2);
+            v.insert(0, m);
+            v
+        })
+        .unwrap();
+
+        assert_eq!(cells_of(&conn, r), vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+        let f: Vec<String> = parse_list(
+            &conn.query_row("SELECT formats_json FROM note_rows WHERE id=?1", [r], |x| x.get::<_, String>(0)).unwrap(),
+        );
+        assert_eq!(f, vec!["b".to_string(), "r".to_string(), "g".to_string()]);
+    }
+
+    #[test]
+    fn a_row_with_no_formats_yet_still_reshapes_without_drifting() {
+        let conn = test_conn();
+        let s = sheet(&conn, &["A", "B", "C"]);
+        let r = row(&conn, s, &["a", "b", "c"]);
+        // formats_json is '[]' - every pre-034 row looks like this.
+        reshape_rows(&conn, s, |mut v| {
+            v.remove(1);
+            v
+        })
+        .unwrap();
+        assert_eq!(cells_of(&conn, r), vec!["a".to_string(), "c".to_string()]);
+        let f: Vec<String> = parse_list(
+            &conn.query_row("SELECT formats_json FROM note_rows WHERE id=?1", [r], |x| x.get::<_, String>(0)).unwrap(),
+        );
+        assert_eq!(f, vec![String::new(), String::new()], "padded to the cells, not left short");
     }
 
     #[test]

@@ -21,6 +21,47 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.56.0 - formats live in the CELLS' shape; `reshape_rows` moves both
+
+`note_rows.formats_json` is aligned by index with `cells_json`, and
+`reshape_rows` runs the caller's closure over BOTH arrays, in the same
+transaction, padding the formats to the cell count first.
+
+That is deliberate and load-bearing. Any other storage - a `cell_formats`
+table keyed by (row_id, col_index), a map on the sheet - drifts the instant a
+column is added, deleted or moved, because nothing carries the format along
+with the cell. **A new column operation gets format handling for free only so
+long as it goes through `reshape_rows`.** One that touches `cells_json`
+directly must move `formats_json` identically or colours land on the wrong
+cells, silently.
+
+`widths_json` on the sheet has the same contract against `columns_json`, and
+is reshaped by hand in `add_note_column`, `delete_note_column` and
+`reorder_note_column`. If a fourth column operation ever appears, it needs the
+same three lines.
+
+## 2.56.0 - a format flag is forgiving on purpose
+
+`clean_format` keeps one colour (`rogbpm`) plus `B`/`I`, sorted, deduped, and
+**drops anything else rather than erroring**. `formatClass` in the UI ignores
+unknown letters the same way.
+
+This is so a newer version writing a flag this one has never heard of cannot
+make a cell unreadable after a merge. Do not "tighten" it into a validation
+error - the value is cosmetic, and a rejected write would lose the text edit
+that came with it.
+
+`toggleFlag` (UI) and `clean_format` (Rust) must keep agreeing: everything the
+UI produces has to survive the backend unchanged, or a colour will appear to
+flip back the next time the sheet loads.
+
+## 2.56.0 - cell format is written by its OWN command
+
+`set_note_cell_format` exists instead of widening `update_note_row` because the
+grid saves a cell on blur. A colour picked while that write is in flight would
+be overwritten by it, and the person would see the colour appear and then
+vanish. Keep the two writes separate.
+
 ## 2.55.0 - alert times are LOCAL wall-clock; do not "fix" them to UTC
 
 `sheet_alerts.remind_at` is `YYYY-MM-DDTHH:MM` with **no timezone**, and it is
