@@ -4,11 +4,12 @@ import type { NoteRow, NoteSheet, SheetAlert, WorkspaceHit, WorkspaceItem } from
 import { Button, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
 import { IconBell, IconLayoutGrid, IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
-import Grid, { cellRef, colLetter, COLOURS, formatClass } from "./sheets/Grid";
+import Grid, { cellRef, colLetter, COLOURS, FILLS, formatClass } from "./sheets/Grid";
 import type { GridHandle, Sel } from "./sheets/Grid";
 import MenuBar from "./sheets/MenuBar";
 import type { Menu } from "./sheets/MenuBar";
 import AlertsPanel from "./sheets/AlertsPanel";
+import AgendaPanel from "./sheets/AgendaPanel";
 
 /**
  * Sheets — the dark "Classic" spreadsheet marko chose out of ten.
@@ -52,6 +53,8 @@ export default function Sheets() {
   const [hits, setHits] = useState<WorkspaceHit[] | null>(null);
   const [alerts, setAlerts] = useState<SheetAlert[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [agendaOpen, setAgendaOpen] = useState(false);
+  const [whenOpen, setWhenOpen] = useState<null | "date" | "time" | "both">(null);
   const [newOpen, setNewOpen] = useState(false);
   const [oldNotes, setOldNotes] = useState<WorkspaceItem[]>([]);
   const [importing, setImporting] = useState(false);
@@ -204,6 +207,15 @@ export default function Sheets() {
       label: "Edit",
       items: [
         { kind: "item", label: "Clear cell", hint: "Del", onClick: () => g()?.clearCell() },
+        { kind: "item", label: "Clear formatting", onClick: () => g()?.clearFormatting() },
+        { kind: "sep" },
+        { kind: "item", label: "Insert row above", onClick: () => g()?.insertRow("above") },
+        { kind: "item", label: "Insert row below", onClick: () => g()?.insertRow("below") },
+        { kind: "item", label: "Duplicate row", onClick: () => g()?.duplicateRow() },
+        { kind: "sep" },
+        { kind: "item", label: "Merge with the next cell", onClick: () => g()?.mergeSelected(2) },
+        { kind: "item", label: "Merge across the row", onClick: () => g()?.mergeSelected(999) },
+        { kind: "item", label: "Split merged cell", onClick: () => g()?.unmergeSelected() },
         { kind: "sep" },
         { kind: "item", label: "Delete row", danger: true, onClick: () => g()?.deleteRow() },
         { kind: "item", label: "Delete column", danger: true, onClick: () => g()?.deleteColumn() },
@@ -211,12 +223,21 @@ export default function Sheets() {
     },
     {
       label: "View",
-      items: ZOOMS.map((z) => ({
-        kind: "check" as const,
-        label: `${Math.round(z * 100)} %`,
-        on: zoom === z,
-        onClick: () => setZoom(z),
-      })),
+      items: [
+        ...ZOOMS.map((z) => ({
+          kind: "check" as const,
+          label: `${Math.round(z * 100)} %`,
+          on: zoom === z,
+          onClick: () => setZoom(z),
+        })),
+        { kind: "sep" as const },
+        ...[0, 1, 2, 3].map((n) => ({
+          kind: "check" as const,
+          label: n === 0 ? "No frozen rows" : `Freeze ${n} row${n === 1 ? "" : "s"}`,
+          on: (active?.frozenRows ?? 0) === n,
+          onClick: () => g()?.setFrozenRows(n),
+        })),
+      ],
     },
     {
       label: "Insert",
@@ -229,6 +250,11 @@ export default function Sheets() {
         { kind: "item", label: "5 columns at the end", onClick: () => { for (let i = 0; i < 5; i += 1) g()?.addColumn(); } },
         { kind: "sep" },
         { kind: "item", label: "Today's date", hint: "into the cell", onClick: () => g()?.insertToday() },
+        { kind: "item", label: "Date…", onClick: () => setWhenOpen("date") },
+        { kind: "item", label: "Time…", onClick: () => setWhenOpen("time") },
+        { kind: "item", label: "Date and time…", onClick: () => setWhenOpen("both") },
+        { kind: "sep" },
+        { kind: "item", label: "What's coming…", onClick: () => setAgendaOpen(true) },
         { kind: "item", label: "Reminder…", onClick: () => setAlertsOpen(true) },
       ],
     },
@@ -457,6 +483,50 @@ export default function Sheets() {
             >
               I
             </button>
+            <button
+              type="button"
+              onClick={() => g()?.applyFormat("U")}
+              title="Underline"
+              className="h-5 w-5 rounded border border-slate-200 text-slate-600 underline transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              U
+            </button>
+            <button
+              type="button"
+              onClick={() => g()?.applyFormat("S")}
+              title="Strikethrough"
+              className="h-5 w-5 rounded border border-slate-200 text-slate-600 line-through transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              S
+            </button>
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <span className="text-slate-400 dark:text-slate-500">Fill</span>
+            {FILLS.map((fl) => (
+              <button
+                key={fl.flag || "none"}
+                type="button"
+                onClick={() => g()?.applyFormat(fl.flag || "fill:")}
+                title={fl.label}
+                aria-label={`Fill ${fl.label}`}
+                className="flex h-5 w-5 items-center justify-center rounded border border-slate-200 transition hover:border-slate-400 dark:border-slate-700"
+              >
+                <span className={`h-2.5 w-2.5 rounded-sm ${fl.dot}`} />
+              </button>
+            ))}
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            {([["L", "◧"], ["M", "▣"], ["R", "◨"]] as const).map(([flag, glyph]) => (
+              <button
+                key={flag}
+                type="button"
+                onClick={() => g()?.applyFormat(flag)}
+                title={`Align ${flag === "L" ? "left" : flag === "M" ? "centre" : "right"}`}
+                className="h-5 w-5 rounded border border-slate-200 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+              >
+                {glyph}
+              </button>
+            ))}
 
             <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
             <span className="text-slate-400 dark:text-slate-500">Row</span>
@@ -473,6 +543,52 @@ export default function Sheets() {
             <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
             <span className="text-slate-400 dark:text-slate-500">Col {colLetter(sel.c)}</span>
             <SizeNudge onLess={() => g()?.nudgeColumnWidth(-20)} onMore={() => g()?.nudgeColumnWidth(20)} label="column width" />
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <span className="text-slate-400 dark:text-slate-500">Merge</span>
+            {[2, 3, 4].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => g()?.mergeSelected(n)}
+                title={`Join this cell with the next ${n - 1}`}
+                className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+              >
+                {n}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => g()?.mergeSelected(999)}
+              title="Join across the whole row"
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              all
+            </button>
+            <button
+              type="button"
+              onClick={() => g()?.unmergeSelected()}
+              title="Split it back apart"
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              split
+            </button>
+
+            <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
+            <button
+              type="button"
+              onClick={() => setWhenOpen("date")}
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              Date…
+            </button>
+            <button
+              type="button"
+              onClick={() => setAgendaOpen(true)}
+              className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-600 transition hover:border-slate-400 dark:border-slate-700 dark:text-slate-300"
+            >
+              Coming up
+            </button>
 
             <span className="mx-1 h-4 w-px bg-slate-200 dark:bg-slate-700" />
             <button
@@ -500,6 +616,15 @@ export default function Sheets() {
             </div>
             <div className={`min-w-0 flex-1 truncate px-2 py-1 text-slate-700 dark:text-slate-200${formatClass(cellFormat)}`}>
               {cellValue}
+            </div>
+            <div className="shrink-0 border-l border-slate-200 px-2 py-1 text-[11px] text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              {(() => {
+                const st = gridRef.current?.columnStats();
+                if (!st || st.count === 0) return `Column ${colLetter(sel.c)} · empty`;
+                return `Column ${colLetter(sel.c)} · ${st.count} filled${
+                  st.sum !== null ? ` · sum ${st.sum.toLocaleString("sk-SK", { maximumFractionDigits: 2 })}` : ""
+                }`;
+              })()}
             </div>
           </div>
 
@@ -570,6 +695,24 @@ export default function Sheets() {
         }}
       />
 
+      <AgendaPanel
+        open={agendaOpen}
+        onClose={() => setAgendaOpen(false)}
+        sheet={active}
+        rows={rows}
+        alerts={alerts}
+        onGoTo={(r, c) => setSel({ r, c })}
+      />
+
+      <WhenPicker
+        mode={whenOpen}
+        onClose={() => setWhenOpen(null)}
+        onPick={(text) => {
+          setWhenOpen(null);
+          gridRef.current?.insertText(text);
+        }}
+      />
+
       <AlertsPanel
         open={alertsOpen}
         onClose={() => setAlertsOpen(false)}
@@ -580,6 +723,77 @@ export default function Sheets() {
         onChanged={() => void loadAlerts()}
       />
     </div>
+  );
+}
+
+/** The calendar marko asked for: pick a date and/or a time, and it drops the
+ *  text straight into the cell. Uses the app's own date field, which is the one
+ *  he already had fixed once — no second date UI to keep in step.
+ *
+ *  The text it writes is `DD/MM/YYYY`, which is what he types by hand anyway
+ *  and what `AgendaPanel` reads back. */
+function WhenPicker({
+  mode,
+  onClose,
+  onPick,
+}: {
+  mode: null | "date" | "time" | "both";
+  onClose: () => void;
+  onPick: (text: string) => void;
+}) {
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("09:00");
+
+  useEffect(() => {
+    if (!mode) return;
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    setDate(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`);
+    setTime(`${p(d.getHours())}:${p(d.getMinutes())}`);
+  }, [mode]);
+
+  function build(): string {
+    const [y, m, dd] = date.split("-");
+    const asDate = date ? `${dd}/${m}/${y}` : "";
+    if (mode === "time") return time;
+    if (mode === "both") return `${asDate} ${time}`.trim();
+    return asDate;
+  }
+
+  return (
+    <Modal
+      open={mode !== null}
+      onClose={onClose}
+      title={mode === "time" ? "Insert a time" : mode === "both" ? "Insert a date and time" : "Insert a date"}
+      width="max-w-sm"
+    >
+      <div className="flex flex-col gap-3">
+        {mode !== "time" && (
+          <label>
+            <span className="label">Date</span>
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+        )}
+        {mode !== "date" && (
+          <label>
+            <span className="label">Time</span>
+            <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          </label>
+        )}
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Goes into the selected cell as <strong>{build() || "…"}</strong>. Anything dated shows up under
+          &ldquo;What&rsquo;s coming&rdquo;.
+        </p>
+      </div>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={() => onPick(build())} disabled={!build()}>
+          Insert
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }
 

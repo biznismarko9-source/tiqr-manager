@@ -49,6 +49,8 @@ pub struct NoteSheet {
     pub widths: Vec<i64>,
     /// The sheet's default row height in px. A row may override it.
     pub row_height: i64,
+    /// 2.57.0. How many rows stay stuck to the top while the rest scrolls.
+    pub frozen_rows: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -63,6 +65,9 @@ pub struct NoteRow {
     pub formats: Vec<String>,
     /// Per-row height in px; 0 means "use the sheet's `row_height`".
     pub height: i64,
+    /// 2.57.0. Column spans aligned by index with `cells` - see migration 035.
+    /// "" / "1" normal, "N" spans N columns, "0" covered by a merge.
+    pub merges: Vec<String>,
     pub updated_at: String,
 }
 
@@ -132,7 +137,7 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
         .query_row(
             "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
                     (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
-                    s.description, s.pinned, s.archived, s.widths_json, s.row_height
+                    s.description, s.pinned, s.archived, s.widths_json, s.row_height, s.frozen_rows
              FROM note_sheets s WHERE s.id = ?1",
             [id],
             |r| {
@@ -148,12 +153,13 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
                     r.get::<_, i64>(8)?,
                     r.get::<_, String>(9)?,
                     r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
                 ))
             },
         )
         .optional()?;
     match row {
-        Some((id, name, columns_json, position, updated_at, row_count, description, pinned, archived, widths_json, row_height)) => Ok(NoteSheet {
+        Some((id, name, columns_json, position, updated_at, row_count, description, pinned, archived, widths_json, row_height, frozen_rows)) => Ok(NoteSheet {
             id,
             name,
             columns: parse_list(&columns_json),
@@ -165,6 +171,7 @@ fn read_sheet(conn: &Connection, id: i64) -> AppResult<NoteSheet> {
             archived: archived != 0,
             widths: parse_widths(&widths_json),
             row_height,
+            frozen_rows,
         }),
         None => Err(AppError::NotFound(format!("Note sheet {id} no longer exists."))),
     }
@@ -176,7 +183,7 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.name, s.columns_json, s.position, s.updated_at,
                 (SELECT COUNT(*) FROM note_rows r WHERE r.sheet_id = s.id),
-                s.description, s.pinned, s.archived, s.widths_json, s.row_height
+                s.description, s.pinned, s.archived, s.widths_json, s.row_height, s.frozen_rows
          FROM note_sheets s ORDER BY s.pinned DESC, s.position, s.id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -192,6 +199,7 @@ pub fn list_note_sheets(state: State<AppState>) -> AppResult<Vec<NoteSheet>> {
             archived: r.get::<_, i64>(8)? != 0,
             widths: parse_widths(&r.get::<_, String>(9)?),
             row_height: r.get(10)?,
+            frozen_rows: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -448,14 +456,20 @@ fn reshape_rows<F>(conn: &Connection, sheet_id: i64, f: F) -> AppResult<()>
 where
     F: Fn(Vec<String>) -> Vec<String>,
 {
-    let existing: Vec<(i64, String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, cells_json, formats_json FROM note_rows WHERE sheet_id = ?1")?;
+    let existing: Vec<(i64, String, String, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, cells_json, formats_json, merges_json FROM note_rows WHERE sheet_id = ?1")?;
         let rows = stmt.query_map([sheet_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
-    for (id, cells_raw, formats_raw) in existing {
+    for (id, cells_raw, formats_raw, merges_raw) in existing {
         let cells = parse_list(&cells_raw);
         // 2.56.0: the SAME transformation runs over the formats, padded to the
         // cell count first. That is the whole reason formats are stored in the
@@ -463,11 +477,21 @@ where
         // colour with it, by construction, instead of by a second rule that
         // could be forgotten. Every caller of this gets that for free.
         let formats = fit(parse_list(&formats_raw), cells.len());
+        // 2.57.0: merges ride along in the same shape and the same closure, for
+        // the same reason formats do (migration 035).
+        let merges = fit(parse_list(&merges_raw), cells.len());
         let next_cells = f(cells);
         let next_formats = f(formats);
+        let next_merges = f(merges);
         conn.execute(
-            "UPDATE note_rows SET cells_json = ?2, formats_json = ?3, updated_at = ?4 WHERE id = ?1",
-            rusqlite::params![id, dump_list(&next_cells), dump_list(&next_formats), now_iso()],
+            "UPDATE note_rows SET cells_json = ?2, formats_json = ?3, merges_json = ?4, updated_at = ?5 WHERE id = ?1",
+            rusqlite::params![
+                id,
+                dump_list(&next_cells),
+                dump_list(&next_formats),
+                dump_list(&next_merges),
+                now_iso()
+            ],
         )?;
     }
     Ok(())
@@ -480,7 +504,7 @@ where
 fn read_rows(conn: &Connection, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
     let width = sheet_columns(conn, sheet_id)?.len();
     let mut stmt =
-        conn.prepare("SELECT id, sheet_id, position, cells_json, updated_at, formats_json, height FROM note_rows WHERE sheet_id = ?1 ORDER BY position, id")?;
+        conn.prepare("SELECT id, sheet_id, position, cells_json, updated_at, formats_json, height, merges_json FROM note_rows WHERE sheet_id = ?1 ORDER BY position, id")?;
     let rows = stmt.query_map([sheet_id], |r| {
         Ok(NoteRow {
             id: r.get(0)?,
@@ -489,6 +513,7 @@ fn read_rows(conn: &Connection, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
             cells: fit(parse_list(&r.get::<_, String>(3)?), width),
             formats: fit(parse_list(&r.get::<_, String>(5)?), width),
             height: r.get(6)?,
+            merges: fit(parse_list(&r.get::<_, String>(7)?), width),
             updated_at: r.get(4)?,
         })
     })?;
@@ -518,7 +543,8 @@ pub fn create_note_row(state: State<AppState>, sheet_id: i64, cells: Vec<String>
     let id = conn.last_insert_rowid();
     touch_sheet(&conn, sheet_id)?;
     let formats = vec![String::new(); cells.len()];
-    Ok(NoteRow { id, sheet_id, position: next_position, cells, formats, height: 0, updated_at: now_iso() })
+    let merges = vec![String::new(); cells.len()];
+    Ok(NoteRow { id, sheet_id, position: next_position, cells, formats, height: 0, merges, updated_at: now_iso() })
 }
 
 #[tauri::command]
@@ -538,13 +564,14 @@ pub fn update_note_row(state: State<AppState>, id: i64, cells: Vec<String>) -> A
         rusqlite::params![id, dump_list(&cells), now],
     )?;
     touch_sheet(&conn, sheet_id)?;
-    let (position, formats_raw, height) = conn.query_row(
-        "SELECT position, formats_json, height FROM note_rows WHERE id = ?1",
+    let (position, formats_raw, height, merges_raw) = conn.query_row(
+        "SELECT position, formats_json, height, merges_json FROM note_rows WHERE id = ?1",
         [id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)),
     )?;
     let formats = fit(parse_list(&formats_raw), cells.len());
-    Ok(NoteRow { id, sheet_id, position, cells, formats, height, updated_at: now })
+    let merges = fit(parse_list(&merges_raw), cells.len());
+    Ok(NoteRow { id, sheet_id, position, cells, formats, height, merges, updated_at: now })
 }
 
 /// Only the letters the UI knows, in a stable order, deduped. An unknown
@@ -552,13 +579,23 @@ pub fn update_note_row(state: State<AppState>, id: i64, cells: Vec<String>) -> A
 /// one has never heard of must not make the cell unwritable, and the value is
 /// cosmetic anyway.
 fn clean_format(raw: &str) -> String {
+    // Four disjoint alphabets, so nothing is ambiguous and order in the stored
+    // string never matters: text colour, fill, styles, alignment.
     const COLOURS: &str = "rogbpm";
-    const STYLES: &str = "BI";
+    const FILLS: &str = "1234567";
+    const STYLES: &str = "BIUS";
+    const ALIGN: &str = "LMR";
     let mut colour = None;
+    let mut fill = None;
+    let mut align = None;
     let mut styles: Vec<char> = Vec::new();
     for ch in raw.chars() {
         if COLOURS.contains(ch) {
-            colour = Some(ch); // last colour wins; there is only ever one
+            colour = Some(ch); // last wins; there is only ever one
+        } else if FILLS.contains(ch) {
+            fill = Some(ch);
+        } else if ALIGN.contains(ch) {
+            align = Some(ch);
         } else if STYLES.contains(ch) && !styles.contains(&ch) {
             styles.push(ch);
         }
@@ -568,7 +605,13 @@ fn clean_format(raw: &str) -> String {
     if let Some(c) = colour {
         out.push(c);
     }
+    if let Some(f) = fill {
+        out.push(f);
+    }
     out.extend(styles);
+    if let Some(a) = align {
+        out.push(a);
+    }
     out
 }
 
@@ -647,6 +690,129 @@ pub fn set_note_column_width(state: State<AppState>, sheet_id: i64, index: usize
         rusqlite::params![sheet_id, dump_widths(&widths), now_iso()],
     )?;
     read_sheet(&conn, sheet_id)
+}
+
+/// A cell's column span. 1 (or 0) un-merges it. The cells it swallows are
+/// marked "0" so the grid knows to draw nothing for them; their TEXT is left
+/// alone, so un-merging gives it straight back.
+#[tauri::command]
+pub fn set_note_cell_merge(state: State<AppState>, row_id: i64, col_index: usize, span: i64) -> AppResult<NoteRow> {
+    let conn = state.db.lock().unwrap();
+    let sheet_id: Option<i64> = conn
+        .query_row("SELECT sheet_id FROM note_rows WHERE id = ?1", [row_id], |r| r.get(0))
+        .optional()?;
+    let Some(sheet_id) = sheet_id else {
+        return Err(AppError::NotFound(format!("Note row {row_id} no longer exists.")));
+    };
+    let width = sheet_columns(&conn, sheet_id)?.len();
+    if col_index >= width {
+        return Err(AppError::Validation("That column no longer exists.".to_string()));
+    }
+    let raw: String = conn.query_row("SELECT merges_json FROM note_rows WHERE id = ?1", [row_id], |r| r.get(0))?;
+    let mut merges = fit(parse_list(&raw), width);
+
+    // Whatever this cell used to swallow is released first, so shrinking a
+    // merge cannot leave orphaned "0"s that draw as invisible cells forever.
+    let old: usize = merges[col_index].parse().unwrap_or(1).max(1);
+    for i in col_index + 1..(col_index + old).min(width) {
+        merges[i] = String::new();
+    }
+
+    let span = span.max(1) as usize;
+    let span = span.min(width - col_index); // never runs off the end of the row
+    if span <= 1 {
+        merges[col_index] = String::new();
+    } else {
+        merges[col_index] = span.to_string();
+        for i in col_index + 1..col_index + span {
+            merges[i] = "0".to_string();
+        }
+    }
+    let store = if merges.iter().all(|m| m.is_empty()) { Vec::new() } else { merges };
+    conn.execute(
+        "UPDATE note_rows SET merges_json = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![row_id, dump_list(&store), now_iso()],
+    )?;
+    touch_sheet(&conn, sheet_id)?;
+    read_rows(&conn, sheet_id)?
+        .into_iter()
+        .find(|r| r.id == row_id)
+        .ok_or_else(|| AppError::NotFound(format!("Note row {row_id} no longer exists.")))
+}
+
+/// How many rows stay stuck to the top while the rest scrolls.
+#[tauri::command]
+pub fn set_note_frozen_rows(state: State<AppState>, sheet_id: i64, rows: i64) -> AppResult<NoteSheet> {
+    let conn = state.db.lock().unwrap();
+    conn.execute(
+        "UPDATE note_sheets SET frozen_rows = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, rows.clamp(0, 10), now_iso()],
+    )?;
+    read_sheet(&conn, sheet_id)
+}
+
+/// A new blank row AT `position`, pushing everything from there down.
+///
+/// One transaction, and the shift runs from the bottom up so the UNIQUE-ish
+/// ordering never collides midway. Positions are only an ordering, so a gap
+/// would be harmless - but a duplicate would make two rows swap places at
+/// random on the next read, which is the kind of thing that looks like data
+/// loss.
+#[tauri::command]
+pub fn insert_note_row_at(state: State<AppState>, sheet_id: i64, position: i64) -> AppResult<Vec<NoteRow>> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let width = sheet_columns(&tx, sheet_id)?.len();
+    tx.execute(
+        "UPDATE note_rows SET position = position + 1 WHERE sheet_id = ?1 AND position >= ?2",
+        rusqlite::params![sheet_id, position],
+    )?;
+    tx.execute(
+        "INSERT INTO note_rows(sheet_id, position, cells_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+        rusqlite::params![sheet_id, position, dump_list(&vec![String::new(); width]), now_iso()],
+    )?;
+    tx.execute(
+        "UPDATE note_sheets SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![sheet_id, now_iso()],
+    )?;
+    tx.commit()?;
+    read_rows(&conn, sheet_id)
+}
+
+/// A copy of one row directly beneath it - text, colours and merges included.
+#[tauri::command]
+pub fn duplicate_note_row(state: State<AppState>, row_id: i64) -> AppResult<Vec<NoteRow>> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let (sheet_id, position, cells, formats, merges, height) = tx.query_row(
+        "SELECT sheet_id, position, cells_json, formats_json, merges_json, height FROM note_rows WHERE id = ?1",
+        [row_id],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        },
+    )?;
+    tx.execute(
+        "UPDATE note_rows SET position = position + 1 WHERE sheet_id = ?1 AND position > ?2",
+        rusqlite::params![sheet_id, position],
+    )?;
+    tx.execute(
+        "INSERT INTO note_rows(sheet_id, position, cells_json, formats_json, merges_json, height, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        rusqlite::params![sheet_id, position + 1, cells, formats, merges, height, now_iso()],
+    )?;
+    tx.execute(
+        "UPDATE note_sheets SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![sheet_id, now_iso()],
+    )?;
+    tx.commit()?;
+    read_rows(&conn, sheet_id)
 }
 
 #[tauri::command]

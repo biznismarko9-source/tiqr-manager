@@ -2390,6 +2390,8 @@ export interface NoteSheet {
   widths: number[];
   /** The sheet's default row height in px. */
   rowHeight: number;
+  /** 2.57.0: how many rows stay stuck to the top while the rest scrolls. */
+  frozenRows: number;
 }
 
 export interface NoteRow {
@@ -2404,6 +2406,9 @@ export interface NoteRow {
   formats: string[];
   /** Per-row height in px; 0 means "use the sheet's rowHeight". */
   height: number;
+  /** 2.57.0: column spans aligned with `cells` - "" / "1" normal, "N" spans N,
+   *  "0" covered by a merge to the left. */
+  merges: string[];
   updatedAt: string;
 }
 

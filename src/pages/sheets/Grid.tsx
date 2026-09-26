@@ -44,25 +44,53 @@ const GUTTER_W = 30;
 const LETTER_H = 15;
 const MICRO_FONT = 9;
 
-/** One colour letter from migration 034 to the class that draws it. Both
- *  themes, because the grid follows the app's light/dark switch. */
+/** Text colours. 2.57.0: marko asked for these to be stronger ("farby nech su
+ *  sytsie"), so light mode went 600 -> 700 saturated hues and dark mode 400 ->
+ *  300, which is a real step up on both grounds rather than one tuned for one
+ *  theme and merely legible on the other. */
 const COLOUR_CLASS: Record<string, string> = {
-  r: "text-red-600 dark:text-red-400",
-  o: "text-amber-600 dark:text-amber-400",
-  g: "text-green-700 dark:text-green-400",
-  b: "text-blue-600 dark:text-blue-400",
-  p: "text-purple-600 dark:text-purple-400",
-  m: "text-slate-400 dark:text-slate-500",
+  r: "text-red-700 dark:text-red-300",
+  o: "text-orange-700 dark:text-orange-300",
+  g: "text-emerald-700 dark:text-emerald-300",
+  b: "text-blue-700 dark:text-blue-300",
+  p: "text-fuchsia-700 dark:text-fuchsia-300",
+  m: "text-slate-500 dark:text-slate-400",
 };
 
+/** Fills. Deliberately far lighter than the text colours - a fill sits UNDER
+ *  text that has to stay readable in both themes, so these are tints, not the
+ *  same hue at the same strength. */
+const FILL_CLASS: Record<string, string> = {
+  "1": "bg-red-100 dark:bg-red-950",
+  "2": "bg-orange-100 dark:bg-orange-950",
+  "3": "bg-emerald-100 dark:bg-emerald-950",
+  "4": "bg-blue-100 dark:bg-blue-950",
+  "5": "bg-fuchsia-100 dark:bg-fuchsia-950",
+  "6": "bg-slate-200 dark:bg-slate-800",
+  "7": "bg-yellow-100 dark:bg-yellow-950",
+};
+
+const ALIGN_CLASS: Record<string, string> = { L: "text-left", M: "text-center", R: "text-right" };
+
 export const COLOURS: { flag: string; label: string; dot: string }[] = [
-  { flag: "", label: "Default", dot: "bg-slate-400" },
-  { flag: "r", label: "Red", dot: "bg-red-500" },
-  { flag: "o", label: "Amber", dot: "bg-amber-500" },
-  { flag: "g", label: "Green", dot: "bg-green-500" },
-  { flag: "b", label: "Blue", dot: "bg-blue-500" },
-  { flag: "p", label: "Purple", dot: "bg-purple-500" },
-  { flag: "m", label: "Grey", dot: "bg-slate-400" },
+  { flag: "", label: "Default text", dot: "bg-slate-400" },
+  { flag: "r", label: "Red", dot: "bg-red-600" },
+  { flag: "o", label: "Orange", dot: "bg-orange-600" },
+  { flag: "g", label: "Green", dot: "bg-emerald-600" },
+  { flag: "b", label: "Blue", dot: "bg-blue-600" },
+  { flag: "p", label: "Pink", dot: "bg-fuchsia-600" },
+  { flag: "m", label: "Grey", dot: "bg-slate-500" },
+];
+
+export const FILLS: { flag: string; label: string; dot: string }[] = [
+  { flag: "", label: "No fill", dot: "bg-transparent border border-slate-300 dark:border-slate-600" },
+  { flag: "1", label: "Red", dot: "bg-red-300" },
+  { flag: "2", label: "Orange", dot: "bg-orange-300" },
+  { flag: "3", label: "Green", dot: "bg-emerald-300" },
+  { flag: "4", label: "Blue", dot: "bg-blue-300" },
+  { flag: "5", label: "Pink", dot: "bg-fuchsia-300" },
+  { flag: "6", label: "Grey", dot: "bg-slate-400" },
+  { flag: "7", label: "Yellow", dot: "bg-yellow-300" },
 ];
 
 /** A stored flag string to the classes that draw it. An unknown letter draws
@@ -71,21 +99,60 @@ export function formatClass(f: string): string {
   let out = "";
   for (const ch of f) {
     if (COLOUR_CLASS[ch]) out += ` ${COLOUR_CLASS[ch]}`;
+    else if (FILL_CLASS[ch]) out += ` ${FILL_CLASS[ch]}`;
+    else if (ALIGN_CLASS[ch]) out += ` ${ALIGN_CLASS[ch]}`;
     else if (ch === "B") out += " font-semibold";
     else if (ch === "I") out += " italic";
+    else if (ch === "U") out += " underline underline-offset-2";
+    else if (ch === "S") out += " line-through";
   }
   return out;
 }
 
 /** Toggling one flag on a cell: a colour REPLACES the old colour (there is
  *  only ever one), a style toggles on and off. */
-export function toggleFlag(current: string, flag: string): string {
-  if (flag === "") return current.replace(/[rogbpm]/g, "");
-  if ("BI".includes(flag)) {
-    return current.includes(flag) ? current.replace(flag, "") : current + flag;
+/** Which alphabet a flag belongs to decides how it toggles. A member of an
+ *  exclusive set REPLACES whatever was there; a style toggles on and off. The
+ *  four sets are the same ones `clean_format` uses in Rust, and the two must
+ *  keep agreeing or a colour will appear to flip back on the next load. */
+const EXCLUSIVE: RegExp[] = [/[rogbpm]/g, /[1234567]/g, /[LMR]/g];
+
+/** The same normal form `clean_format` produces in Rust: colour, fill, sorted
+ *  styles, alignment. Without this the UI appends styles in click order and the
+ *  backend sorts them, so "BUS" here becomes "BSU" there - identical to look
+ *  at, but the two strings diverge, which is exactly what PROTECTED_AREAS says
+ *  must not happen. */
+function normaliseFlags(f: string): string {
+  let colour = "";
+  let fill = "";
+  let align = "";
+  const styles: string[] = [];
+  for (const ch of f) {
+    if ("rogbpm".includes(ch)) colour = ch;
+    else if ("1234567".includes(ch)) fill = ch;
+    else if ("LMR".includes(ch)) align = ch;
+    else if ("BIUS".includes(ch) && !styles.includes(ch)) styles.push(ch);
   }
-  const without = current.replace(/[rogbpm]/g, "");
-  return current.includes(flag) ? without : flag + without;
+  styles.sort();
+  return colour + fill + styles.join("") + align;
+}
+
+export function toggleFlag(current: string, flag: string): string {
+  // "" clears the text colour, "fill:" clears the fill, "align:" the alignment.
+  if (flag === "") return normaliseFlags(current.replace(EXCLUSIVE[0], ""));
+  if (flag === "fill:") return normaliseFlags(current.replace(EXCLUSIVE[1], ""));
+  if (flag === "align:") return normaliseFlags(current.replace(EXCLUSIVE[2], ""));
+  if ("BIUS".includes(flag)) {
+    return normaliseFlags(current.includes(flag) ? current.replace(flag, "") : current + flag);
+  }
+  const set = EXCLUSIVE.find((re) => {
+    re.lastIndex = 0;
+    return re.test(flag);
+  });
+  if (!set) return normaliseFlags(current);
+  set.lastIndex = 0;
+  const without = current.replace(set, "");
+  return normaliseFlags(current.includes(flag) ? without : flag + without);
 }
 
 export type Sel = { r: number; c: number };
@@ -117,6 +184,8 @@ export type GridHandle = {
   moveColumn: (delta: -1 | 1) => void;
   deleteRow: () => void;
   insertToday: () => void;
+  /** Writes a literal into the selected cell — the date/time picker uses it. */
+  insertText: (text: string) => void;
   clearCell: () => void;
   sortBySelected: (dir: "asc" | "desc" | null) => void;
   /** 2.56.0 */
@@ -126,6 +195,14 @@ export type GridHandle = {
   resetRowHeight: () => void;
   nudgeColumnWidth: (delta: number) => void;
   setSheetRowHeight: (h: number) => void;
+  /** 2.57.0 */
+  mergeSelected: (span: number) => void;
+  unmergeSelected: () => void;
+  insertRow: (where: "above" | "below") => void;
+  duplicateRow: () => void;
+  clearFormatting: () => void;
+  setFrozenRows: (n: number) => void;
+  columnStats: () => { count: number; sum: number | null };
 };
 
 export default function Grid({
@@ -161,14 +238,32 @@ export default function Grid({
   const [sort, setSort] = useState<Sort>(null);
   const [editing, setEditing] = useState<{ r: number; c: number; value: string } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  /** Live drag of a column edge or a row edge. `px` is what is on screen right
+   *  now; the write happens once, on mouse-up, so a drag is one row in the
+   *  database and not one per pixel. */
+  const [drag, setDrag] = useState<
+    { kind: "col"; index: number; px: number } | { kind: "row"; rowId: number; index: number; px: number } | null
+  >(null);
+  const dragRef = useRef<typeof drag>(null);
+  dragRef.current = drag;
+  /** Where the edge being dragged started, in page coordinates, so the live
+   *  size is just `pointer - origin` instead of an accumulated delta that
+   *  drifts once the pointer leaves the window and comes back. */
+  const dragOrigin = useRef(0);
 
   const columns = sheet.columns;
   const baseRowH = sheet.rowHeight > 0 ? sheet.rowHeight : 24;
   const font = (BASE_FONT * zoom).toFixed(1);
-  /** A row's own height if it has one, otherwise the sheet's. */
-  const heightOf = (row: NoteRow | undefined) =>
-    Math.round((row && row.height > 0 ? row.height : baseRowH) * zoom);
-  const widthOf = (i: number) => Math.round(((sheet.widths[i] ?? 0) > 0 ? sheet.widths[i] : DEFAULT_COL_W) * zoom);
+  /** A row's own height if it has one, otherwise the sheet's - and whatever
+   *  the pointer is doing right now, if this is the edge being dragged. */
+  const heightOf = (row: NoteRow | undefined) => {
+    if (drag?.kind === "row" && row && drag.rowId === row.id) return drag.px;
+    return Math.round((row && row.height > 0 ? row.height : baseRowH) * zoom);
+  };
+  const widthOf = (i: number) => {
+    if (drag?.kind === "col" && drag.index === i) return drag.px;
+    return Math.round(((sheet.widths[i] ?? 0) > 0 ? sheet.widths[i] : DEFAULT_COL_W) * zoom);
+  };
   const rowH = Math.round(baseRowH * zoom);
 
   useEffect(() => {
@@ -269,6 +364,45 @@ export default function Grid({
   function focusBox() {
     boxRef.current?.focus();
   }
+
+  /** A drag is tracked on the DOCUMENT, not on the handle: the pointer moves
+   *  far faster than a 5px strip and would otherwise slip off it mid-drag. */
+  useEffect(() => {
+    if (!drag) return;
+    const move = (e: MouseEvent) => {
+      setDrag((d) => {
+        if (!d) return d;
+        const px = d.kind === "col" ? Math.max(40, Math.min(900, e.clientX - dragOrigin.current))
+                                    : Math.max(16, Math.min(400, e.clientY - dragOrigin.current));
+        return { ...d, px };
+      });
+    };
+    const up = () => {
+      const d = dragRef.current;
+      setDrag(null);
+      if (!d) return;
+      void (async () => {
+        try {
+          if (d.kind === "col") {
+            await api.setNoteColumnWidth(sheet.id, d.index, Math.round(d.px / zoom));
+            onSheetChanged();
+          } else {
+            const h = Math.round(d.px / zoom);
+            await api.setNoteRowHeight(d.rowId, h);
+            setRows((rs) => rs.map((x) => (x.id === d.rowId ? { ...x, height: h } : x)));
+          }
+        } catch (e) {
+          toast.error(errMsg(e));
+        }
+      })();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    return () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+  }, [drag, sheet.id, zoom, setRows, toast, onSheetChanged]);
 
   /** `grown` is 1 when the caller has just created rows this render does not
    *  know about, so Enter on the blank bottom row lands on the new blank row
@@ -418,6 +552,7 @@ export default function Grid({
         const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         void commit(sel.r, sel.c, iso);
       },
+      insertText: (text) => void commit(sel.r, sel.c, text),
       clearCell: () => void commit(sel.r, sel.c, ""),
       sortBySelected: (dir) => setSort(dir ? { index: sel.c, dir } : null),
 
@@ -478,6 +613,102 @@ export default function Grid({
           }
         })();
       },
+      mergeSelected: (span) => {
+        const row = display[sel.r];
+        if (!row) {
+          toast.error("Type something in that row first, then merge it.");
+          return;
+        }
+        void (async () => {
+          try {
+            const saved = await api.setNoteCellMerge(row.id, sel.c, span);
+            setRows((rs) => rs.map((x) => (x.id === saved.id ? saved : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      unmergeSelected: () => {
+        const row = display[sel.r];
+        if (!row) return;
+        void (async () => {
+          try {
+            const saved = await api.setNoteCellMerge(row.id, sel.c, 1);
+            setRows((rs) => rs.map((x) => (x.id === saved.id ? saved : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      insertRow: (where) => {
+        const row = display[sel.r];
+        const at = row ? row.position + (where === "below" ? 1 : 0) : rows.length;
+        void (async () => {
+          try {
+            const all = await api.insertNoteRowAt(sheet.id, at);
+            setRows(() => all);
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      duplicateRow: () => {
+        const row = display[sel.r];
+        if (!row) {
+          toast.error("There is nothing in that row to duplicate.");
+          return;
+        }
+        void (async () => {
+          try {
+            const all = await api.duplicateNoteRow(row.id);
+            setRows(() => all);
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      clearFormatting: () => {
+        const row = display[sel.r];
+        if (!row) return;
+        void (async () => {
+          try {
+            const saved = await api.setNoteCellFormat(row.id, sel.c, "");
+            setRows((rs) => rs.map((x) => (x.id === saved.id ? saved : x)));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      setFrozenRows: (n) => {
+        void (async () => {
+          try {
+            await api.setNoteFrozenRows(sheet.id, n);
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      columnStats: () => {
+        let count = 0;
+        let sum = 0;
+        let anyNumber = false;
+        for (const row of display) {
+          const raw = (row.cells[sel.c] ?? "").trim();
+          if (!raw) continue;
+          count += 1;
+          // European decimals and thousands separators, because that is how
+          // prices get typed here: "1 234,50" and "180,00" both read as numbers.
+          const n = Number(raw.replace(/\s/g, "").replace(/\.(?=\d{3}\b)/g, "").replace(",", "."));
+          if (Number.isFinite(n)) {
+            sum += n;
+            anyNumber = true;
+          }
+        }
+        return { count, sum: anyNumber ? sum : null };
+      },
       nudgeColumnWidth: (delta) => {
         const cur = (sheet.widths[sel.c] ?? 0) > 0 ? sheet.widths[sel.c] : DEFAULT_COL_W;
         void (async () => {
@@ -515,10 +746,21 @@ export default function Grid({
                 className={`border-b border-r ${line} text-center font-normal leading-none tracking-wider ${
                   sel.c === i ? "bg-brand-600 text-white" : chrome
                 }`}
-                style={{ width: widthOf(i), height: LETTER_H, fontSize: `${MICRO_FONT}px` }}
-                title={`Column ${colLetter(i)} — ${(sheet.widths[i] ?? 0) > 0 ? sheet.widths[i] : DEFAULT_COL_W}px`}
+                style={{ width: widthOf(i), height: LETTER_H, fontSize: `${MICRO_FONT}px`, position: "relative" }}
+                title={`Column ${colLetter(i)} — drag the edge to resize`}
               >
                 {colLetter(i)}
+                <span
+                  role="separator"
+                  aria-label={`Resize column ${colLetter(i)}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dragOrigin.current = e.clientX - widthOf(i);
+                    setDrag({ kind: "col", index: i, px: widthOf(i) });
+                  }}
+                  className="absolute -right-[3px] top-0 z-30 h-full w-[6px] cursor-col-resize hover:bg-brand-500/60"
+                />
               </th>
             ))}
           </tr>
@@ -541,17 +783,38 @@ export default function Grid({
             const row = display[r];
             const h = heightOf(row);
             return (
-              <tr key={row?.id ?? `blank-${r}`}>
+              <tr
+                key={row?.id ?? `blank-${r}`}
+                className={r < sheet.frozenRows ? "sticky z-10" : undefined}
+                style={r < sheet.frozenRows ? { top: LETTER_H + rowH + r * rowH } : undefined}
+              >
                 <th
                   className={`border-b border-r ${line} text-center align-middle font-normal leading-none ${
                     sel.r === r ? "bg-brand-600 text-white" : chrome
                   }`}
-                  style={{ width: GUTTER_W, height: h, fontSize: `${MICRO_FONT}px` }}
-                  title={row && row.height > 0 ? `${row.height}px` : undefined}
+                  style={{ width: GUTTER_W, height: h, fontSize: `${MICRO_FONT}px`, position: "relative" }}
+                  title={row ? "Drag the bottom edge to resize" : undefined}
                 >
                   {r + 1}
+                  {row && (
+                    <span
+                      role="separator"
+                      aria-label={`Resize row ${r + 1}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dragOrigin.current = e.clientY - h;
+                        setDrag({ kind: "row", rowId: row.id, index: r, px: h });
+                      }}
+                      className="absolute -bottom-[3px] left-0 z-30 h-[6px] w-full cursor-row-resize hover:bg-brand-500/60"
+                    />
+                  )}
                 </th>
                 {columns.map((_, c) => {
+                  // "0" means a merge to the left already covers this cell, so
+                  // it must not be drawn at all - the colSpan does its job.
+                  if ((row?.merges[c] ?? "") === "0") return null;
+                  const span = Math.max(1, Math.min(Number(row?.merges[c] ?? 1) || 1, columns.length - c));
                   const isSel = sel.r === r && sel.c === c;
                   const cellEdit = editing && editing.r === r && editing.c === c ? editing : null;
                   const hasAlert = row ? alertCells.has(`${row.id}:${c}`) : false;
@@ -569,7 +832,11 @@ export default function Grid({
                       className={`relative border-b border-r ${line} bg-surface p-0 align-middle ${
                         isSel && !cellEdit ? "ring-2 ring-inset ring-brand-500" : ""
                       }`}
-                      style={{ width: widthOf(c), height: h }}
+                      colSpan={span > 1 ? span : undefined}
+                      style={{
+                        width: span > 1 ? undefined : widthOf(c),
+                        height: h,
+                      }}
                     >
                       {cellEdit ? (
                         <input

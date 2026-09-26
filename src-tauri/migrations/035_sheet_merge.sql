@@ -1,0 +1,45 @@
+-- 035: Merged cells, and frozen header rows.
+--
+-- WHY THIS EXISTS
+--
+-- marko: "nech sa daju spojit riadky do jedneho, aj policka ... pridaj tam
+-- viac funkcii, nech to funguje top".
+--
+-- WHY MERGES ARE STRINGS, POSITIONALLY, LIKE CELLS AND FORMATS
+--
+-- `note_rows.merges_json` is a JSON array of STRINGS aligned by index with
+-- that row's `cells_json`, exactly like `formats_json` from migration 034.
+--
+-- Strings, not numbers, and that is not an accident: `reshape_rows` takes one
+-- closure `Fn(Vec<String>) -> Vec<String>` and runs it over every positional
+-- array a row has. Keeping merges in the same type means a column added,
+-- deleted or moved carries its merges through the SAME transformation as its
+-- text and its colour, by construction. A numeric array would need a second,
+-- parallel reshape - which is exactly the kind of thing that gets forgotten
+-- and silently puts a merge on the wrong cell.
+--
+--     ""  or "1"  a normal cell
+--     "3"          this cell spans 3 columns
+--     "0"          covered by a merge that starts to its left; draws nothing
+--
+-- A span that runs off the end of the row is clamped when read, so a merge
+-- can never make a row render wider than the sheet.
+--
+-- MERGING IS HORIZONTAL ONLY
+--
+-- Within one row. That covers "spojit policka" and, by merging a whole row's
+-- cells, "spojit riadky do jedneho" - a title row that is one wide cell.
+-- Vertical merging across rows would need state no row owns, and is not here.
+--
+-- FROZEN ROWS
+--
+-- `note_sheets.frozen_rows` is how many rows stay stuck to the top while the
+-- rest scrolls - the ordinary spreadsheet header freeze. 0 is off.
+--
+-- SYNC
+--
+-- No new tables. Two columns on tables that already carry uid, tombstones and
+-- MERGE_TABLES entries, both defaulting to the pre-035 behaviour.
+
+ALTER TABLE note_rows ADD COLUMN merges_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE note_sheets ADD COLUMN frozen_rows INTEGER NOT NULL DEFAULT 0;

@@ -16,6 +16,50 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.57.0 - ťahanie, spájanie, výplne, kalendár
+
+### Veľkosti sa ťahajú myšou
+
+Chytíš **okraj písmena stĺpca** a ťaháš — stĺpec sa zužuje/rozširuje živo.
+To isté pri **čísle riadku**, spodný okraj mení výšku. Uloží sa to až keď
+pustíš.
+
+### Farby sú sýtejšie + výplne
+
+Text je výraznejší v oboch režimoch. Pribudla **výplň bunky** (8 možností),
+**podčiarknutie**, **preškrtnutie** a **zarovnanie** vľavo/na stred/vpravo.
+
+### Spájanie buniek
+
+Na lište **Merge: 2 · 3 · 4 · all · split**. Spojíš bunku s ďalšími, alebo celý
+riadok do jednej — hodí sa na nadpisy. `split` to rozdelí späť **aj s textom**,
+nič sa nestratí.
+
+Keď stĺpec presunieš alebo zmažeš, spojenie ide s tým, čo si spojil.
+
+### Kalendár a čas
+
+**Insert → Date… / Time… / Date and time…** — vyberieš z kalendára a hodí ti to
+do bunky.
+
+### Čo kedy sa deje
+
+**Coming up** (na lište aj v Insert) prečíta **celý hárok**, nájde všetky
+dátumy a vypíše ich **od najbližšieho**, aj s tým, čo je vedľa nich v riadku.
+Pripočíta aj alerty. Klikneš na riadok a skočí ti na tú bunku.
+
+Nehľadá to v jednom „dátumovom stĺpci" — hľadá to všade, lebo stĺpce tu nič
+nediktujú.
+
+### Ďalšie funkcie
+
+- vložiť riadok **nad/pod** kurzor
+- **duplikovať riadok** aj s farbami a spojeniami
+- **vymazať formátovanie** bunky
+- **zmraziť 1–3 riadky** hore (View), ostanú visieť pri rolovaní
+- dole vedľa hodnoty bunky: **koľko je v stĺpci vyplnených a ich súčet**
+  (rozumie aj `1 234,50`)
+
 ## 2.56.0 - farby, veľkosti, viac miesta
 
 ### Číslovanie je maličké

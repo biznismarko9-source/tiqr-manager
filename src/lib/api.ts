@@ -647,6 +647,13 @@ export const api = {
     invoke<NoteSheet>("set_note_sheet_row_height", { sheetId, height }),
   setNoteColumnWidth: (sheetId: number, index: number, width: number) =>
     invoke<NoteSheet>("set_note_column_width", { sheetId, index, width }),
+  setNoteCellMerge: (rowId: number, colIndex: number, span: number) =>
+    invoke<NoteRow>("set_note_cell_merge", { rowId, colIndex, span }),
+  setNoteFrozenRows: (sheetId: number, rows: number) =>
+    invoke<NoteSheet>("set_note_frozen_rows", { sheetId, rows }),
+  insertNoteRowAt: (sheetId: number, position: number) =>
+    invoke<NoteRow[]>("insert_note_row_at", { sheetId, position }),
+  duplicateNoteRow: (rowId: number) => invoke<NoteRow[]>("duplicate_note_row", { rowId }),
   searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
   // Sheet alerts (2.55.0) - see commands/alerts.rs.
   listSheetAlerts: (includeDone: boolean) => invoke<SheetAlert[]>("list_sheet_alerts", { includeDone }),

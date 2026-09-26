@@ -21,6 +21,44 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.57.0 - merges are STRINGS so one closure moves everything
+
+`merges_json` holds `""`/`"1"`/`"N"`/`"0"` as strings, not numbers, purely so
+`reshape_rows`'s single `Fn(Vec<String>) -> Vec<String>` can carry cells,
+formats AND merges through the same transformation in the same transaction.
+
+A numeric array would need a second, parallel reshape - the exact thing that
+gets forgotten and silently lands a merge on the wrong cell. **If a fourth
+positional array is ever added, make it strings too** and add it to that one
+loop; do not introduce a typed variant.
+
+`set_note_cell_merge` must keep **releasing the old span before applying the
+new one**. Shrinking a 4-wide merge to 2 without that leaves `"0"` on two cells
+nothing covers any more, and they render as nothing at all - invisible, and
+untypeable, for good.
+
+## 2.57.0 - `toggleFlag` must produce `clean_format`'s normal form
+
+The UI appended style letters in click order; Rust sorts them. `BUS` and `BSU`
+draw identically, so nothing looked wrong - but the stored string and the
+in-memory one had diverged, and any comparison between them would be wrong.
+
+`normaliseFlags` in Grid.tsx mirrors `clean_format` exactly: colour, fill,
+sorted styles, alignment. **Change one and change the other**, and re-run the
+round-trip check (every value the UI produces must survive the backend byte for
+byte).
+
+The four alphabets are disjoint on purpose - `rogbpm`, `1234567`, `BIUS`,
+`LMR`. Adding a flag to one of them is safe; adding a letter that already
+appears in another silently reclassifies it.
+
+## 2.57.0 - a drag is tracked on the document and written once
+
+Column/row resize listens on `document` for mousemove/mouseup, from an origin
+captured at mousedown, because the pointer leaves a 6px handle instantly. The
+size is written to the database **on mouse-up only** - a write per mousemove
+would be hundreds of rows per drag and would fight the live preview.
+
 ## 2.56.0 - formats live in the CELLS' shape; `reshape_rows` moves both
 
 `note_rows.formats_json` is aligned by index with `cells_json`, and

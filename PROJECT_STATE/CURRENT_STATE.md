@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.56.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.57.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1997,7 +1997,52 @@ menus carry them too.
 **Colouring needs a stored row.** A row the grid is only drawing has nothing to
 colour, and the UI says so rather than doing nothing.
 
-**Next new migration is 035.**
+**2.57.0 - merges, drag-resize, fills, and "what's coming".** marko, with a
+screenshot of real Google Sheets: *"chcem aby sa dala menit velkost tych
+riadkov a stlpcov, farby nech su sytsie, nech sa daju spojit riadky do jedneho,
+aj policka, pridaj tam viac funkcii ... aj to ze add calendar alebo time a da
+ti to policko a ptm budes vediet co a kedy sa deje"*.
+
+**Migration 035**: `note_rows.merges_json` and `note_sheets.frozen_rows`. No
+new tables again.
+
+**Merges are STRINGS, positionally** - `"" / "1"` normal, `"N"` spans N
+columns, `"0"` covered. Strings and not numbers so `reshape_rows` carries them
+through the SAME `Fn(Vec<String>) -> Vec<String>` closure as cells and
+formats. A merge therefore survives a column move/delete/add by construction.
+**Horizontal only**, within one row; merging a whole row's cells is how you get
+"spojit riadky do jedneho".
+
+**`set_note_cell_merge` releases what the old span swallowed first**, before
+applying the new one - otherwise shrinking a merge leaves orphaned `"0"`s that
+draw as invisible cells forever. It also clamps to the end of the row.
+
+**Drag-resize** on column and row edges. The drag is tracked on the DOCUMENT,
+not the 6px handle (the pointer outruns it), from an origin captured at
+mousedown, and writes ONCE on mouse-up - one database row per drag, not one per
+pixel.
+
+**Formats gained three more alphabets**, all disjoint so order never matters:
+fills `1-7`, styles `BIUS` (bold/italic/underline/strike), alignment `LMR`.
+Text colours went **more saturated** on his request (600→700 light, 400→300
+dark); fills are deliberately far lighter, because text sits on them.
+
+**`toggleFlag` now returns the backend's normal form.** Found while testing:
+the UI appended styles in click order and Rust sorted them, so `BUS` here
+became `BSU` there - identical to look at, and a silent divergence of the exact
+kind PROTECTED_AREAS forbids. `normaliseFlags` mirrors `clean_format`.
+
+**`AgendaPanel` answers "what and when"** by scanning every cell for something
+that looks like a date (`25/09/2026`, `2026-09-25`, `25.9.2026`, optional
+time), because no column declares itself a date column - that is the whole
+point of the free grid. Reminders fold into the same list. The regex is
+anchored so `2026ABC` and `180,00` are not dates; 12 non-dates verified.
+
+**Also**: insert row above/below, duplicate row (text, colours and merges),
+clear formatting, freeze 0-3 header rows, and a column readout in the value bar
+(count filled, and a sum that understands `1 234,50`).
+
+**Next new migration is 036.**
 
 ## Stack / layout
 
