@@ -1,79 +1,124 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { api, errMsg } from "../../lib/api";
-import type { NoteRow, NoteSheet } from "../../lib/types";
-import { Button, ConfirmDialog, Input, TableSkeleton } from "../../components/ui";
-import {
-  IconChevronDown,
-  IconChevronLeft,
-  IconChevronRight,
-  IconChevronUp,
-  IconPencil,
-  IconPlus,
-  IconSearch,
-  IconTrash,
-  IconX,
-} from "../../components/icons";
+import type { NoteRow, NoteSheet, SheetAlert } from "../../lib/types";
 import { useToast } from "../../lib/toast";
 
 /**
- * The grid - marko: "urobil to ako realne google sheets uplne jednoduche".
+ * The grid — marko picked the "Classic" design, asked for it darker, and asked
+ * for the header to stop dictating the contents:
  *
- * The 2.51.0-2.53.0 table put an `<input>` in every cell. It worked, it saved
- * itself, and it did not feel like a spreadsheet - it felt like a form with a
- * hundred boxes. This is the same data through a real grid:
+ *   "nechcem aby podla toho horneho stlpca si mohol zapisovat len co je v nom,
+ *    chcem aby to bolo volne a vedel s tym pracovat"
  *
- *   - a cell is **plain text** until it is being edited; the box appears only
- *     in the one cell you are in
- *   - the **keyboard** drives it: arrows move, Enter edits then goes down, Tab
- *     goes right, Esc cancels, typing straight over a cell replaces it,
- *     Delete clears it
- *   - **row numbers** down the left, like every spreadsheet
- *   - **one blank row is always waiting at the bottom** - typing in it creates
- *     the row, so there is no "Add row" step
+ * So the header is **letters** — A, B, C — exactly like a spreadsheet, and a
+ * column's name is now an optional label underneath that may be empty. A
+ * column no longer describes what belongs in it; it is only a position. (The
+ * Rust validation that rejected an empty column name is gone — 2.55.0.)
  *
- * Storage is untouched: `note_sheets` / `note_rows` from migration 031, one
- * write per committed cell, positional cells (see `PROTECTED_AREAS.md`).
+ * Everything else is the 2.54 grid, which worked: plain-text cells with one
+ * `<input>` only in the cell being edited, keyboard-first movement, row
+ * numbers, and blank rows always waiting at the bottom.
+ *
+ * ## Rows that are drawn but not stored
+ *
+ * The grid always draws at least `MIN_ROWS`. Typing into one of those calls
+ * `ensure_note_rows`, which creates every row up to it in ONE transaction —
+ * otherwise row 30 would be stored as row 4 and jump up the screen.
+ *
+ * ## Colour
+ *
+ * Built from the app's own surface tokens, so it follows the light/dark switch
+ * like every other page. Dark is the one that was tuned: chrome on
+ * `surface-sunken` (near-black), cells on `surface` (a step up), so it reads
+ * as lit cells on dark chrome rather than one flat black sheet.
  */
 
-type Sel = { r: number; c: number };
+const MIN_ROWS = 40;
+const BASE_ROW_H = 24;
+const BASE_FONT = 12.5;
+
+export type Sel = { r: number; c: number };
 type Sort = { index: number; dir: "asc" | "desc" } | null;
 
-export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSheetChanged: () => void }) {
+/** 0 → A, 25 → Z, 26 → AA. */
+export function colLetter(index: number): string {
+  let s = "";
+  let i = index + 1;
+  while (i > 0) {
+    const m = (i - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    i = Math.floor((i - 1) / 26);
+  }
+  return s;
+}
+
+export function cellRef(r: number, c: number): string {
+  return `${colLetter(c)}${r + 1}`;
+}
+
+/** What the toolbar and the menus are allowed to do to the grid, so neither of
+ *  them needs to know how a row or a column is stored. */
+export type GridHandle = {
+  addRows: (n: number) => void;
+  addColumn: () => void;
+  renameColumn: () => void;
+  deleteColumn: () => void;
+  moveColumn: (delta: -1 | 1) => void;
+  deleteRow: () => void;
+  insertToday: () => void;
+  clearCell: () => void;
+  sortBySelected: (dir: "asc" | "desc" | null) => void;
+};
+
+export default function Grid({
+  sheet,
+  rows,
+  setRows,
+  zoom,
+  filter,
+  sel,
+  setSel,
+  alerts,
+  onSheetChanged,
+  onCellValue,
+  bind,
+}: {
+  sheet: NoteSheet;
+  rows: NoteRow[];
+  setRows: (fn: (rs: NoteRow[]) => NoteRow[]) => void;
+  zoom: number;
+  filter: string;
+  sel: Sel;
+  setSel: (s: Sel) => void;
+  alerts: SheetAlert[];
+  onSheetChanged: () => void;
+  /** Feeds the value bar above the grid, and tells the page which STORED row
+   *  the cursor is on - `sel.r` is a display index, so with a filter or a sort
+   *  on it does not line up with `rows` and anything resolving it upstairs
+   *  would point at the wrong row. */
+  onCellValue: (value: string, rowId: number | null) => void;
+  bind: (handle: GridHandle) => void;
+}) {
   const toast = useToast();
-  const [rows, setRows] = useState<NoteRow[] | null>(null);
-  const [filter, setFilter] = useState("");
   const [sort, setSort] = useState<Sort>(null);
-  const [sel, setSel] = useState<Sel>({ r: 0, c: 0 });
   const [editing, setEditing] = useState<{ r: number; c: number; value: string } | null>(null);
-  const [confirmSheet, setConfirmSheet] = useState(false);
-  const [confirmColumn, setConfirmColumn] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
 
   const columns = sheet.columns;
-
-  const loadRows = useCallback(async () => {
-    try {
-      setRows(await api.listNoteRows(sheet.id));
-    } catch (e) {
-      toast.error(errMsg(e));
-      setRows([]);
-    }
-  }, [sheet.id, toast]);
+  const rowH = Math.round(BASE_ROW_H * zoom);
+  const font = (BASE_FONT * zoom).toFixed(1);
+  const smallFont = ((BASE_FONT - 1.5) * zoom).toFixed(1);
 
   useEffect(() => {
-    setRows(null);
-    setSel({ r: 0, c: 0 });
-    setEditing(null);
-    setFilter("");
     setSort(null);
-    void loadRows();
-  }, [loadRows]);
+    setEditing(null);
+  }, [sheet.id]);
 
   /** Filter, then sort. Both are display-only: `rows` keeps the stored order,
    *  so nothing here can write a value into the wrong row. */
   const display = useMemo(() => {
-    let list = rows ?? [];
+    let list = rows;
     const q = filter.trim().toLowerCase();
     if (q) list = list.filter((r) => r.cells.some((c) => c.toLowerCase().includes(q)));
     if (sort) {
@@ -81,7 +126,7 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
       list = [...list].sort((a, b) => {
         const x = a.cells[index] ?? "";
         const y = b.cells[index] ?? "";
-        // An empty cell is a missing value, not a small one - it sinks either way.
+        // An empty cell is a missing value, not a small one — it sinks either way.
         if (!x && !y) return a.position - b.position;
         if (!x) return 1;
         if (!y) return -1;
@@ -92,66 +137,90 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
     return list;
   }, [rows, filter, sort]);
 
-  /** The blank row waiting at the bottom. It is hidden while filtering,
-   *  because a row that does not match the filter would vanish the moment it
-   *  was typed into. */
   const hasBlank = !filter.trim();
-  const rowCount = display.length + (hasBlank ? 1 : 0);
+  const rowCount = hasBlank ? Math.max(display.length + 1, MIN_ROWS) : display.length;
 
-  function cellAt(r: number, c: number): string {
-    const row = display[r];
-    return row ? (row.cells[c] ?? "") : "";
-  }
+  const cellAt = useCallback(
+    (r: number, c: number) => {
+      const row = display[r];
+      return row ? (row.cells[c] ?? "") : "";
+    },
+    [display],
+  );
 
-  /** Writes one cell. The blank bottom row becomes a real row here, and the
-   *  return value says so - the caller needs it to know that the grid is one
-   *  row taller than the render it is still standing in. */
-  async function commit(r: number, c: number, value: string): Promise<boolean> {
-    const row = display[r];
-    if (row) {
-      if ((row.cells[c] ?? "") === value) return false;
-      const next = [...row.cells];
-      while (next.length < columns.length) next.push("");
-      next[c] = value;
-      setRows((rs) => rs?.map((x) => (x.id === row.id ? { ...x, cells: next } : x)) ?? rs);
+  useEffect(() => {
+    onCellValue(editing ? editing.value : cellAt(sel.r, sel.c), display[sel.r]?.id ?? null);
+  }, [editing, sel, cellAt, display, onCellValue]);
+
+  /** Which cells carry a live reminder, so the corner marker can be drawn. */
+  const alertCells = useMemo(() => {
+    const m = new Set<string>();
+    alerts.forEach((a) => {
+      if (a.rowId !== null && a.colIndex !== null && !a.done) m.add(`${a.rowId}:${a.colIndex}`);
+    });
+    return m;
+  }, [alerts]);
+
+  /* ------------------------------- writing ------------------------------ */
+
+  /** Writes one cell. Rows the grid was only drawing become real here, and the
+   *  return value says whether the grid grew — the caller needs it, because it
+   *  is still standing in the render that did not know. */
+  const commit = useCallback(
+    async (r: number, c: number, value: string): Promise<boolean> => {
+      const row = display[r];
+      if (row) {
+        if ((row.cells[c] ?? "") === value) return false;
+        const next = [...row.cells];
+        while (next.length < columns.length) next.push("");
+        next[c] = value;
+        setRows((rs) => rs.map((x) => (x.id === row.id ? { ...x, cells: next } : x)));
+        try {
+          const saved = await api.updateNoteRow(row.id, next);
+          setRows((rs) => rs.map((x) => (x.id === saved.id ? saved : x)));
+        } catch (e) {
+          toast.error(errMsg(e));
+          setRows((rs) => rs.map((x) => (x.id === row.id ? row : x)));
+        }
+        return false;
+      }
+      // A drawn-but-not-stored row. Nothing is created until something is typed.
+      if (!value) return false;
       try {
-        const saved = await api.updateNoteRow(row.id, next);
-        setRows((rs) => rs?.map((x) => (x.id === saved.id ? saved : x)) ?? rs);
+        const all = await api.ensureNoteRows(sheet.id, r + 1);
+        const target = all[r];
+        if (!target) return false;
+        const next = [...target.cells];
+        while (next.length < columns.length) next.push("");
+        next[c] = value;
+        const saved = await api.updateNoteRow(target.id, next);
+        setRows(() => all.map((x) => (x.id === saved.id ? saved : x)));
         onSheetChanged();
+        return true;
       } catch (e) {
         toast.error(errMsg(e));
-        setRows((rs) => rs?.map((x) => (x.id === row.id ? row : x)) ?? rs);
+        return false;
       }
-      return false;
-    }
-    // The blank row: nothing is stored until something is actually typed.
-    if (!value) return false;
-    const cells = columns.map((_, i) => (i === c ? value : ""));
-    try {
-      const created = await api.createNoteRow(sheet.id, cells);
-      setRows((rs) => [...(rs ?? []), created]);
-      onSheetChanged();
-      return true;
-    } catch (e) {
-      toast.error(errMsg(e));
-      return false;
-    }
-  }
+    },
+    [display, columns.length, setRows, sheet.id, toast, onSheetChanged],
+  );
 
   function focusBox() {
     boxRef.current?.focus();
   }
 
-  /** `grown` is 1 when the caller has just created a row that this render does
-   *  not know about yet - without it, Enter on the blank bottom row would
-   *  clamp straight back onto the row it had only just created instead of
-   *  landing on the new blank one below. */
-  function moveTo(r: number, c: number, grown = 0) {
-    setSel({
-      r: Math.max(0, Math.min(r, Math.max(0, rowCount - 1 + grown))),
-      c: Math.max(0, Math.min(c, columns.length - 1)),
-    });
-  }
+  /** `grown` is 1 when the caller has just created rows this render does not
+   *  know about, so Enter on the blank bottom row lands on the new blank row
+   *  below instead of clamping back onto the one it just created. */
+  const moveTo = useCallback(
+    (r: number, c: number, grown = 0) => {
+      setSel({
+        r: Math.max(0, Math.min(r, Math.max(0, rowCount - 1 + grown))),
+        c: Math.max(0, Math.min(c, columns.length - 1)),
+      });
+    },
+    [rowCount, columns.length, setSel],
+  );
 
   function startEdit(r: number, c: number, initial?: string) {
     setSel({ r, c });
@@ -170,10 +239,9 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
   }
 
   function onGridKey(e: ReactKeyboardEvent<HTMLDivElement>) {
-    if (editing) return; // the input owns the keyboard while a cell is open
+    if (editing) return; // the open cell's own input owns the keyboard
     const { r, c } = sel;
     const k = e.key;
-
     if (k === "ArrowDown") { e.preventDefault(); moveTo(r + 1, c); return; }
     if (k === "ArrowUp") { e.preventDefault(); moveTo(r - 1, c); return; }
     if (k === "ArrowRight") { e.preventDefault(); moveTo(r, c + 1); return; }
@@ -183,7 +251,8 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
     if (k === "Delete" || k === "Backspace") { e.preventDefault(); void commit(r, c, ""); return; }
     if (k === "Home") { e.preventDefault(); moveTo(r, 0); return; }
     if (k === "End") { e.preventDefault(); moveTo(r, columns.length - 1); return; }
-
+    if (k === "PageDown") { e.preventDefault(); moveTo(r + 15, c); return; }
+    if (k === "PageUp") { e.preventDefault(); moveTo(r - 15, c); return; }
     // Typing straight over a selected cell replaces it, as in any spreadsheet.
     if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
@@ -191,339 +260,228 @@ export default function Grid({ sheet, onSheetChanged }: { sheet: NoteSheet; onSh
     }
   }
 
-  /* ----------------------------- columns ----------------------------- */
+  /* ------------------------ structure (menu actions) -------------------- */
 
-  async function afterColumnChange() {
-    await loadRows();
+  const reload = useCallback(async () => {
+    try {
+      const fresh = await api.listNoteRows(sheet.id);
+      setRows(() => fresh);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
     setSort(null);
     setEditing(null);
     onSheetChanged();
-  }
+  }, [sheet.id, setRows, toast, onSheetChanged]);
 
-  async function addColumn() {
-    const name = window.prompt("Column name");
-    if (!name?.trim()) return;
-    try {
-      await api.addNoteColumn(sheet.id, name.trim());
-      await afterColumnChange();
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  }
-
-  async function renameColumn(i: number) {
-    const name = window.prompt("Column name", columns[i]);
-    if (!name?.trim() || name.trim() === columns[i]) return;
-    try {
-      await api.renameNoteColumn(sheet.id, i, name.trim());
-      await afterColumnChange();
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  }
-
-  async function removeColumn(i: number) {
-    try {
-      await api.deleteNoteColumn(sheet.id, i);
-      await afterColumnChange();
-      moveTo(sel.r, Math.min(sel.c, columns.length - 2));
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-    setConfirmColumn(null);
-  }
-
-  async function moveColumn(i: number, delta: -1 | 1) {
-    const to = i + delta;
-    if (to < 0 || to >= columns.length) return;
-    try {
-      await api.reorderNoteColumn(sheet.id, i, to);
-      await afterColumnChange();
-      moveTo(sel.r, to);
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  }
-
-  async function removeRow(r: number) {
-    const row = display[r];
-    if (!row) return;
-    try {
-      await api.deleteNoteRow(row.id);
-      setRows((rs) => rs?.filter((x) => x.id !== row.id) ?? rs);
-      onSheetChanged();
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  }
-
-  function toggleSort(i: number) {
-    setEditing(null);
-    setSort((s) => {
-      if (!s || s.index !== i) return { index: i, dir: "asc" };
-      if (s.dir === "asc") return { index: i, dir: "desc" };
-      return null; // a third click puts the sheet back in its own order
-    });
-  }
-
-  /* ------------------------------ render ------------------------------ */
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">{sheet.name}</h2>
-        <div className="relative w-full max-w-xs">
-          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
-          <Input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter rows…"
-            aria-label="Filter rows in this sheet"
-            className="pl-9"
-          />
-        </div>
-        {(filter.trim() || sort) && (
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            {display.length} of {rows?.length ?? 0}
-            {sort ? ` · ${columns[sort.index]} ${sort.dir === "asc" ? "A→Z" : "Z→A"}` : ""}{" "}
-            <button
-              type="button"
-              className="underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-200"
-              onClick={() => {
-                setFilter("");
-                setSort(null);
-              }}
-            >
-              clear
-            </button>
-          </span>
-        )}
-        <div className="ml-auto flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            onClick={async () => {
-              const name = window.prompt("Sheet name", sheet.name);
-              if (!name?.trim() || name.trim() === sheet.name) return;
-              try {
-                await api.renameNoteSheet(sheet.id, name.trim());
-                onSheetChanged();
-              } catch (e) {
-                toast.error(errMsg(e));
-              }
-            }}
-          >
-            <IconPencil className="h-4 w-4" /> Rename
-          </Button>
-          <Button variant="secondary" onClick={addColumn}>
-            <IconPlus className="h-4 w-4" /> Column
-          </Button>
-          <Button variant="secondary" onClick={() => setConfirmSheet(true)}>
-            <IconTrash className="h-4 w-4" /> Delete sheet
-          </Button>
-        </div>
-      </div>
-
-      {rows === null ? (
-        <TableSkeleton />
-      ) : (
-        <>
-          <div
-            ref={boxRef}
-            tabIndex={0}
-            onKeyDown={onGridKey}
-            className="table-shell outline-none focus-visible:ring-1 focus-visible:ring-brand-500"
-          >
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0 z-10 bg-surface">
-                <tr>
-                  <th className="w-[44px] border-b border-r border-slate-200 bg-surface-sunken px-1 py-1.5 text-[11px] font-normal text-slate-400 dark:border-slate-700 dark:text-slate-500" />
-                  {columns.map((c, i) => {
-                    const sortDir = sort && sort.index === i ? sort.dir : null;
-                    return (
-                    <th
-                      key={i}
-                      className="min-w-[120px] border-b border-r border-slate-200 bg-surface-sunken px-2 py-1.5 text-left text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300"
-                    >
-                      <span className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => toggleSort(i)}
-                          title={`Sort by ${c}`}
-                          className="inline-flex min-w-0 flex-1 items-center gap-1 truncate hover:text-slate-900 dark:hover:text-slate-100"
-                        >
-                          <span className="truncate">{c}</span>
-                          {sortDir === "asc" && <IconChevronUp className="h-3 w-3 shrink-0" />}
-                          {sortDir === "desc" && <IconChevronDown className="h-3 w-3 shrink-0" />}
-                        </button>
-                        <span className="flex shrink-0 items-center text-slate-300 dark:text-slate-600">
-                          {i > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => void moveColumn(i, -1)}
-                              aria-label={`Move column ${c} left`}
-                              title="Move left"
-                              className="hover:text-slate-700 dark:hover:text-slate-200"
-                            >
-                              <IconChevronLeft className="h-3 w-3" />
-                            </button>
-                          )}
-                          {i < columns.length - 1 && (
-                            <button
-                              type="button"
-                              onClick={() => void moveColumn(i, 1)}
-                              aria-label={`Move column ${c} right`}
-                              title="Move right"
-                              className="hover:text-slate-700 dark:hover:text-slate-200"
-                            >
-                              <IconChevronRight className="h-3 w-3" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void renameColumn(i)}
-                            aria-label={`Rename column ${c}`}
-                            title="Rename"
-                            className="ml-0.5 hover:text-slate-700 dark:hover:text-slate-200"
-                          >
-                            <IconPencil className="h-3 w-3" />
-                          </button>
-                          {columns.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmColumn(i)}
-                              aria-label={`Delete column ${c}`}
-                              title="Delete column"
-                              className="hover:text-red-600 dark:hover:text-red-400"
-                            >
-                              <IconX className="h-3 w-3" />
-                            </button>
-                          )}
-                        </span>
-                      </span>
-                    </th>
-                    );
-                  })}
-                  <th className="w-[36px] border-b border-slate-200 bg-surface-sunken dark:border-slate-700" />
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from({ length: rowCount }, (_, r) => {
-                  const isBlank = r >= display.length;
-                  return (
-                    <tr key={display[r]?.id ?? "blank"} className="group">
-                      <td className="border-b border-r border-slate-200 bg-surface-sunken px-1 py-1 text-center text-[11px] tabular-nums text-slate-400 dark:border-slate-700 dark:text-slate-500">
-                        {r + 1}
-                      </td>
-                      {columns.map((_, c) => {
-                        const isSel = sel.r === r && sel.c === c;
-                        const cellEdit = editing && editing.r === r && editing.c === c ? editing : null;
-                        return (
-                          <td
-                            key={c}
-                            onMouseDown={() => {
-                              if (cellEdit) return;
-                              if (editing) void finishEdit("none");
-                              setSel({ r, c });
-                              focusBox();
-                            }}
-                            onDoubleClick={() => startEdit(r, c)}
-                            className={`border-b border-r border-slate-200 p-0 align-middle dark:border-slate-700 ${
-                              isSel && !cellEdit ? "ring-2 ring-inset ring-brand-500" : ""
-                            }`}
-                          >
-                            {cellEdit ? (
-                              <input
-                                autoFocus
-                                value={cellEdit.value}
-                                onChange={(e) => setEditing({ r, c, value: e.target.value })}
-                                onBlur={() => void finishEdit("none")}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    void finishEdit("down");
-                                  } else if (e.key === "Tab") {
-                                    e.preventDefault();
-                                    void finishEdit(e.shiftKey ? "left" : "right");
-                                  } else if (e.key === "Escape") {
-                                    e.preventDefault();
-                                    setEditing(null);
-                                    focusBox();
-                                  }
-                                }}
-                                aria-label={`${columns[c]}, row ${r + 1}`}
-                                className="w-full bg-transparent px-2 py-1.5 text-sm text-slate-900 outline-none ring-2 ring-inset ring-brand-500 dark:text-slate-50"
-                              />
-                            ) : (
-                              <div
-                                className={`truncate px-2 py-1.5 ${
-                                  isBlank ? "text-slate-300 dark:text-slate-600" : "text-slate-700 dark:text-slate-200"
-                                }`}
-                                title={cellAt(r, c) || undefined}
-                              >
-                                {cellAt(r, c) || " "}
-                              </div>
-                            )}
-                          </td>
-                        );
-                      })}
-                      <td className="border-b border-slate-200 px-1 text-center dark:border-slate-700">
-                        {!isBlank && (
-                          <button
-                            type="button"
-                            onClick={() => void removeRow(r)}
-                            aria-label={`Delete row ${r + 1}`}
-                            title="Delete row"
-                            className="rounded p-1 text-transparent transition group-hover:text-slate-400 hover:!text-red-600 dark:hover:!text-red-400"
-                          >
-                            <IconX className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Click a cell and type. <strong>Enter</strong> edits and moves down, <strong>Tab</strong> moves right,{" "}
-            <strong>Esc</strong> cancels, <strong>Delete</strong> clears. The last row is always empty — typing in it
-            adds a row. Everything saves itself.
-            {filter.trim() && " (The empty row is hidden while a filter is on.)"}
-          </p>
-        </>
-      )}
-
-      <ConfirmDialog
-        open={confirmSheet}
-        title={`Delete "${sheet.name}"?`}
-        message="Every row in this sheet goes with it, on this computer and the other one. This cannot be undone."
-        confirmLabel="Delete sheet"
-        danger
-        onCancel={() => setConfirmSheet(false)}
-        onConfirm={async () => {
+  useEffect(() => {
+    bind({
+      addRows: (n) => {
+        void (async () => {
           try {
-            await api.deleteNoteSheet(sheet.id);
-            setConfirmSheet(false);
+            const all = await api.ensureNoteRows(sheet.id, rows.length + n);
+            setRows(() => all);
             onSheetChanged();
           } catch (e) {
             toast.error(errMsg(e));
           }
-        }}
-      />
+        })();
+      },
+      addColumn: () => {
+        void (async () => {
+          try {
+            // Unlabelled on purpose: a new column is a position, not a field.
+            await api.addNoteColumn(sheet.id, "");
+            await reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      renameColumn: () => {
+        const cur = columns[sel.c] ?? "";
+        const name = window.prompt(`Label for column ${colLetter(sel.c)} — leave empty for none`, cur);
+        if (name === null || name.trim() === cur) return;
+        void (async () => {
+          try {
+            await api.renameNoteColumn(sheet.id, sel.c, name.trim());
+            await reload();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      deleteColumn: () => {
+        if (columns.length <= 1) {
+          toast.error("A sheet needs at least one column.");
+          return;
+        }
+        void (async () => {
+          try {
+            await api.deleteNoteColumn(sheet.id, sel.c);
+            await reload();
+            moveTo(sel.r, Math.min(sel.c, columns.length - 2));
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      moveColumn: (delta) => {
+        const to = sel.c + delta;
+        if (to < 0 || to >= columns.length) return;
+        void (async () => {
+          try {
+            await api.reorderNoteColumn(sheet.id, sel.c, to);
+            await reload();
+            setSel({ r: sel.r, c: to });
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      deleteRow: () => {
+        const row = display[sel.r];
+        if (!row) return;
+        void (async () => {
+          try {
+            await api.deleteNoteRow(row.id);
+            setRows((rs) => rs.filter((x) => x.id !== row.id));
+            onSheetChanged();
+          } catch (e) {
+            toast.error(errMsg(e));
+          }
+        })();
+      },
+      insertToday: () => {
+        const d = new Date();
+        const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        void commit(sel.r, sel.c, iso);
+      },
+      clearCell: () => void commit(sel.r, sel.c, ""),
+      sortBySelected: (dir) => setSort(dir ? { index: sel.c, dir } : null),
+    });
+  }, [bind, sheet.id, columns, sel, display, rows.length, reload, commit, moveTo, setRows, setSel, toast, onSheetChanged]);
 
-      <ConfirmDialog
-        open={confirmColumn !== null}
-        title={confirmColumn !== null ? `Delete column "${columns[confirmColumn]}"?` : ""}
-        message="What is written in that column is deleted from every row in this sheet. The other columns are untouched."
-        confirmLabel="Delete column"
-        danger
-        onCancel={() => setConfirmColumn(null)}
-        onConfirm={() => {
-          if (confirmColumn !== null) void removeColumn(confirmColumn);
-        }}
-      />
+  /* ------------------------------- render ------------------------------- */
+
+  const chrome = "bg-surface-sunken text-slate-500 dark:text-slate-400";
+  const line = "border-slate-200 dark:border-slate-800";
+
+  return (
+    <div
+      ref={boxRef}
+      tabIndex={0}
+      onKeyDown={onGridKey}
+      className="table-shell h-full outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand-500"
+      style={{ fontSize: `${font}px` }}
+    >
+      <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
+        <thead className="sticky top-0 z-20">
+          <tr>
+            <th className={`w-[42px] border-b border-r ${line} ${chrome}`} style={{ height: rowH - 4 }} />
+            {columns.map((_, i) => (
+              <th
+                key={i}
+                className={`border-b border-r ${line} text-center font-normal ${
+                  sel.c === i ? "bg-brand-600 text-white" : chrome
+                }`}
+                style={{ width: 118, height: rowH - 4, fontSize: `${smallFont}px` }}
+                title={`Column ${colLetter(i)}`}
+              >
+                {colLetter(i)}
+              </th>
+            ))}
+          </tr>
+          <tr>
+            <th className={`border-b border-r ${line} ${chrome}`} style={{ height: rowH }} />
+            {columns.map((label, i) => (
+              <th
+                key={i}
+                className={`truncate border-b border-r ${line} bg-surface px-1.5 text-left font-semibold text-slate-700 dark:text-slate-200`}
+                style={{ height: rowH }}
+                title={label || `No label — column ${colLetter(i)} takes anything`}
+              >
+                {label || <span className="font-normal text-slate-300 dark:text-slate-700">·</span>}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rowCount }, (_, r) => {
+            const row = display[r];
+            return (
+              <tr key={row?.id ?? `blank-${r}`}>
+                <th
+                  className={`border-b border-r ${line} text-center font-normal ${
+                    sel.r === r ? "bg-brand-600 text-white" : chrome
+                  }`}
+                  style={{ height: rowH, fontSize: `${smallFont}px` }}
+                >
+                  {r + 1}
+                </th>
+                {columns.map((_, c) => {
+                  const isSel = sel.r === r && sel.c === c;
+                  const cellEdit = editing && editing.r === r && editing.c === c ? editing : null;
+                  const hasAlert = row ? alertCells.has(`${row.id}:${c}`) : false;
+                  const text = cellAt(r, c);
+                  return (
+                    <td
+                      key={c}
+                      onMouseDown={() => {
+                        if (cellEdit) return;
+                        if (editing) void finishEdit("none");
+                        setSel({ r, c });
+                        focusBox();
+                      }}
+                      onDoubleClick={() => startEdit(r, c)}
+                      className={`relative border-b border-r ${line} bg-surface p-0 align-middle ${
+                        isSel && !cellEdit ? "ring-2 ring-inset ring-brand-500" : ""
+                      }`}
+                      style={{ height: rowH }}
+                    >
+                      {cellEdit ? (
+                        <input
+                          autoFocus
+                          value={cellEdit.value}
+                          onChange={(e) => setEditing({ r, c, value: e.target.value })}
+                          onBlur={() => void finishEdit("none")}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void finishEdit("down");
+                            } else if (e.key === "Tab") {
+                              e.preventDefault();
+                              void finishEdit(e.shiftKey ? "left" : "right");
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              setEditing(null);
+                              focusBox();
+                            }
+                          }}
+                          aria-label={cellRef(r, c)}
+                          className="w-full bg-surface px-1.5 text-slate-900 outline-none ring-2 ring-inset ring-brand-500 dark:text-slate-50"
+                          style={{ height: rowH, fontSize: `${font}px` }}
+                        />
+                      ) : (
+                        <div className="truncate px-1.5 text-slate-800 dark:text-slate-200" title={text || undefined}>
+                          {text || " "}
+                        </div>
+                      )}
+                      {hasAlert && !cellEdit && (
+                        <span
+                          aria-label="Has a reminder"
+                          title="Has a reminder"
+                          className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[6px] border-t-[6px] border-l-transparent border-t-amber-500"
+                        />
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

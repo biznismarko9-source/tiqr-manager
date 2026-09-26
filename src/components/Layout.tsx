@@ -229,6 +229,40 @@ export default function Layout() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [profileOpen]);
 
+  // 2.55.0: sheet reminders. Deliberately its OWN effect with its own timer,
+  // touching nothing the sync tick does - it reads one table and shows a
+  // notification. It lives here rather than on the Sheets page because a
+  // reminder that only fires while you happen to be looking at the sheet is
+  // not a reminder.
+  //
+  // It is not a scheduler: with the app closed nothing fires, and whatever
+  // came due meanwhile arrives on the first tick after the next start. The
+  // Reminders panel says so in as many words.
+  useEffect(() => {
+    let alive = true;
+    const tick = () => {
+      api
+        .checkSheetAlerts()
+        .then((due) => {
+          if (!alive) return;
+          // The desktop notification is sent by the backend; this is the same
+          // thing said inside the app, for when notifications are turned off
+          // at the OS level.
+          due.forEach((a) => {
+            const where = a.note.trim() || a.sheetName;
+            toast.info(where ? `${a.title} — ${where}` : a.title);
+          });
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const id = window.setInterval(tick, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [toast]);
+
   useEffect(() => {
     // Quiet, one-time check on launch. Never blocks the UI and never
     // surfaces an error - if it's offline or GitHub is unreachable, the

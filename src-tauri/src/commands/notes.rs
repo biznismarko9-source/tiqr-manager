@@ -164,12 +164,14 @@ pub fn create_note_sheet(state: State<AppState>, name: String, columns: Vec<Stri
     if name.is_empty() {
         return Err(AppError::Validation("A sheet needs a name.".to_string()));
     }
-    // A sheet with no columns cannot be typed into, so one is provided rather
-    // than leaving marko with a grid he has to configure before it is useful.
+    // 2.55.0: the caller decides the width, and blank labels are kept. A new
+    // sheet is a plain grid of unlabelled columns ("chcem aby to bolo volne"),
+    // so trailing blanks must survive - filtering them out is what used to
+    // turn a 14-wide empty grid into a single "Note" column.
     let columns: Vec<String> = {
-        let cleaned: Vec<String> = columns.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+        let cleaned: Vec<String> = columns.iter().map(|c| c.trim().to_string()).collect();
         if cleaned.is_empty() {
-            vec!["Note".to_string()]
+            vec![String::new(); DEFAULT_COLUMNS]
         } else {
             cleaned
         }
@@ -239,10 +241,10 @@ pub fn delete_note_sheet(state: State<AppState>, id: i64) -> AppResult<()> {
 
 #[tauri::command]
 pub fn add_note_column(state: State<AppState>, sheet_id: i64, name: String) -> AppResult<NoteSheet> {
+    // 2.55.0: an empty name is allowed and means "no label" - the header shows
+    // the plain letter and marko writes whatever he likes in the column. See
+    // migration 033's closing note.
     let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err(AppError::Validation("A column needs a name.".to_string()));
-    }
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let mut columns = sheet_columns(&tx, sheet_id)?;
@@ -261,10 +263,8 @@ pub fn add_note_column(state: State<AppState>, sheet_id: i64, name: String) -> A
 
 #[tauri::command]
 pub fn rename_note_column(state: State<AppState>, sheet_id: i64, index: usize, name: String) -> AppResult<NoteSheet> {
+    // An empty name CLEARS the label rather than being rejected (2.55.0).
     let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err(AppError::Validation("A column needs a name.".to_string()));
-    }
     let conn = state.db.lock().unwrap();
     let mut columns = sheet_columns(&conn, sheet_id)?;
     if index >= columns.len() {
@@ -354,6 +354,47 @@ pub fn reorder_note_column(
     read_sheet(&conn, sheet_id)
 }
 
+/// A brand-new sheet is this wide. Wide enough to look like a spreadsheet the
+/// moment it opens, narrow enough to read without scrolling sideways.
+const DEFAULT_COLUMNS: usize = 14;
+
+/// Grows a sheet to at least `count` rows and returns all of them.
+///
+/// 2.55.0. The grid draws empty rows past the end of the stored ones, the way
+/// a spreadsheet always has somewhere to type. The moment marko types in one
+/// of those, every row above it has to exist too - otherwise row 30 would be
+/// stored as row 4 and jump up the screen. One transaction, so the sheet is
+/// never half-grown.
+#[tauri::command]
+pub fn ensure_note_rows(state: State<AppState>, sheet_id: i64, count: usize) -> AppResult<Vec<NoteRow>> {
+    if count > 5000 {
+        return Err(AppError::Validation("That is further down than this sheet goes.".to_string()));
+    }
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let width = sheet_columns(&tx, sheet_id)?.len();
+    let have: i64 = tx.query_row("SELECT COUNT(*) FROM note_rows WHERE sheet_id = ?1", [sheet_id], |r| r.get(0))?;
+    let mut next: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM note_rows WHERE sheet_id = ?1",
+        [sheet_id],
+        |r| r.get(0),
+    )?;
+    let blank = dump_list(&vec![String::new(); width]);
+    for _ in have..count as i64 {
+        tx.execute(
+            "INSERT INTO note_rows(sheet_id, position, cells_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            rusqlite::params![sheet_id, next, blank, now_iso()],
+        )?;
+        next += 1;
+    }
+    tx.execute(
+        "UPDATE note_sheets SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![sheet_id, now_iso()],
+    )?;
+    tx.commit()?;
+    read_rows(&conn, sheet_id)
+}
+
 /// Rewrites every row of one sheet through `f`, inside the caller's
 /// transaction. Read fully before writing: rewriting while iterating a live
 /// statement on the same table is the classic way to half-apply a change.
@@ -376,10 +417,12 @@ where
     Ok(())
 }
 
-#[tauri::command]
-pub fn list_note_rows(state: State<AppState>, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
-    let conn = state.db.lock().unwrap();
-    let width = sheet_columns(&conn, sheet_id)?.len();
+/// Every row of one sheet, padded to the sheet's width. Extracted in 2.55.0
+/// because `ensure_note_rows` has to return the same thing after growing the
+/// sheet, and two copies of a read that applies `fit()` would be two places to
+/// get the padding wrong.
+fn read_rows(conn: &Connection, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
+    let width = sheet_columns(conn, sheet_id)?.len();
     let mut stmt =
         conn.prepare("SELECT id, sheet_id, position, cells_json, updated_at FROM note_rows WHERE sheet_id = ?1 ORDER BY position, id")?;
     let rows = stmt.query_map([sheet_id], |r| {
@@ -392,6 +435,12 @@ pub fn list_note_rows(state: State<AppState>, sheet_id: i64) -> AppResult<Vec<No
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn list_note_rows(state: State<AppState>, sheet_id: i64) -> AppResult<Vec<NoteRow>> {
+    let conn = state.db.lock().unwrap();
+    read_rows(&conn, sheet_id)
 }
 
 #[tauri::command]

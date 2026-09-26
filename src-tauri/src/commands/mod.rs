@@ -2,6 +2,7 @@ pub mod ai_import;
 pub mod app_info;
 pub mod attention_center;
 pub mod backup;
+pub mod alerts;
 pub mod cloud_merge;
 pub mod cloud_sync;
 pub mod calendar;

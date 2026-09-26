@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  SheetAlert,
+  SheetAlertInput,
   WorkspaceHit,
   WorkspaceItem,
   WorkspaceItemInput,
@@ -626,11 +628,25 @@ export const api = {
   reorderNoteColumn: (sheetId: number, fromIndex: number, toIndex: number) =>
     invoke<NoteSheet>("reorder_note_column", { sheetId, fromIndex, toIndex }),
   listNoteRows: (sheetId: number) => invoke<NoteRow[]>("list_note_rows", { sheetId }),
+  /** Grows the sheet to at least `count` rows and returns all of them - the
+   *  grid calls this the moment something is typed into a row it was only
+   *  drawing, so every row above it exists too. */
+  ensureNoteRows: (sheetId: number, count: number) =>
+    invoke<NoteRow[]>("ensure_note_rows", { sheetId, count }),
   createNoteRow: (sheetId: number, cells: string[]) => invoke<NoteRow>("create_note_row", { sheetId, cells }),
   updateNoteRow: (id: number, cells: string[]) => invoke<NoteRow>("update_note_row", { id, cells }),
   deleteNoteRow: (id: number) => invoke<void>("delete_note_row", { id }),
   /** One search across every sheet - marko: "najst vsetky jednoducho". */
   searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
+  // Sheet alerts (2.55.0) - see commands/alerts.rs.
+  listSheetAlerts: (includeDone: boolean) => invoke<SheetAlert[]>("list_sheet_alerts", { includeDone }),
+  saveSheetAlert: (alert: SheetAlertInput) => invoke<SheetAlert>("save_sheet_alert", { alert }),
+  setSheetAlertDone: (id: number, done: boolean) => invoke<SheetAlert>("set_sheet_alert_done", { id, done }),
+  deleteSheetAlert: (id: number) => invoke<void>("delete_sheet_alert", { id }),
+  /** Alerts that have come due since the last call. Marks them notified and
+   *  shows a desktop notification for each. Not a scheduler: nothing fires
+   *  while the app is closed. */
+  checkSheetAlerts: () => invoke<SheetAlert[]>("check_sheet_alerts"),
   setNoteSheetFlags: (id: number, flags: { pinned?: boolean; archived?: boolean; description?: string }) =>
     invoke<NoteSheet>("set_note_sheet_flags", { id, ...flags }),
   // Workspace items (2.52.0) - see commands/workspace.rs.

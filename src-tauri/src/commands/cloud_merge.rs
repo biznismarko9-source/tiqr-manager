@@ -104,6 +104,8 @@ const MERGE_TABLES: &[MergeTable] = &[
     MergeTable { name: "workspace_items", fks: &[], natural_key: None, code: None },
     MergeTable { name: "note_sheets", fks: &[], natural_key: None, code: None },
     MergeTable { name: "note_rows", fks: &[("sheet_id", Some("note_sheets"))], natural_key: None, code: None },
+    // 2.55.0: sheet alerts hang off a sheet the same way rows do.
+    MergeTable { name: "sheet_alerts", fks: &[("sheet_id", Some("note_sheets"))], natural_key: None, code: None },
     MergeTable { name: "event_categories", fks: &[], natural_key: Some("name"), code: None },
     MergeTable { name: "finance_categories", fks: &[], natural_key: Some("name"), code: None },
     MergeTable { name: "platforms", fks: &[], natural_key: Some("name"), code: None },

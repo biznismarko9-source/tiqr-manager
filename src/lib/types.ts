@@ -2411,6 +2411,35 @@ export interface NoteHit {
 /** 2.52.0 Workspace - notes, records and tasks are one row wearing three
  *  hats, so a quick note can become a task later without being retyped.
  *  See commands/workspace.rs and migration 032. */
+/** A reminder on a sheet, at a local wall-clock time (2.55.0, migration 033).
+ *  `rowId`/`colIndex` are both optional: an alert can point at a cell, at a
+ *  row, or at nothing but the sheet. */
+export interface SheetAlert {
+  id: number;
+  sheetId: number;
+  sheetName: string;
+  rowId: number | null;
+  colIndex: number | null;
+  title: string;
+  note: string;
+  /** Local wall-clock `YYYY-MM-DDTHH:MM` - exactly what a datetime-local input gives. */
+  remindAt: string;
+  done: boolean;
+  notified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SheetAlertInput {
+  id?: number;
+  sheetId: number;
+  rowId: number | null;
+  colIndex: number | null;
+  title: string;
+  note: string;
+  remindAt: string;
+}
+
 export type WorkspaceKind = "note" | "record" | "task";
 
 export interface WorkspaceField {

@@ -16,6 +16,57 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.55.0 - Sheets: tmavý, voľný, s alertmi
+
+Vybral si si návrh **01 Classic** a chcel ho tmavší. Tu je — aj s tým ostatným,
+čo si k nemu napísal.
+
+### Hlavička už nič nediktuje
+
+Hore sú **písmená A, B, C**, presne ako v Sheets. Názov stĺpca je len
+**nepovinný štítok** v druhom riadku hlavičky — môže byť prázdny.
+
+Stĺpec už nehovorí, čo do neho patrí. **Píšeš čo chceš a kam chceš.**
+
+Nový hárok = **14 prázdnych stĺpcov bez názvov** a prázdna mriežka. Štítok si
+ktorémukoľvek stĺpcu dáš (alebo zmažeš) cez **Format → Label for column**.
+
+### Taby dole
+
+Zoznam hárkov je **dole**, ako v Sheets. Klikneš = prepneš, **+** = nový,
+dvojklik = premenovať.
+
+### Alerty
+
+**Insert → Reminder…** alebo zvonček vpravo hore. Napíšeš čo, vyberieš **kedy**
+(dátum aj čas), prípadne poznámku — a vieš to **pripnúť ku konkrétnej bunke**,
+tá potom má oranžový rožtek.
+
+Keď príde čas, dostaneš **systémové upozornenie** aj hlášku v appke. Zvonček
+ukazuje, koľko ich je po termíne.
+
+**Hovorím rovno:** funguje to, **kým máš appku otvorenú**. Keď je zavretá, nič
+nevyskočí — čo medzitým dobehlo, dostaneš pri najbližšom spustení. Je to
+napísané aj priamo v tom okne.
+
+### Menu hore
+
+**File · Edit · View · Insert · Format · Data** — tak ako si chcel. Sú v nich
+tie základné veci: nový/premenovať/zmazať hárok, zmazať riadok/stĺpec, zoom,
+pridať riadky/stĺpec, dnešný dátum, alert, štítok stĺpca, posun stĺpca,
+triedenie.
+
+### Riadky
+
+Mriežka vždy ukazuje **aspoň 40 riadkov**, aj keď je hárok prázdny. Napíšeš do
+ktoréhokoľvek a vznikne — aj všetky nad ním, aby ti nič neposkočilo hore.
+
+### Čo som nechytal
+
+Synchronizáciu, Dashboard, Events, Inventory, Sales, Pulls, Finance,
+prihlásenie, nastavenia, tému, navigáciu. Databáza sa len **rozšírila** o
+tabuľku alertov — nič existujúce sa nemaže.
+
 ## 2.54.1 - oprava buildu 2.54.0
 
 2.54.0 sa nezostavilo — moja chyba. Pri premenovaní jednej premennej v mriežke

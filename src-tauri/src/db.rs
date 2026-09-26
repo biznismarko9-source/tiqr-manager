@@ -231,6 +231,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "032_workspace",
         include_str!("../migrations/032_workspace.sql"),
     ),
+    (
+        "033_sheet_alerts",
+        include_str!("../migrations/033_sheet_alerts.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

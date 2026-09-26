@@ -21,6 +21,59 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.55.0 - alert times are LOCAL wall-clock; do not "fix" them to UTC
+
+`sheet_alerts.remind_at` is `YYYY-MM-DDTHH:MM` with **no timezone**, and it is
+the only time in this app that is not UTC. It comes straight out of
+`<input type="datetime-local">` and is compared against
+`strftime('%Y-%m-%dT%H:%M','now','localtime')`.
+
+This is deliberate. "Remind me at 9:00" means nine o'clock where marko is, on
+whichever of his two machines he is at. Converting to UTC and back would let a
+reminder set on the Mac fire an hour early on the PC across a DST change, for
+no gain - he is one person in one place.
+
+`clean_when` refuses anything that is not exactly that shape. **Keep it
+refusing**: a reminder stored in a format the due query cannot match is worse
+than one that was never created, because it looks saved.
+
+## 2.55.0 - `notified` and `done` answer different questions
+
+`notified` = the desktop notification has already been shown, which is what
+stops a reminder firing every 60 seconds while it is overdue. `done` = marko
+ticked it off. **Never infer one from the other.**
+
+Two rules that fall out of it and must stay: changing `remind_at` clears
+`notified` (a reminder moved to next week has not been delivered for next
+week), and setting `done` sets `notified` (an overdue alert being ticked off
+must not pop up once more on the next tick).
+
+`notified` syncs with the row on purpose, so a reminder already shown on one
+machine does not fire again on the other.
+
+## 2.55.0 - a column label is optional and must stay optional
+
+The header is letters. A column's name is a label that may be an empty string,
+and `create_note_sheet` / `add_note_column` / `rename_note_column` all accept
+that - the validation that rejected an empty name was removed in 2.55.0 on
+marko's explicit instruction ("chcem aby to bolo volne").
+
+**Do not put it back**, and do not filter blanks out of `columns_json`:
+`create_note_sheet` used to do exactly that, which silently turned a request
+for a 14-wide empty grid into a single column called "Note".
+
+## 2.55.0 - the Sheets page sizes itself; `Layout` gives pages no height
+
+`Layout` renders `<Outlet/>` inside a plain `px-7 py-5` div with no height, so
+`h-full` on a page collapses to its content. Sheets sets
+`height: calc(100vh - 150px)` and `min-h-0` on the grid wrapper, which is what
+pins the bottom tab strip under the grid instead of letting the table's own
+height push it off screen.
+
+If a page ever needs to be a real fixed-height column, it has to do the same -
+or `Layout` has to grow a height chain, which is a bigger change than it
+looks and would touch every page.
+
 ## 2.54.1 - a green CI does not mean the Rust compiled
 
 `beforeBuildCommand` is `npm run build` = `tsc -b && vite build`, and it runs

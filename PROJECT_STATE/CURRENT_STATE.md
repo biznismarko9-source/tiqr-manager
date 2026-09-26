@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.54.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.55.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -1887,7 +1887,71 @@ Also verified this round, and worth keeping up: **every SQL statement in
 database built from all 32 migrations**, plus the `format!()`-built query, whose
 column names are what `row_to_item` reads by name.
 
-**Next new migration is 033.**
+**2.55.0 - Sheets: dark, free, and it can remind him.** marko picked design
+01 ("Classic") out of ten and asked for four things:
+
+1. *"urobil ho tmavsi ale tak vyvazeny aby sa v nom dalo pracovat"*
+2. *"nechcem aby podla toho horneho stlpca si mohol zapisovat len co je v nom,
+   chcem aby to bolo volne a vedel s tym pracovat"*
+3. *"nejake alert by som si tam chcel nastavit casovo a tak"*
+4. *"toto co je hore ze file edit data to je good ... aj to dole prepinanie"*
+
+**The header is LETTERS now.** `A, B, C` across the top, and a column's name
+is an optional label on a second header row that may be empty. A column no
+longer says what belongs in it - it is a position. The Rust validation that
+rejected an empty column name is **gone**, in both `add_note_column` and
+`rename_note_column`, and `create_note_sheet` keeps blank labels instead of
+filtering them out (which is what used to turn a 14-wide empty grid into a
+single "Note" column). A new sheet is 14 unlabelled columns and no rows.
+
+**The sheet list moved to a bottom tab strip.** Click to switch, `+` to add,
+double-click to rename - where a spreadsheet keeps it and where he asked for
+it. The left rail is the app's own navigation and is untouched.
+
+**Rows that are drawn but not stored.** The grid always draws at least 40
+rows. Typing into one calls the new `ensure_note_rows`, which creates every
+row up to it **in one transaction** - without that, typing in row 30 of an
+empty sheet would store it as row 1 and it would jump up the screen.
+`read_rows` was extracted from `list_note_rows` so both return rows padded by
+the same `fit()`.
+
+**Migration 033: `sheet_alerts`.** A reminder with a title, a note, and a
+local wall-clock `remind_at`, optionally pointing at a row and a column (which
+is what puts the amber corner on a cell). All three sync pieces are in place:
+uid trigger, delete tombstone, `MERGE_TABLES` entry with `sheet_id` as an fk.
+
+**Alert time is LOCAL, not UTC** - deliberately, and it is the only place in
+the app that is. "Remind me at 9:00" means nine where marko is; the value
+comes straight out of `<input type="datetime-local">` and is compared with
+`strftime('%Y-%m-%dT%H:%M','now','localtime')`. `clean_when` refuses anything
+that is not exactly `YYYY-MM-DDTHH:MM` rather than storing a value that would
+silently never fire.
+
+**`notified` is separate from `done`.** `notified` stops a reminder firing
+every minute while overdue; `done` is marko ticking it off. Changing the time
+re-arms it (`notified = CASE WHEN remind_at = ?6 THEN notified ELSE 0 END`),
+because a reminder moved to next week has plainly not been delivered yet.
+
+**Alerts tick from `Layout.tsx`, in their own effect**, every 60 s, touching
+nothing the sync tick does - a reminder that only fires while you are looking
+at the sheet is not a reminder. It is **not a scheduler**: with the app closed
+nothing fires, and the panel says so in as many words. The desktop
+notification reuses `commands::notifications::send_desktop_notification`, so
+no new dependency.
+
+**Menus carry the actions** (`sheets/MenuBar.tsx`): File, Edit, View, Insert,
+Format, Data. The grid exposes a `GridHandle` the menus call, so neither the
+menus nor the toolbar knows how a row or a column is stored.
+
+**The page sets its own height** (`calc(100vh - 150px)`) because `Layout`
+gives its pages none - `h-full` would collapse and the tab strip would fall
+off the bottom of the grid.
+
+**Deliberately NOT in v1:** copy/paste between cells, multi-cell selection,
+formulas, column resizing by dragging, undo, recurring reminders, per-column
+types. `column_types_json` is still written and never read.
+
+**Next new migration is 034.**
 
 ## Stack / layout
 
