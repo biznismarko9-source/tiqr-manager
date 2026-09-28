@@ -16,6 +16,97 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.62.0 - poznámky sa dajú používať
+
+Bez migrácie. Schéma sa najskôr pozrela a nič nové nepotrebovala.
+
+### Priradenia
+
+- **štítok je odkaz** — klikneš naň a otvorí sa to, k čomu je podkarta
+  priradená
+- objednávka, event a predaj majú vlastnú stránku; **lístok otvorí svoju
+  objednávku**, **pull otvorí zoznam pullov**, **financia otvoria Financie** —
+  tieto tri stránky v TIQR neexistujú a nové sa nerobili
+
+### Kopírovanie
+
+- **Duplikovať podkartu** a **Duplikovať poznámku** — vždy sa spýta, či ísť
+  *len s obsahom*, alebo *aj s priradeniami*
+- kópia sa volá „… copy", druhá „… copy 2" — nikdy sa nezrazí s existujúcim
+  názvom
+- kópia celej poznámky si berie **aj svoje obrázky**
+
+### Presúvanie
+
+- **ťahaním myšou** sa presúvajú riadky, podkarty aj poznámky — kam to pustíš,
+  tam to je
+- šípky ↑ ↓ ‹ › ostávajú
+
+### Písanie
+
+- **odrážky** a **číslovanie** — čísla sa prepočítajú samé, keď niečo pridáš
+  alebo zmažeš
+- **dva bloky vedľa seba** — „⬓ Na polovicu" funguje na všetkom, aj na
+  obrázkoch a čiarach
+- **posuvník šírky** — nastavíš si, aká široká je plocha, kde píšeš (pamätá si
+  to tento počítač, nikam sa to neposiela)
+- **Ctrl+F** — nájde v poznámke a postaví kurzor rovno na nájdené slovo,
+  ‹ › preskakuje medzi nálezmi
+
+### Obrázky
+
+- klikom sa otvoria **na celú veľkosť**
+- majú **vlastný popis** pod sebou
+
+### Zoznam a menu
+
+- pri zaškrtávacom zozname vidíš **koľko z neho je hotových**
+- podkarta má menu **⋯** — premenovať, duplikovať, posunúť, zmazať
+- poznámka má menu **⋯** — duplikovať, pripnúť, archivovať, zmazať
+- **Zmazať poznámku sa presunulo z panela nástrojov do tohto menu** — bolo to
+  hneď vedľa formátovania
+- nová poznámka si vie vybrať **šablónu** (Event, Objednávka, Pull, Predaj) —
+  šablóna len pripraví podkarty, nič do nich nenapíše
+
+## 2.61.0 - opravy v poznámkach, Sheets preč
+
+### Priradenie
+
+- **funguje po podkartách** — každá podkarta má svoje vlastné priradenia, nie
+  spoločné pre celú poznámku
+- **Inventár sa vyberá cez objednávku** — ukáže sa celá objednávka, rozklikneš
+  ju a vyberieš **všetky lístky alebo len niektoré**
+- **Financie sú konečne čitateľné** — keď záznam nemá popis, názov sa poskladá
+  z kategórie, miesta, objednávky alebo účtu, a vždy je tam suma a dátum
+
+### Podkarty
+
+- nová podkarta si pýta názov **v okne appky**, nie v systémovom
+- dajú sa **posúvať** doľava/doprava
+- premenovanie dvojklikom
+
+### Písanie
+
+- **Enter ťa hodí rovno do nového riadku** (predtým si musel kliknúť)
+- riadky, texty aj **obrázky sa dajú posúvať** hore/dole
+- **Späť (Ctrl+Z)** — vráti poslednú zmenu, až 60 krokov dozadu
+
+### Bezpečnosť
+
+- **mazanie sa pýta** — poznámka, podkarta aj obrázok
+- **štítok a dátum sa dajú odstrániť** krížikom
+
+### Poznámky
+
+- dajú sa **posúvať** v zozname a ostanú tam, kde ich dáš
+
+### Sheets
+
+Celá sekcia hárkov je **preč z appky**, aj ten odkaz „Staré hárky".
+
+**Dáta z hárkov som nezmazal** — sú stále v databáze a synchronizujú sa, len
+ich appka nikde neukazuje. Mazanie je nevratné, tak to spravím až keď povieš.
+
 ## 2.60.0 - obmedzenia na lístkoch, mesto pod eventom
 
 ### Obmedzenia

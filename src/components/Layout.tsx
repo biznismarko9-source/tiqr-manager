@@ -102,9 +102,11 @@ const NAV: NavItem[] = [
   // destination, no groups (PROTECTED_AREAS, 2.43.0). Shipped as "Workspace"
   // (2.52.0) then "Notes" (2.53.0); marko asked for "realne google sheets
   // uplne jednoduche" and chose tables only, so the label says what it is.
-  // 2.58.0: Notes takes the row. The spreadsheet is still there at /sheets and
-  // still syncs - it is just not in the rail any more, and Notes links to it
-  // while any sheet still exists, so nothing marko typed is stranded.
+  // 2.61.0: Notes. The 2.51-2.57 spreadsheet is gone from the app entirely -
+  // marko: "to co tam pise stare harky kde su sheets tak to uplne zmazat". Its
+  // TABLES are deliberately still in the database (see 2.61.0 in
+  // CURRENT_STATE.md): dropping them is not reversible and he has not asked
+  // for the data itself to go.
   { to: "/notes", label: "Notes", icon: IconClipboard },
 ];
 

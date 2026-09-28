@@ -2454,6 +2454,11 @@ export interface NoteLink {
   refId: number;
   /** Resolved server-side so a list of notes needs no extra fetches. */
   label: string;
+  /** Where the chip goes when you click it, built in Rust from the routes
+   *  that really exist. A ticket opens its ORDER, a pull opens the pull list
+   *  and a finance entry opens Finance, because those three have no detail
+   *  page of their own - see `link_href` in commands/notepad.rs. */
+  href: string;
 }
 
 export interface Note {
@@ -2475,10 +2480,23 @@ export interface Note {
  *  formatting, which is the whole point ("kde ten text ma byt vacsi, aka
  *  farba"). An unknown `k` is skipped rather than breaking the page. */
 export type NoteBlock =
-  | { k: "text"; t: string; s?: NoteTextSize; c?: NoteColour; b?: 1; i?: 1 }
-  | { k: "check"; t: string; d?: 1; s?: NoteTextSize; c?: NoteColour; b?: 1; i?: 1 }
-  | { k: "image"; id: number; t?: string }
-  | { k: "rule" };
+  | ({ k: "text" } & NoteTextish)
+  | ({ k: "bullet" } & NoteTextish)
+  | ({ k: "num" } & NoteTextish)
+  | ({ k: "check"; d?: 1 } & NoteTextish)
+  | { k: "image"; id: number; w?: NoteBlockWidth }
+  | { k: "rule"; w?: NoteBlockWidth };
+
+/** Everything a written line carries. `bullet` and `num` (2.62.0) are the same
+ *  line with a marker drawn in front of it - the numbering is not stored,
+ *  it is counted from the run of `num` blocks above, so inserting one in the
+ *  middle renumbers the rest by itself. */
+type NoteTextish = { t: string; s?: NoteTextSize; c?: NoteColour; b?: 1; i?: 1; w?: NoteBlockWidth };
+
+/** A half-width block stands next to the next half-width one - marko:
+ *  "2 riadky vedla seba". Absent means the whole column, which is every
+ *  block written before 2.62.0. */
+export type NoteBlockWidth = "half";
 
 export type NoteTextSize = "h1" | "h2" | "p" | "small";
 export type NoteColour = "r" | "o" | "g" | "b" | "p" | "m";

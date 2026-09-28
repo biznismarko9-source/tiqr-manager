@@ -21,6 +21,91 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.62.0 - a note's images belong to the NOTE, not to the block
+
+`note_images.note_id` is what `list_note_images` filters on, and the block only
+carries `{"k":"image","id":N}`. So:
+
+- copying a **sub-tab** inside a note may keep the same ids - same note, same
+  rows;
+- copying a **note** may not. `duplicate_note` inserts its own `note_images`
+  rows and rewrites the ids in every `blocks_json` (`remap_images`). Without
+  that rewrite the copy renders "Obrázok sa nenašiel" for every picture in it,
+  and it looks like data loss.
+
+Anything else that ever creates a note from another note's pages has to do the
+same thing. `remap_images` rewrites ONLY image blocks whose id is in the map
+and leaves everything else byte-for-byte alone - keep it that way; it is the
+only code in the app that rewrites a stored block body.
+
+## 2.62.0 - the numbering of a `num` block is NOT stored
+
+A numbered line knows it is numbered, not which number it is. `numberOf` counts
+the unbroken run of `num` blocks above it at render time. Do not "fix" this by
+writing the digit into the block: two lines could then disagree about who is
+third, and every insert/move/delete would have to renumber the file.
+
+The same holds for `w: "half"` - it says "half the column", not "column 1" or
+"column 2". Which two blocks end up side by side is whatever the `flex-wrap`
+row does with them. There is no grid and no slot, deliberately: a stored slot
+would have to be repaired every time a block moves.
+
+## 2.62.0 - the notes width slider is per-MACHINE and must stay out of the DB
+
+`tiqr.notes.docWidth` in `localStorage`, read through a try/catch (private mode
+and disabled storage both return/throw). It is a view preference, like the
+`autoSyncLog` record: putting it in `notes` or `app_settings` would either sync
+one machine's window size onto the other or need a migration. 2.62.0 shipped
+with **no migration at all** and the next new one is still 039.
+
+## 2.62.0 - three link kinds have no detail page, by decision
+
+`link_href` sends **ticket** to `/orders/{order_id}`, **pull** to `/pulls` and
+**finance** to `/finance`, because TIQR has no ticket, pull or finance detail
+route (`App.tsx` - `/pulls` and `/finance` are list pages; `tickets` redirects).
+This was flagged to marko rather than solved by inventing three pages. If those
+routes are ever added, `link_href` is the single place to change - the chips
+read `NoteLink.href` and know nothing else about where they go.
+
+## 2.61.0 - the Sheets TABLES still exist and hold real data
+
+The spreadsheet section was deleted from the app in 2.61.0, but
+`note_sheets` / `note_columns` / `note_rows` / `sheet_alerts` are **still in
+the database, still carry marko's data, and still sync**. Nothing reads them.
+
+**Do not drop them as "cleanup".** He asked for the section to go, not for the
+data to be destroyed, and that is not a distinction to decide on his behalf.
+If it is ever really retired, the tables, their tombstone triggers and their
+MERGE_TABLES entries go together in one migration, and only after he says so.
+
+`commands::notes` (the spreadsheet) and `commands::alerts` are now unreferenced
+by the UI. They are left registered, like the other orphaned commands.
+
+## 2.61.0 - `note_links` has BOTH note_id and page_id, and they must agree
+
+`page_id` says which sub-tab shows the link; `note_id` says which note owns it
+and is what makes "every link on this note" one index lookup.
+
+**Only the backend writes them, always together, with `note_id` derived from
+the page.** `add_note_link` takes a `page_id` and looks the note up - it must
+never accept both from the caller, or the two can disagree and a link ends up
+listed under one note and shown on another note's tab.
+
+Both are declared in MERGE_TABLES so both ids are translated on a merge.
+
+## 2.61.0 - reordering renumbers the WHOLE set
+
+`renumber` in `commands/notepad.rs` rewrites every position from 0 upward in
+the order given, rather than swapping two rows.
+
+A list that has ever had a row deleted has gaps in its positions. Swapping two
+numbers across a gap silently moves something else. Whole-set renumbering ends
+at 0..n-1 with no gaps and no duplicates whatever shape it started in.
+
+`reorder_notes` deliberately does NOT bump `updated_at`: moving a note in a
+list is not editing it, and the bump would reshuffle the very ordering being
+set, since `updated_at` is the tiebreaker.
+
 ## 2.60.0 - `update_ticket_impl` CLEARS every field a caller omits
 
 Its big UPDATE writes `section`, `row_label`, `tier`, `seat`, `ticket_type`,

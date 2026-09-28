@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { Note, NotepadHit } from "../lib/types";
-import { Button, EmptyState, Input, TableSkeleton } from "../components/ui";
+import { Button, ConfirmDialog, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
 import { IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { formatDateNumeric } from "../lib/format";
 import Editor from "./notes/Editor";
 import { LINK_KINDS } from "./notes/LinkPicker";
+import Menu, { menuAt } from "./notes/Menu";
+import type { MenuAt } from "./notes/Menu";
+import DuplicateDialog from "./notes/DuplicateDialog";
 
 /**
  * Notes — design 02 of the ten, which marko picked.
@@ -20,12 +22,35 @@ import { LINK_KINDS } from "./notes/LinkPicker";
  * their own size and colour, checkboxes, images, sub-tabs along the bottom,
  * and what the note is attached to.
  *
+ * ## 2.62.0
+ *
+ * The list is where a note is MANAGED: it is dragged into place, duplicated,
+ * pinned, archived and deleted from the "⋯" menu here, so the editor toolbar
+ * is only about what is inside the note. Deleting used to sit in that toolbar,
+ * one click away from the formatting buttons; it is now behind the menu and
+ * behind the same confirm as before.
+ *
  * ## Height
  *
  * `Layout` gives its pages no height, so a viewport-based one is what keeps
  * the two panes the same length and the sub-tab strip pinned to the bottom of
  * the editor rather than floating under the page.
  */
+
+/** A template lays out the SUB-TABS of a new note and nothing else. It writes
+ *  no text, invents no values and fills in no fields: an empty tab named
+ *  "Platba" is a place to write, not a claim that anything was paid. */
+const TEMPLATES: { key: string; label: string; pages: string[] }[] = [
+  { key: "blank", label: "Prázdna", pages: [] },
+  { key: "event", label: "Event", pages: ["Event", "Lístky", "Nákup", "Prevod", "Predaj", "Poznámky"] },
+  {
+    key: "order",
+    label: "Objednávka",
+    pages: ["Objednávka", "Platforma", "Číslo objednávky", "Lístky", "Platba", "Poznámky"],
+  },
+  { key: "pull", label: "Pull", pages: ["Pull", "Event", "Lístky", "Platba", "Prevod", "Poznámky"] },
+  { key: "sale", label: "Predaj", pages: ["Predaj", "Kupec", "Cena", "Prevod", "Poznámky"] },
+];
 
 export default function Notes() {
   const toast = useToast();
@@ -34,7 +59,11 @@ export default function Notes() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<NotepadHit[] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [sheetCount, setSheetCount] = useState(0);
+  const [menu, setMenu] = useState<null | { at: MenuAt; id: number }>(null);
+  const [dup, setDup] = useState<Note | null>(null);
+  const [remove, setRemove] = useState<Note | null>(null);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [tpl, setTpl] = useState("blank");
 
   const load = useCallback(async () => {
     try {
@@ -53,15 +82,6 @@ export default function Notes() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Anything still in the old spreadsheet. Nothing was deleted when Notes
-  // replaced it in the sidebar, so this is how he gets back to it.
-  useEffect(() => {
-    api
-      .listNoteSheets()
-      .then((s) => setSheetCount(s.length))
-      .catch(() => setSheetCount(0));
-  }, []);
 
   useEffect(() => {
     const q = query.trim();
@@ -82,26 +102,106 @@ export default function Notes() {
   const archived = useMemo(() => (notes ?? []).filter((n) => n.archived), [notes]);
   const shown = showArchived ? archived : live;
   const active = useMemo(() => (notes ?? []).find((n) => n.id === activeId) ?? null, [notes, activeId]);
+  const menuNote = useMemo(() => (notes ?? []).find((n) => n.id === menu?.id) ?? null, [notes, menu]);
 
-  async function newNote() {
+  /** The chosen template only creates the sub-tabs, one call each. There is no
+   *  "create a note with these tabs" command and 2.62.0 adds no migration, so
+   *  this is the whole of it: create, name the tab that always exists, add the
+   *  rest. */
+  async function newNote(pages: string[]) {
     try {
       const created = await api.createNote("");
-      setNotes((ns) => [created, ...(ns ?? [])]);
-      setActiveId(created.id);
+      if (pages.length > 0) {
+        const first = await api.listNotePages(created.id);
+        if (first[0]) await api.renameNotePage(first[0].id, pages[0]!);
+        for (const name of pages.slice(1)) await api.createNotePage(created.id, name);
+      }
       setShowArchived(false);
+      setActiveId(created.id);
+      await load();
     } catch (e) {
       toast.error(errMsg(e));
     }
   }
 
-  async function togglePin(n: Note) {
+  async function duplicateNote(n: Note, withLinks: boolean) {
+    setDup(null);
     try {
-      const saved = await api.setNoteFlags(n.id, { pinned: !n.pinned });
-      setNotes((ns) => ns?.map((x) => (x.id === saved.id ? saved : x)) ?? ns);
+      const copy = await api.duplicateNote(n.id, withLinks);
+      setShowArchived(false);
+      setActiveId(copy.id);
+      await load();
+      toast.success(withLinks ? "Poznámka aj s priradeniami" : "Poznámka bez priradení");
     } catch (e) {
       toast.error(errMsg(e));
     }
   }
+
+  async function deleteNote(n: Note) {
+    setRemove(null);
+    try {
+      await api.deleteNote(n.id);
+      if (activeId === n.id) setActiveId(null);
+      await load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  }
+
+  /** Writes the whole order back - see `renumber` in commands/notepad.rs for
+   *  why the whole set is renumbered rather than two rows. */
+  async function reorder(next: Note[]) {
+    setNotes((ns) => {
+      if (!ns) return ns;
+      const moved = new Map(next.map((x, k) => [x.id, k]));
+      return [...ns].sort((a, b) => (moved.get(a.id) ?? 0) - (moved.get(b.id) ?? 0));
+    });
+    try {
+      await api.reorderNotes(next.map((x) => x.id));
+      await load();
+    } catch (e) {
+      toast.error(errMsg(e));
+      await load();
+    }
+  }
+
+  /** marko: "mala by byt moznost hybat s poznamkamy". */
+  async function moveNote(n: Note, delta: -1 | 1) {
+    const list = shown;
+    const i = list.findIndex((x) => x.id === n.id);
+    const to = i + delta;
+    if (i < 0 || to < 0 || to >= list.length) return;
+    const next = [...list];
+    const [m] = next.splice(i, 1);
+    next.splice(to, 0, m!);
+    await reorder(next);
+  }
+
+  /** Dropped ON a note: the dragged one takes that place. */
+  async function dropNote(fromId: number, onto: Note) {
+    const list = shown;
+    const from = list.findIndex((x) => x.id === fromId);
+    const to = list.findIndex((x) => x.id === onto.id);
+    if (from < 0 || to < 0 || from === to) return;
+    const next = [...list];
+    const [m] = next.splice(from, 1);
+    next.splice(to, 0, m!);
+    await reorder(next);
+  }
+
+  async function setFlags(n: Note, flags: { pinned?: boolean; archived?: boolean }) {
+    try {
+      const saved = await api.setNoteFlags(n.id, flags);
+      setNotes((ns) => ns?.map((x) => (x.id === saved.id ? saved : x)) ?? ns);
+      if (saved.archived && saved.id === activeId) setActiveId(null);
+      await load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  }
+
+  const act =
+    "rounded px-1 text-[11px] leading-none text-transparent transition group-hover:text-slate-300 hover:!text-slate-600 dark:group-hover:text-slate-600 dark:hover:!text-slate-200";
 
   return (
     <div
@@ -114,7 +214,10 @@ export default function Notes() {
           <h1 className="text-[16px] font-semibold text-slate-900 dark:text-slate-50">Poznámky</h1>
           <button
             type="button"
-            onClick={newNote}
+            onClick={() => {
+              setTpl("blank");
+              setTplOpen(true);
+            }}
             title="Nová poznámka"
             aria-label="Nová poznámka"
             className="ml-auto grid h-6 w-6 place-items-center rounded-md bg-brand-600 text-[15px] leading-none text-white transition hover:bg-brand-500"
@@ -174,11 +277,23 @@ export default function Notes() {
                 key={n.id}
                 role="button"
                 tabIndex={0}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("text/plain", `note:${n.id}`);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const raw = e.dataTransfer.getData("text/plain");
+                  if (!raw.startsWith("note:")) return;
+                  void dropNote(Number(raw.slice(5)), n);
+                }}
                 onClick={() => setActiveId(n.id)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") setActiveId(n.id);
                 }}
-                className={`relative mb-0.5 cursor-pointer rounded-lg px-3 py-2.5 transition ${
+                className={`group relative mb-0.5 cursor-pointer rounded-lg px-3 py-2.5 transition ${
                   n.id === activeId
                     ? "bg-surface ring-1 ring-slate-200 dark:ring-slate-700"
                     : "hover:bg-surface/60"
@@ -202,20 +317,58 @@ export default function Notes() {
                     </span>
                   ))}
                 </span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void togglePin(n);
-                  }}
-                  title={n.pinned ? "Odopnúť" : "Pripnúť"}
-                  aria-label={n.pinned ? "Odopnúť" : "Pripnúť"}
-                  className={`absolute right-2.5 top-2.5 text-[11px] transition ${
-                    n.pinned ? "text-amber-500" : "text-slate-300 hover:text-amber-500 dark:text-slate-700"
-                  }`}
-                >
-                  ★
-                </button>
+                <span className="absolute right-2 top-2 flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void moveNote(n, -1);
+                    }}
+                    title="Posunúť hore"
+                    aria-label="Posunúť hore"
+                    className={act}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void moveNote(n, 1);
+                    }}
+                    title="Posunúť dole"
+                    aria-label="Posunúť dole"
+                    className={act}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void setFlags(n, { pinned: !n.pinned });
+                    }}
+                    title={n.pinned ? "Odopnúť" : "Pripnúť"}
+                    aria-label={n.pinned ? "Odopnúť" : "Pripnúť"}
+                    className={`text-[11px] transition ${
+                      n.pinned ? "text-amber-500" : "text-slate-300 hover:text-amber-500 dark:text-slate-700"
+                    }`}
+                  >
+                    ★
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenu({ at: menuAt(e), id: n.id });
+                    }}
+                    title="Viac"
+                    aria-label="Viac"
+                    className={act}
+                  >
+                    ⋯
+                  </button>
+                </span>
               </div>
             ))
           )}
@@ -231,14 +384,6 @@ export default function Notes() {
               {showArchived ? "Späť na poznámky" : `Archív (${archived.length})`}
             </button>
           )}
-          {sheetCount > 0 && (
-            <Link
-              to="/sheets"
-              className="ml-auto text-slate-400 underline underline-offset-2 transition hover:text-slate-700 dark:hover:text-slate-200"
-            >
-              Staré hárky ({sheetCount})
-            </Link>
-          )}
         </div>
       </aside>
 
@@ -249,22 +394,7 @@ export default function Notes() {
             <TableSkeleton />
           </div>
         ) : active ? (
-          <Editor
-            key={active.id}
-            note={active}
-            onNoteChanged={() => void load()}
-            onDeleted={async () => {
-              if (!window.confirm(`Zmazať poznámku „${active.title || "Bez názvu"}"? Aj s podkartami a obrázkami.`))
-                return;
-              try {
-                await api.deleteNote(active.id);
-                setActiveId(null);
-                await load();
-              } catch (e) {
-                toast.error(errMsg(e));
-              }
-            }}
-          />
+          <Editor key={active.id} note={active} onNoteChanged={() => void load()} />
         ) : (
           <div className="grid h-full place-items-center p-6">
             <EmptyState
@@ -272,7 +402,13 @@ export default function Notes() {
               title="Žiadna poznámka"
               description="Poznámka je prázdny papier — píš čo chceš, kde chceš. Veľkosť, farbu a obrázok si vyberáš pre každý riadok zvlášť, a dole si vieš pridať podkarty."
               action={
-                <Button variant="primary" onClick={newNote}>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setTpl("blank");
+                    setTplOpen(true);
+                  }}
+                >
                   <IconPlus className="h-4 w-4" /> Nová poznámka
                 </Button>
               }
@@ -280,6 +416,92 @@ export default function Notes() {
           </div>
         )}
       </section>
+
+      <Menu
+        at={menu?.at ?? null}
+        onClose={() => setMenu(null)}
+        items={
+          menuNote
+            ? [
+                { label: "Duplikovať…", onClick: () => setDup(menuNote) },
+                "-",
+                { label: menuNote.pinned ? "Odopnúť" : "Pripnúť", onClick: () => void setFlags(menuNote, { pinned: !menuNote.pinned }) },
+                {
+                  label: menuNote.archived ? "Vrátiť z archívu" : "Archivovať",
+                  onClick: () => void setFlags(menuNote, { archived: !menuNote.archived }),
+                },
+                "-",
+                { label: "Zmazať poznámku", danger: true, onClick: () => setRemove(menuNote) },
+              ]
+            : []
+        }
+      />
+
+      <DuplicateDialog
+        open={dup !== null}
+        title="Duplikovať poznámku"
+        intro="Skopíruje sa celá poznámka — názov, štítok, dátum, všetky podkarty s ich obsahom aj poradím. Priradenia len ak si ich vypýtaš."
+        contentLabel="Kópia nebude priradená k ničomu."
+        linksLabel="Každá podkarta kópie sa priradí k tomu istému, čo originál."
+        onCancel={() => setDup(null)}
+        onConfirm={(withLinks) => dup && void duplicateNote(dup, withLinks)}
+      />
+
+      <Modal open={tplOpen} onClose={() => setTplOpen(false)} title="Nová poznámka" width="max-w-md">
+        <p className="mb-3 text-[12.5px] leading-relaxed text-slate-500 dark:text-slate-400">
+          Šablóna iba pripraví podkarty — nič do nich nenapíše a nič si nevymyslí.
+        </p>
+        <div className="flex flex-col gap-2">
+          {TEMPLATES.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTpl(t.key)}
+              className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition ${
+                tpl === t.key
+                  ? "bg-brand-50 ring-brand-400 dark:bg-brand-500/10 dark:ring-brand-500"
+                  : "ring-slate-200 hover:bg-surface-sunken dark:ring-slate-700"
+              }`}
+            >
+              <span
+                className={`mt-1 h-3.5 w-3.5 shrink-0 rounded-full ${
+                  tpl === t.key ? "border-[4px] border-brand-600" : "border-[1.5px] border-slate-400 dark:border-slate-500"
+                }`}
+              />
+              <span className="min-w-0">
+                <b className="block text-[13px] font-semibold text-slate-900 dark:text-slate-50">{t.label}</b>
+                <span className="block text-[11.5px] text-slate-500 dark:text-slate-400">
+                  {t.pages.length === 0 ? "Jedna prázdna podkarta." : t.pages.join(" · ")}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <ModalFooter>
+          <Button variant="secondary" onClick={() => setTplOpen(false)}>
+            Zrušiť
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              setTplOpen(false);
+              void newNote(TEMPLATES.find((t) => t.key === tpl)?.pages ?? []);
+            }}
+          >
+            Vytvoriť
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      <ConfirmDialog
+        open={remove !== null}
+        title={`Zmazať poznámku „${remove?.title || "Bez názvu"}"?`}
+        message="Zmaže sa aj so všetkými podkartami, obrázkami a priradeniami, na tomto aj na druhom počítači. Toto sa nedá vrátiť."
+        confirmLabel="Áno, zmazať"
+        danger
+        onCancel={() => setRemove(null)}
+        onConfirm={() => remove && void deleteNote(remove)}
+      />
     </div>
   );
 }

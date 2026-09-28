@@ -203,6 +203,7 @@ const MERGE_TABLES: &[MergeTable] = &[
         name: "note_links",
         fks: &[
             ("note_id", Some("notes")),
+            ("page_id", Some("note_pages")),
             ("order_id", Some("orders")),
             ("event_id", Some("events")),
             ("ticket_id", Some("tickets")),

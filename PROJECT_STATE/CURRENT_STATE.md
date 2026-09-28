@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.60.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.62.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2175,7 +2175,124 @@ per-ticket row to badge.
 It did so BEFORE this release too (434/433 → 441/440, a change of +7/+7), so it
 is a checker artifact on a long-shipping file, not a defect.
 
-**Next new migration is 038.**
+**2.61.0 - marko's own list of what was wrong with the notepad, plus Sheets
+removed.** Nine fixes he reported after using 2.58.0, and one deletion.
+
+**Migration 038.** `note_links.page_id` (links belong to a SUB-TAB, not the
+note - *"to priradenie musi fungovat osobitne v kazdej podkarte zvlast"*) and
+`notes.position` (*"moznost hybat s poznamkamy"*).
+
+**`note_id` stays alongside `page_id` and is not redundant**: it is the index
+for "every link on this note" and the column 036's MERGE_TABLES entry already
+declares. Only the backend writes them, always together, deriving `note_id`
+from the page - so they cannot disagree. `page_id` is declared in MERGE_TABLES
+too, so a merge translates it.
+
+**The backfill gives 2.58.0 links the note's FIRST tab.** Leaving them NULL
+would mean a link belonging to no tab and therefore shown on none - silently
+invisible, which is worse than being on the wrong tab where it can be moved.
+Verified against a real pre-038 database.
+
+**`renumber` rewrites EVERY position, not two.** A list that has ever had a row
+deleted has gaps, and swapping two numbers across a gap silently reorders
+something else. After it, positions are always 0..n-1 - verified against clean,
+gapped and duplicated inputs.
+
+**Inventory is picked BY ORDER** in the link picker - orders, expand one, take
+all its tickets or tick the seats you mean. A flat list of two hundred codes is
+not something anyone picks from. **Finance entries are never "(bez popisu)"**
+any more: the label is built from note / category / place / order / account and
+always carries the amount and the date.
+
+**Undo** is a per-tab stack of `blocks` snapshots (Ctrl+Z or the button), depth
+60, cleared when the tab or note changes - an undo reaching into a different
+tab would be worse than none. It is not version control and is not sold as
+such.
+
+**Also**: blocks move up/down, tabs move left/right, the tag and date have an
+×, deleting a note/tab/image asks first through the app's own ConfirmDialog
+(no more `window.prompt`/`window.confirm` anywhere in the notepad), and Enter
+now puts the cursor IN the new line.
+
+**SHEETS IS GONE FROM THE APP** - marko: *"to co tam pise stare harky kde su
+sheets tak to uplne zmazat"*. `pages/Sheets.tsx` and `pages/sheets/` deleted,
+route and sidebar entry removed, the "Staré hárky" link removed.
+
+**Its TABLES are deliberately still there** (`note_sheets`, `note_columns`,
+`note_rows`, `sheet_alerts`), with their commands and MERGE_TABLES entries.
+Dropping them is not reversible and he asked for the SECTION to go, not for the
+data to be destroyed. Nothing reads them any more. If he ever confirms he wants
+the data gone, that is its own migration. (`commands::notes` and
+`commands::alerts` are now entirely unreferenced by the UI - left in place like
+the other orphaned commands from removed features.)
+
+**2.62.0 - the notepad, worked in rather than looked at. NO MIGRATION.**
+Thirteen things, all of them about using a note rather than about what a note
+can hold. The schema was inspected first and nothing new was needed: the one
+field this release looked like it wanted, an image caption, has existed as
+`note_images.caption` since 036 and was simply never written to. **The next new
+migration is still 039.**
+
+**A chip is a link.** `NoteLink` gained `href`, built in Rust by `link_href`
+from the routes that really exist. Three of the six kinds have NO detail page
+in TIQR, so they land on the nearest thing that does: a **ticket** opens the
+ORDER it belongs to (`/orders/{order_id}`, looked up from `tickets`), a **pull**
+opens `/pulls`, a **finance** entry opens `/finance`. No page was invented for
+them - flagged to marko in the report rather than decided quietly.
+
+**Duplicating asks first.** `duplicate_note_page` and `duplicate_note`, one
+transaction each, and both take `with_links` from a dialog rather than a
+default: a copy that silently drags the assignments along is noticed only after
+something has been sent twice, and one that silently drops them is noticed only
+when you go looking. `copy_name` never collides ("X copy", "X copy 2", ...),
+and an untitled note copies as "Bez názvu copy".
+
+**A copied TAB keeps pointing at the same `note_images` rows; a copied NOTE
+gets its own.** The tab stays inside the note that owns those rows, so nothing
+has to be copied. A note does not: `list_note_images` is per note, so without
+copying the rows AND rewriting the ids in `blocks_json` (`remap_images`) every
+picture in the copy would draw "Obrázok sa nenašiel". That rewrite touches only
+`{"k":"image","id":N}` blocks whose id is in the map, and leaves anything it
+does not recognise exactly as it was.
+
+**Drag works on all three lists** - blocks, sub-tabs and notes - and all three
+use the same arithmetic: the dragged item ends at exactly the index it was
+dropped on, dragging up or down alike, so neighbours swap either way. The drag
+payload is plain `text/plain` with a `blk:` / `page:` / `note:` prefix, checked
+on drop, so a stray drop from anywhere else is a no-op. The **grip** is what is
+draggable on a block, never the row - a draggable row would take the mouse away
+from selecting text inside its own textarea.
+
+**Ctrl+F puts the cursor ON the hit** rather than painting over it. The body is
+real textareas, and highlighting inside one would mean shadowing every textarea
+with a read-only copy of its own text. Hits cover the title, every written
+block and every image caption, in page order.
+
+**New block kinds `bullet` and `num`.** The number is NOT stored: it is counted
+from the run of `num` blocks directly above, so inserting, moving or deleting
+one renumbers the rest by itself. Rust reads blocks by `t` only (`preview_of`,
+`search_notepad`), so both kinds are searchable and previewable with no backend
+change at all.
+
+**`w: "half"` on ANY block** (marko: *"na vsetky zlozky"*) makes it half the
+column, so two stand side by side; the block list is a `flex-wrap` row and a
+full-width block is `w-full`. **The width slider** next to it is a view
+preference of THIS machine - `localStorage` under `tiqr.notes.docWidth`, read
+through a try/catch, never in the database and never synced.
+
+**Templates create empty SUB-TABS and nothing else.** "Event", "Objednávka",
+"Pull", "Predaj" lay out the tabs of a new note; they write no text, fill in no
+fields and invent no values. Implemented with the commands that already exist
+(`create_note` + `rename_note_page` + `create_note_page`), which is why this
+release needed no new "create with tabs" command.
+
+**Deleting a note moved out of the editor toolbar** into the note's own "⋯"
+menu in the list, behind the same ConfirmDialog as before - it used to sit one
+click from the formatting buttons. The editor's toolbar is now only about what
+is inside the note; the list is where a note is managed (drag, duplicate, pin,
+archive, delete). `Editor` therefore no longer takes an `onDeleted` prop.
+
+**Next new migration is 039.**
 
 ## Stack / layout
 

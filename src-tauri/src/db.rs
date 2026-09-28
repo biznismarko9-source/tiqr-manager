@@ -251,6 +251,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "037_ticket_restrictions",
         include_str!("../migrations/037_ticket_restrictions.sql"),
     ),
+    (
+        "038_note_page_links",
+        include_str!("../migrations/038_note_page_links.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

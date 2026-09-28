@@ -676,12 +676,26 @@ export const api = {
   renameNotePage: (id: number, name: string) => invoke<NotePage>("rename_note_page", { id, name }),
   saveNotePage: (id: number, blocks: NoteBlock[]) => invoke<NotePage>("save_note_page", { id, blocks }),
   deleteNotePage: (id: number) => invoke<NotePage[]>("delete_note_page", { id }),
+  /* 2.62.0. `withLinks` is asked in the dialog, never assumed: a copy that
+     silently drags the assignments along is the kind of thing you only notice
+     after it has already been synced. */
+  duplicateNotePage: (pageId: number, withLinks: boolean) =>
+    invoke<NotePage[]>("duplicate_note_page", { pageId, withLinks }),
+  duplicateNote: (noteId: number, withLinks: boolean) =>
+    invoke<Note>("duplicate_note", { noteId, withLinks }),
+  setNoteImageCaption: (id: number, caption: string) =>
+    invoke<NoteImage>("set_note_image_caption", { id, caption }),
   addNoteImage: (noteId: number, dataUri: string, caption: string) =>
     invoke<NoteImage>("add_note_image", { noteId, dataUri, caption }),
   listNoteImages: (noteId: number) => invoke<NoteImage[]>("list_note_images", { noteId }),
   deleteNoteImage: (id: number) => invoke<void>("delete_note_image", { id }),
-  addNoteLink: (noteId: number, kind: NoteLinkKind, refId: number) =>
-    invoke<NoteLink[]>("add_note_link", { noteId, kind, refId }),
+  /** 2.61.0: links belong to a SUB-TAB, not the note. */
+  listNotePageLinks: (pageId: number) => invoke<NoteLink[]>("list_note_page_links", { pageId }),
+  addNoteLink: (pageId: number, kind: NoteLinkKind, refId: number) =>
+    invoke<NoteLink[]>("add_note_link", { pageId, kind, refId }),
+  reorderNotePages: (noteId: number, orderedIds: number[]) =>
+    invoke<NotePage[]>("reorder_note_pages", { noteId, orderedIds }),
+  reorderNotes: (orderedIds: number[]) => invoke<void>("reorder_notes", { orderedIds }),
   deleteNoteLink: (id: number) => invoke<void>("delete_note_link", { id }),
   searchNotepad: (query: string) => invoke<NotepadHit[]>("search_notepad", { query }),
 

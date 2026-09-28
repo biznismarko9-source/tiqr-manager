@@ -43,6 +43,15 @@ pub struct NoteLink {
     /// Already resolved for display, so the list does not have to fetch six
     /// other tables to draw one row.
     pub label: String,
+    /// 2.62.0: where clicking the chip goes, resolved here because only the
+    /// backend can answer it for a ticket (its detail lives inside its ORDER,
+    /// so the order id has to be looked up).
+    ///
+    /// Three of the six kinds have no detail page in this app at all - pull
+    /// and finance have only a list, and a ticket has none of its own. Those
+    /// point at the nearest thing that EXISTS rather than at a new page: the
+    /// brief was explicit that no new module may be built for this.
+    pub href: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -129,6 +138,30 @@ fn link_label(conn: &Connection, kind: &str, id: i64) -> String {
         .to_string()
 }
 
+/// 2.61.0: links hang off a SUB-TAB, not the note - marko: "to priradenie musi
+/// fungovat osobitne v kazdej podkarte zvlast nie spolu". `links_of` is still
+/// used for the note-wide view the list column needs; `page_links_of` is what
+/// the editor asks for.
+/// The route a chip opens. Only routes App.tsx already declares.
+fn link_href(conn: &Connection, kind: &str, id: i64) -> String {
+    match kind {
+        "order" => format!("/orders/{id}"),
+        "event" => format!("/events/{id}"),
+        "sale" => format!("/sales/{id}"),
+        // A ticket has no page of its own; it is shown inside its order.
+        "ticket" => conn
+            .query_row("SELECT order_id FROM tickets WHERE id = ?1", [id], |r| r.get::<_, i64>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .map(|o| format!("/orders/{o}"))
+            .unwrap_or_else(|| "/orders".to_string()),
+        "pull" => "/pulls".to_string(),
+        "finance" => "/finance".to_string(),
+        _ => String::new(),
+    }
+}
+
 fn links_of(conn: &Connection, note_id: i64) -> AppResult<Vec<NoteLink>> {
     let cols = LINK_COLUMNS.map(|(c, _)| c).join(", ");
     let sql = format!("SELECT id, {cols} FROM note_links WHERE note_id = ?1 ORDER BY id");
@@ -151,7 +184,8 @@ fn links_of(conn: &Connection, note_id: i64) -> AppResult<Vec<NoteLink>> {
         // but it would be a silent blank line if it ever did - skip it.
         if let Some((kind, ref_id)) = found {
             let label = link_label(conn, &kind, ref_id);
-            out.push(NoteLink { id, kind, ref_id, label });
+            let href = link_href(conn, &kind, ref_id);
+            out.push(NoteLink { id, kind, ref_id, label, href });
         }
     }
     Ok(out)
@@ -231,10 +265,13 @@ fn read_note(conn: &Connection, id: i64) -> AppResult<Note> {
 #[tauri::command]
 pub fn list_notes(state: State<AppState>, include_archived: bool) -> AppResult<Vec<Note>> {
     let conn = state.db.lock().unwrap();
+    // 2.61.0: hand-set `position` first, most-recently-changed as the
+    // tiebreaker - so a note marko put at the top stays there when he edits a
+    // different one, which is what "hybat s poznamkamy" is for.
     let sql = if include_archived {
-        "SELECT id FROM notes ORDER BY pinned DESC, updated_at DESC"
+        "SELECT id FROM notes ORDER BY pinned DESC, position, updated_at DESC"
     } else {
-        "SELECT id FROM notes WHERE archived = 0 ORDER BY pinned DESC, updated_at DESC"
+        "SELECT id FROM notes WHERE archived = 0 ORDER BY pinned DESC, position, updated_at DESC"
     };
     let ids: Vec<i64> = {
         let mut stmt = conn.prepare(sql)?;
@@ -437,12 +474,292 @@ pub fn delete_note_page(state: State<AppState>, id: i64) -> AppResult<Vec<NotePa
     list_note_pages(state, note_id)
 }
 
+/// Re-numbers a whole set from 0 upward in the order given. One statement per
+/// row inside the caller's transaction.
+///
+/// Rewriting EVERY position, rather than swapping two, is deliberate: a list
+/// that has ever had a row deleted has gaps, and swapping two numbers across a
+/// gap silently reorders something else. After this the positions are always
+/// 0..n-1 with no gaps and no duplicates, whatever shape they were in before.
+fn renumber(conn: &Connection, table: &str, parent_col: &str, parent: i64, ordered: &[i64]) -> AppResult<()> {
+    for (i, id) in ordered.iter().enumerate() {
+        conn.execute(
+            &format!("UPDATE {table} SET position = ?2 WHERE id = ?1 AND {parent_col} = ?3"),
+            rusqlite::params![id, i as i64, parent],
+        )?;
+    }
+    Ok(())
+}
+
+/// Moves one sub-tab to another slot. The UI sends the ids it wants, in order.
+#[tauri::command]
+pub fn reorder_note_pages(state: State<AppState>, note_id: i64, ordered_ids: Vec<i64>) -> AppResult<Vec<NotePage>> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    renumber(&tx, "note_pages", "note_id", note_id, &ordered_ids)?;
+    tx.execute(
+        "UPDATE notes SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![note_id, now_iso()],
+    )?;
+    tx.commit()?;
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM note_pages WHERE note_id = ?1 ORDER BY position, id")?;
+        let rows = stmt.query_map([note_id], |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    ids.into_iter().map(|id| read_page(&conn, id)).collect()
+}
+
+/// Moves notes in the list. Same whole-set renumber, for the same reason.
+#[tauri::command]
+pub fn reorder_notes(state: State<AppState>, ordered_ids: Vec<i64>) -> AppResult<()> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    for (i, id) in ordered_ids.iter().enumerate() {
+        // No `updated_at` bump: moving a note in a list is not editing it, and
+        // bumping it would reshuffle the very ordering being set.
+        tx.execute(
+            "UPDATE notes SET position = ?2 WHERE id = ?1",
+            rusqlite::params![id, i as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn touch_note(conn: &Connection, note_id: i64) -> AppResult<()> {
     conn.execute(
         "UPDATE notes SET updated_at = ?2 WHERE id = ?1",
         rusqlite::params![note_id, now_iso()],
     )?;
     Ok(())
+}
+
+fn page_links_of(conn: &Connection, page_id: i64) -> AppResult<Vec<NoteLink>> {
+    let cols = LINK_COLUMNS.map(|(c, _)| c).join(", ");
+    let sql = format!("SELECT id, {cols} FROM note_links WHERE page_id = ?1 ORDER BY id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([page_id], |r| {
+        let id: i64 = r.get(0)?;
+        let mut found: Option<(String, i64)> = None;
+        for (i, (_col, kind)) in LINK_COLUMNS.iter().enumerate() {
+            if let Some(v) = r.get::<_, Option<i64>>(i + 1)? {
+                found = Some(((*kind).to_string(), v));
+                break;
+            }
+        }
+        Ok((id, found))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, found) = row?;
+        if let Some((kind, ref_id)) = found {
+            let label = link_label(conn, &kind, ref_id);
+            let href = link_href(conn, &kind, ref_id);
+            out.push(NoteLink { id, kind, ref_id, label, href });
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_note_page_links(state: State<AppState>, page_id: i64) -> AppResult<Vec<NoteLink>> {
+    let conn = state.db.lock().unwrap();
+    page_links_of(&conn, page_id)
+}
+
+/// A name that is not already taken in this set: "X copy", then "X copy 2".
+fn copy_name(base: &str, taken: &[String]) -> String {
+    let stem = if base.trim().is_empty() { "Bez názvu" } else { base };
+    let first = format!("{stem} copy");
+    if !taken.iter().any(|t| t == &first) {
+        return first;
+    }
+    for i in 2..1000 {
+        let c = format!("{stem} copy {i}");
+        if !taken.iter().any(|t| t == &c) {
+            return c;
+        }
+    }
+    first
+}
+
+/// Copies one sub-tab, directly after the original.
+///
+/// ONE transaction. A half-copied tab - blocks in, links missing, position not
+/// shifted - is worse than no copy at all, and there is no way for marko to
+/// tell it happened.
+///
+/// `with_links` defaults to false at the call site: a duplicate is a starting
+/// point, and silently attaching it to the same order as the original is the
+/// kind of thing that is noticed only after something has been sent twice.
+///
+/// Images are NOT copied. The copy points at the same `note_images` rows, and
+/// it may: those rows belong to the NOTE, and the copy is in the same note.
+/// They live in the database and sync uploads the whole file, so copying the
+/// bytes would double what is paid for on every sync from then on.
+/// `duplicate_note` below is the case where they genuinely have to be copied.
+#[tauri::command]
+pub fn duplicate_note_page(state: State<AppState>, page_id: i64, with_links: bool) -> AppResult<Vec<NotePage>> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let (note_id, position, name, blocks_json) = tx
+        .query_row(
+            "SELECT note_id, position, name, blocks_json FROM note_pages WHERE id = ?1",
+            [page_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Note tab {page_id} no longer exists.")))?;
+
+    let taken: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT name FROM note_pages WHERE note_id = ?1")?;
+        let rows = stmt.query_map([note_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    tx.execute(
+        "UPDATE note_pages SET position = position + 1 WHERE note_id = ?1 AND position > ?2",
+        rusqlite::params![note_id, position],
+    )?;
+    tx.execute(
+        "INSERT INTO note_pages(note_id, position, name, blocks_json, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        rusqlite::params![note_id, position + 1, copy_name(&name, &taken), blocks_json, now_iso()],
+    )?;
+    let new_page = tx.last_insert_rowid();
+
+    if with_links {
+        let cols = LINK_COLUMNS.map(|(c, _)| c).join(", ");
+        tx.execute(
+            &format!(
+                "INSERT INTO note_links(note_id, page_id, {cols}, created_at) \
+                 SELECT note_id, ?2, {cols}, ?3 FROM note_links WHERE page_id = ?1"
+            ),
+            rusqlite::params![page_id, new_page, now_iso()],
+        )?;
+    }
+    tx.execute("UPDATE notes SET updated_at = ?2 WHERE id = ?1", rusqlite::params![note_id, now_iso()])?;
+    tx.commit()?;
+    drop(conn);
+    list_note_pages(state, note_id)
+}
+
+/// Re-points `{"k":"image","id":…}` blocks at the copy's own image rows.
+///
+/// Everything it does not recognise is left exactly as it was: an id with no
+/// entry in the map, a block of another kind, or a body that is not the JSON
+/// array it is supposed to be. Rewriting is the only thing that can go wrong
+/// here, so it does as little of it as possible.
+fn remap_images(blocks_json: &str, map: &[(i64, i64)]) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(blocks_json) else {
+        return blocks_json.to_string();
+    };
+    let Some(arr) = v.as_array_mut() else {
+        return blocks_json.to_string();
+    };
+    for b in arr.iter_mut() {
+        if b.get("k").and_then(|x| x.as_str()) != Some("image") {
+            continue;
+        }
+        let Some(old) = b.get("id").and_then(|x| x.as_i64()) else {
+            continue;
+        };
+        let Some(&(_, fresh)) = map.iter().find(|(o, _)| *o == old) else {
+            continue;
+        };
+        if let Some(obj) = b.as_object_mut() {
+            obj.insert("id".to_string(), serde_json::Value::from(fresh));
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| blocks_json.to_string())
+}
+
+/// Copies a whole note - every tab, in order, with its blocks and its images.
+///
+/// Same one-transaction rule, and for a stronger reason: a note is a tree, and
+/// a partial tree is a note marko would have to unpick by hand.
+#[tauri::command]
+pub fn duplicate_note(state: State<AppState>, note_id: i64, with_links: bool) -> AppResult<Note> {
+    let mut conn = state.db.lock().unwrap();
+    let tx = conn.transaction()?;
+    let (title, tag, note_date) = tx
+        .query_row(
+            "SELECT title, tag, note_date FROM notes WHERE id = ?1",
+            [note_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Note {note_id} no longer exists.")))?;
+
+    let taken: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT title FROM notes")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let position: i64 =
+        tx.query_row("SELECT position FROM notes WHERE id = ?1", [note_id], |r| r.get(0))?;
+    // The copy sits directly under the original rather than at the end, which
+    // is where you look for it.
+    tx.execute("UPDATE notes SET position = position + 1 WHERE position > ?1", [position])?;
+    tx.execute(
+        "INSERT INTO notes(title, tag, note_date, position, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        rusqlite::params![copy_name(&title, &taken), tag, note_date, position + 1, now_iso()],
+    )?;
+    let new_note = tx.last_insert_rowid();
+
+    // Images belong to a NOTE, so the copy needs its own rows and its blocks
+    // have to be re-pointed at them. Without this every picture in the copy
+    // would draw "Obrázok sa nenašiel": the block would still name the
+    // original's row, which `list_note_images` never returns for this note.
+    //
+    // This is the one place the bytes are copied. A sub-tab copy stays inside
+    // the same note and keeps pointing at the same rows, which is why it does
+    // not pay this - see `duplicate_note_page`.
+    let images: Vec<(i64, String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, data_uri, caption FROM note_images WHERE note_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([note_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut image_map: Vec<(i64, i64)> = Vec::new();
+    for (old_image, data_uri, caption) in images {
+        tx.execute(
+            "INSERT INTO note_images(note_id, data_uri, caption, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![new_note, data_uri, caption, now_iso()],
+        )?;
+        image_map.push((old_image, tx.last_insert_rowid()));
+    }
+
+    let pages: Vec<(i64, i64, String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, position, name, blocks_json FROM note_pages WHERE note_id = ?1 ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map([note_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let cols = LINK_COLUMNS.map(|(c, _)| c).join(", ");
+    for (old_page, pos, name, blocks) in pages {
+        tx.execute(
+            "INSERT INTO note_pages(note_id, position, name, blocks_json, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            rusqlite::params![new_note, pos, name, remap_images(&blocks, &image_map), now_iso()],
+        )?;
+        if with_links {
+            let np = tx.last_insert_rowid();
+            tx.execute(
+                &format!(
+                    "INSERT INTO note_links(note_id, page_id, {cols}, created_at) \
+                     SELECT ?2, ?3, {cols}, ?4 FROM note_links WHERE page_id = ?1"
+                ),
+                rusqlite::params![old_page, new_note, np, now_iso()],
+            )?;
+        }
+    }
+    tx.commit()?;
+    read_note(&conn, new_note)
 }
 
 /* ------------------------------------------------------------------ *
@@ -490,6 +807,31 @@ pub fn list_note_images(state: State<AppState>, note_id: i64) -> AppResult<Vec<N
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// The caption of an attached image.
+///
+/// `note_images.caption` has existed since migration 036 and was never
+/// written to after creation - the UI kept a second copy inside the block
+/// instead. This is the command that column was always missing; the block's
+/// own copy goes away with 2.62.0.
+#[tauri::command]
+pub fn set_note_image_caption(state: State<AppState>, id: i64, caption: String) -> AppResult<NoteImage> {
+    let conn = state.db.lock().unwrap();
+    let n = conn.execute(
+        "UPDATE note_images SET caption = ?2 WHERE id = ?1",
+        rusqlite::params![id, caption.trim()],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("Image {id} no longer exists.")));
+    }
+    let img = conn.query_row(
+        "SELECT id, note_id, data_uri, caption FROM note_images WHERE id = ?1",
+        [id],
+        |r| Ok(NoteImage { id: r.get(0)?, note_id: r.get(1)?, data_uri: r.get(2)?, caption: r.get(3)? }),
+    )?;
+    touch_note(&conn, img.note_id)?;
+    Ok(img)
+}
+
 #[tauri::command]
 pub fn delete_note_image(state: State<AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
@@ -502,30 +844,37 @@ pub fn delete_note_image(state: State<AppState>, id: i64) -> AppResult<()> {
  * ------------------------------------------------------------------ */
 
 #[tauri::command]
-pub fn add_note_link(state: State<AppState>, note_id: i64, kind: String, ref_id: i64) -> AppResult<Vec<NoteLink>> {
+pub fn add_note_link(state: State<AppState>, page_id: i64, kind: String, ref_id: i64) -> AppResult<Vec<NoteLink>> {
     let column = LINK_COLUMNS
         .iter()
         .find(|(_, k)| *k == kind)
         .map(|(c, _)| *c)
         .ok_or_else(|| AppError::Validation(format!("Cannot attach a note to a {kind}.")))?;
     let conn = state.db.lock().unwrap();
-    // The same thing twice on one note is a no-op, not an error - he clicked it
-    // twice, he did not do anything wrong.
+    // `note_id` is derived from the page, never passed in, so the two columns
+    // cannot disagree about which note a link belongs to.
+    let note_id: i64 = conn
+        .query_row("SELECT note_id FROM note_pages WHERE id = ?1", [page_id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("Note tab {page_id} no longer exists.")))?;
+    // The same thing twice on one TAB is a no-op, not an error - he clicked it
+    // twice, he did not do anything wrong. Twice on two different tabs is two
+    // real links, which is the whole point of them being per-tab.
     let exists: Option<i64> = conn
         .query_row(
-            &format!("SELECT id FROM note_links WHERE note_id = ?1 AND {column} = ?2"),
-            rusqlite::params![note_id, ref_id],
+            &format!("SELECT id FROM note_links WHERE page_id = ?1 AND {column} = ?2"),
+            rusqlite::params![page_id, ref_id],
             |r| r.get(0),
         )
         .optional()?;
     if exists.is_none() {
         conn.execute(
-            &format!("INSERT INTO note_links(note_id, {column}, created_at) VALUES (?1, ?2, ?3)"),
-            rusqlite::params![note_id, ref_id, now_iso()],
+            &format!("INSERT INTO note_links(note_id, page_id, {column}, created_at) VALUES (?1, ?2, ?3, ?4)"),
+            rusqlite::params![note_id, page_id, ref_id, now_iso()],
         )?;
         touch_note(&conn, note_id)?;
     }
-    links_of(&conn, note_id)
+    page_links_of(&conn, page_id)
 }
 
 #[tauri::command]
@@ -607,6 +956,19 @@ pub fn search_notepad(state: State<AppState>, query: String) -> AppResult<Vec<No
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_never_takes_a_name_that_is_already_there() {
+        assert_eq!(copy_name("ABC123", &[]), "ABC123 copy");
+        assert_eq!(copy_name("ABC123", &["ABC123 copy".into()]), "ABC123 copy 2");
+        assert_eq!(
+            copy_name("ABC123", &["ABC123 copy".into(), "ABC123 copy 2".into()]),
+            "ABC123 copy 3"
+        );
+        // An unnamed tab still gets a name rather than " copy".
+        assert_eq!(copy_name("", &[]), "Bez názvu copy");
+        assert_eq!(copy_name("   ", &[]), "Bez názvu copy");
+    }
 
     #[test]
     fn every_link_column_has_a_kind_and_they_are_unique() {
