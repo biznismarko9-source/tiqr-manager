@@ -243,6 +243,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "035_sheet_merge",
         include_str!("../migrations/035_sheet_merge.sql"),
     ),
+    (
+        "036_notepad",
+        include_str!("../migrations/036_notepad.sql"),
+    ),
+    (
+        "037_ticket_restrictions",
+        include_str!("../migrations/037_ticket_restrictions.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

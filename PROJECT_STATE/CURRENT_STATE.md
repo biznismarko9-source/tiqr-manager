@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.57.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.60.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2042,7 +2042,140 @@ anchored so `2026ABC` and `180,00` are not dates; 12 non-dates verified.
 clear formatting, freeze 0-3 header rows, and a column readout in the value bar
 (count filled, and a sum that understands `1 234,50`).
 
-**Next new migration is 036.**
+**2.58.0 - the notepad.** marko pivoted: *"radsej to podme zmenit skor na
+styl poznamok ... jednoduche apple poznamky"*, picked design 02 of ten, and
+then added three things while it was being built:
+
+1. *"si vies zaskrtnut ... vies si vybrat kde chces mat fotku, kde chces
+   pisat, kde ten text ma byt vacsi, aka farba"*
+2. *"v jednej karte si vies pridat podkarty niekde dole ako to je v google
+   sheets"*
+3. *"priradovanie eventu, pullu, inventaru, sellu atd"* + *"aj finance"*
+
+**Migration 036: `notes`, `note_pages`, `note_images`, `note_links`.** All four
+carry the three sync pieces. **These are NOT the spreadsheet** - `note_sheets`
+/ `note_columns` / `note_rows` (031) still exist, still sync, and Sheets is
+still reachable at `/sheets`; it simply lost the sidebar row to Notes, and
+Notes links to it while any sheet exists so nothing is stranded.
+
+**A page body is a list of blocks**, `note_pages.blocks_json`, each block
+carrying its own kind and formatting - `{"k":"text","t":…,"s":"h1|h2|p|small",
+"c":"r|o|g|b|p|m","b":1,"i":1}`, plus `check`, `image` and `rule`. Per-block,
+because "kde ten text ma byt vacsi" is a per-piece decision. The backend never
+looks inside a block except to pull a list preview: block kinds will grow, and
+a validating backend would have to be redeployed on BOTH machines before the
+newer one could save anything.
+
+**Sub-tabs are a table, not more JSON** - they are selected between, renamed,
+reordered and deleted individually, and a note with thirty codes would
+otherwise rewrite every page on every keystroke in one of them.
+
+**Links are six real foreign-key columns, not `(kind, id)`.** `cloud_merge`
+translates ids by NAMED COLUMN -> parent table; a generic pair has no named
+parent, so after a merge a note would point at whatever local record happened
+to hold that number. `note_links` is listed LAST in `MERGE_TABLES`, after all
+six parents. ON DELETE CASCADE on the link columns: deleting an order removes
+the LINK and leaves the note.
+
+**Images are TEXT, not BLOB** - `data:image/jpeg;base64,…`, so they travel the
+merge path like every other column instead of being the one type on it never
+exercised. The UI downscales to 1400px and re-encodes at JPEG 0.72 on a canvas
+before upload (no new dependency); Rust caps the result as a backstop. They
+live in their own table so listing notes never drags the bytes along.
+
+**NOT in this release: the sync change marko asked for** (*"ten sync urob tak
+ze on sa robi v pozadi ... nemusis cakat kym sa to loadne"*). That is its own
+piece of work in a protected area and was deliberately not rushed in here.
+
+**2.59.0 - automatic sync runs at launch and at close, and never blocks.**
+marko: *"ten sync urob tak ze on sa robi v pozadi, ze vlastne pocas toho tebe
+funguje apka a nemusis cakat kym sa to loadne"* and *"po kazdej zmene sa to
+musi niekde zapisovat do nejakeho spolocneho celku ze si to vies syncnut
+kedykolvek a ie automaticky su len ked zapinas a vypinas apku v pozadi"*.
+
+**The five-minute timer is gone.** Automatic sync is now exactly twice: once
+at launch, once on the way out. Manual sync from Settings is unchanged and is
+always correct, because every write already marks the database dirty.
+
+**A REGRESSION FROM 2.58.0 WAS FOUND AND FIXED HERE.** `busyEditing()` in
+`Layout.tsx` returned true for any FOCUSED `<textarea>` or `<select>`, empty or
+not. The 2.58.0 notes editor is built out of textareas, so from 2.58.0 on, the
+cursor sitting in a note line deferred every automatic pull and merge
+indefinitely - indistinguishable from sync being dead. It now asks the real
+question (is there unsaved typing?) of textarea, input and contenteditable
+alike; a `<select>` never defers.
+
+**Pull and merge no longer render the blocking overlay** (`blocking: false`).
+With the timer gone they can only happen at launch anyway, so nothing is
+yanked out from under an edit.
+
+**The close hook takes FULL ownership of closing, and that is not optional.**
+Once a `onCloseRequested` listener exists, Tauri no longer closes the window
+for you - the listener does, after the handler resolves, via `destroy()`. So:
+`preventDefault()` is called FIRST and synchronously on every path, and the
+handler always ends in an explicit `win.destroy()`. `core:window:allow-destroy`
+was added to `capabilities/default.json`; without it the default path throws
+and the app cannot be closed at all.
+
+**The close push has an 8 s timeout and swallows every failure.** Nothing is
+lost by giving up: the database is still dirty and the next launch sends it.
+Being unable to close the app would be far worse. Every path was simulated -
+nothing to send, uploads, refused, hangs, cannot plan, offline - and all six
+end with the window closed.
+
+**Verified while reading, not changed:** `decide_auto` and `remote_newer`
+(a Drive file-version comparison) are correct, and the dirty hook is an
+allow-all with a five-table bookkeeping deny-list, so the 036 notepad tables
+mark the database dirty like everything else.
+
+**STILL OPEN:** marko reports sync "nerobil dobre sync". The Mac's own history
+shows a healthy machine - one `push` when dirty, `idle` otherwise, no errors.
+Nothing in the decision path is wrong. The evidence needed next is the WINDOWS
+machine's history; do not guess at a fix without it.
+
+**2.60.0 - ticket restrictions, and the city under the event name.** marko:
+*"chcem aby sme vedeli pridat restriction pri listkov napr ako restricted view,
+16+ atd, take najhlavnejsie, a pri inventory a sales aj vidno mesto v stlpci
+event pod nazvom, trochu urobme tie stlpce vacsie aby sa to tam zmestilo"*.
+
+**Migration 037: `tickets.restrictions_json`.** A JSON array of short codes -
+`rv 16 18 id nr ao st wc` - because a seat can be restricted view AND 18+ at
+once. The CODES are the data; the LABELS live in `src/lib/restrictions.ts`, in
+one place, so renaming one is a text edit and Inventory / Sales / the editor
+cannot drift apart. An unknown code is kept and shown as-is on both sides, so a
+newer version adding one cannot have it thrown away by an older one after a
+sync.
+
+**`update_ticket_impl` writes restrictions in their OWN statement.** Every other
+field in that big UPDATE is written unconditionally, so a caller that omits one
+CLEARS it - and it has more than one caller. Restrictions are set in one screen
+and would have been wiped by every other path that edits a ticket. `None` means
+leave alone; an empty list clears.
+
+**`BulkTicketField::Restrictions`** sets them for a whole selection - an order
+is usually one restriction, and ticking them one at a time is how they end up
+never being set at all. The value arrives as JSON in `text_value` and goes
+through the same `clean_restrictions` as a single edit, so both store the
+identical shape.
+
+**The city needed NO migration** - `events.city` has existed since 001, it was
+simply never carried past the event queries. Added to `Order`, `Ticket`, `Sale`
+and `SaleGroup` (with the same only-when-every-line's-event-agrees guard the
+group's name already uses, so a Mixed-events group has no city either).
+
+**Columns were widened to pay for the second line**: Inventory's three
+colgroups (Event 26→32, 44→48, 33→39) and Sales' two (16→22), each taken from
+its roomiest neighbours. **All five still sum to exactly 100** - verified.
+
+**Restriction badges sit with the SEAT in Order Detail**, not with the order: a
+restricted view belongs to a seat. Inventory is grouped BY ORDER and so has no
+per-ticket row to badge.
+
+**Note:** `OrderDetail.tsx` reports one unbalanced `(` to the bracket checker.
+It did so BEFORE this release too (434/433 → 441/440, a change of +7/+7), so it
+is a checker artifact on a long-shipping file, not a defect.
+
+**Next new migration is 038.**
 
 ## Stack / layout
 

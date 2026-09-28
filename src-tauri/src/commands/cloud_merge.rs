@@ -106,6 +106,12 @@ const MERGE_TABLES: &[MergeTable] = &[
     MergeTable { name: "note_rows", fks: &[("sheet_id", Some("note_sheets"))], natural_key: None, code: None },
     // 2.55.0: sheet alerts hang off a sheet the same way rows do.
     MergeTable { name: "sheet_alerts", fks: &[("sheet_id", Some("note_sheets"))], natural_key: None, code: None },
+    // 2.58.0 notepad (migration 036). NOT the spreadsheet above - different
+    // feature, similar names. `note_links` is listed at the very END because it
+    // points at six other tables and every one must be merged before it.
+    MergeTable { name: "notes", fks: &[], natural_key: None, code: None },
+    MergeTable { name: "note_pages", fks: &[("note_id", Some("notes"))], natural_key: None, code: None },
+    MergeTable { name: "note_images", fks: &[("note_id", Some("notes"))], natural_key: None, code: None },
     MergeTable { name: "event_categories", fks: &[], natural_key: Some("name"), code: None },
     MergeTable { name: "finance_categories", fks: &[], natural_key: Some("name"), code: None },
     MergeTable { name: "platforms", fks: &[], natural_key: Some("name"), code: None },
@@ -188,6 +194,22 @@ const MERGE_TABLES: &[MergeTable] = &[
     MergeTable {
         name: "event_marketplace_links",
         fks: &[("marketplace_id", None), ("event_id", Some("events"))],
+        natural_key: None,
+        code: None,
+    },
+    // LAST on purpose: it points at six other tables, and cloud_merge needs
+    // every parent merged before a child can have its ids translated.
+    MergeTable {
+        name: "note_links",
+        fks: &[
+            ("note_id", Some("notes")),
+            ("order_id", Some("orders")),
+            ("event_id", Some("events")),
+            ("ticket_id", Some("tickets")),
+            ("sale_id", Some("sales")),
+            ("pull_id", Some("pulls")),
+            ("finance_entry_id", Some("finance_entries")),
+        ],
         natural_key: None,
         code: None,
     },

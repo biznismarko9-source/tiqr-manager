@@ -21,6 +21,125 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.60.0 - `update_ticket_impl` CLEARS every field a caller omits
+
+Its big UPDATE writes `section`, `row_label`, `tier`, `seat`, `ticket_type`,
+`listing_price_cents`, `status`, `resale_status`, `delivery_status` and `notes`
+unconditionally. A caller that does not send one **erases it**. That is the
+existing contract and more than one path calls this.
+
+So `restrictions` is written by its **own statement**, only when `Some`. Add a
+new ticket field the same way unless every caller is known to send it - the
+edit form is not the only one.
+
+## 2.60.0 - restriction CODES are data, labels are not
+
+`tickets.restrictions_json` holds short codes. Every label is in
+`src/lib/restrictions.ts`. Renaming "Obmedzený výhľad" must stay a text edit,
+never a data migration, and the same words must appear in Inventory, Sales and
+the editor from one source.
+
+`clean_restrictions` (Rust) and the UI both **keep unknown codes**. A newer
+version adding one must not have it silently dropped by an older one after a
+sync. Do not turn that into a validation error.
+
+## 2.60.0 - the colgroups sum to 100 and must keep summing to 100
+
+Inventory has THREE colgroups (7 / 6 / 8 columns, chosen by `isNarrow` and
+`lockedStatus`) and Sales has TWO IDENTICAL ones. Widening a column means
+taking the width from others in the same group.
+
+Change one and change its twin: Sales' two colgroups are byte-identical on
+purpose, and a table whose widths sum to 99 or 101 does not fail - it just
+quietly stops lining up.
+
+## 2.59.0 - an onCloseRequested listener OWNS closing the window
+
+The moment a close-requested listener exists, Tauri stops closing the window
+itself: the listener closes it after the handler resolves, and it does that
+with `destroy()`.
+
+Two consequences, both load-bearing:
+
+1. **`core:window:allow-destroy` must stay in `capabilities/default.json`.**
+   Without it the default path throws and **the app cannot be closed at all**.
+2. **`preventDefault()` is called first and synchronously on every path**, and
+   the handler always ends in an explicit `win.destroy()`. Letting a path fall
+   through after an `await` hands closing back to machinery this code no longer
+   controls.
+
+The close-time push is wrapped in an 8 s `Promise.race` and swallows every
+error. **Keep both.** What is not sent stays dirty and goes on the next launch;
+a window that will not close is unrecoverable.
+
+## 2.59.0 - sync deferral must ask about TYPING, not about focus
+
+`busyEditing()` decides whether an automatic pull/merge waits. It used to
+return true for any focused `<textarea>` or `<select>`.
+
+2.58.0's notes editor is made of textareas, so that one line made automatic
+sync defer forever whenever a note was open - which reads as "sync is broken",
+not as "sync is being polite". It now asks whether there is unsaved TYPING.
+
+**If a new editor is added, check this function against it.** The rule is the
+question, not the tag list: is there something a reload would destroy?
+
+## 2.59.0 - automatic sync is launch + close, on purpose
+
+No timer. marko asked for exactly this, and the trade is real and accepted:
+with the app left open on one machine, changes made on the other are not
+noticed until a restart or a hand-pressed sync. Do not quietly add a timer or
+a focus trigger back - 2.48.1 added focus triggers, 2.50.1 removed them
+because he objected, and 2.59.0 removed the timer for the same reason.
+
+## 2.58.0 - `notes` is the NOTEPAD, `note_sheets` is the SPREADSHEET
+
+Two features, one unfortunate prefix:
+
+    note_sheets / note_columns / note_rows   spreadsheet   (031, /sheets)
+    notes / note_pages / note_images /
+    note_links                               notepad       (036, /notes)
+
+`commands::notes` is the spreadsheet. `commands::notepad` is the notepad.
+Check which one you are in before changing anything called `note_*`.
+
+## 2.58.0 - a note's links are six FK columns; never collapse them to (kind, id)
+
+`note_links` has `order_id`, `event_id`, `ticket_id`, `sale_id`, `pull_id` and
+`finance_entry_id`, exactly one non-null per row.
+
+The tempting simplification is one `(kind TEXT, ref_id INTEGER)` pair. It is
+**silently wrong here**: `cloud_merge` translates the other machine's ids to
+this one's by NAMED COLUMN -> parent table (`MergeTable.fks`). A generic pair
+has no named parent, so after a merge a note would point at whatever local
+record happened to carry that number - a different order, or a sale.
+
+`note_links` must stay LAST in `MERGE_TABLES`; every one of its six parents has
+to be merged before it. Adding a seventh kind means a column, an `fks` entry,
+and a row in `LINK_COLUMNS` in `commands/notepad.rs` - that constant is the
+single list the module iterates, so nothing can be added to the table and
+forgotten in the code.
+
+## 2.58.0 - the backend does not parse note blocks, on purpose
+
+`note_pages.blocks_json` goes in and out as `serde_json::Value`.
+`commands::notepad` only ever reaches in for a `t` field to build a list
+preview and to search.
+
+**Do not add block validation there.** Block kinds will grow, and a backend
+that rejected an unknown one would have to be shipped to BOTH machines before
+the newer one could save anything - and a rejected save loses the text that
+came with it. The UI skips kinds it does not know instead.
+
+## 2.58.0 - note images are downscaled in the UI before they are ever stored
+
+Canvas, 1400px longest edge, JPEG 0.72, stored as a `data:` TEXT column. The
+cap in `add_note_image` is a backstop, not the mechanism.
+
+This matters because sync pushes the WHOLE database file to Drive: an
+un-shrunk 6MB screenshot is paid for on every sync from then on. If the
+downscale is ever moved or removed, the cap alone will not save the upload.
+
 ## 2.57.0 - merges are STRINGS so one closure moves everything
 
 `merges_json` holds `""`/`"1"`/`"N"`/`"0"` as strings, not numbers, purely so

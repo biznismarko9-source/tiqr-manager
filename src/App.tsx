@@ -19,6 +19,7 @@ import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
 import Finance from "./pages/Finance";
 import Sheets from "./pages/Sheets";
+import Notes from "./pages/Notes";
 import Settings from "./pages/Settings";
 
 /** 2.39.0: `/tickets` was the Inventory list. Orders and Inventory were two
@@ -171,6 +172,7 @@ export default function App() {
               <Route path="pulls" element={<Pulls />} />
               <Route path="finance" element={<Finance />} />
               <Route path="sheets" element={<Sheets />} />
+              <Route path="notes" element={<Notes />} />
               <Route path="settings" element={<Settings />} />
               {/* 1.8.2: Settings Home (above) plus one real route per section -
                   HashRouter makes this refresh-stable with zero extra config,

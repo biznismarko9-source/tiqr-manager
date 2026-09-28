@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Note,
+  NoteBlock,
+  NoteImage,
+  NoteLink,
+  NoteLinkKind,
+  NotePage,
+  NotepadHit,
   SheetAlert,
   SheetAlertInput,
   WorkspaceHit,
@@ -655,6 +662,29 @@ export const api = {
     invoke<NoteRow[]>("insert_note_row_at", { sheetId, position }),
   duplicateNoteRow: (rowId: number) => invoke<NoteRow[]>("duplicate_note_row", { rowId }),
   searchNotes: (query: string) => invoke<NoteHit[]>("search_notes", { query }),
+  // Notepad (2.58.0) - see commands/notepad.rs. NOT the spreadsheet above.
+  listNotes: (includeArchived: boolean) => invoke<Note[]>("list_notes", { includeArchived }),
+  getNote: (id: number) => invoke<Note>("get_note", { id }),
+  createNote: (title: string) => invoke<Note>("create_note", { title }),
+  updateNote: (id: number, title: string, tag: string, noteDate: string | null) =>
+    invoke<Note>("update_note", { id, title, tag, noteDate }),
+  setNoteFlags: (id: number, flags: { pinned?: boolean; archived?: boolean }) =>
+    invoke<Note>("set_note_flags", { id, ...flags }),
+  deleteNote: (id: number) => invoke<void>("delete_note", { id }),
+  listNotePages: (noteId: number) => invoke<NotePage[]>("list_note_pages", { noteId }),
+  createNotePage: (noteId: number, name: string) => invoke<NotePage>("create_note_page", { noteId, name }),
+  renameNotePage: (id: number, name: string) => invoke<NotePage>("rename_note_page", { id, name }),
+  saveNotePage: (id: number, blocks: NoteBlock[]) => invoke<NotePage>("save_note_page", { id, blocks }),
+  deleteNotePage: (id: number) => invoke<NotePage[]>("delete_note_page", { id }),
+  addNoteImage: (noteId: number, dataUri: string, caption: string) =>
+    invoke<NoteImage>("add_note_image", { noteId, dataUri, caption }),
+  listNoteImages: (noteId: number) => invoke<NoteImage[]>("list_note_images", { noteId }),
+  deleteNoteImage: (id: number) => invoke<void>("delete_note_image", { id }),
+  addNoteLink: (noteId: number, kind: NoteLinkKind, refId: number) =>
+    invoke<NoteLink[]>("add_note_link", { noteId, kind, refId }),
+  deleteNoteLink: (id: number) => invoke<void>("delete_note_link", { id }),
+  searchNotepad: (query: string) => invoke<NotepadHit[]>("search_notepad", { query }),
+
   // Sheet alerts (2.55.0) - see commands/alerts.rs.
   listSheetAlerts: (includeDone: boolean) => invoke<SheetAlert[]>("list_sheet_alerts", { includeDone }),
   saveSheetAlert: (alert: SheetAlertInput) => invoke<SheetAlert>("save_sheet_alert", { alert }),

@@ -3,6 +3,7 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDateNumeric, formatMoney, formatSeatsSummary } from "../lib/format";
+import { RESTRICTION_TONE_CLASS, TICKET_RESTRICTIONS } from "../lib/restrictions";
 import {
   Badge,
   Button,
@@ -442,12 +443,15 @@ export function TicketsView({
                  wide enough to read at a glance rather than squeezed against
                  columns that are no longer there. Sums to 100. */
               <colgroup>
-                <col className="w-[26%]" />
+                {/* 2.60.0: Event 26 -> 32. It carries two lines now (name and
+                    city), so the slice came from Seats and Total cost, which
+                    had the most slack. Still sums to 100. */}
+                <col className="w-[32%]" />
                 <col className="w-[13%]" />
-                <col className="w-[19%]" />
+                <col className="w-[15%]" />
                 <col className="w-[9%]" />
                 <col className="w-[10%]" />
-                <col className="w-[13%]" />
+                <col className="w-[11%]" />
                 <col className="w-[10%]" />
               </colgroup>
             ) : isNarrow ? (
@@ -456,12 +460,13 @@ export function TicketsView({
                  side of it, which are the ones carrying numbers people
                  actually compare. Sums to 100. */
               <colgroup>
+                {/* 2.60.0: Event 44 -> 48, from Total cost and Status. Sums to 100. */}
                 <col className="w-[11%]" />
-                <col className="w-[44%]" />
+                <col className="w-[48%]" />
                 <col className="w-[8%]" />
                 <col className="w-[11%]" />
-                <col className="w-[14%]" />
                 <col className="w-[12%]" />
+                <col className="w-[10%]" />
               </colgroup>
             ) : (
               /* 2.38.0: eight, not nine - Sold is gone. Event gives up a
@@ -470,14 +475,16 @@ export function TicketsView({
                  their full value instead of truncating, which is what marko
                  asked for when he set this column list. Sums to 100. */
               <colgroup>
+                {/* 2.60.0: Event 33 -> 39, a point or three from each of the
+                    four widest neighbours rather than gutting one. Sums to 100. */}
                 <col className="w-[9%]" />
-                <col className="w-[33%]" />
+                <col className="w-[39%]" />
+                <col className="w-[10%]" />
                 <col className="w-[11%]" />
-                <col className="w-[14%]" />
                 <col className="w-[6.5%]" />
                 <col className="w-[8.5%]" />
-                <col className="w-[10%]" />
-                <col className="w-[8%]" />
+                <col className="w-[9%]" />
+                <col className="w-[7%]" />
               </colgroup>
             )}
             <thead>
@@ -520,13 +527,27 @@ export function TicketsView({
                         </Link>
                       </td>
                     )}
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate`} title={o.eventName}>
-                      {allowCrossLinks ? (
-                        <Link to={`/events/${o.eventId}`} className="hover:underline">
-                          {o.eventName}
-                        </Link>
-                      ) : (
-                        o.eventName
+                    {/* 2.60.0: the city sits under the name - marko: "aj vidno
+                        mesto v stlpci event pod nazvom". Two lines, so the
+                        column got wider in the colgroups above rather than
+                        squeezing the name. */}
+                    <td
+                      className={isNarrow ? "td-c-narrow" : "td-c"}
+                      title={o.eventCity ? `${o.eventName} — ${o.eventCity}` : o.eventName}
+                    >
+                      <span className="block truncate">
+                        {allowCrossLinks ? (
+                          <Link to={`/events/${o.eventId}`} className="hover:underline">
+                            {o.eventName}
+                          </Link>
+                        ) : (
+                          o.eventName
+                        )}
+                      </span>
+                      {o.eventCity && (
+                        <span className="block truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">
+                          {o.eventCity}
+                        </span>
                       )}
                     </td>
                     {(!isNarrow || lockedStatus) && <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(o.purchaseDate)}</td>}
@@ -585,6 +606,7 @@ export function TicketEditModal({
   const [resaleStatus, setResaleStatus] = useState("");
   const [deliveryStatus, setDeliveryStatus] = useState("");
   const [notes, setNotes] = useState("");
+  const [restrictions, setRestrictions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -600,6 +622,7 @@ export function TicketEditModal({
     setResaleStatus(ticket.resaleStatus ?? "");
     setDeliveryStatus(ticket.deliveryStatus ?? "");
     setNotes(ticket.notes ?? "");
+    setRestrictions(ticket.restrictions ?? []);
     setError(null);
   }, [ticket]);
 
@@ -628,6 +651,7 @@ export function TicketEditModal({
       resaleStatus: resaleStatus || null,
       deliveryStatus: deliveryStatus || null,
       notes: notes || null,
+      restrictions,
     };
     setSaving(true);
     try {
@@ -704,6 +728,36 @@ export function TicketEditModal({
             ))}
           </Select>
         </Field>
+        {/* 2.60.0: the things a buyer has to be told before they pay. Toggles,
+            not a dropdown - a seat can easily be restricted view AND 18+. */}
+        <div className="col-span-2">
+          <Field label="Obmedzenia">
+            <div className="flex flex-wrap gap-1.5">
+              {TICKET_RESTRICTIONS.map((r) => {
+                const on = restrictions.includes(r.code);
+                return (
+                  <button
+                    key={r.code}
+                    type="button"
+                    onClick={() =>
+                      setRestrictions((cur) =>
+                        cur.includes(r.code) ? cur.filter((c) => c !== r.code) : [...cur, r.code],
+                      )
+                    }
+                    title={r.label}
+                    className={`rounded-full px-2.5 py-1 text-[11.5px] transition ${
+                      on
+                        ? RESTRICTION_TONE_CLASS[r.tone]
+                        : "bg-surface-sunken text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+        </div>
         <div className="col-span-2">
           <Field label="Notes">
             <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />

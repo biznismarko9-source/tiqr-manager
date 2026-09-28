@@ -30,8 +30,9 @@ pub(crate) const LIST_CAP: i64 = 5000;
 // sale, never a stale refunded one. Same pattern already used in
 // orders.rs's fetch_sales_summary and events.rs's stats query.
 const BASE_SQL: &str = "
-    SELECT t.id, t.code, t.event_id, e.name as event_name, t.order_id, o.code as order_code,
-      t.section, t.row_label, t.tier, t.seat, t.ticket_type,
+    SELECT t.id, t.code, t.event_id, e.name as event_name, e.city as event_city,
+      t.order_id, o.code as order_code,
+      t.section, t.row_label, t.tier, t.seat, t.ticket_type, t.restrictions_json,
       t.purchase_cost_cents, t.purchase_fees_cents, t.other_costs_cents,
       t.listing_price_cents, t.currency, t.status, t.resale_status, t.delivery_status,
       t.notes, t.is_demo,
@@ -61,7 +62,11 @@ fn map_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         code: row.get("code")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        event_city: row.get("event_city")?,
         order_id: row.get("order_id")?,
+        // A blob that will not parse reads as "no restrictions" rather than
+        // failing the whole list - one bad row must not hide the inventory.
+        restrictions: serde_json::from_str(&row.get::<_, String>("restrictions_json")?).unwrap_or_default(),
         order_code: row.get("order_code")?,
         section: row.get("section")?,
         row_label: row.get("row_label")?,
@@ -193,6 +198,21 @@ pub fn get_ticket(state: State<AppState>, id: i64) -> AppResult<Ticket> {
 /// unit-testable against a plain `&Connection` without a full Tauri context.
 /// Byte-identical validation/SQL to the previous inline version - this is a
 /// mechanical extraction, not a behaviour change.
+/// Trimmed, lower-cased, de-duplicated, blanks dropped - so "RV", " rv " and
+/// a double click are all one `rv`. Unknown codes are KEPT: the labels live in
+/// the UI, and a newer version adding a code must not have it thrown away by
+/// an older one on the way through.
+pub(crate) fn clean_restrictions(raw: &[String]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for r in raw {
+        let r = r.trim().to_lowercase();
+        if !r.is_empty() && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+}
+
 pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdateInput) -> AppResult<()> {
     let current_status: String = conn
         .query_row("SELECT status FROM tickets WHERE id = ?1", [id], |r| {
@@ -221,6 +241,18 @@ pub(crate) fn update_ticket_impl(conn: &Connection, id: i64, input: &TicketUpdat
     }
 
     let next_status = input.status.clone().unwrap_or(current_status);
+
+    // Its own statement, deliberately. Every other field in the big UPDATE
+    // below is written unconditionally, so a caller that omits one CLEARS it -
+    // and `update_ticket_impl` has more than one caller. Restrictions are set
+    // in one screen and would be wiped by every other path that edits a
+    // ticket. `None` here means "leave them alone"; an empty list clears them.
+    if let Some(list) = &input.restrictions {
+        conn.execute(
+            "UPDATE tickets SET restrictions_json=?2 WHERE id=?1",
+            params![id, clean_restrictions(list)],
+        )?;
+    }
 
     conn.execute(
         "UPDATE tickets SET section=?1, row_label=?2, tier=?3, seat=?4, ticket_type=?5,
@@ -306,6 +338,7 @@ pub(crate) fn bulk_update_tickets_impl(
         BulkTicketField::Tier => "tier",
         BulkTicketField::Seat => "seat",
         BulkTicketField::ListingPriceCents => "listing_price_cents",
+        BulkTicketField::Restrictions => "restrictions_json",
     };
 
     // Dedupe so the same id appearing twice (e.g. a stale double click) is
@@ -352,6 +385,12 @@ pub(crate) fn bulk_update_tickets_impl(
     let mut update_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
     if let BulkTicketField::ListingPriceCents = input.field {
         update_params.push(Box::new(input.cents_value));
+    } else if let BulkTicketField::Restrictions = input.field {
+        // Arrives as a JSON array in `text_value` - normalised here so a bulk
+        // set and a single-ticket edit store the identical shape.
+        let parsed: Vec<String> =
+            serde_json::from_str(input.text_value.as_deref().unwrap_or("[]")).unwrap_or_default();
+        update_params.push(Box::new(clean_restrictions(&parsed)));
     } else {
         update_params.push(Box::new(input.text_value.clone()));
     }

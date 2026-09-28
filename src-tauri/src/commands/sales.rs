@@ -26,7 +26,7 @@ const BASE_SQL: &str = "
       -- shown as its own distinct badge alongside ticket_status above - see
       -- REDESIGN-2.0.68-REPORT.md.
       t.resale_status as ticket_resale_status,
-      t.event_id, e.name as event_name,
+      t.event_id, e.name as event_name, e.city as event_city,
       t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
       s.currency, t.currency as ticket_currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at, s.updated_at,
@@ -83,6 +83,7 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         ticket_resale_status: row.get("ticket_resale_status")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        event_city: row.get("event_city")?,
         order_id: row.get("order_id")?,
         order_code: row.get("order_code")?,
         platform_id: row.get("platform_id")?,
@@ -137,6 +138,7 @@ fn map_sale_group(row: &Row) -> rusqlite::Result<SaleGroup> {
         ticket_count: row.get("ticket_count")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        event_city: row.get("event_city")?,
         event_date: row.get("event_date")?,
         category_id: row.get("category_id")?,
         category_name: row.get("category_name")?,
@@ -276,6 +278,9 @@ pub(crate) const GROUP_BASE_SELECT: &str = "
       COUNT(*) as ticket_count,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(t.event_id) END as event_id,
       CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.name) END as event_name,
+      -- 2.60.0: the city, under the same guard as the name above - a Mixed
+      -- events group honestly has no single city either.
+      CASE WHEN COUNT(DISTINCT t.event_id) = 1 THEN MAX(e.city) END as event_city,
       -- 2.23.0: the event's own date, carried with the same
       -- only-when-every-line's-event-agrees guard as event_id/event_name
       -- above rather than a rule of its own. Null on a Mixed events group

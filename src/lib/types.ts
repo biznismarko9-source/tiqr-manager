@@ -308,6 +308,8 @@ export interface OrderRecord {
   code: string;
   eventId: number;
   eventName: string;
+  /** 2.60.0 */
+  eventCity: string | null;
   /** 2.2.10: the event's own date/status - Orders' Active/Completed tabs now
    * key off whether the EVENT is done (see Orders.tsx's `isOrderDone`/
    * ORDER_TABS doc comment), not just this order's own ticket counts. */
@@ -431,6 +433,8 @@ export interface Ticket {
   code: string;
   eventId: number;
   eventName: string;
+  /** 2.60.0: shown under the event name in Inventory. */
+  eventCity: string | null;
   orderId: number;
   orderCode: string;
   section: string | null;
@@ -441,6 +445,8 @@ export interface Ticket {
   tier: string | null;
   seat: string | null;
   ticketType: string | null;
+  /** 2.60.0: short codes — see lib/restrictions.ts. */
+  restrictions: string[];
   purchaseCostCents: number;
   purchaseFeesCents: number;
   otherCostsCents: number;
@@ -477,6 +483,8 @@ export interface TicketUpdateInput {
   tier?: string | null;
   seat?: string | null;
   ticketType?: string | null;
+  /** Omitted means leave them alone; an empty array clears them. */
+  restrictions?: string[];
   listingPriceCents?: number | null;
   status?: TicketStatus | null;
   resaleStatus?: string | null;
@@ -560,6 +568,8 @@ export interface Sale {
   ticketResaleStatus: string | null;
   eventId: number;
   eventName: string;
+  /** 2.60.0 */
+  eventCity: string | null;
   /** The ticket's own order - every ticket belongs to exactly one order, so
    * this is never null/Mixed (unlike SaleGroup's fields below, which CAN be
    * Mixed once several lines are aggregated). Powers Sale Detail's
@@ -609,6 +619,8 @@ export interface SaleGroup {
   /** Null means the group's tickets span more than one event ("Mixed events"). */
   eventId: number | null;
   eventName: string | null;
+  /** 2.60.0: null on a mixed-event group, same rule as the name. */
+  eventCity: string | null;
   /** 2.23.0: the shared event's own date, under the same "only when every
    *  line's event agrees" rule. null for a mixed-event group or a TBD event. */
   eventDate: string | null;
@@ -2428,6 +2440,73 @@ export interface NoteHit {
 /** A reminder on a sheet, at a local wall-clock time (2.55.0, migration 033).
  *  `rowId`/`colIndex` are both optional: an alert can point at a cell, at a
  *  row, or at nothing but the sheet. */
+/* ── Notepad (2.58.0, migration 036) ──────────────────────────────────
+ * NOT the spreadsheet: `NoteSheet`/`NoteRow` above are that. These are notes,
+ * their sub-tabs and what they are attached to. */
+
+/** What a note can be attached to. Each maps to one real foreign key column
+ *  on `note_links`, so ids survive a merge between the two machines. */
+export type NoteLinkKind = "order" | "event" | "ticket" | "sale" | "pull" | "finance";
+
+export interface NoteLink {
+  id: number;
+  kind: NoteLinkKind;
+  refId: number;
+  /** Resolved server-side so a list of notes needs no extra fetches. */
+  label: string;
+}
+
+export interface Note {
+  id: number;
+  title: string;
+  tag: string;
+  pinned: boolean;
+  archived: boolean;
+  noteDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+  pageCount: number;
+  imageCount: number;
+  preview: string;
+  links: NoteLink[];
+}
+
+/** One piece of a page. `k` is the kind; everything else is per-block
+ *  formatting, which is the whole point ("kde ten text ma byt vacsi, aka
+ *  farba"). An unknown `k` is skipped rather than breaking the page. */
+export type NoteBlock =
+  | { k: "text"; t: string; s?: NoteTextSize; c?: NoteColour; b?: 1; i?: 1 }
+  | { k: "check"; t: string; d?: 1; s?: NoteTextSize; c?: NoteColour; b?: 1; i?: 1 }
+  | { k: "image"; id: number; t?: string }
+  | { k: "rule" };
+
+export type NoteTextSize = "h1" | "h2" | "p" | "small";
+export type NoteColour = "r" | "o" | "g" | "b" | "p" | "m";
+
+/** A sub-tab. `blocks` comes through as real JSON, not a string. */
+export interface NotePage {
+  id: number;
+  noteId: number;
+  position: number;
+  name: string;
+  blocks: NoteBlock[];
+}
+
+export interface NoteImage {
+  id: number;
+  noteId: number;
+  dataUri: string;
+  caption: string;
+}
+
+export interface NotepadHit {
+  noteId: number;
+  noteTitle: string;
+  pageId: number;
+  pageName: string;
+  excerpt: string;
+}
+
 export interface SheetAlert {
   id: number;
   sheetId: number;

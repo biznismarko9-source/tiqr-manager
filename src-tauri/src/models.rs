@@ -309,6 +309,8 @@ pub struct Order {
     pub code: String,
     pub event_id: i64,
     pub event_name: String,
+    /// 2.60.0: shown under the event name in Inventory.
+    pub event_city: Option<String>,
     /// 2.2.10: the event's own date/status, denormalized here the same way
     /// category_name/platform_name already are (2.0.27) - marko's request:
     /// Orders' Active/Completed split now keys off whether the EVENT is
@@ -511,6 +513,9 @@ pub struct Ticket {
     pub code: String,
     pub event_id: i64,
     pub event_name: String,
+    /// 2.60.0: shown under the event name in Inventory and Sales. `events.city`
+    /// has always existed; it simply was not carried this far.
+    pub event_city: Option<String>,
     pub order_id: i64,
     pub order_code: String,
     pub section: Option<String>,
@@ -525,6 +530,9 @@ pub struct Ticket {
     pub tier: Option<String>,
     pub seat: Option<String>,
     pub ticket_type: Option<String>,
+    /// 2.60.0 (migration 037): short codes - rv, 16, 18, st, wc, id, nr, ao.
+    /// Several can apply to one ticket; the labels live in the UI.
+    pub restrictions: Vec<String>,
     pub purchase_cost_cents: i64,
     pub purchase_fees_cents: i64,
     pub other_costs_cents: i64,
@@ -568,6 +576,9 @@ pub struct TicketUpdateInput {
     pub tier: Option<String>,
     pub seat: Option<String>,
     pub ticket_type: Option<String>,
+    /// Absent means LEAVE ALONE, like every other field here. An empty list is
+    /// a real value and clears them.
+    pub restrictions: Option<Vec<String>>,
     pub listing_price_cents: Option<i64>,
     pub status: Option<String>,
     /// 2.0.10 - see `Ticket::resale_status`/`Ticket::delivery_status`.
@@ -594,6 +605,9 @@ pub struct TicketUpdateInput {
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BulkTicketField {
+    /// 2.60.0. A whole order is usually the same restriction, and ticking them
+    /// one ticket at a time is how they end up never being set at all.
+    Restrictions,
     Section,
     RowLabel,
     Tier,
@@ -700,6 +714,8 @@ pub struct Sale {
     pub ticket_resale_status: Option<String>,
     pub event_id: i64,
     pub event_name: String,
+    /// 2.60.0: the city, under the name, same as Inventory.
+    pub event_city: Option<String>,
     /// 1.8.0: the ticket's own order, so Sale Detail can link straight to
     /// Order Detail without a second round trip. Every ticket belongs to
     /// exactly one order (tickets.order_id is NOT NULL - see migration 001),
@@ -761,6 +777,9 @@ pub struct SaleGroup {
     /// restricted to one event) and the UI should show "Mixed events".
     pub event_id: Option<i64>,
     pub event_name: Option<String>,
+    /// 2.60.0: null on a Mixed-events group for the same reason event_name is -
+    /// see the query's own guard.
+    pub event_city: Option<String>,
     /// 2.23.0: the shared event's own date - same "only when every line's
     /// event agrees" rule as the two above. None for a mixed-event group or a
     /// TBD event; both are honestly "no single date".

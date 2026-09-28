@@ -1,0 +1,44 @@
+-- 037: Restrictions on a ticket.
+--
+-- WHY THIS EXISTS
+--
+-- marko: "chcem aby sme vedeli pridat restriction pri listkov napr ako
+-- restricted view, 16+ atd, take najhlavnejsie".
+--
+-- These are the things a buyer has to be told BEFORE they pay - a restricted
+-- view seat sold as a normal one is a refund, and an 18+ ticket sold to
+-- someone who cannot use it is a refund plus an argument. They belong on the
+-- ticket because they are a property of the seat, not of the order: one order
+-- can easily be two clear-view seats and two behind a pillar.
+--
+-- WHY A JSON ARRAY OF SHORT CODES
+--
+-- A ticket can carry several at once ("restricted view" AND "18+"), so a
+-- single TEXT column would be a list in disguise. The house style for a list
+-- that is only ever read as part of its own row is a JSON array in TEXT -
+-- same as `cells_json`, `formats_json` and `tags_json` elsewhere.
+--
+-- The codes are short and stable; the LABELS live in the UI, in one place, so
+-- renaming "Restricted view" to something else is not a data migration:
+--
+--     rv  restricted / obstructed view      18  18+
+--     16  16+                               id  ID or name required
+--     st  standing (no seat)                nr  no re-entry
+--     wc  accessible / wheelchair           ao  minor must be accompanied
+--
+-- An unknown code is shown as-is by the UI rather than dropped, so a newer
+-- version adding one cannot make an older one lose it on the way through.
+--
+-- SYNC
+--
+-- No new table: a column on `tickets`, which already carries `uid`, its
+-- tombstone and a MERGE_TABLES entry. Existing tickets default to '[]' and
+-- read back exactly as before.
+
+ALTER TABLE tickets ADD COLUMN restrictions_json TEXT NOT NULL DEFAULT '[]';
+
+-- Inventory and Sales both show the event's city under its name from 2.60.0
+-- ("aj vidno mesto v stlpci event pod nazvom"). That needed NO schema change -
+-- `events.city` has existed since 001; it simply was not carried through the
+-- ticket and sale queries. Noted here so the next person looking for where
+-- the city is stored does not go hunting for a migration that adds it.

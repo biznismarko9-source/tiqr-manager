@@ -16,6 +16,119 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.60.0 - obmedzenia na lístkoch, mesto pod eventom
+
+### Obmedzenia
+
+Pri úprave lístka je nové pole **Obmedzenia** — naklikáš, čo platí:
+
+**Obmedzený výhľad · 18+ · 16+ · Na meno/doklad · Bez opätovného vstupu ·
+Maloletý s dospelým · Na státie · Bezbariérové miesto**
+
+Dá sa ich zapnúť **viac naraz** (sedadlo môže byť aj za stĺpom aj 18+).
+
+V **detaile objednávky** ich vidíš ako farebné odznaky **pri sedadle** — tam,
+kam sa pozeráš, keď riešiš, ktoré miesto to je.
+
+Vieš ich nastaviť aj **hromadne** pre označené lístky naraz — celá objednávka
+býva rovnaká a preklikávať ich po jednom je istý spôsob, ako ich nenastaviť
+vôbec.
+
+### Mesto pod názvom eventu
+
+V **Inventory** aj v **Sales** je teraz pod názvom eventu **mesto**, menším
+sivým písmom.
+
+### Širšie stĺpce
+
+Stĺpec Event dostal viac miesta, aby sa tam tie dva riadky zmestili:
+Inventory **26 → 32 %**, **44 → 48 %** a **33 → 39 %** (tri rôzne šírky podľa
+toho, ako široké máš okno), Sales **16 → 22 %**.
+
+## 2.59.0 - sync na pozadí, len pri zapnutí a vypnutí
+
+### Tak, ako si to chcel
+
+- **5-minútový časovač je preč.** Automaticky sa syncuje **pri zapnutí** a
+  **pri zatváraní** appky.
+- **Nič už appku nezamkne.** Sťahovanie aj zlučovanie beží na pozadí, appka
+  medzitým funguje.
+- **Ručne kedykoľvek** cez Settings → Data. Každá zmena si sama poznačí, že je
+  čo poslať, takže ručný sync je vždy správny.
+
+### Opravil som chybu, ktorú som ti spravil v 2.58.0
+
+Sync odkladal sťahovanie, kým „niečo píšeš" — ale stačilo, aby bol kurzor v
+akomkoľvek poli, **aj prázdnom**. Nový editor poznámok je celý z takých polí,
+takže kým si mal otvorenú poznámku, **automatický sync sa odkladal donekonečna**.
+Vyzeralo to presne ako keby sync nefungoval. Teraz sa pýta na to podstatné:
+je tam rozpísaný text, o ktorý by si prišiel?
+
+### Zatváranie appky
+
+Pri zatváraní sa ešte pošle, čo je neposlané — **maximálne 8 sekúnd**, potom sa
+appka zavrie tak či tak. Nič sa nestratí: čo neprešlo, ostáva označené a pošle
+sa pri najbližšom spustení.
+
+**Appka sa musí dať vždy zavrieť** — preveril som všetkých 6 možných priebehov
+(nič na poslanie, prešlo, odmietnuté, zaseklo sa, nevie sa rozhodnúť, offline).
+
+### Čo som overil a nemenil
+
+Rozhodovanie syncu aj porovnávanie verzií z Drive sú **správne**. A označovanie
+zmien funguje aj pre nové tabuľky poznámok.
+
+## 2.58.0 - Poznámky
+
+Vybral si si návrh **02** a je hotový.
+
+### Ako to funguje
+
+Vľavo zoznam poznámok, vpravo tá otvorená. Hore lišta, dole **podkarty**.
+
+**Každý riadok si nastavíš zvlášť** — to je na tom to hlavné:
+- **veľkosť** (veľký nadpis / nadpis / text / malý)
+- **farba** (6 farieb + základná)
+- **tučné, kurzíva**
+- **checkbox** — z riadku spravíš odškrtávacie políčko
+- **obrázok** — vložíš ho presne tam, kde stojíš
+- **čiara** na oddelenie
+
+Enter spraví nový riadok, a ak si bol na checkboxe, nový je tiež checkbox.
+
+### Podkarty
+
+Dole v poznámke sú **podkarty ako v Sheets**. Napr. poznámka „Oasis kódy" a v
+nej podkarty `ABC123`, `DEF456`… a v každej si píšeš o tom kóde zvlášť.
+**+** pridá, dvojklik premenuje, **×** zmaže.
+
+### Priradenie k záznamu
+
+Tlačidlo **⧉ Priradiť** — poznámku pripojíš k **objednávke, eventu, inventáru,
+predaju, pullu aj finančnému záznamu**. Aj k viacerým naraz. V zozname aj v
+poznámke to potom vidíš ako štítok.
+
+Keď ten záznam neskôr zmažeš, **poznámka ostane** — zmizne len to prepojenie.
+
+### Obrázky
+
+Vyberieš súbor a appka ho **sama zmenší** (max 1400 px, JPEG), aby ti
+nenafukoval to, čo sa nahráva pri každom syncu.
+
+### Ukladá sa samo
+
+Po písaní, pri prepnutí podkarty aj pri odchode z poznámky.
+
+### Staré hárky
+
+Sheets **nikam nezmizli** — len už nie sú v paneli. Dole v zozname poznámok máš
+odkaz **„Staré hárky"**, kým tam nejaké máš.
+
+### Čo v tom NIE JE
+
+**Zmena syncu**, ktorú si pýtal (nech beží v pozadí). Sync je chránená časť a
+nechcel som ju narýchlo prilepiť sem — spravím ju zvlášť.
+
 ## 2.57.0 - ťahanie, spájanie, výplne, kalendár
 
 ### Veľkosti sa ťahajú myšou

@@ -4,6 +4,7 @@ pub mod attention_center;
 pub mod backup;
 pub mod alerts;
 pub mod cloud_merge;
+pub mod notepad;
 pub mod cloud_sync;
 pub mod calendar;
 pub mod csv_export;

@@ -15,6 +15,7 @@ import type {
   Ticket,
 } from "../lib/types";
 import { centsToDecimalString, decimalStringToCents, formatDate, formatDateNumeric, formatMoney, formatSeatLocation } from "../lib/format";
+import { RESTRICTION_TONE_CLASS, restrictionShort, restrictionTone, restrictionsTitle } from "../lib/restrictions";
 import {
   Badge,
   Button,
@@ -567,8 +568,32 @@ export default function OrderDetail() {
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={t.code}>
                       {t.code}
                     </td>
-                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={seatLabel}>
-                      {seatLabel}
+                    {/* 2.60.0: restrictions sit with the SEAT, because that is
+                        what they are about - a restricted view belongs to the
+                        seat, not to the order. */}
+                    <td
+                      className={isNarrow ? "td-c-narrow" : "td-c"}
+                      title={
+                        t.restrictions.length > 0
+                          ? `${seatLabel} — ${restrictionsTitle(t.restrictions)}`
+                          : seatLabel
+                      }
+                    >
+                      <span className="block truncate text-slate-500 dark:text-slate-400">{seatLabel}</span>
+                      {t.restrictions.length > 0 && (
+                        <span className="mt-0.5 flex flex-wrap gap-1">
+                          {t.restrictions.map((code) => (
+                            <span
+                              key={code}
+                              className={`rounded px-1.5 py-[1px] text-[10px] leading-tight ${
+                                RESTRICTION_TONE_CLASS[restrictionTone(code)]
+                              }`}
+                            >
+                              {restrictionShort(code)}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(t.totalCostCents, t.currency)}</td>
                     {!isNarrow && (

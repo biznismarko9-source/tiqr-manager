@@ -772,31 +772,37 @@ export default function Sales() {
                     rather than a fixed-width number - Event, Platform, Seats
                     and the dots, whose header is the widest label in the
                     row. Sums to 100. */}
+                {/* 2.60.0: Event 16 -> 22. It carries two lines now (name and
+                    city), and 16% was the tightest free-text column in the
+                    app. Taken from Platform, Seats and Status. Sums to 100. */}
                 <col className="w-[9.5%]" />
-                <col className="w-[16%]" />
-                <col className="w-[12%]" />
+                <col className="w-[22%]" />
+                <col className="w-[10%]" />
                 <col className="w-[9%]" />
-                <col className="w-[12%]" />
+                <col className="w-[9%]" />
                 <col className="w-[4.5%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
-                <col className="w-[10%]" />
+                <col className="w-[9%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 {/* 2.34.2: see the narrow colgroup above - same columns. */}
+                {/* 2.60.0: Event 16 -> 22. It carries two lines now (name and
+                    city), and 16% was the tightest free-text column in the
+                    app. Taken from Platform, Seats and Status. Sums to 100. */}
                 <col className="w-[9.5%]" />
-                <col className="w-[16%]" />
-                <col className="w-[12%]" />
+                <col className="w-[22%]" />
+                <col className="w-[10%]" />
                 <col className="w-[9%]" />
-                <col className="w-[12%]" />
+                <col className="w-[9%]" />
                 <col className="w-[4.5%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
                 <col className="w-[9%]" />
-                <col className="w-[10%]" />
+                <col className="w-[9%]" />
               </colgroup>
             )}
             <thead>
@@ -882,13 +888,32 @@ export default function Sales() {
                       in Orders/Tickets/Sales. The Sale code link above stays
                       (opening this exact sale's own detail page isn't a
                       foreign jump). */}
-                  <td className={isNarrow ? "td-c-narrow" : "td-c"} title={g.eventId && g.eventName ? g.eventName : undefined}>
+                  {/* 2.60.0: the city under the name - marko: "aj vidno mesto v
+                      stlpci event pod nazvom". Null on a Mixed-events group,
+                      same rule the name already follows. */}
+                  <td
+                    className={isNarrow ? "td-c-narrow" : "td-c"}
+                    title={
+                      g.eventId && g.eventName
+                        ? g.eventCity
+                          ? `${g.eventName} — ${g.eventCity}`
+                          : g.eventName
+                        : undefined
+                    }
+                  >
                     {g.eventId && g.eventName ? (
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate">{g.eventName}</span>
-                        {g.categoryName && g.categoryColorSlot !== null && (
-                          <span className="shrink-0">
-                            <EventCategoryBadge name={g.categoryName} colorSlot={g.categoryColorSlot} />
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate">{g.eventName}</span>
+                          {g.categoryName && g.categoryColorSlot !== null && (
+                            <span className="shrink-0">
+                              <EventCategoryBadge name={g.categoryName} colorSlot={g.categoryColorSlot} />
+                            </span>
+                          )}
+                        </div>
+                        {g.eventCity && (
+                          <span className="block truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">
+                            {g.eventCity}
                           </span>
                         )}
                       </div>

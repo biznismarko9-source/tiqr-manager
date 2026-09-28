@@ -5,6 +5,7 @@ import {
   IconCalendarDays,
   IconChevronUp,
   IconGauge,
+  IconClipboard,
   IconLayoutGrid,
   IconLogOut,
   IconMoon,
@@ -24,6 +25,7 @@ import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
 import logo from "../assets/logo.png";
@@ -35,7 +37,13 @@ import logo from "../assets/logo.png";
 // re-uploading the same file every couple of minutes through a long working
 // session. Five minutes is far below the time it takes to walk from one
 // machine to the other, which is the only deadline that matters here.
-const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+// 2.59.0: how long the app is willing to hold the window open to finish
+// sending before it gives up and closes anyway.
+//
+// Eight seconds, and the "anyway" is the important half: an upload that stalls
+// must NOT leave marko unable to close his own app. Nothing is lost by giving
+// up - the database is still marked dirty, so the very next launch sends it.
+const CLOSE_SYNC_TIMEOUT_MS = 8000;
 
 // 2.0.44: initials shown in the profile widget's avatar circle - up to 2,
 // from up to 2 words of the name, uppercased. "T" for an empty/whitespace
@@ -94,7 +102,10 @@ const NAV: NavItem[] = [
   // destination, no groups (PROTECTED_AREAS, 2.43.0). Shipped as "Workspace"
   // (2.52.0) then "Notes" (2.53.0); marko asked for "realne google sheets
   // uplne jednoduche" and chose tables only, so the label says what it is.
-  { to: "/sheets", label: "Sheets", icon: IconLayoutGrid },
+  // 2.58.0: Notes takes the row. The spreadsheet is still there at /sheets and
+  // still syncs - it is just not in the rail any more, and Notes links to it
+  // while any sheet still exists, so nothing marko typed is stranded.
+  { to: "/notes", label: "Notes", icon: IconClipboard },
 ];
 
 // Shared by every NavLink below, so the active/hover look is defined in
@@ -314,8 +325,15 @@ export default function Layout() {
       const el = document.activeElement as HTMLElement | null;
       if (!el) return false;
       const tag = el.tagName;
-      if (tag === "TEXTAREA" || tag === "SELECT") return true;
+      // 2.59.0: it used to be enough for a <textarea> or <select> to merely
+      // HAVE focus. The 2.58.0 notes editor is built out of textareas, so from
+      // then on the cursor sitting in an empty note line deferred every
+      // automatic pull and merge for as long as marko had a note open - which
+      // looks exactly like sync being dead. The question was always whether
+      // there is unsaved TYPING to protect, so ask that of all three.
+      if (tag === "TEXTAREA") return (el as HTMLTextAreaElement).value.trim().length > 0;
       if (tag === "INPUT") return (el as HTMLInputElement).value.trim().length > 0;
+      if (tag === "SELECT") return false;
       return el.isContentEditable;
     };
     const tick = async () => {
@@ -334,7 +352,7 @@ export default function Layout() {
           setSyncFailure(null);
           return;
         } else if (plan.action === "pull" && !busyEditing()) {
-          setSyncActivity({ label: "Getting newer data from your other computer", blocking: true });
+          setSyncActivity({ label: "Getting newer data from your other computer", blocking: false });
           const safetyPath = await api.cloudSyncPull();
           toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
           setTimeout(() => relaunch(), 900);
@@ -345,7 +363,7 @@ export default function Layout() {
           // because rows arrived underneath everything already on screen.
           // A plain reload, not `relaunch()`: the database file was added to,
           // not swapped, so the running process is fine.
-          setSyncActivity({ label: "Combining what's on both computers", blocking: true });
+          setSyncActivity({ label: "Combining what's on both computers", blocking: false });
           const merged = await api.cloudMergePull();
           const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
           if (merged.totalDeleted > 0) {
@@ -403,16 +421,69 @@ export default function Layout() {
     // itself in the header. The five-minute timer already covers the same
     // hand-off within a few minutes, without turning every click on the
     // window into activity.
+    // 2.59.0: NO timer any more. marko: "automaticky su len ked zapinas a
+    // vypinas apku v pozadi". Once here at launch, once on the way out (below),
+    // and any number of times by hand from Settings. Every write already marks
+    // the database dirty (db::LOCAL_DIRTY + the persisted DIRTY_KEY), so
+    // "there is something to send" is known at all times and a hand-pressed
+    // sync is always correct - the timer was never what made that true.
     tickRef.current = tick;
-    const run = () => void tick();
-    run();
-    const interval = setInterval(run, AUTO_SYNC_INTERVAL_MS);
+    void tick();
     return () => {
       cancelled = true;
       tickRef.current = null;
-      clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 2.59.0: the other half of "automaticky len ked zapinas a vypinas apku" -
+  // send what is unsent on the way out, so walking to the other machine always
+  // finds the latest work there.
+  //
+  // Only ever a PUSH. Pulling or merging while closing would mean replacing the
+  // database under an app that is halfway shut down, and there is nobody
+  // watching to be told about it.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let closing = false;
+    void (async () => {
+      try {
+        const win = getCurrentWindow();
+        unlisten = await win.onCloseRequested(async (event) => {
+          if (closing) return;
+          // preventDefault FIRST, and synchronously. Once a close-requested
+          // listener exists, the window is no longer closed for us - the
+          // listener closes it after the handler resolves. Deciding to let it
+          // through AFTER an await would hand that job back on a path this
+          // code no longer controls, so this takes the job on every path and
+          // always closes explicitly below.
+          event.preventDefault();
+          closing = true;
+          try {
+            const plan = await api.cloudSyncAuto().catch(() => null);
+            if (plan?.action === "push") {
+              setSyncActivity({ label: "Saving your changes before closing", blocking: false });
+              // Whichever finishes first. The timeout is not a fallback for a
+              // broken upload - it is the promise that the window closes.
+              await Promise.race([
+                api.cloudSyncPush().catch(() => undefined),
+                new Promise((r) => setTimeout(r, CLOSE_SYNC_TIMEOUT_MS)),
+              ]);
+            }
+          } catch {
+            // Closing must never depend on any of it having worked. What was
+            // not sent is still marked dirty and goes on the next launch.
+          }
+          void win.destroy();
+        });
+      } catch {
+        // No window handle (or an older runtime): closing simply stays instant,
+        // and the next launch sends what is unsent. Never worth blocking on.
+      }
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   // 2.0.76: periodic check for the outbound-notification feature (desktop/

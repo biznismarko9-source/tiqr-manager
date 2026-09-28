@@ -17,7 +17,7 @@ const LIST_CAP: i64 = 5000;
 
 const BASE_SQL: &str = "
     SELECT
-      o.id, o.code, o.event_id, e.name as event_name,
+      o.id, o.code, o.event_id, e.name as event_name, e.city as event_city,
       e.event_date as event_date, e.status as event_status,
       e.category_id, ec.name as category_name, ec.color_slot as category_color_slot,
       o.supplier_id, sup.name as supplier_name,
@@ -62,6 +62,7 @@ fn map_order(row: &Row) -> rusqlite::Result<Order> {
         code: row.get("code")?,
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
+        event_city: row.get("event_city")?,
         event_date: row.get("event_date")?,
         event_status: row.get("event_status")?,
         category_id: row.get("category_id")?,
