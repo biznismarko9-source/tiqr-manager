@@ -1,3 +1,36 @@
+/* ---------------------------------------------------------------------------
+   2.63.0 - Bricolage Grotesque, bundled.
+
+   The app is offline by default, so the typeface is two woff2 files sitting
+   in the repo, not a link to Google. Vite hashes them into the build. The
+   `Inter` that has always sat at the head of the Tailwind sans stack is NOT
+   loaded and never was (see the note further down); this one is.
+
+   Two subsets, because Slovak needs both: latin carries a e i o u y and o
+   with a circumflex, latin-ext carries c s z t d n l r with the hacek and
+   the acute. Vietnamese is left out, it is 30 kB nobody here reads.
+
+   `font-display: swap` means the app paints in the system face first and
+   swaps when the file is ready, so a cold start never shows blank text.
+   The licence is OFL 1.1, the text is beside the files.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/bricolage-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/bricolage-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -54,18 +87,18 @@
        `--sh-overlay` keeps a real shadow and is the ONE exception - a dialog
        genuinely floats above a dimmed page, and without it the modal and the
        backdrop merge. */
-    --app-bg: #fbfbfc;
+    --app-bg: #fafafa;
     --surface: #ffffff;
     --surface-muted: theme("colors.slate.100");
     --surface-raised: #ffffff;
     /* 2.29.4: DARKER than the page, not lighter. For the chrome that sits
        under the content rather than on top of it - the sidebar and the
        segmented tracks. Marko asked for both to be darker. */
-    --surface-sunken: #f0f0f4;
+    --surface-sunken: #f0f0f1;
     /* 3.0: the border is a hairline, not an outline - lighter than slate-200
        so a table of them stops reading as a grid. */
-    --line: #e6e6ec;
-    --line-soft: #efeff3;
+    --line: #e6e6e8;
+    --line-soft: #f0f0f1;
     --scroll-thumb: theme("colors.slate.300");
     --highlight: transparent;
     /* 3.0: hairline PLUS one very soft lift. 2.29.2 removed the shadow
@@ -74,17 +107,17 @@
        old strength and with no second layer. */
     --sh-card: 0 0 0 1px #e6e6ec, 0 1px 2px rgb(16 16 28 / 0.05);
     --sh-raised: 0 0 0 1px theme("colors.slate.300");
-    --sh-overlay: 0 18px 48px rgb(20 22 34 / 0.22), 0 0 0 1px theme("colors.slate.200");
+    --sh-overlay: 0 18px 48px rgb(11 11 12 / 0.24), 0 0 0 1px theme("colors.slate.200");
     --sh-inset: 0 0 0 1px theme("colors.slate.300");
   }
   .dark {
     --app-bg: theme("colors.slate.950");
     --surface: theme("colors.slate.900");
-    --surface-muted: #16161d;
-    --surface-raised: #1a1a22;
-    --surface-sunken: #050507;
+    --surface-muted: #1a1a1c;
+    --surface-raised: #1f1f23;
+    --surface-sunken: #070708;
     --line: theme("colors.slate.800");
-    --line-soft: #17171f;
+    --line-soft: #1f1f22;
     --scroll-thumb: theme("colors.slate.700");
     --highlight: transparent;
     /* Dark carries its depth in the tone step (950 ground -> 900 card), so

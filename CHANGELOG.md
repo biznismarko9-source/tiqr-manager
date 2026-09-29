@@ -16,6 +16,35 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.63.0 - Noir
+
+Len vzhľad. Žiadna funkcia sa nezmenila, žiadna migrácia, žiadny nový príkaz.
+
+Vybral si to sám v tom živom prepínači štýlov: **Noir, fialová `#7c5cf0`,
+Bricolage Grotesque, Slight rohy, Cosy hustota, plošný graf.**
+
+### Farby
+
+- **celá appka je neutrálna** — sivá stratila fialový nádych, tmavý režim
+  sedí na `#141415` a `#0b0b0c`
+- **akcent je tvoja fialová** `#7c5cf0`
+- tlačidlá sú o odtieň tmavšie (`#6e4ce4`), lebo biely text na `#7c5cf0`
+  nemá dosť kontrastu
+
+### Písmo
+
+- **Bricolage Grotesque, priložené v appke** — dva súbory, 107 kB
+- funguje **aj bez internetu**, nič sa nesťahuje
+- má aj **č š ž ť ď ň ľ ĺ ŕ**, nie len holú latinku
+
+### Tvary
+
+- **ostrejšie rohy** — ovládacie prvky 4 px, kontajnery 6 px
+
+### Čoho som sa nedotkol
+
+tieňov, šírok stĺpcov v tabuľkách, stavových farieb, ani jednej stránky
+
 ## 2.62.0 - poznámky sa dajú používať
 
 Bez migrácie. Schéma sa najskôr pozrela a nič nové nepotrebovala.

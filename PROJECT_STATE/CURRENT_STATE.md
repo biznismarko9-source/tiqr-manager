@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.62.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.63.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2293,6 +2293,38 @@ is inside the note; the list is where a note is managed (drag, duplicate, pin,
 archive, delete). `Editor` therefore no longer takes an `onDeleted` prop.
 
 **Next new migration is 039.**
+
+**2.63.0 - Noir. A LOOK-ONLY release: no logic, no schema, no commands.**
+marko spent a session in a live style picker built for this and chose the
+combination by name: Noir palette, `#7c5cf0` violet, Bricolage Grotesque,
+Slight corners, Cosy density, area charts. Then: *"zatial by som zmenil len
+designy"*. So this release changes how the app looks and nothing else.
+
+**Four files, as 2.6.0's entry demands.** `tailwind.config.js` (the `slate`
+and `brand` ramps, the radius scale, the sans stack), `src/index.css` (the
+`@font-face` block and the nine surface values that were literal hex rather
+than ramp lookups). `ui.tsx` and `Layout.tsx` needed nothing: they already
+read everything through the layer, which is the whole point of it.
+
+**The repaint is one ramp.** `slate` goes from a violet-cast neutral to a
+true one, 900 and 950 landing on the exact Noir surface and ground. Because
+~23k lines already say `bg-slate-N`, that single edit carries the app.
+
+**`brand` was changed, which PROTECTED_AREAS forbids without asking.** He
+asked for it himself, from a preview running on his own numbers. See the
+2.63.0 entry there for why `brand-600` is deliberately NOT his exact colour.
+
+**The app loads a real typeface for the first time.** Two woff2 subsets,
+107 kB, bundled in `src/assets/fonts/` with their OFL licence. No network.
+Latin plus latin-ext, because latin alone cannot write Slovak.
+
+**Corners tightened to 4 / 6 px** from 5 / 6 / 8. Third time he has asked
+for sharper without asking for square.
+
+**Not touched, on purpose:** the shadow scale (2.29.0's neumorphic pair
+still carries depth), every table's colgroup and `.th-c-narrow` metrics,
+`STATUS_TONES`, and every page file. A page was not allowed to restyle
+itself before this release and still is not.
 
 ## Stack / layout
 

@@ -21,6 +21,54 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.63.0 - the brand ramp WAS changed, and here is the permission
+
+The 2.6.0 entry below says never to touch `brand` without asking marko,
+because a palette change was tried in 2.0.56 and rejected in production in
+2.0.58. 2.63.0 changes it anyway, to `#7c5cf0`.
+
+That is not the rule being ignored. He built the palette himself in a live
+style picker running on his own figures, looked at six of them, and picked
+this one by name along with the typeface, the corner radius, the density and
+the chart shape. A choice made that way is stronger than an answer to a
+question, and it is the thing 2.0.56 lacked.
+
+**`brand-500` is his exact colour. `brand-600` is NOT.** 600 is the fill
+under every `bg-brand-600` button and white text on `#7c5cf0` measures
+4.45:1, just under AA. 600 is `#6e4ce4`, the same hue one step down, at
+5.1:1. Do not "correct" 600 back to 500's value to make them match.
+
+## 2.63.0 - the app now really loads a typeface, and it is a file
+
+Until this version the `Inter` at the head of the Tailwind sans stack was
+decoration: no `@font-face`, no bundled file, nothing fetched, so the app
+rendered in whatever the system had. `src/index.css` said so itself.
+
+Bricolage Grotesque is different. Two woff2 subsets live in
+`src/assets/fonts/` and are declared at the very top of `index.css`, above
+the `@tailwind` directives. Rules that follow from that:
+
+- **Never swap those `url()`s for a Google Fonts link.** The app is offline
+  by default. A link turns a cold start with no network into blank or
+  fallback text, and adds an outbound call this app does not otherwise make.
+- **Both subsets are needed.** latin alone loses c s z t d n l r with the
+  hacek, which is most of written Slovak. Vietnamese was deliberately left
+  out.
+- The licence is OFL 1.1 and its text sits next to the files. It has to
+  travel with them.
+
+## 2.63.0 - the slate ramp is still the lever, and 400 is load bearing
+
+The Noir repaint is almost entirely one ramp. Retuning `slate` is what turns
+roughly 23k lines of already written `bg-slate-N` / `text-slate-N` /
+`border-slate-N` neutral in one edit, exactly as the 2.6.0 entry describes.
+
+`slate-400` kept the luminance it had (0.19) even though its hue changed.
+That is deliberate: it is what `placeholder:text-slate-400` and every muted
+label ride on, in BOTH modes at once. Lighten it and dark mode gains a
+little while light mode drops below AA; darken it and the reverse. Leave its
+brightness alone unless you are measuring both modes.
+
 ## 2.62.0 - a note's images belong to the NOTE, not to the block
 
 `note_images.note_id` is what `list_note_images` filters on, and the block only

@@ -46,18 +46,27 @@ export default {
         // straight -3 lightness shift measured 4.05:1 on the card surface -
         // under the 4.5 floor. It sits at 5.3:1 now. Re-measure both if this
         // ramp is ever regenerated.
+        // 2.63.0 (Noir): retuned around #7c5cf0, which marko picked in the
+        // style studio. PROTECTED_AREAS' 2.6.0 entry says not to touch this
+        // ramp without asking him first, because a palette change was tried
+        // in 2.0.56 and rejected in 2.0.58 - this time he chose it himself
+        // from a live preview of his own numbers, which is that permission.
+        //
+        // 500 is his exact colour. 600 is one step darker ON PURPOSE: it is
+        // the fill under `bg-brand-600` and white text on #7c5cf0 measures
+        // 4.45:1, just under AA. #6e4ce4 carries the same hue at 5.1:1.
         brand: {
-          50: "#e4ddfd",
-          100: "#d5cbfb",
-          200: "#bcacf6",
-          300: "#ac99f0",
-          400: "#9077e9",
-          500: "#5f3fd5",
-          600: "#492cb5",
-          700: "#3e2791",
-          800: "#311f6f",
-          900: "#221358",
-          950: "#140c32",
+          50: "#f0ecfe",
+          100: "#e4ddfd",
+          200: "#cec2fb",
+          300: "#b6a3f8",
+          400: "#9b80f4",
+          500: "#7c5cf0",
+          600: "#6e4ce4",
+          700: "#5b3bc9",
+          800: "#4930a0",
+          900: "#3a277c",
+          950: "#24184f",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -113,18 +122,27 @@ export default {
         // why that one cannot be fixed here (no single value clears 4.5 on
         // both grounds - the class pairing has to differ per mode, and most
         // of the app currently pairs them the wrong way round).
+        // 2.63.0 (Noir): the ramp loses its violet cast and goes neutral.
+        // marko picked this palette himself out of the live style picker,
+        // so this is a chosen retune, not drift. 900 and 950 are the exact
+        // Noir surface and ground he was looking at.
+        //
+        // 400 keeps the luminance the 2.6.0 ramp had (0.19), on purpose:
+        // it is what `placeholder:text-slate-400` and every muted label
+        // ride on, and moving it would change contrast in BOTH modes at
+        // once. Same contrast as before, different hue.
         slate: {
-          50: "#f4f4f8",
-          100: "#e6e6ee",
-          200: "#d0d0dc",
-          300: "#adadbe",
-          400: "#74748a",
-          500: "#62626f",
-          600: "#4b4b57",
-          700: "#34343e",
-          800: "#1e1e27",
-          900: "#101016",
-          950: "#08080b",
+          50: "#f6f6f7",
+          100: "#ebebed",
+          200: "#d6d6d9",
+          300: "#b2b2b7",
+          400: "#797980",
+          500: "#626268",
+          600: "#4b4b50",
+          700: "#34343a",
+          800: "#1f1f23",
+          900: "#141415",
+          950: "#0b0b0c",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the
@@ -155,6 +173,10 @@ export default {
       // offline-by-default case first.
       fontFamily: {
         sans: [
+          // 2.63.0: Bricolage Grotesque, and unlike Inter above it this one
+          // is REALLY loaded - two woff2 subsets bundled in the app, see the
+          // @font-face block at the top of index.css. The app stays offline.
+          "Bricolage Grotesque",
           "Inter",
           "ui-sans-serif",
           "system-ui",
@@ -209,9 +231,12 @@ export default {
         // `full` is deliberately NOT touched: the 46 `rounded-full` uses are
         // status dots, avatars and pills, and a dot with a corner is a bug,
         // not a sharper design.
-        md: "0.3125rem",
-        lg: "0.375rem",
-        xl: "0.5rem",
+        // 2.63.0 (Noir): marko picked "Slight" in the style picker, one notch
+        // sharper again than 2.47.0's 5/6/8. Controls land at 4px,
+        // containers at 6px. Still not square, which he has said twice.
+        md: "0.1875rem",
+        lg: "0.25rem",
+        xl: "0.375rem",
         "2xl": "0.625rem",
       },
       transitionDuration: {
