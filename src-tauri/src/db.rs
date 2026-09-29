@@ -255,6 +255,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "038_note_page_links",
         include_str!("../migrations/038_note_page_links.sql"),
     ),
+    (
+        "039_normalise_currency_codes",
+        include_str!("../migrations/039_normalise_currency_codes.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

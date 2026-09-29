@@ -423,8 +423,16 @@ pub(crate) fn create_order_impl(conn: &Connection, input: &OrderInput) -> AppRes
     insert_order_with_tickets(conn, input, false)
 }
 
+/// 2.64.0: the currency is normalised HERE, at the door, before anything is
+/// written. `fx::normalize_currency` has always existed and the conversion
+/// path has always called it, but nothing called it on the way IN - which is
+/// how marko ended up with orders whose currency column held the symbol "€".
+/// Every test in the app asks "is this 'EUR'?", so those orders fell out of
+/// his Dashboard totals entirely. Migration 039 cleaned the rows that were
+/// already written; this stops new ones. Do not remove one without the other.
 #[tauri::command]
-pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Order> {
+pub fn create_order(state: State<AppState>, mut input: OrderInput) -> AppResult<Order> {
+    input.currency = crate::fx::normalize_currency(&input.currency);
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let order_id = create_order_impl(&tx, &input)?;
@@ -519,7 +527,11 @@ pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInp
 }
 
 #[tauri::command]
-pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+pub fn update_order(state: State<AppState>, id: i64, mut input: OrderEditInput) -> AppResult<Order> {
+    // 2.64.0: same door, same reason - see create_order above. This is the
+    // "currency-relabel-only" edit path the dashboard's own comment warns
+    // about, so it is exactly where a symbol could get back in.
+    input.currency = crate::fx::normalize_currency(&input.currency);
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let order = update_order_impl(&tx, id, &input)?;

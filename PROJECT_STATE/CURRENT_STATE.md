@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.63.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.64.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2292,7 +2292,32 @@ click from the formatting buttons. The editor's toolbar is now only about what
 is inside the note; the list is where a note is managed (drag, duplicate, pin,
 archive, delete). `Editor` therefore no longer takes an `onDeleted` prop.
 
-**Next new migration is 039.**
+**2.64.0 - four things marko listed, one of which was money going missing.**
+
+**MIGRATION 039, and the reason matters.** His Dashboard offered "Convert to
+EUR: € (2)". The column held the euro SYMBOL, every check in the app compares
+against the string `EUR`, so those orders fell out of every total on the
+screen. Money he owns was invisible, not merely mislabelled. 039 normalises
+the stored value across **all fourteen** tables that carry a currency (an
+order reading `EUR` whose tickets still read `€` would be worse than the state
+we started in), and `create_order`/`update_order` now normalise on the way in
+so it cannot recur. The symbol map is copied from `fx::normalize_currency`;
+`kr` is deliberately unmapped. Verified on a dirty database: symbols, lower
+case and padded codes all land correctly, `kr` is left alone, a second run
+changes nothing and an already-clean database is untouched.
+
+**Listings is out of Event Detail.** Two tabs now, Overview and Sales. About
+1,135 lines of UI deleted along with 21 imports that went unused with it. The
+`ticket_listings` table, migration 022, its seven commands and Order Detail's
+"Listing price" column all stay - the Sheets precedent from 2.61.0.
+
+**Event date on Order Detail and Sale Detail**, between Ticket and Seat. No
+backend change was needed: `Order.eventDate` and `Sale.eventDate` were already
+being selected and sent. Sale Detail reads it PER LINE, not from the sale
+header, because a mixed-event sale has a different date on every row and the
+header has none.
+
+**Next new migration is 040.**
 
 **2.63.0 - Noir. A LOOK-ONLY release: no logic, no schema, no commands.**
 marko spent a session in a live style picker built for this and chose the

@@ -497,7 +497,10 @@ export default function OrderDetail() {
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[9.756%]" />
-                <col className="w-[49.195%]" />
+                {/* 2.64.0: Event date, 10 points taken from Seat - it had
+                    49% for "409 · 56 · 23" and can spare them. Sums to 100. */}
+                <col className="w-[10%]" />
+                <col className="w-[39.195%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10.122%]" />
                 <col className="w-[10%]" />
@@ -513,7 +516,9 @@ export default function OrderDetail() {
               <colgroup>
                 <col className="w-8" />
                 <col className="w-[7.638%]" />
-                <col className="w-[53.175%]" />
+                {/* 2.64.0: see the narrow colgroup above. Sums to 100. */}
+                <col className="w-[10%]" />
+                <col className="w-[43.175%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[8.274%]" />
                 <col className="w-[6.436%]" />
@@ -534,6 +539,12 @@ export default function OrderDetail() {
                   />
                 </th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Ticket</th>
+                {/* 2.64.0 (marko): the date the event actually happens, right
+                    beside the ticket. Every row on this page is the same order
+                    and therefore the same event, so it repeats - that is the
+                    point, it is the number you check before you promise a
+                    delivery date. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seat</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 {!isNarrow && <th className="th-c text-right">Listing price</th>}
@@ -567,6 +578,9 @@ export default function OrderDetail() {
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate font-medium text-slate-900 dark:text-slate-100`} title={t.code}>
                       {t.code}
+                    </td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap tabular-nums`}>
+                      {order.eventDate ? formatDateNumeric(order.eventDate) : <span className="text-slate-400 dark:text-slate-500">TBD</span>}
                     </td>
                     {/* 2.60.0: restrictions sit with the SEAT, because that is
                         what they are about - a restricted view belongs to the

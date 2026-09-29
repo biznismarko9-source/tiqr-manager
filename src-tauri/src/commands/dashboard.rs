@@ -588,7 +588,14 @@ pub(crate) fn get_dashboard_impl(
     // stays independent rather than assumed derivable from `currencies`.
     let non_eur_order_currencies: Vec<CurrencyOrderCount> = {
         let mut stmt = conn.prepare(
-            "SELECT currency, COUNT(*) FROM orders WHERE currency != 'EUR' GROUP BY currency ORDER BY currency",
+            // 2.64.0: compare TRIMMED and UPPER-CASED, and rule out the euro
+            // sign explicitly. Migration 039 plus the guard in orders.rs mean
+            // a symbol should never reach this table again, but this query is
+            // what decides whether marko is told his money is in another
+            // currency - it is worth being unable to get that wrong twice.
+            "SELECT currency, COUNT(*) FROM orders \
+             WHERE UPPER(TRIM(currency)) != 'EUR' AND TRIM(currency) != '\u{20ac}' \
+             GROUP BY currency ORDER BY currency",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(CurrencyOrderCount {

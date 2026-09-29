@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { Platform, Sale, SaleEditInput, SalePaymentStatus } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
+import { formatDate, formatDateNumeric, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
 import {
   Badge,
   Button,
@@ -415,15 +415,20 @@ export default function SaleDetail() {
                     wider than its cell, which is what made the pills collide
                     on marko's Mac. Sums to 100. */}
                 <col className="w-[9.756%]" />
-                <col className="w-[10.488%]" />
+                <col className="w-[8.488%]" />
+                {/* 2.64.0: Event date. Seat is only 10% here so it cannot pay
+                    for this on its own - the ten points come off Order,
+                    Profit, Delivery, Payout and the action column, the five
+                    with room to spare. Sums to 100. */}
+                <col className="w-[10%]" />
                 <col className="w-[10.317%]" />
                 <col className="w-[10%]" />
                 <col className="w-[10%]" />
-                <col className="w-[10.488%]" />
+                <col className="w-[8.488%]" />
                 <col className="w-[8%]" />
-                <col className="w-[13%]" />
                 <col className="w-[9%]" />
-                <col className="w-[8.951%]" />
+                <col className="w-[8%]" />
+                <col className="w-[7.951%]" />
               </colgroup>
             ) : (
               // 2.0.68: same reasoning as the narrow colgroup above - the new
@@ -438,7 +443,10 @@ export default function SaleDetail() {
                     status columns took them. Sums to 100. */}
                 <col className="w-[9.638%]" />
                 <col className="w-[9.912%]" />
-                <col className="w-[19.963%]" />
+                {/* 2.64.0: Event date, ten points straight out of Seat, which
+                    had 20% here. Sums to 100. */}
+                <col className="w-[10%]" />
+                <col className="w-[9.963%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[7.779%]" />
                 <col className="w-[8.133%]" />
@@ -461,6 +469,11 @@ export default function SaleDetail() {
                 </th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Ticket</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Order</th>
+                {/* 2.64.0 (marko): when the event happens, beside the ticket
+                    it was sold from. Read per LINE, not from the sale header:
+                    a mixed-event sale has a different date on every row and
+                    the header has none at all. */}
+                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Seat</th>
                 {/* 2.34.2: marko's own list - Ticket, Order, Seat, Cost,
                     Sale price, Profit, then the three statuses. Fees is gone
@@ -510,6 +523,9 @@ export default function SaleDetail() {
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={s.orderCode}>
                       {s.orderCode}
+                    </td>
+                    <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap tabular-nums`}>
+                      {s.eventDate ? formatDateNumeric(s.eventDate) : <span className="text-slate-400 dark:text-slate-500">TBD</span>}
                     </td>
                     <td className={`${isNarrow ? "td-c-narrow" : "td-c"} truncate text-slate-500 dark:text-slate-400`} title={seatLabel}>
                       {seatLabel}

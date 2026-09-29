@@ -21,6 +21,66 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.64.0 - a currency column holds a CODE, and two things enforce that
+
+marko's Dashboard was offering "Convert to EUR: € (2)". Converting euros into
+euros is not the damage. Every money total on that screen is computed for ONE
+currency, so two orders - and their tickets, and their sales - were being left
+out of his figures entirely. **Money he owns was invisible.**
+
+The cause was literal: the column held the SYMBOL. Every test in the app asks
+"is this 'EUR'?" and `€` is not `EUR`.
+
+`fx::normalize_currency` already existed, and its own doc comment describes
+this exact bug being found once before **in the conversion path** and fixed
+there. The other half was never done. 2.64.0 does both halves:
+
+- **migration 039** normalises the rows already written, in all fourteen
+  tables that carry a currency;
+- **`create_order` and `update_order` normalise on the way in**, so a new one
+  cannot be written dirty.
+
+**Neither is sufficient alone. Do not remove one without the other.** The
+migration cleans history; the guard stops it repeating. A future session that
+deletes the guard as "redundant" re-opens the hole the moment marko edits an
+order's currency by hand.
+
+The symbol map in the migration is **copied from `normalize_currency`** so the
+two cannot drift. `kr` is deliberately absent from both: Swedish, Norwegian and
+Danish all use it, and picking one would be guessing about somebody's money.
+
+## 2.64.0 - Listings is gone from the UI, the data is not
+
+marko: *"v events su 3 zlozky, overview, listings, sales, odstran listings"*.
+Event Detail now has two tabs.
+
+What went: `ListingsTab`, `ListingsBulkBar`, `TicketListingFormModal` and their
+module constants, about 1,135 lines, all of which lived only in that file.
+
+**What stays, deliberately:** the `ticket_listings` table, migration 022, all
+seven Rust commands, and the **"Listing price" column on Order Detail**, which
+still reads that data. Same call as the Sheets removal in 2.61.0 - he asked for
+the section, not for the records. Dropping the table is a separate decision and
+a separate migration, and it needs his word.
+
+## 2.64.0 - adding a column to a table means paying for it out of another
+
+Order Detail and Sale Detail gained an Event date column. Every one of those
+tables has TWO colgroups, narrow and wide, and this file's 2.6.0 entry says
+their percentages are measured against real rendered data and must keep summing
+to 100.
+
+So the new column is funded, not appended:
+
+- **Order Detail**: ten points straight out of Seat, which had 49% (narrow) and
+  53% (wide) for strings like "409 · 56 · 23".
+- **Sale Detail**: Seat only has 10% in the narrow table and cannot pay alone -
+  the ten points come off Order, Profit, Delivery, Payout and the action
+  column. The wide table takes them from Seat's 20%.
+
+Both colgroups in both files still sum to exactly 100. If you add another
+column, do the same arithmetic; do not let a table drift off 100.
+
 ## 2.63.0 - the brand ramp WAS changed, and here is the permission
 
 The 2.6.0 entry below says never to touch `brand` without asking marko,

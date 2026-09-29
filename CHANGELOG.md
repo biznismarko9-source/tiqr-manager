@@ -16,6 +16,33 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.64.0 - chýbajúce peniaze, Listings preč, dátum eventu
+
+### Opravené: dve objednávky ti chýbali v číslach
+
+Dashboard písal **„Convert to EUR: € (2)"**. Prevádzať eurá na eurá nedáva
+zmysel, ale to nebola tá škoda.
+
+V tej kolónke bol **symbol `€`** namiesto kódu `EUR`. Appka sa všade pýta „je
+to EUR?" a `€` nie je `EUR`. Tie dve objednávky, ich lístky aj ich predaje
+preto **vypadli zo všetkých súčtov** na Dashboarde. Tvoje peniaze boli neviditeľné.
+
+- **opravené aj uložené dáta** vo všetkých 14 tabuľkách, čo nesú menu
+- **opravený aj vstup**, takže sa to už nemôže vrátiť
+- `kr` sa naschvál nepremieňa — je švédska, nórska aj dánska a hádať by
+  znamenalo vymýšľať si o tvojich peniazoch
+
+### Events
+
+- **Listings je preč.** Ostali dve zložky, Overview a Sales
+- tabuľka a príkazy v pozadí ostali, rovnako ako pri Sheets
+
+### Dátum eventu
+
+- **v objednávke** medzi Ticket a Seat
+- **v predaji** tiež, a číta sa pre každý riadok zvlášť, takže pri predaji cez
+  viac eventov vidíš pri každom lístku jeho vlastný dátum
+
 ## 2.63.0 - Noir
 
 Len vzhľad. Žiadna funkcia sa nezmenila, žiadna migrácia, žiadny nový príkaz.
