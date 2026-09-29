@@ -16,6 +16,19 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.64.1 - oprava buildu
+
+2.64.0 sa nezostavilo. Dátum eventu v predaji som napísal proti políčku, ktoré
+na type `Sale` neexistovalo, a moja kontrola pred odoslaním sa pýtala len na to,
+či sa slovo `eventDate` niekde v súbore vyskytuje. Vyskytovalo sa, ale na inom
+type.
+
+- **dátum eventu v predaji teraz existuje naozaj** — v Ruste, v dotaze, aj v
+  TypeScripte
+- overené spustením dotazu proti skutočnej schéme: vráti dátum, a pri evente bez
+  dátumu vráti prázdno, čo appka ukáže ako `TBD`
+- **všetko ostatné z 2.64.0 je nezmenené**
+
 ## 2.64.0 - chýbajúce peniaze, Listings preč, dátum eventu
 
 ### Opravené: dve objednávky ti chýbali v číslach

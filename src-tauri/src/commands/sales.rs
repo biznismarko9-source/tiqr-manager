@@ -26,7 +26,7 @@ const BASE_SQL: &str = "
       -- shown as its own distinct badge alongside ticket_status above - see
       -- REDESIGN-2.0.68-REPORT.md.
       t.resale_status as ticket_resale_status,
-      t.event_id, e.name as event_name, e.city as event_city,
+      t.event_id, e.name as event_name, e.city as event_city, e.event_date as event_date,
       t.order_id, o.code as order_code,
       s.platform_id, p.name as platform_name, s.sale_date, s.sale_price_cents, s.selling_fees_cents,
       s.currency, t.currency as ticket_currency, s.payment_status, s.buyer_reference, s.notes, s.is_demo, s.created_at, s.updated_at,
@@ -84,6 +84,7 @@ fn map_sale(row: &Row) -> rusqlite::Result<Sale> {
         event_id: row.get("event_id")?,
         event_name: row.get("event_name")?,
         event_city: row.get("event_city")?,
+        event_date: row.get("event_date")?,
         order_id: row.get("order_id")?,
         order_code: row.get("order_code")?,
         platform_id: row.get("platform_id")?,

@@ -716,6 +716,12 @@ pub struct Sale {
     pub event_name: String,
     /// 2.60.0: the city, under the name, same as Inventory.
     pub event_city: Option<String>,
+    /// 2.64.0: the event's own date, denormalised onto the sale LINE the
+    /// same way `event_name`/`event_city` already are. Sale Detail shows a
+    /// per-line Event date column, and it has to be per line: a sale that
+    /// spans several events has a different date on every row and its
+    /// `SaleGroup` header honestly carries none at all.
+    pub event_date: Option<String>,
     /// 1.8.0: the ticket's own order, so Sale Detail can link straight to
     /// Order Detail without a second round trip. Every ticket belongs to
     /// exactly one order (tickets.order_id is NOT NULL - see migration 001),

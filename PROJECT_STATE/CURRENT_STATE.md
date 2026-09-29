@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.64.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.64.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2316,6 +2316,30 @@ backend change was needed: `Order.eventDate` and `Sale.eventDate` were already
 being selected and sent. Sale Detail reads it PER LINE, not from the sale
 header, because a mixed-event sale has a different date on every row and the
 header has none.
+
+**2.64.1 - 2.64.0 never built. `Sale` had no `eventDate`.**
+
+2.64.0's Sale Detail column was written against a field that does not exist:
+`OrderRecord` carries `eventDate`, `Sale` did not, and the check that was run
+before shipping only asked whether the string "eventDate" appeared anywhere in
+`types.ts` - which it does, on a different type. That is not a check, and it is
+why `tsc -b` stopped both builds.
+
+The field is now real end to end: `Sale.event_date` on the Rust struct,
+`e.event_date` in `BASE_SQL`, the one `map_sale` that builds a `Sale`, and
+`Sale.eventDate` in TypeScript. Proven by running `BASE_SQL` against the real
+schema: it returns the date for a dated event and NULL for a TBD one, which is
+what `Option<String>` and the UI's "TBD" expect.
+
+**Everything else in 2.64.0 is unchanged and was never compiled.** The build
+died in `tsc -b`, which runs BEFORE cargo, so none of 2.64.0's Rust had been
+through the compiler when it was delivered. Those five hunks were reviewed
+again line by line for 2.64.1 and each one's assumption checked against the
+source: both currency fields really are `String`, `fx` really is imported in
+`orders.rs`, the migration file really is on disk, `Sale` really has one
+construction site. The `mut` parameters on the two commands were also replaced
+with plain shadowed bindings, so nothing depends on how the command macro
+rewrites an argument list.
 
 **Next new migration is 040.**
 

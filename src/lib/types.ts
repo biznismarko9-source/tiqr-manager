@@ -570,6 +570,11 @@ export interface Sale {
   eventName: string;
   /** 2.60.0 */
   eventCity: string | null;
+  /** 2.64.0: the event's own date, on the LINE. Sale Detail shows it
+   *  between Ticket and Seat. Read per line rather than from the group
+   *  header, because a mixed-event sale has a different date on every
+   *  row and the header has none. */
+  eventDate: string | null;
   /** The ticket's own order - every ticket belongs to exactly one order, so
    * this is never null/Mixed (unlike SaleGroup's fields below, which CAN be
    * Mixed once several lines are aggregated). Powers Sale Detail's

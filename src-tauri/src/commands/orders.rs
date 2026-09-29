@@ -431,8 +431,11 @@ pub(crate) fn create_order_impl(conn: &Connection, input: &OrderInput) -> AppRes
 /// his Dashboard totals entirely. Migration 039 cleaned the rows that were
 /// already written; this stops new ones. Do not remove one without the other.
 #[tauri::command]
-pub fn create_order(state: State<AppState>, mut input: OrderInput) -> AppResult<Order> {
-    input.currency = crate::fx::normalize_currency(&input.currency);
+pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Order> {
+    // Shadowed rather than a `mut` parameter: the command macro rewrites the
+    // argument list, and a plain binding cannot be affected by how it does that.
+    let mut input = input;
+    input.currency = fx::normalize_currency(&input.currency);
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let order_id = create_order_impl(&tx, &input)?;
@@ -527,11 +530,12 @@ pub(crate) fn update_order_impl(conn: &Connection, id: i64, input: &OrderEditInp
 }
 
 #[tauri::command]
-pub fn update_order(state: State<AppState>, id: i64, mut input: OrderEditInput) -> AppResult<Order> {
+pub fn update_order(state: State<AppState>, id: i64, input: OrderEditInput) -> AppResult<Order> {
+    let mut input = input;
     // 2.64.0: same door, same reason - see create_order above. This is the
     // "currency-relabel-only" edit path the dashboard's own comment warns
     // about, so it is exactly where a symbol could get back in.
-    input.currency = crate::fx::normalize_currency(&input.currency);
+    input.currency = fx::normalize_currency(&input.currency);
     let mut conn = state.db.lock().unwrap();
     let tx = conn.transaction()?;
     let order = update_order_impl(&tx, id, &input)?;
