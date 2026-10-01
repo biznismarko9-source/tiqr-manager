@@ -374,6 +374,10 @@ export default function Settings() {
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
+  /** 2.66.0: the Drive revision waiting on a confirm. Restoring one replaces
+   * this computer's whole database and relaunches - the same consequence the
+   * file restore above has always asked about, and this path never did. */
+  const [confirmRestoreRevision, setConfirmRestoreRevision] = useState<CloudRevision | null>(null);
   const [confirmDeletePlatform, setConfirmDeletePlatform] = useState<Platform | null>(null);
   const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<EventCategory | null>(null);
   const [confirmDeleteFinanceCategory, setConfirmDeleteFinanceCategory] = useState<FinanceCategory | null>(null);
@@ -592,6 +596,7 @@ export default function Settings() {
 
   const doRestoreRevision = async (rev: CloudRevision) => {
     setBusyAction("restore");
+    setConfirmRestoreRevision(null);
     try {
       const safetyPath = await api.cloudSyncRestoreRevision(rev.id);
       toast.success(`Restored the cloud version. Your previous data was saved to ${safetyPath}. Relaunching...`);
@@ -703,8 +708,19 @@ export default function Settings() {
       const outcome = await api.cloudMergePull();
       setMergeResult(outcome);
       setSyncChoice(false);
+      // 2.66.0: the toast only ever reported what came IN. A merge that also
+      // removed rows (deleted on the other machine, migration 028's
+      // tombstones) said nothing about them, so the one number the user saw
+      // understated what had just happened to their data.
       toast.success(
-        `Added ${outcome.totalInserted} record${outcome.totalInserted === 1 ? "" : "s"} from your other computer.`,
+        [
+          `Added ${outcome.totalInserted} record${outcome.totalInserted === 1 ? "" : "s"} from your other computer.`,
+          outcome.totalDeleted > 0
+            ? `Removed ${outcome.totalDeleted} deleted there.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
       );
       await refreshSync();
       await refreshRestorePoints();
@@ -1081,8 +1097,14 @@ export default function Settings() {
                           <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2.5 text-xs ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:ring-amber-500/25">
                             <p className="flex items-start gap-1.5 text-amber-800 dark:text-amber-300">
                               <IconAlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              Both computers hold changes the other hasn&apos;t seen. Combining keeps everything -
-                              nothing is replaced and nothing is deleted.
+                              {/* 2.66.0: this said "nothing is replaced and nothing is deleted",
+                                  which is not what the merge does. Since 2.20.0 it also removes rows
+                                  the OTHER computer deleted, via migration 028's tombstones - that is
+                                  what `MergeOutcome.totalDeleted` counts. Nothing you still have on
+                                  both machines is touched, and that is the honest version. */}
+                              Both computers hold changes the other hasn&apos;t seen. Combining brings the other
+                              computer&apos;s records over and replaces nothing - but it does apply the deletions
+                              you made there, so anything you deleted on the other computer goes here too.
                             </p>
                             <Button
                               variant="primary"
@@ -1188,6 +1210,16 @@ export default function Settings() {
                               Added {mergeResult.totalInserted} record{mergeResult.totalInserted === 1 ? "" : "s"} from
                               your other computer.
                             </p>
+                            {/* 2.66.0: `totalDeleted` existed since 2.20.0 and was
+                                rendered nowhere, so a merge could remove rows and the
+                                result panel stayed quiet about it. */}
+                            {mergeResult.totalDeleted > 0 && (
+                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                                {mergeResult.totalDeleted} record{mergeResult.totalDeleted === 1 ? "" : "s"} removed
+                                here because {mergeResult.totalDeleted === 1 ? "it was" : "they were"} deleted on your
+                                other computer.
+                              </p>
+                            )}
                             {mergeResult.totalRenumbered > 0 && (
                               <p className="mt-1 text-slate-500 dark:text-slate-400">
                                 {mergeResult.totalRenumbered} of them got a new code - both computers had already used
@@ -1419,7 +1451,7 @@ export default function Settings() {
                             size="sm"
                             className="ml-auto"
                             disabled={busyAction === "restore" || syncDisabled}
-                            onClick={() => void doRestoreRevision(r)}
+                            onClick={() => setConfirmRestoreRevision(r)}
                           >
                             Restore this
                           </Button>
@@ -1802,6 +1834,32 @@ export default function Settings() {
         busy={busyAction === "restore"}
         onCancel={() => setConfirmRestorePath(null)}
         onConfirm={doRestore}
+      />
+
+      {/* 2.66.0: until now this path replaced the whole database and
+          relaunched 900ms later off a single click, with nothing but a
+          caption above the list to warn about it - while the file restore
+          right beside it had always asked. Same consequence, same question. */}
+      <ConfirmDialog
+        open={!!confirmRestoreRevision}
+        title="Restore this cloud version?"
+        message={
+          <>
+            <b>Everything on this computer will be replaced</b> with the copy Drive held on{" "}
+            {confirmRestoreRevision?.modifiedAt
+              ? formatDateTime(confirmRestoreRevision.modifiedAt)
+              : "that date"}
+            . Anything you have done since then and not synced up survives only in the safety copy TIQR takes
+            first - it shows up under Restore points. The app relaunches automatically.
+          </>
+        }
+        confirmLabel="Restore & relaunch"
+        danger
+        busy={busyAction === "restore"}
+        onCancel={() => setConfirmRestoreRevision(null)}
+        onConfirm={() => {
+          if (confirmRestoreRevision) void doRestoreRevision(confirmRestoreRevision);
+        }}
       />
 
       <ConfirmDialog
@@ -3713,7 +3771,26 @@ function NotificationsCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const configured = desktopEnabled || ntfyEnabled;
+  /**
+   * 2.66.0 - this read `desktopEnabled || ntfyEnabled`, which are the FORM's
+   * own draft checkboxes, and that silently lost the first save this card
+   * ever made.
+   *
+   * On a fresh install nothing is configured, so the form branch renders.
+   * Tick the first checkbox and the draft flips `configured` to true while
+   * `editing` is still false (it starts false and the load never sets it),
+   * so `configured && !editing` below became true and swapped the form for
+   * the read-only summary - taking the Save button with it. The badge read
+   * "Enabled" and nothing had been written. `AiFeaturesCard` above never had
+   * this because it calls `setEditing(!c)` off the LOADED value.
+   *
+   * "Is this configured" is a fact about what is saved, not about what is
+   * being typed, so it now reads `status`. All three uses want that: the
+   * badge should show what is live, the form/summary switch should not move
+   * under the user mid-edit, and Cancel should only appear when there is
+   * something saved to cancel back to.
+   */
+  const configured = !!status && (status.desktopEnabled || status.ntfyEnabled);
 
   const doSave = async () => {
     setSaving(true);

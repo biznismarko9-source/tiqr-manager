@@ -2323,7 +2323,13 @@ export interface MergeTableResult {
 }
 
 /** The result of adding the other machine's records to this one's (2.16.0).
- *  Nothing is replaced and nothing is deleted - see cloud_merge.rs. */
+ *  Nothing is replaced - see cloud_merge.rs.
+ *
+ *  2.66.0: this comment used to end "and nothing is deleted", directly above
+ *  `totalDeleted` two fields down. That has been wrong since 2.20.0 added
+ *  tombstone handling: a merge DOES remove rows the other machine deleted.
+ *  Settings' own "Combine both" copy repeated the same claim and has been
+ *  corrected too. */
 export interface MergeOutcome {
   tables: MergeTableResult[];
   totalInserted: number;

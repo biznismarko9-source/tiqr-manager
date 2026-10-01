@@ -205,6 +205,28 @@ export default function OrderDetail() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* 2.65.0 - marko: *"z inventaru ked prekliknes order tak mas tam
+              tlacitku add sale nech rovno ta tam hodi"*.
+
+              Note this sits deliberately against 1.9.1/2.45.0, which stripped
+              every "this reference jumps me somewhere else" LINK out of
+              Orders/Tickets/Sales (see the event-name comment just above).
+              That removal was about incidental references firing navigation
+              you did not ask for; this is a button you press on purpose, and
+              it is the one journey the data actually implies - an order full
+              of unsold tickets exists to become a sale.
+
+              Hidden entirely once nothing is sellable, so it can never be a
+              dead end: pressing it would open a form whose whole point is
+              tickets this order no longer has. */}
+          {order.availableCount + order.listedCount > 0 && (
+            <Button
+              variant="primary"
+              onClick={() => navigate("/sales", { state: { openCreate: true, orderId: order.id } })}
+            >
+              <IconPlus className="h-4 w-4" /> Add sale
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>

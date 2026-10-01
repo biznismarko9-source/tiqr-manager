@@ -190,6 +190,9 @@ export default function Sales() {
   const [tab, setTab] = useListTab("salesTab", ["pending", "completed"] as const);
 
   const [modalOpen, setModalOpen] = useState(false);
+  /** 2.65.0: set only when Order Detail sent us here; see the location.state
+   * effect below. Null for the ordinary "New sale" button. */
+  const [createForOrderId, setCreateForOrderId] = useState<number | null>(null);
   // 2.0.28: bulk-delete selection mode - marko's own request. No checkbox
   // column sitting there all the time; the "Delete" toggle button below
   // reveals it, and it disappears again the moment you confirm or cancel.
@@ -215,8 +218,12 @@ export default function Sales() {
   // automatic cross-section navigation out of Orders/Tickets/Sales), so
   // `presetSearch` lost its only caller and was removed here too.
   useEffect(() => {
-    const state = location.state as { openCreate?: boolean } | null;
+    // 2.65.0: `orderId` rides along the SAME state this already used, so Order
+    // Detail's "Add sale" lands here with that order chosen. It is cleared with
+    // the rest on the replace below, so a later plain visit starts empty.
+    const state = location.state as { openCreate?: boolean; orderId?: number } | null;
     if (state?.openCreate) {
+      setCreateForOrderId(state.orderId ?? null);
       setModalOpen(true);
       navigate(location.pathname, { replace: true, state: null });
     }
@@ -988,9 +995,14 @@ export default function Sales() {
           kept one more release so marko can compare. */}
       <SaleRowsModal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        initialOrderId={createForOrderId}
+        onClose={() => {
+          setModalOpen(false);
+          setCreateForOrderId(null);
+        }}
         onCreated={() => {
           setModalOpen(false);
+          setCreateForOrderId(null);
           load();
         }}
       />

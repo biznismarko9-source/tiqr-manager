@@ -1,0 +1,37 @@
+TIQR 2.66.0 - na vydanie
+========================
+
+CO JE V TOMTO ZIPE
+
+Cely projekt, verzia 2.66.0, s OBOMA zmenami:
+
+  2.65.0 - rozbalovacka objednavok v novom predaji ukazuje datum a sedadla,
+           a Order Detail ma tlacitko "Add sale"
+  2.66.0 - tri opravene chyby v Settings (upozornenia sa pri prvom zapnuti
+           neulozili, obnova z Drive nemala potvrdenie, "Combine both"
+           tvrdilo ze sa nic nemaze)
+
+Pytal si si "2.65.0 zip". Verzia 2.65.0 uz na disku neexistuje - posunul
+som ju rovno na 2.66.0, takze 2.65.0 nikdy nebude samostatne vydanie.
+Vsetko, co v nej bolo, je tu.
+
+AKO TO VYDAT
+
+1. Rozbal tento zip na Windows laptope.
+2. Spusti 1-CLICK-UPDATE.bat (dvojklik).
+3. Precitaj si, co vypise. Ked uvidis "STOPPED", posli mi presne to.
+
+release.ps1 je PowerShell, preto to musi ist z Windowsu.
+
+DOLEZITE
+
+Nic z tohto NIE JE SKOMPILOVANE. Na Macu nie je npm ani cargo, takze
+som ten kod nespustil - prvy kompilator, ktory ho uvidi, je CI po pushi.
+
+Pri 2.64.0 sa build rozbil prave takto. Ak spadne, posli mi log z CI.
+
+CO CITAT
+
+  REDESIGN-2.65.0-REPORT.md   - zmena v predaji, po slovensky
+  REDESIGN-2.66.0-REPORT.md   - tri opravy, po slovensky
+  CHANGELOG.md                - hore su obe

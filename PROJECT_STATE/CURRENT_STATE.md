@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.64.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.66.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2340,6 +2340,89 @@ source: both currency fields really are `String`, `fx` really is imported in
 construction site. The `mut` parameters on the two commands were also replaced
 with plain shadowed bindings, so nothing depends on how the command macro
 rewrites an argument list.
+
+**2.65.0 - the sale form says WHICH order, and an order can start a sale.**
+marko: *"ked davam sale tak len toto cca ukazuje, treba tam doplnit nazov,
+datum a sektor row seats aspon nech to je priehladne a taktiez z inventaru ked
+prekliknes order tak mas tam tlacitku add sale nech rovno ta tam hodi"*.
+
+**No backend change, no migration, no new command.** Both additions were
+already on `OrderRecord`: `eventDate` since 2.2.10, `seats` since 2.0.38.
+
+`SaleRowsModal`'s order dropdown read `CODE · Event · N voľných`, which cannot
+separate two orders on the same event - and two orders on one event is the
+ordinary case. New `orderOptionLabel()` adds the event date and the seat
+summary. **The seats are bracketed deliberately:** `formatSeatsSummary` joins
+section/row/seat with the same `" · "` the label uses between its own fields,
+so unbracketed `104 · 8 · 1-2` reads as three separate facts, and a two-block
+order's `"; "` divider vanishes into the run entirely. Each part is skipped
+when absent rather than rendered empty.
+
+Known and accepted: `OrderRecord.seats` is every ticket's seat *including
+cancelled ones* (its own 2.0.38 comment), so the seats shown can be wider than
+what is sellable. The free count beside them is the authoritative number. This
+is the same caveat the Orders list's Seats column already carries.
+
+`SaleRowsModal` gained `initialOrderId`; `Sales.tsx` carries an `orderId`
+alongside the `openCreate` it already read from `location.state`; Order Detail
+gained an **"Add sale"** button. It only preselects - the tickets are still
+added by pressing "Add its tickets", because arriving with rows already in the
+form is a write nobody asked for. The button is hidden when nothing is
+sellable, so it can never open a form for tickets the order no longer has.
+
+**This sits deliberately against 1.9.1/2.45.0**, which stripped every
+cross-section *link* out of Orders/Tickets/Sales at marko's request. Those were
+incidental references that navigated unasked; this is a button pressed on
+purpose. Flagged to marko rather than done quietly.
+
+**Not compiled.** There is no npm/node/cargo on this machine, so the label
+logic was verified by porting `compactSeatList`, `formatSeatsSummary` and
+`formatDateNumeric` to Python and running five cases, including a two-block
+order and an order with neither date nor seats. CI is the first compiler.
+
+**2.66.0 - three silent bugs in Settings, all verified in source first.**
+marko asked what the "three Settings bugs" actually were; each was re-read in
+the code before being described to him, and all three held up.
+
+**1. Notifications lost the first save.** `configured` was
+`desktopEnabled || ntfyEnabled` - the FORM's draft checkboxes. On a fresh
+install both are false so the form branch renders; ticking the first box
+flipped `configured` true while `editing` was still false (it initialises
+false and the load never set it), so `configured && !editing` swapped the form
+for the read-only summary and took Save with it. Badge read "Enabled", nothing
+written. Now derived from `status`, the loaded/saved value, which is the right
+semantics for all three consumers - badge, form/summary switch, Cancel.
+`AiFeaturesCard` was never affected because it calls `setEditing(!c)` off the
+loaded value.
+
+**2. Drive revision restore had no confirmation.** `doRestoreRevision` fired
+straight from the button, replacing the whole database and relaunching 900ms
+later, while the file-restore path beside it had always used a ConfirmDialog.
+Added one: `confirmRestoreRevision` state, the button now opens it, the dialog
+names the revision's date and the safety copy.
+
+**3. "Combine both" claimed nothing is deleted.** False since 2.20.0 added
+tombstone handling - the merge removes rows deleted on the other machine, and
+`MergeOutcome.totalDeleted` counts exactly that. Worse, `totalDeleted` was
+rendered nowhere, so a merge could delete silently. Fixed in four places: the
+amber copy, the result panel, the success toast, and `MergeOutcome`'s own doc
+comment in `types.ts`, which carried the same false sentence two fields above
+the field that disproves it.
+
+**Correction recorded here too:** earlier in the same session "Mixed Money"
+was repeatedly described as an unread flag producing a wrong number on screen.
+That was wrong. `Events.tsx` routes cost/revenue/profit through
+`formatMoneyOrMixed` (renders "Mixed"), `EventDetail.tsx` has a dedicated
+`s.currency === null` branch with an amber explanation, and `Recap.tsx` uses it
+too. The error came from reading the type comment and assuming no consumer
+without grepping for one - then seeding that assumption into a subagent brief
+and accepting the agent's echo of it as confirmation. The redesign documents
+were corrected.
+
+**Not compiled.** No npm/cargo on this machine. Each inserted block was
+checked as self-balanced; a whole-file paren scan reports pre-existing JSX it
+cannot parse (it flags untouched files identically), so it is not evidence
+either way. CI is the first compiler.
 
 **Next new migration is 040.**
 

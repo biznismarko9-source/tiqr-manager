@@ -16,6 +16,60 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.66.0 - tri tiché chyby v Settings
+
+Všetky tri overené priamo v kóde, nie prevzaté z auditu.
+
+**Upozornenia sa pri prvom zapnutí neuložili.** `configured` sa počítalo
+z `desktopEnabled || ntfyEnabled`, čo sú **rozpísané** checkboxy formulára.
+Na čistej inštalácii prvé kliknutie prehodilo `configured` na true, kým
+`editing` bolo stále false, takže `configured && !editing` vymenilo formulár
+za zhrnutie - aj s tlačidlom Save. Odznak ukázal „Enabled" a neuložilo sa nič.
+Teraz sa `configured` číta zo `status`, teda z uloženého stavu. To opravuje
+všetky tri použitia naraz: odznak, prepínanie formulár/zhrnutie aj tlačidlo
+Cancel. `AiFeaturesCard` to nikdy nemala, lebo volá `setEditing(!c)`
+z načítanej hodnoty.
+
+**Obnova staršej kópie z Drive nemala potvrdenie.** Jeden klik prepísal celú
+databázu a o 900 ms reštartoval, pričom obnova zo súboru hneď vedľa sa vždy
+pýtala. Pridaný ConfirmDialog s rovnakým znením a rovnakou vážnosťou, vrátane
+dátumu tej revízie a zmienky o bezpečnostnej kópii.
+
+**„Combine both" tvrdilo, že sa nič nemaže.** Nie je to pravda od 2.20.0, kde
+pribudlo spracovanie tombstonov - zlúčenie **odstráni riadky, ktoré si zmazal
+na druhom počítači**, a presne to počíta `MergeOutcome.totalDeleted`. To pole
+sa navyše nikde nezobrazovalo, takže zlúčenie mohlo mazať úplne ticho. Text
+opravený, `totalDeleted` pribudlo do výsledného panela aj do toastu, a rovnaké
+falošné tvrdenie v doc komentári typu je opravené tiež.
+
+## 2.65.0 - v predaji vidno, ktorá objednávka to je, a z objednávky sa dá rovno predať
+
+Dve veci, obe na marka vlastnú žiadosť, obe bez zmeny backendu.
+
+**Rozbaľovačka objednávok v novom predaji** ukazovala `KÓD · Event · N voľných`,
+čo nestačí na rozlíšenie dvoch objednávok na ten istý event - a dve objednávky
+na jeden event sú normálny prípad, nie okrajový. Doplnený **dátum eventu**
+a **sektor/rad/sedadlá**. Obe polia už cestujú na `OrderRecord` (`eventDate` od
+2.2.10, `seats` od 2.0.38), takže to nepotrebovalo nový príkaz ani nové pole -
+je to čisto popisok.
+
+Sedadlá sú **v zátvorke**, a to nie je ozdoba: `formatSeatsSummary` spája
+sektor/rad/sedadlo tým istým `" · "`, ktorým popisok oddeľuje svoje polia, takže
+bez zátvoriek by sa `104 · 8 · 1-2` čítalo ako tri samostatné údaje. Overené
+prepisom oboch formátovačov do Pythonu a spustením na piatich prípadoch vrátane
+objednávky cez dva bloky a objednávky bez dátumu aj bez sedadiel.
+
+**Order Detail dostal tlačidlo "Add sale"**, ktoré otvorí formulár predaja
+s tou objednávkou už vybranou. Ide cez ten istý `location.state`, ktorý Sales
+už používalo pre `openCreate`. Tlačidlo sa nezobrazí, keď na objednávke nie je
+nič predajné, aby nikdy neviedlo do slepej uličky.
+
+Stojí to vedome proti 1.9.1/2.45.0, ktoré z Orders/Tickets/Sales odstránili
+odkazy typu "táto zmienka ma prehodí inam". Tamto boli mimovoľné odkazy, ktoré
+navigovali bez toho, aby si o to požiadal; toto je tlačidlo, ktoré stlačíš
+zámerne, a je to jediná cesta, ktorú dáta naozaj implikujú - objednávka plná
+nepredaných lístkov existuje na to, aby sa stala predajom.
+
 ## 2.64.1 - oprava buildu
 
 2.64.0 sa nezostavilo. Dátum eventu v predaji som napísal proti políčku, ktoré

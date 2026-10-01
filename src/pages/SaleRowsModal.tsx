@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import type { OrderRecord, Platform, SaleBatchInput, SalePaymentStatus, Ticket } from "../lib/types";
-import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatLocation, todayIso } from "../lib/format";
+import { centsToDecimalString, decimalStringToCents, formatDateNumeric, formatMoney, formatSeatLocation, formatSeatsSummary, todayIso } from "../lib/format";
 import {
   cellError,
   Input,
@@ -50,14 +50,61 @@ type Row = {
 
 const PAYMENT_STATUSES: SalePaymentStatus[] = ["paid", "pending"];
 
+/**
+ * 2.65.0 - marko: *"ked davam sale tak len toto cca ukazuje, treba tam doplnit
+ * nazov, datum a sektor row seats aspon nech to je priehladne"*.
+ *
+ * The dropdown used to read `CODE · Event · N voľných`, which is not enough to
+ * tell two orders on the same event apart - and two orders on the same event is
+ * the normal case, not the edge one. Date and seats both already travel on
+ * `OrderRecord` (`eventDate` since 2.2.10, `seats` since 2.0.38), so this needs
+ * no new command and no new field: it is purely a label.
+ *
+ * Each part is skipped rather than rendered empty, so an order with no date and
+ * no seats still reads cleanly instead of as a row of stray separators.
+ *
+ * The seats are BRACKETED, and that is not decoration. `formatSeatsSummary`
+ * already joins section/row/seat with " · " internally - the same separator
+ * this label uses between its own fields - so unbracketed it renders as
+ * `OASIS-004 · OASIS LIVE '27 · 04.07.2027 · 104 · 8 · 1-2 · 2 voľných`,
+ * where nothing tells you that `104 · 8 · 1-2` is one fact rather than three.
+ * An order spanning two blocks is worse still, because the "; " that divides
+ * them disappears into the run. The brackets put the boundary back.
+ *
+ * One honest caveat, inherited from `OrderRecord.seats` and the same one the
+ * Orders list already lives with: that array is every ticket's seat in the
+ * order, including cancelled ones, so the seats shown here can be wider than
+ * what is actually sellable. The free count beside it is the authoritative
+ * number.
+ */
+function orderOptionLabel(o: OrderRecord): string {
+  const free = o.availableCount + o.listedCount;
+  const seats = formatSeatsSummary(o.seats);
+  return [
+    o.code,
+    o.eventName,
+    o.eventDate ? formatDateNumeric(o.eventDate) : null,
+    seats !== "-" ? `(${seats})` : null,
+    `${free} voľných`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export default function SaleRowsModal({
   open,
   onClose,
   onCreated,
+  initialOrderId,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+  /** 2.65.0: the order to arrive with already chosen, set when Order Detail's
+   * "Add sale" button opened this form. Only preselects the dropdown - the
+   * tickets are still added by pressing "Add its tickets", because arriving
+   * with rows already in the form would be a write nobody asked for. */
+  initialOrderId?: number | null;
 }) {
   const toast = useToast();
 
@@ -96,6 +143,9 @@ export default function SaleRowsModal({
     setNotes("");
     setSaleDate(todayIso());
     setError(null);
+    // 2.65.0: arriving from an order's own page starts with it chosen.
+    setPickOrderId(initialOrderId ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Only orders that still have something sellable - the same scope the old
@@ -105,11 +155,20 @@ export default function SaleRowsModal({
     const t = setTimeout(() => {
       api
         .listOrders({ search: orderQuery || undefined, status: "available,listed" })
-        .then((res) => setOrderOptions(res.slice(0, 25)))
+        .then((res) => {
+          const top = res.slice(0, 25);
+          // 2.65.0: a preselected order has to be IN the list or the <select>
+          // shows a blank. It can fall outside the first 25, so put it back.
+          if (initialOrderId && !top.some((o) => o.id === initialOrderId)) {
+            const hit = res.find((o) => o.id === initialOrderId);
+            if (hit) top.unshift(hit);
+          }
+          setOrderOptions(top);
+        })
         .catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [open, orderQuery]);
+  }, [open, orderQuery, initialOrderId]);
 
   const sellSide = useMemo(
     () => platforms.filter((p) => p.kind === "sale" || p.kind === "both"),
@@ -266,7 +325,7 @@ export default function SaleRowsModal({
             <option value="">Select an order…</option>
             {orderOptions.map((o) => (
               <option key={o.id} value={o.id}>
-                {o.code} · {o.eventName} · {o.availableCount + o.listedCount} voľných
+                {orderOptionLabel(o)}
               </option>
             ))}
           </Select>
