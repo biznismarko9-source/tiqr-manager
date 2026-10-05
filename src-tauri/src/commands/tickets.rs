@@ -891,6 +891,11 @@ mod tests {
             &conn,
             ticket_id,
             &TicketUpdateInput {
+                // 2.70.0: present since 2.60.0 added it to the struct; these
+                // two test literals were never updated, so `cargo test` has
+                // not compiled since. `tauri build` skips #[cfg(test)], which
+                // is why no release build ever said so.
+                restrictions: None,
                 section: Some("A1".to_string()),
                 row_label: Some("7".to_string()),
                 tier: Some("VIP".to_string()),
@@ -922,6 +927,7 @@ mod tests {
         let conn = test_conn();
         let ticket_id = seed_one_ticket(&conn);
         let blank = || TicketUpdateInput {
+            restrictions: None,
             section: None,
             row_label: None,
             tier: None,

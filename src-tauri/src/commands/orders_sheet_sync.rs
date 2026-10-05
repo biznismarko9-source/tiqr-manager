@@ -1055,6 +1055,9 @@ fn apply_order_rows(
             // already set by payment_status just above.
             tier: None,
             seats,
+            // 2.70.0: no sheet column for restrictions either - the same
+            // reason, and the same precedent, as `tier` directly above.
+            restrictions: None,
         };
 
         match insert_order_with_tickets(conn, &input, false) {

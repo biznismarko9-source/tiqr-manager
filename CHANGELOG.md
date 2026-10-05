@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.70.0 - build fix: chýbajúce `restrictions` v piatich literáloch
+
+CI (Windows aj Mac) zastavilo build 2.69.0 na mojej chybe z 2.67.0:
+
+```
+error[E0063]: missing field `restrictions` in initializer of `OrderInput`
+  --> src/commands/csv_import.rs:250
+  --> src/commands/orders_sheet_sync.rs:1015
+```
+
+2.67.0 pridalo `OrderInput.restrictions` a doplnilo ho do 12 literálov.
+Literálov je **18**. Dva zostali a kompilátor ich našiel.
+
+**Doplnené `restrictions: None`** - oba zdroje žiadne obmedzenia nenesú,
+takže `None` je pravda, nie výplň:
+
+- `csv_import.rs:250` - import nemá stĺpec pre restrictions.
+- `orders_sheet_sync.rs:1015` - hárok ho tiež nemá; rovnaký precedens ako
+  `tier: None` priamo nad tým.
+
+**Plus tri, ktoré CI nemohlo vidieť.** `tauri build` preskakuje
+`#[cfg(test)]`, takže tieto by padli až na `cargo test`:
+
+- `sales.rs:1502` - tiež `OrderInput`, tiež z 2.67.0, moja chyba.
+- `tickets.rs:893` a `tickets.rs:924` - `TicketUpdateInput`, chýbajúce od
+  **2.60.0**. `cargo test` teda nekompiloval štyri verzie, a žiadny release
+  build to nemohol povedať. (`:936`/`:937` sú v poriadku, používajú
+  `..blank()`.)
+
+**Ako viem, že už nič nechýba.** Namiesto ručného prechádzania som si napísal
+audit: nájdi v `src/` každý literál každej štruktúry, ktorá v `models.rs`
+deklaruje `restrictions` (`OrderInput`, `Ticket`, `TicketUpdateInput`),
+a over, či ho má - alebo či používa `..` syntax. Výsledok po oprave:
+**0 chýbajúcich z 18 + 2 + 5**. To je kontrola, ktorú som mal spraviť v
+2.67.0 namiesto počítania po pamäti.
+
 ## 2.69.0 - "Record 2 sales" klamalo, je to jeden predaj
 
 marko: *"ked tam mas nejaku order, kliknes na nu a das add its tickets tak sa

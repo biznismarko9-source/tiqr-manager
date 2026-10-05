@@ -264,6 +264,13 @@ fn parse_rows(conn: &Connection, path: &str) -> AppResult<(Vec<String>, Vec<Pars
                 row_label: row_label.map(|s| s.to_string()),
                 tier: tier.map(|s| s.to_string()),
                 seats: seats.filter(|s| !s.is_empty()),
+                // 2.70.0: the import format has no restrictions column, so an
+                // imported order arrives unrestricted and gets stamped per
+                // ticket afterwards. Adding a column is its own decision -
+                // which header, and how the eight short codes would be
+                // written into one cell - and was not part of the 2.67.0 task
+                // that added the field.
+                restrictions: None,
             })
         } else {
             None

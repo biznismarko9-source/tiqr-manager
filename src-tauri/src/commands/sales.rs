@@ -1516,6 +1516,7 @@ mod tests {
             row_label: Some(row_label.to_string()),
             tier: None,
             seats: Some(seats.iter().map(|s| s.to_string()).collect()),
+            restrictions: None,
         };
         let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
         let mut stmt = conn.prepare("SELECT id FROM tickets WHERE order_id = ?1 ORDER BY id").unwrap();
