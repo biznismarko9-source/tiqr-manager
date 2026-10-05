@@ -1,19 +1,14 @@
-TIQR 2.66.0 - na vydanie
+TIQR 2.67.0 - na vydanie
 ========================
 
 CO JE V TOMTO ZIPE
 
-Cely projekt, verzia 2.66.0, s OBOMA zmenami:
+Cely projekt, verzia 2.67.0, s TROMI nevydanymi zmenami naraz:
 
   2.65.0 - rozbalovacka objednavok v novom predaji ukazuje datum a sedadla,
            a Order Detail ma tlacitko "Add sale"
-  2.66.0 - tri opravene chyby v Settings (upozornenia sa pri prvom zapnuti
-           neulozili, obnova z Drive nemala potvrdenie, "Combine both"
-           tvrdilo ze sa nic nemaze)
-
-Pytal si si "2.65.0 zip". Verzia 2.65.0 uz na disku neexistuje - posunul
-som ju rovno na 2.66.0, takze 2.65.0 nikdy nebude samostatne vydanie.
-Vsetko, co v nej bolo, je tu.
+  2.66.0 - tri opravene chyby v Settings
+  2.67.0 - restriction sa da vybrat pri novej objednavke
 
 AKO TO VYDAT
 
@@ -27,11 +22,18 @@ DOLEZITE
 
 Nic z tohto NIE JE SKOMPILOVANE. Na Macu nie je npm ani cargo, takze
 som ten kod nespustil - prvy kompilator, ktory ho uvidi, je CI po pushi.
+Teraz ho cakaju tri verzie naraz, takze ak nieco spadne, posli mi log.
 
-Pri 2.64.0 sa build rozbil prave takto. Ak spadne, posli mi log z CI.
+TMAVSIE OKNA - NESPRAVIL SOM TO
+
+Hladal som co stmavit a nenasiel som nic: kazde okno uz je #141415 na
+podklade #0b0b0c, co je presne to iste ako v laboch. Hypoteza je, ze mas
+temu na "system" a OS v svetlom rezime. Prepinac je v apke vlavo dole.
+Podrobnosti v REDESIGN-2.67.0-REPORT.md, sekcia 3.
 
 CO CITAT
 
-  REDESIGN-2.65.0-REPORT.md   - zmena v predaji, po slovensky
-  REDESIGN-2.66.0-REPORT.md   - tri opravy, po slovensky
-  CHANGELOG.md                - hore su obe
+  REDESIGN-2.67.0-REPORT.md   - restriction, po slovensky
+  REDESIGN-2.66.0-REPORT.md   - tri opravy
+  REDESIGN-2.65.0-REPORT.md   - zmena v predaji
+  CHANGELOG.md                - hore su vsetky tri

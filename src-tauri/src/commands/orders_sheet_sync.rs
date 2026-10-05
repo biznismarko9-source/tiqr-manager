@@ -5173,6 +5173,7 @@ mod tests {
             row_label: Some("25".to_string()),
             tier: None,
             seats: None,
+            restrictions: None,
         }
     }
 
@@ -6048,6 +6049,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         insert_order_with_tickets(&conn, &input, false).unwrap();
 

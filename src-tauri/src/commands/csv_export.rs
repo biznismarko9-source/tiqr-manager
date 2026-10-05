@@ -592,6 +592,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         let order_id = insert_order_with_tickets(conn, &input, false).unwrap();
         let mut stmt = conn
@@ -680,6 +681,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         let order_id = insert_order_with_tickets(&mut conn, &usd_order, false).unwrap();
         let usd_ticket: i64 = conn
@@ -1003,6 +1005,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         insert_order_with_tickets(&mut conn, &input, false).unwrap();
 

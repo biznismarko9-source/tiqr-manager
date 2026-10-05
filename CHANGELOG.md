@@ -16,6 +16,106 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.69.0 - "Record 2 sales" klamalo, je to jeden predaj
+
+marko: *"ked tam mas nejaku order, kliknes na nu a das add its tickets tak sa
+to rozdeli na 2 sales, ale v skutocnosti to je len jeden"*.
+
+**Dáta boli celý čas správne.** Overené, nie predpokladané:
+
+- `SaleRowsModal` posiela všetky riadky jedným volaním `createSalesBatch`
+  (jedno `lines: rows.map(...)`), nie jedno volanie na riadok.
+- `create_sales_batch` dá celej dávke **spoločný `batch_id`** (kód prvého
+  riadku), a to len vtedy, keď má viac než jeden riadok - jeden lístok ostáva
+  `NULL`, čiže samostatný predaj. Presne to, čo marko chcel.
+- `GROUP_KEY_EXPR` = `COALESCE(s.batch_id, 'single:' || s.id)` zoskupuje to
+  späť **v Sales liste, na dashboarde, v kalendári aj v CSV exporte**.
+- V jeho vlastnej databáze: `OASIS-001 | 2 | OASIS-001,OASIS-002` - jedna
+  skupina, dva riadky. Tiež `UEFA-001 | 2`, `ENGLAND-001 | 8`,
+  `SAL-000145 | 4`. Samostatné predaje (`CELINE-003`, `CELINE-004`,
+  `CELINE-009`) majú `batch_id` NULL.
+- `OrderDetail` ukazuje len súhrn (revenue/profit), žiadny zoznam riadkov.
+
+Čiže nikde v apke sa to nerozdelilo na dva predaje. Jediné, čo to tvrdilo,
+bolo **tlačidlo v tom okne**.
+
+**Zmenené** (`src/pages/SaleRowsModal.tsx`, dva reťazce):
+
+- `submitLabel` už nie je `Record ${rows.length} sales`, ale natvrdo
+  **`Record sale`**. Tento formulár nikdy nevytvoril N predajov - vždy jeden.
+  Modal nemá edit režim a volá sa z jediného miesta (`Sales.tsx:996`), takže
+  "vždy jeden" platí bez výnimky.
+- Súhrn dole začína **`One sale · `** - fakt, ktorý marko potreboval, je
+  povedaný presne v momente potvrdzovania.
+
+**Nedotknuté:** `batch_id`, `create_sales_batch`, `GROUP_KEY_EXPR`, schéma,
+peniaze. Toto bola chyba v texte, nie v modeli, a opravil sa text.
+
+## 2.68.0 - automatický Pull a Merge sa pýtajú
+
+marko: *"ten sync nefunguje spravne, stracam udaje"* -> *"oprav to aby sa to
+uz nestalo"*.
+
+**Čo sa stalo.** 1.10.2026 o 16:47 automatický sync stiahol z Drive staršiu
+kópiu a prepísal ňou celú lokálnu databázu. Preč boli 3 objednávky
+(ESPAA-002/003/004), 6 lístkov a 2 predaje (OASIS-001/002, 640 €). Doložené:
+`deleted_rows` sa cez tú stratu nezmenil (79->87 bolo o dva dni skôr, iná
+udalosť) a živá databáza bola striktná podmnožina zálohy - podpis prepisu
+súboru, nie mazania riadkov. V Settings boli **štyri** body obnovy s názvom
+"Before Sync Down".
+
+**Prečo.** Záloha `pre-restore-20261001-164651520.sqlite3` má zapísané
+`cloud_sync_local_dirty = false` a `cloud_sync_last_sync_at = 2026-09-30
+13:23`, pričom tie objednávky vznikli 30.09. o 14:36 - hodinu PO poslednom
+syncu. Príznak, ktorý má presne tomuto brániť, bol v tej chvíli nepravdivý,
+`decide_auto` z neho vyrobil `(false, true) -> Pull`, a `Layout.tsx` ten Pull
+vykonal bez otázky.
+
+**Oprava.** `Layout.tsx`: vetvy `pull` a `merge` v päťminútovom ticku už
+nevykonávajú nič. Prácu zaparkujú do `pendingRunRef` - telo je nezmenené,
+len o jeden `async () =>` hlbšie - a otvoria `ConfirmDialog`. Push ostáva
+automatický: iba odosiela a vlastnú poistku proti prepísaniu druhého počítača
+už má.
+
+Ďalej: "Nie" sa pamätá na celú session (`syncDeclinedRef`), takže sa otázka
+neopakuje každých 5 minút - namiesto toho ostane banner. História syncu
+zapisuje `"asked"`, nie `"pull"`, keď sa len pýtalo; `plan.action` by tvrdil
+stiahnutie, ktoré sa nestalo.
+
+Opravený aj komentár z 2.16.0, ktorý tvrdil, že merge *"nothing is deleted"*.
+Nebola to pravda - `totalDeleted` priamo pod ním ráta riadky, ktoré merge
+zmaže podľa tombstonov z druhého stroja. Dialóg to teraz hovorí nahlas.
+
+**Neopravené, vedome.** Prečo bol `local_dirty` nepravdivý, ostáva otvorené
+(`KNOWN_BUGS.md`). Správna oprava - neveriť príznaku, ale porovnať obsah -
+je v `cloud_sync_auto` drahá: `content_hash` beží nad celým snapshotom,
+a ten príkaz je dnes zámerne read-only a lacný. Dialóg robí zlyhanie
+nedeštruktívnym bez ohľadu na to, prečo je príznak zlý.
+
+## 2.67.0 - restriction sa dá vybrať pri novej objednávke
+
+marko: *"do new order pridat moznost vybrat restriction"*.
+
+Nový stĺpec **Restrictions** v mriežke novej objednávky, osem prepínačov po
+jednom písmene (plný slovenský názov je v `title`). Štyri, ktoré stoja peniaze
+keď sa prehliadnu - obmedzený výhľad, 18+, 16+, doklad - sú prvé, lebo tak ich
+radí `TICKET_RESTRICTIONS`.
+
+Uložia sa **len na lístky**, nie na objednávku. Presne vzor `tier` z 2.2.7:
+nastaví sa raz pri vytváraní, skopíruje na každý vygenerovaný lístok, a dá sa
+potom meniť po jednom. Druhá kópia na objednávke, ktorú by čítal filter alebo
+súčet, by bola ten istý tvar chyby ako riadky s `€`.
+
+Obmedzenia sú súčasťou tvaru riadku, takže dva riadky, ktoré sa líšia len nimi,
+sa nezlúčia do jednej objednávky - razítko sa aplikuje raz na objednávku.
+A prenášajú sa do ďalšieho riadku rovnako ako typ lístka, lebo druhý riadok je
+skoro vždy ďalší kus toho istého bloku.
+
+Backend: `OrderInput.restrictions` v TS aj v Ruste, `restrictions_json`
+pribudlo do INSERTu lístkov, čistené cez `clean_restrictions` - tú istú funkciu
+používa editor lístka. Prázdny zoznam dá `"[]"`, čo je presne DEFAULT toho
+stĺpca. Pole doplnené do dvanástich miest, kde sa `OrderInput` skladá ručne.
+
 ## 2.66.0 - tri tiché chyby v Settings
 
 Všetky tri overené priamo v kóde, nie prevzaté z auditu.

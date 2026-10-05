@@ -1447,6 +1447,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         let order_id =
             crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
@@ -2170,6 +2171,7 @@ mod tests {
                 row_label: None,
                 tier: None,
                 seats: None,
+                restrictions: None,
             };
             let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
             conn.query_row(
@@ -2273,6 +2275,7 @@ mod tests {
             row_label: None,
             tier: None,
             seats: None,
+            restrictions: None,
         };
         let order_id = crate::commands::orders::insert_order_with_tickets(conn, &input, false).unwrap();
         conn.query_row("SELECT id FROM tickets WHERE order_id=?1", [order_id], |r| {

@@ -391,10 +391,19 @@ pub(crate) fn insert_order_with_tickets(
     let fees_alloc = allocate_cents(input.fees_cents, input.quantity);
     let other_alloc = allocate_cents(input.other_costs_cents, input.quantity);
 
+    // 2.67.0: `restrictions_json` joins the stamped-at-creation columns.
+    // Computed once outside the loop - every ticket this order generates gets
+    // the same set, and any one of them can be changed afterwards in the
+    // ticket editor. `clean_restrictions` on an empty/absent list yields
+    // "[]", which is exactly the column's own NOT NULL DEFAULT.
+    let restrictions_json = crate::commands::tickets::clean_restrictions(
+        input.restrictions.as_deref().unwrap_or(&[]),
+    );
     let mut stmt = conn.prepare(
         "INSERT INTO tickets (code, event_id, order_id, section, row_label, tier, seat, ticket_type,
-           purchase_cost_cents, purchase_fees_cents, other_costs_cents, currency, status, is_demo)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'available',?13)",
+           purchase_cost_cents, purchase_fees_cents, other_costs_cents, currency, status, is_demo,
+           restrictions_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'available',?13,?14)",
     )?;
     let seats = input.seats.as_ref().filter(|s| !s.is_empty());
     for i in 0..input.quantity as usize {
@@ -413,6 +422,7 @@ pub(crate) fn insert_order_with_tickets(
             other_alloc[i],
             input.currency,
             is_demo as i64,
+            restrictions_json,
         ])?;
     }
 
@@ -1323,6 +1333,7 @@ mod tests {
             row_label: Some("12".to_string()),
             tier: None,
             seats: None,
+            restrictions: None,
         }
     }
 

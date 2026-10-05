@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.66.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.69.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2423,6 +2423,48 @@ were corrected.
 checked as self-balanced; a whole-file paren scan reports pre-existing JSX it
 cannot parse (it flags untouched files identically), so it is not evidence
 either way. CI is the first compiler.
+
+**2.67.0 - restrictions can be picked when creating an order. NO MIGRATION.**
+marko: *"do new order pridat moznost vybrat restriction"*.
+
+`OrderRowsModal` (the current new-order grid; `OrderFormModal` is the older
+one) gained a **Restrictions** column: eight one-letter toggles, the four
+money-costing codes first because that is `TICKET_RESTRICTIONS`' own order,
+full Slovak label in `title`.
+
+**Stored on the tickets only.** `OrderInput.restrictions` is stamped onto every
+generated ticket and nothing restriction-shaped is kept on the order row -
+exactly the `tier` convention from 2.2.7, and deliberately so: migration 037
+put restrictions on the seat because "one order can easily be two clear-view
+seats and two behind a pillar", and a second copy a filter could read would be
+the same shape as the "€" rows.
+
+`Row.restrictions` is part of `sameShape`, so two rows differing only in their
+restrictions become two orders - correct, since the stamp is per order. It also
+carries forward in `blankRow` like `ticketType`, because re-ticking "behind a
+pillar" on every row is the step that gets skipped.
+
+Rust: field on `OrderInput`, `restrictions_json` added to the ticket INSERT
+(15 columns, 14 placeholders + the `'available'` literal, 14 params - counted),
+cleaned through `commands::tickets::clean_restrictions`, which on an empty list
+yields `"[]"` - the column's own NOT NULL DEFAULT. The field was added to all
+**12** hand-written `OrderInput` literals; each was verified to be inside an
+`OrderInput` and not some other struct sharing `tier`/`seats`.
+
+Also fixed in passing: `rightAlign={[0, 6]}` -> `[0, 7]`, because inserting the
+column at index 4 moved Price/ea. Nothing type-checks that against `head`.
+
+**Asked for and NOT done: "urob vsetky okna tmavsie".** Investigated and found
+nothing to change. Every window is `bg-surface` = `slate-900` = `#141415` on a
+`slate-950` `#0b0b0c` ground - byte-identical to the register marko approved in
+the labs. `surface-raised` `#1f1f23` is used in exactly one popover. A scan for
+light backgrounds lacking a `dark:` counterpart across every `.tsx` returned
+zero real hits. Darkening the slate scale was costed: it *improves* every text
+contrast slightly but shrinks the 950->900 tone step by ~35%, and index.css
+says outright that dark "carries its depth in the tone step". The likeliest
+explanation is that the theme defaults to **system** (`lib/theme.ts`), so if
+his OS is in light mode he is looking at the light theme. Put back to marko
+rather than shipping a change that flattens cards into the page.
 
 **Next new migration is 040.**
 

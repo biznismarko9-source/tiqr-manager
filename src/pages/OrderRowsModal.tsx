@@ -3,6 +3,7 @@ import { api, errMsg } from "../lib/api";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventWithStats, OrderInput, OrderRecord, Platform } from "../lib/types";
 import { decimalStringToCents, formatDateNumeric, formatMoney, todayIso } from "../lib/format";
+import { TICKET_RESTRICTIONS } from "../lib/restrictions";
 import {
   cellError,
   Input,
@@ -53,6 +54,19 @@ import { useToast } from "../lib/toast";
  * `api.createOrder` call with the same `OrderInput` the old modal sent.
  */
 
+/**
+ * 2.67.0 - marko: *"do new order pridat moznost vybrat restriction"*.
+ *
+ * Eight codes will not fit a grid cell as words, so each gets one letter and
+ * a `title` carrying the real Slovak label. The order is `TICKET_RESTRICTIONS`'
+ * own, which puts the four that cost money when they are missed first - a
+ * restricted-view seat sold as a normal one is a refund, an 18+ ticket sold
+ * to someone who cannot use it is a refund and an argument.
+ */
+const RESTRICTION_GLYPH: Record<string, string> = {
+  rv: "V", "18": "8", "16": "6", id: "D", nr: "R", ao: "M", st: "S", wc: "B",
+};
+
 type Row = {
   qty: string;
   ticketType: string;
@@ -65,6 +79,10 @@ type Row = {
   pulled: boolean;
   puller: string;
   notes: string;
+  /** 2.67.0: stamped onto every ticket this row generates. Part of the row's
+   * shape, so two rows that differ only here become two orders - which is
+   * right, because the stamp is applied per order. */
+  restrictions: string[];
 };
 
 function blankRow(prev?: Row): Row {
@@ -82,6 +100,10 @@ function blankRow(prev?: Row): Row {
     pulled: false,
     puller: "",
     notes: "",
+    // Carried over for the same reason ticketType is: a second row is almost
+    // always more of the same block, and re-ticking "behind a pillar" for
+    // every row is exactly the step that gets skipped.
+    restrictions: prev?.restrictions ?? [],
   };
 }
 
@@ -109,6 +131,10 @@ function sameShape(a: Row, b: Row): boolean {
     norm(a.ticketType) === norm(b.ticketType) &&
     a.platformId === b.platformId &&
     a.pulled === b.pulled &&
+    // 2.67.0: same codes, same set. Two rows that differ only in their
+    // restrictions must not merge into one order, because the stamp is
+    // applied once per order.
+    a.restrictions.slice().sort().join(",") === b.restrictions.slice().sort().join(",") &&
     norm(a.puller) === norm(b.puller)
   );
 }
@@ -259,6 +285,9 @@ export default function OrderRowsModal({
           paymentStatus: "paid",
           notes: [notes.trim(), g.head.notes.trim()].filter(Boolean).join("\n") || null,
           ticketType: g.head.ticketType.trim() || null,
+          // 2.67.0: stamped onto every ticket this order generates. Stored on
+          // the tickets only - nothing restriction-shaped is kept on the order.
+          restrictions: g.head.restrictions.length > 0 ? g.head.restrictions : null,
           section: g.head.section.trim() || null,
           rowLabel: g.head.rowLabel.trim() || null,
           tier: null,
@@ -386,8 +415,10 @@ export default function OrderRowsModal({
       </div>
 
       <RowFormTable
-        head={["Qty", "Type", "Section", "Row", "Seats", "Platform", "Price/ea", "Currency", "Pull", "Notes"]}
-        rightAlign={[0, 6]}
+        head={["Qty", "Type", "Section", "Row", "Restrictions", "Seats", "Platform", "Price/ea", "Currency", "Pull", "Notes"]}
+        // 2.67.0: Price/ea moved from index 6 to 7 when the Restrictions
+           // column went in at 4. Nothing type-checks this against `head`.
+           rightAlign={[0, 7]}
         onAdd={() => setRows((rs) => [...rs, blankRow(rs[rs.length - 1])])}
         addLabel="Add seats"
       >
@@ -437,6 +468,39 @@ export default function OrderRowsModal({
             </td>
             <td className="td-c w-[90px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Row" />
+            </td>
+            {/* 2.67.0: eight toggles, four money-costing ones first, always in
+                the same eight positions so absence reads as an empty slot
+                rather than as missing text. */}
+            <td className="td-c w-[176px]">
+              <div className="flex gap-0.5">
+                {TICKET_RESTRICTIONS.map((t) => {
+                  const on = r.restrictions.includes(t.code);
+                  return (
+                    <button
+                      key={t.code}
+                      type="button"
+                      title={t.label}
+                      aria-label={t.label}
+                      aria-pressed={on}
+                      onClick={() =>
+                        patch(i, {
+                          restrictions: on
+                            ? r.restrictions.filter((c) => c !== t.code)
+                            : [...r.restrictions, t.code],
+                        })
+                      }
+                      className={`h-7 w-5 rounded text-xs font-semibold tabular-nums transition ${
+                        on
+                          ? "bg-brand-600 text-white"
+                          : "text-slate-400 hover:bg-slate-100 dark:text-slate-600 dark:hover:bg-slate-800"
+                      }`}
+                    >
+                      {on ? RESTRICTION_GLYPH[t.code] ?? "\u2022" : "\u00b7"}
+                    </button>
+                  );
+                })}
+              </div>
             </td>
             <td className="td-c w-[150px]">
               <Input

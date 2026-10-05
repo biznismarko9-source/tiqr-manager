@@ -22,6 +22,37 @@ from old reports.
 
 ## Open
 
+- **`cloud_sync_local_dirty` can read `false` while unsynced work exists.**
+  Proven once, with cost. In `pre-restore-20261001-164651520.sqlite3` the
+  flag is `false` and `cloud_sync_last_sync_at` is `2026-09-30T13:23`, while
+  orders ESPAA-002/003/004 and sales OASIS-001/002 were created 2026-09-30 at
+  14:36 - after that sync, never sent. `decide_auto` turned that into
+  `(false, true) -> Pull` and the whole database was replaced by an older
+  Drive copy; marko lost 3 orders, 6 tickets and 2 sales (640 EUR). Four
+  restore points named "Before Sync Down" say it had happened before.
+
+  Not yet explained: which of the three ways the flag can go stale actually
+  fired. Candidates, all in reading distance of each other - `database.rs`
+  clears the atomic on the post-login database switch; `flush_local_dirty`
+  is best-effort on exit and its failure is ignored; the persisted copy is
+  only written on a 5-minute tick, so a write followed quickly by a close
+  can fall between them.
+
+  2.68.0 made the consequence non-destructive rather than fixing this: Pull
+  and Merge now ask (see its changelog entry). The flag being wrong is still
+  wrong - it also means a genuine Push can be skipped, which loses nothing
+  but leaves the machines apart.
+
+  The robust fix is to stop trusting a flag and compare content instead, but
+  `content_hash` runs over a full snapshot and `cloud_sync_auto` is
+  deliberately cheap and read-only, so it is a real design change, not a
+  small edit. A cheaper hardening that is strictly safer and was considered
+  but NOT taken in 2.68.0: make `decide_auto`'s `(false, true)` arm return
+  `Merge` instead of `Pull`. Merge is never more destructive than Pull -
+  it applies the same tombstones but keeps rows the other side has never
+  seen - so it is the better default even when the flag is right. It needs
+  the unit tests at the bottom of `cloud_sync.rs` updated with it.
+
 - **Sales sync can't independently guard against a duplicate sale from a
   stale, un-pushed refund row.** As of 2.0.80, refunding a sale in the app
   is only reflected in a connected Google Sheet once "Push sales" or "Fix

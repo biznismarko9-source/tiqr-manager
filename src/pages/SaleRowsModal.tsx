@@ -453,18 +453,30 @@ export default function SaleRowsModal({
         </RowFormTable>
       )}
 
+      {/* 2.69.0: the label never says "Record N sales" again - this form has
+          never once made N sales. Every submit is a single
+          `createSalesBatch` call, and `create_sales_batch` gives every line
+          of it the SAME `batch_id` (its first code), so the Sales list, the
+          dashboard, the calendar and the CSV export all group it back into
+          ONE row - they share `GROUP_KEY_EXPR`. marko read the old label and
+          concluded the app had split one sale in two: "rozdeli sa to na 2
+          sales, ale v skutocnosti to je len jeden". The data was right; the
+          button was lying about it. */}
       <RowFormFooter
         error={error}
         problems={shown}
         saving={saving}
         onCancel={onClose}
         onSubmit={submit}
-        submitLabel={rows.length > 1 ? `Record ${rows.length} sales` : "Record sale"}
+        submitLabel="Record sale"
         summary={
           rows.length === 0 ? (
             "No tickets"
           ) : (
             <>
+              {/* Said out loud at the moment of committing, because this is
+                  exactly the question the old label answered wrongly. */}
+              One sale ·{" "}
               {rows.length} {rows.length === 1 ? "ticket" : "tickets"} ·{" "}
               {formatMoney(totals.revenue, currency)} revenue ·{" "}
               <span className={totals.profit >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>

@@ -17,7 +17,7 @@ import {
   IconWallet,
 } from "./icons";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { Spinner } from "./ui";
+import { ConfirmDialog, Spinner } from "./ui";
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api, errMsg } from "../lib/api";
 import { recordAutoSync } from "../lib/autoSyncLog";
@@ -218,6 +218,32 @@ export default function Layout() {
   // is happening quietly" from "this ends in a restart, there is nothing
   // useful to click".
   const [syncActivity, setSyncActivity] = useState<{ label: string; blocking: boolean } | null>(null);
+  // 2.68.0: automatic Pull and Merge now ASK. They used to run off the timer
+  // with no question put to marko, and on 1.10.2026 that cost him three
+  // orders, six tickets and two sales: the backend believed this machine had
+  // nothing unsent (`cloud_sync_local_dirty` was false while a day of work sat
+  // unsynced), chose Pull, and replaced the whole file with an older copy from
+  // Drive. Four restore points named "Before Sync Down" say it had happened
+  // before.
+  //
+  // Push stays automatic - it only ever SENDS, and its own overwrite guard
+  // already asks before it can flatten the other machine. Pull replaces this
+  // database wholesale; Merge deletes here whatever was deleted there. Those
+  // two are the only paths in the app that could destroy data without a
+  // confirmation, and now they do not.
+  //
+  // The work itself is unchanged - it is parked in `pendingRunRef` exactly as
+  // it was written, and runs verbatim once marko says yes.
+  const [pendingSync, setPendingSync] = useState<{ action: "pull" | "merge"; reason: string } | null>(null);
+  const [pendingSyncBusy, setPendingSyncBusy] = useState(false);
+  const pendingRunRef = useRef<null | (() => Promise<void>)>(null);
+  // Mirrors `pendingSync` for the tick, which reads from a closure where state
+  // would be stale. Also stops a second dialog stacking on the first.
+  const pendingSyncRef = useRef(false);
+  // Set once he answers No. The question is then not re-asked every five
+  // minutes - the banner below carries it instead, and Settings -> Data does
+  // it on his schedule.
+  const syncDeclinedRef = useRef(false);
   // 2.4.4: one-click light/dark toggle above the profile widget - replaces
   // Settings -> Appearance's old 3-way Light/System/Dark picker (marko's own
   // request). Reuses the exact same lib/theme.ts useTheme() hook that picker
@@ -339,7 +365,7 @@ export default function Layout() {
       return el.isContentEditable;
     };
     const tick = async () => {
-      if (autoSyncBusy.current) return;
+      if (autoSyncBusy.current || pendingSyncRef.current) return;
       autoSyncBusy.current = true;
       try {
         const plan = await api.cloudSyncAuto();
@@ -353,45 +379,73 @@ export default function Layout() {
           recordAutoSync({ at: Date.now(), action: plan.action, reason: plan.reason, error: null });
           setSyncFailure(null);
           return;
-        } else if (plan.action === "pull" && !busyEditing()) {
-          setSyncActivity({ label: "Getting newer data from your other computer", blocking: false });
-          const safetyPath = await api.cloudSyncPull();
-          toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
-          setTimeout(() => relaunch(), 900);
-        } else if (plan.action === "merge" && !busyEditing()) {
-          // 2.16.0: the case that used to stop and ask which machine wins.
-          // Nothing is replaced and nothing is deleted, so there is no
-          // question left to put to marko - but the page still has to reload,
-          // because rows arrived underneath everything already on screen.
-          // A plain reload, not `relaunch()`: the database file was added to,
-          // not swapped, so the running process is fine.
-          setSyncActivity({ label: "Combining what's on both computers", blocking: false });
-          const merged = await api.cloudMergePull();
-          const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
-          if (merged.totalDeleted > 0) {
-            parts.push(`${merged.totalDeleted} removed here because you deleted them there.`);
-          }
-          if (merged.totalRenumbered > 0) {
-            parts.push(`${merged.totalRenumbered} got a new code (both computers had used the same one).`);
-          }
-          if (merged.totalSkipped > 0) {
-            parts.push(`${merged.totalSkipped} couldn't be added - see Settings → Data.`);
-          }
-          if (merged.totalIdentityClashes > 0) {
-            parts.push(`${merged.totalIdentityClashes} couldn't be told apart from yours - see Settings → Data.`);
-          }
-          toast.success(parts.join(" "));
-          setTimeout(() => window.location.reload(), 1200);
+        } else if (plan.action === "pull" && !busyEditing() && !syncDeclinedRef.current) {
+          // 2.68.0: parked for the dialog instead of run. The body below is
+          // the 2.14.0 code, unchanged, one `async () =>` deeper.
+          pendingRunRef.current = async () => {
+            setSyncActivity({ label: "Getting newer data from your other computer", blocking: false });
+            const safetyPath = await api.cloudSyncPull();
+            toast.success(`Synced down from your other computer. Your previous data was saved to ${safetyPath}. Restarting...`);
+            setTimeout(() => relaunch(), 900);
+          };
+          pendingSyncRef.current = true;
+          setPendingSync({ action: "pull", reason: plan.reason });
+        } else if (plan.action === "merge" && !busyEditing() && !syncDeclinedRef.current) {
+          // 2.16.0 ran this on the timer, reasoning that "nothing is replaced
+          // and nothing is deleted, so there is no question left to put to
+          // marko". The second half of that sentence was never true: the
+          // tombstone pass below removes rows here that were deleted on the
+          // other machine, and `totalDeleted` right underneath counts them.
+          // 2.68.0 asks.
+          //
+          // The reload at the end is still a plain one, not `relaunch()`: the
+          // database file is added to, not swapped, so the running process is
+          // fine - only the screen is stale, because rows arrived underneath
+          // everything already on it.
+          pendingRunRef.current = async () => {
+            setSyncActivity({ label: "Combining what's on both computers", blocking: false });
+            const merged = await api.cloudMergePull();
+            const parts = [`Added ${merged.totalInserted} record${merged.totalInserted === 1 ? "" : "s"} from your other computer.`];
+            if (merged.totalDeleted > 0) {
+              parts.push(`${merged.totalDeleted} removed here because you deleted them there.`);
+            }
+            if (merged.totalRenumbered > 0) {
+              parts.push(`${merged.totalRenumbered} got a new code (both computers had used the same one).`);
+            }
+            if (merged.totalSkipped > 0) {
+              parts.push(`${merged.totalSkipped} couldn't be added - see Settings → Data.`);
+            }
+            if (merged.totalIdentityClashes > 0) {
+              parts.push(`${merged.totalIdentityClashes} couldn't be told apart from yours - see Settings → Data.`);
+            }
+            toast.success(parts.join(" "));
+            setTimeout(() => window.location.reload(), 1200);
+          };
+          pendingSyncRef.current = true;
+          setPendingSync({ action: "merge", reason: plan.reason });
         } else if (plan.action === "pull" || plan.action === "merge") {
-          // 2.48.1: only reached when marko IS mid-edit. The work is real and
-          // waiting; it happens on the next tick once he is done, and the
-          // banner is there so a long form is not a silent stall.
-          setSyncNotice(`${plan.reason} It will finish once you're done editing.`);
+          // 2.48.1: reached when marko is mid-edit. 2.68.0: also reached once
+          // he has answered No this session. Either way the work is real and
+          // waiting, and the banner is there so it is not a silent stall.
+          setSyncNotice(
+            syncDeclinedRef.current
+              ? `${plan.reason} You chose not to do this automatically - run it from Settings → Data when you want it.`
+              : `${plan.reason} It will finish once you're done editing.`,
+          );
         }
         // Whatever happened, it happened - including "nothing to do", which is
         // the answer marko most needs to be able to see when he believes sync
         // is dead.
-        recordAutoSync({ at: Date.now(), action: plan.action, reason: plan.reason, error: null });
+        // 2.68.0: "asked" when the plan was parked for the dialog rather than
+        // carried out. `plan.action` here would claim a pull that has not
+        // happened - and a sync history that overstates what sync did is the
+        // exact thing this release exists to stop.
+        recordAutoSync({
+          at: Date.now(),
+          action: pendingSyncRef.current ? "asked" : plan.action,
+          reason: plan.reason,
+          error: null,
+        });
         setSyncFailure(null);
       } catch (e) {
         // 2.48.0: no longer silent. `Off` and `Offline` are decided by the
@@ -707,6 +761,70 @@ export default function Layout() {
         </div>
       </main>
       <SyncActivity activity={syncActivity} />
+      {/* 2.68.0: the question automatic sync never asked. Only Pull and Merge
+          reach it - Push is still silent, because sending can't lose anything
+          here. See the comment beside `pendingSync` for what this cost. */}
+      <ConfirmDialog
+        open={!!pendingSync}
+        danger={pendingSync?.action === "pull"}
+        busy={pendingSyncBusy}
+        title={
+          pendingSync?.action === "pull"
+            ? "Replace this computer's data with Google Drive's copy?"
+            : "Combine what's on both computers?"
+        }
+        message={
+          <>
+            <p>{pendingSync?.reason}</p>
+            <p className="mt-2">
+              {pendingSync?.action === "pull" ? (
+                <>
+                  Everything on this computer is <strong className="font-semibold">replaced</strong> by the
+                  copy from Google Drive. A safety backup of what is here now is saved first, and the app
+                  restarts.
+                </>
+              ) : (
+                <>
+                  Records from your other computer are added here, and anything you deleted there is
+                  deleted here too. Nothing else is replaced.
+                </>
+              )}
+            </p>
+          </>
+        }
+        confirmLabel={pendingSync?.action === "pull" ? "Replace and restart" : "Combine"}
+        onConfirm={async () => {
+          setPendingSyncBusy(true);
+          try {
+            await pendingRunRef.current?.();
+            pendingRunRef.current = null;
+            pendingSyncRef.current = false;
+            setPendingSync(null);
+          } catch (e) {
+            // Same treatment the tick gives its own failures, so a refused
+            // download or a dead token reads identically wherever it happens.
+            const message = errMsg(e);
+            recordAutoSync({ at: Date.now(), action: "error", reason: message, error: message });
+            setSyncFailure(message);
+            setNeedsGoogleConsent(/does not include permission for Drive/i.test(message));
+            pendingSyncRef.current = false;
+            setPendingSync(null);
+          } finally {
+            setPendingSyncBusy(false);
+          }
+        }}
+        onCancel={() => {
+          // No is remembered for the session: the timer stops re-opening this
+          // every five minutes and leaves the banner standing instead.
+          syncDeclinedRef.current = true;
+          pendingRunRef.current = null;
+          pendingSyncRef.current = false;
+          setSyncNotice(
+            `${pendingSync?.reason ?? ""} Nothing was changed. Run it from Settings → Data when you want it.`,
+          );
+          setPendingSync(null);
+        }}
+      />
       {/* 2.25.0: the guided tour. Mounted HERE because it navigates between
           pages as it runs - anything rendered inside a route would unmount
           itself on its own first step. Renders nothing until started. */}

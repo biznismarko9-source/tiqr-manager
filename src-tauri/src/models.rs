@@ -415,6 +415,21 @@ pub struct OrderInput {
     /// gets `seats[i]`. Leave empty/absent to generate tickets without a
     /// seat number (unchanged default behaviour).
     pub seats: Option<Vec<String>>,
+    /// 2.67.0: restriction codes stamped onto EVERY ticket this order
+    /// generates - marko: *"do new order pridat moznost vybrat restriction"*.
+    ///
+    /// Exactly the `tier` convention above: set once at creation, copied to
+    /// each generated ticket, editable per-ticket afterwards. It is stored
+    /// ONLY on the tickets - nothing restriction-shaped is kept on the order
+    /// row. That is deliberate: migration 037 put restrictions on the seat
+    /// because "one order can easily be two clear-view seats and two behind
+    /// a pillar", and a second copy on the order that a filter or total
+    /// could read would be the same shape of bug as the "€" currency rows.
+    ///
+    /// Cleaned through `commands::tickets::clean_restrictions`, so the same
+    /// trimming/lower-casing/de-duplication the per-ticket editor applies
+    /// happens here too, and unknown codes from a newer version survive.
+    pub restrictions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

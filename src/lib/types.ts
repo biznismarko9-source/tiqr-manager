@@ -390,6 +390,13 @@ export interface OrderInput {
   tier?: string | null;
   /** One seat label per generated ticket, in order. Length must equal quantity if provided. */
   seats?: string[] | null;
+  /** 2.67.0: restriction codes (see lib/restrictions.ts) stamped onto EVERY
+   * ticket this order generates - the same "set once at creation, editable
+   * per-ticket afterwards" convention as `tier` above. Stored only on the
+   * tickets; nothing restriction-shaped is kept on the order row, because
+   * migration 037 put them on the seat deliberately and a second copy a
+   * filter could read would be the same shape of bug as the "€" rows. */
+  restrictions?: string[] | null;
 }
 
 export interface OrderEditInput {
