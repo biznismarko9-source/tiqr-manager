@@ -88,6 +88,28 @@ pub fn normalize_currency(raw: &str) -> String {
         _ => {}
     }
     let upper = t.to_uppercase();
+    // 2.71.0: a symbol carrying a country prefix, which the bare-symbol table
+    // above cannot see. marko's AI import read "US $" off a Dallas listing
+    // screenshot and stored it verbatim - the old code upper-cased it to
+    // "US $" and handed that to the rate service, which answered
+    // `404 {"message":"not found"}`. His report: "taktiez convert mien
+    // nefunguje".
+    //
+    // Whitespace is squeezed out first, so "US $", "US$" and "us  $" are one
+    // case rather than three. These are the forms a marketplace page actually
+    // prints; a code this does not know still falls through to the plain
+    // upper-cased value, exactly as before.
+    let squeezed: String = upper.chars().filter(|c| !c.is_whitespace()).collect();
+    match squeezed.as_str() {
+        "US$" | "$US" | "USD$" => return "USD".to_string(),
+        "A$" | "AU$" => return "AUD".to_string(),
+        "C$" | "CA$" => return "CAD".to_string(),
+        "NZ$" => return "NZD".to_string(),
+        "HK$" => return "HKD".to_string(),
+        "S$" => return "SGD".to_string(),
+        "R$" => return "BRL".to_string(),
+        _ => {}
+    }
     match upper.as_str() {
         "KČ" | "KC" => "CZK".to_string(),
         "FT" => "HUF".to_string(),
@@ -102,6 +124,24 @@ pub fn fetch_rate(from: &str, to: &str) -> AppResult<RateQuote> {
     // shortcut below would miss it again.
     let from = normalize_currency(from);
     let to = normalize_currency(to);
+
+    // 2.71.0: refused HERE, naming the value, rather than sent and relayed
+    // back as a bare `404 {"message":"not found"}` - which is all marko got
+    // and which says nothing about which currency was the problem or what to
+    // do about it. Every real code this service knows is three ASCII letters,
+    // so anything else cannot be a lookup that would have succeeded.
+    //
+    // Checked BEFORE the `from == to` shortcut below on purpose: two copies
+    // of the same unusable value would otherwise quietly return a rate of
+    // 1.0 and convert real money at a rate nobody looked up.
+    for (which, code) in [("source", &from), ("target", &to)] {
+        if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Err(AppError::Validation(format!(
+                "\"{code}\" is not a currency code the rate service can look up (the {which} currency). \
+                 Change it to a three-letter code - USD, EUR, GBP - and convert then."
+            )));
+        }
+    }
 
     if from == to {
         // No real request needed, and nothing downstream should ever hit

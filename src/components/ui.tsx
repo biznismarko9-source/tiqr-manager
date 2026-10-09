@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ChangeEvent, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
-import { IconAlertTriangle, IconCalendarDays, IconChevronDown, IconChevronLeft, IconChevronRight, IconCopy, IconPlus, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { IconAlertTriangle, IconCalendarDays, IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconCopy, IconPlus, IconTrendingDown, IconTrendingUp, IconX } from "./icons";
+import { createPortal } from "react-dom";
 import { formatDateNumeric } from "../lib/format";
 import type { TrendInfo } from "../lib/format";
 
@@ -407,6 +408,135 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
         {children}
       </select>
       <IconChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 transition-colors dark:text-slate-500" />
+    </div>
+  );
+}
+
+/** 2.71.0: a `Select` for a value that is a LIST, not one choice.
+ *
+ *  marko on the eight one-letter restriction toggles in the New Order grid:
+ *  "je to hrozne ... tie restrictions su nepriehladne strasne". He asked for
+ *  the cell to open "taky vyber ako je pri platforme" - a real dropdown with
+ *  words in it, like the Platform `<select>` right beside it.
+ *
+ *  A native `<select multiple>` is not that: it renders as a permanently open
+ *  list box, which cannot live in a table cell. So this is a button drawn like
+ *  `Select`'s closed box, and a panel listing every option by its FULL label
+ *  with a tick on the chosen ones - the same labels `Tickets.tsx`'s per-ticket
+ *  editor already shows, so the two screens cannot drift apart.
+ *
+ *  The panel goes through a PORTAL on purpose. `.table-shell` is
+ *  `overflow-auto` (index.css), so a panel positioned inside the cell is
+ *  clipped by that scroll container the moment it is taller than its row -
+ *  which, with eight options, it always is. Fixed coordinates taken from the
+ *  button's own rect sidestep the clipping entirely.
+ *
+ *  Closed state shows `short` labels joined ("Výhľad, 18+") because a table
+ *  cell is narrow; the panel shows `label` in full because that is where
+ *  there is room to read. */
+export function MultiSelect({
+  options,
+  value,
+  onChange,
+  emptyLabel = "\u2014",
+  title,
+}: {
+  options: readonly { code: string; label: string; short?: string }[];
+  value: readonly string[];
+  onChange: (next: string[]) => void;
+  emptyLabel?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setBox({ left: r.left, top: r.bottom + 4, width: Math.max(r.width, 210) });
+    // Scrolling or resizing CLOSES it rather than re-placing it: a panel that
+    // trails its own button across a table scrolling in two directions reads
+    // as a bug, and re-measuring on every scroll frame is a cost this control
+    // does not need to pay. `true` captures the table's own scroll, which
+    // does not bubble.
+    const close = () => setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const chosen = options.filter((o) => value.includes(o.code));
+  const shown = chosen.length === 0 ? emptyLabel : chosen.map((o) => o.short ?? o.label).join(", ");
+  const full = chosen.length === 0 ? title : chosen.map((o) => o.label).join(" \u00b7 ");
+
+  return (
+    <div className="relative w-full">
+      <button
+        ref={btnRef}
+        type="button"
+        title={full}
+        aria-label={title}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((o) => !o)}
+        className="input flex w-full items-center pr-9 text-left"
+      >
+        <span
+          className={`min-w-0 flex-1 truncate ${chosen.length === 0 ? "text-slate-400 dark:text-slate-500" : ""}`}
+        >
+          {shown}
+        </span>
+      </button>
+      <IconChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 transition-colors dark:text-slate-500" />
+      {open &&
+        box &&
+        createPortal(
+          <>
+            {/* Swallows the closing click so it cannot also land on whatever
+                sits underneath - `onMouseDown`, not `onClick`, so it wins
+                before the option button under the cursor reacts. */}
+            <div className="fixed inset-0 z-[70]" onMouseDown={() => setOpen(false)} />
+            <div
+              role="listbox"
+              aria-multiselectable="true"
+              className="fixed z-[71] max-h-72 overflow-auto rounded-lg bg-surface p-1 shadow-overlay ring-1 ring-slate-200 animate-[pop-in_.14s_ease-out] dark:ring-slate-700"
+              style={{ left: box.left, top: box.top, width: box.width }}
+            >
+              {options.map((o) => {
+                const on = value.includes(o.code);
+                return (
+                  <button
+                    key={o.code}
+                    type="button"
+                    role="option"
+                    aria-selected={on}
+                    onClick={() => onChange(on ? value.filter((c) => c !== o.code) : [...value, o.code])}
+                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition ${
+                      on
+                        ? "bg-brand-600 text-white"
+                        : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    {/* Kept in the layout when off, not removed, so the labels
+                        line up in one column instead of shifting left. */}
+                    <IconCheck className={`h-3.5 w-3.5 shrink-0 ${on ? "opacity-100" : "opacity-0"}`} />
+                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

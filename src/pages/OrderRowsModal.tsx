@@ -8,6 +8,7 @@ import {
   cellError,
   Input,
   Modal,
+  MultiSelect,
   RowFormFooter,
   RowFormTable,
   RowNumber,
@@ -57,15 +58,17 @@ import { useToast } from "../lib/toast";
 /**
  * 2.67.0 - marko: *"do new order pridat moznost vybrat restriction"*.
  *
- * Eight codes will not fit a grid cell as words, so each gets one letter and
- * a `title` carrying the real Slovak label. The order is `TICKET_RESTRICTIONS`'
- * own, which puts the four that cost money when they are missed first - a
- * restricted-view seat sold as a normal one is a refund, an 18+ ticket sold
- * to someone who cannot use it is a refund and an argument.
+ * 2.71.0 replaced the control. 2.67.0 reasoned that eight codes would not fit
+ * a grid cell as words, so each got one letter with the Slovak label hidden in
+ * a `title`. That is precisely what marko could not read: "tie restrictions su
+ * nepriehladne strasne". A `MultiSelect` (ui.tsx) solves the width problem
+ * properly - the words live in the panel, where there is room for them.
+ *
+ * The ORDER is unchanged and still matters: `TICKET_RESTRICTIONS` puts the
+ * four that cost money when they are missed first - a restricted-view seat
+ * sold as a normal one is a refund, an 18+ ticket sold to someone who cannot
+ * use it is a refund and an argument.
  */
-const RESTRICTION_GLYPH: Record<string, string> = {
-  rv: "V", "18": "8", "16": "6", id: "D", nr: "R", ao: "M", st: "S", wc: "B",
-};
 
 type Row = {
   qty: string;
@@ -469,38 +472,21 @@ export default function OrderRowsModal({
             <td className="td-c w-[90px]">
               <Input value={r.rowLabel} onChange={(e) => patch(i, { rowLabel: e.target.value })} aria-label="Row" />
             </td>
-            {/* 2.67.0: eight toggles, four money-costing ones first, always in
-                the same eight positions so absence reads as an empty slot
-                rather than as missing text. */}
+            {/* 2.71.0: was eight one-letter toggles. marko: "je to hrozne ...
+                tie restrictions su nepriehladne strasne" - he asked for the
+                cell to open "taky vyber ako je pri platforme". It now does:
+                the closed box reads "Výhľad, 18+", and opening it lists all
+                eight by their full Slovak name, the same names the per-ticket
+                editor in Tickets.tsx shows. Order is unchanged - the four that
+                cost money when missed are still first, because that is how
+                TICKET_RESTRICTIONS itself is ordered. */}
             <td className="td-c w-[176px]">
-              <div className="flex gap-0.5">
-                {TICKET_RESTRICTIONS.map((t) => {
-                  const on = r.restrictions.includes(t.code);
-                  return (
-                    <button
-                      key={t.code}
-                      type="button"
-                      title={t.label}
-                      aria-label={t.label}
-                      aria-pressed={on}
-                      onClick={() =>
-                        patch(i, {
-                          restrictions: on
-                            ? r.restrictions.filter((c) => c !== t.code)
-                            : [...r.restrictions, t.code],
-                        })
-                      }
-                      className={`h-7 w-5 rounded text-xs font-semibold tabular-nums transition ${
-                        on
-                          ? "bg-brand-600 text-white"
-                          : "text-slate-400 hover:bg-slate-100 dark:text-slate-600 dark:hover:bg-slate-800"
-                      }`}
-                    >
-                      {on ? RESTRICTION_GLYPH[t.code] ?? "\u2022" : "\u00b7"}
-                    </button>
-                  );
-                })}
-              </div>
+              <MultiSelect
+                title="Obmedzenia"
+                options={TICKET_RESTRICTIONS}
+                value={r.restrictions}
+                onChange={(next) => patch(i, { restrictions: next })}
+              />
             </td>
             <td className="td-c w-[150px]">
               <Input

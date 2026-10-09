@@ -16,6 +16,72 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.71.0 - restrictions ako dropdown + oprava konverzie mien
+
+marko: *"tie restrictions su nepriehladne strasne ... chcem, aby ked nato
+klikneš tak sa ti ukaze taky vyber ako je pri platforme"* a *"taktiez convert
+mien nefunguje"*.
+
+### Restrictions: osem písmen -> dropdown so slovami
+
+Nová komponenta **`MultiSelect`** (`ui.tsx`) - `Select` pre hodnotu, ktorá je
+zoznam. Zatvorená vyzerá ako Platform vedľa nej a číta sa "Výhľad, 18+";
+otvorená vypíše všetkých osem **plným slovenským názvom** s fajkou na
+vybraných. Sú to tie isté názvy, ktoré ukazuje per-lístkový editor v
+`Tickets.tsx`, takže obe obrazovky nemôžu rozísť.
+
+Natívny `<select multiple>` by to nevyriešil - renderuje sa ako trvalo
+otvorený list box, ktorý sa do bunky tabuľky nezmestí.
+
+Panel ide cez **portál**. `.table-shell` je `overflow-auto` (index.css), takže
+panel umiestnený v bunke by scroll kontajner odstrihol, hneď ako je vyšší než
+riadok - čo s ôsmimi možnosťami je vždy. Scroll a resize panel zatvárajú,
+nepresúvajú ho.
+
+Poradie ostalo: štyri, ktoré stoja peniaze, sú stále prvé. `RESTRICTION_GLYPH`
+zmizol, existoval len pre tie prepínače.
+
+### Konverzia mien: `US $` nie je mena
+
+404 z kurzovej služby nebol výpadok. **Objednávka YELIVE-001 má menu uloženú
+ako `US $`**, nie `USD` - AI import to tak prečítal zo screenshotu a
+`fx::normalize_currency` ten tvar nepoznala, takže ho `to_uppercase()` nechal
+tak a poslal sa do URL. Overené naživo proti službe:
+
+| dotaz | odpoveď |
+|---|---|
+| `from=GBP&to=EUR` | 200, kurz 1.1814 |
+| `from=US $&to=EUR` | **404 `{"message":"not found"}`** |
+| `from=EUR&to=EUR` | 422 `{"message":"bad currency pair"}` |
+
+Čiže endpoint aj sieť boli v poriadku; chybná bola tá jedna hodnota.
+
+**Dve opravy v `fx.rs`:**
+
+1. `normalize_currency` pozná symbol s predponou krajiny - `US$`, `A$`, `C$`,
+   `NZ$`, `HK$`, `S$`, `R$`, a to aj s medzerou vnútri (medzery sa najprv
+   vyhodia). Neznámy kód stále prepadne na obyčajný veľký tvar, ako predtým.
+2. Kód, ktorý nemá tri ASCII písmená, sa **odmietne pred odoslaním** a chyba
+   pomenuje konkrétnu hodnotu, namiesto preposlania holého 404. Kontroluje sa
+   PRED skratkou `from == to`, inak by dve kópie tej istej nepoužiteľnej
+   hodnoty ticho vrátili kurz 1.0.
+
+**Jeho existujúci riadok to neopraví** - normalizácia beží na vstupe, uložená
+hodnota ostáva. Opravuje si ho sám, dáta sú jeho.
+
+### Kontrola dát (marko: *"skus pokukat vsetky chyby ktore vies najst"*)
+
+Pätnásť integritných dotazov nad jeho živou databázou. Čisté: meny lístkov vs
+objednávok, quantity vs počet lístkov, osirelé predaje, `sold` bez predaja,
+`available` s predajom, záporné sumy, duplicitné kódy, objednávky bez eventu,
+`restrictions_json` (platnosť aj neznáme kódy), statusy.
+
+Jediný nález je tá mena vyššie. Falošný poplach: osem `batch_id` tvaru
+`SAL-000xxx`, ktoré nezodpovedajú žiadnemu kódu predaja - to je stav z čias
+pred 2.30.0, keď sa kódy prečíslovali na event-ové a `batch_id` ostalo.
+`GROUP_BASE_SELECT` s tým vedome počíta (zobrazovaný kód berie z `MIN(id)`
+riadku), zoskupovanie funguje správne - overené.
+
 ## 2.70.0 - build fix: chýbajúce `restrictions` v piatich literáloch
 
 CI (Windows aj Mac) zastavilo build 2.69.0 na mojej chybe z 2.67.0:
