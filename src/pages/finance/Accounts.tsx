@@ -15,12 +15,13 @@ import {
   ModalFooter,
   PanelSkeleton,
   Select,
+  segmentedItemClass,
   Spinner,
   StatsSkeleton,
   Textarea,
 } from "../../components/ui";
 import { FinanceCategoryBadge } from "../../components/FinanceCategoryBadge";
-import { IconLink, IconPencil, IconPlus, IconTrash, IconWallet } from "../../components/icons";
+import { IconLink, IconPencil, IconPlus, IconRefresh, IconTrash, IconWallet } from "../../components/icons";
 import { useToast } from "../../lib/toast";
 import { CURRENCIES } from "../Orders";
 import type { FinanceData } from "./shared";
@@ -233,7 +234,11 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
           </div>
 
           {recurringExpenses.length === 0 ? (
-            <EmptyState title="No recurring expenses yet" description="e.g. rent, subscriptions, insurance - add one and it'll show up here when it's due." />
+            <EmptyState
+              icon={<IconRefresh className="h-5 w-5" />}
+              title="No recurring expenses yet"
+              description="e.g. rent, subscriptions, insurance - add one and it'll show up here when it's due."
+            />
           ) : (
             <Card>
               <div className="table-flush max-h-[calc(100vh-24rem)]">
@@ -909,15 +914,18 @@ function RecurringFormModal({
 
         <div>
           <span className="label">Scope</span>
-          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+          {/* 2.85.0: the identical Personal/Business toggle Transactions' own
+              entry form got in 2.82.0, and for the same reason. `SEGMENTED_TRACK`
+              is not used here either: it carries `w-fit`, and this one fills
+              its field. The track borrows only the surface. */}
+          <div className="flex gap-1 rounded-lg bg-surface-sunken p-1 shadow-card">
             {(["personal", "business"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => setScope(s)}
-                className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  scope === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
+                aria-pressed={scope === s}
+                className={`flex-1 ${segmentedItemClass(scope === s)}`}
               >
                 {s === "personal" ? "Personal" : "Business"}
               </button>

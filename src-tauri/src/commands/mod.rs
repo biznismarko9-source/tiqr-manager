@@ -11,6 +11,7 @@ pub mod csv_export;
 pub mod csv_import;
 pub mod currency;
 pub mod dashboard;
+pub mod data_health;
 pub mod database;
 pub mod event_categories;
 pub mod events;

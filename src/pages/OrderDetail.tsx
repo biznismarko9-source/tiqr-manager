@@ -31,10 +31,25 @@ import {
   ModalFooter,
   Select,
   Spinner,
+  StatCard,
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconLink, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import {
+  IconArrowLeft,
+  IconBarChart,
+  IconCheck,
+  IconDatabase,
+  IconLink,
+  IconPackage,
+  IconPencil,
+  IconPlus,
+  IconReceipt,
+  IconTag,
+  IconTicket,
+  IconTrash,
+  IconWallet,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { usePreferredCurrency } from "../lib/preferredCurrency";
 import { useNarrowTables } from "../lib/useNarrowTables";
@@ -236,49 +251,63 @@ export default function OrderDetail() {
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Quantity</p>
-          <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Unit price</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoney(order.unitPriceCents, order.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Fees + other</p>
-          <p className="mt-1 text-lg font-semibold">
-            {formatMoney(order.feesCents + order.otherCostsCents, order.currency)}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Total cost</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
-        </Card>
+      {/* 2.77.0: these six were hand-rolled `<Card>`s with their own label
+          and value markup, while Dashboard and Event Detail used `StatCard`
+          for the same job. Converting them is the whole point of this pass:
+          one component means one set of paddings, one type scale and one
+          truncation rule, so a metric card looks identical wherever it
+          appears. Every value, format and condition below is unchanged -
+          including "Partial", which still appears in amber exactly when
+          `orderPaidCents`/`orderOutstandingCents` are null (the order model
+          has no field to back a real number; see the 1.9.0 audit).
+
+          Accents group by meaning, not by variety: violet for the count,
+          blue for the per-unit inputs, orange for cost, emerald for money
+          actually collected. */}
+      <div className="summary-bar mb-8">
+        <StatCard
+          label="Quantity"
+          value={String(order.quantity)}
+          icon={<IconTicket className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Unit price"
+          value={formatMoney(order.unitPriceCents, order.currency)}
+          icon={<IconTag className="h-4 w-4" />}
+          accent="blue"
+        />
+        <StatCard
+          label="Fees + other"
+          value={formatMoney(order.feesCents + order.otherCostsCents, order.currency)}
+          icon={<IconReceipt className="h-4 w-4" />}
+          accent="blue"
+        />
+        <StatCard
+          label="Total cost"
+          value={formatMoney(order.totalCostCents, order.currency)}
+          icon={<IconWallet className="h-4 w-4" />}
+          accent="orange"
+        />
         {/* 1.9.0 (section 5): Paid/Outstanding - see the orderPaidCents/
             orderOutstandingCents derivation above. 'partial' shows as text,
-            never a fabricated number - the order model has no field to back
-            one (see the 1.9.0 report's audit). */}
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Paid</p>
-          <p className={`mt-1 text-lg font-semibold ${orderPaidCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}>
-            {orderPaidCents !== null ? formatMoney(orderPaidCents, order.currency) : "Partial"}
-          </p>
-          {orderPaidCents === null && (
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Exact amount not tracked</p>
-          )}
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Outstanding</p>
-          <p
-            className={`mt-1 text-lg font-semibold ${orderOutstandingCents === null ? "text-amber-600 dark:text-amber-400" : ""}`}
-          >
-            {orderOutstandingCents !== null ? formatMoney(orderOutstandingCents, order.currency) : "Partial"}
-          </p>
-          {orderOutstandingCents === null && (
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Exact amount not tracked</p>
-          )}
-        </Card>
+            never a fabricated number. */}
+        <StatCard
+          label="Paid"
+          value={orderPaidCents !== null ? formatMoney(orderPaidCents, order.currency) : "Partial"}
+          tone={orderPaidCents === null ? "warning" : "default"}
+          sub={orderPaidCents === null ? "Exact amount not tracked" : undefined}
+          icon={<IconCheck className="h-4 w-4" />}
+          accent="emerald"
+        />
+        <StatCard
+          label="Outstanding"
+          value={orderOutstandingCents !== null ? formatMoney(orderOutstandingCents, order.currency) : "Partial"}
+          tone={orderOutstandingCents === null ? "warning" : "default"}
+          sub={orderOutstandingCents === null ? "Exact amount not tracked" : undefined}
+          icon={<IconReceipt className="h-4 w-4" />}
+          accent="orange"
+        />
       </div>
 
       {/* 1.9.10: marko wanted Platform/Notes/Currency combined into one row
@@ -293,15 +322,15 @@ export default function OrderDetail() {
           this 4 items now. */}
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Platform</p>
+          <p className="section-title">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{order.platformName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Notes</p>
+          <p className="section-title">Notes</p>
           <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{order.notes || "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Currency</p>
+          <p className="section-title">Currency</p>
           <div className="mt-1 flex items-center gap-2">
             <p className="text-sm text-slate-700 dark:text-slate-300">{order.currency}</p>
             {/* 2.0.51: marko's own follow-up to 2.0.50 - that version only
@@ -326,7 +355,7 @@ export default function OrderDetail() {
             yet" - the button already works either way, this just avoids a
             flash of "Not recorded" before the real answer arrives. */}
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Finance</p>
+          <p className="section-title">Finance</p>
           <div className="mt-1 flex items-center gap-2">
             {financeEntriesForOrder && financeEntriesForOrder.length > 0 ? (
               <span className="text-sm text-emerald-600 dark:text-emerald-400">
@@ -396,43 +425,55 @@ export default function OrderDetail() {
       </Card>
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
-      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Total tickets</p>
-          <p className="mt-1 text-lg font-semibold">{order.quantity}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Available</p>
-          <p className="mt-1 text-lg font-semibold">{order.availableCount + order.listedCount}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sold</p>
-          <p className="mt-1 text-lg font-semibold">{order.soldCount}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Purchase cost</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoney(order.totalCostCents, order.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sales revenue</p>
-          <p className="mt-1 text-lg font-semibold">
-            {salesSummary ? formatMoney(salesSummary.revenueCents, order.currency) : "..."}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Realized profit</p>
-          <p
-            className={`mt-1 text-lg font-semibold ${
-              salesSummary && salesSummary.profitCents > 0
-                ? "text-emerald-600 dark:text-emerald-400"
-                : salesSummary && salesSummary.profitCents < 0
-                  ? "text-red-600 dark:text-red-400"
-                  : ""
-            }`}
-          >
-            {salesSummary ? formatMoney(salesSummary.profitCents, order.currency) : "..."}
-          </p>
-        </Card>
+      {/* 2.77.0: converted to `StatCard`, same as the six above - see their
+          comment. Realized profit keeps its exact emerald/red/neutral rule
+          through StatCard's own `tone`, which uses the identical classes, so
+          the colour cannot drift from the one Dashboard uses for the same
+          idea. No value, format or condition changed. */}
+      <div className="summary-bar mb-8">
+        <StatCard
+          label="Total tickets"
+          value={String(order.quantity)}
+          icon={<IconTicket className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Available"
+          value={String(order.availableCount + order.listedCount)}
+          icon={<IconPackage className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Sold"
+          value={String(order.soldCount)}
+          icon={<IconCheck className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Purchase cost"
+          value={formatMoney(order.totalCostCents, order.currency)}
+          icon={<IconWallet className="h-4 w-4" />}
+          accent="orange"
+        />
+        <StatCard
+          label="Sales revenue"
+          value={salesSummary ? formatMoney(salesSummary.revenueCents, order.currency) : "..."}
+          icon={<IconBarChart className="h-4 w-4" />}
+          accent="blue"
+        />
+        <StatCard
+          label="Realized profit"
+          value={salesSummary ? formatMoney(salesSummary.profitCents, order.currency) : "..."}
+          tone={
+            salesSummary && salesSummary.profitCents > 0
+              ? "positive"
+              : salesSummary && salesSummary.profitCents < 0
+                ? "negative"
+                : "default"
+          }
+          icon={<IconDatabase className="h-4 w-4" />}
+          accent="teal"
+        />
       </div>
       <p className="-mt-5 mb-8 text-xs text-slate-500 dark:text-slate-400">
         Revenue and realized profit only count tickets that are actually sold and not refunded - not-yet-sold
@@ -460,7 +501,7 @@ export default function OrderDetail() {
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
-        <EmptyState title="No tickets found for this order" />
+        <EmptyState icon={<IconTicket className="h-5 w-5" />} title="No tickets found for this order" />
       ) : (
         // 2.0.35: same proportional-percentage model Sales.tsx now uses -
         // see that file's colgroup comment for the full history and the

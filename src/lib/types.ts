@@ -1126,6 +1126,23 @@ export interface SheetsConnectionConfig {
   currency: string;
 }
 
+/** 2.73.0: one row of Settings -> Data's "Check my data" panel. Read-only by
+ *  construction - see commands/data_health.rs for why there is no "fix it"
+ *  counterpart. A check that found nothing is still returned, with
+ *  `count: 0`; "I looked and there is nothing wrong" is the answer marko
+ *  needs most often. */
+export type DataCheck = {
+  id: string;
+  title: string;
+  detail: string;
+  /** "warn" affects money or stops something working; "info" is an
+   *  inconsistency worth knowing about but nothing is broken. */
+  severity: string;
+  count: number;
+  /** Up to five record codes, so a hit is findable rather than just counted. */
+  examples: string[];
+};
+
 export const CURRENCY_OPTIONS = ["EUR", "USD", "GBP"] as const;
 
 export interface SheetsConnectionStatus {

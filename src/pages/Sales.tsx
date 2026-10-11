@@ -435,7 +435,12 @@ export default function Sales() {
       {/* 2.38.0: the tab switcher moved OFF its own line and into the filter
           row, pinned right (ml-auto) - marko's request, everywhere it exists,
           following the arrangement Pulls already had. */}
-      <div className="mb-2 flex flex-wrap items-end gap-3">
+      {/* 2.78.0: the filters now sit inside one sunken surface, the same
+          treatment Events got in 2.76.0 and Inventory in 2.77.0 - so the
+          three list pages read as one product rather than three. Same
+          controls, same handlers, same widths, same wrapping; the bar is
+          only what groups them. The tab switcher stays pinned right. */}
+      <div className="mb-3 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">

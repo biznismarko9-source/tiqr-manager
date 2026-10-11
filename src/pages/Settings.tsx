@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { startTour, TOUR_STEP_COUNT } from "../components/Tour";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -26,6 +26,7 @@ import {
   type SheetsConnectionTestResult,
   type SheetSyncResult,
   type SpreadsheetTabsResult,
+  type DataCheck,
 } from "../lib/types";
 import { formatDateTime } from "../lib/format";
 import { readAutoSyncLog } from "../lib/autoSyncLog";
@@ -373,6 +374,11 @@ export default function Settings() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // 2.73.0: "Check my data". `null` until it has been run once - an empty
+  // array would be indistinguishable from "ran and found nothing", and those
+  // two have to look different (see the panel's own emerald case).
+  const [dataChecks, setDataChecks] = useState<DataCheck[] | null>(null);
+  const [checksRunning, setChecksRunning] = useState(false);
   const [confirmRestorePath, setConfirmRestorePath] = useState<string | null>(null);
   /** 2.66.0: the Drive revision waiting on a confirm. Restoring one replaces
    * this computer's whole database and relaunches - the same consequence the
@@ -749,6 +755,20 @@ export default function Settings() {
     return () => clearInterval(t);
   }, [sec, sync?.state, refreshSync]);
 
+  const runDataChecks = async () => {
+    setChecksRunning(true);
+    try {
+      setDataChecks(await api.checkDataHealth());
+    } catch (e) {
+      // A toast, not a row in the panel: the checks failing to RUN is not the
+      // same thing as a check finding nothing, and the panel only ever speaks
+      // about results.
+      toast.error(errMsg(e));
+    } finally {
+      setChecksRunning(false);
+    }
+  };
+
   const doBackup = async () => {
     const stamp = new Date().toISOString().slice(0, 10);
     const path = await save({
@@ -1026,11 +1046,134 @@ export default function Settings() {
           </Modal>
 
           {sec === "data" && (
-            // 1.9.5: marko wants these stacked instead of side-by-side -
-            // was `grid-cols-1 lg:grid-cols-2` (Import/Export paired on wide
-            // screens, Backup spanning below); now a single column always,
-            // so all three cards read top-to-bottom regardless of width.
-            <div className="grid grid-cols-1 gap-4">
+            // 1.9.5: marko wants these stacked instead of side-by-side.
+            // 2.84.0: still one column, but in two named groups. Four
+            // full-width cards in an undifferentiated run gave the page no
+            // way to say that two of them are everyday tools and two can
+            // overwrite the whole database. Only wrappers were added and the
+            // order of the four cards changed; not one card's markup,
+            // controls, handlers or copy was touched.
+            <div className="grid grid-cols-1 gap-6">
+              <SettingsGroup
+                title="Everyday"
+                hint="Moving lists in and out, and checking what is already here. Nothing here can overwrite your data."
+              >
+              {/* 2.38.0: Import and Export used to be two cards side by side
+                  saying the same word twice. One card, two labelled rows -
+                  marko asked for Settings to be as simple as it can get, and
+                  this is one screen-worth of it. Every handler below
+                  (setImportOpen, doDownloadTemplate, setExportConfig and the
+                  five export configs) is exactly the one it was. */}
+              <Card className="p-5">
+                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">CSV</h3>
+                <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+                  Bring orders in from a spreadsheet, or take any list out as a file.
+                </p>
+
+                <p className="section-title mb-2">Import orders</p>
+                {/* 1.9.2 (section 8): shortened from a single dense paragraph
+                    to just the 3 things marko asked to keep - the required
+                    columns, the seats note, and the all-or-nothing note.
+                    Import itself (Preview -> Validate -> Confirm -> Import,
+                    still transactional/all-or-nothing) and Download template
+                    below are unchanged - this is a text-only simplification. */}
+                {/* 2.30.1: the sixteen column names moved into the template
+                    file, which is where marko actually reads them - he opens
+                    it to build the CSV. Kept on screen: that an import either
+                    lands whole or not at all, which changes what he does if
+                    it fails. */}
+                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                  All-or-nothing. Download the template for the exact columns.
+                </p>
+                <div className="mb-4 flex flex-wrap gap-2">
+                  <Button variant="primary" onClick={() => setImportOpen(true)}>
+                    <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
+                  </Button>
+                  <Button variant="secondary" disabled={busyAction === "template"} onClick={doDownloadTemplate}>
+                    {busyAction === "template" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
+                    Download template
+                  </Button>
+                </div>
+
+                <p className="section-title mb-2">Export</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { label: "Events", key: "events", config: eventsExportConfig },
+                    { label: "Orders", key: "orders", config: ordersExportConfig },
+                    { label: "Tickets", key: "tickets", config: ticketsExportConfig },
+                    { label: "Sales", key: "sales", config: salesExportConfig },
+                    { label: "Inventory", key: "inventory", config: inventoryExportConfig },
+                  ].map((x) => (
+                    <Button key={x.key} variant="secondary" onClick={() => setExportConfig(x.config)}>
+                      <IconDownload className="h-4 w-4" />
+                      {x.label}
+                    </Button>
+                  ))}
+                </div>
+              </Card>
+
+              {/* 2.73.0: marko's own pick. Two real problems this week were
+                  only ever found by someone querying his database by hand - a
+                  currency stored as "US $" (which is why Convert answered 404
+                  for days) and three paid orders costing 0.00. Neither was
+                  reachable from inside the app. This is those queries.
+
+                  It reports and never fixes: deciding what a wrong value
+                  SHOULD be is a judgement about his own money, not something
+                  a button gets to guess. See commands/data_health.rs. */}
+              <Card className="p-5">
+                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Check my data</h3>
+                <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+                  Looks for things that quietly make numbers wrong - a currency that isn&apos;t a real
+                  code, a paid order with no cost on it, a ticket sold twice. Nothing is changed.
+                </p>
+                <Button variant="secondary" disabled={checksRunning} onClick={runDataChecks}>
+                  {checksRunning ? <Spinner className="h-4 w-4" /> : <IconDatabase className="h-4 w-4" />}
+                  Run checks
+                </Button>
+                {dataChecks && (
+                  <div className="mt-4 space-y-2">
+                    {dataChecks.every((c) => c.count === 0) ? (
+                      // Said explicitly, not by showing an empty list: "I
+                      // looked and found nothing" is the answer he gets most
+                      // often, and a blank panel cannot give it.
+                      <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                        All {dataChecks.length} checks passed - nothing to look at.
+                      </p>
+                    ) : (
+                      dataChecks
+                        .filter((c) => c.count > 0)
+                        .map((c) => (
+                          <div
+                            key={c.id}
+                            className={`rounded-lg px-3 py-2 text-xs ${
+                              c.severity === "warn"
+                                ? "bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"
+                                : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                            }`}
+                          >
+                            <div className="font-semibold">
+                              {c.title} ({c.count})
+                            </div>
+                            <p className="mt-0.5 opacity-90">{c.detail}</p>
+                            {c.examples.length > 0 && (
+                              <p className="mt-1 font-mono text-[11px] opacity-80">
+                                {c.examples.join(", ")}
+                                {c.count > c.examples.length ? ` +${c.count - c.examples.length} more` : ""}
+                              </p>
+                            )}
+                          </div>
+                        ))
+                    )}
+                  </div>
+                )}
+              </Card>
+              </SettingsGroup>
+
+              <SettingsGroup
+                title="Keeping your data safe"
+                hint="Copies of this database, and the one action that can replace it. Read each button before pressing it."
+              >
               {/* 2.12.0: Cloud sync sits above Backup/Restore because it is
                   the same concern - moving this database between machines -
                   just automatic. It reuses the very same snapshot and restore
@@ -1340,60 +1483,6 @@ export default function Settings() {
                 )}
               </Card>
 
-              {/* 2.38.0: Import and Export used to be two cards side by side
-                  saying the same word twice. One card, two labelled rows -
-                  marko asked for Settings to be as simple as it can get, and
-                  this is one screen-worth of it. Every handler below
-                  (setImportOpen, doDownloadTemplate, setExportConfig and the
-                  five export configs) is exactly the one it was. */}
-              <Card className="p-5">
-                <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">CSV</h3>
-                <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
-                  Bring orders in from a spreadsheet, or take any list out as a file.
-                </p>
-
-                <p className="section-title mb-2">Import orders</p>
-                {/* 1.9.2 (section 8): shortened from a single dense paragraph
-                    to just the 3 things marko asked to keep - the required
-                    columns, the seats note, and the all-or-nothing note.
-                    Import itself (Preview -> Validate -> Confirm -> Import,
-                    still transactional/all-or-nothing) and Download template
-                    below are unchanged - this is a text-only simplification. */}
-                {/* 2.30.1: the sixteen column names moved into the template
-                    file, which is where marko actually reads them - he opens
-                    it to build the CSV. Kept on screen: that an import either
-                    lands whole or not at all, which changes what he does if
-                    it fails. */}
-                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                  All-or-nothing. Download the template for the exact columns.
-                </p>
-                <div className="mb-4 flex flex-wrap gap-2">
-                  <Button variant="primary" onClick={() => setImportOpen(true)}>
-                    <IconUpload className="h-4 w-4" /> Choose CSV &amp; preview
-                  </Button>
-                  <Button variant="secondary" disabled={busyAction === "template"} onClick={doDownloadTemplate}>
-                    {busyAction === "template" ? <Spinner className="h-4 w-4" /> : <IconDownload className="h-4 w-4" />}
-                    Download template
-                  </Button>
-                </div>
-
-                <p className="section-title mb-2">Export</p>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { label: "Events", key: "events", config: eventsExportConfig },
-                    { label: "Orders", key: "orders", config: ordersExportConfig },
-                    { label: "Tickets", key: "tickets", config: ticketsExportConfig },
-                    { label: "Sales", key: "sales", config: salesExportConfig },
-                    { label: "Inventory", key: "inventory", config: inventoryExportConfig },
-                  ].map((x) => (
-                    <Button key={x.key} variant="secondary" onClick={() => setExportConfig(x.config)}>
-                      <IconDownload className="h-4 w-4" />
-                      {x.label}
-                    </Button>
-                  ))}
-                </div>
-              </Card>
-
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Backup &amp; restore</h3>
                 <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
@@ -1568,13 +1657,24 @@ export default function Settings() {
                   </p>
                 )}
               </Card>
+              </SettingsGroup>
             </div>
           )}
 
           {sec === "support" && <SupportCards />}
 
           {sec === "integrations" && (
-            <div className="grid grid-cols-1 gap-4 lg:max-w-6xl">
+            <div className="grid grid-cols-1 gap-6 lg:max-w-6xl">
+              {/* 2.84.0: two groups, not four loose cards. The sign-in card
+                  and both sheet cards are ONE integration - a Google account
+                  with two sheets under it - and each was showing its own
+                  "Connected" badge, so the page read as three services. The
+                  API key is genuinely a second, unrelated one. Only wrappers
+                  were added; every card below is untouched. */}
+              <SettingsGroup
+                title="Google Sheets"
+                hint="One Google account, and the sheets it syncs with."
+              >
               <GoogleSignInCard onChange={setGoogleStatus} />
               {/* 2.0.16: Pulls and Orders & Sales side by side (marko's own
                   request) now that Sign in with Google always sits above
@@ -1641,14 +1741,20 @@ export default function Settings() {
                   onCreate={api.createOrdersSheet}
                 />
               </div>
+              </SettingsGroup>
 
               {/* 2.1.6: standalone - not a Google Sheets thing at all, but
                   "integrations" is the closest existing home (connecting an
                   optional external service) and a whole new top-level
                   section for one API-key field felt like more navigation
                   than marko needs. See AnthropicApiKeyCard's own doc
-                  comment. */}
-              <AnthropicApiKeyCard />
+                  comment.
+                  2.84.0: that reasoning is now said on the page itself
+                  instead of only in this comment - its own group, so it
+                  cannot be mistaken for part of the Google block above. */}
+              <SettingsGroup title="AI" hint="Optional. Your own Anthropic key, used by the AI import.">
+                <AnthropicApiKeyCard />
+              </SettingsGroup>
             </div>
           )}
 
@@ -1962,6 +2068,39 @@ export default function Settings() {
  * knows how to show this, no extra tooltip library needed for one line of
  * text). Lets a heading stay explained without a permanent paragraph of text
  * underneath it - see Settings -> Lookups for where this replaced one. */
+/** 2.84.0: a titled group of Settings cards.
+ *
+ *  Settings' longest sections stack four or five full-width cards in one
+ *  column with nothing saying which belong together. On Integrations that
+ *  read as four separate services when it is really two - a Google account
+ *  with two sheets under it, plus an unrelated API key. On Data it put the
+ *  everyday tools and the things that can overwrite the database in one
+ *  undifferentiated run.
+ *
+ *  This adds the sentence those columns were missing and nothing else: a
+ *  heading, an optional line under it, and the cards unchanged beneath. No
+ *  card's own markup, controls or behaviour is touched by it.
+ */
+function SettingsGroup({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="grid grid-cols-1 gap-4">
+      <div>
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{title}</h2>
+        {hint && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{hint}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function InfoHint({ text }: { text: string }) {
   return (
     <span title={text} className="inline-flex cursor-help text-slate-300 dark:text-slate-600">
@@ -4239,7 +4378,7 @@ function SupportCards() {
               Load suggestions
             </Button>
           ) : inbox.length === 0 ? (
-            <EmptyState title="Nothing sent yet" />
+            <EmptyState icon={<IconInfo className="h-5 w-5" />} title="Nothing sent yet" />
           ) : (
             <ul className="divide-y divide-slate-100 dark:divide-slate-800">
               {inbox.map((s) => (

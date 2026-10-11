@@ -1124,9 +1124,32 @@ pub(crate) fn decide_auto(
             "Both machines have changes - they get added together, nothing is dropped.",
         ),
         (true, false) => (Push, "This machine has changes the other one hasn't seen."),
+        // 2.73.0: Merge, not Pull - and this is the fix for what cost marko
+        // real data on 1.10.2026.
+        //
+        // Reaching here means `local_dirty` said false. On that day it said
+        // false while a day of unsynced work sat in the database
+        // (`cloud_sync_local_dirty = false` with `last_sync_at` a day older
+        // than the orders it had not sent - see KNOWN_BUGS.md), the old Pull
+        // replaced the whole file with Drive's older copy, and three orders,
+        // six tickets and two sales went with it.
+        //
+        // Merge cannot do that. It applies the SAME tombstones Pull's file
+        // would have carried, so a genuine deletion on the other machine
+        // still lands - but it keeps rows this side holds that the other one
+        // has never seen. So it is never more destructive than Pull, and
+        // when the flag is wrong it is the difference between a bad day and
+        // a lost week.
+        //
+        // When the flag is RIGHT, the two are equivalent: with nothing
+        // unsent, there are no local-only rows for Merge to preserve, so it
+        // arrives at the same database Pull would have produced.
+        //
+        // This does not make the flag trustworthy - that is still open in
+        // KNOWN_BUGS.md. It makes the flag's being wrong survivable.
         (false, true) => (
-            Pull,
-            "The other machine has newer data and this one has nothing unsent.",
+            Merge,
+            "The other machine has newer data - it gets added to what is here.",
         ),
         (false, false) => (Idle, "Everything is already in sync."),
     }
@@ -1525,7 +1548,12 @@ mod tests {
     #[test]
     fn one_side_changing_is_answerable_without_a_human() {
         assert_eq!(act(true, true, true, true, true, true, false), CloudSyncAutoAction::Push);
-        assert_eq!(act(true, true, true, true, true, false, true), CloudSyncAutoAction::Pull);
+        // 2.73.0: Merge, not Pull. See the arm's own comment - a false
+        // `local_dirty` is what emptied marko's database on 1.10.2026, and
+        // Merge is the answer that survives the flag being wrong. With the
+        // flag RIGHT the two produce the same database anyway, so nothing is
+        // given up by never choosing Pull here.
+        assert_eq!(act(true, true, true, true, true, false, true), CloudSyncAutoAction::Merge);
     }
 
     #[test]

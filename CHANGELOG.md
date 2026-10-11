@@ -16,6 +16,718 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.85.0 - Globálny prečesávací prechod (fáza G)
+
+marko poslal master prompt na redesign celej apky. Väčšina už bola hotová —
+Dashboard (2.74/2.75), Events (2.76), Inventory (2.77), Sales (2.78), Pulls
+(2.79), Finance (2.80-2.82), Notes (2.83), Settings (2.84) — a bod 1.1 toho
+promptu výslovne hovorí **nezačínať odznova**:
+*"Preserve previous work that is already correct... Extend and refine them
+instead of accidentally reverting them."*
+
+Čo hotové **nebolo**, boli dve veci: globálny shell (fáza B) a jednotný
+prečesávací prechod naprieč celou apkou (fáza G). Toto je ten prechod.
+
+### Tri posledné ručne kreslené segmentované ovládače
+
+Sken celej apky našiel tri miesta, kde pilulkový pruh nepoužíval zdieľané
+`SEGMENTED_TRACK` + `segmentedItemClass` — a jedno z nich bolo prekvapivé:
+
+- **`Finance.tsx`** — hlavný štvorzáložkový pruh sekcie Finance
+  (Overview/Transactions/Accounts/Reports). Jeho **vlastné podstránky**
+  zdieľaný ovládač používali, len jeho navigácia nie.
+- **`finance/Reports.tsx`** — výber obdobia
+- **`finance/Accounts.tsx`** — prepínač Personal/Business v opakovanom výdavku
+
+Vo všetkých troch bol aktívny stav už predtým byte-identický
+(`bg-brand-600 text-white`); menia sa dráha, neaktívne farby a focus ring.
+Pribudlo `aria-pressed`.
+
+### Prázdne stavy
+
+20 z 27 `EmptyState` malo ikonu, sedem nie. Doplnených **šesť**.
+
+Siedmy — `EmptyRow` na Dashboarde — ikonu **zámerne nedostal** a je to
+zapísané priamo v kóde: je to generický riadok, ktorý používa veľa kariet
+s rôznymi vetami, takže akákoľvek jedna ikona by bola pre väčšinu z nich
+nesprávna. Dokumentovaná výnimka, nie prehliadnutie.
+
+Jeden z tých šiestich si zaslúži zmienku: `Recap.tsx` používa `EmptyState`
+na zobrazenie **chyby**, nie neprítomnosti. Dostal výstražnú ikonu, aby to
+bolo vidieť skôr, než sa veta prečíta.
+
+### Globálny shell: nedotknutý, a zámerne
+
+Bočný panel má zdokumentované iterácie z 2.6.0, 2.29.0 a 2.43.0 — aktívny
+tint s akcentovým prúžkom, focus ring, uvážené rozmery pre 192px rail.
+Je to jedna z najstarostlivejšie navrhnutých častí apky. Prerábať ho by
+bola churn, nie zlepšenie.
+
+## 2.84.0 - Settings: Data a Integrations prestavané do skupín
+
+marko menoval Data a Integrations ako miesta, kde *"many actions and status
+indicators currently compete for attention"*. Mal pravdu a audit ukázal
+presne prečo.
+
+### Integrations: štyri karty boli v skutočnosti dve integrácie
+
+`GoogleSignInCard` + karta Pulls + karta Orders & Sales sú **jedna**
+integrácia — jeden Google účet a dva hárky pod ním. Každá z nich pritom
+ukazovala vlastný odznak „Connected", takže stránka čítala ako tri služby.
+AI kľúč je genuínne druhá, nesúvisiaca.
+
+Teraz sú to dve pomenované skupiny: **Google Sheets** (účet + dva hárky)
+a **AI** (kľúč). Pridané boli len obaly; karty sú nedotknuté.
+
+### Data: štyri karty bez toho, aby bolo vidieť, ktoré hryzú
+
+CSV, Check my data, Sync a Backup & restore stáli v jednom nerozlíšenom
+stĺpci. Dve z nich sú bežný nástroj, dve vedia prepísať celú databázu.
+
+Teraz: **Everyday** (CSV, Check my data — *"Nothing here can overwrite your
+data"*) a **Keeping your data safe** (Sync, Backup & restore — *"the one
+action that can replace it"*).
+
+Karty sa preusporiadali, ale ich vzájomné poradie v rámci skupiny ostalo —
+Sync je stále priamo nad Backup & restore, ako to žiadal komentár z 2.12.0
+(*"the same concern - moving this database between machines"*).
+
+### Nová `SettingsGroup`
+
+Nadpis, voliteľná veta pod ním, deti nezmenené. Lokálna v `Settings.tsx`.
+
+### Zvyšných päť podsekcií sa nezmenilo — a je na to dôvod
+
+Lookups, Notifications, Software, Account a Support sú **po jednej karte**
+(alebo jednej komponente). Nemajú čo zoskupovať; vytvárať v nich skupiny by
+znamenalo vymýšľať štruktúru tam, kde je jedna vec.
+
+### Overenie presunu
+
+Presúvalo sa ~600 riadkov v 4 352-riadkovom súbore. Overené: `<Card>` 17/17,
+`<SettingsGroup>` 4/4, zátvorky 0/0/0, a **každý handler sedí 1:1**
+(`setImportOpen`, `doDownloadTemplate`, `setExportConfig`, `runDataChecks`,
+`cloudSyncPush`, „Backup database", „Restore from backup").
+
+## 2.83.0 - Notes: štítok sa konečne zobrazuje
+
+Audit Notes. Výsledok je ako pri Pulls — zadanie pýtalo veľa vecí, ktoré už
+existujú.
+
+### Čo audit zistil
+
+**Nie je to contentEditable editor.** Žiadny `execCommand`, žiadne
+`dangerouslySetInnerHTML`. Je to **blokový editor**: `NoteBlock[]`, jedna
+textarea na blok, bloky `text`/`bullet`/`num`/`check`/`image`/`rule`
+s veľkosťou (h1/h2/p/small), šiestimi farbami, bold, italic a polovičnou
+šírkou. Formátovanie je teda blokové, nie inline HTML.
+
+**Všetko toto už existuje a funguje:** pripínanie (aj s triedením
+`ORDER BY pinned DESC` v backende), archív, duplikácia, šablóny, kontextové
+menu, drag-and-drop preradenie, vyhľadávanie naprieč podstránkami, náhľad
+obsahu v zozname, dátum poslednej úpravy, počet podstránok a obrázkov,
+odkazy na objednávky/predaje, podstránky ako spodné záložky.
+
+Bod 4 zadania navrhuje pripínanie, obľúbené, štítky, lepšie náhľady, rýchle
+vytvorenie, duplikáciu a kontextové akcie. **Sedem z ôsmich už tam bolo.**
+
+### Jediná skutočná medzera: štítok
+
+`Note.tag` je v type, backend ho vyberá, editor ho píše pri `onBlur` —
+a `Notes.tsx` ho **nerenderoval ani raz**. Napísal si štítok a zmizol.
+
+Teraz je v riadku zoznamu, ako prvý v metadátach, lebo to je presne to, na
+čo štítok je — rozoznať dve poznámky na prvý pohľad.
+
+Pozn.: marko má dnes jednu poznámku a žiadny štítok, takže **zmenu zatiaľ
+neuvidí**. Dátová cesta bola mŕtva a už nie je.
+
+### Šípky preradenia
+
+`↑` a `↓` boli holé znaky, ktoré sa vykresľovali v akejkoľvek veľkosti
+a hrúbke, akú písmo zvolilo. Teraz `IconChevronUp`/`IconChevronDown`.
+
+### Čoho som sa nedotkol
+
+Editora. Bod 7 hovorí, že stabilita je priorita, a blokový editor s 1 295
+riadkami, vlastným draft/dirty/save mechanizmom a `fieldRefs` je bez
+kompilátora to posledné, čo sa oplatí prerábať kvôli vzhľadu.
+
+## 2.82.0 - Finance dokončené: Transactions, Accounts, Reports, dialógy
+
+Zvyšok sekcie Finance. Dashboard sa nedotkol.
+
+### Audit najprv - a dvakrát ma zastavil
+
+**Tabuľkové triedy.** Finance používa `.th`/`.td`, nie `.th-c`/`.td-c`. Skoro
+som to „opravil" - a bola by to chyba: `.th`/`.td` je legitímna rozvoľnenejšia
+konvencia (px-3 py-2.5), ktorú používa aj Dashboard, Settings a EventDetail.
+Nechal som ju.
+
+**Rozlíšenie príjmu a výdavku.** Zadanie žiada, aby nestálo len na farbe -
+a už nestojí: každý riadok má odznak so slovom *aj* znamienko `+`/`−`.
+Nemenil som to.
+
+### Čo som naozaj zmenil
+
+**Transactions**
+- Suma výdavku je **rose**, nie neutrálna sivá. Príjem bol emerald a karta
+  Cashflow Forecast na Overview používa pre výdavky rose od 2.1.0 - v jednej
+  sekcii mala tá istá vec dve farby.
+- Prepínače Type a Scope vo formulári na zdieľané `segmentedItemClass` -
+  ten istý ťah, aký dostal Pulls v 2.79.0. `SEGMENTED_TRACK` sa tu **ne**použil
+  zámerne: nesie `w-fit`, a tieto dva majú vyplniť bunku mriežky.
+- Prázdny stav dostal ikonu.
+
+**Reports**
+- Pruhy v rozpade nosia farbu kategórie, rovnako ako na Overview.
+- Prázdny stav dostal ikonu.
+
+**Accounts**
+- Prázdny stav opakovaných výdavkov dostal ikonu. Druhý ju už mal.
+
+### `FormGroup` povýšený do `ui.tsx`
+
+Žil ako **bitovo zhodná** kópia v `Orders.tsx` aj `Pulls.tsx`. Ich vlastný
+komentár hovoril, že ostáva lokálny, lebo *"still only a handful of forms want
+this kind of sectioning"*. Tretí záujemca mení tú kalkuláciu.
+
+Markup je nezmenený, takže Orders aj Pulls renderujú presne to, čo predtým -
+presunula sa definícia, nič sa nereštylovalo. Overené: jeden export, žiadna
+lokálna kópia, oba súbory importujú, **9 použití stále platí**.
+
+### Čo som NEVNÚTIL
+
+`FormGroup` do transakčného formulára. Vnucuje `grid-cols-2`, kým ten
+formulár má vlastné mriežky (`1fr 110px` pre sumu a menu). Vnútiť ho by
+rozbilo fungujúce rozloženie kvôli zoskupeniu, ktoré ten formulár aj tak už
+má cez `Field` a `space-y-3`.
+
+Povýšenie tým nestráca zmysel - odstránilo duplikát - ale dôvod, ktorý ma
+k nemu viedol, nevyšiel. Hovorím to rovno.
+
+## 2.81.0 - Finance Overview dokončený (etapa 1)
+
+marko mi dal stupňovanie, ktoré som sám navrhol: Overview, Transactions,
+Accounts, Reports — a *"finish and verify one stage before starting the
+next"*. Toto je **etapa 1**, Overview celý.
+
+Aj férová kritika 2.80.0: *"Do not redesign only the top of the page and
+leave the remaining content visually inconsistent."* Presne to som vtedy
+spravil. Toto to dopĺňa.
+
+### Expenses by category
+
+**Pruh teraz nosí farbu svojej kategórie.** Predtým bol každý fialový, hoci
+štvorček vedľa názvu mal vlastnú farbu — štvorček hovoril jedno, pruh druhé.
+Nová exportovaná `financeCategoryFill` vracia **tú istú triedu**, akú používa
+štvorček, takže sa nemôžu rozísť.
+
+**Pribudli percentá**, ktoré zadanie žiadalo. Počítajú sa zo súčtu riadkov
+toho zoznamu, nie z karty Expenses nad ním — zoznam je to, čoho sú tie
+percentá podielom, a cudzí menovateľ by spôsobil, že by si na vlastnom
+zozname nesadli do 100 %.
+
+### Chyba, ktorú našlo pozeranie
+
+Vykreslil som ten zoznam s markovými vlastnými kategóriami a dve z nich —
+Zdravie (25,00 €) a Doprava (3,90 €) — ukazovali **„0%"**. To číta ako „nič",
+hoci o stĺpec vedľa stojí reálna suma.
+
+Riadok s nenulovou sumou, ktorý zaokrúhľuje pod jedno percento, teraz ukazuje
+**„<1%"**.
+
+### Cashflow Forecast
+
+Štyri popisky (`<dt>`) prešli na `.section-title`, štýl malých nadpisov,
+ktorý má zvyšok apky.
+
+Odznak „Forecast" mal `bg-brand-50` a `uppercase tracking-wide`. Tá výplň je
+presne tá sýta levanduľa, ktorú `StatCard` vo vlastnom komentári z 2.47.4
+označil za chybnú v light mode (*"marko: na light mode je tam chybna farba"*),
+a veľké písmená malé popisky stratili v 3.0. Teraz nesie tónovaný prstenec,
+rovnaký idiom ako `METRIC_ACCENTS`, ktorý funguje na oboch podkladoch.
+
+### Nedotknuté
+
+Žiadny výpočet, filter ani dátový tok. Graf z 2.80.0 funguje ďalej.
+`Dashboard.tsx` aj `DashboardCharts.tsx` sú stále nedotknuté.
+
+## 2.80.0 - Finance: Dashboard cashflow graf znovupoužitý
+
+Priorita č. 1 zo zadania: *"the Finance chart must use the same chart design
+and visual implementation as the Cashflow chart in Dashboard"*.
+
+### Čo audit našiel
+
+Finance graf **už znovupoužíval Dashboard komponentu** — ale tú staršiu.
+2.45.0 na markovu vlastnú žiadosť (*"vo finance ako je income vs expense
+widget tak urobit taky isty graf ako ktory je na dashboarde"*) postavil
+Finance graf na `MetricChart`.
+
+Lenže Dashboard medzitým dostal druhý graf: `CashflowChart` v 2.74.0 — dve
+plynulé krivky, monotónna interpolácia, gradientové výplne. **To je ten,
+ktorý marko myslí.**
+
+### Riešenie je symetrické
+
+Karta grafu vo Finance teraz nesie **oboje**, presne ako Dashboard:
+
+- pilulka **Cashflow**, predvolená, vykreslí `CashflowChart`
+- tri pilulky **Income / Expenses / Net** na `MetricChart`, nedotknuté
+
+Je to **skutočná komponenta**, importovaná z `DashboardCharts`, nie napodobenina
+v CSS. Jej API je od 2.74.0 dátovo agnostické (`points` + `formatValue`
+vlastný volajúcemu), takže **nebolo treba Dashboard vôbec refaktorovať** —
+ani `Dashboard.tsx`, ani `DashboardCharts.tsx` sa nezmenili.
+
+Adaptér je triviálny: jeden `SeriesBucket` → jeden `CashflowPoint`. Nič sa
+neprepočítava — `incomeCents`/`expenseCents` sú tie isté hodnoty, aké kreslí
+metrický graf pod tým, a `bucketLabel` je Dashboardov vlastný exportovaný
+formátovač, takže oba grafy píšu mesiac rovnako.
+
+Nadpis v režime Cashflow ukazuje **net za obdobie** — tú istú hodnotu, akú
+má karta „Net Cash Flow" nad ním, podaná zhora, nie sčítaná z vykreslených
+bucketov (`buildSeries` strope „All time" na 24 mesiacov, takže súčet
+bucketov by s kartami nesedel).
+
+### Karty a filtre
+
+Päť `StatCard`-ov vo Finance Overview dostalo ikony a akcenty: Current
+Balance emerald, Owed to you orange, Income blue, Expenses orange, Net Cash
+Flow teal.
+
+Tri filtračné lišty (Overview, Transactions, Reports) do vnorenej lišty.
+Po tomto vydaní má **osem líšt naprieč siedmimi súbormi** rovnaký tvar.
+
+### Čo už bolo v poriadku
+
+Finance bolo na tom lepšie než Inventory a Sales boli. `StatCard` už
+používalo, ručne kreslené karty tam neboli žiadne, zastarané popisky tiež nie
+(okrem nadpisu grafu, ktorý zámerne kopíruje Dashboard).
+
+## 2.79.0 - Pulls zarovnané so zvyškom
+
+Redesign sekcie Pulls. Žiadna iná sekcia sa nedotkla a **žiadna zdieľaná
+komponenta sa nemenila** — takže nebolo čo kontrolovať na regresiu inde.
+
+### Čo obhliadka našla — menej práce, než zadanie čakalo
+
+Zadanie pýtalo zoskupiť polia formulárov a zarovnať detail stránku. Ani jedno
+nebolo treba:
+
+- **`FormGroup` sa už používa** v oboch modáloch, päť skupín: „Pull",
+  „Seats & details", „Fee & tracking", „Pull", „Fee & link". Presne to
+  zoskupenie, aké bod 6 žiadal.
+- **Pulls nemá detail stránku.** Žiadna `/pulls/:id` neexistuje —
+  `PullFormModal` sa otvára priamo zo zoznamu a pull nemá žiadne podradené
+  entity. Bod 7 teda odpadá.
+- **Zastarané popisky s `uppercase` tam nie sú ani jedny** (0 výskytov),
+  na rozdiel od Inventory a Sales.
+
+### Prepínač Given / Received
+
+Bol ručne kreslený — vlastný rám, vlastné veľkosti — kým zvyšok apky
+segmentuje cez `SEGMENTED_TRACK` + `segmentedItemClass` (Dashboard taby,
+prepínač grafu, `TabSwitcher`).
+
+Prevedený na zdieľané tokeny. **Aktívny stav bol už predtým byte-identický**
+(`bg-brand-600 text-white`), takže sa menila len dráha a neaktívne/focus
+štýlovanie. Tie isté dve tlačidlá, ten istý handler, ten istý stav. Pribudlo
+`aria-pressed`.
+
+### Filtre
+
+Obe vetvy — Given aj Received — dostali tú istú vnorenú lištu. Po tomto
+vydaní má **päť filtračných líšt naprieč štyrmi súbormi** rovnaký tvar:
+Events 1, Orders 1, Sales 1, Pulls 2.
+
+### Zachované
+
+Rozdiely medzi Given a Received (iné polia, filtre aj stĺpce) ostali
+nedotknuté — zadanie výslovne hovorilo ich nezjednocovať. Rovnako stavy,
+výpočty poplatkov, pravidlá dokončenia, výber riadkov aj hromadné mazanie.
+
+## 2.78.0 - Sales zarovnané s Inventory a Events
+
+Redesign sekcie Sales. Žiadna iná sekcia sa nedotkla.
+
+Zadanie bolo jasné: *"Do not create a new design language or give Sales a
+different layout philosophy"*. Takže žiadne nové komponenty — len dotiahnutie
+Sales k tomu, čo Inventory a Events už majú.
+
+### Päť ručných kariet na `StatCard`
+
+`SaleDetail` kreslil Revenue, Fees, Cost, Profit a ROI ručne cez `<Card>`
+s vlastným popiskom a hodnotou — presne to isté, čo mal Inventory pred
+2.77.0. Prevedené na `StatCard`.
+
+Profit si cez `tone` drží presne to isté emerald/red/neutral pravidlo.
+`formatMoneyOrMixed` ostalo, takže „Mixed" pri predaji cez viac mien sa
+stále zobrazí. **Žiadna hodnota, formát ani podmienka sa nezmenila.**
+
+Akcenty podľa zadania: revenue blue, fees a cost orange, profit emerald,
+ROI teal.
+
+### Informačný panel
+
+Šesť popiskov (Platform, Sale date, Currency, Refunded, Paid, Outstanding)
+zjednotených na `.section-title`. Používali `uppercase`, ktoré tento štýl
+stratil už v 3.0 — rovnaká oprava, akú dostal Inventory panel v 2.77.0.
+
+### Filtre
+
+Do jednej vnorenej lišty. Po tomto vydaní majú **všetky tri zoznamy** —
+Events, Inventory, Sales — tú istú lištu (overené: jeden výskyt v každom).
+
+### Čo už bolo v poriadku
+
+Súhrnný pruh výsledkov (Results, Tickets, Revenue, Profit, Paid,
+Outstanding, Refunded) už používal `SummaryStat`, čo je presne tá kompaktná
+súhrnná komponenta, akú zadanie žiadalo. Nedotknutý.
+
+## 2.77.0 - Inventory: dvanásť ručných kariet na StatCard
+
+Redesign sekcie Inventory. Žiadna iná sekcia sa nedotkla.
+
+### Hlavný nález
+
+`OrderDetail` si dvanásť metrických kariet kreslil **ručne** cez `<Card>`
+s vlastným popiskom a hodnotou, kým Dashboard aj Event Detail používajú
+`StatCard`. To je zdroj tej nekonzistencie, ktorú bolo vidieť.
+
+Všetkých dvanásť prevedených na `StatCard`. Jedna komponenta znamená jedny
+odsadenia, jednu typografiu a jedno pravidlo orezávania - metrická karta
+vyzerá rovnako všade.
+
+**Žiadna hodnota, formát ani podmienka sa nezmenila.** Vrátane „Partial",
+ktoré sa stále zobrazí presne vtedy, keď sú `orderPaidCents` /
+`orderOutstandingCents` null (model objednávky nemá pole, ktoré by nieslo
+skutočné číslo - viď audit z 1.9.0), a stále jantárovo.
+
+### `StatCard` dostal tón `warning`
+
+Kvôli tomu „Partial". Čisto aditívne - žiadny existujúci volajúci ho
+neposiela, a `SummaryStat` si svoju trojhodnotovú úniu ponechal nedotknutú.
+
+### Akcenty podľa významu, nie pre pestrosť
+
+Hlavička objednávky: violet pre počet, blue pre vstupy na kus, orange pre
+náklad, emerald pre skutočne vybrané peniaze.
+
+Order summary: tri karty s počtami violet, Purchase cost orange, Sales
+revenue blue, Realized profit teal - a ten si cez `tone` drží presne to isté
+emerald/red/neutral pravidlo, aké mal predtým.
+
+### Zoznam objednávok
+
+Šesť filtrov (Search, Category, Platform, From, To, Sort) v jednej vnorenej
+lište, rovnako ako Events v 2.76.0, nech sa oba zoznamy čítajú rovnako.
+Tie isté vstupy, handlery aj šírky.
+
+### Panel Platform / Notes / Currency / Finance
+
+Štyri popisky zjednotené na `.section-title`. Používali `uppercase`, ktoré
+tento štýl stratil už v 3.0 - boli to posledné štyri veľké písmená v tom
+paneli. Dva ďalšie výskyty mimo panelu (riadok detailu, pole v modáli)
+ostali zámerne nedotknuté, lebo tento prechod je zúžený na Inventory panel.
+
+### Čo som NEPRIDAL
+
+Súhrnný pruh nad tabuľkou z inšpiračného obrázka. Znamenal by počítať nové
+agregáty, čo je funkcia, nie vzhľad - a zadanie hovorí neduplikovať
+informácie a nevymýšľať funkcionalitu.
+
+## 2.76.0 - Events: doladenie, Stock stĺpec preč
+
+Redesign sekcie Events. Žiadna iná sekcia sa nedotkla.
+
+marko v priebehu práce: *"pamataj ze vsetko robime v podobnom designe, toto su
+len navrhy a inspiracia"* - takže referenčné screenshoty slúžili ako smer, nie
+ako predloha, a všetko ostalo v jazyku apky (existujúce tokeny, zdieľané
+komponenty).
+
+### Stock stĺpec odstránený
+
+marko: *"ten stock cely odstran"*. Stĺpec aj komponenta `StockBar` sú preč.
+
+Nič sa pre ten stĺpec nepočítalo zvlášť - čítal `stats.purchasedTickets` a
+`stats.availableTickets`, oboje backend naďalej posiela a detail eventu
+naďalej zobrazuje. Žiadny dotaz, typ ani výpočet sa nemenil.
+
+Hlavička aj riadok majú po odstránení **8 buniek** (overené počítaním), a
+v tejto tabuľke nič nepočíta stĺpce podľa indexu - žiadny `colSpan` ani
+`rightAlign`, takže sa nemalo čo rozsypať.
+
+### Zoznam eventov
+
+Filtre (Search, Category, From, To, Sort) sú v jednej vnorenej lište
+(`surface-sunken`) namiesto piatich voľne stojacich ovládačov. Tie isté
+vstupy, tie isté handlery - lišta len spôsobí, že sa čítajú ako jedna skupina.
+Prepínač Upcoming/Completed ostáva pripnutý vpravo.
+
+### Detail eventu
+
+Desať `StatCard` dostalo ikony a akcenty cez voliteľné props z 2.74.0.
+Pravidlo: **tri karty s počtami nosia brand violet, peňažné berú mapovanie
+z Dashboardu** (cost orange, revenue blue, profit teal, ROI emerald). Jeden
+pohľad oddelí "koľko lístkov" od "koľko peňazí".
+
+Trojica Potential Profit nosí tie isté tri akcenty ako jej dvojička na
+Dashboarde, takže odhad vyzerá rovnako na oboch obrazovkách.
+
+Štyri prázdne stavy dostali ikonu. `EmptyState` ikonu aj akciu podporoval už
+predtým - Events ich len neposielalo, takže zdieľaná komponenta sa nemenila.
+
+### Pozn. k overovaniu
+
+Pri kontrole `StockBar` v prehliadači vyzeralo, že výplň pruhu nie je vidieť.
+**Chyba bola v mojej testovacej stránke**, nie v apke: zabudol som na
+`display:block` na vnútornom pruhu, ktorý appka má (`block h-full`). Bez neho
+má inline span nulovú výšku. Píšem to sem, lebo inak by som ohlásil chybu,
+ktorá neexistovala - a stĺpec aj tak medzitým padol.
+
+## 2.75.0 - Dashboard dokončený: platformy, Financials, Activity
+
+Dokončenie redesignu Dashboardu. Events sa nedotklo, podľa zadania.
+
+### Sales by Platform zapojené bez straty
+
+`PlatformDonut` z 2.74.0 nahradený **`PlatformRing`** - samotný prstenec, bez
+vlastnej hlavičky a legendy. Pridaný **nad** existujúci zoznam v
+`SalesByPlatformCard`, nie namiesto neho: ten zoznam je jeho legenda, už
+menuje každú platformu s tržbou aj počtom lístkov a už sa rozbaľuje.
+
+Riadky zoznamu dostali bodku a pruh vo farbe svojho výseku plus percento.
+Obe strany berú farbu z `platformFill(index)`, takže sa nemôžu rozísť;
+backend už triedi podľa tržby zostupne (má na to test).
+
+### Chyba, ktorú našlo pozeranie: zmizli sumy
+
+2.74.0 dalo hodnotu a sparkline na jeden riadok, ako referencia. Sparkline má
+pevných 64px, hodnota `min-w-0 truncate` - v úzkej karte sa hodnota orezala
+**na nič**. Zmerané (`scrollWidth > clientWidth`):
+
+```
+orezany text: ANO - €3,539.61 | €7,473.78 | €3,934.17 | 41
+```
+
+Sparkline presunutý na vlastný riadok pod hodnotou, cez celú šírku. Po
+oprave pri najužšej karte, akú `.summary-bar` dovolí (152px): bez orezania.
+
+Pozn.: prvý beh testu používal `minmax(0,1fr)` namiesto skutočného
+`minmax(9rem,1fr)` z `index.css`, čiže staval karty užšie než apka kedy
+postaví. Test opravený na reálne pravidlo.
+
+### Financials
+
+**Bar chart "Revenue vs Purchase Cost" v apke neexistuje** - tri nezávislé
+vyhľadávania. Je len na referenčnom screenshote. Nič sa teda neodstraňovalo.
+
+Doplnené ikony a akcenty ôsmim peňažným kartám. Štyri karty s počtami ostali
+bez ikon zámerne - zadanie žiada striedme farebné kódovanie, nie farbu všade.
+
+### Activity
+
+`AlertCard` dostal voliteľnú ikonu. Podklad jantárový pri nenulovom počte,
+neutrálny pri nule - rovnaké pravidlo, aké má už samotné číslo. Karta s nulou
+je dobrá správa a nemá vyzerať ako výstraha.
+
+### Neoverené
+
+Node ani cargo tu nie sú: **žiadny build, lint, type-check ani testy, appka
+nespustená.** Overené sú komponenty vykreslené v prehliadači na reálnych
+dátach, nie zložený Dashboard.
+
+## 2.74.0 - redesign, fáza 3-4: KPI karty a Balance Cashflow
+
+marko dodal master prompt na kompletný vizuálny redesign a referenčné
+screenshoty. Toto je prvý skutočný kus: zdieľané tokeny, KPI riadok a hlavný
+graf. Fázy 5-9 (Financials, Activity, ostatné sekcie) nasledujú.
+
+### Čo sa ukázalo pri analýze
+
+Dashboard **už má** Overview/Financials/Activity (perzistované v
+`app_settings`), segmentovaný prepínač, `StatCard`, `SalesByPlatformCard`
+aj rozloženie "graf + platformy vedľa". A `DashboardData` už nesie
+`cashflow`, `revenueTimeSeries`, `salesByPlatform` aj `previousPeriod`.
+
+Čiže všetko, čo referencia žiada, **už existuje ako dáta a ako štruktúra**.
+Je to naozaj vizuálna práca, presne ako marko napísal.
+
+### StatCard: ikona, akcent, sparkline
+
+Tri **voliteľné** props. Každý existujúci volajúci (Event Detail, Sales,
+Pulls, Finance) renderuje presne to, čo predtým - pridáva ich len Overview.
+
+Akcenty: teal/blue/orange/emerald + `violet`, ktorý ukazuje na **brand ramp**,
+nie na Tailwindov vlastný violet. Tú rampu si marko vybral sám z živého
+náhľadu a `PROTECTED_AREAS` hovorí nesiahať na ňu bez opýtania - tak ju
+redesign používa namiesto toho, aby vedľa nej postavil druhú fialovú.
+
+Sparkliny sú **reálne**: každá je stĺpec z `revenueTimeSeries`. ROI žiadnu
+nemá - na tom rade per-bucket ROI nie je a vymyslená čiara je presne to, čo
+táto apka robiť nesmie.
+
+### Balance Cashflow
+
+Nová komponenta v `DashboardCharts.tsx`, ručné SVG (projekt nemá grafovú
+knižnicu a pridávať ju pre dva grafy sa neoplatí - rovnaký argument má
+`MetricChart` vo vlastnom komentári).
+
+Income = `revenueCents` z bucketu. Expenses = `cogsCents + sellingFeesCents`.
+Oboje z rovnakých dát, aké kreslí Revenue karta nad tým. Headline berie
+`data.period.profitCents`, nie prepočet z bucketov, takže graf a KPI karta
+sa nemôžu rozísť.
+
+**Pridané ako ŠTVRTÁ možnosť** na existujúci prepínač metrík, nie namiesto
+neho. Revenue/Profit/Cost sú reálna funkcia od 1.7.5 a redesign ich nemazhe
+kvôli screenshotu. Cashflow je východzí, ostatné sú jeden klik ďaleko.
+
+### Chyba, ktorú našlo až pozeranie
+
+Prvá verzia používala Catmull-Rom interpoláciu. Na markových vlastných
+štyroch mesiacoch (Apr 700, Aug 2 494, Sep 3 771, Oct 509) **vrchol krivky
+pristál medzi augustom a septembrom**, nie na septembri - prudký pád do
+októbra ťahá predchádzajúci kontrolný bod. Kto by z toho grafu čítal najvyšší
+mesiac, dostal by zlú odpoveď.
+
+Nahradené **Fritsch-Carlson monotónnou interpoláciou**: kde dáta rastú,
+krivka rastie, a nikdy neopustí interval medzi dvoma susednými hodnotami.
+
+Overené meraním na **skutočne vykreslenej ceste** (`getPointAtLength` nad
+400 vzorkami): najvyšší mesiac na x=513.3, vrchol krivky na x=512.8,
+odchýlka 0.5px. Plus: žiadne NaN, všetky Y v ploche, segmenty donutu v
+súčte presne obvod, percentá 100 %.
+
+Pri tom istom pohľade sa ukázalo aj to, že osové popisky 9px vo viewBoxe
+760px sa renderujú ako ~5px. Zväčšené na 11px, vodiacich čiar 5 -> 3.
+
+### PlatformDonut
+
+Postavený a overený (matematika dasharray sedí), ale **zatiaľ nezapojený**.
+`SalesByPlatformCard` má rozbaľovanie, ktoré by sa výmenou stratilo - to je
+na ďalší krok, nie na tichú stratu funkcie.
+
+## 2.73.0 - sync dokončený, testy v CI, "Check my data"
+
+marko si vybral všetky tri veci, ktoré som navrhol.
+
+### 1. `decide_auto` vracia Merge, nie Pull
+
+Vetva `(false, true)` - "druhý stroj má novšie dáta a tento nemá nič
+neodoslané" - vracia **Merge**.
+
+Presne táto vetva ho 1.10.2026 pripravila o tri objednávky, šesť lístkov a
+dva predaje: `local_dirty` tvrdil `false`, hoci deň práce čakal neodoslaný,
+a Pull prepísal celý súbor staršou kópiou z Drive.
+
+Merge to spraviť nemôže. Aplikuje **tie isté** tombstony, ktoré by niesol
+Pullov súbor, takže skutočné zmazanie na druhom stroji stále dorazí - ale
+nechá riadky, ktoré táto strana má a druhá nikdy nevidela. Keď je príznak
+**správny**, sú obe rovnocenné: bez neodoslaných zmien niet lokálnych riadkov,
+ktoré by Merge zachovával, takže dôjde k tej istej databáze.
+
+`decide_auto` už `Pull` nevracia vôbec. Variant ostáva pre ručné "Sync down".
+
+Príčina (prečo je príznak nepravdivý) je **stále otvorená** v `KNOWN_BUGS.md`.
+2.68.0 a 2.73.0 spolu dosiahli to, že jeho nepravdivosť je prežiteľná, nie
+fatálna.
+
+### 2. `cargo test` v CI
+
+Nový job `rust-tests` v `release.yml`. Tieto testy existovali celý čas a nikdy
+ich nikto nespustil: `tauri build` kompiluje bez `#[cfg(test)]`, takže testový
+modul, ktorý sa ani nepreloží, vyzerá ako zelený build - a vyzeral, štyri
+vydania.
+
+Beží na macOS, nie na ubuntu: Tauri potrebuje na Linuxe webkit2gtk a kontrola,
+ktorá padne na chýbajúcom systémovom balíku, nikoho nič nenaučí.
+
+**Zámerne zatiaľ nie je podmienkou `release`.** Tie testy nikto nevidel prejsť
+mesiace, takže spraviť z nich bránu pred prvým zeleným behom by riskovalo, že
+markovi zablokujem vydanie kvôli niečomu, na čo sa ani jeden z nás nepozrel.
+Keď job zozelenie, pridá sa `needs: rust-tests`.
+
+Frontend vlastný job nepotrebuje: `npm run build` je `tsc -b && vite build`.
+
+### 3. "Check my data" (Settings -> Data)
+
+Deväť integritných kontrol, ktoré som tento týždeň robil ručne, ako tlačidlo.
+Nový modul `commands/data_health.rs`.
+
+Obsahuje presne tie dve, ktoré našli reálny problém: mena, ktorá nie je
+trojpísmenový kód (`US $`, kvôli nej nefungoval convert), a zaplatená
+objednávka s nulovou cenou (NFL-001/002/003, šesť lístkov).
+
+**Nikdy nič nemení.** Každá kontrola je `SELECT`. Opraviť ktorúkoľvek znamená
+rozhodnúť, aká hodnota je tá správna, a to je markovo rozhodnutie o jeho
+peniazoch, nie pravidlo pre tlačidlo. Žiadne "oprav všetko".
+
+Kontrola, ktorá nič nenašla, sa vracia tiež (`count: 0`), a panel to povie
+nahlas - "pozrel som a nič tam nie je" je odpoveď, ktorú potrebuje najčastejšie,
+a prázdny panel ju dať nevie.
+
+**Overené naživo:** všetkých deväť dotazov som pustil proti kópii jeho
+databázy. Bežia bez chyby a vrátia 2 (`YELIVE-001 (US $)`) a 3
+(`NFL-001,NFL-002,NFL-003`); zvyšných sedem nula. Plus tri unit testy vrátane
+jedného, ktorý overuje, že všetkých deväť SQL príkazov vôbec zbehne nad
+zmigrovanou schémou - presne ten druh preklepu, ktorý by inak objavil až
+marko stlačením tlačidla.
+
+## 2.72.0 - restrictions po anglicky, sale picker len na budúce eventy
+
+marko: *"restrictions by mali byt napisane v anglictine, a mali by obsahovat
+len zakladne restrictions ake mozu byt"* a *"pri sales by sa mali ukazovat len
+tie events a orders ktore este len budu"*.
+
+### Restrictions
+
+Celý zoznam prepísaný do angličtiny a skrátený na to, čo reálne nastáva:
+
+| kód | label | tón |
+|---|---|---|
+| `rv` | Restricted view | warn |
+| `18` | 18+ | warn |
+| `16` | 16+ | warn |
+| `id` | ID required | warn |
+| `aw` | **Away fans only** (nové) | warn |
+| `nr` | No re-entry | info |
+| `st` | Standing | neutral |
+| `wc` | Wheelchair space | neutral |
+
+**Bezpečné prepísať naraz, lebo to bolo overené:** v databáze nemal ani jeden
+lístok nastavené restriction (0 riadkov s neprázdnym `restrictions_json`),
+takže vypadnutím kódu sa nič neosirotilo. `clean_restrictions` v Ruste nemá
+vlastný allow-list - len trimuje, zmenšuje a dedupuje - takže zoznam žije na
+jednom mieste a je to čisto frontendová zmena.
+
+`ao` (maloletý s dospelým) vypadol: 16+/18+ už vekovú otázku nesú a marko
+pýtal základný zoznam, nie úplný. `aw` je nový a je to tá futbalová, ktorá na
+resale reálne bolí - miesto v sektore hostí predané domácemu fanúšikovi je
+refund a otočený kupec.
+
+Popisky polí `"Obmedzenia"` -> `"Restrictions"` v oboch editoroch.
+
+### Sale picker: len to, čo sa ešte neodohralo
+
+`SaleRowsModal` filtruje zoznam objednávok na eventy s dátumom dnes alebo
+neskôr. Dve veci sa **zámerne neskrývajú**:
+
+- Objednávka **bez dátumu** (TBD event) nemá dátum, ktorý by mohol byť
+  v minulosti - ostáva. Nikdy neskrývať niečo preto, že údaj chýba.
+- Keď marko **napíše hľadanie**, zobrazia sa zhody bez ohľadu na dátum.
+  Skryť to, na čo sa práve spýtal menom, by bolo presne tá nepriehľadnosť,
+  ktorú hlási - a je to zároveň jediná cesta, ako zapísať oneskorený predaj,
+  ktorý by inak filter znemožnil.
+
+Záchrana predvolenej objednávky (tlačidlo "Add sale" na detaile objednávky)
+hľadá v **nefiltrovanom** výsledku, takže funguje aj pre event, ktorý sa už
+odohral.
+
+Porovnanie dátumov je textové - obe strany sú ISO `YYYY-MM-DD`, ktoré ako text
+triedi v poradí dátumov.
+
 ## 2.71.0 - restrictions ako dropdown + oprava konverzie mien
 
 marko: *"tie restrictions su nepriehladne strasne ... chcem, aby ked nato

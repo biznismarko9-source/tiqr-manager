@@ -5,7 +5,20 @@ import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, Ticket } fro
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, StatCard, TabSwitcher } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
-import { IconArrowLeft, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import {
+  IconArrowLeft,
+  IconBarChart,
+  IconCheck,
+  IconDatabase,
+  IconGauge,
+  IconPackage,
+  IconPencil,
+  IconPlus,
+  IconTicket,
+  IconTrash,
+  IconTrendingUp,
+  IconWallet,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
 
@@ -209,12 +222,47 @@ function OverviewTab({
 
   return (
     <div>
+      {/* 2.76.0: the same cards, now with the icons and accents the Dashboard
+          uses - `StatCard`'s `icon`/`accent` are optional props added in
+          2.74.0, so nothing here changed except its appearance.
+          The rule is deliberate and worth keeping: the three COUNT cards all
+          wear the brand violet, and the money cards take the Dashboard's own
+          mapping (cost orange, revenue blue, profit teal, ROI emerald). One
+          glance separates "how many tickets" from "how much money", which
+          seven identically-coloured boxes could not do. */}
       <div className="summary-bar">
-        <StatCard label="Tickets" value={String(s.purchasedTickets)} />
-        <StatCard label="Sold" value={String(s.soldTickets)} sub={`${s.cancelledTickets} cancelled`} />
-        <StatCard label="Available" value={String(s.availableTickets)} sub={`${s.listedTickets} listed`} />
-        <StatCard label="Total cost" value={formatMoneyOrMixed(s.totalCostCents, s.currency)} />
-        <StatCard label="Revenue" value={formatMoneyOrMixed(s.revenueCents, s.currency)} />
+        <StatCard
+          label="Tickets"
+          value={String(s.purchasedTickets)}
+          icon={<IconTicket className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Sold"
+          value={String(s.soldTickets)}
+          sub={`${s.cancelledTickets} cancelled`}
+          icon={<IconCheck className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Available"
+          value={String(s.availableTickets)}
+          sub={`${s.listedTickets} listed`}
+          icon={<IconPackage className="h-4 w-4" />}
+          accent="violet"
+        />
+        <StatCard
+          label="Total cost"
+          value={formatMoneyOrMixed(s.totalCostCents, s.currency)}
+          icon={<IconWallet className="h-4 w-4" />}
+          accent="orange"
+        />
+        <StatCard
+          label="Revenue"
+          value={formatMoneyOrMixed(s.revenueCents, s.currency)}
+          icon={<IconBarChart className="h-4 w-4" />}
+          accent="blue"
+        />
       </div>
       {s.currency === null && (
         <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
@@ -227,9 +275,16 @@ function OverviewTab({
           label="Profit"
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
           tone={s.profitCents > 0 ? "positive" : s.profitCents < 0 ? "negative" : "default"}
+          icon={<IconDatabase className="h-4 w-4" />}
+          accent="teal"
         />
         {/* 2.39.0: Margin removed app-wide at marko's request. */}
-        <StatCard label="ROI" value={formatPercentOrMixed(s.roi, s.currency)} />
+        <StatCard
+          label="ROI"
+          value={formatPercentOrMixed(s.roi, s.currency)}
+          icon={<IconGauge className="h-4 w-4" />}
+          accent="emerald"
+        />
       </div>
 
       {event.notes && (
@@ -260,7 +315,7 @@ function OverviewTab({
       {tickets === null ? (
         <LoadingBlock />
       ) : tickets.length === 0 ? (
-        <EmptyState title="No tickets for this event yet" />
+        <EmptyState icon={<IconTicket className="h-5 w-5" />} title="No tickets for this event yet" />
       ) : (
         // 2.2.3: max-w-[1400px] removed - see the Orders table above.
         <div className="table-shell table-shell-compact">
@@ -373,7 +428,7 @@ function SalesTab({
       {groups === null ? (
         <LoadingBlock />
       ) : groups.length === 0 ? (
-        <EmptyState title="No sales for this event yet" />
+        <EmptyState icon={<IconBarChart className="h-5 w-5" />} title="No sales for this event yet" />
       ) : (
         // 2.2.3: no max-w cap - see Overview's Orders table's own comment.
         <div className="table-shell table-shell-compact mb-8">
@@ -427,9 +482,29 @@ function SalesTab({
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
         <div className="summary-bar">
-          <StatCard label="Inventory cost" value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)} sub="What unsold tickets cost you" />
-          <StatCard label="Listing value" value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)} sub="Unsold tickets that have a listing price" />
-          <StatCard label="Potential profit" value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)} sub="Listing value minus inventory cost" />
+          {/* Same three accents the Dashboard's own Potential Profit trio
+              wears, so the estimate reads identically on both screens. */}
+          <StatCard
+            label="Inventory cost"
+            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
+            sub="What unsold tickets cost you"
+            icon={<IconPackage className="h-4 w-4" />}
+            accent="orange"
+          />
+          <StatCard
+            label="Listing value"
+            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
+            sub="Unsold tickets that have a listing price"
+            icon={<IconTicket className="h-4 w-4" />}
+            accent="blue"
+          />
+          <StatCard
+            label="Potential profit"
+            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
+            sub="Listing value minus inventory cost"
+            icon={<IconTrendingUp className="h-4 w-4" />}
+            accent="teal"
+          />
         </div>
         {missingListingPriceCount > 0 && (
           <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
@@ -455,9 +530,17 @@ function SalesTab({
       {orders === null || financeEntries === null ? (
         <LoadingBlock />
       ) : orders.length === 0 ? (
-        <EmptyState title="No orders for this event yet" description="Record a purchase first, then you can link Finance entries to it." />
-      ) : financeEntries.length === 0 ? (
         <EmptyState
+          icon={<IconPackage className="h-5 w-5" />}
+          title="No orders for this event yet"
+          description="Record a purchase first, then you can link Finance entries to it."
+        />
+      ) : financeEntries.length === 0 ? (
+        // 2.76.0: an icon, so this reads as a deliberate state rather than
+        // a gap. The sentence was already right - it names the exact action
+        // and where to find it - so it is untouched.
+        <EmptyState
+          icon={<IconWallet className="h-5 w-5" />}
           title="Nothing recorded in Finance for this event yet"
           description={`Open one of this event's orders and use "Record in Finance" there.`}
         />

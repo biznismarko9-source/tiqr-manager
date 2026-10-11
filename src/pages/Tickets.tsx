@@ -731,7 +731,7 @@ export function TicketEditModal({
         {/* 2.60.0: the things a buyer has to be told before they pay. Toggles,
             not a dropdown - a seat can easily be restricted view AND 18+. */}
         <div className="col-span-2">
-          <Field label="Obmedzenia">
+          <Field label="Restrictions">
             <div className="flex flex-wrap gap-1.5">
               {TICKET_RESTRICTIONS.map((r) => {
                 const on = restrictions.includes(r.code);

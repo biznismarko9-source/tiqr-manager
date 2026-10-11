@@ -25,15 +25,32 @@ export const TICKET_RESTRICTIONS: {
   short: string;
   tone: RestrictionTone;
 }[] = [
+  // 2.72.0: English, and only the ones that actually come up - marko:
+  // "restrictions by mali byt napisane v anglictine, a mali by obsahovat len
+  // zakladne restrictions ake mozu byt".
+  //
+  // Safe to rewrite wholesale: no ticket in the database had a restriction
+  // set when this changed (checked, not assumed - zero rows with a non-empty
+  // `restrictions_json`), so nothing was orphaned by dropping a code. If that
+  // is ever false again, a dropped code still RENDERS - `restrictionShort`
+  // falls back to the code itself - but it stops being selectable.
+  //
+  // `ao` (minor with an adult) went: 16+/18+ already carry the age question,
+  // and marko asked for a basic list, not a complete one.
+  //
+  // `aw` is new and is the football one that actually bites on resale - an
+  // away-end seat sold to a home fan is a refund and a turned-away buyer.
+
   // The ones that cost money when they are missed come first.
-  { code: "rv", label: "Obmedzený výhľad", short: "Výhľad", tone: "warn" },
+  { code: "rv", label: "Restricted view", short: "Restricted", tone: "warn" },
   { code: "18", label: "18+", short: "18+", tone: "warn" },
   { code: "16", label: "16+", short: "16+", tone: "warn" },
-  { code: "id", label: "Na meno / treba doklad", short: "Doklad", tone: "warn" },
-  { code: "nr", label: "Bez opätovného vstupu", short: "Bez návratu", tone: "info" },
-  { code: "ao", label: "Maloletý len s dospelým", short: "S dospelým", tone: "info" },
-  { code: "st", label: "Na státie", short: "Státie", tone: "neutral" },
-  { code: "wc", label: "Bezbariérové miesto", short: "Bezbariér.", tone: "neutral" },
+  { code: "id", label: "ID required", short: "ID", tone: "warn" },
+  { code: "aw", label: "Away fans only", short: "Away end", tone: "warn" },
+  // Things the buyer must know, but that do not void the ticket.
+  { code: "nr", label: "No re-entry", short: "No re-entry", tone: "info" },
+  { code: "st", label: "Standing", short: "Standing", tone: "neutral" },
+  { code: "wc", label: "Wheelchair space", short: "Wheelchair", tone: "neutral" },
 ];
 
 const BY_CODE = new Map(TICKET_RESTRICTIONS.map((r) => [r.code, r]));
@@ -58,7 +75,7 @@ export const RESTRICTION_TONE_CLASS: Record<RestrictionTone, string> = {
   neutral: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
 };
 
-/** `["rv","18"]` → `"Obmedzený výhľad · 18+"`, for a tooltip. */
+/** `["rv","18"]` → `"Restricted view · 18+"`, for a tooltip. */
 export function restrictionsTitle(codes: string[]): string {
   return codes.map(restrictionLabel).join(" · ");
 }

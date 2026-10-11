@@ -121,6 +121,48 @@ permissions:
 # marko asked for exactly one download per platform.
 
 jobs:
+  # --- Path 0: the Rust unit tests -----------------------------------------
+  #
+  # 2.73.0. These existed all along and nothing ever ran them. `tauri build`
+  # compiles the crate WITHOUT `#[cfg(test)]`, so a test module that does not
+  # even compile looks exactly like a green build - and did, for four
+  # releases: `TicketUpdateInput` gained a field in 2.60.0 and two test
+  # literals were never updated, so `cargo test` had not compiled since.
+  # 2.70.0 found that by hand, after a release had already failed for the
+  # same class of mistake in non-test code.
+  #
+  # macOS rather than ubuntu on purpose: Tauri needs webkit2gtk and friends
+  # installed before it will build on Linux, and a check that fails for a
+  # missing system package teaches nobody anything. macOS already builds this
+  # crate in the jobs below, so the toolchain is known to work there.
+  #
+  # Deliberately NOT a dependency of `release` yet. Nobody has seen these
+  # tests pass on any machine in months, so making them a release gate before
+  # a single green run would risk blocking marko from shipping over something
+  # neither of us has looked at. Once this job goes green, add
+  # `needs: rust-tests` to `release` - that is the point of it.
+  #
+  # The frontend needs no job here: `npm run build` is `tsc -b && vite build`,
+  # so TypeScript is already type-checked inside every build below.
+  rust-tests:
+    runs-on: macos-latest
+    name: Rust tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
   # --- Path 1: quick unsigned test build, never on tag pushes -------------
   test-build:
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

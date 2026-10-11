@@ -68,7 +68,11 @@ const PADDING_BOTTOM = 26;
 const PADDING_RIGHT = 12;
 const FALLBACK_WIDTH = 640; // only used before layout/ResizeObserver report a real width
 
-function bucketLabel(iso: string, granularity: string): string {
+/** 2.74.0: exported so `DashboardCharts`' cashflow line labels its buckets
+ *  with the EXACT same words this chart does. Two charts on one screen
+ *  writing the same month two ways is the kind of small wrongness that makes
+ *  a product feel unfinished. Behaviour is unchanged. */
+export function bucketLabel(iso: string, granularity: string): string {
   const d = new Date(`${iso}T00:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
   if (granularity === "month") {

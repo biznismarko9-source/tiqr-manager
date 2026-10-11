@@ -1,8 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Account, FinanceEntry, Transfer } from "../../lib/types";
 import { formatMoney, formatPercent, todayIso } from "../../lib/format";
-import { Card, EmptyState, Input, PanelSkeleton } from "../../components/ui";
-import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
+import { Card, EmptyState, Input, PanelSkeleton, SEGMENTED_TRACK, segmentedItemClass } from "../../components/ui";
+import { financeCategoryFill, FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
 import { IconBarChart, IconTrendingUp, IconUsers, IconWallet } from "../../components/icons";
 import { PERIODS, periodBounds, type FinanceData, type PeriodKey } from "./shared";
 
@@ -177,21 +177,31 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
   return (
     <div>
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
+        {/* 2.85.0 (global consistency pass): was a hand-rolled pill row with
+            its own border, sizes and hover colours, while the rest of the
+            app - including this section's own sub-pages - segments with
+            SEGMENTED_TRACK + segmentedItemClass. The active state was
+            already `bg-brand-600 text-white`, byte-identical; the track,
+            inactive colours and focus ring move onto the shared tokens.
+            Same buttons, same handler, same state. */}
+        <div className={SEGMENTED_TRACK}>
           {PERIODS.map((p) => (
             <button
               key={p.key}
               onClick={() => setPeriod(p.key)}
-              className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                period === p.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-              }`}
+              aria-pressed={period === p.key}
+              className={segmentedItemClass(period === p.key)}
             >
               {p.label}
             </button>
           ))}
         </div>
         {period === "custom" && (
-          <div className="flex flex-wrap items-end gap-3">
+          {/* 2.80.0: the same sunken filter bar Events, Inventory, Sales and
+              Pulls already have, so Finance's toolbars group their controls
+              the same way as every other list in the app. Same controls, same
+              handlers, same wrapping. */}
+          <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               From
               <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="mt-1" />
@@ -340,7 +350,8 @@ function ReportCard({ title, icon, children, note }: { title: string; icon?: Rea
 }
 
 function BreakdownList({ rows, showSwatch }: { rows: BreakdownRow[]; showSwatch?: boolean }) {
-  if (rows.length === 0) return <EmptyState title="No expenses in this period yet" />;
+  if (rows.length === 0)
+    return <EmptyState icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />;
   const totalCents = rows.reduce((s, r) => s + r.totalCents, 0);
   const maxVal = Math.max(1, ...rows.map((r) => r.totalCents));
   return (
@@ -357,8 +368,20 @@ function BreakdownList({ rows, showSwatch }: { rows: BreakdownRow[]; showSwatch?
               <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{totalCents > 0 ? formatPercent(r.totalCents / totalCents) : ""}</span>
             </span>
           </div>
+          {/* 2.82.0: the bar wears the row's own colour when it has one, the
+              same class its swatch above already uses (`financeCategoryFill`
+              reads the identical table). Before this every bar was brand
+              purple beside a green or amber swatch. An account breakdown has
+              no colour slot, so those keep the brand fill they had. */}
           <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800">
-            <div className="h-1.5 rounded-full bg-brand-500" style={{ width: `${Math.max(4, (r.totalCents / maxVal) * 100)}%` }} />
+            <div
+              className={`h-1.5 rounded-full ${
+                showSwatch && r.colorSlot !== null && r.colorSlot !== undefined
+                  ? financeCategoryFill(r.colorSlot)
+                  : "bg-brand-500"
+              }`}
+              style={{ width: `${Math.max(4, (r.totalCents / maxVal) * 100)}%` }}
+            />
           </div>
         </div>
       ))}

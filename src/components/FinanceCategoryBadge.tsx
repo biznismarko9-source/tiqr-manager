@@ -72,6 +72,17 @@ export function FinanceCategoryBadge({ name, colorSlot }: { name: string; colorS
   );
 }
 
+/** 2.81.0: the solid fill for a category's own colour, for a progress bar
+ *  that has to agree with the swatch beside it.
+ *
+ *  Returns the SAME class the swatch uses (`tone.dot`), rather than a second
+ *  per-slot table that could drift from it. Overview's category breakdown
+ *  drew a brand-purple bar next to a green swatch before this - the swatch
+ *  said one thing and the bar said another. */
+export function financeCategoryFill(colorSlot: number): string {
+  return toneFor(colorSlot).dot;
+}
+
 /** A small solid-color dot, no text - for Settings' Finance Categories lists,
  * where the name is already shown as its own text right next to it. */
 export function FinanceCategorySwatch({ colorSlot, className = "" }: { colorSlot: number; className?: string }) {

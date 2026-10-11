@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import type { Note, NotepadHit } from "../lib/types";
 import { Button, ConfirmDialog, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
-import { IconPlus, IconSearch } from "../components/icons";
+import { IconChevronDown, IconChevronUp, IconPlus, IconSearch } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { formatDateNumeric } from "../lib/format";
 import Editor from "./notes/Editor";
@@ -308,6 +308,20 @@ export default function Notes() {
                   </span>
                 )}
                 <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-slate-400 dark:text-slate-500">
+                  {/* 2.83.0: the tag, at last. `Note.tag` has been stored and
+                      editable in the editor's header since Notes shipped, and
+                      `Notes.tsx` never rendered it once - type a tag on a note
+                      and it vanished everywhere you would look for it. Traced
+                      before changing anything: the string is on the type, the
+                      backend selects it, the editor writes it on blur, and the
+                      list simply never read it.
+                      Placed first in the meta row because it is the thing a
+                      tag is FOR - telling two notes apart at a glance. */}
+                  {n.tag && (
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-brand-500 ring-1 ring-inset ring-brand-500/25">
+                      {n.tag}
+                    </span>
+                  )}
                   <span>{formatDateNumeric(n.updatedAt.slice(0, 10))}</span>
                   {n.pageCount > 1 && <span>{n.pageCount} podkariet</span>}
                   {n.imageCount > 0 && <span>▣ {n.imageCount}</span>}
@@ -328,7 +342,11 @@ export default function Notes() {
                     aria-label="Posunúť hore"
                     className={act}
                   >
-                    ↑
+                    {/* 2.83.0: the app's own icon instead of a bare "↑"
+                        character, which rendered at whatever size and weight
+                        the font felt like and sat differently from every
+                        other control in the row. */}
+                    <IconChevronUp className="h-3.5 w-3.5" />
                   </button>
                   <button
                     type="button"
@@ -340,7 +358,7 @@ export default function Notes() {
                     aria-label="Posunúť dole"
                     className={act}
                   >
-                    ↓
+                    <IconChevronDown className="h-3.5 w-3.5" />
                   </button>
                   <button
                     type="button"

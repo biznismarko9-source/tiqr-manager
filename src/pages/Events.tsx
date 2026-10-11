@@ -40,19 +40,6 @@ import { useNarrowTables } from "../lib/useNarrowTables";
  *  next to it and adds nothing new - an event with no tickets shows an empty
  *  track rather than a full one, which is what a divide-by-zero would have
  *  drawn. */
-function StockBar({ purchased, available }: { purchased: number; available: number }) {
-  const sold = Math.max(0, purchased - available);
-  const pct = purchased > 0 ? Math.round((sold / purchased) * 100) : 0;
-  return (
-    <span className="flex items-center gap-2" title={`${sold} of ${purchased} sold`}>
-      <span className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-        <span className="block h-full rounded-full bg-brand-600" style={{ width: `${pct}%` }} />
-      </span>
-      <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{pct}%</span>
-    </span>
-  );
-}
-
 const EVENT_TABS: { key: "upcoming" | "completed"; label: string }[] = [
   { key: "upcoming", label: "Upcoming" },
   { key: "completed", label: "Completed" },
@@ -313,7 +300,14 @@ export default function Events() {
           following the arrangement Pulls already had. Its old `mb-4` lived
           inside TabSwitcher itself; that margin now belongs to the caller, so
           the two places that still stand alone (EventDetail) spell it out. */}
-      <div className="mb-2 flex flex-wrap items-end gap-3">
+      {/* 2.76.0: the same five controls, now inside one sunken bar instead of
+          floating loose above the table. Nothing was added, removed or
+          rewired - Search, Category, From, To and Sort are the identical
+          inputs with the identical handlers. The bar is what makes them read
+          as one filter group, and it matches the panel treatment the rest of
+          the app already uses (`surface-sunken`). The tab switcher stays
+          pinned right, as marko asked for everywhere it exists. */}
+      <div className="mb-3 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">
@@ -475,11 +469,14 @@ export default function Events() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Date</th>
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Status</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Tickets</th>
-                {/* 2.33.0: marko's own column list - Event, Date, Status,
-                    Tickets, Stock, Cost, Revenue, Profit and nothing else.
-                    Available, Days, Margin and ROI are gone from this table;
-                    the numbers still exist on the event's own page. */}
-                <th className={isNarrow ? "th-c-narrow" : "th-c"}>Stock</th>
+                {/* 2.33.0: marko's own column list. 2.76.0 drops Stock from
+                    it on his instruction ("ten stock cely odstran"), so the
+                    table is Event, Date, Status, Tickets, Cost, Revenue,
+                    Profit. Available, Days, Margin and ROI went earlier.
+                    Nothing was computed only for this column - it read
+                    `stats.purchasedTickets`/`stats.availableTickets`, both of
+                    which the backend still sends and the event's own page
+                    still shows. No query, type or calculation changed. */}
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Cost</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Revenue</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Profit</th>
@@ -552,9 +549,6 @@ export default function Events() {
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
-                  <td className={isNarrow ? "td-c-narrow" : "td-c"}>
-                    <StockBar purchased={ev.stats.purchasedTickets} available={ev.stats.availableTickets} />
-                  </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td

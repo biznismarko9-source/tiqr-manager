@@ -13,6 +13,7 @@ import {
   Modal,
   ModalFooter,
   Select,
+  segmentedItemClass,
   Spinner,
   TableSkeleton,
   Textarea,
@@ -194,7 +195,11 @@ export default function Transactions({ entries, categories, accounts, transfers,
           ))}
         </div>
         {period === "custom" && (
-          <div className="flex flex-wrap items-end gap-3">
+          {/* 2.80.0: the same sunken filter bar Events, Inventory, Sales and
+              Pulls already have, so Finance's toolbars group their controls
+              the same way as every other list in the app. Same controls, same
+              handlers, same wrapping. */}
+          <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               From
               <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="mt-1" />
@@ -257,7 +262,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
           </div>
           {rows.length === 0 ? (
             <div className="p-6">
-              <EmptyState title="No transactions match these filters" />
+              <EmptyState icon={<IconSearch className="h-5 w-5" />} title="No transactions match these filters" />
             </div>
           ) : (
             /* 2.23.0: the height cap is what makes the wheel work here.
@@ -371,7 +376,15 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
       <td className="td max-w-[220px] truncate" title={entry.note ?? undefined}>
         {entry.note ?? <span className="text-slate-300 dark:text-slate-600">-</span>}
       </td>
-      <td className={`td text-right tabular-nums ${entry.entryType === "income" ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}`}>
+      {/* 2.82.0: an expense is rose, not neutral slate. Income was already
+          emerald, and the Cashflow Forecast card over on Overview has used
+          rose for expenses since 2.1.0 - so within one section the same idea
+          was coloured two ways. The same rose, deliberately muted rather than
+          a loud red: a ledger where every second row shouts is harder to
+          read, not easier.
+          The sign and the Type badge are untouched - the distinction never
+          rested on colour alone, and still does not. */}
+      <td className={`td text-right tabular-nums ${entry.entryType === "income" ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
         {entry.entryType === "income" ? "+" : "-"}
         {formatMoney(entry.amountCents, entry.currency)}
       </td>
@@ -556,15 +569,23 @@ export function EntryFormModal({
         <div className="grid grid-cols-2 gap-2">
           <div>
             <span className="label">Type</span>
-            <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            {/* 2.82.0: onto the shared segmented styling, the same move Pulls'
+                Given/Received toggle got in 2.79.0. The active state was
+                already `bg-brand-600 text-white`, byte-identical to
+                `segmentedItemClass`; what changes is the track (sunken
+                surface instead of a hairline box), the inactive colours and a
+                real focus ring.
+                `SEGMENTED_TRACK` itself is NOT used here: it carries `w-fit`,
+                and these two toggles are meant to fill their grid cell. So the
+                track keeps its own width and borrows only the surface. */}
+            <div className="flex gap-1 rounded-lg bg-surface-sunken p-1 shadow-card">
               {(["expense", "income"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setEntryType(t)}
-                  className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    entryType === t ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
+                  aria-pressed={entryType === t}
+                  className={`flex-1 ${segmentedItemClass(entryType === t)}`}
                 >
                   {t === "income" ? "Income" : "Expense"}
                 </button>
@@ -573,15 +594,14 @@ export function EntryFormModal({
           </div>
           <div>
             <span className="label">Scope</span>
-            <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 p-1">
+            <div className="flex gap-1 rounded-lg bg-surface-sunken p-1 shadow-card">
               {(["personal", "business"] as const).map((s) => (
                 <button
                   key={s}
                   type="button"
                   onClick={() => setScope(s)}
-                  className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    scope === s ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
+                  aria-pressed={scope === s}
+                  className={`flex-1 ${segmentedItemClass(scope === s)}`}
                 >
                   {s === "personal" ? "Personal" : "Business"}
                 </button>

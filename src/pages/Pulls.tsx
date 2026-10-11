@@ -31,13 +31,16 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  FormGroup,
   Input,
   TableSkeleton,
   StatusDots,
   Modal,
   ModalFooter,
   PageHeader,
+  SEGMENTED_TRACK,
   Select,
+  segmentedItemClass,
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
@@ -139,17 +142,21 @@ export default function Pulls() {
             : "Tickets someone else pulled for you - who pulled them, what you paid, and which order they became."
         }
         actions={
-          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5">
+          /* 2.79.0: was a hand-rolled pill row with its own border and sizes,
+             while the rest of the app segments with SEGMENTED_TRACK +
+             segmentedItemClass (Dashboard's tabs, the chart mode switcher,
+             TabSwitcher's own Active/Completed). The active state was already
+             byte-identical - `bg-brand-600 text-white` - so only the track and
+             the inactive/focus styling move onto the shared tokens. Same two
+             buttons, same handler, same state. */
+          <div className={SEGMENTED_TRACK}>
             {(["given", "received"] as const).map((c) => (
               <button
                 key={c}
                 type="button"
                 onClick={() => setCategory(c)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  category === c
-                    ? "bg-brand-600 text-white"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
-                }`}
+                aria-pressed={category === c}
+                className={segmentedItemClass(category === c)}
               >
                 {c === "given" ? "Given" : "Received"}
               </button>
@@ -167,16 +174,6 @@ export default function Pulls() {
  * reasoning as that file's comment (still only a handful of forms in the app
  * want this kind of sectioning). Shared by both PullFormModal and
  * PullReceivedFormModal below. */
-function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
-      {title && (
-        <p className="mb-3 section-title">{title}</p>
-      )}
-      <div className="grid grid-cols-2 gap-4">{children}</div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Given pulls (1.9.7) - the original feature, unchanged by 2.0.17 beyond
@@ -356,7 +353,10 @@ function GivenPulls() {
           are the same row now - `order-last ml-auto` keeps them visually at
           the right end while staying first in source, so they wrap to their
           own line only when the window is genuinely too narrow. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      {/* 2.79.0: same sunken filter bar Events (2.76.0), Inventory (2.77.0)
+          and Sales (2.78.0) already have, so all five list pages group their
+          controls the same way. Same inputs, handlers, widths and wrapping. */}
+      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="order-last ml-auto flex gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
             <Button variant="secondary" onClick={() => setSelectionMode(true)}>
@@ -1171,7 +1171,10 @@ function ReceivedPulls() {
           are the same row now - `order-last ml-auto` keeps them visually at
           the right end while staying first in source, so they wrap to their
           own line only when the window is genuinely too narrow. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      {/* 2.79.0: same sunken filter bar Events (2.76.0), Inventory (2.77.0)
+          and Sales (2.78.0) already have, so all five list pages group their
+          controls the same way. Same inputs, handlers, widths and wrapping. */}
+      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="order-last ml-auto flex gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
             <Button variant="secondary" onClick={() => setSelectionMode(true)}>

@@ -14,9 +14,17 @@ import {
   StatCard,
   StatsSkeleton,
 } from "../../components/ui";
-import { MetricChart, type MetricKey } from "../../components/MetricChart";
-import { FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
-import { IconBarChart, IconPlus, IconTrendingUp } from "../../components/icons";
+import { bucketLabel, MetricChart, type MetricKey } from "../../components/MetricChart";
+import { CashflowChart, type CashflowPoint } from "../../components/DashboardCharts";
+import { financeCategoryFill, FinanceCategorySwatch } from "../../components/FinanceCategoryBadge";
+import {
+  IconBarChart,
+  IconDatabase,
+  IconPlus,
+  IconReceipt,
+  IconTrendingUp,
+  IconWallet,
+} from "../../components/icons";
 import { useToast } from "../../lib/toast";
 import { usePreferredCurrency } from "../../lib/preferredCurrency";
 import { PERIODS, SCOPES, periodBounds, type FinanceData, type PeriodKey, type ScopeFilter } from "./shared";
@@ -391,7 +399,11 @@ export default function Overview({ entries, categories, accounts, loading, reloa
           ))}
         </div>
         {period === "custom" && (
-          <div className="flex flex-wrap items-end gap-3">
+          {/* 2.80.0: the same sunken filter bar Events, Inventory, Sales and
+              Pulls already have, so Finance's toolbars group their controls
+              the same way as every other list in the app. Same controls, same
+              handlers, same wrapping. */}
+          <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               From
               <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="mt-1" />
@@ -438,23 +450,48 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               each band - only the grouping and the two labels are new. */}
           <p className="section-title mb-2">What you have · not affected by the period filter</p>
           <div className="summary-bar">
-            <StatCard label="Current Balance" value={formatMoney(currentBalanceCents, "EUR")} sub="Across active EUR accounts" />
+            {/* 2.80.0: icons and accents, the same optional props the rest of
+                the app's metric cards carry since 2.74.0. The accents say what
+                the figure IS: emerald for money actually in the accounts,
+                orange for money still owed, blue for income, orange for
+                expenses, teal for the net. No value or calculation changed. */}
+            <StatCard
+              label="Current Balance"
+              value={formatMoney(currentBalanceCents, "EUR")}
+              sub="Across active EUR accounts"
+              icon={<IconWallet className="h-4 w-4" />}
+              accent="emerald"
+            />
             {pending && pending.count > 0 && (
               <StatCard
                 label="Owed to you"
                 value={formatMoneyOrMixed(pending.amountCents, pending.currency)}
                 sub={`${pending.count} unpaid sale${pending.count === 1 ? "" : "s"}`}
+                icon={<IconReceipt className="h-4 w-4" />}
+                accent="orange"
               />
             )}
           </div>
           <p className="section-title mb-2">What moved · in the selected period</p>
           <div className="summary-bar">
-            <StatCard label="Income" value={formatMoney(incomeCents, "EUR")} />
-            <StatCard label="Expenses" value={formatMoney(expenseCents, "EUR")} />
+            <StatCard
+              label="Income"
+              value={formatMoney(incomeCents, "EUR")}
+              icon={<IconTrendingUp className="h-4 w-4" />}
+              accent="blue"
+            />
+            <StatCard
+              label="Expenses"
+              value={formatMoney(expenseCents, "EUR")}
+              icon={<IconWallet className="h-4 w-4" />}
+              accent="orange"
+            />
             <StatCard
               label="Net Cash Flow"
               value={formatMoney(netCashFlowCents, "EUR")}
               tone={netCashFlowCents > 0 ? "positive" : netCashFlowCents < 0 ? "negative" : "default"}
+              icon={<IconDatabase className="h-4 w-4" />}
+              accent="teal"
             />
           </div>
           {unassigned.count > 0 && (
@@ -518,6 +555,11 @@ export default function Overview({ entries, categories, accounts, loading, reloa
 
 function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
   const maxVal = Math.max(1, ...rows.map((r) => r.totalCents));
+  // 2.81.0: the share each category is of the period's expenses. Summed from
+  // the rows themselves, not taken from the Expenses card above - this list
+  // is what it is a percentage OF, and borrowing a different denominator
+  // would make the percentages fail to add up on their own list.
+  const total = rows.reduce((sum, r) => sum + r.totalCents, 0);
   return (
     <Card>
       <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
@@ -526,7 +568,7 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
       </div>
       {rows.length === 0 ? (
         <div className="p-4">
-          <EmptyState title="No expenses in this period yet" />
+          <EmptyState icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />
         </div>
       ) : (
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -539,11 +581,33 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
                 </span>
                 <span className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">{formatMoney(r.totalCents, "EUR")}</span>
               </div>
-              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800">
-                <div
-                  className="h-1.5 rounded-full bg-brand-500"
-                  style={{ width: `${Math.max(4, (r.totalCents / maxVal) * 100)}%` }}
-                />
+              <div className="flex items-center gap-2">
+                {/* 2.81.0: the bar wears the CATEGORY's own colour, the same
+                    one its swatch above already uses - `financeCategoryFill`
+                    reads the identical class, so the two cannot disagree.
+                    Before this every bar was brand purple regardless of the
+                    swatch beside it. A category with no colour set keeps the
+                    brand fill, which is what it had. */}
+                <div className="h-1.5 flex-1 rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className={`h-1.5 rounded-full ${
+                      r.colorSlot !== null ? financeCategoryFill(r.colorSlot) : "bg-brand-500"
+                    }`}
+                    style={{ width: `${Math.max(4, (r.totalCents / maxVal) * 100)}%` }}
+                  />
+                </div>
+                {/* "<1%" rather than "0%" for a category that has real money
+                    in it but rounds below one. Rendering his 25,00 EUR health
+                    row as "0%" read as "nothing spent here", which is not what
+                    the row says one column to the left. Caught by looking at
+                    the list with his own categories in it. */}
+                <span className="w-9 shrink-0 text-right text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                  {total <= 0
+                    ? "-"
+                    : r.totalCents > 0 && (r.totalCents / total) * 100 < 0.5
+                      ? "<1%"
+                      : `${Math.round((r.totalCents / total) * 100)}%`}
+                </span>
               </div>
             </li>
           ))}
@@ -590,6 +654,22 @@ function IncomeExpenseChart({
   expenseCents: number;
 }) {
   const [metric, setMetric] = useState<MetricKey>("revenue");
+  // 2.80.0: marko asked for Finance's chart to be the Dashboard's CASHFLOW
+  // chart. 2.45.0 had already made this the Dashboard's chart - but the
+  // Dashboard gained a second one in 2.74.0, `CashflowChart`, and that is the
+  // one he means: two smooth curves, income against expenses, monotone
+  // interpolation, gradient fills.
+  //
+  // So this card now carries BOTH, exactly as the Dashboard's own chart card
+  // does: a "Cashflow" pill that is the default, plus the three Income /
+  // Expenses / Net metric pills that have been here since 2.45.0 and which
+  // nothing gets to delete.
+  //
+  // It is the real component, imported from `DashboardCharts`, not a lookalike
+  // rebuilt in CSS. Its API is already data-agnostic (`points` + a caller's
+  // own `formatValue`), which is why no refactor of the Dashboard was needed
+  // and why the Dashboard's own chart is untouched by this.
+  const [chartMode, setChartMode] = useState<"cashflow" | "metric">("cashflow");
   const points = useMemo<RevenueTimeSeriesPoint[]>(
     () =>
       buckets.map((b) => ({
@@ -602,55 +682,95 @@ function IncomeExpenseChart({
       })),
     [buckets],
   );
+  // The adapter: one `SeriesBucket` becomes one `CashflowPoint`. Nothing is
+  // recomputed - `incomeCents`/`expenseCents` are the same per-bucket figures
+  // the metric chart below already plots, and `bucketLabel` is the Dashboard's
+  // own exported formatter, so both charts write a month the same way.
+  const cashPoints = useMemo<CashflowPoint[]>(
+    () =>
+      buckets.map((b) => ({
+        label: bucketLabel(b.bucketStart, granularity),
+        income: b.incomeCents,
+        expenses: b.expenseCents,
+      })),
+    [buckets, granularity],
+  );
+
   // The headline number is the period's own total, handed down from the
   // cards above - NOT a sum of the plotted buckets. `buildSeries` caps an
   // "All time" ledger at the most recent 24 months (or 92 days), so summing
   // the plotted points would quietly disagree with the Income/Expenses/Net
   // Cash Flow cards on the same screen.
   const total = metric === "cost" ? expenseCents : metric === "profit" ? incomeCents - expenseCents : incomeCents;
+  // Cashflow mode shows the NET for the period, the same figure the "Net Cash
+  // Flow" card above it shows and the same one the Dashboard's own cashflow
+  // headline uses. Handed down from the cards, never summed from the plotted
+  // buckets - see the note below for why that distinction matters.
+  const net = incomeCents - expenseCents;
+  const headline = chartMode === "cashflow" ? net : total;
+  const headlineIsNet = chartMode === "cashflow" || metric === "profit";
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            {FINANCE_METRIC_LABELS[metric]} {granularity === "day" ? "by day" : "by month"}
+            {chartMode === "cashflow"
+              ? `Balance cashflow ${granularity === "day" ? "by day" : "by month"}`
+              : `${FINANCE_METRIC_LABELS[metric]} ${granularity === "day" ? "by day" : "by month"}`}
           </p>
           <p
             className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${
-              metric !== "profit"
+              !headlineIsNet
                 ? ""
-                : total > 0
+                : headline > 0
                   ? "text-emerald-600 dark:text-emerald-400"
-                  : total < 0
+                  : headline < 0
                     ? "text-red-600 dark:text-red-400"
                     : ""
             }`}
           >
-            {formatMoney(total, "EUR")}
+            {formatMoney(headline, "EUR")}
           </p>
         </div>
         <div className={SEGMENTED_TRACK}>
+          {/* 2.80.0: the Cashflow pill, first and default - the same
+              arrangement the Dashboard's chart card uses. The three metric
+              pills below it are untouched. */}
+          <button
+            onClick={() => setChartMode("cashflow")}
+            aria-pressed={chartMode === "cashflow"}
+            className={segmentedItemClass(chartMode === "cashflow")}
+          >
+            Cashflow
+          </button>
           {FINANCE_METRICS.map((m) => (
             <button
               key={m.key}
-              onClick={() => setMetric(m.key)}
-              aria-pressed={metric === m.key}
-              className={segmentedItemClass(metric === m.key)}
+              onClick={() => {
+                setMetric(m.key);
+                setChartMode("metric");
+              }}
+              aria-pressed={chartMode === "metric" && metric === m.key}
+              className={segmentedItemClass(chartMode === "metric" && metric === m.key)}
             >
               {m.label}
             </button>
           ))}
         </div>
       </div>
-      <MetricChart
-        points={points}
-        granularity={granularity}
-        currency="EUR"
-        metric={metric}
-        labels={FINANCE_METRIC_LABELS}
-        emptyLabel="No entries in this period yet."
-      />
+      {chartMode === "cashflow" ? (
+        <CashflowChart points={cashPoints} formatValue={(cents) => formatMoney(cents, "EUR")} />
+      ) : (
+        <MetricChart
+          points={points}
+          granularity={granularity}
+          currency="EUR"
+          metric={metric}
+          labels={FINANCE_METRIC_LABELS}
+          emptyLabel="No entries in this period yet."
+        />
+      )}
     </div>
   );
 }
@@ -668,31 +788,41 @@ function ForecastCard({ forecast, loading }: { forecast: CashflowForecast | null
       <div className="mb-3 flex items-center gap-2">
         <IconTrendingUp className="h-4 w-4 text-slate-500 dark:text-slate-400" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Cashflow Forecast</h3>
-        <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700 dark:bg-brand-500/10 dark:text-brand-400">
+        {/* 2.81.0: was `bg-brand-50` + `uppercase tracking-wide`. That fill is
+            the saturated lavender StatCard's own 2.47.4 comment flagged as
+            reading wrong in light mode, and the app dropped tracked-out
+            capitals from small labels in 3.0. This is the same
+            tinted-ring idiom `METRIC_ACCENTS` uses, which works on both
+            grounds. Same word, same place. */}
+        <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-500 ring-1 ring-inset ring-brand-500/20">
           Forecast
         </span>
       </div>
       {loading ? (
         <PanelSkeleton lines={3} className="shadow-none" />
       ) : !forecast || !forecast.available ? (
-        <EmptyState title="Forecast unavailable" description="Add an active EUR account on the Accounts tab to see a forecast." />
+        <EmptyState
+              icon={<IconTrendingUp className="h-5 w-5" />}
+              title="Forecast unavailable"
+              description="Add an active EUR account on the Accounts tab to see a forecast."
+            />
       ) : (
         <div>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
             <div>
-              <dt className="text-xs text-slate-500 dark:text-slate-400">Current balance</dt>
+              <dt className="section-title">Current balance</dt>
               <dd className="tabular-nums text-slate-800 dark:text-slate-200">{formatMoney(forecast.currentBalanceCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-500 dark:text-slate-400">Expected income</dt>
+              <dt className="section-title">Expected income</dt>
               <dd className="tabular-nums text-emerald-600 dark:text-emerald-400">+{formatMoney(forecast.expectedIncomeCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-500 dark:text-slate-400">Recurring expenses</dt>
+              <dt className="section-title">Recurring expenses</dt>
               <dd className="tabular-nums text-rose-600 dark:text-rose-400">-{formatMoney(forecast.recurringExpensesCents, "EUR")}</dd>
             </div>
             <div>
-              <dt className="text-xs text-slate-500 dark:text-slate-400">Upcoming expenses</dt>
+              <dt className="section-title">Upcoming expenses</dt>
               <dd className="tabular-nums text-rose-600 dark:text-rose-400">-{formatMoney(forecast.upcomingExpensesCents, "EUR")}</dd>
             </div>
           </dl>

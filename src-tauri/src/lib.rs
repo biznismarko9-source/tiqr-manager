@@ -270,6 +270,7 @@ pub fn run() {
             commands::firebase_google_auth::start_firebase_google_sign_in,
             commands::firebase_google_auth::cancel_firebase_google_sign_in,
             commands::currency::convert_currency,
+            commands::data_health::check_data_health,
             commands::notes::list_note_sheets,
             commands::notes::create_note_sheet,
             commands::notes::rename_note_sheet,

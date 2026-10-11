@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  DataCheck,
   Note,
   NoteBlock,
   NoteImage,
@@ -179,6 +180,9 @@ export const api = {
    * of its tickets, and every sale tied to those tickets (refunded/historical
    * included) atomically - see commands/orders.rs::convert_order_currency_impl. */
   convertOrderCurrency: (id: number) => invoke<OrderCurrencyConversionResult>("convert_order_currency", { id }),
+  /** 2.73.0: runs every integrity check and reports. Changes nothing - see
+   *  commands/data_health.rs's own module comment. */
+  checkDataHealth: () => invoke<DataCheck[]>("check_data_health"),
   /** 2.0.51: the Dashboard mixed-currency banner's bulk action - converts
    * every order in `currencies` to EUR, or every non-EUR order at all when
    * `currencies` is omitted/empty (marko's own "or all" option). Fetches one

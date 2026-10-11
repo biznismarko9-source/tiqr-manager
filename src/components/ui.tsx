@@ -637,6 +637,29 @@ export function Field({
 // ---------------------------------------------------------------------------
 // Layout bits
 // ---------------------------------------------------------------------------
+/** 2.82.0: a titled section inside a long form - a hairline, a small
+ *  heading, and a two-column grid for the fields under it.
+ *
+ *  Lived as a byte-identical local copy in BOTH `Orders.tsx` and `Pulls.tsx`.
+ *  Their own comment said it stayed local because "still only a handful of
+ *  forms in the app want this kind of sectioning"; Finance's entry form is the
+ *  third, which is where a third copy stops being cheaper than one export.
+ *
+ *  The markup is unchanged from those copies, so Orders' and Pulls' forms
+ *  render exactly what they rendered before - this moved a definition, it did
+ *  not restyle anything.
+ */
+export function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
+      {title && (
+        <p className="mb-3 section-title">{title}</p>
+      )}
+      <div className="grid grid-cols-2 gap-4">{children}</div>
+    </div>
+  );
+}
+
 export function Card({
   children,
   className = "",
@@ -1048,6 +1071,63 @@ export function StatusDots({
 // Stat card (used on Dashboard + Event detail)
 // ---------------------------------------------------------------------------
 
+/** 2.74.0: the metric accents from marko's redesign reference - one hue per
+ *  KPI so a row of five reads as five different things at a glance rather
+ *  than five identical boxes.
+ *
+ *  `violet` deliberately points at the BRAND ramp rather than Tailwind's own
+ *  violet: that ramp is the colour marko picked himself from a live preview
+ *  (PROTECTED_AREAS' 2.6.0 entry says not to change it without asking), so
+ *  the redesign uses it rather than introducing a second purple beside it.
+ *
+ *  Written as whole literal class strings because Tailwind scans source text
+ *  - a composed `bg-${hue}-500/12` would be scanned as nothing and ship with
+ *  no colour at all. */
+const METRIC_ACCENTS = {
+  teal: { box: "bg-teal-500/10 text-teal-500 ring-teal-500/20", line: "stroke-teal-500" },
+  blue: { box: "bg-blue-500/10 text-blue-500 ring-blue-500/20", line: "stroke-blue-500" },
+  orange: { box: "bg-orange-500/10 text-orange-500 ring-orange-500/20", line: "stroke-orange-500" },
+  emerald: { box: "bg-emerald-500/10 text-emerald-500 ring-emerald-500/20", line: "stroke-emerald-500" },
+  violet: { box: "bg-brand-500/10 text-brand-500 ring-brand-500/20", line: "stroke-brand-500" },
+} as const;
+
+export type MetricAccent = keyof typeof METRIC_ACCENTS;
+
+/** A bare trend line for a KPI card - no axes, no labels, no tooltip. It is
+ *  decoration that happens to be true: the caller passes real per-bucket
+ *  numbers (Dashboard uses `revenueTimeSeries`, which carries revenue, cogs,
+ *  profit and sold tickets per bucket), never a generated shape.
+ *
+ *  Fewer than two points cannot be a line, so it renders nothing rather than
+ *  a dot that would read as data. A perfectly flat series draws down the
+ *  middle instead of dividing by a zero range. */
+function Sparkline({ points, className }: { points: number[]; className: string }) {
+  if (points.length < 2) return null;
+  const lo = Math.min(...points);
+  const hi = Math.max(...points);
+  const span = hi - lo;
+  const w = 64;
+  const h = 22;
+  const d = points
+    .map((v, i) => {
+      const x = (i / (points.length - 1)) * w;
+      const y = span === 0 ? h / 2 : h - ((v - lo) / span) * h;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className={`h-[20px] w-full overflow-visible ${className}`}
+      fill="none"
+      aria-hidden="true"
+      preserveAspectRatio="none"
+    >
+      <path d={d} strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 export function StatCard({
   label,
   value,
@@ -1056,11 +1136,18 @@ export function StatCard({
   trend,
   trendColored = true,
   emphasis = false,
+  icon,
+  accent,
+  spark,
 }: {
   label: string;
   value: string;
   sub?: string;
-  tone?: "default" | "positive" | "negative";
+  /** 2.77.0: `warning` added for Inventory's Paid/Outstanding, which show
+   *  the word "Partial" in amber when the order model has no exact figure
+   *  to put there. Purely additive - no existing caller passes it, and
+   *  `SummaryStat` below keeps its own three-value union untouched. */
+  tone?: "default" | "positive" | "negative" | "warning";
   /** Optional "vs previous period" delta (2.0.47, DIR-001) - see
    * computeTrend/computeTrendPoints in lib/format.ts. Omitted/null renders
    * nothing, so every pre-2.0.47 caller (Event Detail's StatCard usages
@@ -1083,6 +1170,14 @@ export function StatCard({
    * A ring needs no border width to exist and cannot be beaten by `.card`'s
    * own `bg-surface`, which is what made the old fill unpredictable too. */
   emphasis?: boolean;
+  /** 2.74.0 - all three OPTIONAL, so every caller that predates the redesign
+   *  (Event Detail, Sales, Pulls, Finance...) renders exactly as it did. Only
+   *  Dashboard's own Overview row passes them today. */
+  icon?: ReactNode;
+  accent?: MetricAccent;
+  /** Real per-bucket values for the sparkline - see `Sparkline` above. Null
+   *  or shorter than two points draws nothing. */
+  spark?: number[] | null;
   /** false = the trend arrow/text always render in neutral slate regardless
    * of direction - for a metric where "up" isn't unambiguously good (e.g.
    * Purchase cost - spending more isn't necessarily bad). Default true
@@ -1114,7 +1209,9 @@ export function StatCard({
       ? "text-emerald-600 dark:text-emerald-400"
       : tone === "negative"
         ? "text-red-600 dark:text-red-400"
-        : "text-slate-900 dark:text-slate-50";
+        : tone === "warning"
+          ? "text-amber-600 dark:text-amber-400"
+          : "text-slate-900 dark:text-slate-50";
   const trendTone =
     !trend || !trendColored || trend.direction === "flat"
       ? "text-slate-500 dark:text-slate-400"
@@ -1135,12 +1232,39 @@ export function StatCard({
         emphasis ? "ring-1 ring-slate-300 dark:ring-slate-600" : ""
       }`}
     >
+      {/* 2.74.0: the icon row only exists when a caller asks for one, so a
+          StatCard without `icon` renders byte-for-byte what it did before. */}
+      {icon && accent && (
+        <span
+          className={`mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg ring-1 ring-inset ${METRIC_ACCENTS[accent].box}`}
+          aria-hidden="true"
+        >
+          {icon}
+        </span>
+      )}
       <p className="section-title truncate">{label}</p>
       <p
         className={`mt-1.5 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[24px]" : "text-[19px]"} ${valueTone}`}
       >
         {value}
       </p>
+      {/* 2.75.0: the sparkline sits on its OWN ROW, full width, under the
+          figure - it does not share a line with it.
+          2.74.0 put the two side by side, the way the reference screenshot
+          shows them, and that was wrong at this app's card width. The
+          sparkline is a fixed 64px and the value had `min-w-0 truncate`, so
+          in a five-across row the figure lost the fight and was ellipsed away
+          to NOTHING: every money value on the Overview rendered as an empty
+          card with a label, a line and a trend. Caught by rendering the row
+          and measuring `scrollWidth > clientWidth` on it, not by reading it.
+          The reference's cards are far wider than these; a value that
+          disappears when a window narrows is not a trade worth making for a
+          layout match. */}
+      {spark && accent && (
+        <div className="mt-2">
+          <Sparkline points={spark} className={METRIC_ACCENTS[accent].line} />
+        </div>
+      )}
       {trend && (
         <p className={`mt-2 flex items-center gap-1 text-[11px] font-medium ${trendTone}`}>
           {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}

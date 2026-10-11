@@ -156,9 +156,35 @@ export default function SaleRowsModal({
       api
         .listOrders({ search: orderQuery || undefined, status: "available,listed" })
         .then((res) => {
-          const top = res.slice(0, 25);
+          // 2.72.0: marko - "pri sales by sa mali ukazovat len tie events a
+          // orders ktore este len budu nie aj tie ktore sa uz stali". The
+          // default list is what he can still sell for; a match that was
+          // played last month is noise in a picker he opens every day.
+          //
+          // Two things are deliberately NOT hidden:
+          //
+          //  - An order with no event date (a TBD event) has no date to be
+          //    past of, so it stays. Never hide something because a fact is
+          //    missing.
+          //  - Once he TYPES a search he is naming something specific, so
+          //    matches show whatever their date. Hiding what he just asked
+          //    for by name would be exactly the opaque behaviour he has been
+          //    reporting - and it is also how a genuinely late sale still
+          //    gets recorded, which is the one case this filter could
+          //    otherwise make impossible.
+          //
+          // Lexicographic comparison is correct here because both sides are
+          // ISO `YYYY-MM-DD`, which sorts as text in date order.
+          const today = todayIso();
+          const inScope = orderQuery.trim()
+            ? res
+            : res.filter((o) => !o.eventDate || o.eventDate >= today);
+          const top = inScope.slice(0, 25);
           // 2.65.0: a preselected order has to be IN the list or the <select>
           // shows a blank. It can fall outside the first 25, so put it back.
+          // Searched in the UNFILTERED result on purpose: "Add sale" on an
+          // order's own page must work even when that event has already been
+          // played, and the filter above would otherwise have dropped it.
           if (initialOrderId && !top.some((o) => o.id === initialOrderId)) {
             const hit = res.find((o) => o.id === initialOrderId);
             if (hit) top.unshift(hit);

@@ -988,7 +988,9 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
     if (error) {
       return (
         <div className="py-20">
-          <EmptyState title={error} />
+          {/* 2.85.0: this one carries an ERROR, not an absence - the alert icon
+            says so before the sentence is read. */}
+        <EmptyState icon={<IconAlertTriangle className="h-5 w-5" />} title={error} />
         </div>
       );
     }

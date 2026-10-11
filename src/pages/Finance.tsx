@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
-import { PageHeader } from "../components/ui";
+import { PageHeader, SEGMENTED_TRACK, segmentedItemClass } from "../components/ui";
 import { useToast } from "../lib/toast";
 import type { FinanceData } from "./finance/shared";
 import Overview from "./finance/Overview";
@@ -81,20 +81,28 @@ export default function Finance() {
         title="Finance"
         subtitle="Personal and business money, tracked in one place."
         actions={
-          <div className="flex w-fit flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => setTab(t.key)}
-                className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
-                  tab === t.key ? "bg-brand-600 text-white" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          <>
+            {/* 2.85.0 (global consistency pass): was a hand-rolled pill row with
+              its own border, sizes and hover colours, while the rest of the
+              app - including this section's own sub-pages - segments with
+              SEGMENTED_TRACK + segmentedItemClass. The active state was
+              already `bg-brand-600 text-white`, byte-identical; the track,
+              inactive colours and focus ring move onto the shared tokens.
+              Same buttons, same handler, same state. */}
+            <div className={SEGMENTED_TRACK}>
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setTab(t.key)}
+                  aria-pressed={tab === t.key}
+                  className={segmentedItemClass(tab === t.key)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </>
         }
       />
 

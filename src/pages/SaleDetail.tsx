@@ -17,10 +17,19 @@ import {
   Modal,
   ModalFooter,
   Select,
+  StatCard,
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconArrowLeft, IconTrash } from "../components/icons";
+import {
+  IconArrowLeft,
+  IconBarChart,
+  IconDatabase,
+  IconGauge,
+  IconReceipt,
+  IconTrash,
+  IconWallet,
+} from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
@@ -258,21 +267,21 @@ export default function SaleDetail() {
 
       <Card className="mb-8 grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 lg:grid-cols-6">
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Platform</p>
+          <p className="section-title">Platform</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{header.platformName ?? "-"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Sale date</p>
+          <p className="section-title">Sale date</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {header.saleDate ? formatDate(header.saleDate) : "Mixed"}
           </p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Currency</p>
+          <p className="section-title">Currency</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{header.currency ?? "Mixed"}</p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Refunded</p>
+          <p className="section-title">Refunded</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {header.refundedCount} of {lines.length}
           </p>
@@ -281,13 +290,13 @@ export default function SaleDetail() {
             above for how these are derived (paid-only / pending-only line
             subsets, refunded lines counted in neither). */}
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Paid</p>
+          <p className="section-title">Paid</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {formatMoneyOrMixed(header.paidCents, header.paidCurrency)}
           </p>
         </div>
         <div>
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Outstanding</p>
+          <p className="section-title">Outstanding</p>
           <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
             {formatMoneyOrMixed(header.outstandingCents, header.outstandingCurrency)}
           </p>
@@ -306,31 +315,51 @@ export default function SaleDetail() {
           app's fixed 1080px-minimum window is effectively always active (see
           REDESIGN-1.8.2-REPORT.md), so this reads as one row on every real
           window size; the plain/sm classes are a defensive fallback only. */}
-      <div className="mb-8 grid grid-cols-3 gap-3 lg:grid-cols-5">
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Revenue</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.revenueCents, header.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Fees</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.feesCents, header.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Cost</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoneyOrMixed(header.costCents, header.currency)}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Profit</p>
-          <p
-            className={`mt-1 text-lg font-semibold ${header.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : header.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
-          >
-            {formatMoneyOrMixed(header.profitCents, header.currency)}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase text-slate-500 dark:text-slate-400">ROI</p>
-          <p className="mt-1 text-lg font-semibold">{formatPercentOrMixed(header.roi, header.currency)}</p>
-        </Card>
+      {/* 2.78.0: converted to `StatCard`, the same move Inventory's twelve
+          cards got in 2.77.0 and for the same reason - these were hand-rolled
+          `<Card>`s with their own label and value markup while every other
+          section used the shared component. One component means one padding,
+          one type scale, one truncation rule.
+
+          Profit keeps its exact emerald/red/neutral rule through `tone`,
+          which uses the identical classes. Every value, format and condition
+          below is unchanged, including `formatMoneyOrMixed`, which is what
+          renders "Mixed" when a sale spans currencies.
+
+          Accents follow the brief: revenue blue, fees and cost orange,
+          profit emerald, ROI teal. */}
+      <div className="summary-bar mb-8">
+        <StatCard
+          label="Revenue"
+          value={formatMoneyOrMixed(header.revenueCents, header.currency)}
+          icon={<IconBarChart className="h-4 w-4" />}
+          accent="blue"
+        />
+        <StatCard
+          label="Fees"
+          value={formatMoneyOrMixed(header.feesCents, header.currency)}
+          icon={<IconReceipt className="h-4 w-4" />}
+          accent="orange"
+        />
+        <StatCard
+          label="Cost"
+          value={formatMoneyOrMixed(header.costCents, header.currency)}
+          icon={<IconWallet className="h-4 w-4" />}
+          accent="orange"
+        />
+        <StatCard
+          label="Profit"
+          value={formatMoneyOrMixed(header.profitCents, header.currency)}
+          tone={header.profitCents > 0 ? "positive" : header.profitCents < 0 ? "negative" : "default"}
+          icon={<IconDatabase className="h-4 w-4" />}
+          accent="emerald"
+        />
+        <StatCard
+          label="ROI"
+          value={formatPercentOrMixed(header.roi, header.currency)}
+          icon={<IconGauge className="h-4 w-4" />}
+          accent="teal"
+        />
       </div>
       <p className="-mt-5 mb-8 text-xs text-slate-500 dark:text-slate-400">
         Revenue, fees, cost, profit and ROI above exclude any refunded ticket in this sale - they are never
@@ -346,7 +375,7 @@ export default function SaleDetail() {
 
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets in this sale ({lines.length})</h2>
       {lines.length === 0 ? (
-        <EmptyState title="No tickets found for this sale" />
+        <EmptyState icon={<IconReceipt className="h-5 w-5" />} title="No tickets found for this sale" />
       ) : (
         // 2.0.35: same proportional-percentage model as Sales.tsx now uses
         // (see that file's colgroup comment for the full history and the

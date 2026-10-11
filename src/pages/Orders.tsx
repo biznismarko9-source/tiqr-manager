@@ -14,6 +14,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  FormGroup,
   Input,
   TableSkeleton,
   Modal,
@@ -377,7 +378,13 @@ export default function Orders() {
           following the arrangement Pulls already had. Its old `mb-4` lived
           inside TabSwitcher itself; that margin now belongs to the caller, so
           the two places that still stand alone (EventDetail) spell it out. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      {/* 2.77.0: the six controls - Search, Category, Platform, From, To,
+          Sort - now sit inside one sunken surface instead of floating loose
+          above the table, matching what Events got in 2.76.0 so the two
+          lists read the same way. Same inputs, same handlers, same widths,
+          same wrap behaviour; the bar is only what groups them. The tab
+          switcher stays pinned right. */}
+      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
         <div className="w-64">
           <span className="label">Search</span>
           <div className="relative">
@@ -756,16 +763,6 @@ export default function Orders() {
  * can wrap Payment status/Notes at the bottom (deliberately left out of
  * marko's 4 named groups - EVENT/TICKETS/PURCHASE/SUMMARY - but still
  * visually separated from the group above them). */
-function FormGroup({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="border-t border-slate-200 pt-4 first:border-t-0 first:pt-0 dark:border-slate-800">
-      {title && (
-        <p className="mb-3 section-title">{title}</p>
-      )}
-      <div className="grid grid-cols-2 gap-4">{children}</div>
-    </div>
-  );
-}
 
 function OrderFormModal({
   open,

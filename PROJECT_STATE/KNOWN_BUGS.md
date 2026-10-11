@@ -43,15 +43,20 @@ from old reports.
   wrong - it also means a genuine Push can be skipped, which loses nothing
   but leaves the machines apart.
 
-  The robust fix is to stop trusting a flag and compare content instead, but
-  `content_hash` runs over a full snapshot and `cloud_sync_auto` is
-  deliberately cheap and read-only, so it is a real design change, not a
-  small edit. A cheaper hardening that is strictly safer and was considered
-  but NOT taken in 2.68.0: make `decide_auto`'s `(false, true)` arm return
-  `Merge` instead of `Pull`. Merge is never more destructive than Pull -
-  it applies the same tombstones but keeps rows the other side has never
-  seen - so it is the better default even when the flag is right. It needs
-  the unit tests at the bottom of `cloud_sync.rs` updated with it.
+  **2.73.0 took the cheaper hardening**: `decide_auto`'s `(false, true)` arm
+  now returns `Merge` instead of `Pull`. Merge is never more destructive than
+  Pull - it applies the same tombstones but keeps rows the other side has
+  never seen - and with the flag RIGHT the two produce the same database, so
+  nothing was given up. `decide_auto` no longer returns `Pull` at all; the
+  variant stays for the hand-pressed "Sync down" button.
+
+  Still open: the flag itself. The robust fix is to stop trusting it and
+  compare content instead, but `content_hash` runs over a full snapshot and
+  `cloud_sync_auto` is deliberately cheap and read-only, so that is a real
+  design change, not a small edit. What 2.68.0 and 2.73.0 together achieved
+  is that the flag being wrong is now survivable rather than fatal - it can
+  still skip a Push that should have happened, which loses nothing but leaves
+  the two machines apart.
 
 - **Sales sync can't independently guard against a duplicate sale from a
   stale, un-pushed refund row.** As of 2.0.80, refunding a sale in the app

@@ -27,7 +27,8 @@ import {
   StatCard,
   StatsSkeleton,
 } from "../components/ui";
-import { MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
+import { bucketLabel, MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
+import { CashflowChart, platformFill, PlatformRing, type CashflowPoint } from "../components/DashboardCharts";
 import { getLastUpdateCheck } from "../lib/updater";
 import {
   IconAlertTriangle,
@@ -36,10 +37,15 @@ import {
   IconDownload,
   IconBell,
   IconCalendarDays,
+  IconDatabase,
+  IconGauge,
   IconPackage,
   IconReceipt,
+  IconTag,
+  IconTicket,
   IconTrendingDown,
   IconTrendingUp,
+  IconWallet,
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { usePreferredCurrency } from "../lib/preferredCurrency";
@@ -117,6 +123,27 @@ const PERIODS: { key: string; label: string }[] = [
  * `data.period` (the exact same FinanceSummary the StatCards above already
  * render), never re-derived from the chart's own bucket array, so this
  * number can never drift from the StatCard for the same metric. */
+/** 2.74.0: the two cashflow series, derived from the buckets the Dashboard
+ *  already receives - nothing new is fetched and nothing is modelled.
+ *
+ *  Income is the bucket's revenue. Expenses is what that revenue cost to
+ *  earn: the cost of the tickets sold in it plus the selling fees charged on
+ *  them. Both fields have been on `RevenueTimeSeriesPoint` since well before
+ *  this chart existed (see revenue_time_series in dashboard.rs); this only
+ *  pairs them.
+ *
+ *  Deliberately NOT "money in minus money out of the bank": that would be
+ *  `paidCents`, a different question with a different answer, and mixing the
+ *  two under one heading is how a cashflow chart starts disagreeing with the
+ *  Profit card beside it. */
+function cashflowPoints(data: DashboardData): CashflowPoint[] {
+  return data.revenueTimeSeries.map((p) => ({
+    label: bucketLabel(p.bucketStart, data.timeSeriesGranularity),
+    income: p.revenueCents,
+    expenses: p.cogsCents + p.sellingFeesCents,
+  }));
+}
+
 function periodMetricValue(data: DashboardData, metric: MetricKey): number {
   if (metric === "profit") return data.period.profitCents;
   if (metric === "sales") return data.period.soldTickets;
@@ -201,6 +228,14 @@ export default function Dashboard() {
   // else.
   const [period, setPeriod] = useState("1y");
   const [metric, setMetric] = useState<MetricKey>("revenue");
+  // 2.74.0: "cashflow" is a FOURTH option on the chart's existing segmented
+  // control, not a replacement for it. The three metric modes are real
+  // functionality marko has had since 1.7.5 and the redesign does not get to
+  // delete them to make room for a reference screenshot - so the control
+  // gained a button and the card gained a branch. Cashflow is the default
+  // because it is the one the redesign puts at the top of the Overview; every
+  // other mode is one click away, exactly as before.
+  const [chartMode, setChartMode] = useState<"cashflow" | "metric">("cashflow");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -397,6 +432,13 @@ export default function Dashboard() {
                       own band of the page: bigger figure, brand-tinted border,
                       and ROI as its sub-line so nothing that was in the
                       headline is lost. */}
+                  {/* 2.74.0: icon, accent and sparkline added - all three are
+                      optional props on StatCard, so every other caller in the
+                      app is untouched. The sparklines are REAL: each one is a
+                      column of `data.revenueTimeSeries`, the same buckets the
+                      chart below draws. ROI deliberately has none - there is
+                      no per-bucket ROI on that series, and a line invented to
+                      fill the gap is exactly what this app must not do. */}
                   <div data-tour="dash-stats" className="summary-bar">
                     <StatCard
                       label="Profit"
@@ -404,18 +446,27 @@ export default function Dashboard() {
                       tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
                       trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
                       sub={`${formatPercent(data.period.roi)} ROI`}
+                      icon={<IconDatabase className="h-4 w-4" />}
+                      accent="teal"
+                      spark={data.revenueTimeSeries.map((p) => p.profitCents)}
                       emphasis
                     />
                     <StatCard
                       label="Revenue"
                       value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
                       trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
+                      icon={<IconBarChart className="h-4 w-4" />}
+                      accent="blue"
+                      spark={data.revenueTimeSeries.map((p) => p.revenueCents)}
                     />
                     <StatCard
                       label="Purchase cost"
                       value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
                       trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
                       trendColored={false}
+                      icon={<IconWallet className="h-4 w-4" />}
+                      accent="orange"
+                      spark={data.revenueTimeSeries.map((p) => p.cogsCents)}
                     />
                   {/* 2.39.0: Margin is gone from the whole app - marko's
                       words: "ako keby zanikla". Profit and ROI stay; the
@@ -425,12 +476,17 @@ export default function Dashboard() {
                       label="ROI"
                       value={formatPercent(data.period.roi)}
                       trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
+                      icon={<IconGauge className="h-4 w-4" />}
+                      accent="emerald"
                     />
                     <StatCard
                       label="Tickets sold"
                       value={String(data.period.soldTickets)}
                       sub={`${data.period.purchasedTickets} purchased in period`}
                       trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
+                      icon={<IconTicket className="h-4 w-4" />}
+                      accent="violet"
+                      spark={data.revenueTimeSeries.map((p) => p.soldTickets)}
                     />
                   </div>
                   {/* Big number + line always come straight from data.period /
@@ -478,39 +534,70 @@ export default function Dashboard() {
                       height from the inside (see its `flex-1` list below)
                       rather than showing dead space under its last row. */}
                   <div className="mb-6 grid gap-4 xl:grid-cols-2">
+                    {/* 2.74.0: the same card, with one more mode. See
+                        `chartMode` above for why the metric modes stayed. */}
                     <Card className="p-4">
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                            {METRICS.find((m) => m.key === metric)?.label} over time
+                            {chartMode === "cashflow"
+                              ? "Balance cashflow"
+                              : `${METRICS.find((m) => m.key === metric)?.label} over time`}
                           </p>
                           <p
-                            className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}
+                            className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${
+                              chartMode === "cashflow"
+                                ? "text-slate-900 dark:text-slate-50"
+                                : periodMetricTone(data, metric)
+                            }`}
                           >
-                            {metric === "sales"
-                              ? String(periodMetricValue(data, metric))
-                              : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
+                            {chartMode === "cashflow"
+                              ? // Income minus expenses for the period, taken from the
+                                // SAME `data.period` the Profit card above renders, never
+                                // re-derived from the buckets - so the headline and the
+                                // KPI card cannot disagree.
+                                formatMoney(data.period.profitCents, data.primaryCurrency)
+                              : metric === "sales"
+                                ? String(periodMetricValue(data, metric))
+                                : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
                           </p>
                         </div>
                         <div className={SEGMENTED_TRACK}>
+                          <button
+                            onClick={() => setChartMode("cashflow")}
+                            aria-pressed={chartMode === "cashflow"}
+                            className={segmentedItemClass(chartMode === "cashflow")}
+                          >
+                            Cashflow
+                          </button>
                           {METRICS.map((m) => (
                             <button
                               key={m.key}
-                              onClick={() => setMetric(m.key)}
-                              aria-pressed={metric === m.key}
-                              className={segmentedItemClass(metric === m.key)}
+                              onClick={() => {
+                                setMetric(m.key);
+                                setChartMode("metric");
+                              }}
+                              aria-pressed={chartMode === "metric" && metric === m.key}
+                              className={segmentedItemClass(chartMode === "metric" && metric === m.key)}
                             >
                               {m.label}
                             </button>
                           ))}
                         </div>
                       </div>
-                      <MetricChart
-                        points={data.revenueTimeSeries}
-                        granularity={data.timeSeriesGranularity}
-                        currency={data.primaryCurrency}
-                        metric={metric}
-                      />
+                      {chartMode === "cashflow" ? (
+                        <CashflowChart
+                          points={cashflowPoints(data)}
+                          formatValue={(cents) => formatMoney(cents, data.primaryCurrency)}
+                        />
+                      ) : (
+                        <MetricChart
+                          points={data.revenueTimeSeries}
+                          granularity={data.timeSeriesGranularity}
+                          currency={data.primaryCurrency}
+                          metric={metric}
+                        />
+                      )}
                     </Card>
                     <SalesByPlatformCard
                       data={data}
@@ -551,6 +638,8 @@ export default function Dashboard() {
                   label="Total cost"
                   value={formatMoneyOrMixed(data.inventory.totalCostCents, data.inventory.currency)}
                   sub="Every ticket ever bought"
+                  icon={<IconWallet className="h-4 w-4" />}
+                  accent="orange"
                 />
               </div>
 
@@ -573,6 +662,8 @@ export default function Dashboard() {
                   label="Revenue"
                   value={formatMoneyOrMixed(data.cashflow.revenueCents, data.cashflow.currency)}
                   sub="Total sold, realized"
+                  icon={<IconBarChart className="h-4 w-4" />}
+                  accent="blue"
                 />
                 <StatCard
                   label="Profit"
@@ -586,16 +677,22 @@ export default function Dashboard() {
                           : "default"
                       : "default"
                   }
+                  icon={<IconDatabase className="h-4 w-4" />}
+                  accent="teal"
                 />
                 <StatCard
                   label="Paid"
                   value={formatMoneyOrMixed(data.cashflow.paidCents, data.cashflow.currency)}
                   sub="Collected from buyers"
+                  icon={<IconCheck className="h-4 w-4" />}
+                  accent="emerald"
                 />
                 <StatCard
                   label="Outstanding"
                   value={formatMoneyOrMixed(data.cashflow.outstandingCents, data.cashflow.currency)}
                   sub="Sold but not yet paid"
+                  icon={<IconReceipt className="h-4 w-4" />}
+                  accent="orange"
                 />
               </div>
 
@@ -618,16 +715,22 @@ export default function Dashboard() {
                     label="Inventory cost"
                     value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}
                     sub="What unsold tickets cost you"
+                    icon={<IconPackage className="h-4 w-4" />}
+                    accent="orange"
                   />
                   <StatCard
                     label="Listing value"
                     value={formatMoneyOrMixed(data.inventoryPotential.listingValueCents, data.inventoryPotential.currency)}
                     sub="Unsold tickets that have a listing price"
+                    icon={<IconTicket className="h-4 w-4" />}
+                    accent="blue"
                   />
                   <StatCard
                     label="Potential profit"
                     value={formatMoneyOrMixed(data.inventoryPotential.potentialProfitCents, data.inventoryPotential.currency)}
                     sub="Listing value minus inventory cost"
+                    icon={<IconTrendingUp className="h-4 w-4" />}
+                    accent="teal"
                   />
                 </div>
                 {data.alerts.missingListingPriceCount > 0 && (
@@ -976,18 +1079,40 @@ function SalesByPlatformCard({
   const rows = data.salesByPlatform;
   const visibleRows = expanded ? rows : rows.slice(0, RECENT_LIST_PREVIEW_COUNT);
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
+  // 2.75.0: the ring's own total. Taken from these same rows rather than from
+  // `data.period.revenueCents`, because a platform breakdown can only ever
+  // total the sales it actually has rows for - and a centre figure that
+  // disagreed with the slices around it would be worse than none.
+  const platformTotal = rows.reduce((sum, r) => sum + r.revenueCents, 0);
   return (
     <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="flex flex-col">
       {rows.length === 0 ? (
         <EmptyRow text="No sales in this period yet" />
       ) : (
         <>
+        {/* 2.75.0: the ring was ADDED above the list, not instead of it. The
+            list is the ring's legend - it already names every platform, its
+            revenue and its ticket count, and it already expands. Replacing it
+            with a legend of its own would have been two breakdowns on one
+            screen, or one working feature deleted to look like a screenshot. */}
+        <div className="flex justify-center pb-1 pt-3">
+          <PlatformRing
+            slices={rows.map((r) => ({ name: r.platformName ?? "No platform", value: r.revenueCents }))}
+            centerValue={formatMoney(platformTotal, data.primaryCurrency)}
+            centerLabel="Revenue"
+          />
+        </div>
         <ul className="flex-1 divide-y divide-slate-100 dark:divide-slate-800">
-          {visibleRows.map((r) => (
+          {visibleRows.map((r, i) => (
             <li key={r.platformId ?? "none"} className="px-4 py-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
-                  {r.platformName ?? "No platform"}
+                <span className="flex min-w-0 items-center gap-2">
+                  {/* Same index, same colour as the arc above - see
+                      `platformFill`, which both sides read from. */}
+                  <span className={`h-2 w-2 shrink-0 rounded-[3px] ${platformFill(i)}`} aria-hidden="true" />
+                  <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
+                    {r.platformName ?? "No platform"}
+                  </span>
                 </span>
                 <span className="shrink-0 text-sm tabular-nums text-slate-600 dark:text-slate-400">
                   {formatMoney(r.revenueCents, data.primaryCurrency)}
@@ -996,11 +1121,14 @@ function SalesByPlatformCard({
               <div className="flex items-center gap-2">
                 <div className="h-1.5 flex-1 rounded-full bg-slate-100 dark:bg-slate-800">
                   <div
-                    className="h-1.5 rounded-full bg-brand-500"
+                    className={`h-1.5 rounded-full ${platformFill(i)}`}
                     style={{ width: `${Math.max(4, (r.revenueCents / maxRevenue) * 100)}%` }}
                   />
                 </div>
-                <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">{r.soldTickets} sold</span>
+                <span className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                  {platformTotal > 0 ? `${Math.round((r.revenueCents / platformTotal) * 100)}% · ` : ""}
+                  {r.soldTickets} sold
+                </span>
               </div>
             </li>
           ))}
@@ -1149,6 +1277,11 @@ function PeriodComparisonCard({ data }: { data: DashboardData }) {
   );
 }
 
+/** 2.85.0: deliberately the ONE EmptyState in the app without an icon.
+ *  It is a generic row reused by every Recent card with a different
+ *  sentence - "No sales yet", "No upcoming events", and so on - so any one
+ *  icon would be wrong for most of its callers. The convention is "with an
+ *  icon"; this is the documented exception, not an oversight. */
 function EmptyRow({ text }: { text: string }) {
   return (
     <div className="p-4">
@@ -1591,6 +1724,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
           <AlertCard
             label="Pulls near deadline"
+            icon={<IconPackage className="h-4 w-4" />}
             count={alerts.pullsNeedingTransferCount}
             description="Pulls not yet transferred, with the event coming up soon or already past"
             linkTo="/pulls"
@@ -1598,6 +1732,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
           />
           <AlertCard
             label="Pending sales"
+            icon={<IconReceipt className="h-4 w-4" />}
             count={alerts.pendingSalesCount}
             description={
               alerts.pendingSalesCount > 0
@@ -1609,6 +1744,7 @@ function AttentionSection({ data }: { data: DashboardData }) {
           />
           <AlertCard
             label="Missing listing price"
+            icon={<IconTag className="h-4 w-4" />}
             count={alerts.missingListingPriceOrdersCount}
             description="Orders with a ticket that has no listing price set"
             linkTo="/orders"
@@ -1689,15 +1825,33 @@ function AlertCard({
   description,
   linkTo,
   linkLabel,
+  icon,
 }: {
   label: string;
   count: number;
   description: string;
   linkTo: string;
   linkLabel: string;
+  /** 2.75.0 - optional, so an AlertCard without one still renders as before.
+   *  Its container is amber when the count is non-zero and neutral when it is
+   *  zero, which is the SAME rule the figure below already follows: a card
+   *  reading 0 is good news and should not be dressed as a warning. */
+  icon?: ReactNode;
 }) {
   return (
     <Card className="p-4">
+      {icon && (
+        <span
+          className={`mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg ring-1 ring-inset ${
+            count > 0
+              ? "bg-amber-500/10 text-amber-500 ring-amber-500/20"
+              : "bg-slate-500/10 text-slate-400 ring-slate-500/20"
+          }`}
+          aria-hidden="true"
+        >
+          {icon}
+        </span>
+      )}
       <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{label}</p>
       <p
         className={`mt-1.5 text-2xl font-semibold tabular-nums ${count > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-900 dark:text-slate-100"}`}

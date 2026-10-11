@@ -482,7 +482,7 @@ export default function OrderRowsModal({
                 TICKET_RESTRICTIONS itself is ordered. */}
             <td className="td-c w-[176px]">
               <MultiSelect
-                title="Obmedzenia"
+                title="Restrictions"
                 options={TICKET_RESTRICTIONS}
                 value={r.restrictions}
                 onChange={(next) => patch(i, { restrictions: next })}
