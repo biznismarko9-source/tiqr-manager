@@ -960,12 +960,12 @@ mod migration_004_tests {
             .unwrap();
         // Ticket 2: never sold.
 
-        let snapshot_before: Vec<(i64, String, i64, i64, String, Option<String>, Option<String>)> = {
+        let snapshot_before: Vec<(i64, i64, i64, String, Option<String>, Option<String>)> = {
             let mut stmt = conn
-                .prepare("SELECT id, code, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
+                .prepare("SELECT id, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
                 .unwrap();
             stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
@@ -979,12 +979,12 @@ mod migration_004_tests {
         run_migrations(&conn).expect("migration 004 must apply cleanly on top of real pre-existing data");
 
         // Nothing lost, nothing changed, nothing duplicated by the rebuild.
-        let snapshot_after: Vec<(i64, String, i64, i64, String, Option<String>, Option<String>)> = {
+        let snapshot_after: Vec<(i64, i64, i64, String, Option<String>, Option<String>)> = {
             let mut stmt = conn
-                .prepare("SELECT id, code, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
+                .prepare("SELECT id, ticket_id, sale_price_cents, payment_status, refunded_at, refund_reason FROM sales ORDER BY id")
                 .unwrap();
             stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
@@ -994,6 +994,41 @@ mod migration_004_tests {
             snapshot_before, snapshot_after,
             "every pre-existing sale row must survive the table rebuild byte-for-byte"
         );
+
+        // 2.87.0: `code` is deliberately out of that comparison. The comment
+        // above about applying "ONLY 004" stopped being true as migrations
+        // accumulated - run_migrations now carries this file all the way to
+        // 039, and 029 hands every row to `codes::backfill_event_codes`,
+        // which rewrites codes to the event-derived form (2.30.0). This
+        // fixture's event is "Old Event", so SAL-000001 becomes OLD-001.
+        // That is the documented contract, not data loss: the old code moves
+        // into `legacy_code`, which is what keeps an already-synced Google
+        // Sheet matching its rows. So assert exactly that instead of a
+        // byte-for-byte claim about `code` the chain now makes false by
+        // design. How the new code is spelled is the prefix rule's business,
+        // not this test's.
+        let codes_after: Vec<(String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT code, legacy_code FROM sales ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(codes_after.len(), 2);
+        assert_eq!(
+            codes_after[0].1.as_deref(),
+            Some("SAL-000001"),
+            "the rewrite must preserve the pre-existing code in legacy_code, never discard it"
+        );
+        assert_eq!(codes_after[1].1.as_deref(), Some("SAL-000002"));
+        assert_ne!(
+            codes_after[0].0.as_str(),
+            "SAL-000001",
+            "the live code must have been rewritten by 029, not left alone"
+        );
+        assert_ne!(codes_after[1].0.as_str(), "SAL-000002");
 
         // Referential integrity must be clean after the rebuild.
         let violations: Vec<String> = {
@@ -1128,13 +1163,13 @@ mod migration_007_tests {
         .unwrap();
         let sale_id: i64 = conn.query_row("SELECT id FROM sales WHERE code='SAL-000001'", [], |r| r.get(0)).unwrap();
 
-        let orders_before: Vec<(i64, String, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, payment_status FROM orders ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let orders_before: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, payment_status FROM orders ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
-        let sales_before: Vec<(i64, String, i64, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let sales_before: Vec<(i64, i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
 
         // The real upgrade moment: run_migrations sees 001-006 already
@@ -1143,16 +1178,53 @@ mod migration_007_tests {
 
         // Nothing about existing orders/sales changed at all - 007 is pure
         // addition, it touches neither table.
-        let orders_after: Vec<(i64, String, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, payment_status FROM orders ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let orders_after: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, payment_status FROM orders ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
-        let sales_after: Vec<(i64, String, i64, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let sales_after: Vec<(i64, i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, sale_price_cents, payment_status FROM sales ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
         assert_eq!(orders_before, orders_after, "every pre-existing order must survive the upgrade untouched");
         assert_eq!(sales_before, sales_after, "every pre-existing sale must survive the upgrade untouched");
+
+        // 2.87.0: `code` is out of both comparisons above. 007 itself really
+        // does touch neither table - but run_migrations no longer stops at
+        // 007, it carries this file to 039, and 029's rewrite (2.30.0)
+        // re-codes every row by design. See migration_004_tests for the full
+        // reasoning. What must still hold is that the old code was preserved
+        // rather than discarded.
+        let order_codes: (String, Option<String>) = conn
+            .query_row("SELECT code, legacy_code FROM orders ORDER BY id", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            order_codes.1.as_deref(),
+            Some("ORD-000001"),
+            "the rewrite must preserve the order's pre-existing code in legacy_code"
+        );
+        assert_ne!(
+            order_codes.0.as_str(),
+            "ORD-000001",
+            "the order's live code must have been rewritten by 029"
+        );
+        let sale_codes: (String, Option<String>) = conn
+            .query_row("SELECT code, legacy_code FROM sales ORDER BY id", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            sale_codes.1.as_deref(),
+            Some("SAL-000001"),
+            "the rewrite must preserve the sale's pre-existing code in legacy_code"
+        );
+        assert_ne!(
+            sale_codes.0.as_str(),
+            "SAL-000001",
+            "the sale's live code must have been rewritten by 029"
+        );
 
         // The table is immediately usable via plain SQL against this
         // pre-existing data, even though nothing in the app writes to it any
@@ -1225,20 +1297,40 @@ mod migration_008_tests {
             [],
         )
         .unwrap();
-        let pulls_before: Vec<(i64, String, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, buyer_name FROM pulls ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let pulls_before: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, buyer_name FROM pulls ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
 
         // The real upgrade moment: run_migrations sees 001-007 already
         // recorded, so it applies ONLY 008 - exactly like a real upgrade.
         run_migrations(&conn).expect("migration 008 must apply cleanly on top of real pre-existing data");
 
-        let pulls_after: Vec<(i64, String, String)> = {
-            let mut stmt = conn.prepare("SELECT id, code, buyer_name FROM pulls ORDER BY id").unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let pulls_after: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, buyer_name FROM pulls ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
         };
         assert_eq!(pulls_before, pulls_after, "every pre-existing pull must survive the upgrade untouched");
+
+        // 2.87.0: `code` is out of that comparison - 029's rewrite (2.30.0)
+        // re-codes the pull by design, keying on its `event_name` ("An
+        // Event"). The old code moves into legacy_code, and that is the claim
+        // worth making. See migration_004_tests for the full reasoning.
+        let pull_codes: (String, Option<String>) = conn
+            .query_row("SELECT code, legacy_code FROM pulls ORDER BY id", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            pull_codes.1.as_deref(),
+            Some("PULL-000001"),
+            "the rewrite must preserve the pull's pre-existing code in legacy_code"
+        );
+        assert_ne!(
+            pull_codes.0.as_str(),
+            "PULL-000001",
+            "the pull's live code must have been rewritten by 029"
+        );
 
         // The new table is immediately usable via plain SQL.
         conn.execute(
@@ -1341,11 +1433,19 @@ mod migration_024_tests {
             rusqlite::params![event_id, order_id],
         )
         .unwrap();
-        let ticket_before: (String, Option<String>, Option<String>, Option<String>) = conn
+        // 2.87.0: hold onto the id. Every lookup below used to key on the
+        // literal 'TKT-PRE-024', which stopped finding the row once
+        // run_migrations began carrying this file past 029 - that migration's
+        // rewrite (2.30.0) gives the ticket an event-derived code, so the old
+        // string matches nothing and this test died on QueryReturnedNoRows.
+        // The id is what identifies the row; the code is now data that the
+        // chain is allowed to change.
+        let ticket_id = conn.last_insert_rowid();
+        let ticket_before: (Option<String>, Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT code, section, row_label, seat FROM tickets WHERE code = 'TKT-PRE-024'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                "SELECT section, row_label, seat FROM tickets WHERE id = ?1",
+                [ticket_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
 
@@ -1355,23 +1455,41 @@ mod migration_024_tests {
 
         let ticket_after: (String, Option<String>, Option<String>, Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT code, section, row_label, seat, tier FROM tickets WHERE code = 'TKT-PRE-024'",
-                [],
+                "SELECT code, section, row_label, seat, tier FROM tickets WHERE id = ?1",
+                [ticket_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
         assert_eq!(
-            (ticket_after.0.clone(), ticket_after.1.clone(), ticket_after.2.clone(), ticket_after.3.clone()),
+            (ticket_after.1.clone(), ticket_after.2.clone(), ticket_after.3.clone()),
             ticket_before,
             "every pre-existing ticket field must survive the upgrade completely unchanged"
         );
         assert_eq!(ticket_after.4, None, "a ticket that predates this migration must read tier as NULL, never an invented value");
 
+        // 2.87.0: `code` is out of that comparison on purpose - 029 re-codes
+        // the row by design. What must hold is that the old code was
+        // preserved rather than discarded, which is what keeps an
+        // already-synced Google Sheet matching its rows.
+        let legacy_code: Option<String> = conn
+            .query_row("SELECT legacy_code FROM tickets WHERE id = ?1", [ticket_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            legacy_code.as_deref(),
+            Some("TKT-PRE-024"),
+            "the rewrite must preserve the pre-existing code in legacy_code, never discard it"
+        );
+        assert_ne!(
+            ticket_after.0.as_str(),
+            "TKT-PRE-024",
+            "the live code must have been rewritten by 029, not left alone"
+        );
+
         // The new column is immediately usable via plain SQL.
-        conn.execute("UPDATE tickets SET tier = 'VIP' WHERE code = 'TKT-PRE-024'", [])
+        conn.execute("UPDATE tickets SET tier = 'VIP' WHERE id = ?1", [ticket_id])
             .expect("the new tier column must be usable right after the upgrade");
         let tier_now: Option<String> = conn
-            .query_row("SELECT tier FROM tickets WHERE code = 'TKT-PRE-024'", [], |r| r.get(0))
+            .query_row("SELECT tier FROM tickets WHERE id = ?1", [ticket_id], |r| r.get(0))
             .unwrap();
         assert_eq!(tier_now, Some("VIP".to_string()));
 

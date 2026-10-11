@@ -16,6 +16,69 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.87.0 - Build fix: opravený build + 10 padajúcich Rust testov
+
+### 1. TypeScript — moja oprava z 2.86.0 bola tiež chybná
+
+V 2.86.0 som `{/* ... */}` správne nahradil blokovým `/* ... */`. Ale do
+**textu** toho komentára som napísal, čo bolo predtým — vrátane `*/`.
+Blokový komentár končí na **prvom** `*/`, takže sa uzavrel v polovici vety
+a zvyšok prózy aj `}` zostali ako kód.
+
+Presne to CI hlásil: `TS1109: Expression expected` na riadku, kde komentár
+začína, a `TS1381` tam, kde mal skončiť — Overview.tsx 406/424,
+Transactions.tsx 202/220, Reports.tsx 204/222.
+
+Komentár je prepísaný tak, že ukončovaciu sekvenciu vo svojom texte
+neobsahuje. Pravidlo: **text komentára nikdy nesmie obsahovať ukončovaciu
+sekvenciu** — ak treba hovoriť o syntaxe komentárov, musí sa opísať slovami.
+
+### 2. Rust: 10 padajúcich testov — všetky jedna príčina, ani jedna chyba v appke
+
+`cargo test` je v CI od 2.73.0. Suite dovtedy reálne nebežal od posledného
+stroja s Rust toolchainom, a medzitým 2.30.0 zaviedlo event-derived kódy
+(`COLDPLAY-001` namiesto `PULL-000001`). Každý test, ktorý mal zadrôtovaný
+fixný prefix, tým prestal platiť.
+
+- **`a_brand_new_path_ends_up_fully_migrated`** — canary na počet migrácií
+  stál na 26, kým pribudlo 027–039. Je to presne ten test, ktorý má padnúť
+  pri zabudnutej registrácii migrácie, a padal — len to 13 vydaní nikto
+  nevidel. Všetkých 39 je v `MIGRATIONS` a všetkých 39 sa aplikuje. → 39.
+- **`search_finds_order_by_partial_ticket_code`** — `trim_start_matches("TKT-")`
+  od 2.30.0 neodstrihával nič (kód je `TEST-001`), takže „podreťazec" bol
+  celý kód. Teraz sa delí na separátore, čo funguje pre obe formy.
+- **`pulls` / `pulls_received` kódy** — fixture má event „Coldplay Arena
+  Show", takže prefix je COLDPLAY a počítadlo je scoped naň (tri číslice).
+  Vlastnosť pod testom sa nemenila: dva zápisy na jeden event idú v poradí.
+- **oba `*_sheet_sync` testy** — `starts_with("ORD-")` / `starts_with("PULL-")`
+  už nemohli prejsť. Testy sa teraz pýtajú na to, čo majú v názve: marker
+  zapísaný do sheetu **je kód toho nového záznamu**, nech je aký chce.
+- **migrácie 004 / 007 / 008 / 024** — ich vlastné komentáre tvrdia, že
+  `run_migrations` aplikuje „ONLY 004". Dnes dotiahne súbor na 039 vrátane
+  029, ktorej prepis zámerne zmení každý kód (`SAL-000001` → `OLD-001`).
+  `code` je preto z porovnania vyňatý a namiesto toho sa overuje skutočný
+  kontrakt 2.30.0: starý kód sa presunul do `legacy_code`, nezahodil sa —
+  čo je to, čo drží už nasynchronizovaný Google Sheet funkčný. 024 navyše
+  hľadal riadok podľa starého kódu, teraz podľa `id`.
+
+### 3. Čo z tohto kola NIE je opravené (zámerne)
+
+- `codes.rs` nemá ani jeden test. Pravidlo `prefix_for_event` rozhoduje
+  o každom kóde v appke a musí byť na oboch strojoch identické, inak merge
+  vidí falošné kolízie. Pokryté je dnes len nepriamo, cez migračné testy.
+- Tie štyri migračné testy padali **pred** svojím koncom, takže tvrdenia za
+  opraveným riadkom na tejto schéme nikdy nebežali.
+
+### Overené / neoverené
+
+Na tomto Macu nie je node ani cargo — **CI je prvý kompilátor**. Overené
+staticky, pričom každá kontrola bola najprv spustená na známe pokazenom
+súbore a musela padnúť na tom istom riadku ako kompilátor: vyváženie
+zátvoriek (65/65 TS súborov, 7/7 editovaných Rust súborov), obe triedy
+komentárovej chyby (0 výskytov), a súhlas arity tuple ↔ počtu stĺpcov
+v SELECT ↔ počtu `r.get()` (0 nezhôd). **Nič z toho nie je kompilácia ani
+beh testov.**
+
 ## 2.86.0 - Build fix: dve nezávislé chyby, obe z CI
 
 ### 1. TypeScript — moja chyba z 2.80.0, dvakrát

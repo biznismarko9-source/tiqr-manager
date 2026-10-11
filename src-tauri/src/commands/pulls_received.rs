@@ -427,8 +427,13 @@ mod tests {
         let conn = test_conn();
         let a = create_pull_received_impl(&conn, &base_input("Jozef"), false).unwrap();
         let b = create_pull_received_impl(&conn, &base_input("Maria"), false).unwrap();
-        assert_eq!(a.code, "RPULL-000001");
-        assert_eq!(b.code, "RPULL-000002");
+        // 2.87.0: 2.30.0 made codes event-derived - see the same change in
+        // pulls.rs. This fixture's event is "Coldplay Arena Show", so the
+        // prefix is COLDPLAY with a prefix-scoped three-digit counter.
+        // "RPULL-" survives only as the fallback for an event with no usable
+        // name. The sequence property under test is unchanged.
+        assert_eq!(a.code, "COLDPLAY-001");
+        assert_eq!(b.code, "COLDPLAY-002");
     }
 
     #[test]

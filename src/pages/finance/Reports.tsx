@@ -197,18 +197,17 @@ export default function Reports({ entries, accounts, transfers, loading }: Finan
           ))}
         </div>
         {period === "custom" && (
-          /* 2.86.0: 2.80.0 put a sunken filter bar here and broke the build
-             twice over.
-             First, syntax: this sits after `{period === "custom" && (`, which
-             is a JavaScript EXPRESSION position, not JSX children - so
-             `{/* ... */}` parsed as an object literal and TypeScript reported
-             "JSX element 'Card' has no corresponding closing tag" in all three
-             Finance files. A plain block comment is what belongs here.
-             Second, and worse: this div is the custom-date SUB-ROW inside the
-             toolbar Card, not a standalone toolbar. Finance's toolbars were
-             already wrapped in a `Card` - unlike Events/Orders/Sales, whose
-             loose divs the 2.76-2.78 bar was actually for. So the row is back
-             to exactly what it was. */
+          /* 2.87.0: reverted to the plain row. 2.80.0 styled this as a sunken
+             filter bar, which was wrong twice over.
+             Wrong element: this is the custom-date SUB-ROW inside the toolbar
+             Card, not a standalone toolbar. Finance toolbars were already
+             wrapped in a Card - unlike Events/Orders/Sales, whose loose divs
+             the 2.76-2.78 bar was actually for.
+             Wrong syntax: this is a JavaScript expression position, not JSX
+             children, so a braced JSX comment here parses as an object
+             literal. A plain block comment is what belongs - and its text
+             must not contain the comment-closing delimiter, which is how the
+             2.86.0 attempt broke the build a second time. */
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               From

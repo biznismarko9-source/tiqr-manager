@@ -3896,7 +3896,18 @@ mod tests {
         assert_eq!(result.errors.len(), 0, "errors: {:?}", result.errors);
         assert_eq!(writes.markers.len(), 1);
         assert_eq!(writes.markers[0].0, 0);
-        assert!(writes.markers[0].1.starts_with("ORD-"));
+        // 2.87.0: was `starts_with("ORD-")`. Since 2.30.0 a new order's code
+        // is derived from its event, so "ORD-" survives only as the fallback
+        // for an event with no usable name and this prefix check could never
+        // pass again. Assert what the test is actually named for instead: the
+        // marker written back to the sheet is the new order's OWN code,
+        // whatever that code turns out to be.
+        let created_code: String =
+            conn.query_row("SELECT code FROM orders", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            writes.markers[0].1, created_code,
+            "the marker written back must be the new order's own code"
+        );
         assert!(writes.price_corrections.is_empty(), "a clean row must never trigger a price correction");
 
         let order_count: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();

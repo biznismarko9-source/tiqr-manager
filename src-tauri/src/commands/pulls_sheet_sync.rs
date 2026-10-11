@@ -2034,7 +2034,16 @@ mod tests {
         assert_eq!(result.errors.len(), 0);
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, 0);
-        assert!(writes[0].1.starts_with("PULL-"));
+        // 2.87.0: was `starts_with("PULL-")` - the same change as in
+        // orders_sheet_sync.rs. Since 2.30.0 the code is event-derived, so
+        // assert the real contract: the marker written back is the new pull's
+        // own code.
+        let created_code: String =
+            conn.query_row("SELECT code FROM pulls", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            writes[0].1, created_code,
+            "the marker written back must be the new pull's own code"
+        );
 
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM pulls", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);

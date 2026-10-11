@@ -461,8 +461,13 @@ mod tests {
         let conn = test_conn();
         let a = create_pull_impl(&conn, &base_input("Jano"), false).unwrap();
         let b = create_pull_impl(&conn, &base_input("Maria"), false).unwrap();
-        assert_eq!(a.code, "PULL-000001");
-        assert_eq!(b.code, "PULL-000002");
+        // 2.87.0: 2.30.0 made codes event-derived. This fixture's event is
+        // "Coldplay Arena Show", so the prefix is COLDPLAY and the counter is
+        // scoped to that prefix - three digits, not six. "PULL-" survives
+        // only as the fallback for an event with no usable name. What the
+        // test is for is unchanged: two pulls on one event number in sequence.
+        assert_eq!(a.code, "COLDPLAY-001");
+        assert_eq!(b.code, "COLDPLAY-002");
     }
 
     #[test]

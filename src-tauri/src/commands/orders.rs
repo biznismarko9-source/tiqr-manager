@@ -2554,12 +2554,19 @@ mod tests {
         let event_id = seed_event(&conn);
         let order_id = insert_order_with_tickets(&conn, &base_input(event_id, 1), false).unwrap();
         let tickets = ticket_ids(&conn, order_id);
-        let full_code = ticket_code(&conn, tickets[0]); // e.g. "TKT-000001"
+        let full_code = ticket_code(&conn, tickets[0]); // e.g. "TEST-001"
         // Same substring/LIKE semantics every other search field already
         // uses (the shared `like = format!("%{q}%")` in list_orders_impl) -
-        // just the numeric part, without the "TKT-" prefix, so this is a
-        // genuine substring match, not accidentally the full code again.
-        let partial = full_code.trim_start_matches("TKT-");
+        // just the numeric part, without the prefix, so this is a genuine
+        // substring match, not accidentally the full code again.
+        //
+        // 2.87.0: this was `trim_start_matches("TKT-")`, which quietly
+        // stopped trimming anything the moment 2.30.0 made codes
+        // event-derived - a ticket on the "Test Event" fixture is "TEST-001",
+        // not "TKT-000001", so `partial` came back as the whole code and the
+        // sanity check below fired. Splitting on the separator instead holds
+        // for the event-derived form and the fixed-prefix fallback alike.
+        let partial = full_code.split_once('-').map(|(_, rest)| rest).unwrap_or(full_code.as_str());
         assert_ne!(partial, full_code, "sanity: must be a genuine substring, not the whole code");
 
         let results =

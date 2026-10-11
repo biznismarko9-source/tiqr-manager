@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.86.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.87.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,51 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.87.0 - the build fix the two releases before it did not manage.** 2.80.0
+put a `{/* ... */}` comment in a JavaScript *expression* position in the three
+Finance pages, where it parses as an object literal. 2.86.0 replaced it with a
+plain `/* ... */` block comment - whose own prose quoted the broken form, and
+the `*/` inside that quote closes the comment right there, leaving `}` plus
+English prose sitting in code. Two consecutive releases, one comment, the same
+three files. Four things are worth carrying forward.
+
+**A block comment's text can never contain the closing delimiter** - not in
+TypeScript, not in Rust. A comment that needs to discuss comment syntax has to
+spell the delimiter out in words.
+
+**A checker is worth exactly what its negative test proves.** Every check
+written this round was first pointed at the known-broken file and required to
+fail on the same line the compiler had named, before being believed about the
+fixed one. That requirement caught four bugs in the checkers themselves: `}`
+smuggled into a character set written as the string `'{};'`, which made every
+TSX `} />` look like the start of a regex; `</div>` read as a regex because it
+follows `<`; template literals never resumed after a `${...}` substitution
+closed; and `in` / `of` in ordinary JSX prose ("2.1k in / 3.4k out") treated
+as JavaScript keywords. A checker that passes the broken file is worse than no
+checker, because it is believed. The scripts live in the session scratchpad,
+deliberately not in the repo - they are a record of how this round was
+verified, not a dependency.
+
+**All 10 Rust test failures had one root cause, and none of them was a bug in
+the app.** 2.73.0 added `cargo test` to CI. The suite had not actually run
+since the last machine that had a Rust toolchain, and in between, 2.30.0's
+event-derived codes (`COLDPLAY-001` rather than `PULL-000001`) invalidated
+every test that hard-coded a fixed prefix - including four migration tests
+whose own comments still claim `run_migrations` "applies ONLY 004", when it
+now carries the file to 039 and 029's rewrite re-codes every row by design.
+The `schema_migrations` canary in `commands/database.rs` is the sharpest case:
+it exists precisely to fail when a migration is added without being
+registered, it sat at 26 while migrations 027-039 landed across thirteen
+releases, and nobody was listening.
+
+**Two things surfaced this round and were deliberately NOT fixed.** `codes.rs`
+has no tests at all, so `prefix_for_event` - the rule that decides every code
+in the app, and which must stay byte-identical across marko's two machines or
+the merge sees false collisions - is covered only indirectly, through the
+migration tests. And the four migration tests each failed *before* their own
+tail, so the assertions after the fixed line have never run on this schema;
+if any of them is also stale, the next CI run is where it will show.
 
 **2.13.0 - the redesign marko picked screen by screen.** Nine choices, made
 one at a time against named alternatives: NAV-04 + GRP-06 (sidebar), SUM-05

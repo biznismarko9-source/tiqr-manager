@@ -207,7 +207,14 @@ mod tests {
         // exactly the number of new migrations any time one is added, so a
         // forgotten MIGRATIONS registration (see db.rs) fails loudly here
         // instead of silently shipping an unmigrated fresh install.
-        assert_eq!(migration_count, 26, "a fresh per-account file must end up on the same schema version as every other file");
+        // 2.87.0: 26 -> 39. The canary did exactly what it was built to do
+        // and nobody was there to hear it: migrations 027-039 were added
+        // across thirteen releases while this number stayed at 26, because
+        // `cargo test` only became part of CI in 2.73.0 and there is no Rust
+        // toolchain on the machine these releases are built on. All 39 are
+        // registered in db.rs's MIGRATIONS and all 39 apply to a fresh file,
+        // which is the thing this count actually proves.
+        assert_eq!(migration_count, 39, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 
