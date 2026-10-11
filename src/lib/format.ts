@@ -161,6 +161,29 @@ export function daysUntil(dateIso: string): number {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 }
 
+/** 2.90.0 - the relative-day line THE REGISTER's Events table carries under
+ *  every date (EVENTS-LAB-LOG.md 05, design 01 "The Table", settled 30.09).
+ *
+ *  Why it belongs next to the date rather than in a column of its own: the
+ *  lab's rule is that risk is never colour - "riziko nesie poradie, sekcia a
+ *  pozícia". A date four days out and a date four days past read identically
+ *  as "14.10.2026"; the thing that makes one urgent is a word, and it has to
+ *  sit where the eye already is.
+ *
+ *  Cancelled is its own answer because a cancelled event has no countdown -
+ *  saying "in 14 days" about something that is not happening is worse than
+ *  saying nothing. */
+export function dayLabel(dateIso: string | null | undefined, status?: string | null): string {
+  if (status === "cancelled") return "cancelled";
+  if (!dateIso) return "";
+  const d = daysUntil(dateIso);
+  if (d === 0) return "today";
+  if (d === 1) return "tomorrow";
+  if (d > 0) return `in ${d} days`;
+  if (d === -1) return "yesterday";
+  return `${Math.abs(d)} days ago`;
+}
+
 export function titleCase(s: string | null | undefined): string {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");

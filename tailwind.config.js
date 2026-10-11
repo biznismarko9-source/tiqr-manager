@@ -142,7 +142,12 @@ export default {
           700: "#34343a",
           800: "#1f1f23",
           900: "#141415",
-          950: "#0b0b0c",
+          // 2.89.0: the app ground, two steps deeper. marko asked for
+          // the cards darker; a darker card on the old ground lost its
+          // edge, so the ground moved with it. Safe to change here
+          // because slate-950 is ONLY ever a dark page background in
+          // this app - no text-, border- or ring-slate-950 anywhere.
+          950: "#050507",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the
@@ -184,6 +189,20 @@ export default {
           "Segoe UI",
           "Roboto",
           "sans-serif",
+        ],
+        // 2.90.0: THE REGISTER asks for mono numerals. This is the SYSTEM
+        // mono stack on purpose - the app is offline-first and bundles only
+        // the two Bricolage subsets, so a figure font that needs downloading
+        // is not an option. ui-monospace resolves to SF Mono on macOS and
+        // Cascadia/Consolas on Windows, both of which are tabular by default.
+        mono: [
+          "ui-monospace",
+          "SFMono-Regular",
+          "SF Mono",
+          "Menlo",
+          "Consolas",
+          "Liberation Mono",
+          "monospace",
         ],
       },
       // 2.6.0: one shadow scale for the whole app, replacing the mix of

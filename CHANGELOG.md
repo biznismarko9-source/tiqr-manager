@@ -16,6 +16,157 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.90.0 - THE REGISTER naozaj nasadený + Events dokončené
+
+Prvý implementačný blok z kompletného redesign mandátu.
+
+### Nález, ktorý zmenil poradie práce
+
+**2.89.0 porušilo THE REGISTER.** Register hovorí doslova: *„vlasové linky,
+8 px rádius, žiadne tiene, prechody ani ilustrácie"*. Ja som deň predtým
+nasadil na každú kartu tieň aj gradient. Oboje je preč, spolu s mäkkým
+nadvihnutím, ktoré tam pridalo ešte 3.0. Panel je teraz presne to, čo
+register hovorí: povrch, vlasová linka, 8 px.
+
+### Čo sa zmenilo globálne
+
+- `--sh-card` je **len vlasová linka**, v oboch režimoch. Gradient preč.
+- Karta má **8 px rádius** (bolo 12).
+- Popisok je **polotučný**, ako register predpisuje — a pribudli `.field`
+  a `.field-bar` (16 × 28 px), takže formulár si už nemusí riešiť medzery sám.
+- **Mono čísla** (`.num`) — systémový mono stack, žiadny nový súbor, appka
+  ostáva offline.
+
+### Riadok čísel prestal byť riadkom kariet
+
+Toto je tá odpoveď na „vsetky okienka ostali rovnake". V registri **riadok
+hlavných čísel nie je päť kariet** — je to **jeden panel, v ňom čísla delené
+vlasovými linkami**. Päť orámovaných krabíc dá piatim číslam rovnakú váhu ako
+tabuľke pod nimi a čítajú sa ako päť objektov. Jeden panel so štyrmi
+predelmi sa číta ako jeden súhrn, čím to aj je.
+
+Nové `Figures`/`Figure` v `ui.tsx`. Prerobené: **Dashboard**, **EventDetail**
+(3 riadky), **Finance Overview** (2 riadky). `StatCard` zámerne ostáva
+exportovaný — `OrderDetail` a `SaleDetail` ho balia inak a prerobiť ich
+naslepo v jednom kole je presne to, čím sa redesign rozbije.
+
+### Events — hotové podľa usadeného dizajnu
+
+`EVENTS-LAB-LOG.md` §07: **01 a 01**, usadené 30.09.
+
+**Zoznam — *The Table*.** Tvojich sedem stĺpcov ostáva (Stock padol v 2.76.0,
+ako si pýtal). Pribudlo: **deň pod dátumom** („in 2 days", „49 days ago",
+„cancelled"), **mono čísla**, a nad tabuľkou **počet riadkov, ktoré sa nedajú
+sčítať**. To posledné je dôležité: per-riadok „Mixed" fungovalo vždy, ale
+nič ti nepovedalo, že sa to deje — musel si si to všimnúť v bunke. Chyba,
+ktorú si táto appka stále opakuje, sa neprejaví ako zlé číslo, ale ako
+**neprítomnosť**, a tá nemá pixely.
+
+**Detail — *One Page*.** Záložky Overview a Sales sú preč, event je jeden
+scroll. Lab to zdôvodňuje jednou vetou: *„boli to dve polovice jednej
+otázky"*. `onSwitchTab` bol mŕtvy prop (deklarovaný, nikdy nevolaný).
+
+### Dva konflikty — nehádal som, zapísal som ich
+
+- **Pulls sú v dokumentácii zaparkované** („Pulls ostáva tak, ako je",
+  30.09), mandát ich chce. Register pass na Pulls je nedorobok, funkcie
+  z labu (Receipts atď.) som nestaval.
+- **Syne/Instrument sa nedajú dodať.** Appka je offline-first a bundluje len
+  dva Bricolage subsety; tie súbory nemám a stiahnuť ich neviem. Mono polovicu
+  registra som dodal zo systému.
+
+### Čo ešte NIE je spravené
+
+Inventory · Sales · Pulls · Finance (Transactions, Accounts, Reports) ·
+Notes (Two Pane, Pin to Record, Quick Note, Real Checklist, Templates) ·
+Settings (Import Preview + podsekcie) · bankový výpis cez CSV ·
+Restriction Stamp · Bulk Change Preview.
+
+### Overené
+
+Vyrenderované pred/po s jeho číslami (riadok čísel aj tabuľka Events).
+Vyváženie zátvoriek 65/65 TS súborov a `index.css`, obe triedy komentárovej
+chyby 0, všetky `<Figure>` použitia majú import. **Nie je to kompilácia** —
+CI je prvý kompilátor.
+
+## 2.89.0 - Onyx Deep: tmavšie okienka (a prečo predtým nešli stmaviť)
+
+marko: „tie zmeny vobec neboli velke, som sklamany, tie okienka. vsetky
+ostali rovnake, totreba zmenu, chcem ich tmavsie a taka krajsie".
+
+Mal pravdu a dôvod bol štrukturálny, nie vec vkusu: **karta bola SVETLEJŠIA
+než stránka** — `--surface` = slate-900 `#141415` na podklade slate-950
+`#0b0b0c`. Preto každé okienko čítalo ako tá istá stredne sivá bez ohľadu na
+to, čo sa na ňom menilo.
+
+| | pred | po |
+|---|---|---|
+| podklad stránky | `#0b0b0c` | `#050507` |
+| karta | `#141415` | `#0c0c10` |
+| hrana karty | `#1f1f23` | `#32323d` |
+| horná hrana | — | svetlo, 96 px nadol |
+
+Karta je teraz približne tam, kde bolo **staré pozadie stránky**, a pozadie
+kleslo ešte hlbšie. Dve veci bránia tomu, aby tmavšia karta na tmavšom
+podklade zmizla: **svetlejší prsteň** v `--sh-card` (keď výplň prestane
+kresliť kartu, musí ju nakresliť hrana) a **krátke svetlo po hornej hrane**
+v `.card`. To svetlo je pevných 96 px, nie percento — vysoký panel s tabuľkou
+tak dostane rovnakú hranu ako nízka KPI dlaždica, nie natiahnutý prechod.
+
+### Čo bolo treba vyriešiť, aby sa to vôbec dalo
+
+- **`--surface` už nesmie byť `theme("colors.slate.900")`.** Ten istý stupeň
+  nesie text v light móde (`text-slate-900`). Keby som hýbal rampou, prefarbím
+  text. Dostal vlastnú hodnotu.
+- **`slate-950` v rampe sa zmeniť DALO** — overil som, že v celej appke nie je
+  ani jeden `text-slate-950`, `border-slate-950` ani `ring-slate-950`, nesie
+  výhradne pozadie stránky.
+- **20 miest malo `dark:bg-slate-900` napísané natvrdo** vedľa `bg-surface`.
+  Kým sa token rovnal slate-900, boli neškodné; po zmene by to boli svetlejšie
+  fľaky — doslovná verzia toho „všetky ostali rovnaké". 17 z nich override
+  stratilo a ide za tokenom. 3 majú priehľadnosť (`/60`, `/90`, `/95`), čo
+  Tailwind cez `var()` farbu nevie, takže ukazujú na hex priamo.
+- **`--line` som zámerne NEHÝBAL.** Niekoľko stoviek miest píše
+  `dark:border-slate-800` natvrdo; token, ktorý by s nimi nesúhlasil, by
+  spravil dve rôzne vlásočnice na jednej obrazovke.
+
+### Overené
+
+Vyrenderované pred/po s jeho vlastnými číslami, s **presne tými hodnotami,
+ktoré sú v kóde**. Vybrané porovnaním piatich variantov, nie odhadom. Plus
+vyváženie zátvoriek v TS aj v CSS/JS a obe triedy komentárovej chyby.
+**Nie je to kompilácia** — CI je prvý kompilátor.
+
+## 2.88.0 - Preč: donut v Sales by platform a sparkliny v KPI kartách
+
+marko: „odstran to kolecko ten donut a tie male grafy odstran".
+
+**Donut (`PlatformRing`) v „Sales by platform" je preč.** Zoznam pod ním bol
+vždy ten skutočný rozpad — menuje platformu, sumu, percento aj počet kusov,
+a dá sa rozbaliť. Krúžok to len zopakoval. Jeho stredové číslo bolo revenue
+za obdobie, ktoré karta Revenue hore na Overview aj tak ukazuje, takže sa
+odstránením nestratilo nič.
+
+**Sparkliny v piatich KPI kartách sú preč** (Profit, Revenue, Purchase cost,
+Tickets sold — ROI žiadnu nemala). Karty teraz nesú číslo, trend a
+podriadok. Reálny graf je priamo pod tým riadkom, nezmenený.
+
+`platformTotal` zostáva — ten ešte stále počíta percentá v zozname. Zmenené
+sú len komentáre, ktoré hovorili o „arc above" a o stredovom čísle krúžku,
+aby neklamali.
+
+**Mŕtvy kód ponechaný zámerne:** `PlatformRing` v `DashboardCharts.tsx`,
+`Sparkline` a prop `spark` na `StatCard` v `ui.tsx` v kóde zostávajú, len ich
+už nič nevolá. Sú exportované, takže build to nerieši. Vymazať ich je väčší
+zásah do súboru, ktorý importuje každá stránka — ak ich mám odstrániť nadobro,
+povedz.
+
+**Overené:** vyrenderované staticky s jeho vlastnými číslami pri šírke 1400 px
+— päť KPI kariet v jednom riadku, každá hodnota čitateľná, zoznam platforiem
+začína rovno pod hlavičkou karty. Plus vyváženie zátvoriek a obe triedy
+komentárovej chyby na `Dashboard.tsx`. **Nie je to kompilácia** — na tomto
+Macu nie je node ani cargo, CI je prvý kompilátor.
+
 ## 2.87.0 - Build fix: opravený build + 10 padajúcich Rust testov
 
 ### 1. TypeScript — moja oprava z 2.86.0 bola tiež chybná

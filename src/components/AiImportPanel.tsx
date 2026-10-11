@@ -352,7 +352,7 @@ export default function AiImportPanel({
               </div>
 
               {groups.length > 0 && activeGroup && (
-                <div className="mt-3 rounded-lg border border-slate-200 bg-surface p-2.5 dark:border-slate-700 dark:bg-slate-900/60">
+                <div className="mt-3 rounded-lg border border-slate-200 bg-surface p-2.5 dark:border-slate-700 dark:bg-[#0c0c10]/60">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <p className="section-title">
                       {groups.length === 1

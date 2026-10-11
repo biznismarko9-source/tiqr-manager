@@ -101,30 +101,54 @@
     --line-soft: #f0f0f1;
     --scroll-thumb: theme("colors.slate.300");
     --highlight: transparent;
-    /* 3.0: hairline PLUS one very soft lift. 2.29.2 removed the shadow
-       entirely to kill a 3D look; this is the opposite problem - everything
-       reads equally flat - so the shadow is back, but at a fifth of the
-       old strength and with no second layer. */
-    --sh-card: 0 0 0 1px #e6e6ec, 0 1px 2px rgb(16 16 28 / 0.05);
+    /* 2.90.0: hairline ONLY. THE REGISTER (REDESIGN-OVERVIEW.md §1, and
+       NOTES-LAB-LOG.md §02 where its twelve parts are written out) says
+       "vlasové linky, 8 px rádius, žiadne tiene, prechody ani ilustrácie" -
+       hairlines, 8px radius, no shadows, no gradients, no illustrations.
+       Part 6 defines a Panel as exactly "povrch, vlasová linka, 8 px".
+       3.0 had put a soft lift back on every card and 2.89.0 added a drop
+       shadow and a top gradient on top of that; both are decoration this
+       design system does not have. The edge is the whole treatment. */
+    --sh-card: 0 0 0 1px #e6e6ec;
     --sh-raised: 0 0 0 1px theme("colors.slate.300");
     --sh-overlay: 0 18px 48px rgb(11 11 12 / 0.24), 0 0 0 1px theme("colors.slate.200");
     --sh-inset: 0 0 0 1px theme("colors.slate.300");
   }
   .dark {
+    /* 2.89.0 (Onyx Deep). marko: "chcem ich tmavsie a taka krajsie".
+       Until now the card was LIGHTER than the page - slate-900 #141415 on a
+       slate-950 #0b0b0c ground - which is why every box read as the same
+       mid-grey no matter what else changed on it. Both moved down, and the
+       card now sits almost exactly where the old PAGE background used to be
+       (#0c0c10 against the old #0b0b0c), and the page went deeper still.
+       Two things keep a darker card from disappearing into a darker page:
+       the ring in `--sh-card` is lighter than it was (a card is drawn by its
+       edge once the fill stops doing it), and `.card` below adds a short
+       highlight down its top edge. */
     --app-bg: theme("colors.slate.950");
-    --surface: theme("colors.slate.900");
-    --surface-muted: #1a1a1c;
-    --surface-raised: #1f1f23;
-    --surface-sunken: #070708;
+    /* NOT theme(slate.900) any more: that step also carries light mode's body
+       text (`text-slate-900`), so the card surface needed a value of its own
+       before it could move. */
+    --surface: #0c0c10;
+    --surface-muted: #131318;
+    --surface-raised: #17171d;
+    /* Still UNDER the page, same as it always was - see the light-mode note. */
+    --surface-sunken: #020203;
+    /* `--line` stays on slate-800: several hundred places spell
+       `dark:border-slate-800` out literally, and a token that disagreed with
+       them would show up as two different hairlines on one screen. The card's
+       own edge is the ring in `--sh-card`, which is what moved instead. */
     --line: theme("colors.slate.800");
     --line-soft: #1f1f22;
     --scroll-thumb: theme("colors.slate.700");
     --highlight: transparent;
-    /* Dark carries its depth in the tone step (950 ground -> 900 card), so
-       the shadow here is barely there - just enough to seat the card. */
-    --sh-card: 0 0 0 1px theme("colors.slate.800"), 0 1px 2px rgb(0 0 0 / 0.4);
-    --sh-raised: 0 0 0 1px theme("colors.slate.700");
-    --sh-overlay: 0 18px 48px rgb(0 0 0 / 0.55), 0 0 0 1px theme("colors.slate.800");
+    /* The depth used to come from the tone step (950 ground -> 900 card).
+       That step is now inverted, so the edge carries it: a lighter ring than
+       the old slate-800, plus one soft drop that seats the card on the page
+       without the 3D look 2.29.2 removed. */
+    --sh-card: 0 0 0 1px #32323d;
+    --sh-raised: 0 0 0 1px #42424e;
+    --sh-overlay: 0 18px 48px rgb(0 0 0 / 0.7), 0 0 0 1px #32323d;
     --sh-inset: 0 0 0 1px theme("colors.slate.800");
   }
 
@@ -416,9 +440,15 @@
      app ground, because in this material the card and the page are one
      sheet. */
   .card {
-    @apply rounded-xl bg-surface shadow-card;
+    /* 2.90.0: rounded-lg (8px), not rounded-xl (12px) - THE REGISTER's Panel
+       is "povrch, vlasová linka, 8 px". Every panel in the app is this one
+       rule, so the radius is corrected here rather than per page. */
+    @apply rounded-lg bg-surface shadow-card;
     border: 0;
   }
+  /* 2.90.0: 2.89.0's top-edge gradient is GONE. THE REGISTER allows no
+     gradients, and the darker surfaces it was propping up hold on their own
+     against the deeper ground once the ring carries the edge. */
   /* Opt-in lift for cards that are actually clickable (KPI tiles, the
      Dashboard's Attention boxes, Ticket Center's filter tiles). Not applied
      to `.card` itself - a static container that lifts on hover is noise. */
@@ -462,8 +492,60 @@
   /* 3.0: the one small-heading style loses its capitals too. It sits above
      cards on Dashboard/Finance/Event Detail, and tracked-out capitals there
      were shouting a label that only needs to be read once. */
+  /* THE REGISTER part 1, the Label: "malý, utlmený, polotučný, vždy NAD
+     svojím ovládačom, nikdy vedľa" - small, muted, SEMIBOLD, always ABOVE
+     the control it names, never beside it. 2.90.0 moves it from medium to
+     semibold with a touch of tracking, which is what separates a label from
+     the body text under it at this size. The "above, never beside" half is
+     structural and is enforced by `.field` below. */
   .section-title {
-    @apply text-[11.5px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
+    @apply text-[11px] font-semibold tracking-[0.01em] text-slate-500 dark:text-slate-400;
+  }
+  /* THE REGISTER parts 2 and 3, the Field and the Bar: a label stacked on
+     the control it owns, and fields spaced 16 x 28px. Using these two means
+     a form never has to re-decide its own spacing. */
+  .field {
+    @apply flex min-w-0 flex-col gap-1.5;
+  }
+  .field-bar {
+    @apply flex flex-wrap items-end;
+    gap: 28px 16px;
+  }
+  /* THE REGISTER: "čísla mono". A money column that is mono AND tabular
+     cannot drift out of alignment between rows, which is the whole reason
+     this app aligns figures at all. */
+  .num {
+    @apply font-mono tabular-nums;
+  }
+
+  /* THE REGISTER's figure row - the part of the system this app did not
+     have. A row of headline numbers is NOT a row of cards in this design
+     system: it is ONE panel whose figures are divided by hairlines. Five
+     bordered boxes give five numbers the same visual weight as the content
+     under them and read as five separate objects; one panel with four
+     divisions reads as one summary, which is what it is.
+     `flex-basis: 150px` with `flex-1` is what lets the same row hold three
+     figures or six and still fill the width, wrapping instead of shrinking
+     a money value into an ellipsis. */
+  .figs {
+    @apply flex flex-wrap;
+  }
+  .fig {
+    @apply min-w-0 flex-1 px-[18px];
+    flex-basis: 150px;
+    border-left: 1px solid var(--line);
+  }
+  .fig:first-child {
+    @apply pl-0;
+    border-left: 0;
+  }
+  .fig-v {
+    @apply mt-1.5 truncate text-[26px] font-bold leading-[1.12] tabular-nums text-slate-900 dark:text-slate-50;
+    letter-spacing: -0.03em;
+  }
+  .fig-v-sm {
+    @apply mt-1 truncate text-[19px] font-semibold leading-tight tabular-nums text-slate-900 dark:text-slate-50;
+    letter-spacing: -0.02em;
   }
 
   /* -----------------------------------------------------------------------

@@ -7,11 +7,12 @@ import {
   Card,
   ConfirmDialog,
   EmptyState,
+  Figure,
+  Figures,
   Input,
   PanelSkeleton,
   SEGMENTED_TRACK,
   segmentedItemClass,
-  StatCard,
   StatsSkeleton,
 } from "../../components/ui";
 import { bucketLabel, MetricChart, type MetricKey } from "../../components/MetricChart";
@@ -351,7 +352,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               <button
                 key={c.currency}
                 type="button"
-                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setConvertConfirm({ currency: c.currency, label: c.currency })}
               >
                 {c.currency} ({c.count})
@@ -360,7 +361,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             {nonEurCurrencies.length > 1 && (
               <button
                 type="button"
-                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setConvertConfirm({ currency: null, label: nonEurCurrencies.map((c) => c.currency).join(", ") })}
               >
                 All
@@ -372,7 +373,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
       )}
 
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface p-1">
           {PERIODS.map((p) => (
             <button
               key={p.key}
@@ -385,7 +386,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface dark:bg-slate-900 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-surface p-1">
           {SCOPES.map((s) => (
             <button
               key={s.key}
@@ -456,51 +457,41 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               row for no visible reason. Same five figures, same order within
               each band - only the grouping and the two labels are new. */}
           <p className="section-title mb-2">What you have · not affected by the period filter</p>
-          <div className="summary-bar">
+          <Figures>
             {/* 2.80.0: icons and accents, the same optional props the rest of
                 the app's metric cards carry since 2.74.0. The accents say what
                 the figure IS: emerald for money actually in the accounts,
                 orange for money still owed, blue for income, orange for
                 expenses, teal for the net. No value or calculation changed. */}
-            <StatCard
+            <Figure
               label="Current Balance"
               value={formatMoney(currentBalanceCents, "EUR")}
               sub="Across active EUR accounts"
-              icon={<IconWallet className="h-4 w-4" />}
-              accent="emerald"
             />
             {pending && pending.count > 0 && (
-              <StatCard
+              <Figure
                 label="Owed to you"
                 value={formatMoneyOrMixed(pending.amountCents, pending.currency)}
                 sub={`${pending.count} unpaid sale${pending.count === 1 ? "" : "s"}`}
-                icon={<IconReceipt className="h-4 w-4" />}
-                accent="orange"
               />
             )}
-          </div>
+          </Figures>
           <p className="section-title mb-2">What moved · in the selected period</p>
-          <div className="summary-bar">
-            <StatCard
+          <Figures>
+            <Figure
               label="Income"
               value={formatMoney(incomeCents, "EUR")}
-              icon={<IconTrendingUp className="h-4 w-4" />}
-              accent="blue"
             />
-            <StatCard
+            <Figure
               label="Expenses"
               value={formatMoney(expenseCents, "EUR")}
-              icon={<IconWallet className="h-4 w-4" />}
-              accent="orange"
             />
-            <StatCard
+            <Figure
               label="Net Cash Flow"
               value={formatMoney(netCashFlowCents, "EUR")}
               tone={netCashFlowCents > 0 ? "positive" : netCashFlowCents < 0 ? "negative" : "default"}
-              icon={<IconDatabase className="h-4 w-4" />}
-              accent="teal"
             />
-          </div>
+          </Figures>
           {unassigned.count > 0 && (
             <p className="-mt-4 mb-2 text-xs text-slate-500 dark:text-slate-400">
               {unassigned.count} of these entr{unassigned.count === 1 ? "y has" : "ies have"} no account, so{" "}

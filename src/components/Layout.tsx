@@ -860,7 +860,7 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
         // sitting in the same corner underneath it - every toast hid the one
         // thing that was supposed to say the app is busy, which is the exact
         // opposite of what it is for.
-        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-surface/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-300"
+        className="pointer-events-none fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-surface/95 px-3.5 py-2 text-xs text-slate-600 shadow-card backdrop-blur dark:border-slate-700 dark:bg-[#0c0c10]/95 dark:text-slate-300"
       >
         <Spinner className="h-3.5 w-3.5 text-brand-500" />
         {activity.label}...
@@ -877,7 +877,7 @@ function SyncActivity({ activity }: { activity: { label: string; blocking: boole
       // outranks everything because it ends the process.
       className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm"
     >
-      <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-surface px-7 py-6 text-center shadow-raised dark:border-slate-700 dark:bg-slate-900">
+      <div className="mx-6 flex max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-surface px-7 py-6 text-center shadow-raised dark:border-slate-700">
         <Spinner className="h-7 w-7 text-brand-500" />
         <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{activity.label}...</p>
         <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">

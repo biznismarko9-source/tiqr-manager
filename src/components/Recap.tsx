@@ -1299,7 +1299,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
     <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-slate-950">
       {/* Header stays put while the report scrolls under it - the period
           picker is the one control someone reaches for repeatedly. */}
-      <header className="shrink-0 border-b border-slate-200 bg-surface/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90">
+      <header className="shrink-0 border-b border-slate-200 bg-surface/90 backdrop-blur dark:border-slate-800 dark:bg-[#0c0c10]/90">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-6 py-3">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
           <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 p-1 dark:border-slate-800">
@@ -1325,14 +1325,14 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
                 type="date"
                 value={customFrom}
                 onChange={(e) => setCustomFrom(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-surface px-2 py-1 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                className="rounded-lg border border-slate-200 bg-surface px-2 py-1 text-xs text-slate-700 dark:border-slate-800 dark:text-slate-200"
               />
               <span className="text-xs text-slate-400">-</span>
               <input
                 type="date"
                 value={customTo}
                 onChange={(e) => setCustomTo(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-surface px-2 py-1 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                className="rounded-lg border border-slate-200 bg-surface px-2 py-1 text-xs text-slate-700 dark:border-slate-800 dark:text-slate-200"
               />
             </span>
           )}

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, Ticket } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
-import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, StatCard, TabSwitcher } from "../components/ui";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, Figure, Figures, LoadingBlock } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
 import {
   IconArrowLeft,
@@ -42,7 +42,9 @@ import { EventFormModal } from "./Events";
 //    into Sales after all. Left here as real history, not rewritten.)
 //
 // 2) Listings rebuilt into a real system. REMOVED FROM THE UI in 2.64.0 -
-//    the table and commands remain, see this file's WorkspaceTab note. Doc
+//    the table and commands remain. (That note used to point at this file's
+//    WorkspaceTab type, which 2.90.0 removed along with the two tabs - the
+//    event is one page now.) Doc
 //    comment and commands/ticket_listings.rs (Rust) for the full design.
 //    Replaces 2.2.3's read-only view of Ticket.listingPriceCents/status
 //    (which explicitly could not show marketplace/URL/last-checked, because
@@ -86,12 +88,13 @@ import { EventFormModal } from "./Events";
    gone from this file. The `ticket_listings` TABLE, its Rust commands and
    the "Listing price" column on Order Detail all stay - same call as the
    Sheets removal in 2.61.0: he asked for the section, not for the data. */
-type WorkspaceTab = "overview" | "sales";
-
-const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
-  { key: "overview", label: "Overview" },
-  { key: "sales", label: "Sales" },
-];
+/* 2.90.0: the two tabs are gone. EVENTS-LAB-LOG.md design 01, "One Page",
+   settled 30.09 - and the lab gives the reason in one line: "Overview and
+   Sales were never two different questions - they were one question cut in
+   half." You cannot answer "did this event make money" from a page that
+   hides the sales behind a click. The page is one scroll now, with the two
+   former tabs as sections of it, in the order you read them: what it cost,
+   where the tickets are, what came back. */
 
 export default function EventDetail() {
   const { id } = useParams();
@@ -99,7 +102,6 @@ export default function EventDetail() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [tab, setTab] = useState<WorkspaceTab>("overview");
   const [event, setEvent] = useState<EventWithStats | null>(null);
   const [orders, setOrders] = useState<OrderRecord[] | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -150,10 +152,10 @@ export default function EventDetail() {
         </div>
       </div>
 
-      <TabSwitcher tabs={WORKSPACE_TABS} active={tab} onChange={setTab} className="mb-4" />
+      <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} />
 
-      {tab === "overview" && <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} onSwitchTab={setTab} />}
-      {tab === "sales" && <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />}
+      <h2 className="section-title mb-3 mt-7">Sales</h2>
+      <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />
 
       <EventFormModal
         open={editOpen}
@@ -205,13 +207,11 @@ function OverviewTab({
   orders,
   tickets,
   navigate,
-  onSwitchTab,
 }: {
   event: EventWithStats;
   orders: OrderRecord[] | null;
   tickets: Ticket[] | null;
   navigate: ReturnType<typeof useNavigate>;
-  onSwitchTab: (tab: WorkspaceTab) => void;
 }) {
   const s = event.stats;
 
@@ -230,62 +230,48 @@ function OverviewTab({
           mapping (cost orange, revenue blue, profit teal, ROI emerald). One
           glance separates "how many tickets" from "how much money", which
           seven identically-coloured boxes could not do. */}
-      <div className="summary-bar">
-        <StatCard
+      <Figures>
+        <Figure
           label="Tickets"
           value={String(s.purchasedTickets)}
-          icon={<IconTicket className="h-4 w-4" />}
-          accent="violet"
         />
-        <StatCard
+        <Figure
           label="Sold"
           value={String(s.soldTickets)}
           sub={`${s.cancelledTickets} cancelled`}
-          icon={<IconCheck className="h-4 w-4" />}
-          accent="violet"
         />
-        <StatCard
+        <Figure
           label="Available"
           value={String(s.availableTickets)}
           sub={`${s.listedTickets} listed`}
-          icon={<IconPackage className="h-4 w-4" />}
-          accent="violet"
         />
-        <StatCard
+        <Figure
           label="Total cost"
           value={formatMoneyOrMixed(s.totalCostCents, s.currency)}
-          icon={<IconWallet className="h-4 w-4" />}
-          accent="orange"
         />
-        <StatCard
+        <Figure
           label="Revenue"
           value={formatMoneyOrMixed(s.revenueCents, s.currency)}
-          icon={<IconBarChart className="h-4 w-4" />}
-          accent="blue"
         />
-      </div>
+      </Figures>
       {s.currency === null && (
         <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
           This event has tickets in more than one currency, so these numbers can&apos;t be combined into one here. Check
           individual orders and sales instead.
         </p>
       )}
-      <div className="summary-bar">
-        <StatCard
+      <Figures>
+        <Figure
           label="Profit"
           value={formatMoneyOrMixed(s.profitCents, s.currency)}
           tone={s.profitCents > 0 ? "positive" : s.profitCents < 0 ? "negative" : "default"}
-          icon={<IconDatabase className="h-4 w-4" />}
-          accent="teal"
         />
         {/* 2.39.0: Margin removed app-wide at marko's request. */}
-        <StatCard
+        <Figure
           label="ROI"
           value={formatPercentOrMixed(s.roi, s.currency)}
-          icon={<IconGauge className="h-4 w-4" />}
-          accent="emerald"
         />
-      </div>
+      </Figures>
 
       {event.notes && (
         <Card className="mb-6 p-4">
@@ -481,31 +467,25 @@ function SalesTab({
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
           This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
         </p>
-        <div className="summary-bar">
+        <Figures>
           {/* Same three accents the Dashboard's own Potential Profit trio
               wears, so the estimate reads identically on both screens. */}
-          <StatCard
+          <Figure
             label="Inventory cost"
             value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
             sub="What unsold tickets cost you"
-            icon={<IconPackage className="h-4 w-4" />}
-            accent="orange"
           />
-          <StatCard
+          <Figure
             label="Listing value"
             value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
             sub="Unsold tickets that have a listing price"
-            icon={<IconTicket className="h-4 w-4" />}
-            accent="blue"
           />
-          <StatCard
+          <Figure
             label="Potential profit"
             value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
             sub="Listing value minus inventory cost"
-            icon={<IconTrendingUp className="h-4 w-4" />}
-            accent="teal"
           />
-        </div>
+        </Figures>
         {missingListingPriceCount > 0 && (
           <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
             {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}

@@ -4297,7 +4297,7 @@ function SupportCards() {
           rows={4}
           maxLength={2000}
           placeholder="Tell us what you would change or add…"
-          className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-600"
+          className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:text-slate-100 dark:placeholder:text-slate-600"
         />
         {/* 2.25.0: one optional picture. A screenshot says in one look what a
             paragraph gets wrong - and it is resized here before it is sent,

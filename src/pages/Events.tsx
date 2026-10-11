@@ -5,7 +5,7 @@ import AiImportPanel from "../components/AiImportPanel";
 import EventRowsModal from "./EventRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventInput, EventStatus, EventWithStats } from "../lib/types";
-import { formatDateNumeric, formatMoneyOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
+import { dayLabel, formatDateNumeric, formatMoneyOrMixed, summarizeBulkDeleteSkips } from "../lib/format";
 import {
   Badge,
   Button,
@@ -25,7 +25,7 @@ import {
 } from "../components/ui";
 import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { LookupSelect } from "../components/LookupSelect";
-import { IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
+import { IconAlertTriangle, IconCalendarDays, IconPlus, IconSearch, IconTag, IconTrash } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { markRow, takeRow } from "../lib/lastRow";
@@ -186,6 +186,17 @@ export default function Events() {
   const visibleEvents = useMemo(
     () => sortedEvents.filter((ev) => (tab === "upcoming" ? ev.status === "upcoming" : ev.status !== "upcoming")),
     [sortedEvents, tab],
+  );
+
+  /* 2.90.0: how many of the rows actually on screen cannot be totalled.
+     Counted from `visibleEvents`, not from every event, because a banner
+     that counts rows you filtered away is a banner about nothing you can
+     see. `stats.currency === null` is the backend's own flag for "this
+     event's money is spread across currencies" - the same one
+     formatMoneyOrMixed reads per cell. */
+  const mixedCurrencyCount = useMemo(
+    () => visibleEvents.filter((ev) => ev.stats.currency === null).length,
+    [visibleEvents],
   );
 
   const exitSelectionMode = () => {
@@ -421,6 +432,34 @@ export default function Events() {
         // dependent formatDate call, per marko's explicit format request.
         // Shared breakpoint moved to 1649px (was 1690px) - see
         // useNarrowTables.ts.
+        <>
+        {/* 2.90.0: the one honest addition EVENTS-LAB design 01 makes to this
+            table. Per-row "Mixed" already worked (formatMoneyOrMixed, and see
+            REDESIGN-OVERVIEW.md 3.1 - the mixed-currency flag IS read, a
+            claim that document itself corrects). What was missing is that
+            nothing told you it was HAPPENING: you had to notice the word in
+            a cell. The incident this app keeps re-learning is that a dropped
+            row shows up as an ABSENCE, and an absence has no pixels - so the
+            count says it out loud, above the table, before you read a single
+            figure. No colour: the register keeps its one accent for
+            selection, so this is a hairline panel like any other. */}
+        {mixedCurrencyCount > 0 && (
+          <div className="card mb-3 flex items-start gap-2.5 p-3">
+            <IconAlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                {mixedCurrencyCount === 1
+                  ? "1 event below cannot be shown as one amount"
+                  : `${mixedCurrencyCount} events below cannot be shown as one amount`}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Their tickets were bought in more than one currency, so Cost, Revenue and Profit
+                read <span className="font-medium">Mixed</span> instead of a total. Open the event to
+                see the figures per order.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="table-shell">
           <table className="w-full table-fixed border-collapse">
             {isNarrow ? (
@@ -544,15 +583,26 @@ export default function Events() {
                       {[ev.venue, ev.city].filter(Boolean).join(", ")}
                     </p>
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>{formatDateNumeric(ev.eventDate)}</td>
+                  {/* 2.90.0: the date carries its own day line - EVENTS-LAB
+                      design 01 ("The Table"), the settled one. The register
+                      allows exactly one accent and it belongs to selection,
+                      so nothing here is coloured: "in 2 days" next to a row
+                      with four unsold tickets is the warning, and it reads
+                      without a palette. */}
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} whitespace-nowrap`}>
+                    <span className="num">{formatDateNumeric(ev.eventDate)}</span>
+                    <span className="block text-[11px] text-slate-500 dark:text-slate-400">
+                      {dayLabel(ev.eventDate, ev.status)}
+                    </span>
+                  </td>
                   <td className={isNarrow ? "td-c-narrow" : "td-c"}>
                     <Badge tone={ev.status}>{ev.status}</Badge>
                   </td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
-                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{ev.stats.purchasedTickets}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.totalCostCents, ev.stats.currency)}</td>
+                  <td className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap`}>{formatMoneyOrMixed(ev.stats.revenueCents, ev.stats.currency)}</td>
                   <td
-                    className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
+                    className={`${isNarrow ? "td-c-narrow" : "td-c"} num text-right whitespace-nowrap font-medium ${ev.stats.profitCents > 0 ? "text-emerald-600 dark:text-emerald-400" : ev.stats.profitCents < 0 ? "text-red-600 dark:text-red-400" : ""}`}
                   >
                     {formatMoneyOrMixed(ev.stats.profitCents, ev.stats.currency)}
                   </td>
@@ -561,6 +611,7 @@ export default function Events() {
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {/* 2.45.0: New Event is now the same row form as New Order / New Sale /

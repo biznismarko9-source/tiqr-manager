@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.87.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.90.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,88 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.90.0 - THE REGISTER applied for real, and Events finished.** This is the
+first implementation block of marko's full-redesign mandate. Four things
+future sessions need to know.
+
+**THE REGISTER is the design system and it is written down.** `REDESIGN-
+OVERVIEW.md` §1 names it; `NOTES-LAB-LOG.md` §02 lists its twelve parts; the
+lab artifacts carry the exact values. Its Panel is "surface, hairline, 8px"
+and it allows **no shadows, no gradients, no illustrations**, one accent
+reserved for selection, labels small/muted/semibold ALWAYS above their
+control, and mono numerals. 2.89.0 had put a drop shadow and a top gradient
+on every card and 3.0 before it had added a soft lift - all three are now
+gone. Check anything decorative against the register before adding it.
+
+**A row of headline numbers is NOT a row of cards in this system.** It is one
+panel whose figures are divided by hairlines (`Figures`/`Figure` in ui.tsx,
+`.figs`/`.fig`/`.fig-v` in index.css). Dashboard, EventDetail and Finance
+Overview were converted. `StatCard` is deliberately still exported and still
+used by OrderDetail and SaleDetail, which wrap their cards differently -
+converting those is remaining work, not an oversight.
+
+**Events is complete per its settled design** (EVENTS-LAB-LOG.md §07, "01 and
+01", 30.09). The list is *The Table*: marko's own seven columns, a relative
+day line under every date, mono money, and a count above the table of how
+many rows cannot be totalled - because the recurring failure in this app is a
+dropped row showing up as an absence, and an absence has no pixels. The
+detail is *One Page*: the Overview/Sales tabs are gone and the event is one
+scroll, because "they were one question cut in half".
+
+**Two conflicts with the mandate, both documented rather than guessed.**
+Pulls is recorded as explicitly PARKED ("Pulls ostáva tak, ako je", 30.09) and
+the mandate asks for it, so its register pass is pending and its lab features
+stay unbuilt. And the selected Syne/Instrument type cannot ship: the app is
+offline-first and bundles only the two Bricolage subsets, so the mono half of
+the register is the system stack and the display half is unchanged.
+
+**2.89.0 (Onyx Deep) - the dark surfaces, after marko said the boxes all
+looked the same.** They did, and the reason was structural rather than a
+matter of taste: the card was LIGHTER than the page (`--surface` =
+slate-900 #141415 on a slate-950 #0b0b0c ground), so every box read as the
+same mid-grey no matter what was done to its contents. The card now sits
+roughly where the old page background was (#0c0c10) and the page went deeper
+still (#050507). Four things to know before touching this again.
+
+**`--surface` can no longer be `theme("colors.slate.900")`.** That step also
+carries light mode's body text (`text-slate-900`), so the card surface needed
+a literal of its own before it could move at all. Changing the slate-900 ramp
+entry instead would have repainted light-mode text.
+
+**`slate-950` WAS safe to change in the ramp** (#0b0b0c -> #050507) because in
+this app it is only ever a dark page background - there is no
+`text-slate-950`, `border-slate-950` or `ring-slate-950` anywhere. Verified
+before changing it; re-verify if it is ever changed again.
+
+**Twenty places had `dark:bg-slate-900` written out literally next to
+`bg-surface`.** They were redundant while the token equalled slate-900, and
+would have become stale lighter patches the moment it did not - the literal
+version of marko's "they all stayed the same". Seventeen had the redundant
+override removed so they follow the token; three carry an opacity
+(`/60`, `/90`, `/95`), which a `var()`-based Tailwind colour cannot take, so
+those point at the hex directly and must be updated by hand if `--surface`
+moves again.
+
+**`--line` deliberately did NOT move.** Several hundred places spell
+`dark:border-slate-800` out literally, so a token that disagreed with them
+would put two different hairlines on one screen. A darker card is kept
+legible by the ring in `--sh-card` and by the 96px top highlight on `.card`
+instead - the highlight is a fixed pixel fade, not a percentage, so a tall
+table panel gets the same edge as a short KPI tile.
+
+**2.88.0 - the donut and the sparklines came back out.** marko asked for the
+`PlatformRing` above "Sales by platform" and the five KPI sparklines to go.
+Both were added in the 2.74.0-2.75.0 redesign; both restated something the
+screen already showed - the ring duplicated the list beneath it and its centre
+figure was the period revenue the Revenue card carries, and the sparklines
+drew `revenueTimeSeries`, which the real chart directly below that row already
+draws. So nothing was lost by removing them, which is the only reason removing
+them was simple. `platformTotal` stays: it is the denominator for the list's
+own percentages, not just the ring's centre figure. The components themselves
+(`PlatformRing`, `Sparkline`, StatCard's `spark` prop) are left in place with
+no caller - deleting them means editing `ui.tsx`, which every page imports,
+for no behavioural gain.
 
 **2.87.0 - the build fix the two releases before it did not manage.** 2.80.0
 put a `{/* ... */}` comment in a JavaScript *expression* position in the three

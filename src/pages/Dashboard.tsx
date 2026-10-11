@@ -19,16 +19,17 @@ import {
   Card,
   ConfirmDialog,
   EmptyState,
+  Figure,
+  Figures,
   Input,
   PageHeader,
   PanelSkeleton,
   SEGMENTED_TRACK,
   segmentedItemClass,
-  StatCard,
   StatsSkeleton,
 } from "../components/ui";
 import { bucketLabel, MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
-import { CashflowChart, platformFill, PlatformRing, type CashflowPoint } from "../components/DashboardCharts";
+import { CashflowChart, platformFill, type CashflowPoint } from "../components/DashboardCharts";
 import { getLastUpdateCheck } from "../lib/updater";
 import {
   IconAlertTriangle,
@@ -432,62 +433,52 @@ export default function Dashboard() {
                       own band of the page: bigger figure, brand-tinted border,
                       and ROI as its sub-line so nothing that was in the
                       headline is lost. */}
-                  {/* 2.74.0: icon, accent and sparkline added - all three are
-                      optional props on StatCard, so every other caller in the
-                      app is untouched. The sparklines are REAL: each one is a
-                      column of `data.revenueTimeSeries`, the same buckets the
-                      chart below draws. ROI deliberately has none - there is
-                      no per-bucket ROI on that series, and a line invented to
-                      fill the gap is exactly what this app must not do. */}
-                  <div data-tour="dash-stats" className="summary-bar">
-                    <StatCard
-                      label="Profit"
-                      value={formatMoney(data.period.profitCents, data.primaryCurrency)}
-                      tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
-                      trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
-                      sub={`${formatPercent(data.period.roi)} ROI`}
-                      icon={<IconDatabase className="h-4 w-4" />}
-                      accent="teal"
-                      spark={data.revenueTimeSeries.map((p) => p.profitCents)}
-                      emphasis
-                    />
-                    <StatCard
-                      label="Revenue"
-                      value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
-                      trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
-                      icon={<IconBarChart className="h-4 w-4" />}
-                      accent="blue"
-                      spark={data.revenueTimeSeries.map((p) => p.revenueCents)}
-                    />
-                    <StatCard
-                      label="Purchase cost"
-                      value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
-                      trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
-                      trendColored={false}
-                      icon={<IconWallet className="h-4 w-4" />}
-                      accent="orange"
-                      spark={data.revenueTimeSeries.map((p) => p.cogsCents)}
-                    />
-                  {/* 2.39.0: Margin is gone from the whole app - marko's
-                      words: "ako keby zanikla". Profit and ROI stay; the
-                      backend still computes `margin` and still sends it,
-                      nothing reads it. */}
-                    <StatCard
-                      label="ROI"
-                      value={formatPercent(data.period.roi)}
-                      trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
-                      icon={<IconGauge className="h-4 w-4" />}
-                      accent="emerald"
-                    />
-                    <StatCard
-                      label="Tickets sold"
-                      value={String(data.period.soldTickets)}
-                      sub={`${data.period.purchasedTickets} purchased in period`}
-                      trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
-                      icon={<IconTicket className="h-4 w-4" />}
-                      accent="violet"
-                      spark={data.revenueTimeSeries.map((p) => p.soldTickets)}
-                    />
+                  {/* 2.74.0: icon and accent added - both optional props on
+                      StatCard, so every other caller in the app is untouched.
+                      2.88.0: the sparklines that were added alongside them are
+                      gone - marko asked for them off these cards. StatCard's
+                      `spark` prop and `Sparkline` itself are left in place and
+                      simply unused; nothing in the app passes `spark` any
+                      more. The figure, its trend and its sub-line are what
+                      these cards carry now, and the real chart is still
+                      directly below this row. */}
+                  <div data-tour="dash-stats" className="mb-5">
+                    <Figures>
+                      <Figure
+                        label="Profit"
+                        value={formatMoney(data.period.profitCents, data.primaryCurrency)}
+                        tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
+                        trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
+                        sub={`${formatPercent(data.period.roi)} ROI`}
+                        emphasis
+                      />
+                      <Figure
+                        label="Revenue"
+                        value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
+                        trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
+                      />
+                      <Figure
+                        label="Purchase cost"
+                        value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
+                        trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
+                        trendColored={false}
+                      />
+                      {/* 2.39.0: Margin is gone from the whole app - marko's
+                          words: "ako keby zanikla". Profit and ROI stay; the
+                          backend still computes `margin` and still sends it,
+                          nothing reads it. */}
+                      <Figure
+                        label="ROI"
+                        value={formatPercent(data.period.roi)}
+                        trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
+                      />
+                      <Figure
+                        label="Tickets sold"
+                        value={String(data.period.soldTickets)}
+                        sub={`${data.period.purchasedTickets} purchased in period`}
+                        trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
+                      />
+                    </Figures>
                   </div>
                   {/* Big number + line always come straight from data.period /
                       data.revenueTimeSeries - the exact same source the
@@ -616,11 +607,11 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Current inventory (all time)
               </p>
-              <div className="summary-bar">
-                <StatCard label="Available" value={String(data.inventory.availableTickets)} />
-                <StatCard label="Listed" value={String(data.inventory.listedTickets)} />
-                <StatCard label="Sold (total)" value={String(data.inventory.soldTickets)} />
-                <StatCard label="Purchased (total)" value={String(data.inventory.purchasedTickets)} />
+              <Figures>
+                <Figure label="Available" value={String(data.inventory.availableTickets)} />
+                <Figure label="Listed" value={String(data.inventory.listedTickets)} />
+                <Figure label="Sold (total)" value={String(data.inventory.soldTickets)} />
+                <Figure label="Purchased (total)" value={String(data.inventory.purchasedTickets)} />
                 {/* 2.3.1 (marko's request): all-time total spend across every
                     ticket ever bought, regardless of status - the exact same
                     total_cost_cents this section's sibling counts already come
@@ -634,14 +625,12 @@ export default function Dashboard() {
                     this is the one "all tickets, no filter" total, so it
                     belongs next to the "all time" inventory counts it shares
                     that exact scope with. */}
-                <StatCard
+                <Figure
                   label="Total cost"
                   value={formatMoneyOrMixed(data.inventory.totalCostCents, data.inventory.currency)}
                   sub="Every ticket ever bought"
-                  icon={<IconWallet className="h-4 w-4" />}
-                  accent="orange"
                 />
-              </div>
+              </Figures>
 
               {/* Cashflow (1.9.0): what's been sold vs. what's actually been
                   collected from buyers vs. what they still owe - all-time
@@ -657,15 +646,13 @@ export default function Dashboard() {
               <p className="mb-2 section-title">
                 Cashflow (all time)
               </p>
-              <div className="summary-bar">
-                <StatCard
+              <Figures>
+                <Figure
                   label="Revenue"
                   value={formatMoneyOrMixed(data.cashflow.revenueCents, data.cashflow.currency)}
                   sub="Total sold, realized"
-                  icon={<IconBarChart className="h-4 w-4" />}
-                  accent="blue"
                 />
-                <StatCard
+                <Figure
                   label="Profit"
                   value={formatMoneyOrMixed(data.cashflow.profitCents, data.cashflow.currency)}
                   tone={
@@ -677,24 +664,18 @@ export default function Dashboard() {
                           : "default"
                       : "default"
                   }
-                  icon={<IconDatabase className="h-4 w-4" />}
-                  accent="teal"
                 />
-                <StatCard
+                <Figure
                   label="Paid"
                   value={formatMoneyOrMixed(data.cashflow.paidCents, data.cashflow.currency)}
                   sub="Collected from buyers"
-                  icon={<IconCheck className="h-4 w-4" />}
-                  accent="emerald"
                 />
-                <StatCard
+                <Figure
                   label="Outstanding"
                   value={formatMoneyOrMixed(data.cashflow.outstandingCents, data.cashflow.currency)}
                   sub="Sold but not yet paid"
-                  icon={<IconReceipt className="h-4 w-4" />}
-                  accent="orange"
                 />
-              </div>
+              </Figures>
 
               {/* Inventory & Potential Profit: deliberately its own tinted
                   zone (not plain StatCards like the sections above) and its
@@ -710,29 +691,23 @@ export default function Dashboard() {
                   Current unsold stock (available + listed), not affected by the period filter above. This is an
                   estimate, not realized profit.
                 </p>
-                <div className="summary-bar">
-                  <StatCard
+                <Figures>
+                  <Figure
                     label="Inventory cost"
                     value={formatMoneyOrMixed(data.inventoryPotential.inventoryCostCents, data.inventoryPotential.currency)}
                     sub="What unsold tickets cost you"
-                    icon={<IconPackage className="h-4 w-4" />}
-                    accent="orange"
                   />
-                  <StatCard
+                  <Figure
                     label="Listing value"
                     value={formatMoneyOrMixed(data.inventoryPotential.listingValueCents, data.inventoryPotential.currency)}
                     sub="Unsold tickets that have a listing price"
-                    icon={<IconTicket className="h-4 w-4" />}
-                    accent="blue"
                   />
-                  <StatCard
+                  <Figure
                     label="Potential profit"
                     value={formatMoneyOrMixed(data.inventoryPotential.potentialProfitCents, data.inventoryPotential.currency)}
                     sub="Listing value minus inventory cost"
-                    icon={<IconTrendingUp className="h-4 w-4" />}
-                    accent="teal"
                   />
-                </div>
+                </Figures>
                 {data.alerts.missingListingPriceCount > 0 && (
                   <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
                     {data.alerts.missingListingPriceCount} unsold ticket{data.alerts.missingListingPriceCount === 1 ? "" : "s"} still{" "}
@@ -956,7 +931,7 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
               <button
                 key={c.currency}
                 type="button"
-                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setPending({ currencies: [c.currency], label: c.currency })}
               >
                 {c.currency} ({c.orderCount})
@@ -965,7 +940,7 @@ function MixedCurrencyBanner({ data, onConverted }: { data: DashboardData; onCon
             {nonEur.length > 1 && (
               <button
                 type="button"
-                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                className="rounded border border-amber-300 bg-surface px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-400 dark:hover:bg-amber-500/10"
                 onClick={() => setPending({ currencies: null, label: nonEur.map((c) => c.currency).join(", ") })}
               >
                 All
@@ -1079,10 +1054,12 @@ function SalesByPlatformCard({
   const rows = data.salesByPlatform;
   const visibleRows = expanded ? rows : rows.slice(0, RECENT_LIST_PREVIEW_COUNT);
   const maxRevenue = Math.max(1, ...rows.map((r) => r.revenueCents));
-  // 2.75.0: the ring's own total. Taken from these same rows rather than from
-  // `data.period.revenueCents`, because a platform breakdown can only ever
-  // total the sales it actually has rows for - and a centre figure that
-  // disagreed with the slices around it would be worse than none.
+  // The denominator for each row's share. Taken from these same rows rather
+  // than from `data.period.revenueCents`, because a platform breakdown can
+  // only ever total the sales it actually has rows for - percentages against
+  // a different denominator would not add up on their own list. (2.75.0 added
+  // this for the ring's centre figure; 2.88.0 removed the ring, and the
+  // percentages still need it.)
   const platformTotal = rows.reduce((sum, r) => sum + r.revenueCents, 0);
   return (
     <RecentCard title="Sales by platform" icon={<IconBarChart className="h-4 w-4" />} className="flex flex-col">
@@ -1090,25 +1067,19 @@ function SalesByPlatformCard({
         <EmptyRow text="No sales in this period yet" />
       ) : (
         <>
-        {/* 2.75.0: the ring was ADDED above the list, not instead of it. The
-            list is the ring's legend - it already names every platform, its
-            revenue and its ticket count, and it already expands. Replacing it
-            with a legend of its own would have been two breakdowns on one
-            screen, or one working feature deleted to look like a screenshot. */}
-        <div className="flex justify-center pb-1 pt-3">
-          <PlatformRing
-            slices={rows.map((r) => ({ name: r.platformName ?? "No platform", value: r.revenueCents }))}
-            centerValue={formatMoney(platformTotal, data.primaryCurrency)}
-            centerLabel="Revenue"
-          />
-        </div>
+        {/* 2.88.0: the donut ring that 2.75.0 put above this list is gone -
+            marko asked for it off. The list below was always the breakdown;
+            the ring only restated it, and its centre figure was this period's
+            revenue, which the Revenue card at the top of the Overview already
+            shows. Nothing is lost by removing it. `PlatformRing` is left in
+            DashboardCharts.tsx, now with no caller. */}
         <ul className="flex-1 divide-y divide-slate-100 dark:divide-slate-800">
           {visibleRows.map((r, i) => (
             <li key={r.platformId ?? "none"} className="px-4 py-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-2">
-                  {/* Same index, same colour as the arc above - see
-                      `platformFill`, which both sides read from. */}
+                  {/* Same index, same colour as this row's own bar below -
+                      see `platformFill`, which both sides read from. */}
                   <span className={`h-2 w-2 shrink-0 rounded-[3px] ${platformFill(i)}`} aria-hidden="true" />
                   <span className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
                     {r.platformName ?? "No platform"}
@@ -1389,7 +1360,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Attention summary"
-        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-surface text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-surface text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800"
       >
         <IconBell className="h-4 w-4" />
         {activeCount > 0 && (
@@ -1403,7 +1374,7 @@ function AlertBell({ data, onShowUpcoming }: { data: DashboardData; onShowUpcomi
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-surface shadow-overlay dark:border-slate-800 dark:bg-slate-900">
+        <div className="absolute right-0 top-full z-10 mt-1 w-72 origin-top-right animate-[pop-in_.16s_ease-out] overflow-hidden rounded-lg border border-slate-200 bg-surface shadow-overlay dark:border-slate-800">
           {activeCount === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">Nothing needs your attention right now.</p>
           ) : (

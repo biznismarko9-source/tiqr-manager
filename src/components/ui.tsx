@@ -1278,6 +1278,78 @@ export function StatCard({
 }
 
 
+/** 2.90.0 - THE REGISTER's figure row.
+ *
+ *  THE REGISTER (REDESIGN-OVERVIEW.md §1, written out as twelve parts in
+ *  NOTES-LAB-LOG.md §02) has no concept of "a row of KPI cards". It has a
+ *  Panel - surface, hairline, 8px - and inside it, figures divided by
+ *  hairlines. Every lab that applied the register drew the summary this way.
+ *
+ *  The difference is not decoration. Five bordered boxes give five numbers
+ *  the same visual weight as the table underneath them, and read as five
+ *  separate objects you have to look at one at a time. One panel with four
+ *  divisions reads as one summary, which is what a period summary IS. It is
+ *  also why marko's "they all stayed the same" was right about the cards:
+ *  the card was the problem, not its fill.
+ *
+ *  `StatCard` is deliberately left in place. Nine screens still use it and
+ *  swapping them all in one unverified pass is how a redesign breaks a
+ *  product. Sections move to `Figures` one at a time. */
+export function Figures({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return (
+    <Card className={`p-4 ${className}`}>
+      <div className="figs">{children}</div>
+    </Card>
+  );
+}
+
+export function Figure({
+  label,
+  value,
+  sub,
+  tone = "default",
+  trend,
+  trendColored = true,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: "default" | "positive" | "negative" | "warning";
+  trend?: TrendInfo | null;
+  trendColored?: boolean;
+  emphasis?: boolean;
+}) {
+  const valueTone =
+    tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : tone === "negative"
+        ? "text-red-600 dark:text-red-400"
+        : tone === "warning"
+          ? "text-amber-600 dark:text-amber-400"
+          : "";
+  const trendTone =
+    !trend || !trendColored || trend.direction === "flat"
+      ? "text-slate-500 dark:text-slate-400"
+      : trend.direction === "up"
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-red-600 dark:text-red-400";
+  return (
+    <div className="fig">
+      <p className="section-title truncate">{label}</p>
+      <p className={`${emphasis ? "fig-v" : "fig-v-sm"} ${valueTone}`}>{value}</p>
+      {trend && (
+        <p className={`mt-2 flex items-center gap-1 text-[11px] font-medium ${trendTone}`}>
+          {trend.direction === "up" && <IconTrendingUp className="h-3 w-3 shrink-0" />}
+          {trend.direction === "down" && <IconTrendingDown className="h-3 w-3 shrink-0" />}
+          {trend.label} <span className="font-normal text-slate-500 dark:text-slate-400">vs. previous</span>
+        </p>
+      )}
+      {sub && <p className="mt-1.5 truncate text-[11px] text-slate-500 dark:text-slate-400">{sub}</p>}
+    </div>
+  );
+}
+
 /** 2.13.1: the one summary figure in the app - "Label: value", grey label,
  * value beside it, nothing around it. Lived in Sales.tsx since 1.9.0; marko
  * pointed at that bar and asked for it on every screen, so it moved here and
