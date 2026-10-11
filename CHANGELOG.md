@@ -16,6 +16,55 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.86.0 - Build fix: dve nezávislé chyby, obe z CI
+
+### 1. TypeScript — moja chyba z 2.80.0, dvakrát
+
+`{/* ... */}` som umiestnil po `{period === "custom" && (`, čo je
+**JavaScript expression** pozícia, nie JSX children. Tam sa to parsuje ako
+objektový literál. TypeScript to ohlásil ako *"JSX element 'Card' has no
+corresponding closing tag"* vo všetkých troch Finance súboroch.
+
+Je to presne tá istá trieda chyby, akú som si sám chytil v 2.71.0 (`//`
+v zozname JSX atribútov) a vtedy komentár preto presunul. Tu som ju spravil
+znova, len na druhú stranu.
+
+**Moja kontrola zátvoriek to nemohla vidieť**, lebo `{/*` a `*/}` sú
+vyvážené. To je tá diera v mojom overovaní.
+
+### 2. A horšie: nastylovaný bol nesprávny element
+
+Ten div je **podriadok s vlastnými dátumami vnútri existujúcej `Card`**, nie
+samostatná lišta. Finance toolbary už v `Card` boli — na rozdiel od
+Events/Orders/Sales, ktorých voľné divy tá lišta z 2.76–2.78 riešila.
+
+Čiže 2.80.0 „zjednotilo" niečo, čo zjednotené nemalo byť. Riadok je **vrátený
+presne do pôvodného tvaru** vo všetkých troch súboroch.
+
+### 3. Rust — hniloba v testoch, ktorú našiel job z 2.73.0
+
+`ScanJsPayload` dostal pole `summary` a `ScanJsCandidate` pole `incomplete`
+(2.9.0); tri testovacie pomocníky v `price_checker_scanner.rs` ich nikdy
+nedostali, takže `cargo test` nekompiloval.
+
+**Toto nie je moja chyba — je to presne to, na čo som ten `rust-tests` job
+v 2.73.0 pridal.** Na prvom behu našiel reálnu hnilobu, ktorú `tauri build`
+vidieť nemôže (preskakuje `#[cfg(test)]`).
+
+Doplnené `summary: ScanJsSummary::default()` a `incomplete: false`.
+Preaudítované: **5/5 literálov `ScanJsPayload` a 3/3 `ScanJsCandidate`** majú
+svoje polia.
+
+### Čo som skúsil a vzdal
+
+Napísať všeobecný kontrolór — na JSX tagy aj na Rust štruktúrne literály.
+**Trikrát produkoval šum**: JSX sa regexom parsovať nedá (šípkové funkcie
+v props obsahujú `>`), a v Ruste sa mi `impl X {` a `-> X {` miešali
+s literálmi (239 z 569 falošných).
+
+Nedodávam kontrolu, ktorej sám neverím. Na túto triedu chýb je kompilátor,
+a ten v CI práve dvakrát odviedol presne tú prácu, ktorú mal.
+
 ## 2.85.0 - Globálny prečesávací prechod (fáza G)
 
 marko poslal master prompt na redesign celej apky. Väčšina už bola hotová —

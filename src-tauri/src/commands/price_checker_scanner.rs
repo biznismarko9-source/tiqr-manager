@@ -1172,7 +1172,19 @@ mod tests {
     }
 
     fn js_ok(candidates: Vec<ScanJsCandidate>) -> ScanJsPayload {
-        ScanJsPayload { ok: true, blocked: false, blocked_reason: None, candidates, diagnostics: ScanJsDiagnostics::default() }
+        // 2.86.0: `summary` was added to ScanJsPayload and these test helpers
+        // were never updated, so `cargo test` had not compiled since. The
+        // rust-tests job added in 2.73.0 is what surfaced it - that is exactly
+        // what it is for. `Default` is right here: a hand-written fixture has
+        // no real scan counts to report.
+        ScanJsPayload {
+            ok: true,
+            blocked: false,
+            blocked_reason: None,
+            candidates,
+            summary: ScanJsSummary::default(),
+            diagnostics: ScanJsDiagnostics::default(),
+        }
     }
 
     fn candidate(price_cents: i64, section: Option<&str>, row: Option<&str>) -> ScanJsCandidate {
@@ -1185,6 +1197,10 @@ mod tests {
             quantity: None,
             listing_id: None,
             marketplace: "stubhub".to_string(),
+            // 2.86.0: added to ScanJsCandidate in 2.9.0; this fixture never
+            // gained it. `false` is the honest value - a hand-built candidate
+            // is a clean read by construction, not a partial one.
+            incomplete: false,
         }
     }
 
@@ -1447,6 +1463,7 @@ mod tests {
             blocked: true,
             blocked_reason: Some("just a moment".to_string()),
             candidates: vec![],
+            summary: ScanJsSummary::default(),
             diagnostics: ScanJsDiagnostics::default(),
         };
         let result1 = merge_scan_into_session(&mut session, 1, &blocked);

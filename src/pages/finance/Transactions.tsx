@@ -195,11 +195,19 @@ export default function Transactions({ entries, categories, accounts, transfers,
           ))}
         </div>
         {period === "custom" && (
-          {/* 2.80.0: the same sunken filter bar Events, Inventory, Sales and
-              Pulls already have, so Finance's toolbars group their controls
-              the same way as every other list in the app. Same controls, same
-              handlers, same wrapping. */}
-          <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+          /* 2.86.0: 2.80.0 put a sunken filter bar here and broke the build
+             twice over.
+             First, syntax: this sits after `{period === "custom" && (`, which
+             is a JavaScript EXPRESSION position, not JSX children - so
+             `{/* ... */}` parsed as an object literal and TypeScript reported
+             "JSX element 'Card' has no corresponding closing tag" in all three
+             Finance files. A plain block comment is what belongs here.
+             Second, and worse: this div is the custom-date SUB-ROW inside the
+             toolbar Card, not a standalone toolbar. Finance's toolbars were
+             already wrapped in a `Card` - unlike Events/Orders/Sales, whose
+             loose divs the 2.76-2.78 bar was actually for. So the row is back
+             to exactly what it was. */
+          <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
               From
               <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="mt-1" />
