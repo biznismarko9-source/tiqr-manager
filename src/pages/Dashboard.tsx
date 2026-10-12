@@ -64,6 +64,7 @@ import { usePreferredCurrency } from "../lib/preferredCurrency";
 // behavior change.
 const UPCOMING_WARNING_WINDOW_DAYS = 3;
 
+
 /** Whole days between today and `dateIso` (positive = in the future,
  * negative = already passed). Plain calendar-day difference, not
  * time-of-day-sensitive - matches how `eventDate` is always a plain
@@ -528,15 +529,40 @@ export default function Dashboard() {
                     {/* 2.74.0: the same card, with one more mode. See
                         `chartMode` above for why the metric modes stayed. */}
                     <Card className="p-4">
+                      {/* 2.91.0: the mode switcher used to drop onto its own
+                          line as soon as you left Cashflow, which moved the
+                          whole chart down the card - the control you just
+                          clicked pushed the thing you were looking at. marko
+                          photographed both states side by side.
+                          The cause was the TITLE, not the layout. "Balance
+                          cashflow" fitted beside the switcher; "Profit & Loss
+                          over time" did not, and the row wrapped. Those two
+                          words were carrying nothing: the card has a time
+                          axis along its bottom, so every mode here is already
+                          over time. Dropping them makes the longest title
+                          shorter than the one that already fitted, which is
+                          what actually fixes this at marko's own width.
+                          The guards around it matter in this order.
+                          `min-w-[150px]` is a REAL floor, deliberately not
+                          `min-w-0`: a zero floor lets this block shrink until
+                          the money value slides out from under the title and
+                          collides with the switcher, which looks worse than
+                          the wrap it was meant to cure (measured, not
+                          guessed). The title is `truncate` so it is the half
+                          that gives way; the value is `whitespace-nowrap`
+                          because 2.74.0 already ellipsed a money figure down
+                          to nothing once. `flex-wrap` stays on the row as a
+                          genuine last resort, for a window narrower than the
+                          floor and the switcher together. */}
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        <div className="min-w-[150px] flex-1">
+                          <p className="truncate text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
                             {chartMode === "cashflow"
                               ? "Balance cashflow"
-                              : `${METRICS.find((m) => m.key === metric)?.label} over time`}
+                              : METRICS.find((m) => m.key === metric)?.label}
                           </p>
                           <p
-                            className={`mt-1.5 text-[22px] font-semibold leading-none tabular-nums ${
+                            className={`mt-1.5 whitespace-nowrap text-[22px] font-semibold leading-none tabular-nums ${
                               chartMode === "cashflow"
                                 ? "text-slate-900 dark:text-slate-50"
                                 : periodMetricTone(data, metric)
@@ -553,7 +579,7 @@ export default function Dashboard() {
                                 : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
                           </p>
                         </div>
-                        <div className={SEGMENTED_TRACK}>
+                        <div className={`${SEGMENTED_TRACK} shrink-0`}>
                           <button
                             onClick={() => setChartMode("cashflow")}
                             aria-pressed={chartMode === "cashflow"}

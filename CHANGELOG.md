@@ -16,6 +16,44 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.91.0 - Prepínač grafu ostáva na riadku s nadpisom
+
+marko poslal dva screenshoty toho istého grafu: pri **Cashflow** je prepínač
+vpravo na riadku s nadpisom, pri **Profit & Loss** padne pod nadpis a odtlačí
+celý graf dole. *„takto je dobre prvy graf ale ten druhy urobi toto ze tie
+vybery da pod to."*
+
+**Príčina bol nadpis, nie rozloženie.** „Balance cashflow" sa vedľa prepínača
+zmestil; „Profit & Loss **over time**" nie. A tie dve slová nenesú nič —
+karta má časovú os po celej spodnej hrane, čiže každý režim je *over time*.
+Nadpis je teraz len názov metriky, takže najdlhší je kratší než ten, ktorý
+sa už predtým zmestil.
+
+| | zalomí sa pod |
+|---|---|
+| „Profit & Loss over time" (pred) | **622 px** šírky karty |
+| „Balance cashflow" | 567 px |
+| „Profit & Loss" (po) | **562 px** |
+
+Takže Profit & Loss sa teraz zmestí všade, kde sa zmestí Cashflow — presne
+to, čo si chcel.
+
+**Tri zábrany okolo toho, v tomto poradí:**
+
+- `min-w-[150px]` je **reálna podlaha**, zámerne nie `min-w-0`. Nulovú
+  podlahu som najprv skúsil a vyrenderoval: blok sa zmenší tak, že číslo
+  vyleze spod nadpisu a koliduje s prepínačom. To je horšie než zalomenie,
+  ktoré to malo liečiť.
+- Nadpis má `truncate` — je to tá polovica, ktorá má ustúpiť.
+- Hodnota má `whitespace-nowrap`, lebo v 2.74.0 sa už raz peňažné číslo
+  skrátilo na nulovú šírku.
+- `flex-wrap` na riadku **ostáva** ako skutočná poslednná možnosť pre okno
+  užšie než podlaha a prepínač dokopy.
+
+**Overené** renderom na hranici: pri 580 px sa starý nadpis zalomí (jeho
+screenshot) a nový drží na riadku. Vyváženie zátvoriek a obe triedy
+komentárovej chyby OK. **Nie je to kompilácia** — CI je prvý kompilátor.
+
 ## 2.90.0 - THE REGISTER naozaj nasadený + Events dokončené
 
 Prvý implementačný blok z kompletného redesign mandátu.
