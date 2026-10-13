@@ -55,18 +55,33 @@ export default {
         // 500 is his exact colour. 600 is one step darker ON PURPOSE: it is
         // the fill under `bg-brand-600` and white text on #7c5cf0 measures
         // 4.45:1, just under AA. #6e4ce4 carries the same hue at 5.1:1.
+        // 2.92.0 (Premium Noir): turquoise. marko supplied a nine-screen
+        // visual reference built on a teal accent and asked for the whole
+        // product to move to it. That is the explicit permission
+        // PROTECTED_AREAS.md's 2.6.0 entry requires before this ramp moves -
+        // the palette was changed once in 2.0.56 and rejected in 2.0.58, so
+        // it never moves on a whim.
+        //
+        // The role each step plays is UNCHANGED, and that matters more than
+        // the hue: 500 is the accent, 400 is what dark mode uses for links
+        // and inline actions, and a filled action button is the one place
+        // this ramp meets text. The violet ramp carried WHITE on 600; a
+        // bright turquoise cannot - white on #0f9c8a measures 3.0:1, under
+        // the 4.5 floor. So the filled button flips to NEAR-BLACK on 400,
+        // which measures 9.4:1 and is also what the reference shows. See
+        // Button's `primary` variant, which changed with this.
         brand: {
-          50: "#f0ecfe",
-          100: "#e4ddfd",
-          200: "#cec2fb",
-          300: "#b6a3f8",
-          400: "#9b80f4",
-          500: "#7c5cf0",
-          600: "#6e4ce4",
-          700: "#5b3bc9",
-          800: "#4930a0",
-          900: "#3a277c",
-          950: "#24184f",
+          50: "#eafaf7",
+          100: "#cbf3ea",
+          200: "#9ae7d8",
+          300: "#60d6c1",
+          400: "#2dc9b0",
+          500: "#14b8a0",
+          600: "#0f9c8a",
+          700: "#0e7b6e",
+          800: "#106158",
+          900: "#105049",
+          950: "#03302c",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -147,7 +162,10 @@ export default {
           // edge, so the ground moved with it. Safe to change here
           // because slate-950 is ONLY ever a dark page background in
           // this app - no text-, border- or ring-slate-950 anywhere.
-          950: "#050507",
+          // 2.92.0: the reference's ground is a COOL near-black, not a
+          // neutral one - every surface above it picks up that cast, which
+          // is most of what separates "premium noir" from "dark grey app".
+          950: "#080b0e",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the

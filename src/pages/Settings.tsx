@@ -900,7 +900,10 @@ export default function Settings() {
                 aria-current={on ? "page" : undefined}
                 className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] transition ${
                   on
-                    ? "bg-brand-500/[0.16] font-semibold text-slate-900 dark:text-slate-50"
+                    ? // 2.92.0: the same active treatment the main rail uses - accent
+                      // in the text, not only in the fill. These two lists are the
+                      // app's only two navigation rails and they must not drift.
+                      "bg-brand-500/[0.12] font-semibold text-brand-700 dark:text-brand-300"
                     : "font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
                 }`}
               >

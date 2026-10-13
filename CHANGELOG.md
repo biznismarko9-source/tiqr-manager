@@ -16,6 +16,54 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.92.0 - Premium Noir: tyrkysový akcent + audit obrazoviek
+
+Podľa dodanej deväťobrazovkovej referencie.
+
+**Akcent: violet → tyrkys.** Celá rampa `brand`. Každý stupeň si drží svoju
+rolu, ale jeden dôsledok nie je kozmetický: **plnené tlačidlo už nemôže niesť
+biely text.** Biela na `brand-600` meria 3,0:1, pod hranicou AA. Primárne
+tlačidlo je teraz takmer čierny text na `brand-400` (9,4:1) — a presne tak to
+ukazuje aj referencia.
+
+**Povrchy: chladná čierna.** Podklad `#080b0e`, karta `#0e1317`, linka
+`#1e262e`. Predtým to bola neutrálna sivo-čierna; referencia má modrastý
+nádych a to je väčšina toho, čo oddeľuje „premium noir" od „tmavosivej appky".
+
+**Navigácia:** aktívna položka nesie akcent aj v texte, nielen vo výplni —
+samotný tieň pri tej šírke čítal ako „prejdené myšou". Settings sub-nav
+dostal ten istý stav, aby sa tie dva railu nerozišli.
+
+### Audit — čo som skutočne našiel
+
+Žiadal si prísny audit a nie opis zámerov. Prečítal som kód a výsledok ma
+prekvapil:
+
+- **Notes už dvojpanelové je.** 300 px zoznam + editor (`Notes.tsx:212`).
+  To JE ten dvojpanelový workspace z referencie.
+- **Settings už ľavý sub-nav má.** `lg:w-56` vedľa obsahu
+  (`Settings.tsx:890`). To JE rozloženie z referencie.
+- **Inventory, Sales, Pulls** už majú lištu filtrov s popiskami nad
+  ovládačmi, segmentový prepínač a tabuľku v `table-shell`. To JE
+  architektúra z referencie.
+
+Tie obrazovky teda nepotrebovali prestavbu — potrebovali ten vizuálny jazyk,
+a ten práve dostali.
+
+### Čo som ZÁMERNE nepostavil
+
+- **Globálne hľadanie v hornom pruhu.** Referencia ho má, appka nie. Postaviť
+  ho ako atrapu je presne to, čo mandát zakazuje: ovládač, čo vyzerá funkčne
+  a nerobí nič.
+- **Avatary interpretov v tabuľkách.** Appka žiadnu fotku interpreta nedrží.
+  Domyslieť si ju je presne to, čo táto appka nesmie nikdy robiť.
+
+### Overené
+
+Vyrenderované: shell, navigácia, tlačidlá, riadok čísel aj tabuľka v novej
+palete. Vyváženie zátvoriek celého `src/`, `index.css` aj `tailwind.config.js`,
+obe triedy komentárovej chyby — 0 nálezov. **Nie je to kompilácia.**
+
 ## 2.91.0 - Prepínač grafu ostáva na riadku s nadpisom
 
 marko poslal dva screenshoty toho istého grafu: pri **Cashflow** je prepínač

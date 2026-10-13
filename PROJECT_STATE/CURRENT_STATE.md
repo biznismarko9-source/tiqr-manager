@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.91.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.92.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,39 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.92.0 (Premium Noir) - the accent moved, and an audit found two screens
+already built the way the new reference shows them.**
+
+marko supplied a nine-screen visual reference on a TURQUOISE accent and asked
+for the product to move to it. That is the explicit permission
+PROTECTED_AREAS.md's 2.6.0 entry requires before the brand ramp moves - it
+was changed once in 2.0.56 and rejected in 2.0.58, so it never moves on a
+whim. The ramp is now teal, every step keeps its old ROLE, and one consequence
+is structural rather than cosmetic: **a filled button can no longer carry
+white text.** White on brand-600 measures 3.0:1. `Button`'s primary variant is
+near-black on brand-400 (9.4:1), which is also what the reference shows.
+
+**The reference and THE REGISTER disagree, and the reference won.** The
+register (REDESIGN-OVERVIEW.md §1) says violet, one accent reserved for
+selection, no decoration. The reference is turquoise with sparklines, artist
+avatars and richer surfaces. marko owns that call and made it in writing.
+Where they agree - hairlines, 8px panels, labels above controls, mono numerals
+- 2.90.0's work stands unchanged.
+
+**The audit's real finding: Notes and Settings were already there.** Notes is
+a 300px list beside a flex-1 editor (`Notes.tsx:212`), which IS the
+reference's two-pane workspace. Settings is a `lg:w-56` left sub-nav beside a
+content pane (`Settings.tsx:890`), which IS the reference's settings layout.
+Inventory, Sales and Pulls already pair a labelled filter bar and a segmented
+control with a `table-shell` table - the reference's own architecture. Those
+screens did not need rebuilding; they needed the visual language, which this
+release gives them. Verify this before "redesigning" them again.
+
+**Two things in the reference were deliberately NOT built.** A global search
+in a top bar, because a control that looks functional and does nothing is
+worse than no control. And artist avatar thumbnails in tables, because this
+app holds no artist image and inventing one is exactly what it must never do.
 
 **2.90.0 - THE REGISTER applied for real, and Events finished.** This is the
 first implementation block of marko's full-redesign mandate. Four things

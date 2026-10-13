@@ -36,8 +36,12 @@ export function Button({
     md: "px-3.5 py-2 text-sm",
   };
   const variants: Record<ButtonVariant, string> = {
+    // 2.92.0: near-black ON turquoise, not white on it. A bright teal cannot
+    // carry white text at AA - white on brand-600 measures 3.0:1. #04100e on
+    // brand-400 is 9.4:1, and dark-on-bright is what the reference's own
+    // filled buttons show.
     primary:
-      "bg-brand-600 text-white hover:bg-brand-500 focus-visible:ring-brand-500",
+      "bg-brand-400 text-[#04100e] hover:bg-brand-300 focus-visible:ring-brand-400",
     secondary:
       "bg-surface text-slate-700 shadow-card hover:bg-surface-muted focus-visible:ring-slate-400 dark:text-slate-200 dark:focus-visible:ring-slate-500",
     danger: "bg-red-600 text-white hover:bg-red-500 focus-visible:ring-red-500",

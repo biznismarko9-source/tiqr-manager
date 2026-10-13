@@ -126,8 +126,12 @@ const NAV_BASE =
 // does not, and it is unmistakable at a glance in a narrow rail. The accent
 // bar stays: the dent alone is quiet, and the bar is what 2.6.0 added
 // precisely because the tint alone was easy to miss.
+// 2.92.0: the active row carries the accent in its TEXT as well as its fill,
+// which is how the reference marks it. A tint alone reads as "hovered" at
+// this rail width, and the accent exists for exactly this "you are here"
+// meaning.
 const NAV_ACTIVE =
-  "bg-brand-500/[0.16] font-semibold text-slate-900 dark:text-slate-50";
+  "bg-brand-500/[0.12] font-semibold text-brand-700 dark:text-brand-300";
 const NAV_IDLE =
   "font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
 const NAV_ACTIVE_BAR =
