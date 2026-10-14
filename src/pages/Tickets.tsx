@@ -249,7 +249,7 @@ export function TicketsView({
           reasoning as Sales.tsx's 2.0.35 change), so there's no longer a
           narrower table edge for this row to match; both now fill the real
           window width together, same as Sales/Orders/Events already do. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      <div className="toolbar">
         <div className="w-52">
           <span className="label">Search</span>
           <div className="relative">

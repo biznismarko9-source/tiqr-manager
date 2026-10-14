@@ -16,6 +16,126 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.94.0 - Deep Black x Electric Purple
+
+### Cashflow preč z Dashboardu
+
+Mód **Cashflow** je z karty grafu odstránený, ako si pýtal. Karta ostala —
+je to teraz čisto metrikový graf so štyrmi módmi (Profit & Loss, Revenue,
+Cost, Sales). Samotný `CashflowChart` v `DashboardCharts.tsx` **zostáva**,
+lebo ho vykresľuje aj Finance Overview a tá v zadaní nebola.
+
+### Tokeny presne podľa tvojich hodnôt
+
+| token | hodnota |
+|---|---|
+| Background | **#08090D** |
+| Surface | **#11131B** |
+| Elevated | **#171927** |
+| Border | **#272938** |
+| Primary purple | **#8B5CF6** |
+| Soft lavender | **#C4B5FD** |
+
+Tvoje dve fialové sú **500 a 300** rampy `brand` — takže rampa nie je môj
+výklad tvojej farby, je to priamo tvoja farba.
+
+**Plnené tlačidlo sa vracia na bielu na `brand-600`.** V 2.92.0 som ho
+prehodil na tmavý text, lebo jasná tyrkysová bielu pri AA neunesie; #7c3aed
+ju unesie (5,9 : 1). Rozhoduje kontrastná hranica, nie vkus.
+
+### Sparkliny sú späť — a nie je to protirečenie
+
+V 2.88.0 si ich kázal odstrániť. Tento brief ich pýta doslova („a restrained
+sparkline… where appropriate") a referencia ich ukazuje. Takže sa vracajú.
+
+Sú **skutočné**: každá je stĺpec z `data.revenueTimeSeries`, tie isté
+koše, ktoré kreslí graf pod nimi. **ROI žiadnu nemá** — tá séria per-bucket
+ROI neobsahuje a vymyslená čiara je presne to, čo táto appka nesmie.
+
+### Tvary widgetov
+
+- panely **12 px** rádius (2.90.0 ich dala na 8 px kvôli REGISTER-u, ktorý
+  je touto referenciou nahradený)
+- ikonové dlaždice **36 px, rádius 10 px** (boli 32/8)
+- hodnota vedúcej karty **25 px**, ostatné 20 px
+- KPI pás má podlahu **11 rem** namiesto 9 — päť kariet s ikonou, hodnotou,
+  trendom aj sparklinou sa pri 9 rem rozdrví skôr, než sa riadok zalomí
+
+### Farba
+
+Vedúca KPI karta nesie **fialový gradient wash** namiesto svetlejšieho
+prstenca. Prstenec v tejto appke znamená „vybrané" — a toto nie je vybrané,
+je to len číslo, na ktoré sa pozeráš prvé.
+
+### Čo z referencie ešte NIE je
+
+Trojstĺpcový operačný riadok (Upcoming Events / Recent Activity / Ticket
+Inventory + Pending Sales tak, ako ich referencia radí), celošírková tabuľka
+Event Performance, a horný toolbar s globálnym hľadaním.
+
+### Overené
+
+Vyrenderované: KPI pás s ikonami a sparklinami, fialový wash, graf s
+fialovou plochou, donut platforiem. Vyváženie zátvoriek celého `src/`,
+`index.css` 110/110, `tailwind.config.js` 12/12, komentárové chyby 0.
+**Nie je to kompilácia.**
+
+## 2.93.0 - Mŕtvy stĺpec v Events + toolbar namiesto formulára
+
+### 1. Tá medzera vpravo bola CHYBA, nie vzhľad
+
+`colgroup` v Events mal **8 stĺpcov, hlavička 7**. V 2.76.0 som odstránil
+stĺpec Stock z hlavičky aj z tela — a jeho `<col>` som nechal v **oboch**
+colgroupoch. Tabuľka teda rezervovala **11,333 % šírky pre stĺpec, ktorý
+nič nevykresľuje.** To je presne ten prázdny pás na tvojom screenshote.
+
+Zapamätateľné: zablúdený `<col>` je pri čítaní kódu neviditeľný, lebo
+nestojí nikde blízko `<th>`, ku ktorému patrí. Prejaví sa len ako šírka,
+ktorá chýba.
+
+Oba colgroupy sú teraz na 7 stĺpcoch so súčtom presne 100 %, a šírky som
+prerezal, nie len jeden zahodil: Event si vzal miesto späť (dlhé názvy sa
+skracovali ako prvé) a tri peňažné stĺpce sú rovnaké, čo drží stĺpec čísel
+ako jeden stĺpec. Dátum tým prestal byť „12.09.2…".
+
+### 2. `.toolbar` — nový layout primitív
+
+Každá zoznamová obrazovka sa otvárala rovnako: päť alebo šesť ovládačov,
+každý s viditeľným popiskom **nad sebou**, v zapustenej lište. To je
+**formulár** — niečo, čo vypĺňaš zhora nadol. Zoznamová obrazovka nechce
+nad tabuľkou formulár; chce **toolbar**, jeden riadok, do ktorého siahneš.
+Tie popisky stáli celý pás tam, kde má byť tabuľka.
+
+Popisky sa **nezmazali** — sú `sr-only`. Ostávajú v DOM aj v poradí pre
+čítačku obrazovky, len sa nekreslia. Každý ovládač aj tak nesie placeholder
+alebo prvú voľbu „All …".
+
+Nasadené na **Events, Inventory, Sales a Pulls (2×)** výmenou **jednej
+triedy na obrazovku** — markup vnútri ovládačov je nedotknutý. Preto sa
+dalo bezpečne spraviť štyri obrazovky naraz.
+
+Events dostal navyše preskupenie: **prepínač stavu ide prvý** (mení sa
+najčastejšie a rozhoduje, na čo sa ostatné štyri filtre vôbec vzťahujú),
+hľadanie berie zvyšok šírky cez `flex-1`, a ovládače majú skutočné
+`aria-label`.
+
+### 3. Čo priznávam
+
+Mal si pravdu. Predošlé kolá boli vrstva tokenov — farby a povrchy —
+nie kompozícia. Toto kolo mení rozloženie: jeden pás navyše preč zo štyroch
+obrazoviek a tabuľka, ktorá konečne vypĺňa svoju šírku.
+
+**Stále štrukturálne pôvodné:** Dashboard nad rámec riadku čísel, Finance
+Transactions/Accounts/Reports, a všetky dialógy. To je ďalšia reálna práca,
+nie formulácia.
+
+### Overené
+
+Vyrenderované pred/po s tvojimi dátami: mŕtvy pás (šrafovane) verzus
+tabuľka dobiehajúca k okraju, a formulár verzus toolbar. Vyváženie zátvoriek
+štyroch stránok aj `index.css`, obe triedy komentárovej chyby — 0.
+**Nie je to kompilácia.**
+
 ## 2.92.0 - Premium Noir: tyrkysový akcent + audit obrazoviek
 
 Podľa dodanej deväťobrazovkovej referencie.

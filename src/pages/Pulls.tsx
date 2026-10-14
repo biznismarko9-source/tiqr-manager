@@ -356,7 +356,7 @@ function GivenPulls() {
       {/* 2.79.0: same sunken filter bar Events (2.76.0), Inventory (2.77.0)
           and Sales (2.78.0) already have, so all five list pages group their
           controls the same way. Same inputs, handlers, widths and wrapping. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+      <div className="toolbar">
         <div className="order-last ml-auto flex gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
             <Button variant="secondary" onClick={() => setSelectionMode(true)}>
@@ -1174,7 +1174,7 @@ function ReceivedPulls() {
       {/* 2.79.0: same sunken filter bar Events (2.76.0), Inventory (2.77.0)
           and Sales (2.78.0) already have, so all five list pages group their
           controls the same way. Same inputs, handlers, widths and wrapping. */}
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+      <div className="toolbar">
         <div className="order-last ml-auto flex gap-2">
           {!selectionMode && pulls && pulls.length > 0 && (
             <Button variant="secondary" onClick={() => setSelectionMode(true)}>

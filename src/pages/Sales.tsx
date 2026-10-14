@@ -440,7 +440,7 @@ export default function Sales() {
           three list pages read as one product rather than three. Same
           controls, same handlers, same widths, same wrapping; the bar is
           only what groups them. The tab switcher stays pinned right. */}
-      <div className="mb-3 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
+      <div className="toolbar">
         <div className="w-56">
           <span className="label">Search</span>
           <div className="relative">

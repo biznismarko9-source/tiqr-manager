@@ -306,34 +306,42 @@ export default function Events() {
         }
       />
 
-      {/* 2.38.0: the tab switcher moved OFF its own line and into the filter
-          row, pinned right (ml-auto) - marko's request, everywhere it exists,
-          following the arrangement Pulls already had. Its old `mb-4` lived
-          inside TabSwitcher itself; that margin now belongs to the caller, so
-          the two places that still stand alone (EventDetail) spell it out. */}
-      {/* 2.76.0: the same five controls, now inside one sunken bar instead of
-          floating loose above the table. Nothing was added, removed or
-          rewired - Search, Category, From, To and Sort are the identical
-          inputs with the identical handlers. The bar is what makes them read
-          as one filter group, and it matches the panel treatment the rest of
-          the app already uses (`surface-sunken`). The tab switcher stays
-          pinned right, as marko asked for everywhere it exists. */}
-      <div className="mb-3 flex flex-wrap items-end gap-3 rounded-xl bg-surface-sunken px-3 py-2.5">
-        <div className="w-64">
-          <span className="label">Search</span>
-          <div className="relative">
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
-            <Input
-              placeholder="Search events..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-            />
-          </div>
+      {/* 2.38.0 put the tab switcher into the filter row pinned RIGHT, and
+          2.76.0 wrapped the five controls in a sunken bar. 2.93.0 keeps the
+          one-row idea from both and drops the rest - see the note below. */}
+      {/* 2.93.0: ONE toolbar row, not five stacked label/control pairs.
+          The old block put a visible label above each of Search, Category,
+          From, To and Sort, which cost a whole band of vertical space above
+          the table and made the filters read as a form you fill in rather
+          than a toolbar you reach for. Every control now carries its name
+          in its placeholder or its first option ("All categories", "Sort:
+          soonest"), plus an aria-label so a screen reader still hears what
+          the eye no longer needs to - that is the whole trade, and it is
+          the one the reference makes too.
+          Order changed as well: the status switcher leads, because it is
+          the filter you change most and the one that decides what the other
+          four even apply to. Search takes the slack with `flex-1`, so the
+          row fills its width at any window instead of trailing off.
+          Nothing was added, removed or rewired - identical inputs, identical
+          handlers, identical state. */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} />
+        <div className="relative min-w-[200px] flex-1">
+          <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 dark:text-slate-400" />
+          <Input
+            placeholder="Search events, venue or city..."
+            aria-label="Search events"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
         </div>
-        <div className="w-52">
-          <span className="label">Category</span>
-          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+        <div className="w-44">
+          <Select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}
+            aria-label="Filter by category"
+          >
             <option value="">All categories</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
@@ -342,16 +350,21 @@ export default function Events() {
             ))}
           </Select>
         </div>
-        <div className="w-36">
-          <span className="label">From</span>
-          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        </div>
-        <div className="w-36">
-          <span className="label">To</span>
-          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-        </div>
-        <div className="w-44">
-          <span className="label">Sort</span>
+        <Input
+          type="date"
+          className="w-[8.5rem]"
+          aria-label="From date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+        />
+        <Input
+          type="date"
+          className="w-[8.5rem]"
+          aria-label="To date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+        />
+        <div className="w-40">
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort events">
             {Object.entries(EVENT_SORT_LABELS).map(([value, label]) => (
               <option key={value || "soonest"} value={value}>
@@ -360,7 +373,6 @@ export default function Events() {
             ))}
           </Select>
         </div>
-        <TabSwitcher tabs={EVENT_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
 
       {selectionMode && (
@@ -468,27 +480,51 @@ export default function Events() {
                 {/* 2.33.0: eight columns, the list marko asked for. Both
                     colgroups are identical now - with Margin and ROI gone
                     there is nothing left for the wide mode to add. */}
-                <col className="w-[28%]" />
-                <col className="w-[9%]" />
-                <col className="w-[10%]" />
-                <col className="w-[8%]" />
+                {/* 2.93.0: SEVEN cols, not eight. 2.76.0 removed the Stock
+                    column from the header and the body but left its <col>
+                    behind in BOTH colgroups, so the table reserved 11.333%
+                    of its width for a column that renders nothing - the
+                    empty strip down the right edge marko photographed.
+                    A stray <col> is invisible when you read the JSX, because
+                    it sits nowhere near the <th> it is supposed to match;
+                    it only shows up as width that goes missing.
+                    These seven sum to exactly 100, and the widths are
+                    re-cut rather than just dropping the extra: Event takes
+                    the room back (long names were the first thing to
+                    ellipse) and the three money columns are equal, which is
+                    what keeps a column of figures reading as one column. */}
+                <col className="w-[30%]" />
+                <col className="w-[12%]" />
                 <col className="w-[11%]" />
-                <col className="w-[11.334%]" />
-                <col className="w-[11.333%]" />
-                <col className="w-[11.333%]" />
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
               </colgroup>
             ) : (
               <colgroup>
                 {selectionMode && <col className="w-8" />}
                 {/* 2.33.0: see the narrow colgroup above - same eight. */}
-                <col className="w-[28%]" />
-                <col className="w-[9%]" />
-                <col className="w-[10%]" />
-                <col className="w-[8%]" />
+                {/* 2.93.0: SEVEN cols, not eight. 2.76.0 removed the Stock
+                    column from the header and the body but left its <col>
+                    behind in BOTH colgroups, so the table reserved 11.333%
+                    of its width for a column that renders nothing - the
+                    empty strip down the right edge marko photographed.
+                    A stray <col> is invisible when you read the JSX, because
+                    it sits nowhere near the <th> it is supposed to match;
+                    it only shows up as width that goes missing.
+                    These seven sum to exactly 100, and the widths are
+                    re-cut rather than just dropping the extra: Event takes
+                    the room back (long names were the first thing to
+                    ellipse) and the three money columns are equal, which is
+                    what keeps a column of figures reading as one column. */}
+                <col className="w-[30%]" />
+                <col className="w-[12%]" />
                 <col className="w-[11%]" />
-                <col className="w-[11.334%]" />
-                <col className="w-[11.333%]" />
-                <col className="w-[11.333%]" />
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
+                <col className="w-[13%]" />
               </colgroup>
             )}
             <thead>

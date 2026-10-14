@@ -26,10 +26,11 @@ import {
   PanelSkeleton,
   SEGMENTED_TRACK,
   segmentedItemClass,
+  StatCard,
   StatsSkeleton,
 } from "../components/ui";
 import { bucketLabel, MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
-import { CashflowChart, platformFill, type CashflowPoint } from "../components/DashboardCharts";
+import { platformFill } from "../components/DashboardCharts";
 import { getLastUpdateCheck } from "../lib/updater";
 import {
   IconAlertTriangle,
@@ -125,26 +126,11 @@ const PERIODS: { key: string; label: string }[] = [
  * `data.period` (the exact same FinanceSummary the StatCards above already
  * render), never re-derived from the chart's own bucket array, so this
  * number can never drift from the StatCard for the same metric. */
-/** 2.74.0: the two cashflow series, derived from the buckets the Dashboard
- *  already receives - nothing new is fetched and nothing is modelled.
- *
- *  Income is the bucket's revenue. Expenses is what that revenue cost to
- *  earn: the cost of the tickets sold in it plus the selling fees charged on
- *  them. Both fields have been on `RevenueTimeSeriesPoint` since well before
- *  this chart existed (see revenue_time_series in dashboard.rs); this only
- *  pairs them.
- *
- *  Deliberately NOT "money in minus money out of the bank": that would be
- *  `paidCents`, a different question with a different answer, and mixing the
- *  two under one heading is how a cashflow chart starts disagreeing with the
- *  Profit card beside it. */
-function cashflowPoints(data: DashboardData): CashflowPoint[] {
-  return data.revenueTimeSeries.map((p) => ({
-    label: bucketLabel(p.bucketStart, data.timeSeriesGranularity),
-    income: p.revenueCents,
-    expenses: p.cogsCents + p.sellingFeesCents,
-  }));
-}
+/* 2.94.0: `cashflowPoints` and the Cashflow chart mode are GONE from this
+   page - marko asked for that chart off the Dashboard. `CashflowChart`
+   itself stays in DashboardCharts.tsx because Finance Overview renders it
+   too (finance/Overview.tsx), and that one was not part of the ask. This
+   card is now purely the metric chart: one question, four ways to read it. */
 
 function periodMetricValue(data: DashboardData, metric: MetricKey): number {
   if (metric === "profit") return data.period.profitCents;
@@ -237,7 +223,6 @@ export default function Dashboard() {
   // gained a button and the card gained a branch. Cashflow is the default
   // because it is the one the redesign puts at the top of the Overview; every
   // other mode is one click away, exactly as before.
-  const [chartMode, setChartMode] = useState<"cashflow" | "metric">("cashflow");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -443,43 +428,68 @@ export default function Dashboard() {
                       more. The figure, its trend and its sub-line are what
                       these cards carry now, and the real chart is still
                       directly below this row. */}
-                  <div data-tour="dash-stats" className="mb-5">
-                    <Figures>
-                      <Figure
-                        label="Profit"
-                        value={formatMoney(data.period.profitCents, data.primaryCurrency)}
-                        tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
-                        trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
-                        sub={`${formatPercent(data.period.roi)} ROI`}
-                        emphasis
-                      />
-                      <Figure
-                        label="Revenue"
-                        value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
-                        trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
-                      />
-                      <Figure
-                        label="Purchase cost"
-                        value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
-                        trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
-                        trendColored={false}
-                      />
-                      {/* 2.39.0: Margin is gone from the whole app - marko's
-                          words: "ako keby zanikla". Profit and ROI stay; the
-                          backend still computes `margin` and still sends it,
-                          nothing reads it. */}
-                      <Figure
-                        label="ROI"
-                        value={formatPercent(data.period.roi)}
-                        trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
-                      />
-                      <Figure
-                        label="Tickets sold"
-                        value={String(data.period.soldTickets)}
-                        sub={`${data.period.purchasedTickets} purchased in period`}
-                        trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
-                      />
-                    </Figures>
+                  {/* 2.94.0: back to five PANELS, and this time with the
+                      sparkline. 2.88.0 took the sparklines off at marko's
+                      request; the Electric Purple reference puts them back
+                      and his brief asks for them in as many words ("a
+                      restrained sparkline... where appropriate"), so they
+                      return. 2.90.0's hairline-divided figure row was the
+                      right answer to a different brief and `Figures` stays
+                      exported for Finance, which still uses it.
+                      Every line is REAL: each one is a column of
+                      `data.revenueTimeSeries`, the same buckets the chart
+                      below draws. ROI deliberately has none - that series
+                      carries no per-bucket ROI, and a line invented to fill
+                      the gap is the one thing this app must never do. */}
+                  <div data-tour="dash-stats" className="summary-bar">
+                    <StatCard
+                      label="Net profit"
+                      value={formatMoney(data.period.profitCents, data.primaryCurrency)}
+                      tone={data.period.profitCents > 0 ? "positive" : data.period.profitCents < 0 ? "negative" : "default"}
+                      trend={computeTrend(data.period.profitCents, data.previousPeriod?.profitCents)}
+                      sub={`${formatPercent(data.period.roi)} ROI`}
+                      icon={<IconDatabase className="h-4 w-4" />}
+                      accent="violet"
+                      spark={data.revenueTimeSeries.map((pt) => pt.profitCents)}
+                      emphasis
+                    />
+                    <StatCard
+                      label="Revenue"
+                      value={formatMoney(data.period.revenueCents, data.primaryCurrency)}
+                      trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
+                      icon={<IconBarChart className="h-4 w-4" />}
+                      accent="violet"
+                      spark={data.revenueTimeSeries.map((pt) => pt.revenueCents)}
+                    />
+                    <StatCard
+                      label="Purchase cost"
+                      value={formatMoney(data.period.totalCostCents, data.primaryCurrency)}
+                      trend={computeTrend(data.period.totalCostCents, data.previousPeriod?.totalCostCents)}
+                      trendColored={false}
+                      icon={<IconWallet className="h-4 w-4" />}
+                      accent="orange"
+                      spark={data.revenueTimeSeries.map((pt) => pt.cogsCents)}
+                    />
+                    {/* 2.39.0: Margin is gone from the whole app - marko's
+                        words: "ako keby zanikla". Profit and ROI stay; the
+                        backend still computes `margin` and still sends it,
+                        nothing reads it. */}
+                    <StatCard
+                      label="ROI"
+                      value={formatPercent(data.period.roi)}
+                      trend={computeTrendPoints(data.period.roi, data.previousPeriod?.roi)}
+                      icon={<IconGauge className="h-4 w-4" />}
+                      accent="emerald"
+                    />
+                    <StatCard
+                      label="Tickets sold"
+                      value={String(data.period.soldTickets)}
+                      sub={`${data.period.purchasedTickets} purchased in period`}
+                      trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
+                      icon={<IconTicket className="h-4 w-4" />}
+                      accent="violet"
+                      spark={data.revenueTimeSeries.map((pt) => pt.soldTickets)}
+                    />
                   </div>
                   {/* Big number + line always come straight from data.period /
                       data.revenueTimeSeries - the exact same source the
@@ -557,64 +567,35 @@ export default function Dashboard() {
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-[150px] flex-1">
                           <p className="truncate text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                            {chartMode === "cashflow"
-                              ? "Balance cashflow"
-                              : METRICS.find((m) => m.key === metric)?.label}
+                            {METRICS.find((m) => m.key === metric)?.label}
                           </p>
                           <p
-                            className={`mt-1.5 whitespace-nowrap text-[22px] font-semibold leading-none tabular-nums ${
-                              chartMode === "cashflow"
-                                ? "text-slate-900 dark:text-slate-50"
-                                : periodMetricTone(data, metric)
-                            }`}
+                            className={`mt-1.5 whitespace-nowrap text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}
                           >
-                            {chartMode === "cashflow"
-                              ? // Income minus expenses for the period, taken from the
-                                // SAME `data.period` the Profit card above renders, never
-                                // re-derived from the buckets - so the headline and the
-                                // KPI card cannot disagree.
-                                formatMoney(data.period.profitCents, data.primaryCurrency)
-                              : metric === "sales"
-                                ? String(periodMetricValue(data, metric))
-                                : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
+                            {metric === "sales"
+                              ? String(periodMetricValue(data, metric))
+                              : formatMoney(periodMetricValue(data, metric), data.primaryCurrency)}
                           </p>
                         </div>
                         <div className={`${SEGMENTED_TRACK} shrink-0`}>
-                          <button
-                            onClick={() => setChartMode("cashflow")}
-                            aria-pressed={chartMode === "cashflow"}
-                            className={segmentedItemClass(chartMode === "cashflow")}
-                          >
-                            Cashflow
-                          </button>
                           {METRICS.map((m) => (
                             <button
                               key={m.key}
-                              onClick={() => {
-                                setMetric(m.key);
-                                setChartMode("metric");
-                              }}
-                              aria-pressed={chartMode === "metric" && metric === m.key}
-                              className={segmentedItemClass(chartMode === "metric" && metric === m.key)}
+                              onClick={() => setMetric(m.key)}
+                              aria-pressed={metric === m.key}
+                              className={segmentedItemClass(metric === m.key)}
                             >
                               {m.label}
                             </button>
                           ))}
                         </div>
                       </div>
-                      {chartMode === "cashflow" ? (
-                        <CashflowChart
-                          points={cashflowPoints(data)}
-                          formatValue={(cents) => formatMoney(cents, data.primaryCurrency)}
-                        />
-                      ) : (
-                        <MetricChart
-                          points={data.revenueTimeSeries}
-                          granularity={data.timeSeriesGranularity}
-                          currency={data.primaryCurrency}
-                          metric={metric}
-                        />
-                      )}
+                      <MetricChart
+                        points={data.revenueTimeSeries}
+                        granularity={data.timeSeriesGranularity}
+                        currency={data.primaryCurrency}
+                        metric={metric}
+                      />
                     </Card>
                     <SalesByPlatformCard
                       data={data}

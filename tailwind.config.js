@@ -70,18 +70,27 @@ export default {
         // the 4.5 floor. So the filled button flips to NEAR-BLACK on 400,
         // which measures 9.4:1 and is also what the reference shows. See
         // Button's `primary` variant, which changed with this.
+        // 2.94.0 (Deep Black x Electric Purple): marko supplied the two
+        // anchors by hex - primary #8B5CF6 and soft lavender #C4B5FD - and
+        // they are 500 and 300 of this ramp, so the ramp IS his spec rather
+        // than an interpretation of it.
+        //
+        // 2.92.0 had taken this to turquoise on a previous reference. Roles
+        // are unchanged again, and one of them flips back: a filled button
+        // carries WHITE on 600 here (#7c3aed, 5.9:1), which it could not do
+        // on a bright teal. See Button's `primary` variant.
         brand: {
-          50: "#eafaf7",
-          100: "#cbf3ea",
-          200: "#9ae7d8",
-          300: "#60d6c1",
-          400: "#2dc9b0",
-          500: "#14b8a0",
-          600: "#0f9c8a",
-          700: "#0e7b6e",
-          800: "#106158",
-          900: "#105049",
-          950: "#03302c",
+          50: "#f5f3ff",
+          100: "#ede9fe",
+          200: "#ddd6fe",
+          300: "#c4b5fd",
+          400: "#a78bfa",
+          500: "#8b5cf6",
+          600: "#7c3aed",
+          700: "#6d28d9",
+          800: "#5b21b6",
+          900: "#4c1d95",
+          950: "#2e1065",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -162,10 +171,10 @@ export default {
           // edge, so the ground moved with it. Safe to change here
           // because slate-950 is ONLY ever a dark page background in
           // this app - no text-, border- or ring-slate-950 anywhere.
-          // 2.92.0: the reference's ground is a COOL near-black, not a
-          // neutral one - every surface above it picks up that cast, which
-          // is most of what separates "premium noir" from "dark grey app".
-          950: "#080b0e",
+          // 2.94.0: marko's Background token, #08090D - a true deep black
+          // with the faintest blue in it, which is what keeps the violet
+          // above it reading as electric rather than muddy.
+          950: "#08090d",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the

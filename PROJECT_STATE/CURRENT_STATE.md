@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.92.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.94.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,69 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.94.0 (Deep Black x Electric Purple) - the third palette, and the
+sparklines came back.**
+
+marko supplied exact hex tokens this time, so the ramp IS his spec rather
+than an interpretation: #8B5CF6 and #C4B5FD are 500 and 300 of `brand`,
+#08090D is slate-950, #11131B is `--surface`, #171927 is `--surface-raised`,
+#272938 is `--line` and the card ring.
+
+**The filled button flips back to white on 600.** 2.92.0 had made it
+near-black on a bright teal because teal cannot carry white at AA; #7c3aed
+can (5.9:1). The contrast floor decides this, not taste - whichever way the
+accent goes, check it before changing the pairing.
+
+**Sparklines are back on the KPI panels, and that is not a contradiction.**
+2.88.0 removed them at marko's request; this brief asks for them in as many
+words and the reference shows them. They are still REAL - each is a column of
+`data.revenueTimeSeries`, the same buckets the chart below draws - and ROI
+still has none, because that series carries no per-bucket ROI.
+2.90.0's `Figures` row is still exported and still used by Finance Overview;
+the Dashboard simply no longer uses it.
+
+**The Cashflow chart mode is gone from the Dashboard** at marko's request.
+`CashflowChart` itself stays in DashboardCharts.tsx because finance/Overview
+renders it too, and that was not part of the ask. The Dashboard's chart card
+is now purely the metric chart with four modes.
+
+**Shapes moved too:** panels are 12px again (2.90.0 had taken them to 8px for
+THE REGISTER, which this reference supersedes), KPI icon tiles are 36px at
+10px radius, and the lead KPI wears a violet gradient wash instead of a
+brighter ring - a ring means "selected" everywhere else in this app.
+
+**Not yet built from this reference:** the three-column operational row
+(Upcoming Events / Recent Activity / Ticket Inventory + Pending Sales as the
+reference arranges them), the full-width Event Performance table, and the top
+toolbar with global search.
+
+**2.93.0 - a stray <col>, and the toolbar primitive.**
+
+**The dead strip down the right of the Events table was a real bug, not a
+style choice.** 2.76.0 removed the Stock column from the header and the body
+and left its `<col>` behind in BOTH colgroups, so the table reserved 11.333%
+of its width for a column that renders nothing. This is a bug class worth
+knowing: a stray `<col>` is invisible when you read the JSX, because it sits
+nowhere near the `<th>` it should match - it only ever shows up as width that
+goes missing. Both colgroups are now seven cols summing to exactly 100%.
+If a table ever looks like it is leaking width at one edge, count `<col>`
+against `<th>` in the same conditional branch before touching anything else.
+
+**`.toolbar` is a new layout primitive (index.css).** Every list screen used
+to open with five or six controls, each under a visible stacked label, inside
+a sunken bar - a FORM above a table. A list screen wants a toolbar: one row
+you reach into. `.toolbar` lays the row out and makes `.label` `sr-only`, so
+the labels stay in the DOM and in the screen-reader order while no longer
+costing a band of the screen where the table lives. Applied to Events,
+Inventory, Sales and Pulls (x2) by swapping ONE className per screen - the
+markup inside each control is untouched, which is why it was safe to do to
+four screens at once. Events additionally got its controls re-ordered
+(status switcher first, search takes the slack) with real aria-labels.
+
+**Still structurally the original, and marko has now said so three times:**
+Dashboard beyond its figure row, Finance Transactions/Accounts/Reports, and
+every dialog and secondary view. Those are the next real work.
 
 **2.92.0 (Premium Noir) - the accent moved, and an audit found two screens
 already built the way the new reference shows them.**

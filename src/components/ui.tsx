@@ -36,12 +36,12 @@ export function Button({
     md: "px-3.5 py-2 text-sm",
   };
   const variants: Record<ButtonVariant, string> = {
-    // 2.92.0: near-black ON turquoise, not white on it. A bright teal cannot
-    // carry white text at AA - white on brand-600 measures 3.0:1. #04100e on
-    // brand-400 is 9.4:1, and dark-on-bright is what the reference's own
-    // filled buttons show.
+    // 2.94.0: white on brand-600 again. 2.92.0 had flipped this to dark-on-
+    // bright because a turquoise could not carry white at AA; #7c3aed can
+    // (5.9:1), and white-on-violet is what the Electric Purple reference
+    // shows. The contrast floor is the reason either way round - not taste.
     primary:
-      "bg-brand-400 text-[#04100e] hover:bg-brand-300 focus-visible:ring-brand-400",
+      "bg-brand-600 text-white hover:bg-brand-500 focus-visible:ring-brand-500",
     secondary:
       "bg-surface text-slate-700 shadow-card hover:bg-surface-muted focus-visible:ring-slate-400 dark:text-slate-200 dark:focus-visible:ring-slate-500",
     danger: "bg-red-600 text-white hover:bg-red-500 focus-visible:ring-red-500",
@@ -1232,15 +1232,21 @@ export function StatCard({
     // `flex-1` is kept for the handful of callers that still use their own
     // flex row (see SummaryStat's note below) - it is inert inside the grid.
     <Card
-      className={`min-w-0 flex-1 p-3 ${
-        emphasis ? "ring-1 ring-slate-300 dark:ring-slate-600" : ""
+      className={`relative isolate min-w-0 flex-1 overflow-hidden p-3.5 ${
+        emphasis
+          ? // 2.94.0: the lead KPI wears a violet wash rather than a brighter
+            // ring. A ring says "selected", which this is not - it is simply
+            // the figure marko looks at first, and a tint says that without
+            // borrowing the meaning the accent carries everywhere else.
+            "ring-1 ring-brand-500/25 before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-gradient-to-br before:from-brand-500/[0.10] before:to-transparent"
+          : ""
       }`}
     >
       {/* 2.74.0: the icon row only exists when a caller asks for one, so a
           StatCard without `icon` renders byte-for-byte what it did before. */}
       {icon && accent && (
         <span
-          className={`mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg ring-1 ring-inset ${METRIC_ACCENTS[accent].box}`}
+          className={`relative mb-3 flex h-9 w-9 items-center justify-center rounded-[10px] ring-1 ring-inset ${METRIC_ACCENTS[accent].box}`}
           aria-hidden="true"
         >
           {icon}
@@ -1248,7 +1254,7 @@ export function StatCard({
       )}
       <p className="section-title truncate">{label}</p>
       <p
-        className={`mt-1.5 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[24px]" : "text-[19px]"} ${valueTone}`}
+        className={`mt-2 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[25px]" : "text-[20px]"} ${valueTone}`}
       >
         {value}
       </p>
