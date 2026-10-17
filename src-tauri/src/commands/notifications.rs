@@ -259,13 +259,16 @@ fn status_from_config(config: &NotificationConfig) -> NotificationStatus {
 /// already stored.
 fn apply_input(existing: NotificationConfig, input: NotificationConfigInput) -> NotificationConfig {
     NotificationConfig {
-        desktop_enabled: input.desktop_enabled,
+        // 2.100.0: `unwrap_or(existing)` on every flag - an omitted field
+        // keeps what is stored. See NotificationConfigInput's doc comment
+        // for the bug this fixes.
+        desktop_enabled: input.desktop_enabled.unwrap_or(existing.desktop_enabled),
         ntfy: NtfyChannelConfig {
-            enabled: input.ntfy_enabled,
+            enabled: input.ntfy_enabled.unwrap_or(existing.ntfy.enabled),
             topic: input.ntfy_topic.unwrap_or(existing.ntfy.topic),
         },
         discord: DiscordChannelConfig {
-            enabled: input.discord_enabled,
+            enabled: input.discord_enabled.unwrap_or(existing.discord.enabled),
             sales: input.discord_sales.unwrap_or(existing.discord.sales),
             finance: input.discord_finance.unwrap_or(existing.discord.finance),
             inventory: input.discord_inventory.unwrap_or(existing.discord.inventory),
@@ -1091,10 +1094,10 @@ mod tests {
             ..Default::default()
         };
         let input = NotificationConfigInput {
-            desktop_enabled: true,
-            ntfy_enabled: true,
+            desktop_enabled: Some(true),
+            ntfy_enabled: Some(true),
             ntfy_topic: None,
-            discord_enabled: false,
+            discord_enabled: None,
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
@@ -1113,10 +1116,10 @@ mod tests {
             ..Default::default()
         };
         let input = NotificationConfigInput {
-            desktop_enabled: false,
-            ntfy_enabled: false,
+            desktop_enabled: Some(false),
+            ntfy_enabled: Some(false),
             ntfy_topic: Some("new-topic".to_string()),
-            discord_enabled: false,
+            discord_enabled: None,
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
@@ -1180,10 +1183,10 @@ mod tests {
         // else in this codebase).
         let conn = test_conn();
         let input = NotificationConfigInput {
-            desktop_enabled: true,
-            ntfy_enabled: true,
+            desktop_enabled: Some(true),
+            ntfy_enabled: Some(true),
             ntfy_topic: Some("secret-topic".to_string()),
-            discord_enabled: false,
+            discord_enabled: None,
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
@@ -1571,15 +1574,99 @@ mod tests {
         finance: Option<&str>,
         inventory: Option<&str>,
     ) -> NotificationConfigInput {
+        // Mirrors what DiscordCard actually sends: the discord fields and
+        // nothing else, so desktop/ntfy are untouched.
         NotificationConfigInput {
-            desktop_enabled: false,
-            ntfy_enabled: false,
+            desktop_enabled: None,
+            ntfy_enabled: None,
             ntfy_topic: None,
-            discord_enabled: true,
+            discord_enabled: Some(true),
             discord_sales: sales.map(str::to_string),
             discord_finance: finance.map(str::to_string),
             discord_inventory: inventory.map(str::to_string),
         }
+    }
+
+    /// THE REGRESSION TEST for what CI caught in 2.100.0.
+    ///
+    /// Two Settings cards write this one config. Saving from the Discord
+    /// card must not switch desktop notifications or ntfy off, and saving
+    /// from the Notifications card must not switch Discord off. While the
+    /// flags were plain `bool` this was impossible to express - every save
+    /// carried a value for every flag.
+    #[test]
+    fn saving_discord_settings_does_not_switch_desktop_or_ntfy_off() {
+        let existing = NotificationConfig {
+            desktop_enabled: true,
+            ntfy: NtfyChannelConfig { enabled: true, topic: "keep-me".to_string() },
+            discord: DiscordChannelConfig::default(),
+        };
+        let after = apply_input(existing, input_with(Some(REAL_SHAPED_URL), None, None));
+        assert!(after.desktop_enabled, "desktop must survive a Discord save");
+        assert!(after.ntfy.enabled, "ntfy must survive a Discord save");
+        assert_eq!(after.ntfy.topic, "keep-me");
+        assert!(after.discord.enabled);
+    }
+
+    #[test]
+    fn saving_notification_settings_does_not_switch_discord_off() {
+        let existing = NotificationConfig {
+            desktop_enabled: false,
+            ntfy: NtfyChannelConfig::default(),
+            discord: DiscordChannelConfig {
+                enabled: true,
+                sales: REAL_SHAPED_URL.to_string(),
+                finance: String::new(),
+                inventory: String::new(),
+            },
+        };
+        // Exactly what NotificationsCard sends: its own three fields only.
+        let input = NotificationConfigInput {
+            desktop_enabled: Some(true),
+            ntfy_enabled: Some(true),
+            ntfy_topic: Some("new-topic".to_string()),
+            discord_enabled: None,
+            discord_sales: None,
+            discord_finance: None,
+            discord_inventory: None,
+        };
+        let after = apply_input(existing, input);
+        assert!(after.discord.enabled, "Discord must survive a Notifications save");
+        assert_eq!(after.discord.sales, REAL_SHAPED_URL, "the webhook must survive too");
+        assert!(after.desktop_enabled);
+        assert_eq!(after.ntfy.topic, "new-topic");
+    }
+
+    /// An input that says nothing at all changes nothing at all.
+    #[test]
+    fn an_entirely_empty_input_leaves_every_field_exactly_as_it_was() {
+        let existing = NotificationConfig {
+            desktop_enabled: true,
+            ntfy: NtfyChannelConfig { enabled: true, topic: "topic".to_string() },
+            discord: DiscordChannelConfig {
+                enabled: true,
+                sales: REAL_SHAPED_URL.to_string(),
+                finance: String::new(),
+                inventory: String::new(),
+            },
+        };
+        let after = apply_input(
+            existing.clone(),
+            NotificationConfigInput {
+                desktop_enabled: None,
+                ntfy_enabled: None,
+                ntfy_topic: None,
+                discord_enabled: None,
+                discord_sales: None,
+                discord_finance: None,
+                discord_inventory: None,
+            },
+        );
+        assert_eq!(after.desktop_enabled, existing.desktop_enabled);
+        assert_eq!(after.ntfy.enabled, existing.ntfy.enabled);
+        assert_eq!(after.ntfy.topic, existing.ntfy.topic);
+        assert_eq!(after.discord.enabled, existing.discord.enabled);
+        assert_eq!(after.discord.sales, existing.discord.sales);
     }
 
     /// `None` means "leave the stored webhook alone", so the Settings screen

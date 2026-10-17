@@ -1357,11 +1357,18 @@ export interface NotificationStatus {
  * blank means, since it's never pre-filled with a real value to begin with.
  * Send a real string only when the user actually typed a new one. */
 export interface NotificationConfigInput {
-  desktopEnabled: boolean;
-  ntfyEnabled: boolean;
+  /** 2.100.0: EVERY field is optional and omitting one means "leave what is
+   *  stored alone".
+   *
+   *  Two Settings cards write this one config - Notifications (desktop +
+   *  ntfy) and Integrations -> Discord. While the flags were required
+   *  booleans, every save from either card overwrote the other card's
+   *  flags, so saving Discord silently switched desktop notifications off.
+   *  Each card now sends only the fields it owns. */
+  desktopEnabled?: boolean | null;
+  ntfyEnabled?: boolean | null;
   ntfyTopic?: string | null;
-  /** 2.99.0: same "omit to leave unchanged" contract as `ntfyTopic`. */
-  discordEnabled: boolean;
+  discordEnabled?: boolean | null;
   discordSales?: string | null;
   discordFinance?: string | null;
   discordInventory?: string | null;

@@ -1729,14 +1729,26 @@ pub struct NotificationStatus {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationConfigInput {
-    pub desktop_enabled: bool,
-    pub ntfy_enabled: bool,
-    pub ntfy_topic: Option<String>,
-    /// 2.99.0: same `Option` contract as `ntfy_topic` - `None` means "leave
-    /// whatever is stored alone", which is what lets the Settings form round
-    /// trip without ever having been given the secret to send back.
+    /// 2.100.0: every field here is now `Option`, and `None` uniformly means
+    /// "leave whatever is stored alone" - the contract the secrets already
+    /// had, extended to the on/off flags.
+    ///
+    /// This is a bug fix, not tidying. Two separate Settings cards write this
+    /// one config: Notifications (desktop + ntfy) and Integrations -> Discord.
+    /// While these were plain `bool`, every save from EITHER card overwrote
+    /// the other card's flags, so saving Discord silently switched desktop
+    /// notifications off and vice versa. 2.99.0 worked around it in one
+    /// direction by re-reading the live status just before saving; CI then
+    /// caught the other direction as a compile error when `discord_enabled`
+    /// became required. Making the flags optional removes the whole class:
+    /// a card sends only the fields it owns and cannot touch the rest.
     #[serde(default)]
-    pub discord_enabled: bool,
+    pub desktop_enabled: Option<bool>,
+    #[serde(default)]
+    pub ntfy_enabled: Option<bool>,
+    pub ntfy_topic: Option<String>,
+    #[serde(default)]
+    pub discord_enabled: Option<bool>,
     #[serde(default)]
     pub discord_sales: Option<String>,
     #[serde(default)]

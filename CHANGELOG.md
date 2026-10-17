@@ -18,6 +18,24 @@ those directly.)
 
 ## 2.100.0 - Mail Intelligence (fáza 1 zo 4)
 
+**Opravené po prvom CI behu (tá istá verzia, nevydaná):**
+
+- **Migračná kanárka 39 -> 40.** `database.rs` má zámerne natvrdo zapísaný
+  počet migrácií, ktorý treba zdvihnúť pri každej novej. Migrácia 040 ho
+  zhodila presne tak, ako má. Nechávam ho natvrdo - keby sa počítal z toho
+  istého zoznamu, ktorý kontroluje, vždy by sedel sám so sebou.
+- **Dve karty písali do jedného configu a prepisovali si navzájom
+  prepínače.** Settings -> Notifications (desktop + ntfy) a Settings ->
+  Integrations -> Discord ukladajú ten istý `NotificationConfig`. Kým boli
+  prepínače obyčajné `bool`, **každé uloženie z jednej karty vyplo to
+  druhé** - uloženie Discordu potichu vyplo desktop notifikácie. 2.99.0 to
+  obišlo v jednom smere (znovunačítanie stavu tesne pred zápisom); CI
+  chytilo druhý smer ako chybu prekladu. Teraz je **každé pole v
+  `NotificationConfigInput` voliteľné a vynechané pole znamená "nechaj tak"**
+  - karta posiela len to, čo vlastní, a obchádzka je preč. Tri regresné
+  testy na to.
+
+
 Žiadal si, aby TIQR čítal mail a automatizoval z neho predaje, sklad a
 financie. To je štvorfázová vec; toto je **fáza 1, dodaná celá** - nie štyri
 fázy dodané na polovicu.

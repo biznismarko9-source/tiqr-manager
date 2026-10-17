@@ -215,7 +215,13 @@ mod tests {
         // toolchain on the machine these releases are built on. All 39 are
         // registered in db.rs's MIGRATIONS and all 39 apply to a fresh file,
         // which is the thing this count actually proves.
-        assert_eq!(migration_count, 39, "a fresh per-account file must end up on the same schema version as every other file");
+        // 2.100.0: 39 -> 40. Migration 040 (Mail Intelligence) was added, and
+        // this canary caught it in CI exactly as designed - unlike the
+        // 027-039 run above, which went unnoticed because `cargo test` was
+        // not yet in CI. Deliberately still a HARDCODED number and not
+        // `MIGRATIONS.len()`: derived from the same list it is checking, it
+        // would always agree with itself and prove nothing.
+        assert_eq!(migration_count, 40, "a fresh per-account file must end up on the same schema version as every other file");
         assert!(event_names(&conn).is_empty());
     }
 

@@ -4125,12 +4125,14 @@ function MailTestLine({ result }: { result: MailTestResult }) {
 // `NotificationConfig` that Settings -> Notifications owns, because Discord
 // is a third delivery channel for the same alerts.
 //
-// `setNotificationConfig` replaces `desktopEnabled` and `ntfyEnabled`
-// outright (they are plain booleans, not the "omit to keep" Option the
-// secrets use), so a careless save from THIS card could silently switch off
-// desktop or ntfy. `doSave` below therefore re-reads the live status
-// immediately before writing and passes those two through from it, rather
-// than from whatever this card happened to load on mount.
+// 2.99.0 shipped with a hazard here and 2.100.0 removed it rather than
+// working around it: `setNotificationConfig` used to replace EVERY flag on
+// every save, so a save from this card switched desktop/ntfy off and a save
+// from Notifications switched Discord off. This card worked around one
+// direction by re-reading the live status first; CI caught the other
+// direction as a compile error. Every field of NotificationConfigInput is
+// now optional and omitting one leaves it alone, so each card simply sends
+// what it owns - see that type's own doc comment.
 //
 // The webhook URLs are never shown. A Discord webhook URL has its token in
 // the path - the URL IS the credential - so `NotificationStatus` carries
@@ -4185,12 +4187,11 @@ function DiscordCard() {
   const doSave = async () => {
     setSaving(true);
     try {
-      // Re-read first - see this card's doc comment above.
-      const live = await api.getNotificationStatus();
+      // 2.100.0: only this card's own fields. The re-read-the-live-status
+      // workaround that used to be here is gone - every field in
+      // NotificationConfigInput is optional now, so omitting desktop and
+      // ntfy leaves them alone instead of overwriting them.
       const input: NotificationConfigInput = {
-        desktopEnabled: live.desktopEnabled,
-        ntfyEnabled: live.ntfyEnabled,
-        ntfyTopic: null,
         discordEnabled: enabled,
         discordSales: drafts.sales.trim() ? drafts.sales.trim() : null,
         discordFinance: drafts.finance.trim() ? drafts.finance.trim() : null,
@@ -4427,6 +4428,10 @@ function NotificationsCard() {
   const doSave = async () => {
     setSaving(true);
     try {
+      // Only this card's own fields - the Discord webhooks and flag are
+      // omitted, so saving here cannot switch Discord off. This is the
+      // failure CI caught: `discordEnabled` had become required, and there
+      // was no honest value to put here.
       const input: NotificationConfigInput = {
         desktopEnabled,
         ntfyEnabled,
