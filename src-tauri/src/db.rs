@@ -40,6 +40,13 @@ pub struct AppState {
     /// than sharing: cancelling one must never accidentally interrupt the
     /// other if both somehow ended up in flight at once.
     pub firebase_oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    /// 2.100.0: a THIRD slot, for connecting the mailbox
+    /// (commands::mail::connect_gmail). Same reasoning the comment above
+    /// gives for why Firebase did not share the Sheets slot: these are three
+    /// genuinely different in-flight attempts, and cancelling one must never
+    /// interrupt another. A mail sign-in asks Google for a different scope
+    /// than either of the other two, so it is never the same attempt.
+    pub mail_oauth_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
     /// 2.1.9: every currently-open Price Checker "Visible Scanner" window,
     /// keyed by the request/session id `PriceChecker.tsx` mints per "Open &
     /// Scan" click (same "frontend mints the id, backend only ever echoes
@@ -258,6 +265,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "039_normalise_currency_codes",
         include_str!("../migrations/039_normalise_currency_codes.sql"),
+    ),
+    // 2.100.0: Mail Intelligence (phase 1). New tables only - nothing
+    // existing is altered, so this migration cannot change a single
+    // order, sale, ticket or finance row. See the file's own header for
+    // why these three tables are deliberately NOT in `MERGE_TABLES`.
+    (
+        "040_mail_intelligence",
+        include_str!("../migrations/040_mail_intelligence.sql"),
     ),
 ];
 

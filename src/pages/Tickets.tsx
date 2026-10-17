@@ -19,6 +19,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { IconBoxes, IconSearch } from "../components/icons";
+import { EventCategoryBadge } from "../components/EventCategoryBadge";
 import { useToast } from "../lib/toast";
 import { useListTab } from "../lib/useListTab";
 import { useNarrowTables } from "../lib/useNarrowTables";
@@ -31,6 +32,14 @@ import { useNarrowTables } from "../lib/useNarrowTables";
 // Status filter it replaces) - Inventory is already locked to
 // available/listed tickets only, so it can never have anything "Completed"
 // to move out of the way (see the 2.0.59 report for the full reasoning).
+/** 2.97.0: "venue, city" exactly the way Events.tsx builds that same line, so
+ *  the two screens cannot drift into formatting one place two ways. Either
+ *  half may be missing - an event with neither returns "" and the caller
+ *  renders no second line at all rather than an empty one. */
+function eventPlace(o: OrderRecord): string {
+  return [o.eventVenue, o.eventCity].filter(Boolean).join(", ");
+}
+
 const TICKETS_TABS: { key: "active" | "completed"; label: string }[] = [
   { key: "active", label: "Active" },
   { key: "completed", label: "Completed" },
@@ -531,22 +540,37 @@ export function TicketsView({
                         mesto v stlpci event pod nazvom". Two lines, so the
                         column got wider in the colgroups above rather than
                         squeezing the name. */}
+                    {/* 2.97.0: this cell now reads the way an Events row does -
+                        name with its category badge beside it, then "venue,
+                        city" muted underneath. Both halves were already here
+                        in pieces: the city line has existed since 2.60.0, and
+                        `categoryName`/`categoryColorSlot` have been on this
+                        row since 2.0.27 and were rendered by Orders, Events
+                        and Sales but never by Inventory. The venue is the one
+                        genuinely new field (see models.rs). */}
                     <td
                       className={isNarrow ? "td-c-narrow" : "td-c"}
-                      title={o.eventCity ? `${o.eventName} — ${o.eventCity}` : o.eventName}
+                      title={eventPlace(o) ? `${o.eventName} — ${eventPlace(o)}` : o.eventName}
                     >
-                      <span className="block truncate">
-                        {allowCrossLinks ? (
-                          <Link to={`/events/${o.eventId}`} className="hover:underline">
-                            {o.eventName}
-                          </Link>
-                        ) : (
-                          o.eventName
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate">
+                          {allowCrossLinks ? (
+                            <Link to={`/events/${o.eventId}`} className="hover:underline">
+                              {o.eventName}
+                            </Link>
+                          ) : (
+                            o.eventName
+                          )}
+                        </span>
+                        {o.categoryName && o.categoryColorSlot !== null && (
+                          <span className="shrink-0">
+                            <EventCategoryBadge name={o.categoryName} colorSlot={o.categoryColorSlot} />
+                          </span>
                         )}
                       </span>
-                      {o.eventCity && (
+                      {eventPlace(o) && (
                         <span className="block truncate text-[11px] leading-tight text-slate-500 dark:text-slate-400">
-                          {o.eventCity}
+                          {eventPlace(o)}
                         </span>
                       )}
                     </td>

@@ -124,6 +124,7 @@ mod tests {
             db_path: Mutex::new(path.to_path_buf()),
             oauth_cancel_flag: Mutex::new(None),
             firebase_oauth_cancel_flag: Mutex::new(None),
+            mail_oauth_cancel_flag: Mutex::new(None),
             price_scanner_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }

@@ -51,6 +51,8 @@ import type {
   CurrencyConversion,
   DashboardData,
   DatabaseSwitchOutcome,
+  DiscordDestination,
+  DiscordTestResult,
   EventCategory,
   EventInput,
   EventMarketplaceLink,
@@ -66,6 +68,14 @@ import type {
   MarketAnalysisResult,
   Marketplace,
   MergeLogEntry,
+  MailConnectionStatus,
+  MailMessageDetail,
+  MailMessageFilter,
+  MailMessageSummary,
+  MailOverview,
+  MailReviewOutcome,
+  MailSyncResult,
+  MailTestResult,
   MergeOutcome,
   NotificationConfigInput,
   NotificationStatus,
@@ -737,11 +747,56 @@ export const api = {
     invoke<NotificationStatus>("set_notification_config", { input }),
   testDesktopNotification: () => invoke<NotificationTestResult>("test_desktop_notification"),
   testNtfyNotification: () => invoke<NotificationTestResult>("test_ntfy_notification"),
+  /** 2.99.0: send one real test message to ONE configured Discord channel.
+   *
+   * Takes the destination NAME, never the webhook URL. The URL lives only in
+   * the backend's config and is looked up there - the frontend has never
+   * been given it, so it cannot send it, and this command would reject it
+   * anyway. That is what keeps this from being an HTTP proxy.
+   *
+   * Resolves with a result even when the send failed - read `status`, not
+   * just `success`, because `"unknown"` means the outcome is genuinely not
+   * known and must not be retried automatically. */
+  testDiscordWebhook: (destination: DiscordDestination) =>
+    invoke<DiscordTestResult>("test_discord_webhook", { destination }),
   /** Silent by design (mirrors checkForUpdate's own "never surfaces an
    * error" contract) - a single disabled/misconfigured channel, or being
    * fully offline, must never interrupt the app with an error toast. See
    * commands/notifications.rs::check_and_send_notifications's doc comment. */
   checkAndSendNotifications: () => invoke<void>("check_and_send_notifications"),
+
+  // -------------------------------------------------------------------------
+  // Mail Intelligence (2.100.0, phase 1) - commands/mail.rs.
+  //
+  // Nothing here creates or changes a sale, order, ticket or finance entry.
+  // That is phase 3; see that module's doc comment for the boundary.
+  // -------------------------------------------------------------------------
+  getMailStatus: () => invoke<MailConnectionStatus>("get_mail_status"),
+  /** Opens a real Google consent screen in the browser and waits for it.
+   *  Asks for `gmail.readonly` ONLY - this app cannot send, delete or label
+   *  anything in the mailbox, and Google is what enforces that. */
+  connectMailGmail: () => invoke<MailConnectionStatus>("connect_mail_gmail"),
+  cancelConnectMail: () => invoke<void>("cancel_connect_mail"),
+  /** Deletes the stored authorisation. Stored messages are KEPT - they are
+   *  marko's own record and dropping a connection is not a request to erase
+   *  his history. */
+  disconnectMail: () => invoke<MailConnectionStatus>("disconnect_mail"),
+  setMailPaused: (paused: boolean) => invoke<MailConnectionStatus>("set_mail_paused", { paused }),
+  setMailRetentionDays: (days: number) =>
+    invoke<MailConnectionStatus>("set_mail_retention_days", { days }),
+  /** One call to Gmail's profile endpoint. Proves the authorisation works
+   *  and names the mailbox, without reading a single message. */
+  testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),
+  syncMailNow: () => invoke<MailSyncResult>("sync_mail_now"),
+  /** Releases a sync claim left behind by a hard kill. Called once on the
+   *  Mail Intelligence screen's first load, never on a timer. */
+  clearStaleMailSync: () => invoke<MailConnectionStatus>("clear_stale_mail_sync"),
+  listMailMessages: (filter: MailMessageFilter) =>
+    invoke<MailMessageSummary[]>("list_mail_messages", { filter }),
+  getMailMessage: (id: number) => invoke<MailMessageDetail>("get_mail_message", { id }),
+  setMailReviewOutcome: (id: number, outcome: MailReviewOutcome, note?: string) =>
+    invoke<MailMessageDetail>("set_mail_review_outcome", { id, outcome, note: note ?? null }),
+  getMailOverview: () => invoke<MailOverview>("get_mail_overview"),
 
   // Price Checker (2.0.81) - compare marko's own unsold inventory for one
   // event against StubHub/Vivid Seats/Ticombo. Manual entry only, no live

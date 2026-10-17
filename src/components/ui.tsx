@@ -1253,8 +1253,16 @@ export function StatCard({
         </span>
       )}
       <p className="section-title truncate">{label}</p>
+      {/* 2.96.0 (Neon): the lead figure glows, and only the lead one, via
+          `.fig-glow` in index.css. That rule uses `currentColor`, so a profit
+          stays emerald and a loss stays red - the neon is added to the
+          meaning rather than painted over it.
+          The comment sits HERE, in JSX children position, not between the
+          attributes below. A block comment there is legal, but this file has
+          broken the build twice on comment placement (2.80.0, 2.86.0) and
+          there is nothing to gain by finding out whether this is the third. */}
       <p
-        className={`mt-2 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[25px]" : "text-[20px]"} ${valueTone}`}
+        className={`mt-2 truncate font-semibold leading-none tabular-nums ${emphasis ? "text-[25px] fig-glow" : "text-[20px]"} ${valueTone}`}
       >
         {value}
       </p>
@@ -1430,7 +1438,7 @@ export function Modal({
     // 2.6.0: the panel is now a real bordered surface with the shared
     // `shadow-overlay`, its own header band, and a footer-safe scroll area -
     // the header no longer scrolls away with the content.
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-slate-950/70">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-[8vh] backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70">
       <div
         className={`w-full ${width} overflow-hidden rounded-xl bg-surface shadow-overlay animate-[pop-in_.18s_ease-out]`}
       >
@@ -1726,7 +1734,7 @@ export function ConfirmDialog({
   if (!open) return null;
   return (
     // 2.0.74: same entrance treatment as Modal above - see its comment.
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-slate-950/70">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px] animate-[fadein_.15s_ease-out] dark:bg-[#05030c]/70">
       <div className="w-full max-w-sm rounded-xl bg-surface p-5 shadow-overlay animate-[pop-in_.18s_ease-out]">
         <div className="flex gap-3.5">
           <div

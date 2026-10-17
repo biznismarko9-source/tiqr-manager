@@ -129,17 +129,22 @@
     /* NOT theme(slate.900) any more: that step also carries light mode's body
        text (`text-slate-900`), so the card surface needed a value of its own
        before it could move. */
-    --surface: #11131b;
-    --surface-muted: #15172099;
-    --surface-raised: #171927;
+    /* 2.96.0 (Neon): GLASS. These are translucent on purpose - what makes
+       the look is the lit ground showing through every panel, not a blur
+       filter. See `.card` below for why the blur is applied narrowly. */
+    --surface: rgba(255,255,255,.050);
+    --surface-muted: rgba(255,255,255,.085);
+    /* Raised stays nearly OPAQUE: a dialog sits over dimmed content, and
+       text on a translucent dialog has two backgrounds competing under it. */
+    --surface-raised: #1b1130;
     /* Still UNDER the page, same as it always was - see the light-mode note. */
-    --surface-sunken: #05060a;
+    --surface-sunken: rgba(0,0,0,.30);
     /* `--line` stays on slate-800: several hundred places spell
        `dark:border-slate-800` out literally, and a token that disagreed with
        them would show up as two different hairlines on one screen. The card's
        own edge is the ring in `--sh-card`, which is what moved instead. */
-    --line: #272938;
-    --line-soft: #1b1d29;
+    --line: rgba(255,255,255,.12);
+    --line-soft: rgba(255,255,255,.07);
     --scroll-thumb: theme("colors.slate.700");
     --highlight: transparent;
     /* The depth used to come from the tone step (950 ground -> 900 card).
@@ -151,14 +156,27 @@
        meaning everywhere, a card's edge only has to say "this is a surface",
        and the reference draws that edge far softer than the register's own
        swatch did. */
-    --sh-card: 0 0 0 1px #272938;
-    --sh-raised: 0 0 0 1px #343753;
-    --sh-overlay: 0 24px 64px rgb(0 0 0 / 0.75), 0 0 0 1px #272938;
-    --sh-inset: 0 0 0 1px theme("colors.slate.800");
+    --sh-card: 0 0 0 1px rgba(255,255,255,.11);
+    --sh-raised: 0 0 0 1px rgba(255,255,255,.20);
+    --sh-overlay: 0 28px 70px rgb(0 0 0 / 0.78), 0 0 0 1px rgba(255,255,255,.16);
+    --sh-inset: 0 0 0 1px rgba(255,255,255,.12);
   }
 
   body {
     @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+  }
+  /* 2.96.0 (Neon): the lit ground. Two fixed radial washes over the void -
+     this is the thing every translucent panel above is translucent ONTO, so
+     without it the glass has nothing to show and the app just looks faded.
+     `fixed` so it stays put while content scrolls; a gradient that scrolls
+     with a long table turns into visible banding. Dark mode only - a lit
+     wash under white cards would be mud. */
+  .dark body {
+    background-image:
+      radial-gradient(1100px 620px at 8% -10%, rgba(192, 38, 211, .30), transparent 62%),
+      radial-gradient(900px 560px at 96% 6%, rgba(34, 211, 238, .18), transparent 58%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
     /* Inter is listed first in the font stack but is NOT bundled or fetched -
        this app is offline-first and deliberately adds no web font, so on most
        machines this resolves to the OS UI face. These two settings are what
@@ -330,7 +348,11 @@
      cap, the contained overscroll, the sticky header below) is untouched:
      that behaviour was fixed against a real bug and is not a style. */
   .table-shell {
-    @apply overflow-auto rounded-xl bg-surface shadow-card;
+    /* 2.96.0: tables get a SOLIDER fill than a card. This is the honest cost
+       of glass, written down: a twelve-row table over a lit gradient is
+       measurably harder to read than over flat ink, and the fix is opacity,
+       not a darker text colour. */
+    @apply overflow-auto rounded-[18px] bg-surface-muted shadow-card;
     border: 0;
     max-height: calc(100vh - var(--table-inset, 13.5rem));
     overscroll-behavior: contain;
@@ -467,15 +489,25 @@
      app ground, because in this material the card and the page are one
      sheet. */
   .card {
-    /* 2.94.0: 12px. 2.90.0 had taken this to 8px because THE REGISTER's
-       Panel is "povrch, vlasová linka, 8 px" - that register is superseded
-       by the Electric Purple reference, whose panels are visibly softer.
-       One rule, every panel in the app, so the shape changes everywhere at
-       once rather than per page. */
-    @apply rounded-xl bg-surface shadow-card;
+    /* 2.96.0: 18px, the Neon design's own radius - softer than 2.94.0's 12,
+       which is most of why glass reads as glass rather than as a flat tint. */
+    @apply rounded-[18px] bg-surface shadow-card;
     border: 0;
   }
-  /* 2.90.0: 2.89.0's top-edge gradient is GONE. THE REGISTER allows no
+  /* 2.96.0: the blur is deliberately NOT on `.card`.
+     Every panel in this app is a `.card`, and Settings alone renders dozens.
+     `backdrop-filter` forces a separate compositing pass per element, and a
+     Tauri webview on a laptop is exactly where that bill arrives. The glass
+     look comes from translucency over the lit ground, which costs nothing;
+     the blur only earns its keep where a panel floats over CONTENT rather
+     than over the background - a dialog, a menu, a sticky bar. Those are
+     `.overlay`/`shadow-overlay`, so that is where it goes. If marko wants
+     blur on ordinary cards too, it is one line here - but measure it on the
+     Inventory table first. */
+  .dark .card-glass,
+  .dark [class*="shadow-overlay"] {
+    backdrop-filter: blur(16px) saturate(140%);
+  }  /* 2.90.0: 2.89.0's top-edge gradient is GONE. THE REGISTER allows no
      gradients, and the darker surfaces it was propping up hold on their own
      against the deeper ground once the ring carries the edge. */
   /* Opt-in lift for cards that are actually clickable (KPI tiles, the
@@ -548,6 +580,27 @@
      this app aligns figures at all. */
   .num {
     @apply font-mono tabular-nums;
+  }
+
+  /* 2.96.0 (Neon): the lit figure. Used on ONE number per screen - the lead
+     KPI - and never on a column of them: a glow on every figure in a table
+     is how a dashboard stops having a hierarchy. The gradient runs into the
+     accent rather than away from it, so the eye lands on the same hue the
+     rest of the screen uses for "this matters". */
+  .dark .fig-lit {
+    background-image: linear-gradient(96deg, theme("colors.slate.50"), theme("colors.brand.400"));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* The same idea for a figure whose COLOUR ALREADY MEANS SOMETHING. Profit
+     is emerald when you made money and red when you lost it, and a gradient
+     would paint over that - the glow has to carry the neon without touching
+     the hue. `currentColor` is the whole trick: whatever semantic colour the
+     figure already has, it glows in that, so meaning survives the styling. */
+  .dark .fig-glow {
+    text-shadow: 0 0 30px color-mix(in srgb, currentColor 50%, transparent);
   }
 
   /* THE REGISTER's figure row - the part of the system this app did not

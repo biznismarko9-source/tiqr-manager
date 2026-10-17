@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, Ticket } from "../lib/types";
-import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
+import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, SeatEntry, Ticket, TicketStatus } from "../lib/types";
+import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatsSummary } from "../lib/format";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Figure, Figures, LoadingBlock } from "../components/ui";
 import { FinanceCategoryBadge } from "../components/FinanceCategoryBadge";
 import {
@@ -215,6 +215,44 @@ function OverviewTab({
 }) {
   const s = event.stats;
 
+  /* Tickets grouped into the orders they came from - see the table below for
+     why the rows are orders now.
+     Two things worth stating. The order of the groups follows the order the
+     tickets arrive in, which is the backend's own sort, so this never
+     reshuffles a list the user has already read. And the currency is only
+     set when every ticket in the group agrees: one order CAN hold tickets
+     bought in two currencies, and `formatMoneyOrMixed` prints "Mixed" rather
+     than adding them - the same rule the rest of the app follows. */
+  const ticketsByOrder = useMemo(() => {
+    const byId = new Map<
+      number,
+      { orderId: number; orderCode: string; count: number; costCents: number;
+        currencies: Set<string>; seats: SeatEntry[]; statusCount: Map<TicketStatus, number> }
+    >();
+    for (const t of tickets ?? []) {
+      let g = byId.get(t.orderId);
+      if (!g) {
+        g = { orderId: t.orderId, orderCode: t.orderCode, count: 0, costCents: 0,
+              currencies: new Set(), seats: [], statusCount: new Map() };
+        byId.set(t.orderId, g);
+      }
+      g.count += 1;
+      g.costCents += t.totalCostCents;
+      g.currencies.add(t.currency);
+      g.seats.push({ section: t.section, rowLabel: t.rowLabel, seat: t.seat });
+      g.statusCount.set(t.status, (g.statusCount.get(t.status) ?? 0) + 1);
+    }
+    return Array.from(byId.values()).map((g) => ({
+      orderId: g.orderId,
+      orderCode: g.orderCode,
+      count: g.count,
+      costCents: g.costCents,
+      currency: g.currencies.size === 1 ? Array.from(g.currencies)[0] : null,
+      seats: formatSeatsSummary(g.seats),
+      statuses: Array.from(g.statusCount.entries()).map(([status, count]) => ({ status, count })),
+    }));
+  }, [tickets]);
+
   // 2.35.1: the ticket-highlight filter went with Inventory Intelligence -
   // that block held every caller of it, so with the block gone the filter
   // could never be switched on and the "Showing: ..." banner could never
@@ -293,7 +331,14 @@ function OverviewTab({
           event" action moved onto the Tickets heading below, so the way in
           is where you are already looking. */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets ({tickets?.length ?? 0})</h2>
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+          Orders ({ticketsByOrder.length})
+          {tickets && tickets.length > 0 && (
+            <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
+              {tickets.length} ticket{tickets.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </h2>
         <Button variant="secondary" onClick={() => navigate("/orders", { state: { presetEventId: event.id } })}>
           <IconPlus className="h-4 w-4" /> New order for this event
         </Button>
@@ -303,35 +348,56 @@ function OverviewTab({
       ) : tickets.length === 0 ? (
         <EmptyState icon={<IconTicket className="h-5 w-5" />} title="No tickets for this event yet" />
       ) : (
-        // 2.2.3: max-w-[1400px] removed - see the Orders table above.
+        /* 2.98.0: ONE ROW PER ORDER, not per ticket.
+           The ticket code used to link to `/orders?code=<TICKET code>`, and
+           Inventory searches ORDER codes - so clicking a ticket took you to
+           Inventory and found nothing. That is what marko hit.
+           A ticket also has no page of its own to link to, which is why the
+           link was aimed sideways in the first place. An order does, so the
+           row is now the order: click it and you land on the order itself.
+           Grouping is by `orderId`, keyed on the id rather than the code
+           because the code is a display string and two orders could in
+           principle carry the same one. */
         <div className="table-shell table-shell-compact">
           <table className="w-full min-w-[700px] border-collapse">
             <thead>
               <tr>
-                <th className="th">Ticket</th>
-                <th className="th">Seat</th>
+                <th className="th">Order</th>
+                <th className="th text-right">Tickets</th>
+                <th className="th">Seats</th>
                 <th className="th text-right">Cost</th>
-                <th className="th text-right">Listing price</th>
                 <th className="th">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {tickets.map((t) => (
-                <tr key={t.id}>
+              {ticketsByOrder.map((g) => (
+                <tr
+                  key={g.orderId}
+                  className="cursor-pointer transition hover:bg-surface-muted"
+                  onClick={() => navigate(`/orders/${g.orderId}`)}
+                >
                   <td className="td">
-                    <Link to={`/orders?code=${encodeURIComponent(t.code)}`} className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400">
-                      {t.code}
+                    <Link
+                      to={`/orders/${g.orderId}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-brand-700 dark:hover:text-brand-400"
+                    >
+                      {g.orderCode}
                     </Link>
                   </td>
-                  <td className="td text-slate-500 dark:text-slate-400">
-                    {formatSeatLocation(t.section, t.rowLabel, t.seat)}
-                  </td>
-                  <td className="td text-right tabular-nums">{formatMoney(t.totalCostCents, t.currency)}</td>
+                  <td className="td text-right tabular-nums">{g.count}</td>
+                  <td className="td truncate text-slate-500 dark:text-slate-400">{g.seats}</td>
                   <td className="td text-right tabular-nums">
-                    {t.listingPriceCents != null ? formatMoney(t.listingPriceCents, t.currency) : "-"}
+                    {formatMoneyOrMixed(g.costCents, g.currency)}
                   </td>
                   <td className="td">
-                    <Badge tone={t.status}>{t.status}</Badge>
+                    <span className="flex flex-wrap gap-1">
+                      {g.statuses.map((st) => (
+                        <Badge key={st.status} tone={st.status}>
+                          {st.count === g.count ? st.status : `${st.count} ${st.status}`}
+                        </Badge>
+                      ))}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -393,15 +459,9 @@ function SalesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders]);
 
-  // 1.8.3 (section 14) / 1.9.10: unchanged from this page's previous
-  // single-tab version - see git history there for the original reasoning.
-  const unsoldTickets = (tickets ?? []).filter((t) => t.status === "available" || t.status === "listed");
-  const potentialInventoryCostCents = unsoldTickets.reduce((sum, t) => sum + t.totalCostCents, 0);
-  const potentialListingValueCents = unsoldTickets.reduce((sum, t) => sum + (t.listingPriceCents ?? 0), 0);
-  const potentialProfitCents = potentialListingValueCents - potentialInventoryCostCents;
-  const unsoldCurrencies = Array.from(new Set(unsoldTickets.map((t) => t.currency)));
-  const potentialCurrency = unsoldCurrencies.length <= 1 ? (unsoldCurrencies[0] ?? event.stats.currency) : null;
-  const missingListingPriceCount = unsoldTickets.filter((t) => t.listingPriceCents == null).length;
+  /* 2.98.0: the six derivations that fed "Potential Profit" are gone with
+     the card. They were three reduces plus a Set over every ticket on the
+     event, on every render, for a figure that is no longer drawn. */
 
   return (
     <div>
@@ -459,41 +519,12 @@ function SalesTab({
         </div>
       )}
 
-      {/* 2.33.0: the "Market vs. mine" card and the Price Checker link that
-          sat here are gone with Price Checker itself. Potential Profit below
-          is this page's own calculation and stays. */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
-        <p className="mb-1 section-title">Potential Profit</p>
-        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          This event&apos;s unsold stock (available + listed), not yet sold. This is an estimate, not realized profit.
-        </p>
-        <Figures>
-          {/* Same three accents the Dashboard's own Potential Profit trio
-              wears, so the estimate reads identically on both screens. */}
-          <Figure
-            label="Inventory cost"
-            value={formatMoneyOrMixed(potentialInventoryCostCents, potentialCurrency)}
-            sub="What unsold tickets cost you"
-          />
-          <Figure
-            label="Listing value"
-            value={formatMoneyOrMixed(potentialListingValueCents, potentialCurrency)}
-            sub="Unsold tickets that have a listing price"
-          />
-          <Figure
-            label="Potential profit"
-            value={formatMoneyOrMixed(potentialProfitCents, potentialCurrency)}
-            sub="Listing value minus inventory cost"
-          />
-        </Figures>
-        {missingListingPriceCount > 0 && (
-          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            {missingListingPriceCount} unsold ticket{missingListingPriceCount === 1 ? "" : "s"} still{" "}
-            {missingListingPriceCount === 1 ? "has" : "have"} no listing price, so potential profit understates what full inventory
-            could be worth once priced.
-          </p>
-        )}
-      </div>
+      {/* 2.98.0: "Potential Profit" is gone at marko's request. It was this
+          page's own estimate of unsold stock (listing value minus inventory
+          cost) and the last thing on the page that showed a number nobody
+          had actually earned. What a ticket MIGHT fetch is not a figure this
+          app should put beside ones that are real. The derivations behind it
+          went with it - see the removed `potential*` memos above. */}
 
       {/* 2.2.5: former FinanceTab, folded in below Market - "sales a finance
           daj dokopy" (see this file's own top-of-file doc comment for the

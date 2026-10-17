@@ -16,6 +16,228 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.100.0 - Mail Intelligence (fáza 1 zo 4)
+
+Žiadal si, aby TIQR čítal mail a automatizoval z neho predaje, sklad a
+financie. To je štvorfázová vec; toto je **fáza 1, dodaná celá** - nie štyri
+fázy dodané na polovicu.
+
+- **Hranica, ktorú treba vedieť:** nič v `commands/mail.rs` nezapisuje
+  predaj, objednávku, lístok ani finančný záznam. Ani jeden `INSERT`, ani
+  jeden `UPDATE`. Je na to test, ktorý spočíta riadky v piatich tabuľkách
+  pred a po spracovaní mailu a overí, že sa nepohli. Párovanie a vytváranie
+  záznamov je fáza 3.
+- **Gmail, bez jedinej novej závislosti.** Appka už mala kompletný Google
+  OAuth tok pre Sheets a `run_sign_in` berie scope ako parameter. Mailbox je
+  teda tretí samostatný grant cez tú istú mašinériu: vlastný scope
+  (`gmail.readonly` - TIQR nevie poslať, zmazať ani označiť nič), vlastný
+  token, vlastný cancel. Odpojenie mailu ťa neodhlási zo Sheets.
+- **IMAP tam NIE JE** - potreboval by nový crate a pravidlo znie žiadne nové
+  závislosti. Rozhranie je však postavené tak, aby IMAP pribudol vedľa
+  Gmailu, nie cezeň.
+- **Kurzor je dátové okno, nie Gmail `historyId`** - zámerne. Gmail drží
+  históriu asi týždeň; táto appka beží len keď je otvorená, takže zavretý
+  notebook cez sviatky je bežný stav, nie výnimka. Okno sa prekrýva o deň a
+  prekryv je zadarmo, lebo ukladanie je idempotentné.
+- **Klasifikácia je deterministická** (doména odosielateľa + kľúčové slová),
+  žiadny model. Preto "text v maile nevie appku nahovoriť na nič" je
+  vlastnosť návrhu, nie nádej - a je na to test s prompt injection.
+- **Tajomstvá:** stav pre frontend nesie booleany a adresu schránky, nikdy
+  token. Telo Google odpovede sa nikdy nečíta. Telá mailov sa neukladajú -
+  len orezaný, od HTML očistený a redigovaný výňatok, ktorý retention maže.
+  Prílohy sa nesťahujú vôbec.
+- **Nájdené renderom, nie čítaním:** figúrka "Failed" na Overview mohla
+  ukazovať len 0 (vo fáze 1 nič ten stav nenastaví), tak je preč.
+
+## 2.99.0 - Discord test webhook
+
+Discord v tejto apke **doteraz vôbec nebol** - jediná zmienka bola komentár
+vo `firebase.ts` o odloženom Discord prihlásení. Toto je teda celý kanál,
+nie tlačidlo pridané k existujúcemu.
+
+- **Settings -> Integrations -> Discord** (`DiscordCard`): tri webhooky
+  (Sales, Finance, Inventory), každý s tlačidlom **Test webhook**, ktoré
+  naozaj pošle POST na Discord a zobrazí, čo sa skutočne vrátilo.
+- **Frontend nikdy nevidí ani neposiela URL webhooku.** Príkaz
+  `test_discord_webhook` berie NÁZOV cieľa ("sales") a URL si nájde backend.
+  `DiscordDestination::parse` odmietne čokoľvek iné než tie tri;
+  `validate_webhook_url` pred každým odoslaním overí uloženú URL proti
+  štyrom Discord hostom. Príkaz sa teda nedá použiť ako HTTP proxy.
+- **`NotificationStatus` nesie len booleany** (`discordSalesSet`...), nikdy
+  URL ani jej maskovanú podobu. URL webhooku má token v ceste - URL *je*
+  to tajomstvo. Modul nelogguje nič, telo Discord odpovede sa **nikdy
+  nečíta** (len `.status()` a hlavička `retry-after`) a žiadna chybová
+  správa URL neobsahuje - je na to test.
+- **`status` má tri hodnoty a UI ich rozlišuje.** `delivered` len pri 2xx,
+  `failed` keď Discord odpovedal a odmietol, `unknown` keď sa nič nevrátilo.
+  Timeout sa **nehlási ako chyba** a **nikdy sa automaticky neposiela
+  znova** - Discord mohol správu prijať a druhý pokus by z jedného testu
+  urobil dve správy v kanáli.
+- Testovacia správa neobsahuje **nič z databázy** a nič nezapisuje - žiadny
+  fiktívny predaj, pohyb ani položka skladu.
+- 25 unit testov, bez siete a bez novej závislosti: rozhodovacia tabuľka je
+  čistá funkcia `interpret_discord_status(u16)`.
+- **Opravené pred vydaním:** pridanie polí do `NotificationConfig` a
+  `NotificationConfigInput` nechalo **päť existujúcich test literálov**
+  v `notifications.rs` nekompletných - `cargo test` by spadol (E0063).
+
+## 2.98.0 - Päť zo siedmich
+
+### Lístky v evente sú teraz objednávky
+
+To bola **skutočná chyba**, nie vzhľad. Odkaz viedol na
+`/orders?code=<kód LÍSTKA>`, ale Inventory hľadá kódy **objednávok** — preto
+ťa klik hodil do Inventory a nič nenašiel.
+
+Lístok nemá vlastnú stránku, preto ten odkaz mieril nabok. Objednávka ju má,
+takže riadok **je** objednávka a klik ťa na ňu hodí.
+
+Zoskupenie kľúčuje na `orderId`, nie na kód (kód je zobrazovací reťazec).
+Mena sa nastaví **len keď sa všetky lístky v objednávke zhodnú** — jedna
+objednávka môže niesť dve meny a vtedy sa vypíše „Mixed", nesčíta sa.
+
+### Odstránené
+
+- **Potential Profit** (detail eventu) — posledné miesto v appke, kde svietili
+  peniaze, ktoré nikto nezarobil
+- **Paid a Outstanding** (detail objednávky)
+- **celý pás „Order summary"** — čím sa zoznam lístkov posunul hore pod hlavičku
+
+Výpočty za nimi som odstránil tiež, nie nechal bežať naprázdno. Jediná
+výnimka je `salesSummary`: stále sa načítava a nič ho nečíta — nechal som ho
+zámerne, lebo je to jediné volanie, ktoré pozná skutočné tržby objednávky, a
+je to prvá vec, ktorú bude niekto chcieť späť.
+
+### Pulls na spodok navigácie
+
+### Dve moje chyby, chytené pred vydaním
+
+Do importu typov som pridal `SaleEntry`, **ktorý neexistuje** — to by
+neskompilovalo. A nový výpočet `ticketsByOrder` mi pristál v `SalesTab`,
+pritom sa používa v `OverviewTab`. Obe som našiel kontrolou, nie odhadom:
+pri vkladaní na komentárovú kotvu treba overiť, v ktorom komponente to
+skutočne skončí — tá kotva bola v susednej funkcii.
+
+### Čo ostáva — a je to jedna práca, nie dve
+
+Editačné okno v Pulls a zoznam podľa mena. **Skutočná príčina je
+štrukturálna:** Events, Orders aj Sales majú každý svoju detail cestu
+(`events/:id`, `orders/:id`, `sales/:id`). **Pulls nemá žiadnu**, preto sa
+všetko tlačí do jedného vysokého okna. Riešenie je dať mu `pulls/:id` — a
+zoznam podľa mena patrí do toho istého prechodu.
+
+**Overené** renderom pred/po, vyvážením zátvoriek celého `src/`, kontrolou
+scope (deklarácia aj obe použitia v tom istom komponente) a tým, že každý
+importovaný typ naozaj existuje. **Nie je to kompilácia.**
+
+## 2.97.0 - Inventory číta ako Events
+
+Riadok v Inventory má teraz **kategóriový odznak vedľa názvu** a pod ním
+**„venue, city"** — presne ako Events.
+
+Väčšina toho tam už bola a nepoužívala sa:
+
+- **Mesto pod názvom existuje od 2.60.0.** `Ticket.eventCity` má dokonca
+  komentár „shown under the event name in Inventory".
+- **`categoryName` a `categoryColorSlot` sú na tom riadku od 2.0.27** a
+  odznak kreslia Orders, Events aj Sales. Inventory jediné nie. Čisté UI,
+  žiadne nové dáta.
+- **Venue bolo jediné naozaj nové pole.** `events e` už bolo v dotaze
+  joinuté, takže je to jeden stĺpec navyše, jedno pole v štruktúre a jeden
+  `row.get` — žiadna migrácia, žiadny nový join.
+
+Pridanie poľa do Rust štruktúry bolo bezpečné preto, že `Order` sa skladá na
+**jedinom mieste** (`orders.rs:60`). V 2.86.0 ma presne tento typ zmeny
+zhodil E0063, lebo tá štruktúra sa skladala na viacerých — ten počet sa
+oplatí overiť pred každým takým zásahom.
+
+`eventPlace()` spája venue a mesto **rovnako ako Events.tsx**, takže sa tie
+dve obrazovky nemôžu rozísť v tom, ako to formátujú. Event, čo nemá ani
+jedno, nevykreslí druhý riadok vôbec — nie prázdny.
+
+**Overené** renderom pred/po. Checkery som musel znovu postaviť (nová
+session) a najprv ich pustil na úmyselne pokazený súbor — oba padli správne,
+až potom som im veril. **Nie je to kompilácia.**
+
+## 2.96.0 - Neon: sklo na nasvietenom podklade
+
+Vybral si z labu **Neon** a jeho výrazné farby. Nasadené na celý TIQR.
+
+| | hodnota |
+|---|---|
+| podklad | **#0a0618** (void) |
+| akcent | **#c026d3** / 500 `#d946ef` |
+| panel | **priehľadný** `rgba(255,255,255,.05)` |
+| linka | `rgba(255,255,255,.12)` |
+| rádius | **18 px** |
+
+**Priehľadnosť funguje len vďaka podkladu.** `.dark body` nesie dva fixné
+radiálne nasvietenia a každý panel nad nimi je `rgba`. Preto osem miest, čo
+maľovali nepriehľadné pozadie appky, je teraz `dark:bg-transparent` — inak by
+sklo nemalo čo ukázať a appka by vyzerala len vyblednuto.
+
+### Chybu, ktorú si tá plošná náhrada spravila, som musel chytiť čítaním
+
+Dve z tých ôsmich boli **stmavenia za dialógmi** (`dark:bg-slate-950/70`).
+Náhrada ich zmenila na `bg-transparent/70` — čo nestmaví nič. Každý dialóg by
+sa vznášal nad živým obsahom. Majú teraz `dark:bg-[#05030c]/70`.
+
+Plošná náhrada cez názov triedy je presne taká bezpečná ako kontrola, ktorá
+po nej nasleduje.
+
+### `backdrop-filter` zámerne NIE je na `.card`
+
+Každý panel v appke je `.card` a samotné Settings ich vykreslia desiatky.
+Blur znamená **samostatný kompozičný prechod na každý prvok** — a účet za to
+príde na notebooku. Sklo číta z priehľadnosti, ktorá je zadarmo. Blur je len
+na `.card-glass` a na čomkoľvek so `shadow-overlay`, teda na paneloch, čo sa
+vznášajú nad **obsahom**, nie nad pozadím. Pred rozšírením to odmerať na
+tabuľke Inventory.
+
+### Tabuľky majú hustejšiu výplň než karty
+
+`bg-surface-muted` namiesto `bg-surface`. Dvanásťriadková tabuľka nad
+nasvieteným prechodom je naozaj horšie čitateľná — a to sa rieši
+nepriehľadnosťou, nie tmavším textom.
+
+### Vedúce číslo svieti cez `currentColor`
+
+Zisk je zelený, keď si zarobil, a červený, keď si stratil. Gradient by ten
+význam prepísal, takže `.fig-glow` pridá svetlo **vo farbe, ktorú to číslo už
+má**. `.fig-lit` (skutočný gradient) ostáva pre čísla, ktorých farba nič
+neznamená.
+
+**Overené** renderom s presnými hodnotami z kódu: nasvietený podklad, sklené
+panely, fuchsiový akcent, svetielkujúci zisk, čitateľná tabuľka a opravené
+stmavenie dialógu. Vyváženie zátvoriek celého `src/`, `index.css` 114/114,
+`tailwind.config.js` 12/12, komentárové chyby 0. **Nie je to kompilácia.**
+
+## 2.95.0 - Tri odstránenia
+
+**Malé grafy pod KPI hodnotami — preč.** Druhýkrát. 2.88.0 ich odstránilo na
+tvoju žiadosť, 2.94.0 ich vrátilo, lebo ich ukazovala referencia a brief ich
+pýtal menovite. Pozrel si sa a povedal nie.
+
+Zapísal som to do kódu aj do stavu projektu ako pravidlo: **referencia, na
+ktorej sparkline je, nie je dôvod ju pridať — dôvod si len ty.** Komponent
+`Sparkline` a prop `spark` ostávajú v `ui.tsx` nepoužité, presne ako medzi
+2.88.0 a 2.94.0 — preto sa minule vrátili za pár minút a nič nestoja.
+
+**„Profit & Loss" — preč z prepínača na Dashboarde.** Odfiltrované na mieste
+volania (`DASHBOARD_METRICS`), nie vymazané zo zdieľaného zoznamu `METRICS` —
+ten používa aj Recap a ty si ukázal na kartu Dashboardu. Profit na tej
+stránke ostáva ako vlastná KPI karta.
+
+**„Net" — preč z prepínača vo Finance.** Ostávajú Income a Expenses.
+Cashflow, čo je prvá pilulka aj predvoľba, aj tak kreslí obe proti sebe —
+čiže presne tú otázku, na ktorú Net odpovedal tretíkrát. S ním sa
+zjednodušilo aj `headlineIsNet`: `metric === "profit"` sa po odstránení
+pilulky už nedá dosiahnuť, takže tá polovica podmienky bola mŕtva.
+
+**Overené** renderom: karty bez grafov nemajú po nich dieru, Dashboard
+ponúka Revenue/Cost/Sales, Finance Cashflow/Income/Expenses. Vyváženie
+zátvoriek celého `src/`, komentárové chyby 0. **Nie je to kompilácia.**
+
 ## 2.94.0 - Deep Black x Electric Purple
 
 ### Cashflow preč z Dashboardu

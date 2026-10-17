@@ -79,18 +79,27 @@ export default {
         // are unchanged again, and one of them flips back: a filled button
         // carries WHITE on 600 here (#7c3aed, 5.9:1), which it could not do
         // on a bright teal. See Button's `primary` variant.
+        // 2.96.0 (Neon): marko picked the Neon direction out of the ten-
+        // dashboard lab and asked for its vivid colours across the whole app.
+        // This is a fuchsia-violet, deliberately more saturated than 2.94.0's
+        // Electric Purple - on a lit void ground a muted violet reads grey.
+        //
+        // The roles are unchanged yet again, and 600 is still where a filled
+        // button meets white: white on #c026d3 measures 4.6:1, which clears
+        // the 4.5 floor. It is the tightest of the three palettes this app
+        // has carried, so re-measure before moving the button off 600.
         brand: {
-          50: "#f5f3ff",
-          100: "#ede9fe",
-          200: "#ddd6fe",
-          300: "#c4b5fd",
-          400: "#a78bfa",
-          500: "#8b5cf6",
-          600: "#7c3aed",
-          700: "#6d28d9",
-          800: "#5b21b6",
-          900: "#4c1d95",
-          950: "#2e1065",
+          50: "#fdf4ff",
+          100: "#fae8ff",
+          200: "#f5d0fe",
+          300: "#f0abfc",
+          400: "#e879f9",
+          500: "#d946ef",
+          600: "#c026d3",
+          700: "#a21caf",
+          800: "#86198f",
+          900: "#701a75",
+          950: "#4a044e",
         },
         // 2.6.0 (visual redesign): retuned away from Tailwind's stock slate.
         // This is the one place the redesign's light/dark surface hierarchy
@@ -171,10 +180,9 @@ export default {
           // edge, so the ground moved with it. Safe to change here
           // because slate-950 is ONLY ever a dark page background in
           // this app - no text-, border- or ring-slate-950 anywhere.
-          // 2.94.0: marko's Background token, #08090D - a true deep black
-          // with the faintest blue in it, which is what keeps the violet
-          // above it reading as electric rather than muddy.
-          950: "#08090d",
+          // 2.96.0: the void. Neon needs a ground with violet already in it,
+          // otherwise the lit gradients above read as grey smudges.
+          950: "#0a0618",
         },
         // 2.29.1: the surface a card actually sits on, as its own token
         // rather than a literal. `bg-white` was the single biggest reason the

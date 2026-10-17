@@ -311,6 +311,12 @@ pub struct Order {
     pub event_name: String,
     /// 2.60.0: shown under the event name in Inventory.
     pub event_city: Option<String>,
+    /// 2.97.0: the venue, beside the city on that same second line - marko
+    /// asked for Inventory to read the way Events already does ("venue,
+    /// city" under the name). Denormalized here exactly like `event_city`
+    /// and `category_name` before it; `events e` is already joined, so this
+    /// costs one more column on a query that was already running.
+    pub event_venue: Option<String>,
     /// 2.2.10: the event's own date/status, denormalized here the same way
     /// category_name/platform_name already are (2.0.27) - marko's request:
     /// Orders' Active/Completed split now keys off whether the EVENT is
@@ -1616,6 +1622,62 @@ pub struct SheetSyncResult {
 pub struct NotificationConfig {
     pub desktop_enabled: bool,
     pub ntfy: NtfyChannelConfig,
+    /// 2.99.0: Discord. Added as a THIRD channel on this same struct rather
+    /// than as its own settings blob, because this struct is already stored
+    /// as one JSON value in `app_settings` with `#[serde(default)]` - so an
+    /// install that has never seen Discord deserializes its old JSON and
+    /// gets `DiscordChannelConfig::default()`. No migration, no new table.
+    pub discord: DiscordChannelConfig,
+}
+
+/// 2.99.0: Discord webhooks, one per destination.
+///
+/// The three URLs are SECRETS and are treated exactly the way the ntfy topic
+/// above is: held here, never echoed back to the frontend (see
+/// `NotificationStatus`), and only overwritten when the input carries
+/// `Some` (see `NotificationConfigInput`). A Discord webhook URL contains
+/// its own token in the last path segment - anyone holding the URL can post
+/// to that channel - so it is a credential, not an address.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordChannelConfig {
+    pub enabled: bool,
+    /// Empty string means "not configured" - the same convention
+    /// `NtfyChannelConfig::topic` already uses, so the two channels read the
+    /// same way in code.
+    pub sales: String,
+    pub finance: String,
+    pub inventory: String,
+}
+
+/// 2.99.0: the structured result of ONE webhook test.
+///
+/// Deliberately richer than `NotificationTestResult` (a bool and a string),
+/// because a webhook test has an outcome that bool cannot express: a request
+/// that timed out may or may not have been delivered. `status` carries that
+/// third case as "unknown", and the UI must not call it either success or
+/// failure - see `DiscordTestStatus` in the frontend types.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordTestResult {
+    pub success: bool,
+    pub destination: String,
+    /// "delivered" | "failed" | "unknown"
+    pub status: String,
+    /// A stable machine-readable code the UI can branch on. `None` on
+    /// success. Never contains any part of the webhook URL.
+    pub error_code: Option<String>,
+    /// Human-readable, safe to display. Never contains the webhook URL, a
+    /// token, or a raw response body from Discord.
+    pub message: String,
+    /// RFC3339, produced by the backend so the displayed time is the time
+    /// the request actually happened rather than when the UI rendered it.
+    pub tested_at: String,
+    /// Unique per attempt, and the same id is embedded in the Discord
+    /// message - so a message in the channel can be matched to a row here.
+    pub test_id: String,
+    /// Only set when Discord returned 429 and told us how long to wait.
+    pub retry_after_seconds: Option<u64>,
 }
 
 /// 2.0.78: ntfy (https://ntfy.sh) replaced Pushover as this app's mobile-
@@ -1647,6 +1709,14 @@ pub struct NotificationStatus {
     pub desktop_enabled: bool,
     pub ntfy_enabled: bool,
     pub ntfy_topic_set: bool,
+    /// 2.99.0: Discord, as BOOLEANS only. The frontend is told whether a
+    /// destination is configured and nothing else - not the URL, not a
+    /// masked form of it, not its id. Masking happens in the UI by drawing
+    /// dots; there is nothing to mask here because nothing is sent.
+    pub discord_enabled: bool,
+    pub discord_sales_set: bool,
+    pub discord_finance_set: bool,
+    pub discord_inventory_set: bool,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1662,6 +1732,17 @@ pub struct NotificationConfigInput {
     pub desktop_enabled: bool,
     pub ntfy_enabled: bool,
     pub ntfy_topic: Option<String>,
+    /// 2.99.0: same `Option` contract as `ntfy_topic` - `None` means "leave
+    /// whatever is stored alone", which is what lets the Settings form round
+    /// trip without ever having been given the secret to send back.
+    #[serde(default)]
+    pub discord_enabled: bool,
+    #[serde(default)]
+    pub discord_sales: Option<String>,
+    #[serde(default)]
+    pub discord_finance: Option<String>,
+    #[serde(default)]
+    pub discord_inventory: Option<String>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per
@@ -3196,3 +3277,163 @@ pub struct CalendarEntry {
     pub currency: Option<String>,
 }
 
+
+// ---------------------------------------------------------------------------
+// Mail Intelligence (2.100.0, phase 1).
+//
+// What crosses the IPC boundary for the mailbox TIQR watches. The rule that
+// shapes every type here is the same one the Discord webhook follows
+// (2.99.0): a credential never travels to the frontend, not even masked.
+// `MailConnectionStatus` carries booleans and an email address - never a
+// token, never a refresh token, never an authorization header.
+//
+// Mirrors migration 040's columns; see that file for why each exists.
+// ---------------------------------------------------------------------------
+
+/// What Settings -> Integrations -> Email and the Mail Intelligence header
+/// read. Contains NO secret: `connected` says whether a refresh token is
+/// stored, and that is the whole of what the frontend learns about it.
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailConnectionStatus {
+    pub connected: bool,
+    /// The mailbox's own address, so marko can see WHICH account is
+    /// connected. This is his own address, already shown throughout the app
+    /// by the Google sign-in card, not a new disclosure.
+    pub account_email: Option<String>,
+    pub provider: Option<String>,
+    /// True when this build has no OAuth client embedded (a local `cargo
+    /// build`), so the UI can say "not available in this build" instead of
+    /// offering a button that cannot work.
+    pub oauth_available: bool,
+    /// Whether Google actually granted the Gmail read scope. Google may
+    /// grant a SUBSET of what was asked for, so this is checked rather than
+    /// assumed - see commands/mail.rs::GMAIL_SCOPE.
+    pub gmail_scope_granted: bool,
+    pub paused: bool,
+    pub sync_in_progress: bool,
+    pub last_sync_at: Option<String>,
+    pub last_sync_count: i64,
+    /// Safe text only - commands/mail.rs::safe_detail strips anything that
+    /// could carry a credential before it ever reaches this field.
+    pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
+    pub retention_days: i64,
+}
+
+/// The Overview screen's counters. Every one is a real `COUNT(*)`; none is a
+/// placeholder, which is what the spec asks for and what this app's own
+/// rules have always required.
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailOverview {
+    pub total_messages: i64,
+    pub new_since_last_sync: i64,
+    pub recognised_count: i64,
+    pub review_required_count: i64,
+    pub processed_count: i64,
+    pub failed_count: i64,
+    pub by_category: Vec<MailCategoryCount>,
+    pub recent: Vec<MailMessageSummary>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailCategoryCount {
+    pub category: String,
+    pub count: i64,
+}
+
+/// One row in Inbox Activity. `bodyExcerpt` is plain text with HTML already
+/// stripped in Rust - the UI renders it as text and must never be given a
+/// path that treats it as markup.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailMessageSummary {
+    pub id: i64,
+    pub provider: String,
+    pub provider_message_id: String,
+    pub from_address: String,
+    pub from_name: Option<String>,
+    pub subject: String,
+    pub snippet: Option<String>,
+    pub received_at: String,
+    pub category: String,
+    pub confidence: String,
+    pub detected_platform: Option<String>,
+    pub status: String,
+    pub review_reason: Option<String>,
+    pub body_excerpt: Option<String>,
+}
+
+/// One message plus its whole audit trail - the "what did it detect, what did
+/// it change, and why" view.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailMessageDetail {
+    pub message: MailMessageSummary,
+    pub history: Vec<MailLogEntry>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLogEntry {
+    pub id: i64,
+    pub at: String,
+    pub step: String,
+    pub outcome: String,
+    pub detail: Option<String>,
+}
+
+/// Filters for Inbox Activity. Every field optional; `None` means "no filter
+/// on this", which is what an untouched control sends.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MailMessageFilter {
+    pub category: Option<String>,
+    pub status: Option<String>,
+    /// Matched against sender address, sender name and subject.
+    pub search: Option<String>,
+    /// Inclusive, `YYYY-MM-DD`.
+    pub from_date: Option<String>,
+    pub to_date: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// What one sync run did. Returned by the manual "Sync now" button and by
+/// the periodic check, so both report the same shape.
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSyncResult {
+    /// False for an outcome that is not a success - including "skipped",
+    /// which is not a failure either. Read `status`, not just this.
+    pub success: bool,
+    /// "synced" | "skipped" | "failed"
+    pub status: String,
+    pub fetched: i64,
+    pub stored_new: i64,
+    /// Messages already present, so the run changed nothing for them. This
+    /// is the number that proves deduplication is working.
+    pub duplicates_ignored: i64,
+    pub review_required: i64,
+    pub message: String,
+    pub synced_at: String,
+}
+
+/// What a test of the mailbox connection found. Same three-valued `status`
+/// convention as `DiscordTestResult` (2.99.0), for the same reason: a
+/// request that never came back is not the same as one that was refused.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailTestResult {
+    pub success: bool,
+    /// "ok" | "failed" | "unknown"
+    pub status: String,
+    pub account_email: Option<String>,
+    /// How many messages the mailbox reports in total, when the provider
+    /// says. Proves the token actually works, without reading any mail.
+    pub messages_total: Option<i64>,
+    pub error_code: Option<String>,
+    pub message: String,
+    pub tested_at: String,
+}

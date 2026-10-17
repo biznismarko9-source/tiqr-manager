@@ -30,6 +30,7 @@ import {
   StatsSkeleton,
 } from "../components/ui";
 import { bucketLabel, MetricChart, METRICS, type MetricKey } from "../components/MetricChart";
+
 import { platformFill } from "../components/DashboardCharts";
 import { getLastUpdateCheck } from "../lib/updater";
 import {
@@ -51,6 +52,12 @@ import {
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { usePreferredCurrency } from "../lib/preferredCurrency";
+/* 2.95.0: the Dashboard's chart drops the "Profit & Loss" mode at marko's
+   request. Filtered HERE rather than removed from `METRICS` itself, because
+   that list is also Recap's (components/Recap.tsx) and he pointed at this
+   card, not that one. Profit is still on this page as its own KPI panel, and
+   `MetricChart` still draws the series for anyone who asks for it. */
+const DASHBOARD_METRICS = METRICS.filter((m) => m.key !== "profit");
 
 // 2.0.47 (DIR-001 signature idea #01): the exact same "warning starting N
 // days before, escalating daily, gone once resolved" mechanism Pulls.tsx
@@ -428,19 +435,19 @@ export default function Dashboard() {
                       more. The figure, its trend and its sub-line are what
                       these cards carry now, and the real chart is still
                       directly below this row. */}
-                  {/* 2.94.0: back to five PANELS, and this time with the
-                      sparkline. 2.88.0 took the sparklines off at marko's
-                      request; the Electric Purple reference puts them back
-                      and his brief asks for them in as many words ("a
-                      restrained sparkline... where appropriate"), so they
-                      return. 2.90.0's hairline-divided figure row was the
-                      right answer to a different brief and `Figures` stays
-                      exported for Finance, which still uses it.
-                      Every line is REAL: each one is a column of
-                      `data.revenueTimeSeries`, the same buckets the chart
-                      below draws. ROI deliberately has none - that series
-                      carries no per-bucket ROI, and a line invented to fill
-                      the gap is the one thing this app must never do. */}
+                  {/* Five KPI panels. On the SPARKLINES, which have now been
+                      on and off twice: 2.88.0 removed them at marko's
+                      request, 2.94.0 brought them back because the Electric
+                      Purple reference showed them and its brief asked for
+                      them by name, and 2.95.0 removed them again - he looked
+                      at the result and said no.
+                      That is settled now: HE DOES NOT WANT SPARKLINES IN
+                      THESE PANELS. A reference image showing them is not a
+                      reason to add them a third time; only him asking is.
+                      `Sparkline` and StatCard's `spark` prop stay in ui.tsx,
+                      unused, exactly as they did between 2.88.0 and 2.94.0 -
+                      that is why bringing them back took minutes last time,
+                      and it costs nothing to leave them. */}
                   <div data-tour="dash-stats" className="summary-bar">
                     <StatCard
                       label="Net profit"
@@ -450,7 +457,6 @@ export default function Dashboard() {
                       sub={`${formatPercent(data.period.roi)} ROI`}
                       icon={<IconDatabase className="h-4 w-4" />}
                       accent="violet"
-                      spark={data.revenueTimeSeries.map((pt) => pt.profitCents)}
                       emphasis
                     />
                     <StatCard
@@ -459,7 +465,6 @@ export default function Dashboard() {
                       trend={computeTrend(data.period.revenueCents, data.previousPeriod?.revenueCents)}
                       icon={<IconBarChart className="h-4 w-4" />}
                       accent="violet"
-                      spark={data.revenueTimeSeries.map((pt) => pt.revenueCents)}
                     />
                     <StatCard
                       label="Purchase cost"
@@ -468,7 +473,6 @@ export default function Dashboard() {
                       trendColored={false}
                       icon={<IconWallet className="h-4 w-4" />}
                       accent="orange"
-                      spark={data.revenueTimeSeries.map((pt) => pt.cogsCents)}
                     />
                     {/* 2.39.0: Margin is gone from the whole app - marko's
                         words: "ako keby zanikla". Profit and ROI stay; the
@@ -488,7 +492,6 @@ export default function Dashboard() {
                       trend={computeTrend(data.period.soldTickets, data.previousPeriod?.soldTickets)}
                       icon={<IconTicket className="h-4 w-4" />}
                       accent="violet"
-                      spark={data.revenueTimeSeries.map((pt) => pt.soldTickets)}
                     />
                   </div>
                   {/* Big number + line always come straight from data.period /
@@ -567,7 +570,7 @@ export default function Dashboard() {
                       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-[150px] flex-1">
                           <p className="truncate text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                            {METRICS.find((m) => m.key === metric)?.label}
+                            {DASHBOARD_METRICS.find((m) => m.key === metric)?.label}
                           </p>
                           <p
                             className={`mt-1.5 whitespace-nowrap text-[22px] font-semibold leading-none tabular-nums ${periodMetricTone(data, metric)}`}
@@ -578,7 +581,7 @@ export default function Dashboard() {
                           </p>
                         </div>
                         <div className={`${SEGMENTED_TRACK} shrink-0`}>
-                          {METRICS.map((m) => (
+                          {DASHBOARD_METRICS.map((m) => (
                             <button
                               key={m.key}
                               onClick={() => setMetric(m.key)}

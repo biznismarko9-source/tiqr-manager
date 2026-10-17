@@ -23,6 +23,9 @@ pub mod firebase_google_auth;
 pub mod google_auth;
 pub mod inventory_intelligence;
 pub mod lookups;
+// 2.100.0: Mail Intelligence (phase 1) - read a mailbox, classify what
+// arrives. Writes no business record; see its module doc comment.
+pub mod mail;
 pub mod notes;
 pub mod notifications;
 pub mod orders;

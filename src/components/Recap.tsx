@@ -1296,7 +1296,7 @@ export function Recap({ kind, onClose }: { kind: RecapKind; onClose: () => void 
   };
 
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-slate-950">
+    <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-transparent">
       {/* Header stays put while the report scrolls under it - the period
           picker is the one control someone reaches for repeatedly. */}
       <header className="shrink-0 border-b border-slate-200 bg-surface/90 backdrop-blur dark:border-slate-800 dark:bg-[#0c0c10]/90">

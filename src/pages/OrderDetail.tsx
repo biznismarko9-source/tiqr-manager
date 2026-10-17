@@ -99,6 +99,12 @@ export default function OrderDetail() {
 
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  /* 2.98.0: `salesSummary` is still FETCHED and held, but nothing on this
+     page reads it any more - the Order summary band that used it is gone.
+     Left in place deliberately rather than ripped out: `getOrderSalesSummary`
+     is the only call that knows this order's realized revenue, and the first
+     thing anyone will want back here is a profit line. Delete it if that
+     never comes; it costs one IPC round-trip per order opened. */
   const [salesSummary, setSalesSummary] = useState<OrderSalesSummary | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -173,17 +179,10 @@ export default function OrderDetail() {
     });
   };
 
-  // 1.9.0 (section 5, "Order Detail"): Paid/Outstanding, derived honestly
-  // from the existing order.paymentStatus label. Unlike a Sale, an Order has
-  // no numeric "amount paid so far" field anywhere - payment state here is a
-  // pure status, not a per-line amount - so 'unpaid'/'paid' map to a hard
-  // 0/total (unambiguous), but 'partial' genuinely has no backing number to
-  // show. Rather than guess or fabricate a split, that case is shown as
-  // "Partial" text with no invented cents value - see the 1.9.0 report.
-  const orderPaidCents =
-    order.paymentStatus === "paid" ? order.totalCostCents : order.paymentStatus === "unpaid" ? 0 : null;
-  const orderOutstandingCents =
-    order.paymentStatus === "paid" ? 0 : order.paymentStatus === "unpaid" ? order.totalCostCents : null;
+  /* 2.98.0: the Paid/Outstanding derivation went with its two cards. Worth
+     knowing if they are ever wanted back: an Order has NO numeric "amount
+     paid" field, so those two were read off `paymentStatus` alone - which is
+     why 'partial' could only ever show the word, never a split. */
 
   return (
     <div>
@@ -256,14 +255,11 @@ export default function OrderDetail() {
           for the same job. Converting them is the whole point of this pass:
           one component means one set of paddings, one type scale and one
           truncation rule, so a metric card looks identical wherever it
-          appears. Every value, format and condition below is unchanged -
-          including "Partial", which still appears in amber exactly when
-          `orderPaidCents`/`orderOutstandingCents` are null (the order model
-          has no field to back a real number; see the 1.9.0 audit).
+          appears. Every value, format and condition below is unchanged.
+          (2.98.0 removed the Paid/Outstanding pair this note also covered.)
 
           Accents group by meaning, not by variety: violet for the count,
-          blue for the per-unit inputs, orange for cost, emerald for money
-          actually collected. */}
+          blue for the per-unit inputs, orange for cost. */}
       <div className="summary-bar mb-8">
         <StatCard
           label="Quantity"
@@ -289,25 +285,10 @@ export default function OrderDetail() {
           icon={<IconWallet className="h-4 w-4" />}
           accent="orange"
         />
-        {/* 1.9.0 (section 5): Paid/Outstanding - see the orderPaidCents/
-            orderOutstandingCents derivation above. 'partial' shows as text,
-            never a fabricated number. */}
-        <StatCard
-          label="Paid"
-          value={orderPaidCents !== null ? formatMoney(orderPaidCents, order.currency) : "Partial"}
-          tone={orderPaidCents === null ? "warning" : "default"}
-          sub={orderPaidCents === null ? "Exact amount not tracked" : undefined}
-          icon={<IconCheck className="h-4 w-4" />}
-          accent="emerald"
-        />
-        <StatCard
-          label="Outstanding"
-          value={orderOutstandingCents !== null ? formatMoney(orderOutstandingCents, order.currency) : "Partial"}
-          tone={orderOutstandingCents === null ? "warning" : "default"}
-          sub={orderOutstandingCents === null ? "Exact amount not tracked" : undefined}
-          icon={<IconReceipt className="h-4 w-4" />}
-          accent="orange"
-        />
+        {/* 2.98.0: Paid and Outstanding removed at marko's request. The
+            payment_status field they were derived from is untouched and is
+            still shown as the order's own status - only these two derived
+            money cards are gone. */}
       </div>
 
       {/* 1.9.10: marko wanted Platform/Notes/Currency combined into one row
@@ -424,62 +405,12 @@ export default function OrderDetail() {
         )}
       </Card>
 
-      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Order summary</h2>
-      {/* 2.77.0: converted to `StatCard`, same as the six above - see their
-          comment. Realized profit keeps its exact emerald/red/neutral rule
-          through StatCard's own `tone`, which uses the identical classes, so
-          the colour cannot drift from the one Dashboard uses for the same
-          idea. No value, format or condition changed. */}
-      <div className="summary-bar mb-8">
-        <StatCard
-          label="Total tickets"
-          value={String(order.quantity)}
-          icon={<IconTicket className="h-4 w-4" />}
-          accent="violet"
-        />
-        <StatCard
-          label="Available"
-          value={String(order.availableCount + order.listedCount)}
-          icon={<IconPackage className="h-4 w-4" />}
-          accent="violet"
-        />
-        <StatCard
-          label="Sold"
-          value={String(order.soldCount)}
-          icon={<IconCheck className="h-4 w-4" />}
-          accent="violet"
-        />
-        <StatCard
-          label="Purchase cost"
-          value={formatMoney(order.totalCostCents, order.currency)}
-          icon={<IconWallet className="h-4 w-4" />}
-          accent="orange"
-        />
-        <StatCard
-          label="Sales revenue"
-          value={salesSummary ? formatMoney(salesSummary.revenueCents, order.currency) : "..."}
-          icon={<IconBarChart className="h-4 w-4" />}
-          accent="blue"
-        />
-        <StatCard
-          label="Realized profit"
-          value={salesSummary ? formatMoney(salesSummary.profitCents, order.currency) : "..."}
-          tone={
-            salesSummary && salesSummary.profitCents > 0
-              ? "positive"
-              : salesSummary && salesSummary.profitCents < 0
-                ? "negative"
-                : "default"
-          }
-          icon={<IconDatabase className="h-4 w-4" />}
-          accent="teal"
-        />
-      </div>
-      <p className="-mt-5 mb-8 text-xs text-slate-500 dark:text-slate-400">
-        Revenue and realized profit only count tickets that are actually sold and not refunded - not-yet-sold
-        tickets are never included.
-      </p>
-
+      {/* 2.98.0: the "Order summary" band is gone at marko's request, which
+          brings the ticket list up to directly under the order's own header.
+          Those six figures all restated numbers already on this page or one
+          click away: quantity and the available/sold split are in the header
+          cards, and revenue/profit belong to Sales. Nothing was recomputed -
+          the whole band was deleted, not moved. */}
       <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Tickets in this order ({tickets?.length ?? 0})</h2>
       {tickets && tickets.length >= 5000 && (
         // 1.6.0 audit H4: this list is capped the same way Orders/Tickets/

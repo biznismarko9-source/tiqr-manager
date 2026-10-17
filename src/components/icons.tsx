@@ -209,6 +209,15 @@ export const IconUsers = (p: SVGProps<SVGSVGElement>) => (
   </Svg>
 );
 // 2.0.2: Settings -> Integrations card icon (Google Sheets connection).
+// 2.100.0: Mail Intelligence - the sidebar rail and Settings -> Integrations
+// -> Email. An envelope, drawn on the same 24x24 stroke grid as every glyph
+// above so it sits at the same visual weight in the rail.
+export const IconMail = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <rect x="2.5" y="5" width="19" height="14" rx="2" />
+    <path d="m3 7 8.2 5.6a1.4 1.4 0 0 0 1.6 0L21 7" />
+  </Svg>
+);
 export const IconLink = (p: SVGProps<SVGSVGElement>) => (
   <Svg {...p}>
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />

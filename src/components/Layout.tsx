@@ -15,6 +15,7 @@ import {
   IconSun,
   IconUsers,
   IconWallet,
+  IconMail,
 } from "./icons";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ConfirmDialog, Spinner } from "./ui";
@@ -92,7 +93,6 @@ const NAV: NavItem[] = [
   { to: "/events", label: "Events", icon: IconCalendarDays },
   { to: "/orders", label: "Inventory", icon: IconPackage },
   { to: "/sales", label: "Sales", icon: IconReceipt },
-  { to: "/pulls", label: "Pulls", icon: IconUsers },
   // Finance is deliberately last and deliberately NOT grouped with the four
   // above: it covers money that has nothing to do with tickets (rent, fees,
   // personal spend) and owns its own four tabs, categories and accounts.
@@ -108,6 +108,16 @@ const NAV: NavItem[] = [
   // CURRENT_STATE.md): dropping them is not reversible and he has not asked
   // for the data itself to go.
   { to: "/notes", label: "Notes", icon: IconClipboard },
+  // 2.100.0: Mail Intelligence. Its own row rather than a Settings page,
+  // because it is somewhere you GO to look at a list - the same reason
+  // Notes is a row. It sits under Notes and above Pulls: like Notes it is
+  // a place you read rather than a place you record stock.
+  { to: "/mail", label: "Mail", icon: IconMail },
+  /* 2.98.0: Pulls sits at the bottom, under everything, at marko's
+     request. It is the one section that is not about his own stock - a pull
+     is a favour done on somebody else's card - so it reads better as the
+     last thing rather than wedged between Sales and Finance. */
+  { to: "/pulls", label: "Pulls", icon: IconUsers },
 ];
 
 // Shared by every NavLink below, so the active/hover look is defined in
@@ -566,8 +576,35 @@ export default function Layout() {
     return () => clearInterval(interval);
   }, []);
 
+  // 2.100.0: Mail Intelligence sync, on the same "while the app is open"
+  // footing as the notification check above - this app has no background
+  // service, so nothing syncs when it is closed (KNOWN_BUGS.md, "Documented
+  // limitations"). Same silent shape too: mail is an optional integration
+  // and its being off, paused or unreachable must never interrupt the app.
+  //
+  // Safe to let run unattended because of what a sync DOES: it reads mail,
+  // classifies it and stores it. It writes no sale, order, ticket or finance
+  // entry - see commands/mail.rs's module doc comment - so the worst an
+  // unattended run can do is put a row in the review queue.
+  //
+  // `sync_mail_now` returns "skipped" after a single cheap read when no
+  // mailbox is connected or syncing is paused, so this costs nothing for
+  // anyone not using the feature. The backend also refuses to start a second
+  // run while one is going, so this timer can never overlap a manual sync.
+  useEffect(() => {
+    const sync = () => {
+      api.syncMailNow().catch(() => {});
+    };
+    // Not fired immediately on mount, unlike the notification check: the
+    // Mail Intelligence screen clears a stale sync claim on ITS first load,
+    // and racing that on every app start would be a sync against a claim
+    // that is about to be cleared. The first automatic run is one interval in.
+    const interval = setInterval(sync, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
-    <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+    <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-transparent">
       {/* 2.0.30: w-56 (224px) -> w-48 (192px) - marko asked to make the
           sidebar narrower to give wide tables (Pulls) more room; nav labels
           and the logo lockup still have comfortable margin at this width.

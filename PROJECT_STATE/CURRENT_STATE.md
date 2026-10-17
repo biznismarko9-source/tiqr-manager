@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.94.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.100.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,228 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.100.0 - Mail Intelligence, PHASE 1 of 4. Read the mailbox; write nothing.**
+
+marko asked for TIQR to read his inbox and automate sales, inventory and
+finance off it. That is a four-phase feature and this release is phase 1,
+delivered complete rather than four phases delivered half.
+
+**The boundary, because it is the thing to know:** nothing in
+`commands/mail.rs` writes a sale, order, ticket, listing or finance entry.
+Not one `INSERT`, not one `UPDATE`. There is a test that counts the rows in
+all five tables before and after ingesting mail and asserts they did not
+move. Matching to records and creating them is phase 3.
+
+**Gmail, with NO new dependency.** This app already had a complete Google
+OAuth 2.0 desktop flow for the Sheets sign-in, and `run_sign_in` takes the
+SCOPE as a parameter - there was already a precedent for a second, separate
+scope (`FIREBASE_SIGN_IN_SCOPE`). So the mailbox is a THIRD grant through
+the same machinery: its own scope (`gmail.readonly`), its own refresh token
+(`mail_gmail_refresh_token`), its own cancel slot on `AppState`.
+Disconnecting the mailbox does not sign marko out of Sheets.
+
+**IMAP is NOT here**, and that is a dependency decision. There is no IMAP
+client in this project and none can be written from what is already present
+- it needs a new crate, and the standing rule is no new dependencies. The
+provider seam (`MailProviderKind`, `FetchedMessage`) is shaped so IMAP drops
+in beside Gmail rather than through it.
+
+**The cursor is a date window, not Gmail's `historyId`** - a deliberate
+deviation from the obvious design. Gmail keeps history about a week and
+answers 404 past that; this app has no background service and only runs
+while marko has it open, so a laptop closed over a holiday is the NORMAL
+case. The history path would be expired more often than not. Instead the
+sync lists by date, overlapping the previous run by a day, and the overlap
+is free because ingestion is idempotent: `UNIQUE (provider, account_email,
+provider_message_id)`. `historyId` is still stored for a future push path.
+
+**Classification is deterministic and pure** - sender domain plus keyword
+rules, no model. So "a hostile message body cannot talk this into doing
+something" is a property of the design, not a hope, and there is a
+prompt-injection test asserting it. Keep that test green when phase 2 adds
+AI extraction; that is when it stops being free.
+
+**Secrets:** `MailConnectionStatus` carries booleans and the mailbox
+address, never the token. `safe_detail` redacts anything token-shaped before
+it reaches a log row, an error or the frontend. Google's response BODY is
+never read - only `.status()` and the `retry-after` header. Bodies are not
+stored; a bounded, HTML-stripped, redacted excerpt is, and retention clears
+it. Attachments are never downloaded - not gated behind a setting, simply
+not implemented.
+
+**Why the three mail tables are NOT in `MERGE_TABLES`:** a mailbox
+connection belongs to one machine, and two machines sharing one sync cursor
+is how mail silently stops arriving on one of them. The records this will
+eventually create are already in `MERGE_TABLES` and travel normally.
+
+**Caught by rendering, not by reading:** the Overview's "Failed" figure
+could only ever read 0 - nothing in phase 1 sets that status - so it was
+removed from the UI. A figure that is structurally always zero reads as a
+broken number rather than a true one.
+
+**2.99.0 - Discord test webhook. A whole new outbound channel, not a button.**
+
+There was **no Discord integration in this app before this.** The only prior
+mention anywhere was a comment in `firebase.ts` saying Discord SIGN-IN had
+been deferred. So 2.99.0 built the channel: three webhooks (Sales, Finance,
+Inventory) stored on the existing `NotificationConfig`, and a real "Test
+webhook" button that POSTs to Discord and shows what actually came back.
+
+**Where it lives.** Settings -> **Integrations** -> Discord
+(`DiscordCard` in `Settings.tsx`), because that is what it is - an optional
+outside service, next to Google Sheets and the Anthropic key. The config
+itself lives on `NotificationConfig` (`commands/notifications.rs`) because
+Discord is a third delivery channel for the same alerts ntfy and desktop
+carry. That split is deliberate and documented at `DiscordCard`.
+
+**The frontend never sees or sends a webhook URL.** `test_discord_webhook`
+takes a destination NAME ("sales") and looks the URL up in the backend. A
+command that accepted a URL from the frontend would be a general-purpose
+HTTP POST proxy wearing a Discord label. `DiscordDestination::parse` rejects
+anything that is not one of the three, and `validate_webhook_url` re-checks
+the stored URL against Discord's own four hosts before every send, so a
+non-Discord URL that somehow got into the config is still never POSTed to.
+
+**`NotificationStatus` carries booleans only** - `discordSalesSet` and
+friends. Not the URL, not a masked form of it. A Discord webhook URL has its
+token in the path, so the URL *is* the credential; the dots in the UI are
+drawn from the booleans, and there is nothing behind them to reveal. The
+module logs nothing at all, Discord's response **body is never read** (only
+`.status()` and the `retry-after` header), and no error message anywhere
+interpolates the URL - there is a test asserting exactly that.
+
+**`status` is three-valued and the UI honours all three.** `delivered` only
+on a 2xx. `failed` when Discord answered and said no. `unknown` when nothing
+came back - a timeout is **not** reported as a failure and is **never**
+auto-retried, because Discord may already have taken the message and a
+silent second attempt is how one test becomes two messages in a channel.
+
+**Tested without a network and without a new dependency.** The decision
+table was factored out as a pure `interpret_discord_status(u16)`, so all 500
+status codes are covered by unit tests with no mock-HTTP crate. 25 tests.
+
+**Caught before shipping, by the E0063 checker and not by reading:** adding
+`discord` to `NotificationConfig` and four fields to
+`NotificationConfigInput` left **five pre-existing test literals in
+`notifications.rs` incomplete** - `cargo test` would have failed. All five
+fixed. This is the third time this exact class has bitten this project.
+
+**2.98.0 - five of marko's seven; the two Pulls items are deferred with a
+reason.**
+
+**The event ticket list is now one row per ORDER.** The old rows linked to
+`/orders?code=<TICKET code>` - Inventory searches ORDER codes, so clicking a
+ticket landed you on Inventory with no result. That was the bug marko
+reported. A ticket has no page of its own, which is why the link pointed
+sideways to begin with; an order does, so the row is the order now and the
+click lands on it. Grouping keys on `orderId`, not the code, and the group's
+currency is set only when every ticket agrees - one order can hold two
+currencies and `formatMoneyOrMixed` prints "Mixed" rather than adding them.
+
+**Removed:** EventDetail's "Potential Profit" (the last place the app showed
+money nobody had earned), OrderDetail's Paid/Outstanding pair, and
+OrderDetail's whole "Order summary" band - which brings the ticket list up
+under the header. The derivations behind all three went with them rather than
+being left to run for nothing. `salesSummary` is the one exception: still
+fetched, read by nothing, deliberately kept because it is the only call that
+knows an order's realized revenue and is the obvious thing to want back.
+
+**Pulls moved to the bottom of the nav.**
+
+**Two scope mistakes caught before shipping, both by checking rather than
+assuming.** A phantom `SaleEntry` added to a type import (that type does not
+exist - it would not have compiled), and the new `ticketsByOrder` memo landed
+in `SalesTab` while being used in `OverviewTab`. Verify which component a
+declaration lands in when inserting at a comment anchor; the anchor was in
+the neighbouring function.
+
+**Still open, and they are one job, not two:** Pulls' edit modal, and a
+by-person view. The real cause is structural - Events, Orders and Sales each
+have a detail route (`events/:id`, `orders/:id`, `sales/:id`) and **Pulls has
+none**, so everything is crammed into one tall modal. Giving it `pulls/:id`
+is the fix, and the by-person list belongs on the same pass.
+
+**2.97.0 - Inventory's event cell now reads the way an Events row does.**
+
+marko asked for the Events treatment (name, then venue and city underneath)
+on Inventory. Most of it was already there and unused, which is worth knowing
+before building anything similar again:
+
+- the **city line has existed since 2.60.0** - `Ticket.eventCity` even
+  carries the doc comment "shown under the event name in Inventory"
+- **`categoryName` / `categoryColorSlot` have been on this row since
+  2.0.27**, and Orders, Events and Sales all rendered the badge. Inventory
+  never did. Pure UI, zero new data.
+- the **venue was the only genuinely new field**. `events e` was already
+  joined in `BASE_SQL`, so it is one more column, one struct field and one
+  `row.get` - no migration, no new join.
+
+`Order` is constructed in exactly ONE place (`orders.rs:60`), which is what
+made adding a field safe; the E0063 round in 2.86.0 happened because a struct
+was built in several. Check that count before adding a field to any model.
+
+`eventPlace()` in Tickets.tsx joins venue and city the same way Events.tsx
+does, so the two screens cannot drift into formatting one thing two ways, and
+an event with neither renders no second line rather than an empty one.
+
+**2.96.0 (Neon) - glass over a lit ground, picked from the ten-dashboard lab.**
+
+marko chose the Neon direction and its vivid colours. The ramp is a fuchsia-
+violet (500 #d946ef, 600 #c026d3) and slate-950 is the void #0a0618. White on
+brand-600 measures 4.6:1 - the tightest of the three palettes this app has
+carried, so re-measure before moving a filled button off 600.
+
+**The surfaces are translucent, and that only works because of the ground.**
+`.dark body` carries two fixed radial washes; every panel above is `rgba`
+over them. If anything paints an opaque app background again, the glass has
+nothing to show and the app just looks faded - which is why eight
+`dark:bg-slate-950` grounds across the shell and the standalone pages are now
+`dark:bg-transparent`.
+
+**That blanket swap broke the modal dim and it had to be caught by reading.**
+Two of those eight were the Modal and ConfirmDialog scrims, which were
+`dark:bg-slate-950/70` - the swap turned them into `bg-transparent/70`, which
+dims nothing, so every dialog would have floated on live content. They carry
+`dark:bg-[#05030c]/70` now. A blanket replace across a class name is only as
+safe as the check that follows it.
+
+**`backdrop-filter` is deliberately NOT on `.card`.** Every panel in this app
+is a card and Settings renders dozens; a per-element compositing pass is a
+bill that arrives on a laptop. The glass reads from translucency, which is
+free. Blur is applied only to `.card-glass` and anything carrying
+`shadow-overlay` - panels that float over content rather than over the
+background. Measure on the Inventory table before widening it.
+
+**Tables get a solider fill than cards** (`bg-surface-muted`), because a
+twelve-row table over a lit gradient really is harder to read, and the fix for
+that is opacity rather than a heavier text colour.
+
+**The lead KPI glows via `currentColor`.** Profit is emerald when you made
+money and red when you lost it; a gradient fill would paint over that
+meaning, so `.fig-glow` adds light in whatever hue the figure already has.
+`.fig-lit` (a real gradient) exists for figures whose colour means nothing.
+
+**2.95.0 - three removals, and one of them is now settled policy.**
+
+**Sparklines are OFF the KPI panels, and this is the second time.** 2.88.0
+removed them when marko asked. 2.94.0 brought them back because the Electric
+Purple reference showed them and its brief asked for them by name. He looked
+and said no again. **A reference image showing a sparkline is not permission
+to add one; only him asking is.** `Sparkline` and StatCard's `spark` prop
+stay in ui.tsx, unused - that is why putting them back took minutes last
+time, and leaving them costs nothing.
+
+**"Profit & Loss" is off the Dashboard chart switcher**, filtered at the call
+site (`DASHBOARD_METRICS`) rather than removed from `METRICS`, because that
+list is also Recap's and he pointed at the Dashboard card. Profit is still on
+the page as its own KPI panel.
+
+**"Net" is off the Finance chart switcher.** Income and Expenses remain, and
+Cashflow - the first pill and the default - already plots both against each
+other, which is the question Net answered a third way. `headlineIsNet`
+simplified with it: `metric === "profit"` became unreachable once the pill
+went, so that half of the condition was dead.
 
 **2.94.0 (Deep Black x Electric Purple) - the third palette, and the
 sparklines came back.**

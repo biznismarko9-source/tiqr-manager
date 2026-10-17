@@ -27,6 +27,10 @@ import {
   type SheetSyncResult,
   type SpreadsheetTabsResult,
   type DataCheck,
+  type DiscordDestination,
+  type DiscordTestResult,
+  type MailConnectionStatus,
+  type MailTestResult,
 } from "../lib/types";
 import { formatDateTime } from "../lib/format";
 import { readAutoSyncLog } from "../lib/autoSyncLog";
@@ -1757,6 +1761,20 @@ export default function Settings() {
                   cannot be mistaken for part of the Google block above. */}
               <SettingsGroup title="AI" hint="Optional. Your own Anthropic key, used by the AI import.">
                 <AnthropicApiKeyCard />
+              </SettingsGroup>
+
+              {/* 2.99.0: its own group - it is a separate service with its
+                  own credentials, not part of the Google block or the key
+                  above. See DiscordCard's own comment for why its settings
+                  are stored with Notifications. */}
+              <SettingsGroup title="Discord" hint="Optional. Post alerts into Discord channels.">
+                <DiscordCard />
+              </SettingsGroup>
+
+              {/* 2.100.0: the mailbox. Its own group - a separate service
+                  with its own grant, and the one place it is configured. */}
+              <SettingsGroup title="Email" hint="Optional. Let TIQR read your inbox and recognise what matters.">
+                <EmailIntegrationCard />
               </SettingsGroup>
             </div>
           )}
@@ -3880,6 +3898,478 @@ function CsvImportModal({
 // blank with a placeholder explaining that; leaving it blank on Save means
 // "keep whatever is already stored", exactly what
 // `NotificationConfigInput.ntfyTopic`'s `Option<String>` expects.
+// 2.100.0: Settings -> Integrations -> Email. The ONE place the mailbox
+// connection is configured; the Mail Intelligence screen carries only a
+// compact status strip and "Sync now", so this form exists once.
+//
+// NOTHING HERE EVER HOLDS A SECRET. There is no token field to fill in,
+// because the connection is an OAuth grant: clicking Connect opens Google's
+// own consent screen, and what comes back is stored by the backend and never
+// sent to this component. `MailConnectionStatus` carries booleans and the
+// mailbox address - that is the whole of what this card is told.
+//
+// The scope asked for is `gmail.readonly`. TIQR cannot send, delete or label
+// anything in the mailbox, and Google is what enforces that, not this code.
+function EmailIntegrationCard() {
+  const toast = useToast();
+  const [status, setStatus] = useState<MailConnectionStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<MailTestResult | null>(null);
+  const [retention, setRetention] = useState("90");
+
+  const apply = (s: MailConnectionStatus) => {
+    setStatus(s);
+    setRetention(String(s.retentionDays));
+  };
+
+  useEffect(() => {
+    api
+      .getMailStatus()
+      .then(apply)
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const doConnect = async () => {
+    setConnecting(true);
+    setTestResult(null);
+    try {
+      apply(await api.connectMailGmail());
+      toast.success("Mailbox connected");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const doDisconnect = async () => {
+    try {
+      apply(await api.disconnectMail());
+      setTestResult(null);
+      toast.success("Mailbox disconnected");
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const doTest = async () => {
+    setTesting(true);
+    try {
+      const r = await api.testMailConnection();
+      setTestResult(r);
+      if (r.status === "failed") toast.error(r.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const doPause = async (paused: boolean) => {
+    try {
+      apply(await api.setMailPaused(paused));
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const saveRetention = async () => {
+    const days = Number(retention);
+    if (!Number.isFinite(days) || days < 1) {
+      toast.error("Retention must be at least 1 day");
+      return;
+    }
+    try {
+      apply(await api.setMailRetentionDays(Math.round(days)));
+      toast.success("Retention saved");
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  const connected = !!status?.connected;
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Email</h3>
+        <Badge tone={connected ? "sold" : "available"}>{connected ? "Connected" : "Off"}</Badge>
+        {connected && status?.paused && <Badge tone="available">Paused</Badge>}
+      </div>
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+        Lets TIQR read your inbox and recognise sale, payout, refund and cancellation mail. It asks Google for
+        read-only access, so TIQR cannot send, delete or change anything in your mailbox. It never creates a sale
+        or a finance entry on its own.
+      </p>
+
+      {!status?.oauthAvailable && (
+        <p className="mb-4 rounded-lg bg-surface-muted px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          This build has no Google client embedded, so a mailbox cannot be connected from it. A release build can.
+        </p>
+      )}
+
+      {connected && status && !status.gmailScopeGranted && (
+        <p className="mb-4 rounded-lg bg-surface-muted px-3 py-2 text-xs text-red-600 dark:text-red-400">
+          Google did not grant permission to read mail, so syncing will fail. Disconnect and connect again, and
+          leave the mail permission ticked on Google&apos;s consent screen.
+        </p>
+      )}
+
+      {connected ? (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+            <p className="truncate text-xs text-slate-600 dark:text-slate-300">
+              {status?.accountEmail ?? "Gmail account"}
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+              {status?.lastSyncAt
+                ? `Last sync ${new Date(status.lastSyncAt).toLocaleString()} - ${status.lastSyncCount} new`
+                : "Not synced yet."}
+            </p>
+            {status?.lastError && (
+              <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">{status.lastError}</p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" disabled={testing} onClick={() => void doTest()}>
+              {testing ? <Spinner className="h-4 w-4" /> : null}
+              Test connection
+            </Button>
+            <Button variant="ghost" onClick={() => void doPause(!status?.paused)}>
+              {status?.paused ? "Resume syncing" : "Pause syncing"}
+            </Button>
+            <Button variant="ghost" onClick={() => void doDisconnect()}>
+              Disconnect
+            </Button>
+          </div>
+
+          {testResult && <MailTestLine result={testResult} />}
+
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="w-40">
+                <Field label="Keep message text for" hint="Days. The row stays; its text is cleared.">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={retention}
+                    onChange={(e) => setRetention(e.target.value)}
+                  />
+                </Field>
+              </div>
+              <Button variant="secondary" onClick={() => void saveRetention()}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <Button variant="primary" disabled={connecting || !status?.oauthAvailable} onClick={() => void doConnect()}>
+          {connecting ? <Spinner className="h-4 w-4" /> : null}
+          {connecting ? "Waiting for Google..." : "Connect Gmail"}
+        </Button>
+      )}
+    </Card>
+  );
+}
+
+// Same three-state convention the Discord test line uses (2.99.0), for the
+// same reason: a request that never came back is not a refusal.
+function MailTestLine({ result }: { result: MailTestResult }) {
+  const tone =
+    result.status === "ok"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : result.status === "unknown"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+  const heading = result.status === "ok" ? "Reachable" : result.status === "unknown" ? "Not confirmed" : "Failed";
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+      <p className={`text-xs font-semibold ${tone}`}>
+        {heading}
+        {result.errorCode ? ` (${result.errorCode})` : ""}
+      </p>
+      <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">{result.message}</p>
+      {result.accountEmail && (
+        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+          {result.accountEmail}
+          {typeof result.messagesTotal === "number" ? ` - ${result.messagesTotal} messages` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// 2.99.0: Settings -> Integrations -> Discord.
+//
+// WHERE THIS LIVES, and the one hazard that comes with it. Marko asked for
+// it under Integrations, and that is right for what it is - an optional
+// outside service you connect, like Google Sheets and the Anthropic key
+// beside it. But the three webhooks are stored on the SAME
+// `NotificationConfig` that Settings -> Notifications owns, because Discord
+// is a third delivery channel for the same alerts.
+//
+// `setNotificationConfig` replaces `desktopEnabled` and `ntfyEnabled`
+// outright (they are plain booleans, not the "omit to keep" Option the
+// secrets use), so a careless save from THIS card could silently switch off
+// desktop or ntfy. `doSave` below therefore re-reads the live status
+// immediately before writing and passes those two through from it, rather
+// than from whatever this card happened to load on mount.
+//
+// The webhook URLs are never shown. A Discord webhook URL has its token in
+// the path - the URL IS the credential - so `NotificationStatus` carries
+// only `discord<Name>Set: boolean` and the dots below are drawn from those
+// booleans. There is no value behind them to reveal, by design, so "masking"
+// here is not hiding a string the frontend holds; the frontend never has it.
+const DISCORD_DESTINATIONS: { key: DiscordDestination; label: string; hint: string }[] = [
+  { key: "sales", label: "Sales", hint: "The channel for sales activity." },
+  { key: "finance", label: "Finance", hint: "The channel for money movements." },
+  { key: "inventory", label: "Inventory", hint: "The channel for stock and listings." },
+];
+
+function DiscordCard() {
+  const toast = useToast();
+  const [status, setStatus] = useState<NotificationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [drafts, setDrafts] = useState<Record<DiscordDestination, string>>({
+    sales: "",
+    finance: "",
+    inventory: "",
+  });
+  const [testBusy, setTestBusy] = useState<DiscordDestination | null>(null);
+  const [results, setResults] = useState<Partial<Record<DiscordDestination, DiscordTestResult>>>({});
+
+  // Same rule as the ntfy topic: the secret inputs always reset to blank,
+  // never to a real value, because a real value is never sent here.
+  const applyStatus = (s: NotificationStatus) => {
+    setStatus(s);
+    setEnabled(s.discordEnabled);
+    setDrafts({ sales: "", finance: "", inventory: "" });
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .getNotificationStatus()
+      .then(applyStatus)
+      .catch((e) => toast.error(errMsg(e)))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const isSet = (d: DiscordDestination) =>
+    d === "sales"
+      ? !!status?.discordSalesSet
+      : d === "finance"
+        ? !!status?.discordFinanceSet
+        : !!status?.discordInventorySet;
+
+  const doSave = async () => {
+    setSaving(true);
+    try {
+      // Re-read first - see this card's doc comment above.
+      const live = await api.getNotificationStatus();
+      const input: NotificationConfigInput = {
+        desktopEnabled: live.desktopEnabled,
+        ntfyEnabled: live.ntfyEnabled,
+        ntfyTopic: null,
+        discordEnabled: enabled,
+        discordSales: drafts.sales.trim() ? drafts.sales.trim() : null,
+        discordFinance: drafts.finance.trim() ? drafts.finance.trim() : null,
+        discordInventory: drafts.inventory.trim() ? drafts.inventory.trim() : null,
+      };
+      applyStatus(await api.setNotificationConfig(input));
+      setResults({});
+      toast.success("Discord settings saved");
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // One real POST, through the backend, for one destination. Sends the
+  // destination NAME - this card has no URL to send and could not send one.
+  //
+  // Nothing is retried here. An "unknown" result means Discord may already
+  // have taken the message, and a silent second attempt is how one test
+  // becomes two messages in somebody's channel.
+  const doTest = async (destination: DiscordDestination) => {
+    setTestBusy(destination);
+    try {
+      const result = await api.testDiscordWebhook(destination);
+      setResults((r) => ({ ...r, [destination]: result }));
+      if (result.status === "failed") toast.error(result.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTestBusy(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <Spinner className="h-4 w-4" /> Loading...
+        </div>
+      </Card>
+    );
+  }
+
+  const configured =
+    !!status &&
+    status.discordEnabled &&
+    (status.discordSalesSet || status.discordFinanceSet || status.discordInventorySet);
+
+  return (
+    <Card className="p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Discord</h3>
+        <Badge tone={configured ? "sold" : "available"}>{configured ? "Connected" : "Off"}</Badge>
+      </div>
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+        Posts to a Discord channel through a webhook. In Discord: Channel settings &rarr; Integrations &rarr;
+        Webhooks &rarr; New Webhook &rarr; Copy Webhook URL. Anyone who has that URL can post to the channel, so
+        treat it like a password.
+      </p>
+
+      <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+        <input
+          type="checkbox"
+          className={CHECKBOX_CLASS}
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+        />
+        Send notifications to Discord
+      </label>
+
+      <div className="mt-4 space-y-5">
+        {DISCORD_DESTINATIONS.map((d) => (
+          <div key={d.key} className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{d.label}</span>
+              {isSet(d.key) ? (
+                <span
+                  className="font-mono text-xs text-slate-400 dark:text-slate-500"
+                  title="A webhook is saved. TIQR never shows it again, not even to you."
+                >
+                  &bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;
+                </span>
+              ) : (
+                <span className="text-xs text-slate-400 dark:text-slate-500">Not set</span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{d.hint}</p>
+            <div className="mt-2 max-w-md">
+              <Field
+                label="Webhook URL"
+                hint={isSet(d.key) ? "Already saved - leave blank to keep it." : undefined}
+              >
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  placeholder={
+                    isSet(d.key)
+                      ? "Leave blank to keep the current webhook"
+                      : "https://discord.com/api/webhooks/..."
+                  }
+                  value={drafts[d.key]}
+                  onChange={(e) => setDrafts((v) => ({ ...v, [d.key]: e.target.value }))}
+                />
+              </Field>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                disabled={testBusy !== null || !isSet(d.key)}
+                onClick={() => doTest(d.key)}
+              >
+                {testBusy === d.key ? <Spinner className="h-4 w-4" /> : null}
+                Test webhook
+              </Button>
+              {!isSet(d.key) && (
+                <span className="text-xs text-slate-400 dark:text-slate-500">Save a webhook first.</span>
+              )}
+            </div>
+            <DiscordTestLine result={results[d.key]} />
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+        <Button variant="primary" disabled={saving} onClick={doSave}>
+          {saving ? <Spinner className="h-4 w-4" /> : null}
+          Save
+        </Button>
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          &quot;Test webhook&quot; uses whatever is currently saved - save first if you just pasted a new URL.
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+// The result of one test, shown as the backend actually reported it.
+//
+// Three states, not two. "unknown" is its own case and is deliberately not
+// coloured as a failure: the request did not come back, which is not the
+// same as Discord refusing it, and telling marko it failed would be a guess.
+// Nothing here is shown as delivered unless `status === "delivered"`, which
+// only a 2xx from Discord produces.
+function DiscordTestLine({ result }: { result?: DiscordTestResult }) {
+  if (!result) return null;
+  const tone =
+    result.status === "delivered"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : result.status === "unknown"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+  const heading =
+    result.status === "delivered" ? "Delivered" : result.status === "unknown" ? "Not confirmed" : "Failed";
+  let when = result.testedAt;
+  try {
+    when = new Date(result.testedAt).toLocaleTimeString();
+  } catch {
+    // Leave the raw timestamp - it is still true, just less pretty.
+  }
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40">
+      <p className={`text-xs font-semibold ${tone}`}>
+        {heading}
+        {result.errorCode ? ` (${result.errorCode})` : ""}
+      </p>
+      <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">{result.message}</p>
+      {typeof result.retryAfterSeconds === "number" && result.retryAfterSeconds > 0 && (
+        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+          Try again in {result.retryAfterSeconds}s.
+        </p>
+      )}
+      <p className="mt-1 font-mono text-[11px] text-slate-400 dark:text-slate-500">
+        {when} &middot; {result.testId}
+      </p>
+    </div>
+  );
+}
+
 function NotificationsCard() {
   const toast = useToast();
   const [status, setStatus] = useState<NotificationStatus | null>(null);

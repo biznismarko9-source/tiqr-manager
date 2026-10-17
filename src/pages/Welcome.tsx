@@ -150,7 +150,7 @@ export default function Welcome() {
   }
 
   return (
-    <div className="flex min-h-full w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-slate-950">
+    <div className="flex min-h-full w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-transparent">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center text-center">
           <img

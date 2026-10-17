@@ -628,10 +628,15 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
 // card above, per bucket. `sellingFeesCents` and `soldTickets` have no meaning
 // in a ledger and are never plotted here (no "Sales" pill), so they are zero
 // rather than invented.
+/* 2.95.0: "Net" is gone at marko's request. Income and Expenses are the two
+   pills left; Cashflow (the first pill, and the default) already draws both
+   of those against each other, which is the question Net was answering in a
+   third way. `FINANCE_METRIC_LABELS` keeps its `profit: "Net"` entry because
+   `MetricChart` takes the whole map and would otherwise have to be special-
+   cased - an unused key in a lookup costs nothing, a branch does. */
 const FINANCE_METRICS: { key: MetricKey; label: string }[] = [
   { key: "revenue", label: "Income" },
   { key: "cost", label: "Expenses" },
-  { key: "profit", label: "Net" },
 ];
 
 const FINANCE_METRIC_LABELS: Partial<Record<MetricKey, string>> = {
@@ -706,7 +711,12 @@ function IncomeExpenseChart({
   // buckets - see the note below for why that distinction matters.
   const net = incomeCents - expenseCents;
   const headline = chartMode === "cashflow" ? net : total;
-  const headlineIsNet = chartMode === "cashflow" || metric === "profit";
+  /* 2.95.0: was `chartMode === "cashflow" || metric === "profit"`. With the
+     Net pill gone, `metric` can never be "profit" here, so the second half
+     was dead. Left as a named constant rather than inlined, because the
+     headline tone below reads better against a name than against a raw
+     comparison. */
+  const headlineIsNet = chartMode === "cashflow";
 
   return (
     <div>

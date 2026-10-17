@@ -310,6 +310,9 @@ export interface OrderRecord {
   eventName: string;
   /** 2.60.0 */
   eventCity: string | null;
+  /** 2.97.0: sits beside eventCity on Inventory's second line, so that row
+   *  reads the same way an Events row does. */
+  eventVenue: string | null;
   /** 2.2.10: the event's own date/status - Orders' Active/Completed tabs now
    * key off whether the EVENT is done (see Orders.tsx's `isOrderDone`/
    * ORDER_TABS doc comment), not just this order's own ticket counts. */
@@ -1338,6 +1341,14 @@ export interface NotificationStatus {
   desktopEnabled: boolean;
   ntfyEnabled: boolean;
   ntfyTopicSet: boolean;
+  /** 2.99.0: Discord, as presence flags only. A webhook URL contains its own
+   * token - it IS the credential - so the backend never sends one here, not
+   * even partially masked. The dots the Settings screen draws are drawn from
+   * these booleans; there is no value behind them to reveal. */
+  discordEnabled: boolean;
+  discordSalesSet: boolean;
+  discordFinanceSet: boolean;
+  discordInventorySet: boolean;
 }
 
 /** What Settings -> Notifications submits to `setNotificationConfig`. The
@@ -1349,6 +1360,11 @@ export interface NotificationConfigInput {
   desktopEnabled: boolean;
   ntfyEnabled: boolean;
   ntfyTopic?: string | null;
+  /** 2.99.0: same "omit to leave unchanged" contract as `ntfyTopic`. */
+  discordEnabled: boolean;
+  discordSales?: string | null;
+  discordFinance?: string | null;
+  discordInventory?: string | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
@@ -1356,6 +1372,38 @@ export interface NotificationConfigInput {
 export interface NotificationTestResult {
   success: boolean;
   message: string;
+}
+
+/** Which Discord channel a test is aimed at. A NAME, never a URL: the
+ * frontend has no webhook URL to send and `testDiscordWebhook` would not
+ * accept one if it did - that is what stops the command being a
+ * general-purpose HTTP POST on anything the frontend names. */
+export type DiscordDestination = "sales" | "finance" | "inventory";
+
+/** The outcome of one real POST to Discord.
+ *
+ * `status` is three-valued ON PURPOSE and the UI must honour all three:
+ *  - `"delivered"` - Discord answered 2xx. Only this may be shown as success.
+ *  - `"failed"`    - Discord answered, and said no. `errorCode` says which.
+ *  - `"unknown"`   - no answer came back (timeout, no connection). Discord
+ *                    may already have taken the message, so this is NOT
+ *                    shown as a failure and is never auto-retried.
+ *
+ * `errorCode` is a stable identifier for the cause; `message` is the human
+ * sentence to show. Neither ever contains the webhook URL or its token. */
+export interface DiscordTestResult {
+  success: boolean;
+  destination: DiscordDestination;
+  status: "delivered" | "failed" | "unknown";
+  errorCode?: string | null;
+  message: string;
+  /** RFC3339. */
+  testedAt: string;
+  /** Printed in the Discord message too, so a row here can be matched to a
+   * message in the channel. */
+  testId: string;
+  /** Only set for a rate limit or a cooldown. */
+  retryAfterSeconds?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2640,4 +2688,165 @@ export interface WorkspaceHit {
   title: string;
   preview: string;
   whereFound: string;
+}
+
+// ---------------------------------------------------------------------------
+// Mail Intelligence (2.100.0, phase 1) - mirrors models.rs's own Mail section
+// field-for-field (serde's rename_all = "camelCase").
+//
+// The rule that shapes all of these, same as the Discord webhook's (2.99.0):
+// a credential never crosses this boundary. `MailConnectionStatus` says
+// WHETHER a mailbox is connected and which address it is - never the token.
+// ---------------------------------------------------------------------------
+
+/** What Settings -> Integrations -> Email and the Mail Intelligence header
+ *  read. Contains no secret. */
+export interface MailConnectionStatus {
+  connected: boolean;
+  /** marko's own address, so he can see which mailbox is connected. */
+  accountEmail?: string | null;
+  provider?: string | null;
+  /** False on a local build with no Google client embedded - the UI says
+   *  "not available in this build" rather than offering a dead button. */
+  oauthAvailable: boolean;
+  /** Google may grant a SUBSET of what was asked for, so this is checked
+   *  rather than assumed. False means connected-but-cannot-read-mail. */
+  gmailScopeGranted: boolean;
+  paused: boolean;
+  syncInProgress: boolean;
+  lastSyncAt?: string | null;
+  lastSyncCount: number;
+  /** Already redacted on the Rust side - see commands/mail.rs::safe_detail. */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  retentionDays: number;
+}
+
+/** The categories the deterministic classifier can produce. `other` is where
+ *  anything unrecognised goes - never a guess. */
+export type MailCategory =
+  | "sale_confirmation"
+  | "purchase_confirmation"
+  | "payout"
+  | "refund"
+  | "cancellation"
+  | "event_update"
+  | "order_status"
+  | "account_notice"
+  | "other";
+
+/** Lifecycle. Phase 1 reaches `classified`, `review_required`, `reviewed`
+ *  and `irrelevant`. `processed` and `failed` exist for the phases that
+ *  actually process something, and nothing in 2.100.0 sets them. */
+export type MailStatus =
+  | "detected"
+  | "classified"
+  | "review_required"
+  | "reviewed"
+  | "irrelevant"
+  | "processed"
+  | "failed";
+
+export interface MailCategoryCount {
+  category: string;
+  count: number;
+}
+
+/** One row in Inbox Activity.
+ *
+ *  `bodyExcerpt` is PLAIN TEXT - HTML was stripped in Rust before it was
+ *  ever stored. Render it as text. There is deliberately no path in this app
+ *  that passes it to `dangerouslySetInnerHTML`, and adding one would undo
+ *  the whole reason it is stripped. */
+export interface MailMessageSummary {
+  id: number;
+  provider: string;
+  providerMessageId: string;
+  fromAddress: string;
+  fromName?: string | null;
+  subject: string;
+  snippet?: string | null;
+  receivedAt: string;
+  category: MailCategory;
+  confidence: "high" | "medium" | "low";
+  detectedPlatform?: string | null;
+  status: MailStatus;
+  reviewReason?: string | null;
+  bodyExcerpt?: string | null;
+}
+
+export interface MailLogEntry {
+  id: number;
+  at: string;
+  step: string;
+  outcome: string;
+  detail?: string | null;
+}
+
+/** One message plus its whole audit trail. */
+export interface MailMessageDetail {
+  message: MailMessageSummary;
+  history: MailLogEntry[];
+}
+
+/** Every field optional - an untouched control sends nothing, which means
+ *  "no filter on this". */
+export interface MailMessageFilter {
+  category?: string | null;
+  status?: string | null;
+  /** Matched against sender address, sender name and subject. */
+  search?: string | null;
+  /** Inclusive, `YYYY-MM-DD`. */
+  fromDate?: string | null;
+  toDate?: string | null;
+  limit?: number | null;
+}
+
+/** What one sync run did.
+ *
+ *  Read `status`, not just `success`: `"skipped"` is neither a success nor a
+ *  failure (paused, not connected, or a run already going), and showing it
+ *  as an error would be wrong. */
+export interface MailSyncResult {
+  success: boolean;
+  status: "synced" | "skipped" | "failed";
+  fetched: number;
+  storedNew: number;
+  /** Messages already present. The sync window overlaps on purpose, so this
+   *  being non-zero is deduplication working, not a problem. */
+  duplicatesIgnored: number;
+  reviewRequired: number;
+  message: string;
+  syncedAt: string;
+}
+
+/** The result of one real call to Gmail's profile endpoint. Reads no mail.
+ *
+ *  Same three-valued `status` as `DiscordTestResult`, for the same reason: a
+ *  request that never came back is not the same as one that was refused. */
+export interface MailTestResult {
+  success: boolean;
+  status: "ok" | "failed" | "unknown";
+  accountEmail?: string | null;
+  messagesTotal?: number | null;
+  errorCode?: string | null;
+  message: string;
+  testedAt: string;
+}
+
+/** What marko can say about a reviewed message.
+ *
+ *  There is deliberately no value meaning "process it": phase 1 has nothing
+ *  to process it with, and an option that did nothing would be a lie. */
+export type MailReviewOutcome = "reviewed" | "irrelevant" | "needs_review";
+
+export interface MailOverview {
+  totalMessages: number;
+  newSinceLastSync: number;
+  recognisedCount: number;
+  reviewRequiredCount: number;
+  processedCount: number;
+  failedCount: number;
+  byCategory: MailCategoryCount[];
+  recent: MailMessageSummary[];
 }

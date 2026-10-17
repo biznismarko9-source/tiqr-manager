@@ -19,6 +19,7 @@ import SaleDetail from "./pages/SaleDetail";
 import Pulls from "./pages/Pulls";
 import Finance from "./pages/Finance";
 import Notes from "./pages/Notes";
+import MailIntelligence from "./pages/MailIntelligence";
 import Settings from "./pages/Settings";
 
 /** 2.39.0: `/tickets` was the Inventory list. Orders and Inventory were two
@@ -171,6 +172,10 @@ export default function App() {
               <Route path="pulls" element={<Pulls />} />
               <Route path="finance" element={<Finance />} />
               <Route path="notes" element={<Notes />} />
+              {/* 2.100.0: Mail Intelligence. One screen with its own tabs,
+                  same as Finance - no child routes, so nothing here needs a
+                  detail path yet. */}
+              <Route path="mail" element={<MailIntelligence />} />
               <Route path="settings" element={<Settings />} />
               {/* 1.8.2: Settings Home (above) plus one real route per section -
                   HashRouter makes this refresh-stable with zero extra config,
