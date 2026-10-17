@@ -2732,6 +2732,10 @@ export interface MailConnectionStatus {
   knownSenders: string[];
   /** Extra domains marko added himself, raw as he typed them. */
   extraSenders: string;
+  /** 2.104.0: `"all"` (the whole mailbox) or `"known"` (marketplace
+   *  senders only). */
+  scope: "all" | "known";
+  unreadCount: number;
 }
 
 /** The categories the deterministic classifier can produce. `other` is where
@@ -2785,6 +2789,13 @@ export interface MailMessageSummary {
   status: MailStatus;
   reviewReason?: string | null;
   bodyExcerpt?: string | null;
+  /** TIQR's own read state, NOT Gmail's. This app holds a read-only scope
+   *  and cannot write a label, so opening a mail here never marks it read
+   *  in Gmail. The UI says so rather than looking like a broken sync. */
+  isUnread: boolean;
+  /** Gmail's own labels, comma separated and lower-cased - `inbox`,
+   *  `unread`, `category_promotions`, `category_social`... */
+  labels: string;
 }
 
 export interface MailLogEntry {

@@ -1,26 +1,32 @@
-// Mail Intelligence (2.100.0) - PHASE 1.
+// Mail (2.104.0) - a real inbox.
 //
-// Three tabs, matching what marko asked for: Overview, Inbox Activity and
-// the Review Queue. What this screen can honestly show today is bounded by
-// what the backend actually does, and the screen says so out loud rather
-// than implying more:
+// marko: "urob normalne z toho mailu normalne cely inbox".
 //
-//   * It shows what arrived and what TIQR made of it.
-//   * It does NOT create sales, orders, tickets or finance entries. Nothing
-//     in commands/mail.rs writes one (see that module's doc comment), so
-//     there is no button here that pretends otherwise. The review queue's
-//     verdicts are "reviewed" and "not relevant" - deliberately not
-//     "approve and create", because there is nothing behind it yet.
+// 2.100.0 shipped this as a classification queue: a table of what TIQR had
+// recognised, with no way to read anything. 2.101.0 then narrowed the sync to
+// marketplace senders after his complaint that there was too much spam. Both
+// were answers to the wrong question. What he wants is his mailbox, in TIQR,
+// with the things that matter pulled to the front - so:
 //
-// The connection itself is configured in Settings -> Integrations -> Email;
-// this screen carries only a compact status strip and "Sync now", so the
-// connection form lives in exactly one place.
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+//   * The sync fetches the WHOLE mailbox again (headers only - see
+//     commands/mail.rs). Junk is excluded by Gmail's own spam folder, not by
+//     a filter this app invents.
+//   * The spam problem is answered by TABS, not by refusing to fetch:
+//     Important first, then all mail, then Gmail's own Promotions and
+//     Social categories, then the review queue.
+//   * It is a two-pane reader - list left, message right - the same shape
+//     Notes already uses for list + content.
+//
+// WHAT THIS IS STILL NOT, said in the UI rather than left to look like a
+// bug: marking a message read here does NOT mark it read in Gmail. The scope
+// this app holds is `gmail.readonly` on purpose and cannot write a label.
+// And nothing here creates a sale, an order or a finance entry - that is
+// phase 3.
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import {
   type MailConnectionStatus,
-  type MailMessageDetail,
   type MailMessageFilter,
   type MailMessageSummary,
   type MailOverview,
@@ -39,23 +45,28 @@ import {
   SEGMENTED_TRACK,
   Select,
   Spinner,
-  TableSkeleton,
   segmentedItemClass,
 } from "../components/ui";
 import { IconMail } from "../components/icons";
 import { useToast } from "../lib/toast";
 
-type Tab = "overview" | "activity" | "review";
+/** The tabs, and what each asks for.
+ *
+ *  `promotions` and `social` match Gmail's OWN category labels rather than
+ *  anything this app guesses - a better answer to "too much spam" than a
+ *  rule invented here, because it is the same split marko already sees in
+ *  Gmail. */
+type Tab = "important" | "inbox" | "promotions" | "social" | "review" | "overview";
 
 const TABS: { key: Tab; label: string }[] = [
+  { key: "important", label: "Important" },
+  { key: "inbox", label: "All mail" },
+  { key: "promotions", label: "Promotions" },
+  { key: "social", label: "Social" },
+  { key: "review", label: "Review" },
   { key: "overview", label: "Overview" },
-  { key: "activity", label: "Inbox Activity" },
-  { key: "review", label: "Review Queue" },
 ];
 
-// The nine categories commands/mail.rs can produce, with the labels marko
-// reads. Kept as one list so the filter dropdown and every badge agree -
-// a second copy is how a renamed category silently stops matching.
 const CATEGORY_LABELS: Record<string, string> = {
   sale_confirmation: "Sale",
   purchase_confirmation: "Purchase",
@@ -78,361 +89,224 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "Failed",
 };
 
-function categoryLabel(c: string) {
-  return CATEGORY_LABELS[c] ?? c;
-}
+const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
 
-/** A category badge. `other` is deliberately quiet - most mail is `other`
- *  and colouring it would make the list look alarming for no reason. */
-function CategoryBadge({ category }: { category: string }) {
-  const tone = category === "other" ? "available" : "sold";
-  return <Badge tone={tone}>{categoryLabel(category)}</Badge>;
-}
-
-/** Confidence, as words rather than a number. A percentage would imply a
- *  precision the rules do not have - they are keyword matches, not a model. */
-function ConfidenceMark({ confidence }: { confidence: string }) {
-  const tone =
-    confidence === "high"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : confidence === "medium"
-        ? "text-amber-600 dark:text-amber-400"
-        : "text-slate-400 dark:text-slate-500";
-  return <span className={`text-[11px] font-medium ${tone}`}>{confidence}</span>;
+function hasLabel(m: MailMessageSummary, label: string) {
+  return m.labels.split(",").includes(label);
 }
 
 function formatWhen(iso: string) {
   try {
-    return new Date(iso).toLocaleString();
+    const d = new Date(iso);
+    // A mail list shows a time for today and a date for everything else; a
+    // full timestamp on every row is noise at this density.
+    return d.toDateString() === new Date().toDateString()
+      ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleDateString();
   } catch {
     return iso;
   }
 }
 
-/** The one place the connection state is summarised on this screen. The full
- *  form is in Settings; this says enough to know whether the numbers below
- *  are current, and offers the one action worth having here. */
-function ConnectionStrip({
-  status,
-  syncing,
-  onSync,
-}: {
-  status: MailConnectionStatus | null;
-  syncing: boolean;
-  onSync: () => void;
-}) {
-  if (!status) return null;
+function CategoryBadge({ category }: { category: string }) {
+  if (category === "other") return null;
+  return <Badge tone="sold">{categoryLabel(category)}</Badge>;
+}
 
-  if (!status.connected) {
-    return (
-      <Card className="mb-5 flex flex-wrap items-center justify-between gap-3 p-4">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-800 dark:text-slate-200">No mailbox connected</p>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            Connect a Gmail account to let TIQR recognise sale, payout and refund mail.
-          </p>
-        </div>
-        <Link to="/settings/integrations">
-          <Button variant="primary">Connect in Settings</Button>
-        </Link>
-      </Card>
-    );
-  }
-
-  // Connected but Google did not grant the mail scope is a real state and a
-  // confusing one - say exactly what is wrong rather than failing silently
-  // on every sync.
-  const scopeProblem = !status.gmailScopeGranted;
-
+/** One row: sender, subject, preview, time - what a mail list is for. */
+function MailRow({ m, active, onClick }: { m: MailMessageSummary; active: boolean; onClick: () => void }) {
   return (
-    <Card className="mb-5 flex flex-wrap items-center justify-between gap-3 p-4">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
-            {status.accountEmail ?? "Mailbox connected"}
-          </p>
-          {status.paused && <Badge tone="available">Paused</Badge>}
-          {/* `cancelled` is the red tone in STATUS_TONES (ui.tsx). There is
-              no "negative" key there - using one would silently fall back to
-              grey, which is the wrong colour for a broken permission. */}
-          {scopeProblem && <Badge tone="cancelled">no mail permission</Badge>}
-        </div>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-          {status.lastSyncAt
-            ? `Last sync ${formatWhen(status.lastSyncAt)} - ${status.lastSyncCount} new`
-            : "Not synced yet."}
-        </p>
-        {status.lastError && (
-          <p className="mt-1 text-xs text-red-600 dark:text-red-400">{status.lastError}</p>
-        )}
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
+        active ? "bg-brand-600/10" : "hover:bg-surface-muted"
+      }`}
+    >
+      <div className="flex items-baseline gap-2">
+        {m.isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" aria-label="Unread" />}
+        <span
+          className={`min-w-0 flex-1 truncate text-[13px] ${
+            m.isUnread ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
+          }`}
+        >
+          {m.fromName ?? m.fromAddress}
+        </span>
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400 dark:text-slate-500">
+          {formatWhen(m.receivedAt)}
+        </span>
       </div>
-      <Button variant="secondary" disabled={syncing || status.paused} onClick={onSync}>
-        {syncing ? <Spinner className="h-4 w-4" /> : null}
-        Sync now
-      </Button>
-    </Card>
+      <p
+        className={`mt-0.5 truncate text-[13px] ${
+          m.isUnread ? "text-slate-800 dark:text-slate-200" : "text-slate-500 dark:text-slate-400"
+        }`}
+      >
+        {m.subject || "(no subject)"}
+      </p>
+      {m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>}
+      {m.category !== "other" && (
+        <div className="mt-1">
+          <CategoryBadge category={m.category} />
+        </div>
+      )}
+    </button>
   );
 }
 
-/** One message, expanded: what was detected, and the whole audit trail. */
-function MessageDetail({
-  detail,
-  onVerdict,
-  busy,
-}: {
-  detail: MailMessageDetail;
-  onVerdict: (outcome: MailReviewOutcome) => void;
-  busy: boolean;
-}) {
-  const m = detail.message;
-  return (
-    <div className="border-t border-slate-200 px-4 py-4 dark:border-slate-800">
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div>
-          <p className="section-title">What TIQR detected</p>
-          <dl className="mt-2 space-y-1.5 text-xs">
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 text-slate-500 dark:text-slate-400">Category</dt>
-              <dd className="text-slate-700 dark:text-slate-200">{categoryLabel(m.category)}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 text-slate-500 dark:text-slate-400">Confidence</dt>
-              <dd>
-                <ConfidenceMark confidence={m.confidence} />
-              </dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 text-slate-500 dark:text-slate-400">Platform</dt>
-              <dd className="text-slate-700 dark:text-slate-200">
-                {m.detectedPlatform ?? <span className="text-slate-400 dark:text-slate-500">not recognised</span>}
-              </dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-28 shrink-0 text-slate-500 dark:text-slate-400">Sender</dt>
-              <dd className="break-all text-slate-700 dark:text-slate-200">{m.fromAddress}</dd>
-            </div>
-          </dl>
-          {m.reviewReason && (
-            <p className="mt-3 rounded-lg bg-surface-muted px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-              {m.reviewReason}
-            </p>
-          )}
-          {m.bodyExcerpt && (
-            <>
-              <p className="section-title mt-4">Excerpt</p>
-              {/* Plain text, always. The backend stripped the HTML before it
-                  was ever stored, and this renders it as text - there is no
-                  path in this app that hands a message body to the DOM as
-                  markup, which is the whole point of stripping it. */}
-              <p className="mt-1 whitespace-pre-wrap break-words text-xs text-slate-600 dark:text-slate-300">
-                {m.bodyExcerpt}
-              </p>
-            </>
-          )}
-        </div>
-
-        <div>
-          <p className="section-title">Processing history</p>
-          <ol className="mt-2 space-y-2">
-            {detail.history.length === 0 && (
-              <li className="text-xs text-slate-500 dark:text-slate-400">Nothing recorded yet.</li>
-            )}
-            {detail.history.map((h) => (
-              <li key={h.id} className="rounded-lg bg-surface-muted px-3 py-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{h.step}</span>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">{h.outcome}</span>
-                  <span className="ml-auto font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                    {formatWhen(h.at)}
-                  </span>
-                </div>
-                {h.detail && (
-                  <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{h.detail}</p>
-                )}
-              </li>
-            ))}
-          </ol>
-
-          {/* The verdicts phase 1 can honestly offer. There is no "approve
-              and create" here because there is nothing behind it yet - see
-              this file's header. */}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button variant="secondary" disabled={busy} onClick={() => onVerdict("reviewed")}>
-              Mark reviewed
-            </Button>
-            <Button variant="ghost" disabled={busy} onClick={() => onVerdict("irrelevant")}>
-              Not relevant
-            </Button>
-            {m.status !== "review_required" && (
-              <Button variant="ghost" disabled={busy} onClick={() => onVerdict("needs_review")}>
-                Back to review
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** The shared list. Inbox Activity and the Review Queue are the same table
- *  with a different filter, so they are the same component - two copies
- *  would drift the moment a column changed. */
-function MessageList({
-  rows,
-  loading,
-  emptyTitle,
-  emptyDescription,
-  onChanged,
-}: {
-  rows: MailMessageSummary[];
-  loading: boolean;
-  emptyTitle: string;
-  emptyDescription: string;
-  onChanged: () => void;
-}) {
+/** The reading pane. Fetches the body on open; never stores it. */
+function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged: () => void }) {
   const toast = useToast();
-  const [openId, setOpenId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<MailMessageDetail | null>(null);
-  const [detailBusy, setDetailBusy] = useState(false);
+  const [body, setBody] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
-  const open = async (id: number) => {
-    if (openId === id) {
-      setOpenId(null);
-      setDetail(null);
-      return;
-    }
-    setOpenId(id);
-    setDetail(null);
-    try {
-      setDetail(await api.getMailMessage(id));
-    } catch (e) {
-      toast.error(errMsg(e));
-      setOpenId(null);
-    }
-  };
+  useEffect(() => {
+    setBody(null);
+    setLoading(true);
+    api
+      .getMailBody(message.id)
+      .then((b) => {
+        setBody(b);
+        onChanged();
+      })
+      .catch((e) => {
+        toast.error(errMsg(e));
+        setBody("");
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.id]);
 
-  const verdict = async (id: number, outcome: MailReviewOutcome) => {
-    setDetailBusy(true);
+  const verdict = async (outcome: MailReviewOutcome) => {
+    setBusy(true);
     try {
-      setDetail(await api.setMailReviewOutcome(id, outcome));
+      await api.setMailReviewOutcome(message.id, outcome);
       onChanged();
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
-      setDetailBusy(false);
+      setBusy(false);
     }
   };
 
-  if (loading) return <TableSkeleton />;
-  if (rows.length === 0) {
-    return <EmptyState icon={<IconMail className="h-5 w-5" />} title={emptyTitle} description={emptyDescription} />;
-  }
-
   return (
-    <div className="table-shell">
-      <table className="w-full text-sm">
-        <colgroup>
-          <col style={{ width: "26%" }} />
-          <col style={{ width: "34%" }} />
-          <col style={{ width: "14%" }} />
-          <col style={{ width: "14%" }} />
-          <col style={{ width: "12%" }} />
-        </colgroup>
-        <thead>
-          <tr>
-            <th className="th">Sender</th>
-            <th className="th">Subject</th>
-            <th className="th">Category</th>
-            <th className="th">Received</th>
-            <th className="th">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((m) => (
-            <Fragment key={m.id}>
-              <tr
-                className="cursor-pointer hover:bg-surface-muted"
-                onClick={() => void open(m.id)}
-              >
-                <td className="td">
-                  <p className="truncate font-medium text-slate-800 dark:text-slate-200">
-                    {m.fromName ?? m.fromAddress}
-                  </p>
-                  {m.fromName && (
-                    <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{m.fromAddress}</p>
-                  )}
-                </td>
-                <td className="td">
-                  <p className="truncate text-slate-700 dark:text-slate-200">{m.subject || "(no subject)"}</p>
-                  {m.detectedPlatform && (
-                    <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{m.detectedPlatform}</p>
-                  )}
-                </td>
-                <td className="td">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <CategoryBadge category={m.category} />
-                    <ConfidenceMark confidence={m.confidence} />
-                  </div>
-                </td>
-                <td className="td num whitespace-nowrap text-slate-600 dark:text-slate-300">
-                  {formatWhen(m.receivedAt)}
-                </td>
-                <td className="td text-slate-600 dark:text-slate-300">{STATUS_LABELS[m.status] ?? m.status}</td>
-              </tr>
-              {openId === m.id && (
-                <tr>
-                  <td className="p-0" colSpan={5}>
-                    {detail ? (
-                      <MessageDetail
-                        detail={detail}
-                        busy={detailBusy}
-                        onVerdict={(o) => void verdict(m.id, o)}
-                      />
-                    ) : (
-                      <div className="flex items-center gap-2 px-4 py-4 text-xs text-slate-500 dark:text-slate-400">
-                        <Spinner className="h-4 w-4" /> Loading...
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+          {message.subject || "(no subject)"}
+        </h2>
+        <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">
+          {message.fromName ? `${message.fromName} · ` : ""}
+          {message.fromAddress}
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-slate-400 dark:text-slate-500">
+            {new Date(message.receivedAt).toLocaleString()}
+          </span>
+          <CategoryBadge category={message.category} />
+          {message.detectedPlatform && (
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">{message.detectedPlatform}</span>
+          )}
+          <span className="text-[11px] text-slate-400 dark:text-slate-500">
+            {STATUS_LABELS[message.status] ?? message.status}
+          </span>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <Spinner className="h-4 w-4" /> Loading from Gmail...
+          </div>
+        ) : body ? (
+          /* PLAIN TEXT, always. The HTML was stripped in Rust before this
+             reached the frontend, and there is deliberately no path here
+             that renders a message body as markup. */
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+            {body}
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Nothing to show - this message has no readable text.
+          </p>
+        )}
+      </div>
+
+      {message.reviewReason && (
+        <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-800">
+          <p className="text-xs text-slate-500 dark:text-slate-400">{message.reviewReason}</p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-800">
+        <Button variant="secondary" disabled={busy} onClick={() => void verdict("reviewed")}>
+          Mark reviewed
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={() => void verdict("irrelevant")}>
+          Not relevant
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={async () => {
+            try {
+              await api.setMailRead(message.id, message.isUnread);
+              onChanged();
+            } catch (e) {
+              toast.error(errMsg(e));
+            }
+          }}
+        >
+          {message.isUnread ? "Mark read" : "Mark unread"}
+        </Button>
+        <span className="text-[11px] text-slate-400 dark:text-slate-500">
+          Read state is TIQR&apos;s own - Gmail is never changed.
+        </span>
+      </div>
     </div>
   );
 }
 
 export default function MailIntelligence() {
   const toast = useToast();
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("important");
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
   const [overview, setOverview] = useState<MailOverview | null>(null);
   const [rows, setRows] = useState<MailMessageSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-
+  const [openId, setOpenId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
 
   const filter = useMemo<MailMessageFilter>(
     () => ({
       search: search.trim() || null,
       category: category || null,
-      // The Review Queue IS the status filter - its own tab pins it, so the
-      // dropdown below is only offered on Inbox Activity.
-      status: tab === "review" ? "review_required" : statusFilter || null,
-      fromDate: fromDate || null,
-      toDate: toDate || null,
+      status: tab === "review" ? "review_required" : null,
+      limit: 500,
     }),
-    [search, category, statusFilter, fromDate, toDate, tab],
+    [search, category, tab],
   );
+
+  /* The list is fetched broadly and the TAB narrows it here rather than in
+     SQL: Gmail's categories live in a comma-separated `labels` column, and
+     a LIKE would also match a label that merely CONTAINS another. */
+  const visible = useMemo(() => {
+    switch (tab) {
+      case "important":
+        return rows.filter((m) => m.category !== "other");
+      case "promotions":
+        return rows.filter((m) => hasLabel(m, "category_promotions"));
+      case "social":
+        return rows.filter((m) => hasLabel(m, "category_social"));
+      case "inbox":
+        return rows.filter((m) => !hasLabel(m, "category_promotions") && !hasLabel(m, "category_social"));
+      default:
+        return rows;
+    }
+  }, [rows, tab]);
 
   const loadHeader = useCallback(async () => {
     const [s, o] = await Promise.all([api.getMailStatus(), api.getMailOverview()]);
@@ -453,8 +327,6 @@ export default function MailIntelligence() {
   }, [filter]);
 
   useEffect(() => {
-    // A hard kill can leave a sync claim behind. Cleared once, here, on the
-    // screen that would be blocked by it - never on a timer.
     api
       .clearStaleMailSync()
       .then(() => loadHeader())
@@ -468,13 +340,15 @@ export default function MailIntelligence() {
     void loadList();
   }, [tab, loadList]);
 
+  const refresh = useCallback(() => {
+    void loadHeader();
+    void loadList();
+  }, [loadHeader, loadList]);
+
   const doSync = async () => {
     setSyncing(true);
     try {
       const result = await api.syncMailNow();
-      // Three outcomes, three messages. "skipped" is neither success nor
-      // failure - paused, not connected, or a run already going - and
-      // showing it as an error would be wrong.
       if (result.status === "synced") {
         toast.success(`${result.storedNew} new, ${result.duplicatesIgnored} already seen.`);
       } else if (result.status === "skipped") {
@@ -491,89 +365,98 @@ export default function MailIntelligence() {
     }
   };
 
+  const open = useMemo(() => visible.find((m) => m.id === openId) ?? null, [visible, openId]);
+
   if (loading) {
     return (
       <div>
-        <PageHeader title="Mail Intelligence" subtitle="What arrived, and what TIQR made of it." />
-        <TableSkeleton />
+        <PageHeader title="Mail" subtitle="Your inbox, with what matters pulled to the front." />
+        <Card className="p-5">
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <Spinner className="h-4 w-4" /> Loading...
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!status?.connected) {
+    return (
+      <div>
+        <PageHeader title="Mail" subtitle="Your inbox, with what matters pulled to the front." />
+        <EmptyState
+          icon={<IconMail className="h-5 w-5" />}
+          title="No mailbox connected"
+          description="Connect a Gmail account to read your inbox here and let TIQR recognise sale, payout and refund mail."
+          action={
+            <Link to="/settings/integrations">
+              <Button variant="primary">Connect in Settings</Button>
+            </Link>
+          }
+        />
       </div>
     );
   }
 
   return (
+    /* NOT `h-full`. `Layout` renders pages in a plain `px-7 py-5` div with
+       no height, so `h-full` collapses to the content - see PROTECTED_AREAS,
+       2.55.0. The two-pane block below pins its own height the same way the
+       Notes page does, and the root stays an ordinary block. */
     <div>
       <PageHeader
-        title="Mail Intelligence"
-        subtitle="What arrived, and what TIQR made of it. Nothing here changes your sales, inventory or finances."
+        title="Mail"
+        subtitle={
+          status.accountEmail
+            ? `${status.accountEmail}${status.unreadCount > 0 ? ` · ${status.unreadCount} unread` : ""}`
+            : "Your inbox, with what matters pulled to the front."
+        }
         actions={
-          <div className={SEGMENTED_TRACK}>
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => setTab(t.key)}
-                aria-pressed={tab === t.key}
-                className={segmentedItemClass(tab === t.key)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className={SEGMENTED_TRACK}>
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => {
+                    setTab(t.key);
+                    setOpenId(null);
+                  }}
+                  aria-pressed={tab === t.key}
+                  className={segmentedItemClass(tab === t.key)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <Button variant="secondary" disabled={syncing || status.paused} onClick={() => void doSync()}>
+              {syncing ? <Spinner className="h-4 w-4" /> : null}
+              Sync
+            </Button>
+          </>
         }
       />
 
-      <ConnectionStrip status={status} syncing={syncing} onSync={() => void doSync()} />
+      {status.lastError && (
+        <Card className="mb-4 p-3">
+          <p className="text-xs text-red-600 dark:text-red-400">{status.lastError}</p>
+        </Card>
+      )}
 
-      {tab === "overview" && overview && (
-        <div className="space-y-5">
-          {/* One panel divided by hairlines, not a row of cards - the house
-              pattern for a row of figures since 2.90.0. */}
-          <Figures>
-            <Figure label="Messages seen" value={String(overview.totalMessages)} emphasis />
-            <Figure label="New since last sync" value={String(overview.newSinceLastSync)} />
-            <Figure label="Recognised" value={String(overview.recognisedCount)} />
-            <Figure
-              label="Awaiting review"
-              value={String(overview.reviewRequiredCount)}
-              tone={overview.reviewRequiredCount > 0 ? "warning" : "default"}
-            />
-            <Figure label="Reviewed" value={String(overview.processedCount)} />
-            {/* No "Failed" figure, deliberately. Nothing in phase 1 sets a
-                message's status to `failed` - there is no processing step
-                that can fail yet - so the counter could only ever read 0.
-                A figure that is structurally always zero reads as a broken
-                number rather than a true one. `failedCount` stays on the
-                model and in the backend count for the phase that can
-                actually set it; a sync failure itself is shown where it
-                belongs, on the connection strip above. */}
-          </Figures>
-
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <Card className="p-4">
-              <h3 className="section-title mb-3">Recent activity</h3>
-              {overview.recent.length === 0 ? (
-                <EmptyState
-                  icon={<IconMail className="h-5 w-5" />}
-                  title="Nothing yet"
-                  description="Connect a mailbox and sync to see what arrives here."
-                />
-              ) : (
-                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {overview.recent.map((m) => (
-                    <li key={m.id} className="flex flex-wrap items-center gap-2 py-2">
-                      <span className="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-200">
-                        {m.subject || "(no subject)"}
-                      </span>
-                      <CategoryBadge category={m.category} />
-                      <span className="whitespace-nowrap font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                        {formatWhen(m.receivedAt)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-
+      {tab === "overview" ? (
+        overview && (
+          <div className="space-y-5">
+            <Figures>
+              <Figure label="Messages" value={String(overview.totalMessages)} emphasis />
+              <Figure label="Unread" value={String(status.unreadCount)} />
+              <Figure label="New since last sync" value={String(overview.newSinceLastSync)} />
+              <Figure label="Recognised" value={String(overview.recognisedCount)} />
+              <Figure
+                label="Awaiting review"
+                value={String(overview.reviewRequiredCount)}
+                tone={overview.reviewRequiredCount > 0 ? "warning" : "default"}
+              />
+            </Figures>
             <Card className="p-4">
               <h3 className="section-title mb-3">By category</h3>
               {overview.byCategory.length === 0 ? (
@@ -592,19 +475,13 @@ export default function MailIntelligence() {
               )}
             </Card>
           </div>
-        </div>
-      )}
-
-      {tab !== "overview" && (
-        <div className="space-y-4">
-          <Card className="flex flex-wrap items-end gap-3 p-4">
-            <div className="min-w-[200px] flex-1">
+        )
+      ) : (
+        <>
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <div className="min-w-[220px] flex-1">
               <Field label="Search">
-                <Input
-                  placeholder="Sender or subject"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+                <Input placeholder="Sender or subject" value={search} onChange={(e) => setSearch(e.target.value)} />
               </Field>
             </div>
             <div className="w-44">
@@ -619,47 +496,53 @@ export default function MailIntelligence() {
                 </Select>
               </Field>
             </div>
-            {tab === "activity" && (
-              <div className="w-44">
-                <Field label="Status">
-                  <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                    <option value="">All</option>
-                    {Object.keys(STATUS_LABELS).map((s) => (
-                      <option key={s} value={s}>
-                        {STATUS_LABELS[s]}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-            )}
-            <div className="w-40">
-              <Field label="From">
-                <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-              </Field>
-            </div>
-            <div className="w-40">
-              <Field label="To">
-                <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-              </Field>
-            </div>
-          </Card>
+          </div>
 
-          <MessageList
-            rows={rows}
-            loading={listLoading}
-            emptyTitle={tab === "review" ? "Nothing waiting" : "No messages match"}
-            emptyDescription={
-              tab === "review"
-                ? "Recognised mail that needs a human look will appear here."
-                : "Change the filters, or sync to fetch new mail."
-            }
-            onChanged={() => {
-              void loadHeader();
-              void loadList();
-            }}
-          />
-        </div>
+          {/* Two panes: list and reader - the same shape Notes already uses
+              for list + content, so the app has one answer to that layout. */}
+          <div
+            className="flex min-h-[420px] gap-4"
+            /* The one place this page sets a real height, same mechanism as
+               Notes (2.55.0): the offset covers the sidebar's padding, the
+               page header and the filter row above. Without it the reading
+               pane has no height to scroll inside and the whole list just
+               pushes the page down. */
+            style={{ height: "calc(100vh - 290px)" }}
+          >
+            <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
+              {listLoading ? (
+                <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
+                  <Spinner className="h-4 w-4" /> Loading...
+                </div>
+              ) : visible.length === 0 ? (
+                <div className="p-4">
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nothing here</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {tab === "review"
+                      ? "Recognised mail that needs a look will appear here."
+                      : "Press Sync to fetch new mail."}
+                  </p>
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {visible.map((m) => (
+                    <MailRow key={m.id} m={m} active={openId === m.id} onClick={() => setOpenId(m.id)} />
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
+              {open ? (
+                <Reader message={open} onChanged={refresh} />
+              ) : (
+                <div className="flex flex-1 items-center justify-center p-8">
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
+                </div>
+              )}
+            </Card>
+          </div>
+        </>
       )}
     </div>
   );

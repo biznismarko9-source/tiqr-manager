@@ -274,6 +274,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "040_mail_intelligence",
         include_str!("../migrations/040_mail_intelligence.sql"),
     ),
+    // 2.104.0: the mail section becomes a real inbox - two columns on
+    // mail_messages, nothing else touched.
+    (
+        "041_mail_inbox",
+        include_str!("../migrations/041_mail_inbox.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

@@ -3337,6 +3337,10 @@ pub struct MailConnectionStatus {
     pub known_senders: Vec<String>,
     /// Whatever he added himself, raw as he typed it.
     pub extra_senders: String,
+    /// 2.104.0: `"all"` (the whole mailbox) or `"known"` (marketplace
+    /// senders only).
+    pub scope: String,
+    pub unread_count: i64,
 }
 
 /// The Overview screen's counters. Every one is a real `COUNT(*)`; none is a
@@ -3382,6 +3386,13 @@ pub struct MailMessageSummary {
     pub status: String,
     pub review_reason: Option<String>,
     pub body_excerpt: Option<String>,
+    /// TIQR's own read state, not Gmail's - this app holds a read-only
+    /// scope and cannot write a label. See migration 041.
+    pub is_unread: bool,
+    /// Gmail's labels, comma separated and lower-cased. Drives the inbox's
+    /// Promotions / Social tabs, which are Gmail's own categories rather
+    /// than ones this app invented.
+    pub labels: String,
 }
 
 /// One message plus its whole audit trail - the "what did it detect, what did

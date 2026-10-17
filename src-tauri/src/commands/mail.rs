@@ -120,6 +120,21 @@ const MAIL_RETENTION_DAYS_KEY: &str = "mail_retention_days";
 /// 2.101.0: extra sender domains marko adds himself, so a marketplace this
 /// app does not know about can still be watched without a new release.
 const MAIL_EXTRA_SENDERS_KEY: &str = "mail_extra_senders";
+/// 2.104.0: `"all"` (the whole mailbox, the default) or `"known"` (only the
+/// marketplace senders 2.101.0 narrowed to).
+///
+/// marko asked for a real inbox after asking for less spam. Those are not in
+/// conflict: what he objected to was spam being IN THE WAY. So the default
+/// is the whole mailbox and the UI separates "everything" from "what
+/// matters" - but `"known"` stays available, because on a mailbox where
+/// Gmail's own spam filtering is poor it is still the cheaper way to run.
+const MAIL_SCOPE_KEY: &str = "mail_scope";
+
+fn mail_scope(conn: &Connection) -> AppResult<String> {
+    Ok(get_setting(conn, MAIL_SCOPE_KEY)?
+        .filter(|v| v == "known")
+        .unwrap_or_else(|| "all".to_string()))
+}
 
 const DEFAULT_RETENTION_DAYS: i64 = 90;
 
@@ -173,6 +188,13 @@ pub(crate) struct FetchedMessage {
     pub snippet: Option<String>,
     pub received_at: String,
     pub body_text: String,
+    /// From Gmail's own `UNREAD` label at the moment it was fetched. Used
+    /// only as the STARTING state - see migration 041 for why TIQR's read
+    /// state is its own and is never written back.
+    pub is_unread: bool,
+    /// Gmail's labels, lower-cased and comma separated. `category_promotions`
+    /// and `category_social` are what drive the inbox's own tabs.
+    pub labels: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +269,49 @@ fn starts_with_ci(b: &[u8], at: usize, needle: &[u8]) -> bool {
     at + needle.len() <= b.len() && b[at..at + needle.len()].eq_ignore_ascii_case(needle)
 }
 
+/// Tags that END A LINE when they are stripped.
+///
+/// 2.104.0: until the reading pane existed this did not matter - every
+/// consumer wanted one collapsed line. Now a real message body is shown,
+/// and collapsing newlines turns an email into a single wall of text with
+/// its paragraphs, addresses and line items run together. These tags emit a
+/// newline instead of a space so the shape of the message survives.
+const BLOCK_TAGS: &[&[u8]] = &[
+    b"p", b"br", b"div", b"tr", b"li", b"table", b"blockquote", b"hr", b"ul", b"ol",
+    b"h1", b"h2", b"h3", b"h4", b"h5", b"h6",
+];
+// `td`/`th` are deliberately NOT in that list, though they are block
+// elements. Marketing mail is laid out in tables, so breaking on every CELL
+// puts "Event:" and "Coldplay" on two lines instead of one. Breaking on the
+// ROW (`tr`) is what reproduces how the message actually reads.
+
+/// Does the tag starting at `at` (just past the `<`) end a line?
+/// Handles the closing form too, so both `<p>` and `</p>` break.
+fn tag_is_block(b: &[u8], at: usize) -> bool {
+    let at = if b.get(at) == Some(&b'/') { at + 1 } else { at };
+    BLOCK_TAGS.iter().any(|t| tag_name_is(b, at, t))
+}
+
+/// Is the tag starting at `at` named exactly `name`?
+///
+/// 2.103.0: `starts_with_ci` alone was not enough and CI caught it. An HTML
+/// tag name ends at whitespace, `>` or `/` - so `<scriptish>` merely STARTS
+/// with "script" and is an ordinary tag, but the first version treated it as
+/// a `<script>` and threw away everything after it looking for a `</script`
+/// that was never coming. Any mail using a tag whose name began with
+/// "script" or "style" lost its whole body from that point on.
+fn tag_name_is(b: &[u8], at: usize, name: &[u8]) -> bool {
+    if !starts_with_ci(b, at, name) {
+        return false;
+    }
+    match b.get(at + name.len()) {
+        // Input ends right after the name: a truncated `<script` is still a
+        // script, and dropping the rest is the safe side to err on.
+        None => true,
+        Some(c) => c.is_ascii_whitespace() || *c == b'>' || *c == b'/',
+    }
+}
+
 /// First case-insensitive occurrence of `needle` at or after `from`.
 /// Scans in place - the whole point is that nothing is copied.
 fn find_ci(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
@@ -301,11 +366,11 @@ pub(crate) fn strip_html(input: &str) -> String {
         }
         // Flush the run of text that ended at this tag.
         out.push_str(&input[text_start..i]);
-        out.push(' ');
+        out.push(if tag_is_block(b, i + 1) { '\n' } else { ' ' });
 
-        let closer: Option<&[u8]> = if starts_with_ci(b, i + 1, b"script") {
+        let closer: Option<&[u8]> = if tag_name_is(b, i + 1, b"script") {
             Some(b"</script")
-        } else if starts_with_ci(b, i + 1, b"style") {
+        } else if tag_name_is(b, i + 1, b"style") {
             Some(b"</style")
         } else {
             None
@@ -326,14 +391,92 @@ pub(crate) fn strip_html(input: &str) -> String {
         out.push_str(&input[text_start..]);
     }
 
-    let decoded = out
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
-    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+    let decoded = decode_entities(&out);
+
+    // Collapse runs of spaces WITHIN each line, but keep the lines - and
+    // never leave more than one blank line, which is what a stripped
+    // `<table>` layout otherwise produces by the dozen.
+    let mut lines: Vec<String> = Vec::new();
+    let mut blanks = 0usize;
+    for raw in decoded.split('\n') {
+        let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blanks += 1;
+            if blanks > 1 || lines.is_empty() {
+                continue;
+            }
+        } else {
+            blanks = 0;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// Named entities worth knowing, beyond the five XML ones.
+///
+/// 2.104.0: the first version decoded six and left everything else as
+/// literal text, so a real email read "Good news &ndash; your listing has
+/// sold". These are the ones that actually turn up in mail; anything else
+/// numeric is handled by the `&#NN;` branch below, and anything unknown is
+/// left exactly as it was rather than guessed at.
+const NAMED_ENTITIES: &[(&str, &str)] = &[
+    ("amp", "&"), ("lt", "<"), ("gt", ">"), ("quot", "\""), ("apos", "'"),
+    ("nbsp", " "), ("ndash", "-"), ("mdash", "-"), ("hellip", "..."),
+    ("lsquo", "'"), ("rsquo", "'"), ("ldquo", "\""), ("rdquo", "\""),
+    ("middot", "\u{b7}"), ("bull", "\u{2022}"), ("euro", "\u{20ac}"),
+    ("pound", "\u{a3}"), ("copy", "\u{a9}"), ("reg", "\u{ae}"),
+    ("trade", "\u{2122}"), ("deg", "\u{b0}"), ("times", "\u{d7}"),
+    ("laquo", "\u{ab}"), ("raquo", "\u{bb}"), ("eacute", "\u{e9}"),
+];
+
+/// One pass, no allocation per entity. An `&` that does not begin a
+/// recognised entity is kept verbatim - this never guesses.
+pub(crate) fn decode_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        // An entity is short; anything longer is not one.
+        let end = tail[..tail.len().min(12)].find(';');
+        let Some(end) = end else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let name = &tail[1..end];
+        let decoded: Option<String> = if let Some(num) = name.strip_prefix('#') {
+            let code = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                num.parse::<u32>().ok()
+            };
+            code.and_then(char::from_u32).map(|c| c.to_string())
+        } else {
+            let lower = name.to_ascii_lowercase();
+            NAMED_ENTITIES
+                .iter()
+                .find(|(n, _)| *n == lower)
+                .map(|(_, v)| (*v).to_string())
+        };
+        match decoded {
+            Some(v) => {
+                out.push_str(&v);
+                rest = &tail[end + 1..];
+            }
+            // Not an entity this app knows. Left exactly as written.
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A bounded excerpt, already stripped and redacted. The cap lives here, in
@@ -715,7 +858,16 @@ pub(crate) fn fetched_from_gmail(msg: &serde_json::Value) -> Option<FetchedMessa
         // dropped - losing a real message because its header was odd is the
         // worse failure, and the log row records that this happened.
         .unwrap_or_else(|| Utc::now().to_rfc3339());
+    let labels: Vec<String> = msg
+        .get("labelIds")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|l| l.as_str()).map(|l| l.to_ascii_lowercase()).collect())
+        .unwrap_or_default();
+    let is_unread = labels.iter().any(|l| l == "unread");
+
     Some(FetchedMessage {
+        is_unread,
+        labels: labels.join(","),
         provider_message_id: id,
         provider_thread_id: jstr(msg, "threadId"),
         from_address,
@@ -827,8 +979,8 @@ fn upsert_message(
             provider, provider_message_id, provider_thread_id, account_email,
             from_address, from_name, subject, snippet, received_at,
             category, confidence, detected_platform, status, review_reason,
-            body_excerpt, first_seen_at, updated_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            body_excerpt, first_seen_at, updated_at, is_unread, labels
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             provider.as_str(),
             msg.provider_message_id,
@@ -846,7 +998,9 @@ fn upsert_message(
             class.review_reason,
             body_excerpt(&msg.body_text),
             now,
-            now
+            now,
+            if msg.is_unread { 1 } else { 0 },
+            msg.labels
         ],
     )?;
     Ok((conn.last_insert_rowid(), true))
@@ -901,11 +1055,25 @@ pub(crate) fn parse_extra_senders(raw: &str) -> Vec<String> {
 ///
 /// The date window still overlaps the previous sync by a day; see the module
 /// comment for why that is free.
-pub(crate) fn sync_query(last_sync_at: Option<&str>, now: DateTime<Utc>, extra: &[String]) -> String {
+pub(crate) fn sync_query(
+    last_sync_at: Option<&str>,
+    now: DateTime<Utc>,
+    extra: &[String],
+    scope: &str,
+) -> String {
     let since = last_sync_at
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc) - ChronoDuration::days(SYNC_OVERLAP_DAYS))
         .unwrap_or_else(|| now - ChronoDuration::days(INITIAL_BACKFILL_DAYS));
+
+    // Gmail's `after:` takes YYYY/MM/DD and is exclusive of earlier days.
+    // `-in:spam -in:trash` stays in BOTH modes: a mail that looks like a sale
+    // confirmation and is sitting in spam is exactly the one not to trust,
+    // and "the whole inbox" has never meant the junk folder to anybody.
+    let base = format!("after:{} -in:spam -in:trash -in:chats", since.format("%Y/%m/%d"));
+    if scope != "known" {
+        return base;
+    }
 
     let mut senders: Vec<String> = KNOWN_SENDERS.iter().map(|(d, _)| format!("from:{d}")).collect();
     for e in extra {
@@ -914,13 +1082,7 @@ pub(crate) fn sync_query(last_sync_at: Option<&str>, now: DateTime<Utc>, extra: 
             senders.push(term);
         }
     }
-
-    // Gmail's `after:` takes YYYY/MM/DD and is exclusive of earlier days.
-    format!(
-        "after:{} -in:spam -in:trash -in:chats ({})",
-        since.format("%Y/%m/%d"),
-        senders.join(" OR ")
-    )
+    format!("{base} ({})", senders.join(" OR "))
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1112,10 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         // WHY a message did or did not arrive, instead of guessing.
         known_senders: KNOWN_SENDERS.iter().map(|(d, _)| (*d).to_string()).collect(),
         extra_senders: get_setting(conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default(),
+        scope: mail_scope(conn)?,
+        unread_count: conn
+            .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
+            .unwrap_or(0),
     })
 }
 
@@ -1190,11 +1356,14 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
     };
 
     // ---- phase 2: the network, with no database lock held -----------------
-    let extra = {
+    let (extra, scope) = {
         let conn = state.db.lock().unwrap();
-        parse_extra_senders(&get_setting(&conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default())
+        (
+            parse_extra_senders(&get_setting(&conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default()),
+            mail_scope(&conn)?,
+        )
     };
-    let query = sync_query(last_sync_at.as_deref(), Utc::now(), &extra);
+    let query = sync_query(last_sync_at.as_deref(), Utc::now(), &extra, &scope);
     let fetch = tauri::async_runtime::spawn_blocking(move || -> AppResult<(Vec<FetchedMessage>, Option<String>)> {
         let (access_token, _) = google_oauth::refresh_access_token(&oauth_client, &refresh_token)?;
         let http = gmail_client()?;
@@ -1215,7 +1384,19 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
 
         let mut out = Vec::new();
         for id in ids.iter().take(SYNC_MAX_MESSAGES) {
-            let url = format!("{GMAIL_API}/messages/{id}?format=full");
+            // 2.104.0: METADATA, not `full`.
+            //
+            // Syncing the whole mailbox used to mean downloading and parsing
+            // every body - megabytes of marketing HTML to build a list that
+            // only shows a sender, a subject and a preview. `format=metadata`
+            // returns exactly those plus Gmail's own `snippet` and labels,
+            // which is everything the list needs and a fraction of the bytes.
+            // The body is fetched by `get_mail_body` when a message is
+            // actually opened, and is never stored.
+            let url = format!(
+                "{GMAIL_API}/messages/{id}?format=metadata\
+                 &metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+            );
             // One message failing must not lose the whole run - the ones that
             // did arrive are still worth storing.
             if let Ok(raw) = gmail_get(&http, &access_token, &url) {
@@ -1254,7 +1435,16 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
     let classified: Vec<(FetchedMessage, Classification)> = messages
         .into_iter()
         .map(|m| {
-            let c = classify(&m.from_address, &m.subject, &m.body_text);
+            // With metadata-only sync `body_text` is empty, so the
+            // snippet - Gmail's own preview - is what stands in for it.
+            // A subject match was always the strong signal anyway; a
+            // body match only ever produced "medium".
+            let body = if m.body_text.is_empty() {
+                m.snippet.clone().unwrap_or_default()
+            } else {
+                m.body_text.clone()
+            };
+            let c = classify(&m.from_address, &m.subject, &body);
             (m, c)
         })
         .collect();
@@ -1380,11 +1570,14 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary>
         status: r.get(11)?,
         review_reason: r.get(12)?,
         body_excerpt: r.get(13)?,
+        is_unread: r.get::<_, i64>(14)? != 0,
+        labels: r.get(15)?,
     })
 }
 
 const SUMMARY_COLUMNS: &str = "id, provider, provider_message_id, from_address, from_name, subject,
-     snippet, received_at, category, confidence, detected_platform, status, review_reason, body_excerpt";
+     snippet, received_at, category, confidence, detected_platform, status, review_reason, body_excerpt,
+     is_unread, IFNULL(labels,'')";
 
 #[tauri::command]
 pub fn list_mail_messages(
@@ -1516,6 +1709,98 @@ pub fn set_mail_review_outcome(
         log_step(&conn, id, "reviewed", status, note.as_deref())?;
     }
     get_mail_message(state, id)
+}
+
+/// Fetch ONE message's full text from Gmail, on demand.
+///
+/// This is what makes the inbox an inbox without turning the database into a
+/// copy of the mailbox. The sync stores headers only; the body is pulled
+/// when marko actually opens a message, shown, and **never stored**. Close
+/// the message and it is gone from this app again.
+///
+/// Returns PLAIN TEXT. The HTML is stripped in Rust (`strip_html`) and the
+/// UI renders it as text - there is no path in this app that hands a message
+/// body to the DOM as markup, which is the whole reason it is stripped.
+#[tauri::command]
+pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<String> {
+    let (provider_message_id, refresh_token) = {
+        let conn = state.db.lock().unwrap();
+        let pid: String = conn
+            .query_row(
+                "SELECT provider_message_id FROM mail_messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
+        (pid, get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?)
+    };
+    let Some(refresh_token) = refresh_token else {
+        return Err(AppError::Validation("no mailbox is connected".to_string()));
+    };
+    let Some(client) = google_oauth::embedded_oauth_client() else {
+        return Err(AppError::Validation(
+            "this build has no Google client embedded".to_string(),
+        ));
+    };
+
+    let body = tauri::async_runtime::spawn_blocking(move || -> AppResult<String> {
+        let (access_token, _) = google_oauth::refresh_access_token(&client, &refresh_token)?;
+        let http = gmail_client()?;
+        let raw = gmail_get(
+            &http,
+            &access_token,
+            &format!("{GMAIL_API}/messages/{provider_message_id}?format=full"),
+        )?;
+        let payload = raw.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+        let text = extract_body_text(&payload);
+        Ok(if text.trim().is_empty() {
+            jstr(&raw, "snippet").unwrap_or_default()
+        } else {
+            text
+        })
+    })
+    .await
+    .map_err(|_| AppError::External("the message did not finish loading".to_string()))??;
+
+    // Opening a message marks it read HERE. Gmail is untouched - the scope
+    // this app holds is read-only and cannot write a label. The UI says so.
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", params![id])?;
+    }
+    Ok(safe_detail(&body))
+}
+
+/// Read / unread, by hand. TIQR's own state; see `get_mail_body`.
+#[tauri::command]
+pub fn set_mail_read(state: State<AppState>, id: i64, read: bool) -> AppResult<()> {
+    let conn = state.db.lock().unwrap();
+    let changed = conn.execute(
+        "UPDATE mail_messages SET is_unread = ?1 WHERE id = ?2",
+        params![if read { 0 } else { 1 }, id],
+    )?;
+    if changed == 0 {
+        return Err(AppError::NotFound(format!("mail message #{id} not found")));
+    }
+    Ok(())
+}
+
+/// Whole mailbox, or only the marketplace senders.
+#[tauri::command]
+pub fn set_mail_scope(state: State<AppState>, scope: String) -> AppResult<MailConnectionStatus> {
+    let scope = match scope.trim() {
+        "all" => "all",
+        "known" => "known",
+        other => {
+            return Err(AppError::Validation(format!(
+                "\"{other}\" is not a mail scope - expected all or known"
+            )))
+        }
+    };
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, MAIL_SCOPE_KEY, scope)?;
+    status_impl(&conn)
 }
 
 #[tauri::command]
@@ -1736,10 +2021,101 @@ mod tests {
         assert!(out.contains("before"), "{out}");
     }
 
+    /// CI caught this one. A tag name ends at whitespace, `>` or `/`, so a
+    /// tag that merely STARTS with "script" or "style" is an ordinary tag -
+    /// and treating it as a script threw the rest of the body away.
     #[test]
     fn a_tag_named_like_script_but_is_not_is_treated_as_an_ordinary_tag() {
-        let out = strip_html("<scriptish>keep me</scriptish>");
-        assert!(out.contains("keep me"), "{out}");
+        for html in [
+            "<scriptish>keep me</scriptish>",
+            "<styles>keep me</styles>",
+            "<style-guide>keep me</style-guide>",
+            "<scripture>keep me</scripture>",
+        ] {
+            let out = strip_html(html);
+            assert!(out.contains("keep me"), "{html} lost its content: {out:?}");
+        }
+    }
+
+    /// ...while the real ones, with every legal boundary character, are
+    /// still dropped whole.
+    #[test]
+    fn a_real_script_or_style_tag_is_still_dropped_however_it_is_written() {
+        for html in [
+            "<script>BAD()</script>after",
+            "<script >BAD()</script>after",
+            "<script type=\"text/javascript\">BAD()</script>after",
+            "<style>.a{color:BAD}</style>after",
+            "<style media=\"print\">.a{color:BAD}</style>after",
+        ] {
+            let out = strip_html(html);
+            assert!(!out.contains("BAD"), "{html} leaked its contents: {out:?}");
+            assert!(out.contains("after"), "{html} lost the text after it: {out:?}");
+        }
+    }
+
+    /// `<script/>` is NOT self-closing in HTML - a browser treats it as an
+    /// open `<script>` and swallows everything after it. This strips the
+    /// same way, which loses the rest of that body; that is the correct
+    /// side to err on for a function whose job is to not leak script
+    /// source, and it is written down here so it reads as a decision rather
+    /// than as the bug it looks like.
+    #[test]
+    fn a_self_closing_script_swallows_the_rest_exactly_as_html_says_it_should() {
+        assert_eq!(strip_html("<script/>after"), "");
+        assert_eq!(strip_html("before<script/>after"), "before");
+    }
+
+    #[test]
+    fn entities_beyond_the_xml_five_are_decoded() {
+        assert_eq!(decode_entities("a &ndash; b"), "a - b");
+        assert_eq!(decode_entities("it&rsquo;s"), "it's");
+        assert_eq!(decode_entities("&euro;440"), "\u{20ac}440");
+        assert_eq!(decode_entities("more&hellip;"), "more...");
+    }
+
+    #[test]
+    fn numeric_entities_decode_in_both_decimal_and_hex() {
+        assert_eq!(decode_entities("&#39;"), "'");
+        assert_eq!(decode_entities("&#8217;"), "\u{2019}");
+        assert_eq!(decode_entities("&#x27;"), "'");
+        assert_eq!(decode_entities("&#X2019;"), "\u{2019}");
+    }
+
+    /// Never guess. An `&` that is not an entity survives untouched - mail
+    /// is full of "Tom & Jerry" and of URLs with `?a=1&b=2`.
+    #[test]
+    fn an_ampersand_that_is_not_an_entity_is_left_alone() {
+        assert_eq!(decode_entities("Tom & Jerry"), "Tom & Jerry");
+        assert_eq!(decode_entities("?a=1&b=2"), "?a=1&b=2");
+        assert_eq!(decode_entities("&notareal;"), "&notareal;");
+        assert_eq!(decode_entities("&#99999999;"), "&#99999999;");
+        assert_eq!(decode_entities("&"), "&");
+        assert_eq!(decode_entities("&averyverylongthing;"), "&averyverylongthing;");
+    }
+
+    /// A table-laid-out email - which is most marketing mail - must keep
+    /// its rows on one line each, not explode every cell onto its own.
+    #[test]
+    fn a_table_row_stays_on_one_line() {
+        let out = strip_html("<table><tr><td>Event:</td><td>Coldplay</td></tr><tr><td>Tickets:</td><td>2</td></tr></table>");
+        assert!(out.contains("Event: Coldplay"), "{out:?}");
+        assert!(out.contains("Tickets: 2"), "{out:?}");
+    }
+
+    /// ...while real paragraphs DO break, which is the whole point of the
+    /// reading pane showing a message rather than a wall of text.
+    #[test]
+    fn paragraphs_survive_as_separate_lines() {
+        let out = strip_html("<p>Hello Marko,</p><p>Your listing has sold.</p>");
+        assert_eq!(out, "Hello Marko,\n\nYour listing has sold.");
+    }
+
+    #[test]
+    fn a_run_of_empty_markup_never_leaves_more_than_one_blank_line() {
+        let out = strip_html("<p>a</p><div></div><div></div><div></div><p>b</p>");
+        assert!(!out.contains("\n\n\n"), "{out:?}");
+        assert!(out.starts_with('a') && out.ends_with('b'), "{out:?}");
     }
 
     #[test]
@@ -2036,18 +2412,18 @@ mod tests {
 
     #[test]
     fn the_first_sync_looks_back_a_bounded_window() {
-        assert!(sync_query(None, at("2026-10-17T12:00:00Z"), &[]).starts_with("after:2026/09/17 "));
+        assert!(sync_query(None, at("2026-10-17T12:00:00Z"), &[], "known").starts_with("after:2026/09/17 "));
     }
 
     #[test]
     fn a_later_sync_overlaps_the_previous_one_by_a_day() {
-        let q = sync_query(Some("2026-10-15T09:00:00Z"), at("2026-10-17T12:00:00Z"), &[]);
+        let q = sync_query(Some("2026-10-15T09:00:00Z"), at("2026-10-17T12:00:00Z"), &[], "known");
         assert!(q.starts_with("after:2026/10/14 "), "{q}");
     }
 
     #[test]
     fn an_unparseable_checkpoint_falls_back_to_the_backfill_window() {
-        let q = sync_query(Some("rubbish"), at("2026-10-17T12:00:00Z"), &[]);
+        let q = sync_query(Some("rubbish"), at("2026-10-17T12:00:00Z"), &[], "known");
         assert!(q.starts_with("after:2026/09/17 "), "{q}");
     }
 
@@ -2055,7 +2431,7 @@ mod tests {
     /// filtering and a month of newsletters is never downloaded at all.
     #[test]
     fn the_query_asks_only_for_senders_this_app_knows() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[]);
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "known");
         assert!(q.contains("from:viagogo.com"), "{q}");
         assert!(q.contains("from:paypal.com"), "{q}");
         assert!(q.contains(" OR "), "several senders must be OR-ed: {q}");
@@ -2070,15 +2446,103 @@ mod tests {
     #[test]
     fn marko_s_own_extra_senders_are_added_to_the_query() {
         let extra = vec!["tickethub.sk".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &extra);
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &extra, "known");
         assert!(q.contains("from:tickethub.sk"), "{q}");
         assert!(q.contains("from:viagogo.com"), "the built-in list must survive: {q}");
     }
 
     #[test]
     fn an_extra_sender_that_is_already_built_in_is_not_repeated() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &["viagogo.com".to_string()]);
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &["viagogo.com".to_string()], "known");
         assert_eq!(q.matches("from:viagogo.com").count(), 1, "{q}");
+    }
+
+    /// THE INBOX. marko: "urob normalne z toho mailu normalne cely inbox".
+    /// In the default scope the query names NO sender - the whole mailbox
+    /// comes through, and the UI is what separates it.
+    #[test]
+    fn the_default_scope_asks_for_the_whole_mailbox() {
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "all");
+        assert!(!q.contains("from:"), "the whole mailbox must not be filtered by sender: {q}");
+        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+    }
+
+    /// ...but junk is still junk in BOTH modes.
+    #[test]
+    fn spam_and_trash_are_excluded_whichever_scope_is_used() {
+        for scope in ["all", "known"] {
+            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], scope);
+            assert!(q.contains("-in:spam"), "{scope}: {q}");
+            assert!(q.contains("-in:trash"), "{scope}: {q}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_scope_value_falls_back_to_the_whole_mailbox() {
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "nonsense");
+        assert!(!q.contains("from:"), "{q}");
+    }
+
+    // ---- unread / labels --------------------------------------------------
+
+    #[test]
+    fn gmails_unread_label_becomes_the_starting_read_state() {
+        let raw = serde_json::json!({
+            "id": "m1",
+            "internalDate": "1760000000000",
+            "labelIds": ["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"],
+        });
+        let m = fetched_from_gmail(&raw).expect("must parse");
+        assert!(m.is_unread);
+        assert_eq!(m.labels, "inbox,unread,category_promotions");
+    }
+
+    #[test]
+    fn a_message_with_no_unread_label_starts_read() {
+        let raw = serde_json::json!({ "id": "m2", "internalDate": "1760000000000", "labelIds": ["INBOX"] });
+        assert!(!fetched_from_gmail(&raw).unwrap().is_unread);
+    }
+
+    #[test]
+    fn a_message_with_no_labels_at_all_does_not_panic() {
+        let raw = serde_json::json!({ "id": "m3", "internalDate": "1760000000000" });
+        let m = fetched_from_gmail(&raw).unwrap();
+        assert!(!m.is_unread);
+        assert_eq!(m.labels, "");
+    }
+
+    #[test]
+    fn the_stored_read_state_round_trips_and_defaults_to_unread() {
+        let conn = test_conn();
+        let msg = sample_fetched("g1");
+        let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
+        let (id, _) = upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
+
+        let rows = list_messages_impl(&conn, &MailMessageFilter::default()).unwrap();
+        assert!(rows[0].is_unread, "a freshly synced message starts unread");
+        assert_eq!(rows[0].labels, "inbox,unread");
+
+        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", params![id]).unwrap();
+        let rows = list_messages_impl(&conn, &MailMessageFilter::default()).unwrap();
+        assert!(!rows[0].is_unread);
+    }
+
+    /// Every message synced before migration 041 existed without the flag.
+    /// "Nobody has opened this in TIQR" is the honest default for them.
+    #[test]
+    fn migration_041_defaults_existing_rows_to_unread() {
+        let conn = test_conn();
+        let msg = sample_fetched("g1");
+        let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
+        upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
+        let dflt: i64 = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('mail_messages') WHERE name = 'is_unread'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dflt, 1);
     }
 
     // ---- extra senders ----------------------------------------------------
@@ -2113,7 +2577,7 @@ mod tests {
                     "{p:?} from {hostile:?} would change the query"
                 );
             }
-            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &parsed);
+            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &parsed, "known");
             assert_eq!(q.matches('(').count(), 1, "exactly one group: {q}");
             assert_eq!(q.matches(')').count(), 1, "exactly one group: {q}");
             assert!(!q.contains("in:anywhere"), "{q}");
@@ -2145,6 +2609,8 @@ mod tests {
             snippet: Some("preview".to_string()),
             received_at: "2026-10-17T10:00:00Z".to_string(),
             body_text: "Well done".to_string(),
+            is_unread: true,
+            labels: "inbox,unread".to_string(),
         }
     }
 
@@ -2280,6 +2746,8 @@ mod tests {
                 snippet: None,
                 received_at: at.to_string(),
                 body_text: String::new(),
+                is_unread: true,
+                labels: "inbox".to_string(),
             };
             let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
             upsert_message(conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();

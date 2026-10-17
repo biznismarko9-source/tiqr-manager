@@ -16,6 +16,61 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.104.0 - Z mailu je normálny inbox
+
+Žiadal si celý inbox. 2.100.0 ti dalo tabuľku toho, čo appka rozpoznala, bez
+možnosti si čokoľvek **prečítať**, a 2.101.0 to ešte zúžilo len na
+marketplace odosielateľov. Oboje odpovedalo na zlú otázku.
+
+**Tie dve veci, čo si pýtal, si len zdanlivo odporujú.** Nevadilo ti, že
+spam existuje - vadilo ti, že **zavadzia**. Takže sync znova ťahá celú
+schránku a triedi to UI:
+
+- **Záložky**: Important / All mail / Promotions / Social / Review.
+  Promotions a Social sú **Gmailove vlastné kategórie**, nie pravidlo, čo
+  som si vymyslel - teda presne to rozdelenie, čo už v Gmaile vidíš.
+- **Dvojpanel**: zoznam vľavo, mail vpravo. Dá sa čítať.
+- Neprečítané sú tučné s bodkou, prečítané tiché - ako v normálnom klientovi.
+- V Settings si vieš prepnúť späť na „len títo odosielatelia", ak budeš chcieť.
+
+**Sync ťahá len hlavičky, telo až keď mail otvoríš** - a neukladá sa.
+Inak by sťahovanie celej schránky znamenalo megabajty reklamného HTML len
+na to, aby sa vykreslil zoznam s odosielateľom a predmetom.
+
+**Tri veci, ktoré odhalilo až to čítacie okno:**
+
+1. Čistenie HTML zlučovalo aj nové riadky, takže skutočný mail bol **jedna
+   stena textu**. Teraz sa odstavce zachovajú. Bunky tabuliek sa zámerne
+   nelámu - reklamné maily sú poskladané z tabuliek a lámať každú bunku by
+   dalo „Event:" a „Coldplay" na dva riadky.
+2. Dekódovalo sa len **šesť** entít, takže mail písal „Good news &ndash;
+   your listing has sold". Teraz je tam skutočný dekodér. `&`, ktoré nie je
+   entita, ostáva nedotknuté - mailov plných „Tom & Jerry" a `?a=1&b=2` je
+   dosť.
+3. Dvojpanel potrebuje skutočnú výšku a Layout stránkam žiadnu nedáva
+   (je to zapísané v PROTECTED_AREAS). `h-full` by sa ticho zrútilo.
+
+**Prečítané/neprečítané je TIQR-ovo vlastné a appka to aj píše** - scope je
+zámerne len na čítanie, takže v Gmaile sa nič neoznačí.
+
+92 testov v `mail.rs`.
+
+## 2.103.0 - Oprava po CI: `<scriptish>` nie je `<script>`
+
+- **Chyba, ktorú chytilo CI.** Kontroloval som len to, či názov tagu
+  *začína* na „script" - lenže názov tagu v HTML končí medzerou, `>` alebo
+  `/`. Takže `<scriptish>` sa bral ako `<script>` a **zahodil sa celý zvyšok
+  mailu** pri hľadaní `</script`, ktoré nikdy neprišlo. Opravené.
+- **A druhá vec, opačná: nepravdu mal môj TEST, nie kód.** Rozšírený test
+  tvrdil, že `<script/>after` nechá „after". Nenechá a ani nemá - `<script/>`
+  sa v HTML **nezatvára sám**, prehliadač ho berie ako otvorený `<script>` a
+  zhltne zvyšok. Pre funkciu, ktorej úlohou je nepustiť von zdroják skriptu,
+  je zahodiť viac tá správna strana. Opravil som očakávanie, nie kód, a
+  napísal to tam, aby to čítalo ako rozhodnutie, nie ako chyba.
+- Chytil som to **pred CI** tým, že som si `strip_html` prepísal do Pythonu
+  a prehnal ním všetkých dvadsať tvrdení - bez kompilátora sa očakávanie
+  inak overiť nedá.
+
 ## 2.102.0 - Nečitateľné rozbaľovačky + dve chyby na detaile eventu
 
 - **Rozbaľovačky sa konečne dajú prečítať.** Otvorený `<select>`, výber

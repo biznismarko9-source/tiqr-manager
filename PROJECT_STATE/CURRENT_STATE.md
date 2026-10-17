@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.102.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.104.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,67 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.104.0 - Mail is a real inbox now.**
+
+marko: *"urob normalne z toho mailu normalne cely inbox"*. 2.100.0 shipped a
+classification queue with no way to READ anything, and 2.101.0 then narrowed
+the sync to marketplace senders after his spam complaint. Both answered the
+wrong question.
+
+**His two requests only look contradictory.** What he objected to was spam
+being IN THE WAY, not spam existing. So the sync fetches the whole mailbox
+again and the UI does the separating: tabs for Important / All mail /
+Promotions / Social / Review, where Promotions and Social match **Gmail's
+own category labels** rather than a rule this app invents - the same split
+he already sees in Gmail. "Known senders only" stays as a setting.
+
+**Headers on sync, body on open.** `format=metadata` instead of
+`format=full`: syncing a whole mailbox no longer downloads megabytes of
+marketing HTML to build a list that shows a sender and a subject. The body
+is fetched by `get_mail_body` when a message is opened, shown, and **never
+stored**. That is what makes "the whole inbox" affordable.
+
+**Three things the reading pane exposed that nothing had before:**
+
+1. `strip_html` collapsed newlines, so a real body was one wall of text.
+   Block tags now end a line. `td`/`th` deliberately do NOT - marketing mail
+   is laid out in tables and breaking on every cell puts "Event:" and
+   "Coldplay" on two lines.
+2. Only six entities were decoded, so mail read "Good news &ndash; your
+   listing has sold". There is a real decoder now, named plus numeric, and
+   an `&` that is not an entity is left alone - mail is full of "Tom &
+   Jerry" and `?a=1&b=2`.
+3. The two-pane needs a real height, and `Layout` gives pages none
+   (PROTECTED_AREAS 2.55.0). It pins its own with `calc(100vh - 290px)`,
+   the same mechanism Notes uses. `h-full` there would have silently
+   collapsed.
+
+**Read state is TIQR's own and the UI says so.** The scope is
+`gmail.readonly` on purpose, so this app cannot mark anything read in Gmail.
+
+92 tests in `mail.rs`; all 29 `strip_html`/entity assertions were simulated
+in Python before shipping, which is the only way to check an expectation
+here without a compiler.
+
+**2.103.0 - CI caught a tag-name bug in `strip_html`, and my own test was
+wrong about a second one.**
+
+`starts_with_ci(b, i+1, b"script")` is not "is this a script tag" - an HTML
+tag name ends at whitespace, `>` or `/`. So `<scriptish>` merely STARTS with
+"script" and was treated as a script: everything after it was thrown away
+hunting a `</script` that was never coming. Any mail using a tag whose name
+begins with "script" or "style" lost its body from that point on. Fixed with
+`tag_name_is`, which checks the boundary character.
+
+**The second one is worth recording because it is the opposite mistake.**
+The widened regression test asserted that `<script/>after` keeps "after".
+It does not, and should not: `<script/>` is NOT self-closing in HTML - a
+browser treats it as an open `<script>` and swallows the rest. The TEST was
+wrong, not the code, and erring toward dropping is the correct side for a
+function whose job is to not leak script source. Caught before CI by porting
+`strip_html` to Python and running all twenty assertions through it, which
+is the only way to check an expectation here without a compiler.
 
 **2.102.0 - the dropdowns nobody could read, and two bugs on Event detail.**
 

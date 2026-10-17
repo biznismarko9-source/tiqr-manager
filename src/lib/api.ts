@@ -788,6 +788,18 @@ export const api = {
    *  these senders ONLY, so anything else is never downloaded at all. */
   setMailExtraSenders: (senders: string) =>
     invoke<MailConnectionStatus>("set_mail_extra_senders", { senders }),
+  /** 2.104.0: `"all"` syncs the whole mailbox, `"known"` only the
+   *  marketplace senders. */
+  setMailScope: (scope: "all" | "known") =>
+    invoke<MailConnectionStatus>("set_mail_scope", { scope }),
+  /** Fetches ONE message's full text from Gmail, on demand.
+   *
+   *  The sync stores headers only - this is what the reading pane calls when
+   *  a message is opened. The body is never stored; close the message and it
+   *  is gone from this app again. Returns PLAIN TEXT with the HTML already
+   *  stripped in Rust: render it as text, never as markup. */
+  getMailBody: (id: number) => invoke<string>("get_mail_body", { id }),
+  setMailRead: (id: number, read: boolean) => invoke<void>("set_mail_read", { id, read }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),

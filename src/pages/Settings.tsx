@@ -4071,6 +4071,51 @@ function EmailIntegrationCard() {
 
           {testResult && <MailTestLine result={testResult} />}
 
+          {/* 2.104.0: whole mailbox, or only the marketplaces.
+              marko asked for less spam (2.101.0) and then for a real inbox
+              (2.104.0). Those are not in conflict - what he objected to was
+              spam being IN THE WAY - so the default is the whole mailbox and
+              the Mail screen's tabs do the separating. "Known senders only"
+              stays for a mailbox where that is still the cheaper way to run. */}
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <p className="section-title">What gets fetched</p>
+            <div className="mt-2 space-y-2">
+              {([
+                {
+                  v: "all" as const,
+                  t: "The whole mailbox",
+                  d: "Everything except spam and trash. The Mail screen separates what matters from the rest.",
+                },
+                {
+                  v: "known" as const,
+                  t: "Only the senders below",
+                  d: "Marketplaces and payment providers only. Nothing else is downloaded at all.",
+                },
+              ]).map((o) => (
+                <label key={o.v} className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="radio"
+                    name="mail-scope"
+                    className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer"
+                    checked={(status?.scope ?? "all") === o.v}
+                    onChange={async () => {
+                      try {
+                        apply(await api.setMailScope(o.v));
+                        toast.success("Saved");
+                      } catch (e) {
+                        toast.error(errMsg(e));
+                      }
+                    }}
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-slate-700 dark:text-slate-200">{o.t}</span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400">{o.d}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {/* 2.101.0: what TIQR actually asks Gmail for.
               marko: "je tam velmi vela spamu co zbytocne pozera". TIQR no
               longer downloads a month of mail and sorts it out afterwards -
@@ -4080,8 +4125,9 @@ function EmailIntegrationCard() {
           <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
             <p className="section-title">What TIQR looks at</p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Only mail from these senders is fetched at all. Everything else in your inbox is never downloaded
-              and never stored.
+              {(status?.scope ?? "all") === "known"
+                ? "Only mail from these senders is fetched at all. Everything else in your inbox is never downloaded and never stored."
+                : "Mail from these senders is what TIQR recognises and files under Important. With the whole mailbox selected above, everything else still arrives - it just does not get flagged."}
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {(status?.knownSenders ?? []).map((d) => (
