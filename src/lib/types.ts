@@ -2727,6 +2727,11 @@ export interface MailConnectionStatus {
   lastError?: string | null;
   lastErrorAt?: string | null;
   retentionDays: number;
+  /** 2.101.0: the sender domains this build watches. Shown so it is obvious
+   *  why a message did or did not arrive. */
+  knownSenders: string[];
+  /** Extra domains marko added himself, raw as he typed them. */
+  extraSenders: string;
 }
 
 /** The categories the deterministic classifier can produce. `other` is where

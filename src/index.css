@@ -87,6 +87,15 @@
        `--sh-overlay` keeps a real shadow and is the ONE exception - a dialog
        genuinely floats above a dimmed page, and without it the modal and the
        backdrop merge. */
+    /* 2.102.0: THE DROPDOWN BUG. An open <select> popup, a date picker and
+       a scrollbar are drawn by the BROWSER, not by this stylesheet.
+       `color-scheme` is the only thing that tells it which way round to
+       draw them, and it was never set - so in dark mode the browser painted
+       a WHITE popup while the options inherited `.input`'s near-white dark
+       mode text. White on white: the list marko photographed, invisible.
+       One declaration fixes every <select> (58 call sites), every
+       `type="date"` and every native scrollbar in the app at once. */
+    color-scheme: light;
     --app-bg: #fafafa;
     --surface: #ffffff;
     --surface-muted: theme("colors.slate.100");
@@ -115,6 +124,7 @@
     --sh-inset: 0 0 0 1px theme("colors.slate.300");
   }
   .dark {
+    color-scheme: dark;
     /* 2.89.0 (Onyx Deep). marko: "chcem ich tmavsie a taka krajsie".
        Until now the card was LIGHTER than the page - slate-900 #141415 on a
        slate-950 #0b0b0c ground - which is why every box read as the same
@@ -232,6 +242,23 @@
     border: 0;
     outline: none;
   }
+  /* Chromium on Windows/Linux honours `color-scheme` for the popup's CHROME
+     but still lets a page colour bleed onto the rows, so the rows are
+     stated outright. Safari ignores these and uses the native list, which
+     `color-scheme` above has already made dark - so this is additive and
+     cannot make either engine worse.
+     `--surface-raised` and not `--surface`: the dropdown floats ABOVE the
+     page like a dialog does, and a translucent row over a translucent panel
+     has two backgrounds competing under its text. */
+  select.input option,
+  select.input optgroup {
+    background-color: var(--surface-raised);
+    color: theme("colors.slate.900");
+  }
+  .dark select.input option,
+  .dark select.input optgroup {
+    color: theme("colors.slate.100");
+  }
   .input:focus {
     box-shadow: var(--sh-inset), theme("boxShadow.focus");
   }
@@ -296,6 +323,26 @@
   }
   .td {
     @apply px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300;
+  }
+  /* 2.102.0: a cell can never paint outside its own column.
+     marko: "tak aby nemohla byt nikdy ziadna prekryta cez seba".
+     Every table here is `table-fixed`, which means a column's width is
+     decided by its <col> and NOT by its content - so one long unbroken
+     string (an order code, a pasted URL, a seat label with no spaces) used
+     to push its way out of the cell and over the column beside it. This is
+     the guarantee rather than a rule about arithmetic: the text breaks
+     instead, so even a colgroup whose widths are wrong makes a column
+     NARROW, never one that overlaps its neighbour.
+     `overflow-wrap`, deliberately not `overflow: hidden` - hidden would
+     also clip focus rings and the status dots on badges. */
+  .th,
+  .td,
+  .th-c,
+  .td-c,
+  .th-c-narrow,
+  .td-c-narrow {
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
   /* 1.8.2: compact table cells for Sales.tsx / SaleDetail.tsx ONLY - a
      separate class (not an override of .th/.td) so every other table in the

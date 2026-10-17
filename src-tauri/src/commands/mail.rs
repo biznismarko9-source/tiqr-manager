@@ -117,6 +117,9 @@ const MAIL_ACCOUNT_EMAIL_KEY: &str = "mail_gmail_account_email";
 /// was asked for, so this is checked rather than assumed.
 const MAIL_GRANTED_SCOPE_KEY: &str = "mail_gmail_granted_scope";
 const MAIL_RETENTION_DAYS_KEY: &str = "mail_retention_days";
+/// 2.101.0: extra sender domains marko adds himself, so a marketplace this
+/// app does not know about can still be watched without a new release.
+const MAIL_EXTRA_SENDERS_KEY: &str = "mail_extra_senders";
 
 const DEFAULT_RETENTION_DAYS: i64 = 90;
 
@@ -220,47 +223,109 @@ pub(crate) fn safe_detail(raw: &str) -> String {
 /// there is no sanitiser to get wrong and no way for a crafted message to
 /// reach a DOM. `<script>` and `<style>` bodies are dropped entirely rather
 /// than having their tags removed, so script source never becomes "text".
+/// Bound on how much of one body is ever scanned.
+///
+/// 2.101.0: a marketing email can be a megabyte of HTML, and only 600
+/// characters of it are ever kept. Scanning all of it is work nobody asked
+/// for, and a hundred of them in one sync is how a sync turns into a hang.
+const HTML_SCAN_LIMIT: usize = 64 * 1024;
+
+/// Truncates at a character boundary, never mid-character.
+fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Case-insensitive "does `b` have `needle` at `at`", without allocating.
+fn starts_with_ci(b: &[u8], at: usize, needle: &[u8]) -> bool {
+    at + needle.len() <= b.len() && b[at..at + needle.len()].eq_ignore_ascii_case(needle)
+}
+
+/// First case-insensitive occurrence of `needle` at or after `from`.
+/// Scans in place - the whole point is that nothing is copied.
+fn find_ci(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || b.len() < needle.len() {
+        return None;
+    }
+    (from..=b.len() - needle.len()).find(|&k| b[k..k + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+/// Turns an HTML part into plain text.
+///
+/// Deliberately a STRIPPER, not a renderer or a sanitiser. The app never
+/// stores markup and the UI never has a path that treats this as markup, so
+/// there is no sanitiser to get wrong and no way for a crafted message to
+/// reach a DOM. `<script>` and `<style>` bodies are dropped entirely rather
+/// than having their tags removed, so script source never becomes "text".
+///
+/// ## 2.101.0 - this function is why "Sync now" crashed the app
+///
+/// The first version had three faults that compounded into one crash, and
+/// they are worth naming so they are not reintroduced:
+///
+/// 1. **It was quadratic.** For every `<script>` or `<style>` it allocated a
+///    fresh copy of the ENTIRE remaining document and lowercased it. A
+///    marketing email with twenty style blocks did twenty full copies; a
+///    hundred such emails in one sync did thousands. That is the hang.
+/// 2. **It held `Vec<char>`**, four bytes per character, so a one-megabyte
+///    body became a four-megabyte vector before any of the above.
+/// 3. **It mixed byte offsets with character indices.** `hay.find(..)`
+///    returns a BYTE offset; it was used as an index into a `Vec<char>`.
+///    For pure ASCII those agree, so it tested fine - but one Slovak
+///    diacritic or one emoji (ordinary in marketing mail) made the skip
+///    land in the wrong place and script source could survive into the
+///    "text". Not a crash, but the one thing this function exists to prevent.
+///
+/// It is now a single linear pass over bytes with no allocation beyond the
+/// output, and the input is capped. `<` and `>` are ASCII, and no UTF-8
+/// continuation byte can equal them, so every index here is a character
+/// boundary and every slice is safe.
 pub(crate) fn strip_html(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let bytes: Vec<char> = input.chars().collect();
+    let input = truncate_on_char_boundary(input, HTML_SCAN_LIMIT);
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n.min(8 * 1024));
     let mut i = 0usize;
-    let n = bytes.len();
+    let mut text_start = 0usize;
+
     while i < n {
-        if bytes[i] == '<' {
-            // Find the tag name so script/style can be skipped whole.
-            let rest: String = bytes[i..n.min(i + 10)].iter().collect::<String>().to_ascii_lowercase();
-            let skip_to = if rest.starts_with("<script") {
-                Some("</script")
-            } else if rest.starts_with("<style") {
-                Some("</style")
-            } else {
-                None
-            };
-            if let Some(closer) = skip_to {
-                let hay: String = bytes[i..].iter().collect::<String>().to_ascii_lowercase();
-                match hay.find(closer) {
-                    Some(rel) => {
-                        // Move past the closing tag's own '>'.
-                        let mut j = i + rel;
-                        while j < n && bytes[j] != '>' {
-                            j += 1;
-                        }
-                        i = (j + 1).min(n);
-                        continue;
-                    }
-                    None => break,
-                }
-            }
-            while i < n && bytes[i] != '>' {
-                i += 1;
-            }
-            i = (i + 1).min(n);
-            out.push(' ');
+        if b[i] != b'<' {
+            i += 1;
             continue;
         }
-        out.push(bytes[i]);
-        i += 1;
+        // Flush the run of text that ended at this tag.
+        out.push_str(&input[text_start..i]);
+        out.push(' ');
+
+        let closer: Option<&[u8]> = if starts_with_ci(b, i + 1, b"script") {
+            Some(b"</script")
+        } else if starts_with_ci(b, i + 1, b"style") {
+            Some(b"</style")
+        } else {
+            None
+        };
+        if let Some(c) = closer {
+            // Jump straight to the closing tag. Everything in between -
+            // the script or style source - is skipped, never emitted.
+            i = find_ci(b, i + 1, c).unwrap_or(n);
+        }
+        // Run to the end of whichever tag we are now sitting on.
+        while i < n && b[i] != b'>' {
+            i += 1;
+        }
+        i = (i + 1).min(n);
+        text_start = i;
     }
+    if text_start < n {
+        out.push_str(&input[text_start..]);
+    }
+
     let decoded = out
         .replace("&nbsp;", " ")
         .replace("&amp;", "&")
@@ -787,15 +852,75 @@ fn upsert_message(
     Ok((conn.last_insert_rowid(), true))
 }
 
-/// Builds the Gmail search query for one run - a date window that overlaps
-/// the previous sync. See the module comment for why this and not `historyId`.
-pub(crate) fn sync_query(last_sync_at: Option<&str>, now: DateTime<Utc>) -> String {
+/// Extra sender domains marko has added himself, cleaned up.
+///
+/// Pure so it can be tested, and strict about what it lets through: these
+/// strings are pasted into a Gmail search query, so anything that could
+/// change the query's meaning - a quote, a space, a parenthesis - is
+/// dropped rather than escaped. A domain is letters, digits, dots and
+/// dashes; nothing else has any business being here.
+pub(crate) fn parse_extra_senders(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in raw.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let cleaned = piece.trim().trim_start_matches('@').trim_matches('.').to_ascii_lowercase();
+        let looks_like_a_domain = !cleaned.is_empty()
+            && cleaned.len() <= 100
+            && cleaned.contains('.')
+            && cleaned
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '@');
+        if looks_like_a_domain && !out.contains(&cleaned) {
+            out.push(cleaned);
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    out
+}
+
+/// Builds the Gmail search query for one run.
+///
+/// ## 2.101.0 - this now asks Gmail for the mail that matters, and nothing else
+///
+/// marko's own words: *"je tam velmi vela spamu co zbytocne pozera"*. The
+/// first version asked for EVERY message in the window and sorted it out
+/// afterwards, which meant downloading and parsing a month of newsletters to
+/// find four real ones. That was wrong twice over - it was slow, and it put
+/// a pile of mail that is none of TIQR's business into TIQR's database.
+///
+/// So the filtering happens at GOOGLE, not here. The query names the
+/// marketplaces and payment providers this app knows (`KNOWN_SENDERS`) plus
+/// whatever marko has added himself, and Gmail returns only those. Spam,
+/// newsletters and private mail are never fetched, never parsed and never
+/// stored - which is a privacy improvement as much as a speed one.
+///
+/// `-in:spam -in:trash` is belt and braces: Gmail excludes both by default,
+/// but a mail that LOOKS like a sale confirmation and is sitting in spam is
+/// exactly the one not to trust.
+///
+/// The date window still overlaps the previous sync by a day; see the module
+/// comment for why that is free.
+pub(crate) fn sync_query(last_sync_at: Option<&str>, now: DateTime<Utc>, extra: &[String]) -> String {
     let since = last_sync_at
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc) - ChronoDuration::days(SYNC_OVERLAP_DAYS))
         .unwrap_or_else(|| now - ChronoDuration::days(INITIAL_BACKFILL_DAYS));
+
+    let mut senders: Vec<String> = KNOWN_SENDERS.iter().map(|(d, _)| format!("from:{d}")).collect();
+    for e in extra {
+        let term = format!("from:{e}");
+        if !senders.contains(&term) {
+            senders.push(term);
+        }
+    }
+
     // Gmail's `after:` takes YYYY/MM/DD and is exclusive of earlier days.
-    format!("after:{} -in:chats", since.format("%Y/%m/%d"))
+    format!(
+        "after:{} -in:spam -in:trash -in:chats ({})",
+        since.format("%Y/%m/%d"),
+        senders.join(" OR ")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +946,10 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         last_error: state.last_error,
         last_error_at: state.last_error_at,
         retention_days: retention_days(conn)?,
+        // What the mailbox is actually watched for. Shown so marko can see
+        // WHY a message did or did not arrive, instead of guessing.
+        known_senders: KNOWN_SENDERS.iter().map(|(d, _)| (*d).to_string()).collect(),
+        extra_senders: get_setting(conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default(),
     })
 }
 
@@ -917,6 +1046,20 @@ pub fn set_mail_paused(state: State<AppState>, paused: bool) -> AppResult<MailCo
         "UPDATE mail_sync_state SET paused = ?1 WHERE id = 1",
         params![if paused { 1 } else { 0 }],
     )?;
+    status_impl(&conn)
+}
+
+/// Extra sender domains to watch, as marko typed them.
+///
+/// Stored raw and cleaned at use (`parse_extra_senders`), so a typo is
+/// visible and fixable rather than silently swallowed on save.
+#[tauri::command]
+pub fn set_mail_extra_senders(state: State<AppState>, senders: String) -> AppResult<MailConnectionStatus> {
+    if senders.len() > 4000 {
+        return Err(AppError::Validation("that is more senders than this list can hold".to_string()));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, MAIL_EXTRA_SENDERS_KEY, senders.trim())?;
     status_impl(&conn)
 }
 
@@ -1047,7 +1190,11 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
     };
 
     // ---- phase 2: the network, with no database lock held -----------------
-    let query = sync_query(last_sync_at.as_deref(), Utc::now());
+    let extra = {
+        let conn = state.db.lock().unwrap();
+        parse_extra_senders(&get_setting(&conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default())
+    };
+    let query = sync_query(last_sync_at.as_deref(), Utc::now(), &extra);
     let fetch = tauri::async_runtime::spawn_blocking(move || -> AppResult<(Vec<FetchedMessage>, Option<String>)> {
         let (access_token, _) = google_oauth::refresh_access_token(&oauth_client, &refresh_token)?;
         let http = gmail_client()?;
@@ -1082,38 +1229,47 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
     .await;
 
     // ---- phase 3: store, and always release the claim ---------------------
-    let conn = state.db.lock().unwrap();
     let (messages, history_id) = match fetch {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             let msg = safe_detail(&e.to_string());
+            let conn = state.db.lock().unwrap();
             finish_run(&conn, Some(&msg))?;
             return Ok(failed(&msg, &synced_at));
         }
         Err(_) => {
             let msg = "The sync did not finish cleanly.";
+            let conn = state.db.lock().unwrap();
             finish_run(&conn, Some(msg))?;
             return Ok(failed(msg, &synced_at));
         }
     };
 
-    let fetched = messages.len() as i64;
+    // 2.101.0: CLASSIFY BEFORE TAKING THE LOCK.
+    //
+    // Parsing is the slow part - stripping HTML out of a hundred marketing
+    // emails - and it needs no database at all. Doing it under the lock
+    // froze every other command in the app for the whole run, which is what
+    // marko saw before it died. Nothing here touches `conn`.
+    let classified: Vec<(FetchedMessage, Classification)> = messages
+        .into_iter()
+        .map(|m| {
+            let c = classify(&m.from_address, &m.subject, &m.body_text);
+            (m, c)
+        })
+        .collect();
+
+    let conn = state.db.lock().unwrap();
+    let fetched = classified.len() as i64;
     let mut stored_new = 0i64;
     let mut duplicates = 0i64;
     let mut review = 0i64;
-    for msg in &messages {
-        let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
-        let (row_id, was_new) = upsert_message(&conn, MailProviderKind::Gmail, &account_email, msg, &class)?;
+    for (msg, class) in &classified {
+        let (row_id, was_new) = upsert_message(&conn, MailProviderKind::Gmail, &account_email, msg, class)?;
         if was_new {
             stored_new += 1;
             log_step(&conn, row_id, "fetched", "ok", Some("Fetched from Gmail."))?;
-            log_step(
-                &conn,
-                row_id,
-                "classified",
-                class.category.as_str(),
-                class.review_reason.as_deref(),
-            )?;
+            log_step(&conn, row_id, "classified", class.category.as_str(), class.review_reason.as_deref())?;
             if class.category != MailCategory::Other {
                 review += 1;
             }
@@ -1499,6 +1655,93 @@ mod tests {
         assert!(!out.contains('<'), "{out}");
     }
 
+    // ---- the three faults that crashed "Sync now" (2.101.0) ---------------
+
+    /// FAULT 3: byte offsets used as character indices. One diacritic was
+    /// enough to make the skip land in the wrong place and let script
+    /// source through - the one thing this function exists to prevent.
+    #[test]
+    fn script_is_dropped_even_when_the_text_around_it_is_not_ascii() {
+        let out = strip_html(
+            "<p>Lístky na Košice — zrušené</p><script>var token='SECRET';</script><p>ďakujeme</p>",
+        );
+        assert!(!out.contains("SECRET"), "script source survived: {out}");
+        assert!(!out.contains("var token"), "{out}");
+        assert!(out.contains("Lístky"), "{out}");
+        assert!(out.contains("ďakujeme"), "{out}");
+    }
+
+    #[test]
+    fn style_is_dropped_even_with_non_ascii_before_it() {
+        let out = strip_html("<p>Košice</p><style>.a{color:red}</style>text");
+        assert!(!out.contains("color"), "{out}");
+        assert!(out.contains("Košice") && out.contains("text"), "{out}");
+    }
+
+    #[test]
+    fn an_emoji_does_not_shift_the_skip() {
+        let out = strip_html("<p>Sold 🎫 out</p><script>BAD()</script>done");
+        assert!(!out.contains("BAD"), "{out}");
+        assert!(out.contains("done"), "{out}");
+    }
+
+    /// FAULT 1: quadratic. Each script/style used to copy the whole
+    /// remaining document. This body has many of both; if the quadratic
+    /// version came back, this test would take minutes instead of
+    /// milliseconds.
+    #[test]
+    fn a_body_with_many_style_blocks_is_handled_in_one_pass() {
+        let mut html = String::new();
+        for i in 0..400 {
+            html.push_str("<style>.c{color:#fff;padding:0}</style>");
+            html.push_str(&format!("<div class=\"x\">row {i} </div>"));
+            html.push_str("<script>trackPixel();</script>");
+        }
+        let started = std::time::Instant::now();
+        let out = strip_html(&html);
+        let took = started.elapsed();
+
+        assert!(!out.contains("trackPixel"), "script source survived");
+        assert!(!out.contains("padding"), "style source survived");
+        assert!(out.contains("row 0") && out.contains("row 399"), "text was lost");
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "this is the quadratic regression - took {took:?}"
+        );
+    }
+
+    /// FAULT 2: unbounded input. A megabyte body is capped rather than
+    /// expanded into a four-megabyte buffer.
+    #[test]
+    fn an_enormous_body_is_capped_rather_than_expanded() {
+        let huge = format!("<p>{}</p>", "word ".repeat(400_000));
+        let started = std::time::Instant::now();
+        let out = strip_html(&huge);
+        assert!(out.len() <= HTML_SCAN_LIMIT + 16, "{} bytes", out.len());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn capping_never_splits_a_character_in_half() {
+        // Every character is multi-byte, so a naive byte cut would panic.
+        let wide = "č".repeat(HTML_SCAN_LIMIT);
+        let out = strip_html(&wide);
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn an_unclosed_script_does_not_leak_its_contents() {
+        let out = strip_html("<p>before</p><script>SECRET_CODE");
+        assert!(!out.contains("SECRET_CODE"), "{out}");
+        assert!(out.contains("before"), "{out}");
+    }
+
+    #[test]
+    fn a_tag_named_like_script_but_is_not_is_treated_as_an_ordinary_tag() {
+        let out = strip_html("<scriptish>keep me</scriptish>");
+        assert!(out.contains("keep me"), "{out}");
+    }
+
     #[test]
     fn strip_html_decodes_the_common_entities() {
         assert_eq!(strip_html("a &amp; b &lt;c&gt; &quot;d&quot;"), "a & b <c> \"d\"");
@@ -1787,24 +2030,101 @@ mod tests {
 
     // ---- sync query -------------------------------------------------------
 
+    fn at(iso: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(iso).unwrap().with_timezone(&Utc)
+    }
+
     #[test]
     fn the_first_sync_looks_back_a_bounded_window() {
-        let now = DateTime::parse_from_rfc3339("2026-10-17T12:00:00Z").unwrap().with_timezone(&Utc);
-        let q = sync_query(None, now);
-        assert_eq!(q, "after:2026/09/17 -in:chats");
+        assert!(sync_query(None, at("2026-10-17T12:00:00Z"), &[]).starts_with("after:2026/09/17 "));
     }
 
     #[test]
     fn a_later_sync_overlaps_the_previous_one_by_a_day() {
-        let now = DateTime::parse_from_rfc3339("2026-10-17T12:00:00Z").unwrap().with_timezone(&Utc);
-        let q = sync_query(Some("2026-10-15T09:00:00Z"), now);
-        assert_eq!(q, "after:2026/10/14 -in:chats");
+        let q = sync_query(Some("2026-10-15T09:00:00Z"), at("2026-10-17T12:00:00Z"), &[]);
+        assert!(q.starts_with("after:2026/10/14 "), "{q}");
     }
 
     #[test]
     fn an_unparseable_checkpoint_falls_back_to_the_backfill_window() {
-        let now = DateTime::parse_from_rfc3339("2026-10-17T12:00:00Z").unwrap().with_timezone(&Utc);
-        assert_eq!(sync_query(Some("rubbish"), now), "after:2026/09/17 -in:chats");
+        let q = sync_query(Some("rubbish"), at("2026-10-17T12:00:00Z"), &[]);
+        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+    }
+
+    /// THE SPAM FIX. The query must name senders, so Google does the
+    /// filtering and a month of newsletters is never downloaded at all.
+    #[test]
+    fn the_query_asks_only_for_senders_this_app_knows() {
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[]);
+        assert!(q.contains("from:viagogo.com"), "{q}");
+        assert!(q.contains("from:paypal.com"), "{q}");
+        assert!(q.contains(" OR "), "several senders must be OR-ed: {q}");
+        assert!(q.contains("-in:spam"), "{q}");
+        assert!(q.contains("-in:trash"), "{q}");
+        // Every known sender is asked for - none silently dropped.
+        for (domain, _) in KNOWN_SENDERS {
+            assert!(q.contains(&format!("from:{domain}")), "{domain} missing from {q}");
+        }
+    }
+
+    #[test]
+    fn marko_s_own_extra_senders_are_added_to_the_query() {
+        let extra = vec!["tickethub.sk".to_string()];
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &extra);
+        assert!(q.contains("from:tickethub.sk"), "{q}");
+        assert!(q.contains("from:viagogo.com"), "the built-in list must survive: {q}");
+    }
+
+    #[test]
+    fn an_extra_sender_that_is_already_built_in_is_not_repeated() {
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &["viagogo.com".to_string()]);
+        assert_eq!(q.matches("from:viagogo.com").count(), 1, "{q}");
+    }
+
+    // ---- extra senders ----------------------------------------------------
+
+    #[test]
+    fn extra_senders_accept_the_shapes_a_person_actually_types() {
+        let parsed = parse_extra_senders("tickethub.sk, @oeticket.com\nseetickets.com; viagogo.com");
+        assert_eq!(parsed, vec!["tickethub.sk", "oeticket.com", "seetickets.com", "viagogo.com"]);
+    }
+
+    #[test]
+    fn extra_senders_drop_anything_that_is_not_a_domain() {
+        let parsed = parse_extra_senders("not-a-domain, , 12345, x");
+        assert!(parsed.is_empty(), "{parsed:?}");
+    }
+
+    /// These strings go straight into a Gmail search query. Anything that
+    /// could change that query's meaning is DROPPED, never escaped.
+    #[test]
+    fn extra_senders_cannot_smuggle_anything_into_the_query() {
+        for hostile in [
+            "evil.com) OR (from:bank.com",
+            "a.com\" OR \"b.com",
+            "a.com in:anywhere",
+            "a.com'",
+            "a.com{b}",
+        ] {
+            let parsed = parse_extra_senders(hostile);
+            for p in &parsed {
+                assert!(
+                    p.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '@'),
+                    "{p:?} from {hostile:?} would change the query"
+                );
+            }
+            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &parsed);
+            assert_eq!(q.matches('(').count(), 1, "exactly one group: {q}");
+            assert_eq!(q.matches(')').count(), 1, "exactly one group: {q}");
+            assert!(!q.contains("in:anywhere"), "{q}");
+        }
+    }
+
+    #[test]
+    fn extra_senders_are_deduped_and_capped() {
+        let many = (0..200).map(|i| format!("d{i}.com")).collect::<Vec<_>>().join(",");
+        assert!(parse_extra_senders(&many).len() <= 40);
+        assert_eq!(parse_extra_senders("a.com, a.com, A.COM"), vec!["a.com"]);
     }
 
     #[test]

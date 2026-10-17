@@ -16,6 +16,67 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.102.0 - Nečitateľné rozbaľovačky + dve chyby na detaile eventu
+
+- **Rozbaľovačky sa konečne dajú prečítať.** Otvorený `<select>`, výber
+  dátumu aj posuvník kreslí **prehliadač**, nie náš štýl, a jediné, čo mu
+  povie tmavo/svetlo, je `color-scheme` - a ten v celej appke nebol nikdy
+  nastavený. Prehliadač teda kreslil **biele** okno a text do neho dedil
+  takmer bielu farbu z tmavého režimu. Biela na bielej - presne ten zoznam,
+  čo si odfotil. Jeden riadok na tému opravil **všetkých 58 výberov**, každé
+  pole s dátumom aj posuvníky naraz.
+- **Na detaile eventu sa vypisovalo `&middot;` ako text.** JSX dekóduje
+  entitu napísanú ako text, ale nie vnútri reťazca v zátvorkách. Opravené na
+  skutočný znak. Zvyšok appky som **preveril** - tam boli správne.
+- **Detail eventu mal nadpis „Sales" dvakrát** (obal + vlastný nadpis sekcie)
+  - pozostatok z 2.90.0. Obal je preč.
+- **Tabuľky: záruka namiesto pravidla.** Každá tabuľka má pevné šírky
+  stĺpcov, takže jeden dlhý reťazec bez medzier sa vedel vytlačiť z bunky
+  cez susedný stĺpec. Bunky teraz text zalomia - aj keby boli šírky zle,
+  stĺpec bude **úzky, nikdy nie prekrytý**.
+- **Checker na tabuľky som napísal a NEPOSLAL.** Dával falošné poplachy na
+  zdravých tabuľkách (podmienené stĺpce, dva varianty, `<col>` spomenutý vo
+  vlastnom komentári). Kontrola, ktorá kričí na zdravý kód, je horšia než
+  žiadna.
+
+## 2.101.0 - Oprava pádu pri Sync now + koniec so spamom
+
+**Pád bol moja chyba, a boli to tri chyby naraz v jednej funkcii**
+(`strip_html`, ktorá čistí HTML z mailu):
+
+1. **Kvadratická.** Pri každom `<script>`/`<style>` si kopírovala **celý
+   zvyšok dokumentu** a prevádzala ho na malé písmená. Reklamný mail s
+   dvadsiatimi style blokmi = dvadsať kópií celého mailu. Sto takých mailov
+   v jednom synchu = tisíce kópií. Tam to umrelo.
+2. **`Vec<char>`** - 4 bajty na znak, takže 1 MB mail sa najprv nafúkol na
+   4 MB.
+3. **Bajtové posuny použité ako indexy znakov.** Pre čistú angličtinu to
+   sedí - preto to prešlo všetkými mojimi testami. Stačila jedna slovenská
+   diakritika alebo emoji a preskočenie skončilo na zlom mieste, takže
+   **zdroják skriptu mohol prejsť do textu** - presne to, čomu má tá funkcia
+   zabrániť.
+
+A všetko to bežalo **so zamknutou databázou**, takže sa celá appka zasekla
+skôr, než spadla. Teraz: jeden lineárny prechod po bajtoch, žiadne
+alokovanie navyše, vstup obmedzený na 64 KB, a klasifikácia je **mimo
+zámku**. 8 regresných testov vrátane slovenčiny a emoji.
+
+**Druhá vec, ktorú si pýtal: už nesťahuje spam.**
+
+Predtým sync pýtal od Gmailu **všetky** maily za posledný mesiac a triedil
+ich až potom - teda sťahoval a parsoval haldu newsletterov, aby našiel štyri
+skutočné. Teraz **filtruje Google, nie TIQR**: dotaz menuje tie
+marketplace-y a platobné brány, ktoré appka pozná, plus čokoľvek si pridáš
+sám. Spam, newslettery a súkromná pošta sa **nikdy nestiahnu, neparsujú ani
+neuložia** - čo je rovnako výhra pre súkromie ako pre rýchlosť.
+
+- V **Settings → Integrations → Email** je nový panel **„What TIQR looks
+  at"** - vidíš zoznam sledovaných odosielateľov a vieš si pridať vlastné
+  domény (napr. `oeticket.com, tickethub.sk`).
+- Domény idú priamo do Gmail dotazu, takže čokoľvek, čo by mohlo ten dotaz
+  zmeniť (úvodzovky, zátvorky, medzery), sa **zahadzuje, nie escapuje**. Je
+  na to test s nepriateľskými vstupmi.
+
 ## 2.100.0 - Mail Intelligence (fáza 1 zo 4)
 
 **Opravené po prvom CI behu (tá istá verzia, nevydaná):**

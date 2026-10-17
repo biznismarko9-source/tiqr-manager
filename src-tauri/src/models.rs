@@ -3331,6 +3331,12 @@ pub struct MailConnectionStatus {
     pub last_error: Option<String>,
     pub last_error_at: Option<String>,
     pub retention_days: i64,
+    /// 2.101.0: the sender domains this build watches, so Settings can show
+    /// marko WHY a message did or did not arrive instead of leaving him to
+    /// guess. Not secret - it is a list of marketplaces.
+    pub known_senders: Vec<String>,
+    /// Whatever he added himself, raw as he typed it.
+    pub extra_senders: String,
 }
 
 /// The Overview screen's counters. Every one is a real `COUNT(*)`; none is a

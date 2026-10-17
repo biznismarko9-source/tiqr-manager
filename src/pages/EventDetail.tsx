@@ -138,8 +138,14 @@ export default function EventDetail() {
             <Badge tone={event.status}>{event.status}</Badge>
           </div>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {[event.venue, event.city, event.country].filter(Boolean).join(" &middot; ")}
-            {event.eventDate ? ` &middot; ${formatDate(event.eventDate)}` : ""}
+            {/* 2.102.0: these were "&middot;" inside JS strings. JSX decodes an
+                entity written as TEXT (`<span>&middot;</span>`), but a string
+                inside braces is just a string - it reached the page as the
+                literal characters "&middot;", which is what marko
+                photographed under the event title. The character itself has
+                no such problem. */}
+            {[event.venue, event.city, event.country].filter(Boolean).join(" · ")}
+            {event.eventDate ? ` · ${formatDate(event.eventDate)}` : ""}
           </p>
         </div>
         <div className="flex gap-2">
@@ -154,8 +160,15 @@ export default function EventDetail() {
 
       <OverviewTab event={event} orders={orders} tickets={tickets} navigate={navigate} />
 
-      <h2 className="section-title mb-3 mt-7">Sales</h2>
-      <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />
+      {/* 2.102.0: the wrapper <h2>Sales</h2> that used to sit here is gone.
+          SalesTab draws its own heading WITH the count and the "Open in
+          Sales" link, so the page showed "Sales" and then "Sales (1)" one
+          under the other - a leftover from 2.90.0, when Overview and Sales
+          stopped being two tabs and this wrapper title was added. The
+          spacing it carried moves onto the section itself. */}
+      <div className="mt-7">
+        <SalesTab event={event} tickets={tickets} orders={orders} navigate={navigate} />
+      </div>
 
       <EventFormModal
         open={editOpen}

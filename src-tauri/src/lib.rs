@@ -251,6 +251,7 @@ pub fn run() {
             commands::mail::disconnect_mail,
             commands::mail::set_mail_paused,
             commands::mail::set_mail_retention_days,
+            commands::mail::set_mail_extra_senders,
             commands::mail::test_mail_connection,
             commands::mail::sync_mail_now,
             commands::mail::clear_stale_mail_sync,

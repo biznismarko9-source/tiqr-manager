@@ -3918,10 +3918,12 @@ function EmailIntegrationCard() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<MailTestResult | null>(null);
   const [retention, setRetention] = useState("90");
+  const [extraSenders, setExtraSenders] = useState("");
 
   const apply = (s: MailConnectionStatus) => {
     setStatus(s);
     setRetention(String(s.retentionDays));
+    setExtraSenders(s.extraSenders ?? "");
   };
 
   useEffect(() => {
@@ -3972,6 +3974,15 @@ function EmailIntegrationCard() {
   const doPause = async (paused: boolean) => {
     try {
       apply(await api.setMailPaused(paused));
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const saveSenders = async () => {
+    try {
+      apply(await api.setMailExtraSenders(extraSenders));
+      toast.success("Watched senders saved");
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -4059,6 +4070,47 @@ function EmailIntegrationCard() {
           </div>
 
           {testResult && <MailTestLine result={testResult} />}
+
+          {/* 2.101.0: what TIQR actually asks Gmail for.
+              marko: "je tam velmi vela spamu co zbytocne pozera". TIQR no
+              longer downloads a month of mail and sorts it out afterwards -
+              it asks Google for these senders ONLY, so newsletters, spam and
+              private mail are never fetched, never parsed and never stored.
+              This panel exists so that is visible rather than mysterious. */}
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <p className="section-title">What TIQR looks at</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Only mail from these senders is fetched at all. Everything else in your inbox is never downloaded
+              and never stored.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(status?.knownSenders ?? []).map((d) => (
+                <span
+                  key={d}
+                  className="rounded-md bg-surface-muted px-2 py-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400"
+                >
+                  {d}
+                </span>
+              ))}
+            </div>
+            <div className="mt-3 max-w-md">
+              <Field
+                label="Also watch these senders"
+                hint="Domains, separated by commas. For example: oeticket.com, tickethub.sk"
+              >
+                <Input
+                  placeholder="oeticket.com, tickethub.sk"
+                  value={extraSenders}
+                  onChange={(e) => setExtraSenders(e.target.value)}
+                />
+              </Field>
+            </div>
+            <div className="mt-2">
+              <Button variant="secondary" onClick={() => void saveSenders()}>
+                Save senders
+              </Button>
+            </div>
+          </div>
 
           <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
             <div className="flex flex-wrap items-end gap-2">

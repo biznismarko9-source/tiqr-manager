@@ -784,6 +784,10 @@ export const api = {
   setMailPaused: (paused: boolean) => invoke<MailConnectionStatus>("set_mail_paused", { paused }),
   setMailRetentionDays: (days: number) =>
     invoke<MailConnectionStatus>("set_mail_retention_days", { days }),
+  /** 2.101.0: extra sender domains to watch. TIQR asks Gmail for mail from
+   *  these senders ONLY, so anything else is never downloaded at all. */
+  setMailExtraSenders: (senders: string) =>
+    invoke<MailConnectionStatus>("set_mail_extra_senders", { senders }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),

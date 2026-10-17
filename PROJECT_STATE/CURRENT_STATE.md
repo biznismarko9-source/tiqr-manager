@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.100.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.102.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,71 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.102.0 - the dropdowns nobody could read, and two bugs on Event detail.**
+
+**`color-scheme` was never set anywhere in this app.** An open `<select>`
+popup, a date picker and a scrollbar are drawn by the BROWSER, not by
+`index.css`, and `color-scheme` is the only thing that tells it which way
+round. Without it the browser painted a WHITE popup while the options
+inherited `.input`'s near-white dark-mode text - white on white, the
+unreadable list marko photographed. One declaration per theme fixes every
+`<select>` (58 call sites), every `type="date"` and every native scrollbar
+at once. Explicit `option` colours are added alongside for Chromium.
+
+**Event detail showed "&middot;" as literal text.** JSX decodes an entity
+written as TEXT (`<span>&middot;</span>`) but NOT one inside a string in
+braces - `.join(" &middot; ")` reached the page verbatim. Both occurrences
+now use the character itself. The rest of the app's `&middot;` are JSX text
+and were always correct; this was checked rather than assumed.
+
+**Event detail titled its Sales section twice** - a wrapper `<h2>Sales</h2>`
+plus `SalesTab`'s own `<h2>Sales (n)</h2>`, a leftover from 2.90.0 when
+Overview and Sales stopped being tabs. The wrapper is gone; its spacing
+moved onto the section.
+
+**Tables: a guarantee rather than an arithmetic rule.** Every table here is
+`table-fixed`, so one long unbroken string could push out of its cell and
+over the column beside it. Cells now carry `overflow-wrap: anywhere`, so a
+colgroup whose widths are wrong makes a column NARROW, never overlapping.
+
+**A table checker was written and NOT shipped.** It produced false positives
+on working tables - conditional columns, narrow/wide variants, and `<col>`
+mentioned in its own prose comments. A check that cries wolf on healthy code
+is worse than none, so the CSS guarantee above carries this instead.
+
+**2.101.0 - "Sync now" crashed the app. Three faults in one function.**
+
+marko: *"ten sync now mi len zacne daco robit a potom apka spadne"*. All
+three were in `strip_html`, and they compounded:
+
+1. **Quadratic.** For every `<script>`/`<style>` it allocated a fresh copy of
+   the ENTIRE remaining document and lowercased it. A marketing email with
+   twenty style blocks did twenty full copies; a hundred such emails did
+   thousands. That is the hang.
+2. **`Vec<char>`** - four bytes per character, so a 1 MB body became a 4 MB
+   vector before any of the above.
+3. **Byte offsets used as character indices.** `str::find` returns a BYTE
+   offset; it indexed a `Vec<char>` with it. Identical for ASCII, which is
+   why it tested clean - but one Slovak diacritic or one emoji made the skip
+   land wrong and script source could survive into the "text", which is the
+   one thing the function exists to prevent.
+
+And it all ran **while holding the database lock**, so the whole app froze
+before it died. Now: one linear pass over bytes, no allocation beyond the
+output, input capped at 64 KB, and classification moved OUT of the lock.
+
+**The ASCII lesson is the one to keep.** Fault 3 passed every test I wrote
+because every test fixture was English. Fixtures for anything that parses
+text from the outside world must include non-ASCII.
+
+**2.101.0 also stopped fetching the spam at all.** marko: *"je tam velmi
+vela spamu co zbytocne pozera"*. The sync used to ask Gmail for EVERY
+message in the window and sort it out afterwards. Now the query names the
+marketplaces (`KNOWN_SENDERS` plus whatever he adds in Settings) and Google
+does the filtering, so newsletters, spam and private mail are never
+downloaded, never parsed and never stored - a privacy improvement as much
+as a speed one.
 
 **2.100.0 - Mail Intelligence, PHASE 1 of 4. Read the mailbox; write nothing.**
 
