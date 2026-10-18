@@ -72,10 +72,16 @@ pub(crate) fn switch_active_database_impl(state: &AppState, target_path: PathBuf
     crate::commands::cloud_sync::flush_local_dirty(&conn_guard);
 
     let is_new = !target_path.exists();
-    let new_conn = crate::db::open_connection(&target_path)?;
+    // 2.110.0: with that account's own mail file attached (mail_store.rs).
+    let new_conn = crate::db::open_live_connection(&target_path)?;
     crate::db::run_migrations(&new_conn)?;
     *conn_guard = new_conn; // old Connection drops here - WAL flushed, same as a normal app quit
     crate::db::LOCAL_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    // After the flag is handed over, not before: the stamp this may write on
+    // the first start of 2.110.0 is this account's own unsent change, and
+    // clearing the flag after it would leave it waiting for some unrelated
+    // edit before the other computer ever saw it (shared_settings.rs).
+    let _ = crate::commands::shared_settings::bootstrap(&conn_guard);
     *path_guard = target_path.clone();
     Ok(DatabaseSwitchOutcome { db_path: target_path.display().to_string(), is_new })
 }

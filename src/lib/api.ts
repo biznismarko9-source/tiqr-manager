@@ -69,6 +69,7 @@ import type {
   Marketplace,
   MergeLogEntry,
   MailConnectionStatus,
+  MailFolderCount,
   MailLabel,
   MailRule,
   MailSender,
@@ -805,6 +806,25 @@ export const api = {
   getMailBody: (id: number) => invoke<string>("get_mail_body", { id }),
   /** Gmail's own folders, with counts. */
   listMailLabels: () => invoke<MailLabel[]>("list_mail_labels"),
+  /** 2.110.0: one page of one folder, newest first. Pass the last message
+   *  already on screen as `before` to get the page after it - there is no
+   *  limit on how far back a folder goes. */
+  listMailFolder: (
+    folder: string,
+    search: string | null,
+    before: { receivedAt: string; id: number } | null,
+    limit = 200,
+  ) =>
+    invoke<MailMessageSummary[]>("list_mail_folder", {
+      folder,
+      search,
+      beforeReceivedAt: before?.receivedAt ?? null,
+      beforeId: before?.id ?? null,
+      limit,
+    }),
+  /** 2.110.0: total and unread for every folder, from the same definition
+   *  the folders list with. */
+  getMailFolderCounts: () => invoke<MailFolderCount[]>("get_mail_folder_counts"),
   /** TIQR's own trash. Reversible, and Gmail is never touched - this app
    *  holds a read-only scope and cannot trash anything there. */
   trashMail: (ids: number[]) => invoke<number>("trash_mail", { ids }),

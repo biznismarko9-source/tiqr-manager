@@ -3357,6 +3357,36 @@ pub struct MailConnectionStatus {
     /// say "4 812 still to fetch" instead of looking stalled during a long
     /// first sync.
     pub queue_depth: i64,
+    /// 2.110.0: where the reading engine is - which folder it is walking,
+    /// how much is waiting, how many folders are read to the end.
+    pub progress: MailSyncProgress,
+    /// 2.110.0: what the mail file takes on disk.
+    pub store_bytes: i64,
+}
+
+/// 2.110.0: the reading engine's progress (commands/mail_sync.rs).
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSyncProgress {
+    /// The folder being read now, in marko's words ("Starred", "OASIS"),
+    /// or `None` once every folder is read to its oldest message.
+    pub reading: Option<String>,
+    /// Messages listed and not downloaded yet.
+    pub waiting: i64,
+    pub folders_done: i64,
+    pub folders_total: i64,
+    /// Every message stored on this device.
+    pub stored_total: i64,
+}
+
+/// 2.110.0: one folder's numbers, from the same SQL the folder lists with.
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailFolderCount {
+    /// `inbox`, `starred`... or a label id such as `label_8`.
+    pub key: String,
+    pub total: i64,
+    pub unread: i64,
 }
 
 /// One of marko's mail rules, exactly as `mail_rules` stores it.
@@ -3552,6 +3582,15 @@ pub struct MailSyncResult {
     /// The Mail screen chains the next batch straight away on this, so a
     /// long first sync arrives in visible waves rather than in one silence.
     pub more_waiting: bool,
+    /// 2.110.0: Google asked to slow down. Nothing was lost - the batch is
+    /// still queued - and `next_delay_ms` says when to carry on.
+    pub rate_limited: bool,
+    /// 2.110.0: how long the app should wait before the next run.
+    pub next_delay_ms: i64,
+    /// 2.110.0: something already on screen may have changed (a star, a
+    /// label, a folder), even when nothing new arrived.
+    pub changed: bool,
+    pub progress: MailSyncProgress,
 }
 
 /// What a test of the mailbox connection found. Same three-valued `status`

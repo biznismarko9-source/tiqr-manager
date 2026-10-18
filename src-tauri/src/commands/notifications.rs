@@ -726,6 +726,8 @@ pub fn set_notification_config(state: State<AppState>, input: NotificationConfig
     let existing = load_notification_config(&conn)?;
     let merged = apply_input(existing, input);
     save_notification_config(&conn, &merged)?;
+    // 2.110.0: the same webhooks on the other computer (shared_settings.rs).
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::NOTIFICATIONS)?;
     Ok(status_from_config(&merged))
 }
 

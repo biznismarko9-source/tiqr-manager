@@ -22,6 +22,7 @@ import { ConfirmDialog, Spinner } from "./ui";
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api, errMsg } from "../lib/api";
 import { recordAutoSync } from "../lib/autoSyncLog";
+import { onMailSyncRequested, publishMailSync } from "../lib/mailSync";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -582,58 +583,83 @@ export default function Layout() {
   // limitations"). Same silent shape too: mail is an optional integration
   // and its being off, paused or unreachable must never interrupt the app.
   //
-  // Safe to let run unattended because of what a sync DOES: it reads mail,
-  // classifies it and stores it. It writes no sale, order, ticket or finance
-  // entry - see commands/mail.rs's module doc comment - so the worst an
-  // unattended run can do is put a row in the review queue.
+  // 2.110.0: THIS is the mail reader, for the whole app. marko: "chcem aby
+  // to citalo spravy od najmladsiej po najstarsiu po tych castiach a samo,
+  // nie ze ja vzdy sync musim davat". One run is about a second of work
+  // (commands/mail_sync.rs); while there is anything left to read the next
+  // one follows straight away, then it checks for new mail on his interval.
+  // The backend says how long to wait (`nextDelayMs`), including after
+  // Google asked it to slow down.
   //
-  // `sync_mail_now` returns "skipped" after a single cheap read when no
-  // mailbox is connected or syncing is paused, so this costs nothing for
-  // anyone not using the feature. The backend also refuses to start a second
-  // run while one is going, so this timer can never overlap a manual sync.
-  // 2.107.0: the interval is marko's, not a constant. Read once on mount
-  // and re-read after each run, so changing it in Settings takes effect
-  // without a restart. `0` means he turned it off.
+  // Every run is announced (lib/mailSync.ts) and the Mail screen refreshes
+  // from that. Its Sync button asks THIS loop to go now - it never starts a
+  // second one, which is how the same message used to be fetched twice.
+  //
+  // An interval of 0 is "only when I press Sync": nothing starts by itself,
+  // but a pressed Sync still reads on until everything is read.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    let running = false;
+    // Sync pressed, or a setting changed, while a run was going: one more
+    // straight after it, rather than leaving the change for the interval.
+    let again = false;
 
-    const runThenSchedule = async () => {
+    const schedule = (ms: number) => {
       if (stopped) return;
-      try {
-        await api.syncMailNow();
-      } catch {
-        // Silent, same as the notification check above: mail is an
-        // optional integration and its being off, paused or unreachable
-        // must never interrupt the app.
-      }
-      if (stopped) return;
-      let seconds = 0;
-      try {
-        seconds = (await api.getMailStatus()).syncIntervalSeconds;
-      } catch {
-        seconds = 0;
-      }
-      if (stopped || seconds <= 0) return;
-      // setTimeout, not setInterval: a run that takes longer than the
-      // interval must not stack up another one behind it.
-      timer = setTimeout(() => void runThenSchedule(), seconds * 1000);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void run(), ms);
     };
 
-    // The first run is one interval in, not on mount - the Mail screen
-    // clears a stale sync claim on ITS first load, and racing that on
-    // every app start would sync against a claim about to be cleared.
+    const run = async () => {
+      if (stopped) return;
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      let next: number | null = 60_000;
+      try {
+        const r = await api.syncMailNow();
+        publishMailSync(r);
+        if (r.status === "skipped") {
+          // Not connected or paused: look again in a minute. Another run
+          // in flight: in a moment.
+          next = r.message.startsWith("A sync is already running") ? 2_000 : 60_000;
+        } else if (r.nextDelayMs > 0) {
+          next = r.nextDelayMs;
+        } else {
+          // Interval 0 and everything read: wait for the button.
+          next = r.moreWaiting ? 250 : null;
+        }
+      } catch {
+        // Silent, same as the notification check above.
+        next = 60_000;
+      } finally {
+        running = false;
+      }
+      if (again) {
+        again = false;
+        if (next === null || next > 250) next = 250;
+      }
+      if (next !== null) schedule(next);
+    };
+
+    // The first run a few seconds after start, so it does not compete with
+    // the app opening - and not at all when he set the interval to 0. With
+    // no mailbox yet it just looks again each minute (one settings read);
+    // connecting one asks for a run straight away anyway.
     api
       .getMailStatus()
       .then((s) => {
-        if (!stopped && s.syncIntervalSeconds > 0) {
-          timer = setTimeout(() => void runThenSchedule(), s.syncIntervalSeconds * 1000);
-        }
+        if (s.syncIntervalSeconds > 0) schedule(s.connected ? 3_000 : 60_000);
       })
       .catch(() => {});
+    const off = onMailSyncRequested(() => schedule(0));
 
     return () => {
       stopped = true;
+      off();
       if (timer) clearTimeout(timer);
     };
   }, []);
