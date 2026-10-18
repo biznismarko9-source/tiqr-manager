@@ -84,6 +84,16 @@ from old reports.
   the database it watches), so it needs a real design pass rather than a
   guess. Revisit if marko reports losing an edit after a crash.
 
+- **An opened mail shows at most ~400 bytes, on one line** (found in
+  2.109.1, deliberately not changed - marko: "nic nemen ako to funguje len
+  to oprav"). `get_mail_body` returns `safe_detail(&body)`, and
+  `safe_detail` is the log/preview redactor: it collapses every run of
+  whitespace into one space and caps at 400 bytes. The reading pane renders
+  with `whitespace-pre-wrap` and `strip_html` keeps line breaks on purpose
+  (2.104.0), so both were meant to show the message's shape. Fixing it means
+  giving the body its own redaction that keeps lines and a larger cap -
+  small, but a visible behaviour change, so it waits for marko to ask.
+
 ## Documented limitations (not bugs, but worth remembering)
 
 - Outbound notifications (desktop/Pushover) only fire while the app process

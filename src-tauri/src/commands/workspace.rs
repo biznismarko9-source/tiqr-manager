@@ -342,6 +342,14 @@ fn excerpt(haystack: &str, needle: &str) -> String {
     let Some(at) = lower.find(needle) else {
         return haystack.chars().take(90).collect();
     };
+    // 2.109.1: `at` is a position in the LOWERCASED copy, and lowercasing
+    // can change a character's length in bytes (`İ` is two, `i̇` three), so
+    // it is not always a valid cut in `haystack` - slicing there panicked.
+    // Snapped back to a boundary; for ordinary text it is the same number.
+    let mut at = at.min(haystack.len());
+    while !haystack.is_char_boundary(at) {
+        at -= 1;
+    }
     // A window around the hit, so a match 400 characters into a note is
     // actually visible in the result rather than cut off before it.
     let start = haystack[..at].char_indices().rev().nth(30).map(|(i, _)| i).unwrap_or(0);
@@ -535,6 +543,18 @@ mod tests {
     #[test]
     fn an_excerpt_of_a_short_note_is_not_truncated_or_prefixed() {
         assert_eq!(excerpt("John123 bought 4 codes", "john123"), "John123 bought 4 codes");
+    }
+
+    #[test]
+    fn a_character_that_grows_when_lowercased_does_not_crash_search() {
+        // `İ` lowercases to three bytes from two, so the hit's position in
+        // the lowercased copy is past the end of the original.
+        let note = format!("{}John123", "İ".repeat(40));
+        let got = excerpt(&note, "john123");
+        assert!(got.contains("John123"), "{got}");
+        // ...and a character that SHRINKS (the Kelvin sign, 3 bytes -> 1).
+        let note = format!("{}é John123", "\u{212a}".repeat(5));
+        assert!(excerpt(&note, "john123").contains("John123"));
     }
 
     #[test]
