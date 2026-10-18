@@ -173,7 +173,21 @@ sa odlíšiť „zatiaľ prázdna" od „chýba".
 
 > *„a tie rust testy opravit"*
 
-**Tri testy boli červené od 2.105.0** a bolo to takto: kontrolovali, že dotaz
+**Šesť testov bolo červených**, nie tri — a dva z nich som našiel až cez CI,
+nie vlastnou kontrolou. Hovorím to rovno, lebo to mení, čomu sa dá veriť:
+
+- **Päť** kontrolovalo okno `after:2026/09/17`, teda 30 dní dozadu. Lenže
+  `INITIAL_BACKFILL_DAYS` je **365**, odkedy si pýtal pozerať ďalej dozadu.
+  Boli červené od vtedy. **Môj vlastný simulátor to nechytil, lebo som v ňom
+  mal tú konštantu napísanú ručne na 30** namiesto toho, aby som ju prečítal
+  zo zdroja — takže simulácia „prešla", kým CI padlo. Simulátor teraz
+  konštanty **číta z kódu** a testy si dátum **odvodia** z konštanty, takže
+  toto nemôže vyhniť po tretí raz. Pribudol jeden test, ktorý samotnú
+  konštantu drží na roku.
+- **Jeden** čítal `dflt_value` z SQLite ako číslo. SQLite ho vracia ako
+  **text**, takže test padal na type.
+
+A ten pôvodný problém: kontrolovali, že dotaz
 obsahuje `-in:spam` a **žiadne** `in:anywhere`. Lenže v 2.105.0 si pýtal vidieť
 spam a kôš (*„vediet rozlisit tiez promotions, spam kos atd"*) a dotaz sa zámerne
 zmenil presne naopak. Testy nikto neupravil, takže mesiace popisovali pravidlo,
@@ -217,7 +231,9 @@ Overený na **troch zámerne pokazených kópiách** (každú musel nájsť) a �
   zaregistrovaný v `lib.rs`.
 - Každý názov SQL stĺpca v `mail.rs` existuje v migráciách (98 dotazov).
 - **Všetkých ~60 nových testovacích tvrdení som prepísal do Pythonu a nechal
-  bežať** — logiku dotazu, filtra, domén aj pravidiel. Všetky prechádzajú.
+  bežať** — logiku dotazu, filtra, domén aj pravidiel. Všetky prechádzajú,
+  a simulátor si konštanty **číta zo zdroja**, nie z mojej pamäte (práve
+  toto mi minule uniklo — pozri časť 7).
 
 **Neoverené, a treba to povedať:**
 - **Nič z toho som nespustil.** Na tomto Macu nie je node ani cargo —

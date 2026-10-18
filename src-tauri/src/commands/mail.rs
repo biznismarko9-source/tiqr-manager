@@ -308,7 +308,11 @@ pub(crate) fn safe_detail(raw: &str) -> String {
         }
     }
     if out.len() > 400 {
-        out.truncate(400);
+        // 2.109.1: on a character boundary. `String::truncate` panics when
+        // byte 400 is the middle of an `é` or an emoji, and every preview
+        // passes through here on its way into the database.
+        let keep = truncate_on_char_boundary(&out, 400).len();
+        out.truncate(keep);
         out.push_str("...");
     }
     out
@@ -517,8 +521,9 @@ pub(crate) fn decode_entities(input: &str) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         let tail = &rest[amp..];
-        // An entity is short; anything longer is not one.
-        let end = tail[..tail.len().min(12)].find(';');
+        // An entity is short; anything longer is not one. 2.109.1: capped
+        // on a character boundary - byte 12 can be the middle of a `č`.
+        let end = truncate_on_char_boundary(tail, 12).find(';');
         let Some(end) = end else {
             out.push('&');
             rest = &tail[1..];
@@ -1087,8 +1092,12 @@ pub(crate) fn extract_quantity(text: &str) -> Option<i64> {
     let hay = text.to_lowercase();
     for word in ["tickets", "ticket", "listky", "l\u{ed}stky", "l\u{ed}stok", "seats", "x ticket"] {
         let Some(at) = hay.find(word) else { continue };
-        let from = at.saturating_sub(12);
-        let digits: String = hay[from..at]
+        // 2.109.1: THIS was the sync crash. `hay[at - 12..at]` was the one
+        // window 2.108.0 did not route through `safe_slice`, and 12 bytes
+        // in front of "tickets" is the middle of the emoji in
+        // "🎟️ Your tickets" - a panic, which a release build turns into
+        // the whole app closing a few seconds into a sync.
+        let digits: String = safe_slice(&hay, at.saturating_sub(12), at)
             .chars()
             .rev()
             .skip_while(|c| !c.is_ascii_digit())
@@ -4473,10 +4482,34 @@ mod tests {
         DateTime::parse_from_rfc3339(iso).unwrap().with_timezone(&Utc)
     }
 
+    /// The first-sync window, DERIVED from the constant rather than written
+    /// out as a date.
+    ///
+    /// Five tests asserted a hard-coded 30-day window long after
+    /// `INITIAL_BACKFILL_DAYS` became 365, because marko asked to look back
+    /// further. They had been red ever since, describing a rule the app had
+    /// stopped following. Deriving it is what stops that happening a third
+    /// time: change the constant and these follow.
+    fn window_from(now: DateTime<Utc>) -> String {
+        format!(
+            "after:{} ",
+            (now - ChronoDuration::days(INITIAL_BACKFILL_DAYS)).format("%Y/%m/%d")
+        )
+    }
+
+    /// ...and the constant itself is pinned here, because deriving the date
+    /// would otherwise make an accidental change to it invisible.
+    #[test]
+    fn the_backfill_window_is_a_whole_year() {
+        assert_eq!(INITIAL_BACKFILL_DAYS, 365, "marko asked to look a year back, not a month");
+        assert_eq!(SYNC_OVERLAP_DAYS, 1);
+    }
+
     #[test]
     fn the_first_sync_looks_back_a_bounded_window() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "all", "");
-        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+        let now = at("2026-10-17T12:00:00Z");
+        let q = sync_query(None, now, &[], "all", "");
+        assert!(q.starts_with(&window_from(now)), "{q}");
     }
 
     #[test]
@@ -4487,8 +4520,9 @@ mod tests {
 
     #[test]
     fn an_unparseable_checkpoint_falls_back_to_the_backfill_window() {
-        let q = sync_query(Some("rubbish"), at("2026-10-17T12:00:00Z"), &[], "all", "");
-        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+        let now = at("2026-10-17T12:00:00Z");
+        let q = sync_query(Some("rubbish"), now, &[], "all", "");
+        assert!(q.starts_with(&window_from(now)), "{q}");
     }
 
     /// In the `known` scope the query names senders, so Google does the
@@ -4522,9 +4556,10 @@ mod tests {
     /// the seventeen built-ins would be the app overruling him, silently.
     #[test]
     fn an_empty_sender_list_means_the_whole_mailbox_not_the_builtin_list() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "known", "");
+        let now = at("2026-10-17T12:00:00Z");
+        let q = sync_query(None, now, &[], "known", "");
         assert!(!q.contains("from:"), "a deleted list must not come back: {q}");
-        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+        assert!(q.starts_with(&window_from(now)), "{q}");
     }
 
     /// THE INBOX. marko: "urob normalne z toho mailu normalne cely inbox".
@@ -4532,10 +4567,11 @@ mod tests {
     /// comes through, and the UI is what separates it.
     #[test]
     fn the_default_scope_asks_for_the_whole_mailbox() {
+        let now = at("2026-10-17T12:00:00Z");
         let senders = vec!["viagogo.com".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &senders, "all", "");
+        let q = sync_query(None, now, &senders, "all", "");
         assert!(!q.contains("from:"), "the whole mailbox must not be filtered by sender: {q}");
-        assert!(q.starts_with("after:2026/09/17 "), "{q}");
+        assert!(q.starts_with(&window_from(now)), "{q}");
     }
 
     /// Spam and trash are FETCHED, in both scopes.
@@ -4573,8 +4609,9 @@ mod tests {
 
     #[test]
     fn a_custom_filter_is_appended_to_the_window_not_substituted_for_it() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "all", "-category:promotions");
-        assert!(q.starts_with("after:2026/09/17 "), "the window must survive: {q}");
+        let now = at("2026-10-17T12:00:00Z");
+        let q = sync_query(None, now, &[], "all", "-category:promotions");
+        assert!(q.starts_with(&window_from(now)), "the window must survive: {q}");
         assert!(q.contains("-category:promotions"), "{q}");
         assert!(q.contains("in:anywhere"), "{q}");
     }
@@ -4787,14 +4824,17 @@ mod tests {
         let msg = sample_fetched("g1");
         let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
         upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
-        let dflt: i64 = conn
+        // `dflt_value` comes back as TEXT - it is the literal SQL as written
+        // in the migration, not a typed value. Asking rusqlite for an i64
+        // here is the InvalidColumnType panic this test had been producing.
+        let dflt: String = conn
             .query_row(
                 "SELECT dflt_value FROM pragma_table_info('mail_messages') WHERE name = 'is_unread'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(dflt, 1);
+        assert_eq!(dflt.trim(), "1");
     }
 
     // ---- OTP codes --------------------------------------------------------
@@ -5858,5 +5898,153 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM mail_processing_log", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0, "the cascade must clean up the log");
+    }
+
+    // ---- 2.109.1: text wider than one byte --------------------------------
+    //
+    // marko: "apka do par sekund od spustenia sync padne". A release build
+    // aborts on any panic, and three readers here still cut a `&str` at a
+    // byte offset worked out by arithmetic - the 2.108.0 class of bug, in
+    // the places that fix did not reach. One emoji in a subject was enough
+    // to close the whole app in the first batch of a sync.
+
+    /// The exact shape that took the app down: a ticket emoji a few bytes in
+    /// front of the word "tickets". `extract_quantity` looked 12 bytes back
+    /// from the word, and 12 bytes back was the middle of the emoji.
+    #[test]
+    fn an_emoji_in_front_of_the_word_tickets_does_not_crash_the_sync() {
+        assert_eq!(extract_quantity("🎟️ Your tickets for Coldplay are ready"), None);
+        assert_eq!(extract_quantity("🎟️ You got 2 tickets"), Some(2));
+        assert_eq!(extract_quantity("Vaše 2 lístky – Elán, Košice"), Some(2));
+    }
+
+    #[test]
+    fn redaction_never_cuts_a_character_in_half() {
+        // 'a' first so every é straddles the 400-byte cap.
+        let raw = format!("a{}", "é".repeat(300));
+        let out = safe_detail(&raw);
+        assert!(out.ends_with("..."), "{out}");
+        assert!(out.len() <= 403, "{}", out.len());
+        assert!(out.starts_with("aé"), "{out}");
+    }
+
+    #[test]
+    fn an_entity_next_to_wide_characters_is_still_decoded() {
+        assert_eq!(decode_entities("&amp;žľťč"), "&žľťč");
+        assert_eq!(decode_entities("Rock &nbsp;ľťčžýáíé Roll"), "Rock  ľťčžýáíé Roll");
+        assert_eq!(decode_entities("&ľťčžýáíé"), "&ľťčžýáíé");
+        assert_eq!(strip_html("<p>a&amp;žľťč</p>"), "a&žľťč");
+    }
+
+    fn read_everything(s: &str, rules: &[MailRule]) {
+        let _ = safe_detail(s);
+        let _ = strip_html(s);
+        let _ = decode_entities(s);
+        let _ = body_excerpt(s);
+        let _ = parse_from_header(s);
+        let _ = domain_of(s);
+        let _ = detect_platform(s);
+        let _ = extract_otp(s, s);
+        let _ = extract_quantity(s);
+        let _ = extract_money(s, Some(2));
+        let _ = extract_reference(s);
+        let _ = classify(s, s, s);
+        let _ = clean_custom_query(s);
+        let _ = clean_domain(s);
+        let _ = parse_extra_senders(s);
+        let _ = urlencode(s);
+        let _ = apply_rules(rules, &subject_of(s, s, s));
+    }
+
+    /// Every reader that runs on a subject or a preview, against every
+    /// width of character at every byte offset around every word those
+    /// readers look for. A reader that slices by byte arithmetic cannot
+    /// pass this, whichever one it is.
+    #[test]
+    fn no_text_reader_panics_on_a_wide_character_at_any_offset() {
+        // 2, 3, 3, 4 and 3 bytes; `İ` also changes length when lowercased.
+        const WIDE: &[&str] = &["é", "–", "€", "🎟", "\u{fe0f}", "İ"];
+        const PROBES: &[&str] = &[
+            "tickets", "ticket", "lístky", "lístok", "seats", "x ticket",
+            "&", "&amp;", "&nbsp;", "&#39;", "&#x2019;", "<p>", "<script>", "</style>",
+            "€", "eur", "$", "£", "kč", "total ", "order total", "per ticket", "fee",
+            "order number", "reference", "objednávka", "verification code", "code is", "kód je",
+            "<", ">", "@", "\"", "(", "from:",
+        ];
+        let rules = vec![
+            rule("from", "contains", "é", "trash"),
+            rule("subject", "starts", "🎟", "read"),
+            rule("preview", "ends", "€", "review"),
+            rule("subject", "equals", "x", "keep"),
+        ];
+        for wide in WIDE {
+            for probe in PROBES {
+                for pre in 0..14 {
+                    for post in 0..14 {
+                        let s = format!("{wide}{}{probe}{}{wide} 12,50 2", "a".repeat(pre), "b".repeat(post));
+                        read_everything(&s, &rules);
+                    }
+                }
+            }
+            // `safe_detail` caps at 400 bytes; shifting by up to three ASCII
+            // bytes puts that cap inside a character for every width.
+            for shift in 0..4 {
+                let s = format!("{}{}", "a".repeat(shift), wide.repeat(500));
+                read_everything(&s, &rules);
+                assert!(safe_detail(&s).len() <= 403);
+            }
+        }
+    }
+
+    /// The same, through the code a sync actually runs for each new message:
+    /// the classifier, the insert with every extracted field, the rules and
+    /// the log - on a real migrated database.
+    #[test]
+    fn the_sync_stores_mail_whatever_characters_it_contains() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO mail_rules (id, position, enabled, field, match_kind, needle, action, created_at)
+             VALUES ('r1', 1, 1, 'subject', 'contains', 'tickets', 'review', '2026-10-18T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let rules = load_rules(&conn).unwrap();
+        let subjects = [
+            "🎟️ Your tickets for Coldplay are ready",
+            "🎟️ You got 2 tickets - order number 🎫 AB-12345",
+            "Vaše 2 lístky – Elán, Košice, spolu 94,00 €",
+            "Don’t miss out — only 2 tickets left at €40",
+            "Rock &amp;žľťč Roll",
+            "İstanbul: your verification code is 482913",
+        ];
+        for (n, subject) in subjects.iter().enumerate() {
+            let mut msg = sample_fetched(&format!("wide{n}"));
+            msg.subject = subject.to_string();
+            // 'a' first so the preview's é straddle the redaction cap.
+            msg.snippet = Some(format!("a{} {subject}", "é".repeat(250)));
+            let class = classify(&msg.from_address, &msg.subject, msg.snippet.as_deref().unwrap());
+            let (id, was_new) =
+                upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
+            assert!(was_new);
+            log_step(&conn, id, "classified", class.category.as_str(), msg.snippet.as_deref()).unwrap();
+            let subj = RuleSubject {
+                from: &msg.from_address,
+                subject: &msg.subject,
+                preview: msg.snippet.as_deref().unwrap_or_default(),
+            };
+            if let Some(hit) = apply_rules(&rules, &subj) {
+                run_rule_action(&conn, id, &hit).unwrap();
+            }
+        }
+        let stored: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, subjects.len() as i64);
+        let qty: Option<i64> = conn
+            .query_row(
+                "SELECT extracted_quantity FROM mail_messages WHERE provider_message_id = 'wide1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(qty, Some(2));
     }
 }

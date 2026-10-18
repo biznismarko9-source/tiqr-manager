@@ -16,6 +16,26 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.109.1 - Oprava: appka padala pár sekúnd po spustení syncu
+
+**Príčina.** Pri ukladaní každého nového mailu sa z predmetu a náhľadu číta
+počet lístkov. To čítanie sa pozrelo 12 *bajtov* pred slovo „tickets" - a
+keď tam bolo emoji alebo diakritika (`🎟️ Your tickets...`), padlo to doprostred
+znaku. Rust na tom spanikári a vydaná appka sa pri panike celá zavrie. Prvá
+dávka 40 mailov to takmer vždy obsahovala, preto pár sekúnd.
+
+**Rovnaká chyba ešte na dvoch miestach**, opravené naraz: skracovanie textu na
+400 bajtov (každý náhľad pri ukladaní, a celé telo mailu pri otvorení) a
+čítanie HTML entít ako `&amp;` (otvorenie HTML mailu). A jedno mimo mailu:
+výsledok vyhľadávania vo Workspace pri znakoch ako `İ`, ktoré po zmenšení
+písmen zmenia dĺžku.
+
+**Nič iné sa nezmenilo** - pre každý text, ktorý predtým nepadal, vychádza
+presne to isté. Pribudlo 7 testov, ktoré pred opravou padali presne s touto
+chybou (vrátane celej cesty ukladania mailu na skutočnej databáze) a teraz
+prechádzajú. Celkom 1404 Rust testov, 0 červených - prvýkrát reálne spustené,
+nie len simulované.
+
 ## 2.109.0 - Mail: vlastné pravidlá, nastavenia v maily, starred vždy
 
 **Nastavenia sú teraz v Maily, dole v zozname zložiek.** Presne tam, kde si
@@ -59,10 +79,12 @@ Nevyvážené zátvorky alebo úvodzovky sa odmietnu celé, nie polovične.
 **Všetky záložky**, aj prázdne. Doteraz sa skrývali tie, z ktorých sa ešte
 nič nestiahlo - čo pri prvom syncu znamenalo skoro všetky.
 
-**Rust testy.** Tri testy boli červené od 2.105.0 - kontrolovali `-in:spam`
-a nulové `in:anywhere`, teda pravidlá, ktoré appka zámerne prestala
-dodržiavať, keď si pýtal vidieť spam a kôš. Opravené proti tomu, čo appka
-naozaj robí. Pribudlo 25 nových testov (pravidlá, domény, filter).
+**Rust testy — všetkých 6 červených.** Tri kontrolovali `-in:spam` a nulové
+`in:anywhere`, teda pravidlá, ktoré appka zámerne prestala dodržiavať, keď
+si pýtal vidieť spam a kôš. Päť kontrolovalo 30-dňové okno, hoci sa pozerá
+rok dozadu — tie si dátum teraz **odvodia z konštanty**, takže nevyhnijú.
+Jeden čítal SQLite `dflt_value` ako číslo, pričom je to text. Pribudlo 26
+nových testov (pravidlá, domény, filter, konštanta okna).
 
 **Jedna reálna chyba chytená pred odoslaním:** nový SQL dotaz čítal stĺpec
 `preview`, ktorý sa v databáze volá `snippet` - padlo by to až za behu.

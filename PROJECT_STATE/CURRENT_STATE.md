@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.109.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.109.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,34 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.109.1 - fix: the app closed a few seconds into a mail sync.** No
+behaviour change, no migration (next is still **046**).
+
+`extract_quantity` sliced `hay[at - 12..at]` by byte arithmetic - the one
+window 2.108.0 did not route through `safe_slice`. Twelve bytes in front of
+"tickets" in `🎟️ Your tickets...` is the middle of the emoji; the panic,
+under `panic = "abort"`, closes the app. It runs inside `upsert_message`
+for every new message, so the first batches of a sync nearly always hit it.
+Same class fixed in three more places: `safe_detail`'s `truncate(400)`
+(every stored preview, and every opened body via `get_mail_body`),
+`decode_entities`' 12-byte entity window (opening HTML mail), and
+`workspace::excerpt`, which used an index from the lowercased copy on the
+original string. Each fix only moves the cut to the nearest character
+boundary, so any input that did not panic produces identical output.
+
+**Compiled and tested in the session, not only in CI**: 1404 tests, 0
+failed, on Linux with webkit2gtk installed for the run; `npm run build`
+passes too. The 7 new tests (6 in `mail.rs`, 1 in `workspace.rs`) were
+run against the unfixed code first and all 7 failed with the char-boundary
+panic. `no_text_reader_panics_on_a_wide_character_at_any_offset` sweeps
+every reader over every wide character at every offset around every probe
+word - add any new text reader to its `read_everything` list. The 6 tests
+that were red in 2.109.0 pass with the test-only fixes from the 2.109.0
+release zip, which are now in the repo too.
+
+Found and NOT changed (see `KNOWN_BUGS.md`): an opened mail is cut to ~400
+bytes on one line, because `get_mail_body` reuses `safe_detail`.
 
 **2.109.0 - Mail: rules, settings moved into Mail, starred that actually
 always arrives.**
