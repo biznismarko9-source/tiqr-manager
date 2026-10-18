@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.107.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.107.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,41 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.107.1 - the build was broken for three releases and no test ran at all.**
+
+marko: *"oprav cele rust testy lebo v poslednych verziach nepresli ziadne"*.
+He is right, and the reason is worse than a failing test: 2.105, 2.106 and
+2.107 never COMPILED, so the whole suite was skipped every time. Two errors:
+
+1. **E0425 `amount_cents_in` not found.** Rewriting `extract_money` around
+   the total replaced a block that happened to contain that helper, and
+   `find_amounts` kept calling it.
+2. **E0308 in `create_from_mail`.** It promised `AppResult<MailProposal>`
+   and ended with a call to `get_mail_proposal`, which returns
+   `AppResult<Option<MailProposal>>`.
+
+**Every check I had said fine**, because neither class was covered: brackets
+balanced, struct literals matched, imports resolved, commands registered.
+So two new checkers exist, each proven to fail on the real bug before being
+trusted:
+
+* `undefined_fns.py` - a bare call to a function that is not defined or
+  imported in that file. 9599 bare calls across the backend, clean.
+* `tailtype.py` - `fn f() -> T { ... g(..) }` where `g` returns something
+  else. 160 tail calls, clean.
+
+**Writing those two found three bugs in the checkers themselves**, each
+caught by investigating a report instead of believing it:
+`trim_matches('"')` - a char literal holding a quote - made the stripper
+read code as a string and report a dozen defined functions as missing;
+`impl Fn(&T) -> i64` parameters were truncated at the first `)`; and `>`
+counted as a closing bracket drove parameter depth negative. That last one
+is the same trap the struct-literal checker hit: **`>` is ambiguous in Rust
+and must never be counted as a bracket.**
+
+**The lesson worth keeping:** a green run of my own checks says nothing
+about whether the code compiles. They cover shapes, not types or names.
 
 **2.107.0 - the mail screen keeps itself current.**
 

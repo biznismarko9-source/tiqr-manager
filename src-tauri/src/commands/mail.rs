@@ -899,6 +899,69 @@ pub(crate) fn extract_money(text: &str, quantity: Option<i64>) -> Option<MoneyRe
     })
 }
 
+/// The last money-shaped number in `s`, as integer cents.
+///
+/// 2.107.1: this was deleted by accident when `extract_money` was rewritten
+/// around the total - the rewrite replaced a block that happened to contain
+/// it, and `find_amounts` kept calling it. CI caught it as E0425. None of
+/// my own checks cover "a function that is called but no longer exists",
+/// which is why `undefined_fns.py` now does.
+///
+/// LAST, not first, because the run of text handed in is what precedes a
+/// currency mark - "total of 2 tickets 440,00" puts the amount at the end.
+///
+/// Separator handling is the fiddly part: two digits after `,` or `.` is a
+/// decimal, three is a thousands group and the number simply continues. A
+/// space is only ever a thousands separator, never a decimal point.
+fn amount_cents_in(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let mut best: Option<i64> = None;
+    let mut i = 0usize;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut whole = String::new();
+        let mut frac = String::new();
+        let mut seen_sep = false;
+        while i < b.len() {
+            let c = b[i];
+            if c.is_ascii_digit() {
+                if seen_sep {
+                    frac.push(c as char);
+                } else {
+                    whole.push(c as char);
+                }
+                i += 1;
+            } else if (c == b',' || c == b'.' || c == b' ')
+                && !seen_sep
+                && b.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            {
+                let run = b[i + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+                if run == 2 && c != b' ' {
+                    seen_sep = true;
+                } else if run != 3 {
+                    break;
+                }
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        if i > start && !whole.is_empty() && whole.len() <= 9 {
+            if let (Ok(w), Ok(f)) = (
+                whole.parse::<i64>(),
+                if frac.is_empty() { Ok(0) } else { frac.parse::<i64>() },
+            ) {
+                best = Some(w * 100 + f);
+            }
+        }
+    }
+    best
+}
+
 #[derive(Debug, Clone)]
 struct Amount {
     cents: i64,
@@ -2942,7 +3005,12 @@ pub fn create_from_mail(state: State<AppState>, id: i64) -> AppResult<MailPropos
             &[],
         );
     }
-    get_mail_proposal(state, id)
+    // `get_mail_proposal` returns an Option - a message whose category maps
+    // to nothing has no proposal. Here one was just created FROM a
+    // proposal, so it exists; saying so with a clear error beats an
+    // `unwrap` that would panic the command if that ever stopped holding.
+    get_mail_proposal(state, id)?
+        .ok_or_else(|| AppError::Other("the record was created but its summary could not be re-read".to_string()))
 }
 
 /// How often the app syncs by itself. `0` turns it off.

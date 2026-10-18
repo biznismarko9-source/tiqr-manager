@@ -16,6 +16,28 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.107.1 - Oprava buildu: tri vydania sa vôbec nepreložili
+
+Mal si pravdu a je to horšie než spadnutý test: **2.105, 2.106 ani 2.107 sa
+nikdy nepreložili**, takže sa celá sada testov zakaždým preskočila. Dve
+chyby, obe moje:
+
+- **`amount_cents_in` neexistovala.** Keď som prepisoval čítanie cien okolo
+  totalu, nahradil som blok, v ktorom tá pomocná funkcia bola - a volajúci
+  ju volal ďalej.
+- **Nesúlad typov v `create_from_mail`**: sľuboval `MailProposal`, ale
+  končil volaním, ktoré vracia `Option<MailProposal>`.
+
+**Všetky moje kontroly hlásili v poriadku**, lebo ani jednu z týchto tried
+nepokrývali - zátvorky sedeli, struct literály sedeli, importy sedeli,
+príkazy boli zaregistrované. Dopísal som preto dve nové a **každú som
+najskôr pustil na tú skutočnú chybu**, aby som vedel, že ju naozaj chytí:
+volanie neexistujúcej funkcie (9599 volaní, čisto) a nesúlad návratového
+typu (160 volaní, čisto).
+
+Pri ich písaní som našiel **tri chyby v tých kontrolách samotných** - každú
+tak, že som nález preveril namiesto toho, aby som mu uveril.
+
 ## 2.107.0 - Maily sa objavujú samy
 
 - **Už nemusíš klikať Sync.** Kým máš Mail otvorený, appka sa pýta Gmailu
