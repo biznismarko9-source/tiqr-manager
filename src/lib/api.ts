@@ -69,10 +69,12 @@ import type {
   Marketplace,
   MergeLogEntry,
   MailConnectionStatus,
+  MailLabel,
   MailMessageDetail,
   MailMessageFilter,
   MailMessageSummary,
   MailOverview,
+  MailProposal,
   MailReviewOutcome,
   MailSyncResult,
   MailTestResult,
@@ -799,6 +801,29 @@ export const api = {
    *  is gone from this app again. Returns PLAIN TEXT with the HTML already
    *  stripped in Rust: render it as text, never as markup. */
   getMailBody: (id: number) => invoke<string>("get_mail_body", { id }),
+  /** Gmail's own folders, with counts. */
+  listMailLabels: () => invoke<MailLabel[]>("list_mail_labels"),
+  /** TIQR's own trash. Reversible, and Gmail is never touched - this app
+   *  holds a read-only scope and cannot trash anything there. */
+  trashMail: (ids: number[]) => invoke<number>("trash_mail", { ids }),
+  restoreMail: (ids: number[]) => invoke<number>("restore_mail", { ids }),
+  /** Irreversible. REFUSES anything not already in the trash - the
+   *  "trash first, then delete" rule is enforced in the backend, not by
+   *  the confirm dialog. */
+  deleteMailForever: (ids: number[]) => invoke<number>("delete_mail_forever", { ids }),
+  setMailReadBulk: (ids: number[], read: boolean) =>
+    invoke<number>("set_mail_read_bulk", { ids, read }),
+  /** What this message could become. Null when its category maps to
+   *  nothing TIQR can honestly create. */
+  getMailProposal: (id: number) => invoke<MailProposal | null>("get_mail_proposal", { id }),
+  /** Creates the record, through the SAME functions used when you type it
+   *  in by hand. Refuses if the message already created one. */
+  createFromMail: (id: number) => invoke<MailProposal>("create_from_mail", { id }),
+  setMailAutomation: (kind: "order" | "sale" | "finance", mode: "off" | "manual" | "auto") =>
+    invoke<MailConnectionStatus>("set_mail_automation", { kind, mode }),
+  /** How often the app syncs by itself. 0 turns it off. */
+  setMailSyncInterval: (seconds: number) =>
+    invoke<MailConnectionStatus>("set_mail_sync_interval", { seconds }),
   setMailRead: (id: number, read: boolean) => invoke<void>("set_mail_read", { id, read }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */

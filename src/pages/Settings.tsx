@@ -4071,6 +4071,96 @@ function EmailIntegrationCard() {
 
           {testResult && <MailTestLine result={testResult} />}
 
+          {/* 2.107.0: how often it checks by itself.
+              marko: "nemusim vzdy manualne davat sync ale ze v realnom
+              case by sa tam zobrazovali maily". Said plainly below that
+              this is polling, not push - Gmail's real push needs a public
+              endpoint and TIQR has no server, so the interval IS the
+              honest limit and there is no point pretending otherwise. */}
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="w-48">
+                <Field label="Check for new mail">
+                  <Select
+                    value={String(status?.syncIntervalSeconds ?? 60)}
+                    onChange={async (e) => {
+                      try {
+                        apply(await api.setMailSyncInterval(Number(e.target.value)));
+                        toast.success("Saved");
+                      } catch (err) {
+                        toast.error(errMsg(err));
+                      }
+                    }}
+                  >
+                    <option value="30">Every 30 seconds</option>
+                    <option value="60">Every minute</option>
+                    <option value="180">Every 3 minutes</option>
+                    <option value="300">Every 5 minutes</option>
+                    <option value="900">Every 15 minutes</option>
+                    <option value="0">Only when I press Sync</option>
+                  </Select>
+                </Field>
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+              TIQR asks Gmail on this interval - Gmail cannot push to it, because TIQR has no server and talks to
+              Google straight from this computer. Nothing is checked while the app is closed.
+            </p>
+          </div>
+
+          {/* 2.106.0: what the sync may do on its own, per record kind.
+              marko: "nech sa nepletie a radsej robi pomaly order po ordri
+              ze ja si vlastne viem vybrat v maily ci to urobit automaticky
+              alebo manualne". Default is MANUAL for all three - the
+              proposal waits in the mail and he presses the button. `auto`
+              only ever acts on a proposal that is already ready, which
+              means every identifier it needed was matched against real
+              TIQR data, never guessed. */}
+          <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <p className="section-title">Creating records from email</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Manual means the mail shows a button and waits for you. Automatic lets a sync create the record
+              itself - and only ever when everything it needs was matched to real data, never guessed.
+            </p>
+            <div className="mt-3 space-y-2">
+              {([
+                { kind: "finance" as const, label: "Payouts and refunds", value: status?.autoFinance },
+                { kind: "order" as const, label: "Purchase confirmations", value: status?.autoOrder },
+                { kind: "sale" as const, label: "Sale confirmations", value: status?.autoSale },
+              ]).map((r) => (
+                <div key={r.kind} className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-[180px] text-sm text-slate-700 dark:text-slate-200">{r.label}</span>
+                  <div className="w-40">
+                    <Select
+                      value={r.value ?? "manual"}
+                      onChange={async (e) => {
+                        try {
+                          apply(
+                            await api.setMailAutomation(
+                              r.kind,
+                              e.target.value as "off" | "manual" | "auto",
+                            ),
+                          );
+                          toast.success("Saved");
+                        } catch (err) {
+                          toast.error(errMsg(err));
+                        }
+                      }}
+                    >
+                      <option value="off">Off</option>
+                      <option value="manual">Manual</option>
+                      <option value="auto">Automatic</option>
+                    </Select>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+              A sale always has to be recorded on its order - the email does not say which tickets were sold, so
+              TIQR names the order instead of choosing for you.
+            </p>
+          </div>
+
           {/* 2.104.0: whole mailbox, or only the marketplaces.
               marko asked for less spam (2.101.0) and then for a real inbox
               (2.104.0). Those are not in conflict - what he objected to was

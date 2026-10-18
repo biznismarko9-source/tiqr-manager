@@ -590,6 +590,60 @@ fn send_ntfy(cfg: &NtfyChannelConfig, title: &str, body: &str) -> AppResult<()> 
     Ok(())
 }
 
+/// Send one embed to a configured Discord destination.
+///
+/// 2.106.0: split out so Mail Intelligence can post "an order was created
+/// from a message" through the SAME path the test button uses - same host
+/// validation, same status table, same refusal to read a response body or
+/// put a URL in an error. A second sender would have been a second place
+/// to get those wrong.
+///
+/// Best-effort on purpose: a webhook that is off, unset or unreachable must
+/// never stop a record being created. The caller gets the outcome and
+/// decides; nothing here propagates a failure upward.
+pub(crate) fn notify_discord(
+    conn: &Connection,
+    dest: DiscordDestination,
+    title: &str,
+    description: &str,
+    fields: &[(String, String)],
+) -> bool {
+    let cfg = match load_notification_config(conn) {
+        Ok(c) => c.discord,
+        Err(_) => return false,
+    };
+    if !cfg.enabled {
+        return false;
+    }
+    let url = dest.url_in(&cfg).trim().to_string();
+    if validate_webhook_url(&url).is_err() {
+        return false;
+    }
+    let embed = serde_json::json!({
+        "username": "TIQR Manager",
+        "embeds": [{
+            "title": title,
+            "description": description,
+            "color": 0x8B5CF6,
+            "fields": fields
+                .iter()
+                .map(|(n, v)| serde_json::json!({ "name": n, "value": v, "inline": true }))
+                .collect::<Vec<_>>(),
+            "timestamp": Utc::now().to_rfc3339(),
+        }]
+    });
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    else {
+        return false;
+    };
+    match client.post(&url).json(&embed).send() {
+        Ok(r) => (200..=299).contains(&r.status().as_u16()),
+        Err(_) => false,
+    }
+}
+
 /// The blocking half of a test: one POST, one interpretation, no retries.
 ///
 /// Returns `(status, error_code, message, retry_after_seconds)` so the caller

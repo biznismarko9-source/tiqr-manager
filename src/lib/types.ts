@@ -2736,6 +2736,18 @@ export interface MailConnectionStatus {
    *  senders only). */
   scope: "all" | "known";
   unreadCount: number;
+  /** What the SYNC may do unattended, per record kind. `manual` is the
+   *  default and the one marko described: the proposal waits for his
+   *  button. `auto` only ever acts on a proposal that is already ready. */
+  autoOrder: "off" | "manual" | "auto";
+  autoSale: "off" | "manual" | "auto";
+  autoFinance: "off" | "manual" | "auto";
+  /** How often the app syncs by itself, in seconds. 0 is off.
+   *
+   *  This is POLLING, not push. Gmail's real push delivers to a public
+   *  HTTPS endpoint and TIQR has no server - it talks to Google straight
+   *  from this machine, so there is nowhere for Google to push to. */
+  syncIntervalSeconds: number;
 }
 
 /** The categories the deterministic classifier can produce. `other` is where
@@ -2793,9 +2805,71 @@ export interface MailMessageSummary {
    *  and cannot write a label, so opening a mail here never marks it read
    *  in Gmail. The UI says so rather than looking like a broken sync. */
   isUnread: boolean;
+  isStarred: boolean;
+  /** The `From` header verbatim - what actually arrived, not this app's
+   *  reading of it. */
+  fromRaw?: string | null;
+  toAddress?: string | null;
+  /** Where a reply would really go. On a phishing mail this disagrees with
+   *  the sender, which is exactly why it is shown. */
+  replyTo?: string | null;
+  /** The one-time code, pulled out so it reads from the list. */
+  otpCode?: string | null;
+  /** What the message SAYS, read out of it. Integer cents plus a separate
+   *  currency code - never a blended number. `null` is "not found", never
+   *  zero and never a guess. */
+  extractedAmountCents?: number | null;
+  extractedCurrency?: string | null;
+  extractedQuantity?: number | null;
+  extractedReference?: string | null;
+  /** Per ticket: the total divided by the quantity, fees already included.
+   *  Never read as its own number - a quoted per-ticket price leaves the
+   *  fees out, which is not what a ticket cost. */
+  extractedUnitCents?: number | null;
+  /** Which figure was chosen and why - "order total", "largest amount",
+   *  "parts added together". */
+  extractedBasis?: string | null;
+  /** What this message already became. Both null for almost every message.
+   *  This pair is what makes a second press a no-op. */
+  createdKind?: string | null;
+  createdId?: number | null;
+  /** Set when the message is in TIQR's own trash. Gmail is untouched. */
+  trashedAt?: string | null;
   /** Gmail's own labels, comma separated and lower-cased - `inbox`,
    *  `unread`, `category_promotions`, `category_social`... */
   labels: string;
+}
+
+/** One of Gmail's own folders. */
+export interface MailLabel {
+  /** Gmail's label id, lower-cased - `inbox`, `starred`, `label_8`. */
+  id: string;
+  name: string;
+  /** Gmail's own type: `system` or `user`. */
+  kind: string;
+  total: number;
+  unread: number;
+}
+
+/** What a message could become, and whether it is ready to.
+ *
+ *  `ready` is false when something it needs could not be MATCHED - an event
+ *  for an order, an order for a sale. Nothing is ever guessed into
+ *  existence, so `blockers` says what is missing in plain words. */
+export interface MailProposal {
+  kind: "order" | "sale" | "finance";
+  ready: boolean;
+  blockers: string[];
+  summary: string;
+  amountCents?: number | null;
+  currency?: string | null;
+  quantity?: number | null;
+  matchedEventId?: number | null;
+  matchedEventName?: string | null;
+  matchedOrderId?: number | null;
+  matchedOrderCode?: string | null;
+  createdKind?: string | null;
+  createdId?: number | null;
 }
 
 export interface MailLogEntry {

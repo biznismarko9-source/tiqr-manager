@@ -1,70 +1,64 @@
-// Mail (2.104.0) - a real inbox.
+// Mail (2.105.0) - closer to Gmail, on purpose.
 //
-// marko: "urob normalne z toho mailu normalne cely inbox".
+// marko asked for the look and the behaviour he already knows:
+//   "1:1 prekopirovali ako vyzera gmail aj funkcnosti"
+//   "vsetky starred maily ... je jedno kolko ich je a ake su stare"
+//   "aby tam tiez boli zalozky" / "nechat zalozky ktore mam v gmaily"
+//   "vediet ho rozkliknut a kuknut odkial ide z akeho mailu"
+//   "policko kde budu chodit vyhradne len OTP kody"
+//   "vediet rozlisit tiez promotions, spam kos atd"
 //
-// 2.100.0 shipped this as a classification queue: a table of what TIQR had
-// recognised, with no way to read anything. 2.101.0 then narrowed the sync to
-// marketplace senders after his complaint that there was too much spam. Both
-// were answers to the wrong question. What he wants is his mailbox, in TIQR,
-// with the things that matter pulled to the front - so:
+// So: three panes - folders, list, message - and the folder rail is built
+// from GMAIL'S OWN labels rather than categories invented here. Spam and
+// Trash are browsable, and deliberately never trusted (see
+// commands/mail.rs::UNTRUSTED_LABELS): a spam message claiming a sale can
+// never reach Important.
 //
-//   * The sync fetches the WHOLE mailbox again (headers only - see
-//     commands/mail.rs). Junk is excluded by Gmail's own spam folder, not by
-//     a filter this app invents.
-//   * The spam problem is answered by TABS, not by refusing to fetch:
-//     Important first, then all mail, then Gmail's own Promotions and
-//     Social categories, then the review queue.
-//   * It is a two-pane reader - list left, message right - the same shape
-//     Notes already uses for list + content.
-//
-// WHAT THIS IS STILL NOT, said in the UI rather than left to look like a
-// bug: marking a message read here does NOT mark it read in Gmail. The scope
-// this app holds is `gmail.readonly` on purpose and cannot write a label.
-// And nothing here creates a sale, an order or a finance entry - that is
-// phase 3.
+// Two things this still is not, said in the UI rather than left to look
+// like a bug: read state is TIQR's own, because the scope is read-only and
+// cannot write a Gmail label; and nothing here creates a sale, an order or
+// a finance entry.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import {
   type MailConnectionStatus,
+  type MailLabel,
   type MailMessageFilter,
   type MailMessageSummary,
-  type MailOverview,
+  type MailProposal,
   type MailReviewOutcome,
 } from "../lib/types";
-import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  Field,
-  Figure,
-  Figures,
-  Input,
-  PageHeader,
-  SEGMENTED_TRACK,
-  Select,
-  Spinner,
-  segmentedItemClass,
-} from "../components/ui";
+import { Badge, Button, Card, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
 import { IconMail } from "../components/icons";
 import { useToast } from "../lib/toast";
 
-/** The tabs, and what each asks for.
- *
- *  `promotions` and `social` match Gmail's OWN category labels rather than
- *  anything this app guesses - a better answer to "too much spam" than a
- *  rule invented here, because it is the same split marko already sees in
- *  Gmail. */
-type Tab = "important" | "inbox" | "promotions" | "social" | "review" | "overview";
+/** Folders this app defines itself, above Gmail's own. */
+type Builtin =
+  | "important"
+  | "otp"
+  | "starred"
+  | "inbox"
+  | "review"
+  | "promotions"
+  | "social"
+  | "updates"
+  | "forums"
+  | "spam"
+  | "trash";
 
-const TABS: { key: Tab; label: string }[] = [
+const BUILTIN_FOLDERS: { key: Builtin; label: string }[] = [
   { key: "important", label: "Important" },
-  { key: "inbox", label: "All mail" },
+  { key: "otp", label: "OTP codes" },
+  { key: "starred", label: "Starred" },
+  { key: "inbox", label: "Inbox" },
+  { key: "review", label: "Needs review" },
   { key: "promotions", label: "Promotions" },
   { key: "social", label: "Social" },
-  { key: "review", label: "Review" },
-  { key: "overview", label: "Overview" },
+  { key: "updates", label: "Updates" },
+  { key: "forums", label: "Forums" },
+  { key: "spam", label: "Spam" },
+  { key: "trash", label: "Trash" },
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -79,27 +73,14 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  detected: "Detected",
-  classified: "Classified",
-  review_required: "Needs review",
-  reviewed: "Reviewed",
-  irrelevant: "Not relevant",
-  processed: "Processed",
-  failed: "Failed",
-};
-
 const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
-
-function hasLabel(m: MailMessageSummary, label: string) {
-  return m.labels.split(",").includes(label);
-}
+const labelsOf = (m: MailMessageSummary) => m.labels.split(",");
+const has = (m: MailMessageSummary, l: string) => labelsOf(m).includes(l);
+const isJunk = (m: MailMessageSummary) => has(m, "spam") || has(m, "trash");
 
 function formatWhen(iso: string) {
   try {
     const d = new Date(iso);
-    // A mail list shows a time for today and a date for everything else; a
-    // full timestamp on every row is noise at this density.
     return d.toDateString() === new Date().toDateString()
       ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       : d.toLocaleDateString();
@@ -108,13 +89,96 @@ function formatWhen(iso: string) {
   }
 }
 
-function CategoryBadge({ category }: { category: string }) {
-  if (category === "other") return null;
-  return <Badge tone="sold">{categoryLabel(category)}</Badge>;
+/** Which messages a folder holds. One place, so the rail's counts and the
+ *  list can never disagree. */
+function inFolder(m: MailMessageSummary, folder: string): boolean {
+  // TIQR's own trash takes a message out of every other folder - the whole
+  // point of a trash is that things leave where they were. Gmail's own
+  // `trash` label lands in the same folder, so there is one Trash here and
+  // not two.
+  if (m.trashedAt) return folder === "trash";
+  switch (folder) {
+    case "important":
+      return m.category !== "other" && !isJunk(m);
+    case "otp":
+      return !!m.otpCode;
+    case "starred":
+      return m.isStarred;
+    case "review":
+      return m.status === "review_required";
+    case "inbox":
+      return (
+        has(m, "inbox") &&
+        !isJunk(m) &&
+        !has(m, "category_promotions") &&
+        !has(m, "category_social") &&
+        !has(m, "category_updates") &&
+        !has(m, "category_forums")
+      );
+    case "promotions":
+      return has(m, "category_promotions");
+    case "social":
+      return has(m, "category_social");
+    case "updates":
+      return has(m, "category_updates");
+    case "forums":
+      return has(m, "category_forums");
+    case "spam":
+      return has(m, "spam");
+    case "trash":
+      return has(m, "trash");  // the locally-trashed are caught above
+    default:
+      // One of marko's own Gmail labels, matched by its id.
+      return has(m, folder);
+  }
 }
 
-/** One row: sender, subject, preview, time - what a mail list is for. */
-function MailRow({ m, active, onClick }: { m: MailMessageSummary; active: boolean; onClick: () => void }) {
+function FolderRow({
+  label,
+  count,
+  unread,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  unread: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition ${
+        active
+          ? "bg-brand-600/15 font-semibold text-brand-700 dark:text-brand-300"
+          : "text-slate-600 hover:bg-surface-muted dark:text-slate-300"
+      }`}
+    >
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {unread > 0 ? (
+        <span className="num shrink-0 text-[11px] font-semibold text-brand-600 dark:text-brand-400">{unread}</span>
+      ) : count > 0 ? (
+        <span className="num shrink-0 text-[11px] text-slate-400 dark:text-slate-500">{count}</span>
+      ) : null}
+    </button>
+  );
+}
+
+function MailRow({
+  m,
+  active,
+  checked,
+  onClick,
+  onToggle,
+}: {
+  m: MailMessageSummary;
+  active: boolean;
+  checked: boolean;
+  onClick: () => void;
+  onToggle: () => void;
+}) {
   return (
     <button
       type="button"
@@ -124,7 +188,22 @@ function MailRow({ m, active, onClick }: { m: MailMessageSummary; active: boolea
       }`}
     >
       <div className="flex items-baseline gap-2">
+        {/* The checkbox sits inside the row button, so a stray click
+            selects rather than doing nothing - but it stops the event, so
+            picking a message and selecting it stay two separate acts. */}
+        <input
+          type="checkbox"
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer"
+          checked={checked}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          aria-label="Select"
+        />
         {m.isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" aria-label="Unread" />}
+        {m.isStarred && <span className="shrink-0 text-[11px] text-amber-500">&#9733;</span>}
         <span
           className={`min-w-0 flex-1 truncate text-[13px] ${
             m.isUnread ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
@@ -143,26 +222,43 @@ function MailRow({ m, active, onClick }: { m: MailMessageSummary; active: boolea
       >
         {m.subject || "(no subject)"}
       </p>
-      {m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>}
-      {m.category !== "other" && (
+      {/* The code, right in the list. A one-time code is useless slowly -
+          by the time you have opened the mail and gone back, half the
+          window is gone. */}
+      {m.otpCode ? (
+        <p className="num mt-1 text-base font-bold tracking-[0.18em] text-brand-600 dark:text-brand-400">
+          {m.otpCode}
+        </p>
+      ) : (
+        m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>
+      )}
+      {m.category !== "other" && !isJunk(m) && (
         <div className="mt-1">
-          <CategoryBadge category={m.category} />
+          <Badge tone="sold">{categoryLabel(m.category)}</Badge>
         </div>
       )}
     </button>
   );
 }
 
-/** The reading pane. Fetches the body on open; never stores it. */
 function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged: () => void }) {
   const toast = useToast();
   const [body, setBody] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [showHeaders, setShowHeaders] = useState(false);
+  const [proposal, setProposal] = useState<MailProposal | null>(null);
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     setBody(null);
     setLoading(true);
+    setShowHeaders(false);
+    setProposal(null);
+    api
+      .getMailProposal(message.id)
+      .then(setProposal)
+      .catch(() => setProposal(null));
     api
       .getMailBody(message.id)
       .then((b) => {
@@ -177,17 +273,7 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.id]);
 
-  const verdict = async (outcome: MailReviewOutcome) => {
-    setBusy(true);
-    try {
-      await api.setMailReviewOutcome(message.id, outcome);
-      onChanged();
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const junk = isJunk(message);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -195,22 +281,197 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
         <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
           {message.subject || "(no subject)"}
         </h2>
-        <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">
-          {message.fromName ? `${message.fromName} · ` : ""}
-          {message.fromAddress}
-        </p>
+
+        {/* "odkial ide, z akeho mailu" - the real address first, the
+            display name second, because a display name is whatever the
+            sender typed and the address is not. */}
+        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          {message.fromName && (
+            <span className="text-sm text-slate-700 dark:text-slate-200">{message.fromName}</span>
+          )}
+          <span className="break-all font-mono text-xs text-slate-500 dark:text-slate-400">
+            &lt;{message.fromAddress}&gt;
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowHeaders((v) => !v)}
+            className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
+          >
+            {showHeaders ? "Hide details" : "Details"}
+          </button>
+        </div>
+
+        {showHeaders && (
+          <dl className="mt-2 space-y-1 rounded-lg bg-surface-muted px-3 py-2 text-[11px]">
+            {[
+              ["From", message.fromRaw ?? message.fromAddress],
+              ["To", message.toAddress],
+              ["Reply-To", message.replyTo],
+              ["Gmail labels", message.labels || null],
+            ].map(([k, v]) =>
+              v ? (
+                <div key={k} className="flex gap-2">
+                  <dt className="w-24 shrink-0 text-slate-500 dark:text-slate-400">{k}</dt>
+                  <dd className="min-w-0 break-all font-mono text-slate-600 dark:text-slate-300">{v}</dd>
+                </div>
+              ) : null,
+            )}
+            {/* A reply address that disagrees with the sender is the single
+                most useful thing on this panel, so it is pointed at. */}
+            {message.replyTo && !message.replyTo.includes(message.fromAddress) && (
+              <p className="pt-1 text-amber-600 dark:text-amber-400">
+                A reply would go somewhere other than the sender.
+              </p>
+            )}
+          </dl>
+        )}
+
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-[11px] text-slate-400 dark:text-slate-500">
             {new Date(message.receivedAt).toLocaleString()}
           </span>
-          <CategoryBadge category={message.category} />
-          {message.detectedPlatform && (
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">{message.detectedPlatform}</span>
-          )}
-          <span className="text-[11px] text-slate-400 dark:text-slate-500">
-            {STATUS_LABELS[message.status] ?? message.status}
-          </span>
+          {message.isStarred && <span className="text-[11px] text-amber-500">&#9733; Starred</span>}
+          {message.category !== "other" && !junk && <Badge tone="sold">{categoryLabel(message.category)}</Badge>}
+          {junk && <Badge tone="cancelled">{has(message, "spam") ? "spam" : "trash"}</Badge>}
         </div>
+
+        {message.otpCode && (
+          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
+            <p className="section-title">One-time code</p>
+            <p className="num mt-1 text-2xl font-bold tracking-[0.3em] text-brand-600 dark:text-brand-400">
+              {message.otpCode}
+            </p>
+          </div>
+        )}
+
+        {/* What the message SAYS, read out of it. Shown and not acted on:
+            creating an order or a sale from these is the next release, and
+            marko gets to see whether the numbers are right first. */}
+        {(message.extractedAmountCents != null ||
+          message.extractedQuantity != null ||
+          message.extractedReference) && !junk && (
+          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
+            <p className="section-title">What TIQR read</p>
+            <dl className="mt-1.5 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              {message.extractedAmountCents != null && (
+                <div>
+                  <dt className="text-slate-500 dark:text-slate-400">
+                    Total{message.extractedBasis ? ` (${message.extractedBasis})` : ""}
+                  </dt>
+                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
+                    {(message.extractedAmountCents / 100).toFixed(2)} {message.extractedCurrency}
+                  </dd>
+                </div>
+              )}
+              {/* Per ticket is the TOTAL divided - fees already in it -
+                  never a per-ticket price quoted in the mail, because that
+                  one leaves the fees out and is not what a ticket cost. */}
+              {message.extractedUnitCents != null && (
+                <div>
+                  <dt className="text-slate-500 dark:text-slate-400">Per ticket (incl. fees)</dt>
+                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
+                    {(message.extractedUnitCents / 100).toFixed(2)} {message.extractedCurrency}
+                  </dd>
+                </div>
+              )}
+              {message.extractedQuantity != null && (
+                <div>
+                  <dt className="text-slate-500 dark:text-slate-400">Tickets</dt>
+                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
+                    {message.extractedQuantity}
+                  </dd>
+                </div>
+              )}
+              {message.extractedReference && (
+                <div>
+                  <dt className="text-slate-500 dark:text-slate-400">Reference</dt>
+                  <dd className="font-mono text-sm text-slate-800 dark:text-slate-200">
+                    {message.extractedReference}
+                  </dd>
+                </div>
+              )}
+            </dl>
+            <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+              Read only - TIQR does not create records from email yet.
+            </p>
+          </div>
+        )}
+
+        {/* WHAT THIS COULD BECOME.
+            Nothing is guessed into existence: an order needs an event and
+            a sale needs an order, and those are MATCHED against what is
+            already in TIQR. When nothing matches, the card says so in
+            words rather than offering a button that would invent one. */}
+        {proposal && (
+          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
+            {proposal.createdId ? (
+              <>
+                <p className="section-title">Already done</p>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                  This created {proposal.createdKind} #{proposal.createdId}.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="section-title">TIQR can make this</p>
+                <p className="mt-1 text-sm text-slate-800 dark:text-slate-200">{proposal.summary}</p>
+                {proposal.matchedEventName && (
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    Event: {proposal.matchedEventName}
+                  </p>
+                )}
+                {proposal.matchedOrderCode && (
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    Order: {proposal.matchedOrderCode}
+                  </p>
+                )}
+                {proposal.ready ? (
+                  <div className="mt-2">
+                    <Button
+                      variant="primary"
+                      disabled={creating}
+                      onClick={async () => {
+                        setCreating(true);
+                        try {
+                          const p = await api.createFromMail(message.id);
+                          setProposal(p);
+                          toast.success(`${p.createdKind} #${p.createdId} created`);
+                          onChanged();
+                        } catch (e) {
+                          toast.error(errMsg(e));
+                        } finally {
+                          setCreating(false);
+                        }
+                      }}
+                    >
+                      {creating ? <Spinner className="h-4 w-4" /> : null}
+                      {proposal.kind === "finance"
+                        ? "Record in Finance"
+                        : proposal.kind === "order"
+                          ? "Create order"
+                          : "Record sale"}
+                    </Button>
+                  </div>
+                ) : (
+                  <ul className="mt-2 space-y-0.5">
+                    {proposal.blockers.map((b) => (
+                      <li key={b} className="text-xs text-amber-600 dark:text-amber-400">
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {junk && (
+          <p className="mt-3 rounded-lg bg-surface-muted px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400">
+            This is in {has(message, "spam") ? "Spam" : "Trash"}. TIQR never classifies these and will never act
+            on one, however convincing it looks.
+          </p>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -232,18 +493,23 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
         )}
       </div>
 
-      {message.reviewReason && (
-        <div className="border-t border-slate-200 px-5 py-3 dark:border-slate-800">
-          <p className="text-xs text-slate-500 dark:text-slate-400">{message.reviewReason}</p>
-        </div>
-      )}
-
       <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-800">
-        <Button variant="secondary" disabled={busy} onClick={() => void verdict("reviewed")}>
+        <Button
+          variant="secondary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.setMailReviewOutcome(message.id, "reviewed" as MailReviewOutcome);
+              onChanged();
+            } catch (e) {
+              toast.error(errMsg(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
           Mark reviewed
-        </Button>
-        <Button variant="ghost" disabled={busy} onClick={() => void verdict("irrelevant")}>
-          Not relevant
         </Button>
         <Button
           variant="ghost"
@@ -269,49 +535,42 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
 
 export default function MailIntelligence() {
   const toast = useToast();
-  const [tab, setTab] = useState<Tab>("important");
+  const [folder, setFolder] = useState<string>("important");
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
-  const [overview, setOverview] = useState<MailOverview | null>(null);
+  const [labels, setLabels] = useState<MailLabel[]>([]);
   const [rows, setRows] = useState<MailMessageSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("");
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [tick, setTick] = useState(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const filter = useMemo<MailMessageFilter>(
-    () => ({
-      search: search.trim() || null,
-      category: category || null,
-      status: tab === "review" ? "review_required" : null,
-      limit: 500,
-    }),
-    [search, category, tab],
+    () => ({ search: search.trim() || null, limit: 2000 }),
+    [search],
   );
 
-  /* The list is fetched broadly and the TAB narrows it here rather than in
-     SQL: Gmail's categories live in a comma-separated `labels` column, and
-     a LIKE would also match a label that merely CONTAINS another. */
-  const visible = useMemo(() => {
-    switch (tab) {
-      case "important":
-        return rows.filter((m) => m.category !== "other");
-      case "promotions":
-        return rows.filter((m) => hasLabel(m, "category_promotions"));
-      case "social":
-        return rows.filter((m) => hasLabel(m, "category_social"));
-      case "inbox":
-        return rows.filter((m) => !hasLabel(m, "category_promotions") && !hasLabel(m, "category_social"));
-      default:
-        return rows;
-    }
-  }, [rows, tab]);
+  const visible = useMemo(() => rows.filter((m) => inFolder(m, folder)), [rows, folder]);
+  const open = useMemo(() => visible.find((m) => m.id === openId) ?? null, [visible, openId]);
+
+  /* Counts come from the same `inFolder` the list uses, so the rail can
+     never show a number the folder does not contain. */
+  const countOf = useCallback(
+    (key: string) => {
+      const inIt = rows.filter((m) => inFolder(m, key));
+      return { total: inIt.length, unread: inIt.filter((m) => m.isUnread).length };
+    },
+    [rows],
+  );
 
   const loadHeader = useCallback(async () => {
-    const [s, o] = await Promise.all([api.getMailStatus(), api.getMailOverview()]);
+    const [s, l] = await Promise.all([api.getMailStatus(), api.listMailLabels()]);
     setStatus(s);
-    setOverview(o);
+    setLabels(l);
   }, []);
 
   const loadList = useCallback(async () => {
@@ -336,36 +595,101 @@ export default function MailIntelligence() {
   }, []);
 
   useEffect(() => {
-    if (tab === "overview") return;
     void loadList();
-  }, [tab, loadList]);
+  }, [loadList]);
 
   const refresh = useCallback(() => {
     void loadHeader();
     void loadList();
   }, [loadHeader, loadList]);
 
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  const bulk = async (what: "trash" | "restore" | "delete" | "read" | "unread") => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    try {
+      const n =
+        what === "trash"
+          ? await api.trashMail(ids)
+          : what === "restore"
+            ? await api.restoreMail(ids)
+            : what === "delete"
+              ? await api.deleteMailForever(ids)
+              : await api.setMailReadBulk(ids, what === "read");
+      toast.success(`${n} message${n === 1 ? "" : "s"} updated`);
+      clearSelection();
+      setConfirmDelete(false);
+      setOpenId(null);
+      refresh();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  /* 2.107.0: the screen keeps itself current.
+     marko: "nemusim vzdy manualne davat sync ale ze v realnom case by sa
+     tam zobrazovali maily".
+
+     This is POLLING and the honest limit is the interval - Gmail's real
+     push needs a public endpoint and TIQR has no server. While this screen
+     is open it runs on marko's configured interval and refreshes the list
+     after each run, so new mail arrives on its own.
+
+     setTimeout and not setInterval: a sync that takes longer than the
+     interval must not stack another one behind it. The backend refuses an
+     overlapping run anyway, but a queue of refused calls is still noise. */
+  useEffect(() => {
+    if (!status?.connected || status.paused) return;
+    const seconds = status.syncIntervalSeconds;
+    if (seconds <= 0) return;
+
+    let stopped = false;
+    const timer = setTimeout(async () => {
+      if (stopped) return;
+      setAutoBusy(true);
+      try {
+        const r = await api.syncMailNow();
+        // Only reload when something actually arrived - a refresh that
+        // changes nothing still re-renders the list under his cursor.
+        if (r.status === "synced" && r.storedNew > 0) {
+          await loadList();
+        }
+        await loadHeader();
+      } catch {
+        // Silent on purpose: an automatic run must never throw a toast at
+        // someone who did not ask for it. A real failure is already on the
+        // status strip.
+      } finally {
+        if (!stopped) {
+          setAutoBusy(false);
+          setTick((t) => t + 1);
+        }
+      }
+    }, seconds * 1000);
+
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+    // `tick` is what re-arms the timer after each run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, status?.connected, status?.paused, status?.syncIntervalSeconds]);
+
   const doSync = async () => {
     setSyncing(true);
     try {
       const result = await api.syncMailNow();
-      if (result.status === "synced") {
-        toast.success(`${result.storedNew} new, ${result.duplicatesIgnored} already seen.`);
-      } else if (result.status === "skipped") {
-        toast.info(result.message);
-      } else {
-        toast.error(result.message);
-      }
-      await loadHeader();
-      if (tab !== "overview") await loadList();
+      if (result.status === "synced") toast.success(result.message);
+      else if (result.status === "skipped") toast.info(result.message);
+      else toast.error(result.message);
+      refresh();
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
       setSyncing(false);
     }
   };
-
-  const open = useMemo(() => visible.find((m) => m.id === openId) ?? null, [visible, openId]);
 
   if (loading) {
     return (
@@ -398,36 +722,39 @@ export default function MailIntelligence() {
     );
   }
 
+  const userLabels = labels.filter((l) => l.kind !== "system" && l.total > 0);
+
   return (
-    /* NOT `h-full`. `Layout` renders pages in a plain `px-7 py-5` div with
-       no height, so `h-full` collapses to the content - see PROTECTED_AREAS,
-       2.55.0. The two-pane block below pins its own height the same way the
-       Notes page does, and the root stays an ordinary block. */
+    /* NOT `h-full`: Layout gives pages no height (PROTECTED_AREAS 2.55.0),
+       so the three-pane block below pins its own, the way Notes does. */
     <div>
       <PageHeader
         title="Mail"
         subtitle={
           status.accountEmail
             ? `${status.accountEmail}${status.unreadCount > 0 ? ` · ${status.unreadCount} unread` : ""}`
-            : "Your inbox, with what matters pulled to the front."
+            : "Your inbox."
         }
+
         actions={
           <>
-            <div className={SEGMENTED_TRACK}>
-              {TABS.map((t) => (
-                <button
-                  key={t.key}
-                  type="button"
-                  onClick={() => {
-                    setTab(t.key);
-                    setOpenId(null);
-                  }}
-                  aria-pressed={tab === t.key}
-                  className={segmentedItemClass(tab === t.key)}
-                >
-                  {t.label}
-                </button>
-              ))}
+            {/* Says out loud that it is keeping itself current, so marko
+                does not sit there wondering whether to press Sync.
+                `PageHeader` has title / subtitle / actions and nothing
+                else - checked, not assumed - so this lives here. */}
+            {status.syncIntervalSeconds > 0 && (
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                {autoBusy || syncing
+                  ? "Checking for new mail..."
+                  : `Checks every ${
+                      status.syncIntervalSeconds < 60
+                        ? `${status.syncIntervalSeconds}s`
+                        : `${Math.round(status.syncIntervalSeconds / 60)} min`
+                    }`}
+              </span>
+            )}
+            <div className="w-56">
+              <Input placeholder="Search mail" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <Button variant="secondary" disabled={syncing || status.paused} onClick={() => void doSync()}>
               {syncing ? <Spinner className="h-4 w-4" /> : null}
@@ -443,107 +770,134 @@ export default function MailIntelligence() {
         </Card>
       )}
 
-      {tab === "overview" ? (
-        overview && (
-          <div className="space-y-5">
-            <Figures>
-              <Figure label="Messages" value={String(overview.totalMessages)} emphasis />
-              <Figure label="Unread" value={String(status.unreadCount)} />
-              <Figure label="New since last sync" value={String(overview.newSinceLastSync)} />
-              <Figure label="Recognised" value={String(overview.recognisedCount)} />
-              <Figure
-                label="Awaiting review"
-                value={String(overview.reviewRequiredCount)}
-                tone={overview.reviewRequiredCount > 0 ? "warning" : "default"}
+      <div className="flex gap-4" style={{ height: "calc(100vh - 220px)", minHeight: "440px" }}>
+        {/* Folders - Gmail's own, plus the few this app adds. */}
+        <Card className="flex w-[190px] shrink-0 flex-col overflow-y-auto p-2">
+          {BUILTIN_FOLDERS.map((f) => {
+            const c = countOf(f.key);
+            return (
+              <FolderRow
+                key={f.key}
+                label={f.label}
+                count={c.total}
+                unread={c.unread}
+                active={folder === f.key}
+                onClick={() => {
+                  setFolder(f.key);
+                  setOpenId(null);
+                  clearSelection();
+                  setConfirmDelete(false);
+                }}
               />
-            </Figures>
-            <Card className="p-4">
-              <h3 className="section-title mb-3">By category</h3>
-              {overview.byCategory.length === 0 ? (
-                <p className="text-xs text-slate-500 dark:text-slate-400">Nothing classified yet.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {overview.byCategory.map((c) => (
-                    <li key={c.category} className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm text-slate-600 dark:text-slate-300">
-                        {categoryLabel(c.category)}
-                      </span>
-                      <span className="num text-sm text-slate-700 dark:text-slate-200">{c.count}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          </div>
-        )
-      ) : (
-        <>
-          <div className="mb-3 flex flex-wrap items-end gap-2">
-            <div className="min-w-[220px] flex-1">
-              <Field label="Search">
-                <Input placeholder="Sender or subject" value={search} onChange={(e) => setSearch(e.target.value)} />
-              </Field>
-            </div>
-            <div className="w-44">
-              <Field label="Category">
-                <Select value={category} onChange={(e) => setCategory(e.target.value)}>
-                  <option value="">All</option>
-                  {Object.keys(CATEGORY_LABELS).map((c) => (
-                    <option key={c} value={c}>
-                      {CATEGORY_LABELS[c]}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </div>
-          </div>
+            );
+          })}
+          {userLabels.length > 0 && (
+            <>
+              <p className="section-title mt-3 px-2.5 pb-1">Your labels</p>
+              {userLabels.map((l) => (
+                <FolderRow
+                  key={l.id}
+                  label={l.name}
+                  count={l.total}
+                  unread={l.unread}
+                  active={folder === l.id}
+                  onClick={() => {
+                    setFolder(l.id);
+                    setOpenId(null);
+                  }}
+                />
+              ))}
+            </>
+          )}
+        </Card>
 
-          {/* Two panes: list and reader - the same shape Notes already uses
-              for list + content, so the app has one answer to that layout. */}
-          <div
-            className="flex min-h-[420px] gap-4"
-            /* The one place this page sets a real height, same mechanism as
-               Notes (2.55.0): the offset covers the sidebar's padding, the
-               page header and the filter row above. Without it the reading
-               pane has no height to scroll inside and the whole list just
-               pushes the page down. */
-            style={{ height: "calc(100vh - 290px)" }}
-          >
-            <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
-              {listLoading ? (
-                <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
-                  <Spinner className="h-4 w-4" /> Loading...
-                </div>
-              ) : visible.length === 0 ? (
-                <div className="p-4">
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nothing here</p>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    {tab === "review"
-                      ? "Recognised mail that needs a look will appear here."
-                      : "Press Sync to fetch new mail."}
-                  </p>
-                </div>
-              ) : (
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  {visible.map((m) => (
-                    <MailRow key={m.id} m={m} active={openId === m.id} onClick={() => setOpenId(m.id)} />
-                  ))}
-                </div>
-              )}
-            </Card>
+        <Card className="flex w-[340px] shrink-0 flex-col overflow-hidden p-0">
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+              <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                {selected.size} selected
+              </span>
+              <button
+                type="button"
+                className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
+                onClick={clearSelection}
+              >
+                Clear
+              </button>
+              <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                <Button variant="ghost" onClick={() => void bulk("read")}>
+                  Read
+                </Button>
+                <Button variant="ghost" onClick={() => void bulk("unread")}>
+                  Unread
+                </Button>
+                {folder === "trash" ? (
+                  <>
+                    <Button variant="secondary" onClick={() => void bulk("restore")}>
+                      Restore
+                    </Button>
+                    {/* Delete is the one irreversible thing here, so it
+                        asks - and the BACKEND refuses anything not already
+                        in the trash regardless of what this button does. */}
+                    {confirmDelete ? (
+                      <Button variant="danger" onClick={() => void bulk("delete")}>
+                        Delete forever?
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
+                        Delete
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <Button variant="secondary" onClick={() => void bulk("trash")}>
+                    Move to trash
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {listLoading ? (
+            <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
+              <Spinner className="h-4 w-4" /> Loading...
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="p-4">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nothing here</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Press Sync to fetch new mail.</p>
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {visible.map((m) => (
+                <MailRow
+                  key={m.id}
+                  m={m}
+                  active={openId === m.id}
+                  checked={selected.has(m.id)}
+                  onClick={() => setOpenId(m.id)}
+                  onToggle={() =>
+                    setSelected((prev) => {
+                      const next = new Set(prev);
+                      if (!next.delete(m.id)) next.add(m.id);
+                      return next;
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </Card>
 
-            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
-              {open ? (
-                <Reader message={open} onChanged={refresh} />
-              ) : (
-                <div className="flex flex-1 items-center justify-center p-8">
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
-                </div>
-              )}
-            </Card>
-          </div>
-        </>
-      )}
+        <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
+          {open ? (
+            <Reader message={open} onChanged={refresh} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center p-8">
+              <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

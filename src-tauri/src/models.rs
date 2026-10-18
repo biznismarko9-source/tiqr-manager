@@ -3341,6 +3341,14 @@ pub struct MailConnectionStatus {
     /// senders only).
     pub scope: String,
     pub unread_count: i64,
+    /// "off" | "manual" | "auto", per record kind. `manual` is the default
+    /// and the one marko described: the proposal waits for his button.
+    pub auto_order: String,
+    pub auto_sale: String,
+    pub auto_finance: String,
+    /// How often the app syncs by itself, in seconds. `0` is off. This is
+    /// polling, not push: TIQR has no server for Google to push to.
+    pub sync_interval_seconds: i64,
 }
 
 /// The Overview screen's counters. Every one is a real `COUNT(*)`; none is a
@@ -3389,6 +3397,38 @@ pub struct MailMessageSummary {
     /// TIQR's own read state, not Gmail's - this app holds a read-only
     /// scope and cannot write a label. See migration 041.
     pub is_unread: bool,
+    pub is_starred: bool,
+    /// The `From` header verbatim. Shown on open so marko can see exactly
+    /// what arrived - "odkial ide, z akeho mailu" - rather than this app's
+    /// reading of it.
+    pub from_raw: Option<String>,
+    pub to_address: Option<String>,
+    /// Where a reply would actually go. Routinely disagrees with `From` on
+    /// a phishing mail, which is why it is worth showing.
+    pub reply_to: Option<String>,
+    /// The one-time code, pulled out so it can be read from the list.
+    /// `None` means none was found, never a guess.
+    pub otp_code: Option<String>,
+    /// What the message SAYS, read out of it. Integer cents and a separate
+    /// currency CODE, this app's rule everywhere. `None` is always "not
+    /// found", never zero and never a guess.
+    pub extracted_amount_cents: Option<i64>,
+    pub extracted_currency: Option<String>,
+    pub extracted_quantity: Option<i64>,
+    pub extracted_reference: Option<String>,
+    /// Per ticket: the total divided by the quantity, fees already in it.
+    pub extracted_unit_cents: Option<i64>,
+    /// Which figure was chosen and why, so the reading can be argued with.
+    pub extracted_basis: Option<String>,
+    /// What this message already became: "order" | "sale" | "finance" plus
+    /// that record's id. Both `None` for everything that has created
+    /// nothing, which is almost every message. This pair is the guard that
+    /// makes a second press - or a second sync - a no-op.
+    pub created_kind: Option<String>,
+    pub created_id: Option<i64>,
+    /// Set when the message is in TIQR's own trash. Gmail is untouched -
+    /// this app holds a read-only scope and cannot trash anything there.
+    pub trashed_at: Option<String>,
     /// Gmail's labels, comma separated and lower-cased. Drives the inbox's
     /// Promotions / Social tabs, which are Gmail's own categories rather
     /// than ones this app invented.
@@ -3402,6 +3442,19 @@ pub struct MailMessageSummary {
 pub struct MailMessageDetail {
     pub message: MailMessageSummary,
     pub history: Vec<MailLogEntry>,
+}
+
+/// One of Gmail's own folders, for the left rail.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLabel {
+    /// Gmail's label id, lower-cased - `inbox`, `starred`, `label_8`.
+    pub id: String,
+    pub name: String,
+    /// Gmail's own `type`: `system` or `user`.
+    pub kind: String,
+    pub total: i64,
+    pub unread: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]

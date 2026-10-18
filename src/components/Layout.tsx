@@ -591,18 +591,54 @@ export default function Layout() {
   // mailbox is connected or syncing is paused, so this costs nothing for
   // anyone not using the feature. The backend also refuses to start a second
   // run while one is going, so this timer can never overlap a manual sync.
+  // 2.107.0: the interval is marko's, not a constant. Read once on mount
+  // and re-read after each run, so changing it in Settings takes effect
+  // without a restart. `0` means he turned it off.
   useEffect(() => {
-    const sync = () => {
-      api.syncMailNow().catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+
+    const runThenSchedule = async () => {
+      if (stopped) return;
+      try {
+        await api.syncMailNow();
+      } catch {
+        // Silent, same as the notification check above: mail is an
+        // optional integration and its being off, paused or unreachable
+        // must never interrupt the app.
+      }
+      if (stopped) return;
+      let seconds = 0;
+      try {
+        seconds = (await api.getMailStatus()).syncIntervalSeconds;
+      } catch {
+        seconds = 0;
+      }
+      if (stopped || seconds <= 0) return;
+      // setTimeout, not setInterval: a run that takes longer than the
+      // interval must not stack up another one behind it.
+      timer = setTimeout(() => void runThenSchedule(), seconds * 1000);
     };
-    // Not fired immediately on mount, unlike the notification check: the
-    // Mail Intelligence screen clears a stale sync claim on ITS first load,
-    // and racing that on every app start would be a sync against a claim
-    // that is about to be cleared. The first automatic run is one interval in.
-    const interval = setInterval(sync, 15 * 60 * 1000);
-    return () => clearInterval(interval);
+
+    // The first run is one interval in, not on mount - the Mail screen
+    // clears a stale sync claim on ITS first load, and racing that on
+    // every app start would sync against a claim about to be cleared.
+    api
+      .getMailStatus()
+      .then((s) => {
+        if (!stopped && s.syncIntervalSeconds > 0) {
+          timer = setTimeout(() => void runThenSchedule(), s.syncIntervalSeconds * 1000);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
+  // Superseded by the self-rescheduling timer above; kept out of the way.
   return (
     <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-transparent">
       {/* 2.0.30: w-56 (224px) -> w-48 (192px) - marko asked to make the

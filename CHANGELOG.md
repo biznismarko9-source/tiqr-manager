@@ -16,6 +16,74 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.107.0 - Maily sa objavujú samy
+
+- **Už nemusíš klikať Sync.** Kým máš Mail otvorený, appka sa pýta Gmailu
+  sama a nové maily pribudnú do zoznamu bez toho, aby si čokoľvek urobil.
+- **Interval si nastavíš** v Settings → Integrations → Email: 30 sekúnd,
+  minúta, 3, 5, 15 minút, alebo „len keď stlačím Sync". Default je minúta.
+  Platí aj pre kontrolu na pozadí, keď si v inej časti appky - predtým tam
+  bolo natvrdo 15 minút.
+- **V hlavičke vidíš, že to žije** - „Checking for new mail..." alebo
+  „Checks every 1 min", takže nesedíš nad tým, či máš kliknúť.
+- **Zoznam sa prekreslí len keď naozaj niečo prišlo.** Obnova, ktorá nič
+  nezmení, by ti len preskočila zoznam pod kurzorom.
+- Automatické behy sú **ticho** - hláška, ktorú si nepýtal, je horšia než
+  žiadna. Skutočnú chybu aj tak vidíš na stavovom pruhu.
+
+**Jedna vec na rovinu: je to opakované pýtanie sa, nie push.** Skutočný
+Gmail push doručuje na verejnú HTTPS adresu a TIQR žiadny server nemá -
+hovorí s Googlom priamo z tvojho počítača, takže nie je kam pushovať.
+Interval je teda skutočný strop a kým je appka zavretá, nekontroluje sa nič.
+
+## 2.106.0 - Z mailu sa dá urobiť záznam, po jednom, tvoje rozhodnutie
+
+- **Pri každom rozpoznanom maile je tlačidlo.** Vidíš, čo z neho TIQR
+  prečítal, a jedným klikom z toho vznikne finančný záznam alebo objednávka.
+- **Nič sa nevymýšľa.** Objednávka potrebuje event, predaj potrebuje order -
+  a tie sa **párujú** na to, čo už v TIQR máš. Event podľa mena v predmete,
+  order podľa jeho vlastnej referencie. Len keď sedí **práve jeden**. Dva
+  eventy s rovnakým menom nie sú voľba, ale blokér - appka ti povie prečo.
+- **Dvakrát sa to stať nemôže.** Mail si pamätá, čo z neho vzniklo, a
+  kontroluje sa to v tom istom zámku ako zápis. Druhý klik, druhý sync aj
+  reštart uprostred behu narazia na to isté.
+- **Používa existujúcu logiku**, nie kópiu - tá istá validácia a to isté
+  rozpočítanie centov ako keď to píšeš ručne.
+- **Auto / manuál / vypnuté, zvlášť pre každý typ**, v Settings. Default je
+  **manuál** pre všetky tri. Auto zasiahne len tam, kde je všetko spárované.
+- **Predaj sa z mailu zámerne nevytvára.** Mail nepovie, ktoré lístky sa
+  predali, a vybrať to za teba podľa predmetu by bola lotéria. Appka ti
+  namiesto toho **pomenuje ten order**, kde to zapíšeš dvoma klikmi.
+- **Tvoje pravidlo o fees platí až do objednávky**: celok ide do ceny
+  lístka, `fees` nesie len zvyšok po delení - 95,00 EUR na 3 lístky uloží
+  31,66 x 3 + 2 a sedí to na cent. Je na to test.
+- **Webhook do Discordu**, keď niečo vznikne - do Finance, Inventory alebo
+  Sales podľa typu.
+
+## 2.105.0 - Bližšie ku Gmailu: starred, záložky, OTP, kôš
+
+- **Starred maily bez obmedzenia dátumu.** Sync beží teraz dvakrát - raz na
+  okno, raz na `is:starred` úplne bez dátumu. Je naozaj jedno, aké sú staré.
+- **Záložky sú tvoje vlastné z Gmailu**, pod skutočnými menami. Spam a Kôš
+  sa dajú prezerať - ale **nikdy sa neklasifikujú**: spam, ktorý tvrdí, že
+  si niečo predal, sa do Important nedostane a nič sa z neho nevyčíta.
+- **OTP kódy majú vlastný priečinok a kód vidíš priamo v zozname.** Ťažšia
+  polovica nie je nájsť číslice, ale odmietnuť ich: musí ich zaštítiť
+  kľúčové slovo do 60 znakov, a štvorciferný rok sa odmietne.
+- **Čítanie cien som prerobil a mal si pravdu.** Bral som posledné číslo pri
+  mene, takže zo 40 € za kus sa stala cena objednávky, ktorá stála 94 €.
+  Teraz hľadá **total s fees** a cenu za lístok z neho **vydelí**. Kde sú
+  len časti a žiadny total, **radšej nepovie nič** - „cena 40 / poplatok 7"
+  nehovorí, či je ten poplatok za kus alebo za objednávku.
+- **Hromadné akcie a kôš.** Označíš viac mailov naraz. **Najskôr kôš, až
+  potom mazanie** - a to pravidlo je vynútené v backende, nie v dialógu.
+  Gmail ostáva nedotknutý, appka má prístup len na čítanie.
+- **Číta toľko, koľko sa dá**: rok dozadu, 750 nových za beh. Ide to len
+  preto, že beh preskakuje to, čo už má.
+- Pri otvorení mailu vidíš **odkiaľ naozaj prišiel** - celú hlavičku From,
+  komu, a kam by šla odpoveď. Ak sa odpoveď líši od odosielateľa, appka na
+  to upozorní.
+
 ## 2.104.0 - Z mailu je normálny inbox
 
 Žiadal si celý inbox. 2.100.0 ti dalo tabuľku toho, čo appka rozpoznala, bez

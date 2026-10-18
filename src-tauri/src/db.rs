@@ -280,6 +280,17 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "041_mail_inbox",
         include_str!("../migrations/041_mail_inbox.sql"),
     ),
+    // 2.105.0: starred mail, Gmail's own folders, OTP codes, full sender.
+    (
+        "042_mail_gmail_parity",
+        include_str!("../migrations/042_mail_gmail_parity.sql"),
+    ),
+    // 2.106.0: what a message turned into, so it can never turn into it
+    // twice.
+    (
+        "043_mail_automation",
+        include_str!("../migrations/043_mail_automation.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.104.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.107.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,121 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.107.0 - the mail screen keeps itself current.**
+
+marko: *"nemusim vzdy manualne davat sync ale ze v realnom case by sa tam
+zobrazovali maily"*.
+
+**It is POLLING, not push, and that is stated in the UI rather than
+glossed over.** Gmail's real push (Cloud Pub/Sub) delivers to a public
+HTTPS endpoint. TIQR has no server - it talks to Google straight from
+marko's machine - so there is nowhere for Google to push TO. The interval
+is the honest limit, and nothing is checked while the app is closed.
+
+**One configurable interval, used in both places.** `mail_sync_interval_
+seconds`, default 60, clamped to 30..3600 with `0` meaning off. The
+background timer in `Layout` and the Mail screen's own both read it, so
+changing it in Settings takes effect without a restart. The previous
+hardcoded 15-minute `setInterval` is gone.
+
+**`setTimeout` that re-arms itself, never `setInterval`.** A run that takes
+longer than the interval must not stack another behind it. The backend
+already refuses an overlapping run (`sync_in_progress`), but a queue of
+refused calls is still noise.
+
+**The list only reloads when something actually arrived.** A refresh that
+changes nothing still re-renders the list under his cursor, so the
+automatic run checks `storedNew > 0` first. Automatic runs are silent -
+a toast nobody asked for is worse than no toast.
+
+**Caught before CI:** I passed a `meta` prop to `PageHeader`, which has
+title / subtitle / actions and nothing else. Invented API, same class as
+the `OrderInput.external_reference` one last release. The indicator lives
+in `actions` instead.
+
+129 tests in `mail.rs`.
+
+**2.106.0 - a message can become a record, one at a time, marko's call.**
+
+marko: *"nech sa nepletie a radsej robi pomaly order po ordri ze ja si
+vlastne viem vybrat v maily ci to urobit automaticky alebo manualne"*.
+
+**Three rules shape all of it.**
+
+1. **Nothing is guessed into existence.** An order needs an event and a
+   sale needs an order. Those are MATCHED against what is already in the
+   database - an event by name appearing in the subject, an order by its
+   own `external_reference` - and only when EXACTLY ONE matches. Two events
+   called the same thing is a blocker, not a coin toss with his data.
+2. **It cannot happen twice.** `created_kind`/`created_id` on the message
+   is checked inside the same lock as the write, so a second press, a
+   second sync and a restart mid-run all hit it.
+3. **It uses the existing business logic.** Finance goes through
+   `create_finance_entry_impl`, orders through `create_order_impl` - same
+   validation, same cent allocation, same protected rules as typing it in.
+
+**Default is MANUAL for all three kinds.** `auto` lets a sync create the
+record itself and only ever acts on a proposal that is already `ready`.
+Each kind is set separately in Settings.
+
+**A sale is deliberately NOT creatable from a mail.** The message does not
+say which tickets were sold, and choosing is not something a subject line
+decides. The matched order is named instead, so it is two clicks on the
+tested path rather than a second creation path invented here.
+
+**Marko's fee rule carries all the way to the order:** the whole total goes
+into `unit_price_cents` and `fees_cents` carries only the division
+remainder, so a 95,00 EUR / 3-ticket order stores 31,66 x 3 + 2 and totals
+to the exact cent the mail stated. There is a test asserting that.
+
+**Caught by the E0063 checker before CI:** `OrderInput` has no
+`external_reference` field - I had invented one. The reference is written
+onto the order's own column in a separate update instead.
+
+126 tests in `mail.rs`.
+
+**2.105.0 - Gmail parity: starred, folders, OTP codes, trash, and a money
+reader that knows which number to take.**
+
+**Starred mail has no date window.** marko: "je jedno kolko ich je a ake su
+stare". The sync now runs TWO queries - the dated one and an unbounded
+`is:starred` - and `is_starred` is its own column so a 2023 starred mail is
+distinguishable from a gap in the window.
+
+**Folders are Gmail's own.** `users.labels.list` is synced so marko's
+labels show under their real names instead of `Label_8`. Spam and Trash are
+fetched and browsable now - and **never classified**: a spam message
+claiming a sale cannot reach Important, and nothing is extracted from one.
+
+**OTP codes get their own folder and the code shows IN THE LIST.** A
+one-time code is useless slowly. The hard half is not finding digits but
+refusing them: a code keyword must vouch for a standalone 4-8 digit run
+within 60 characters, and a 4-digit year is refused outright.
+
+**The money reader was wrong and marko named it exactly:** "neist len zhora
+dole a to cislo ktore sa ti paci zobrat". It took the last amount near a
+currency mark, so a 40 EUR unit price was recorded as the cost of a 94 EUR
+order. It now finds the TOTAL - a labelled total wins, else the largest
+amount, and an amount labelled as a part never wins alone - and derives per
+ticket by dividing, fees already in it. Where every amount is a part and no
+total is stated, it reports NOTHING: "Ticket price 40 / Service fee 7" does
+not say whether that fee is per ticket or per order, and the first version
+invented 47 and then halved it to 23,50.
+
+**Trash is two-step and the rule is in the BACKEND.**
+`delete_mail_forever` refuses any id whose `trashed_at` is NULL. A confirm
+dialog is a habit; a refusal in the command is a guarantee. Gmail is
+untouched throughout - the scope is read-only and cannot trash anything
+there, and the UI says so.
+
+**Reading as much as possible:** a year back, 750 new messages per run,
+20 list pages. Affordable only because a run now skips ids it already has -
+a second pass over the same year costs one list call instead of 750 gets.
+
+**Everything numeric was simulated in Python before shipping** - 21 OTP
+cases, 9 money cases, quantity and reference. That simulation caught two
+real bugs in my own code and one wrong expectation in my own test.
 
 **2.104.0 - Mail is a real inbox now.**
 

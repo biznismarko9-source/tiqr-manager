@@ -79,16 +79,18 @@
 //! and it is the one to keep green when phase 2 adds AI extraction.
 
 use crate::commands::google_auth;
+use crate::commands::notifications::DiscordDestination;
 use crate::commands::sheets_sync::{delete_setting, get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_oauth;
 use crate::models::{
-    MailCategoryCount, MailConnectionStatus, MailLogEntry, MailMessageDetail, MailMessageFilter,
-    MailMessageSummary, MailOverview, MailSyncResult, MailTestResult,
+    MailCategoryCount, MailConnectionStatus, MailLabel, MailLogEntry, MailMessageDetail,
+    MailMessageFilter, MailMessageSummary, MailOverview, MailSyncResult, MailTestResult,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,12 +144,42 @@ const DEFAULT_RETENTION_DAYS: i64 = 90;
 /// classification; nowhere near the whole message.
 pub(crate) const BODY_EXCERPT_LIMIT: usize = 600;
 
-/// Upper bound on one sync run, so a long-closed laptop cannot turn its first
-/// sync into a thousand API calls.
-const SYNC_MAX_MESSAGES: usize = 100;
+/// How many NEW messages one run will fetch in detail.
+///
+/// 2.105.0: 100 -> 500, at marko's own request ("kludne navysme kukanie
+/// mailov a to z celeho mesiaca"). It is affordable now only because a run
+/// no longer fetches what it already has: the ids it already stores are
+/// filtered out before a single `messages.get`, so a second sync over the
+/// same month costs one list call instead of five hundred gets.
+const SYNC_MAX_MESSAGES: usize = 750;
 
-/// How far back the very first sync looks.
-const INITIAL_BACKFILL_DAYS: i64 = 30;
+/// Gmail's `messages.list` returns at most 500 ids per page. Several pages
+/// are walked so a whole month really is a whole month, not the first 500
+/// messages of it.
+const SYNC_MAX_LIST_PAGES: usize = 20;
+
+/// A YEAR. marko: "ak je moznost citat co najviac mailov ako to ide".
+///
+/// Affordable only because of the known-id skip above: the first sync walks
+/// as far back as this and later ones cost one list call, because every id
+/// they return is already stored. A run is still capped, so a year's
+/// backlog fills over several runs rather than in one long freeze - and the
+/// result message says so when there is more waiting.
+const INITIAL_BACKFILL_DAYS: i64 = 365;
+
+/// Gmail labels that mean "do not trust a word of this".
+///
+/// marko asked to SEE spam and trash ("vediet rozlisit tiez promotions,
+/// spam kos atd"), which means they are fetched now. Fetching them is not
+/// the same as believing them: a spam message saying "you sold 4 tickets"
+/// must never land in Important, so classification is SKIPPED for anything
+/// carrying these labels and it is stored as `other` regardless of what it
+/// says. The folder is there to look in, not to act on.
+const UNTRUSTED_LABELS: &[&str] = &["spam", "trash"];
+
+pub(crate) fn is_untrusted(labels: &str) -> bool {
+    labels.split(',').any(|l| UNTRUSTED_LABELS.contains(&l))
+}
 
 /// How far the window overlaps the previous sync. Free, because ingestion is
 /// idempotent - see the module comment.
@@ -192,9 +224,16 @@ pub(crate) struct FetchedMessage {
     /// only as the STARTING state - see migration 041 for why TIQR's read
     /// state is its own and is never written back.
     pub is_unread: bool,
-    /// Gmail's labels, lower-cased and comma separated. `category_promotions`
-    /// and `category_social` are what drive the inbox's own tabs.
+    /// Gmail's labels, lower-cased and comma separated. `category_promotions`,
+    /// `spam`, `trash` and marko's own label ids all arrive through here and
+    /// are what drive the folder list.
     pub labels: String,
+    pub is_starred: bool,
+    /// The `From` header exactly as it arrived, display name and all - the
+    /// detail view shows the raw thing rather than this app's reading of it.
+    pub from_raw: String,
+    pub to_address: Option<String>,
+    pub reply_to: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +635,365 @@ pub(crate) fn detect_platform(from_address: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
+// ---------------------------------------------------------------------------
+// One-time codes (2.105.0).
+//
+// marko: "chcem mat policko kde budu chodit vyhradne len OTP kody".
+//
+// The point of that box is that a one-time code is useless slowly. So the
+// code is pulled out of the subject or the preview and shown IN THE LIST -
+// by the time you have opened the mail, found the digits and gone back, half
+// the window is gone.
+//
+// The hard part is not finding digits, it is NOT finding them. Mail is full
+// of order numbers, invoice numbers, prices, years and tracking numbers. So
+// a number only counts when a code WORD vouches for it and sits near it.
+// ---------------------------------------------------------------------------
+
+/// Words meaning "the number next to me is a one-time code", English and
+/// Slovak. Lower-case; the haystack is lower-cased before matching.
+const OTP_KEYWORDS: &[&str] = &[
+    "verification code", "verification pin", "security code", "one-time", "one time code",
+    "otp", "2fa", "two-factor", "two factor", "passcode", "auth code", "authentication code",
+    "login code", "sign-in code", "sign in code", "confirmation code", "access code",
+    "your code", "code is", "pin is",
+    // Slovak / Czech
+    "overovaci", "overovací", "bezpecnostny kod", "bezpečnostný kód",
+    "jednorazov", "jednorázov", "kod je", "kód je", "overenie", "potvrdzovac",
+];
+
+/// How far from the keyword the digits may sit.
+///
+/// Wide enough for "Your verification code is 123456" and for a code on the
+/// next line; narrow enough that an order number in a different sentence is
+/// not adopted.
+const OTP_WINDOW: usize = 60;
+
+/// Pull a one-time code out of a message, or `None`.
+///
+/// PURE, so every rule - and every false positive worth refusing - is
+/// testable without a mailbox.
+///
+/// Rules, in order:
+///   1. A code keyword must appear. No keyword, no code, however many
+///      digits are lying around.
+///   2. A run of 4-8 digits must sit within `OTP_WINDOW` bytes of it.
+///   3. That run must be STANDALONE - not glued to a letter, a decimal
+///      point or a dash. `#10402931` is an order, `1234,00` is money,
+///      `2026-10-17` is a date.
+///   4. A bare 4-digit year is refused: mail says "2026" constantly and
+///      almost never means a code.
+pub(crate) fn extract_otp(subject: &str, body: &str) -> Option<String> {
+    let hay = format!("{subject}\n{body}").to_lowercase();
+    let bytes = hay.as_bytes();
+    for kw in OTP_KEYWORDS {
+        let Some(at) = hay.find(kw) else { continue };
+        let to = (at + kw.len() + OTP_WINDOW).min(bytes.len());
+        if let Some(code) = first_standalone_code(&bytes[at..to]) {
+            return Some(code);
+        }
+    }
+    None
+}
+
+/// First standalone 4-8 digit run in `b`, by the rules above.
+fn first_standalone_code(b: &[u8]) -> Option<String> {
+    let n = b.len();
+    let mut i = 0usize;
+    while i < n {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        let len = i - start;
+        let before_ok = start == 0 || !bad_before(b[start - 1]);
+        let after_ok = i >= n || !bad_after(b, i);
+        if (4..=8).contains(&len) && before_ok && after_ok {
+            if let Ok(code) = std::str::from_utf8(&b[start..i]) {
+                if !(len == 4 && looks_like_a_year(code)) {
+                    return Some(code.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A character BEFORE the digits that means they are not a bare code:
+/// part of a word (`ab1234`), of a reference (`2024-00318`) or the tail of
+/// a decimal (`1234,00` - the `00` run).
+fn bad_before(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'.' || c == b',' || c == b'-' || c == b'/'
+}
+
+/// A character AFTER the digits that means the same.
+///
+/// 2.105.0: `.` and `,` are treated differently here than before them, and
+/// the simulation of these rules is what caught it. A code at the end of a
+/// sentence - "Your one-time passcode is 90210." - is one of the commonest
+/// shapes there is, and rejecting it on the full stop threw away a real
+/// code. A `.` or `,` only disqualifies when a DIGIT follows it, which is
+/// what makes `1234,00` money and `90210.` a code.
+fn bad_after(b: &[u8], at: usize) -> bool {
+    let c = b[at];
+    if c.is_ascii_alphanumeric() || c == b'-' || c == b'/' {
+        return true;
+    }
+    if c == b'.' || c == b',' {
+        return b.get(at + 1).is_some_and(|n| n.is_ascii_digit());
+    }
+    false
+}
+
+fn looks_like_a_year(code: &str) -> bool {
+    matches!(code.parse::<u32>(), Ok(y) if (1900..=2100).contains(&y))
+}
+
+// ---------------------------------------------------------------------------
+// Reading the numbers out of a message (2.105.0).
+//
+// marko: "ked uvidi ze order confirmation tak mi to da oznamenie na ktore
+// ked kliknem tak ... vytvori order".
+//
+// That is two jobs. This is the FIRST: read the numbers and show them. The
+// second - creating an order, a sale or a finance entry from them - is the
+// next release, deliberately. Those are protected areas, and a parser that
+// writes money records before its reading has ever been checked against
+// real mail is how a mailbox turns into a corrupted ledger. Phase 1 earned
+// the right to store mail by first showing what it had understood; this
+// earns the right to write by the same route.
+//
+// Everything here is PURE and returns `None` rather than a guess.
+// ---------------------------------------------------------------------------
+
+/// Currency codes and symbols worth recognising, as `(needle, code)`.
+const MONEY_MARKS: &[(&str, &str)] = &[
+    ("eur", "EUR"), ("\u{20ac}", "EUR"),
+    ("usd", "USD"), ("$", "USD"),
+    ("gbp", "GBP"), ("\u{a3}", "GBP"),
+    ("czk", "CZK"), ("k\u{10d}", "CZK"),
+    ("pln", "PLN"),
+];
+
+/// What one message says about money.
+///
+/// 2.105.0, and marko's own correction - the first version was wrong in
+/// exactly the way he named:
+///
+///   "neist len zhora dole a to cislo ktore sa ti paci zobrat ale nech to
+///    dava aj zmysel ... ked bude nakup 40e kus ale podtym budu zaratane aj
+///    fees tak normalne to kde su aj fees zaratat ... nerozdelovat fees a
+///    cenu listka ale spojit"
+///
+/// A confirmation mail quotes several amounts: a per-ticket price, a
+/// subtotal, booking fees, delivery, and a total. Taking the last one near
+/// a currency symbol picks whichever happened to be last, which is how a
+/// 40 EUR unit price gets recorded as the cost of an order that actually
+/// cost 94 EUR.
+///
+/// So the rule is: **find the TOTAL - the figure with the fees already in
+/// it - and derive the per-ticket price from it by dividing.** Fees are
+/// never a separate number here, because they are never a separate number
+/// in this app either: an order carries a total and `finance::allocate`
+/// splits it across its tickets to the exact cent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MoneyRead {
+    /// The amount to work with - fees included. Integer cents.
+    pub total_cents: i64,
+    pub currency: String,
+    /// Per ticket, total divided by the quantity. `None` when the message
+    /// did not say how many tickets, because dividing by an assumed 1 is
+    /// how a four-ticket order gets a per-ticket price four times too high.
+    pub unit_cents: Option<i64>,
+    /// WHY this figure was chosen: the phrase that vouched for it, or
+    /// "largest amount". Shown in the UI so the reading can be argued with
+    /// rather than taken on trust.
+    pub basis: String,
+}
+
+/// Phrases that mean "this is the whole thing, fees included".
+const TOTAL_LABELS: &[&str] = &[
+    "order total", "grand total", "total paid", "total cost", "total price",
+    "total charged", "amount paid", "amount charged", "you paid", "total due",
+    "total:", "total ", "celkom", "spolu", "celkov", "k \u{fa}hrade", "cena celkom",
+];
+
+/// Phrases that mean the opposite - a PART, never the figure to record.
+/// An amount wearing one of these is refused as a total even if it is the
+/// only one in the message.
+const PART_LABELS: &[&str] = &[
+    "per ticket", "each", "per seat", "ticket price", "price per",
+    "za kus", "kus", "za listok", "za l\u{ed}stok", "subtotal", "medzis\u{fa}\u{10d}et",
+    "booking fee", "service fee", "delivery", "fee", "poplatok", "doprava", "vat", "dph",
+];
+
+/// Read the money out of a message.
+///
+/// Walks every amount it can find, asks what each one is called, and then
+/// chooses: a labelled total wins; failing that the LARGEST amount wins,
+/// because a total with fees added is by definition bigger than the parts
+/// it is made of. An amount labelled as a part never wins on its own.
+pub(crate) fn extract_money(text: &str, quantity: Option<i64>) -> Option<MoneyRead> {
+    let hay = text.to_lowercase();
+    let found = find_amounts(&hay);
+    if found.is_empty() {
+        return None;
+    }
+
+    // A labelled total, if the message states one.
+    let labelled = found
+        .iter()
+        .filter(|a| a.label.as_deref().is_some_and(|l| TOTAL_LABELS.contains(&l)))
+        .max_by_key(|a| a.cents);
+
+    let (chosen, basis) = match labelled {
+        // The DECISION is already made; this only names it. A window
+        // containing "order total" also contains "total ", so the longest
+        // phrase present is the honest description of what was matched.
+        Some(a) => {
+            let name = TOTAL_LABELS
+                .iter()
+                .filter(|l| hay.contains(**l))
+                .max_by_key(|l| l.len())
+                .map(|l| l.trim_end_matches([' ', ':']).to_string())
+                .or_else(|| a.label.clone())
+                .unwrap_or_else(|| "total".to_string());
+            (a, name)
+        }
+        None => {
+            // No total stated. The largest amount is the total - that is
+            // what "fees are included in it" means arithmetically. But if
+            // the ONLY amounts are explicitly parts, there is no total to
+            // report and guessing one would be worse than saying nothing.
+            let usable: Vec<&Amount> = found
+                .iter()
+                .filter(|a| !a.label.as_deref().is_some_and(|l| PART_LABELS.contains(&l)))
+                .collect();
+            if usable.is_empty() {
+                // EVERY amount is a part and no total is stated. Adding
+                // them is unsound and the first version did it anyway:
+                // "Ticket price 40 EUR / Service fee 7 EUR" for 2 tickets
+                // gave 47 as the order total and then 23,50 per ticket,
+                // which is nonsense. The message does not say whether that
+                // fee is per ticket or per order, and there is no way to
+                // tell - so nothing is reported.
+                //
+                // This is the same rule as everywhere else in this app:
+                // a missing number stays missing. marko can read the mail.
+                return None;
+            }
+            let pick = *usable.iter().max_by_key(|a| a.cents)?;
+            (pick, "largest amount".to_string())
+        }
+    };
+
+    Some(MoneyRead {
+        total_cents: chosen.cents,
+        currency: chosen.currency.clone(),
+        unit_cents: quantity.filter(|q| *q > 0).map(|q| chosen.cents / q),
+        basis,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct Amount {
+    cents: i64,
+    currency: String,
+    /// The total- or part-phrase closest in front of it, if any.
+    label: Option<String>,
+}
+
+/// Every `(amount, currency)` in the text, each tagged with the phrase that
+/// precedes it.
+fn find_amounts(hay: &str) -> Vec<Amount> {
+    let mut out: Vec<Amount> = Vec::new();
+    for (needle, code) in MONEY_MARKS {
+        let mut from = 0usize;
+        while let Some(rel) = hay[from..].find(needle) {
+            let pos = from + rel;
+            let before = &hay[pos.saturating_sub(28)..pos];
+            let after_start = (pos + needle.len()).min(hay.len());
+            let after = &hay[after_start..(after_start + 20).min(hay.len())];
+            if let Some(cents) = amount_cents_in(before).or_else(|| amount_cents_in(after)) {
+                out.push(Amount {
+                    cents,
+                    currency: (*code).to_string(),
+                    label: label_before(hay, pos),
+                });
+            }
+            from = pos + needle.len();
+        }
+    }
+    // Two marks can describe one amount ("EUR 40 €"); one per value is enough.
+    out.sort_by_key(|a| a.cents);
+    out.dedup_by_key(|a| a.cents);
+    out
+}
+
+/// The total- or part-phrase nearest in front of `pos`, within a line's
+/// worth of text. Nearest, not first: "total price per ticket" ends in the
+/// phrase that actually describes the number.
+fn label_before(hay: &str, pos: usize) -> Option<String> {
+    let window = &hay[pos.saturating_sub(48)..pos];
+    TOTAL_LABELS
+        .iter()
+        .chain(PART_LABELS.iter())
+        .filter_map(|l| window.rfind(l).map(|at| (at, (*l).to_string())))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, l)| l)
+}
+
+/// How many tickets the message says. `None` when it does not say - never 1.
+pub(crate) fn extract_quantity(text: &str) -> Option<i64> {
+    let hay = text.to_lowercase();
+    for word in ["tickets", "ticket", "listky", "l\u{ed}stky", "l\u{ed}stok", "seats", "x ticket"] {
+        let Some(at) = hay.find(word) else { continue };
+        let from = at.saturating_sub(12);
+        let digits: String = hay[from..at]
+            .chars()
+            .rev()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let n: i64 = digits.chars().rev().collect::<String>().parse().ok()?;
+        if (1..=200).contains(&n) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// The order / booking / transaction reference the message quotes.
+///
+/// This is the field that will eventually MATCH a mail to an existing TIQR
+/// record, which is why it is worth reading now even though nothing matches
+/// on it yet.
+pub(crate) fn extract_reference(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    for kw in ["order number", "order id", "order #", "order no", "booking reference",
+               "booking number", "reference", "transaction id", "confirmation number",
+               "objedn\u{e1}vka", "\u{10d}\u{ed}slo objedn\u{e1}vky"] {
+        let Some(at) = lower.find(kw) else { continue };
+        let from = at + kw.len();
+        let window = &text[from.min(text.len())..(from + 40).min(text.len())];
+        let token: String = window
+            .chars()
+            .skip_while(|c| !c.is_ascii_alphanumeric())
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        // A reference has digits in it; a word that merely follows the
+        // phrase does not count.
+        if token.len() >= 4 && token.len() <= 40 && token.chars().any(|c| c.is_ascii_digit()) {
+            return Some(token);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Classification {
     pub category: MailCategory,
@@ -864,9 +1262,14 @@ pub(crate) fn fetched_from_gmail(msg: &serde_json::Value) -> Option<FetchedMessa
         .map(|a| a.iter().filter_map(|l| l.as_str()).map(|l| l.to_ascii_lowercase()).collect())
         .unwrap_or_default();
     let is_unread = labels.iter().any(|l| l == "unread");
+    let is_starred = labels.iter().any(|l| l == "starred");
 
     Some(FetchedMessage {
         is_unread,
+        is_starred,
+        from_raw: from_raw.clone(),
+        to_address: header_value(&payload, "To"),
+        reply_to: header_value(&payload, "Reply-To"),
         labels: labels.join(","),
         provider_message_id: id,
         provider_thread_id: jstr(msg, "threadId"),
@@ -974,13 +1377,25 @@ fn upsert_message(
         "review_required"
     };
 
+    let readable = format!("{}\n{}", msg.subject, msg.snippet.as_deref().unwrap_or(""));
+    let trustworthy = !is_untrusted(&msg.labels);
+    // Quantity FIRST: the per-ticket price is the total divided by it, so
+    // the money reading needs to know how many tickets there were.
+    let qty = if trustworthy { extract_quantity(&readable) } else { None };
+    let money = if trustworthy { extract_money(&readable, qty) } else { None };
+    let reference = if trustworthy { extract_reference(&readable) } else { None };
+
     conn.execute(
         "INSERT INTO mail_messages (
             provider, provider_message_id, provider_thread_id, account_email,
             from_address, from_name, subject, snippet, received_at,
             category, confidence, detected_platform, status, review_reason,
-            body_excerpt, first_seen_at, updated_at, is_unread, labels
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            body_excerpt, first_seen_at, updated_at, is_unread, labels,
+            is_starred, from_raw, to_address, reply_to, otp_code,
+            extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference,
+            extracted_unit_cents, extracted_basis
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
+                   ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)",
         params![
             provider.as_str(),
             msg.provider_message_id,
@@ -1000,7 +1415,27 @@ fn upsert_message(
             now,
             now,
             if msg.is_unread { 1 } else { 0 },
-            msg.labels
+            msg.labels,
+            if msg.is_starred { 1 } else { 0 },
+            msg.from_raw,
+            msg.to_address,
+            msg.reply_to,
+            // Never on untrusted mail: a "code" in a phishing message is the
+            // one number nobody should be handed conveniently.
+            if is_untrusted(&msg.labels) {
+                None
+            } else {
+                extract_otp(&msg.subject, msg.snippet.as_deref().unwrap_or(""))
+            },
+            // Nothing is read out of spam or trash either. A number in a
+            // phishing mail is the last one that should be handed to a
+            // screen offering to create a record from it.
+            money.as_ref().map(|m| m.total_cents),
+            money.as_ref().map(|m| m.currency.clone()),
+            qty,
+            reference,
+            money.as_ref().and_then(|m| m.unit_cents),
+            money.as_ref().map(|m| m.basis.clone())
         ],
     )?;
     Ok((conn.last_insert_rowid(), true))
@@ -1070,7 +1505,11 @@ pub(crate) fn sync_query(
     // `-in:spam -in:trash` stays in BOTH modes: a mail that looks like a sale
     // confirmation and is sitting in spam is exactly the one not to trust,
     // and "the whole inbox" has never meant the junk folder to anybody.
-    let base = format!("after:{} -in:spam -in:trash -in:chats", since.format("%Y/%m/%d"));
+    // 2.105.0: `in:anywhere` INCLUDES spam and trash, because marko asked to
+    // be able to tell them apart rather than to have them hidden. What keeps
+    // them harmless is that classification refuses to run on them - see
+    // `UNTRUSTED_LABELS`. `-in:chats` stays: chat logs are not mail.
+    let base = format!("after:{} in:anywhere -in:chats", since.format("%Y/%m/%d"));
     if scope != "known" {
         return base;
     }
@@ -1083,6 +1522,85 @@ pub(crate) fn sync_query(
         }
     }
     format!("{base} ({})", senders.join(" OR "))
+}
+
+/// The SECOND query every sync runs: every starred message, ever.
+///
+/// marko: "chcem aby sa mi vsetky starred maily ukazovali a je jedno kolko
+/// ich je a ake su stare". Deliberately has NO `after:` - a date window is
+/// the one thing that would break that requirement, and starring is the
+/// clearest signal a person can give that a message matters.
+pub(crate) fn starred_query() -> String {
+    "is:starred in:anywhere".to_string()
+}
+
+/// Lists message ids for one query, walking pages until `cap` or the end.
+fn list_message_ids(
+    http: &reqwest::blocking::Client,
+    token: &str,
+    query: &str,
+    cap: usize,
+) -> AppResult<Vec<String>> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut page: Option<String> = None;
+    for _ in 0..SYNC_MAX_LIST_PAGES {
+        let mut url = format!(
+            "{GMAIL_API}/messages?maxResults=500&q={}",
+            urlencode(query)
+        );
+        if let Some(tok) = &page {
+            url.push_str(&format!("&pageToken={}", urlencode(tok)));
+        }
+        let listing = gmail_get(http, token, &url)?;
+        if let Some(arr) = listing.get("messages").and_then(|m| m.as_array()) {
+            ids.extend(arr.iter().filter_map(|m| jstr(m, "id")));
+        }
+        page = jstr(&listing, "nextPageToken");
+        if page.is_none() || ids.len() >= cap {
+            break;
+        }
+    }
+    Ok(ids)
+}
+
+/// Gmail's own label list: `(id, name, kind)`.
+///
+/// A message carries label IDS, not names, and a label marko made himself is
+/// an opaque `Label_8` there. Without this his own folders would be listed
+/// as "Label_8", which is worse than not listing them.
+fn list_gmail_labels(
+    http: &reqwest::blocking::Client,
+    token: &str,
+) -> AppResult<Vec<(String, String, String)>> {
+    let raw = gmail_get(http, token, &format!("{GMAIL_API}/labels"))?;
+    Ok(raw
+        .get("labels")
+        .and_then(|l| l.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| {
+                    Some((
+                        jstr(l, "id")?.to_ascii_lowercase(),
+                        jstr(l, "name")?,
+                        jstr(l, "type").unwrap_or_else(|| "user".to_string()),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn save_labels(conn: &Connection, labels: &[(String, String, String)]) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    for (id, name, kind) in labels {
+        conn.execute(
+            "INSERT INTO mail_labels (id, name, kind, updated_at) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind,
+                                           updated_at = excluded.updated_at",
+            params![id, name, kind, now],
+        )?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1631,10 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         known_senders: KNOWN_SENDERS.iter().map(|(d, _)| (*d).to_string()).collect(),
         extra_senders: get_setting(conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default(),
         scope: mail_scope(conn)?,
+        auto_order: automation_mode(conn, "order"),
+        auto_sale: automation_mode(conn, "sale"),
+        auto_finance: automation_mode(conn, "finance"),
+        sync_interval_seconds: sync_interval_seconds(conn),
         unread_count: conn
             .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
             .unwrap_or(0),
@@ -1364,53 +1886,71 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
         )
     };
     let query = sync_query(last_sync_at.as_deref(), Utc::now(), &extra, &scope);
-    let fetch = tauri::async_runtime::spawn_blocking(move || -> AppResult<(Vec<FetchedMessage>, Option<String>)> {
+
+    // Ids already stored, so the run can skip them entirely.
+    //
+    // 2.105.0: this is what made raising the cap to 500 affordable. The old
+    // sync fetched every id the list returned and only THEN noticed it
+    // already had most of them - so a second pass over the same month cost
+    // five hundred round trips to learn nothing.
+    let known: std::collections::HashSet<String> = {
+        let conn = state.db.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT provider_message_id FROM mail_messages")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+
+    type FetchOutcome = (Vec<FetchedMessage>, Option<String>, Vec<(String, String, String)>, usize);
+    let fetch = tauri::async_runtime::spawn_blocking(move || -> AppResult<FetchOutcome> {
         let (access_token, _) = google_oauth::refresh_access_token(&oauth_client, &refresh_token)?;
         let http = gmail_client()?;
 
         let profile = gmail_get(&http, &access_token, &format!("{GMAIL_API}/profile"))?;
         let history_id = jstr(&profile, "historyId");
 
-        let list_url = format!(
-            "{GMAIL_API}/messages?maxResults={SYNC_MAX_MESSAGES}&q={}",
-            urlencode(&query)
-        );
-        let listing = gmail_get(&http, &access_token, &list_url)?;
-        let ids: Vec<String> = listing
-            .get("messages")
-            .and_then(|m| m.as_array())
-            .map(|arr| arr.iter().filter_map(|m| jstr(m, "id")).collect())
+        // Gmail's own folders, so marko's labels show up under their real
+        // names instead of as `Label_8`.
+        let labels = list_gmail_labels(&http, &access_token).unwrap_or_default();
+
+        // TWO queries. The windowed one is the month; the starred one has no
+        // date bound at all, because "je jedno ... ake su stare".
+        let mut ids = list_message_ids(&http, &access_token, &query, SYNC_MAX_MESSAGES * 3)?;
+        let starred = list_message_ids(&http, &access_token, &starred_query(), SYNC_MAX_MESSAGES * 3)
             .unwrap_or_default();
+        ids.extend(starred);
+
+        // One id can come from both queries; dedupe before spending a call.
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| seen.insert(id.clone()));
+        let listed = ids.len();
+
+        // Anything already stored costs nothing.
+        ids.retain(|id| !known.contains(id));
 
         let mut out = Vec::new();
         for id in ids.iter().take(SYNC_MAX_MESSAGES) {
-            // 2.104.0: METADATA, not `full`.
-            //
-            // Syncing the whole mailbox used to mean downloading and parsing
-            // every body - megabytes of marketing HTML to build a list that
-            // only shows a sender, a subject and a preview. `format=metadata`
-            // returns exactly those plus Gmail's own `snippet` and labels,
-            // which is everything the list needs and a fraction of the bytes.
-            // The body is fetched by `get_mail_body` when a message is
+            // METADATA, not `full` (2.104.0): the list needs a sender, a
+            // subject, a date and a preview, not megabytes of marketing
+            // HTML. The body is fetched by `get_mail_body` when a message is
             // actually opened, and is never stored.
             let url = format!(
                 "{GMAIL_API}/messages/{id}?format=metadata\
-                 &metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+                 &metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date\
+                 &metadataHeaders=To&metadataHeaders=Reply-To"
             );
-            // One message failing must not lose the whole run - the ones that
-            // did arrive are still worth storing.
+            // One message failing must not lose the whole run.
             if let Ok(raw) = gmail_get(&http, &access_token, &url) {
                 if let Some(msg) = fetched_from_gmail(&raw) {
                     out.push(msg);
                 }
             }
         }
-        Ok((out, history_id))
+        Ok((out, history_id, labels, listed))
     })
     .await;
 
     // ---- phase 3: store, and always release the claim ---------------------
-    let (messages, history_id) = match fetch {
+    let (messages, history_id, labels, listed) = match fetch {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             let msg = safe_detail(&e.to_string());
@@ -1444,7 +1984,20 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
             } else {
                 m.body_text.clone()
             };
-            let c = classify(&m.from_address, &m.subject, &body);
+            // SPAM AND TRASH ARE NEVER CLASSIFIED. They are fetched so
+            // marko can look in those folders, which is not the same as
+            // believing them - a spam message saying "you sold 4 tickets"
+            // must never reach Important.
+            let c = if is_untrusted(&m.labels) {
+                Classification {
+                    category: MailCategory::Other,
+                    confidence: "low",
+                    platform: None,
+                    review_reason: None,
+                }
+            } else {
+                classify(&m.from_address, &m.subject, &body)
+            };
             (m, c)
         })
         .collect();
@@ -1468,6 +2021,66 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
         }
     }
 
+    // ---- automation: only what marko has switched to `auto` --------------
+    //
+    // "radsej robi pomaly order po ordri" - so this runs per message, only
+    // for a proposal that is already `ready` (every identifier matched, not
+    // guessed), only for a kind set to `auto`, and never for one that has
+    // already created something. A failure here is logged against the
+    // message and never fails the sync: a mail that could not become a
+    // record is still a mail worth having.
+    let mut auto_created = 0i64;
+    for (msg, _) in &classified {
+        let Some(row_id) = conn
+            .query_row(
+                "SELECT id FROM mail_messages
+                  WHERE provider_message_id = ?1 AND account_email = ?2 AND created_id IS NULL",
+                params![msg.provider_message_id, account_email],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+        else {
+            continue;
+        };
+        let kind = match proposal_kind_for(
+            &conn
+                .query_row(
+                    "SELECT category FROM mail_messages WHERE id = ?1",
+                    params![row_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_default(),
+        ) {
+            Some(k) => k,
+            None => continue,
+        };
+        if automation_mode(&conn, kind) != "auto" {
+            continue;
+        }
+        match create_from_mail_impl(&conn, row_id, "auto") {
+            Ok((k, rid)) => {
+                auto_created += 1;
+                let dest = match k.as_str() {
+                    "finance" => DiscordDestination::Finance,
+                    "order" => DiscordDestination::Inventory,
+                    _ => DiscordDestination::Sales,
+                };
+                crate::commands::notifications::notify_discord(
+                    &conn,
+                    dest,
+                    "Created from email",
+                    &format!("{k} #{rid} - {}", msg.subject),
+                    &[],
+                );
+            }
+            Err(e) => {
+                let _ = log_step(&conn, row_id, "auto_create", "skipped", Some(&e.to_string()));
+            }
+        }
+    }
+    let _ = auto_created;
+
+    save_labels(&conn, &labels)?;
     if let Some(h) = history_id {
         conn.execute("UPDATE mail_sync_state SET last_history_id = ?1 WHERE id = 1", params![h])?;
     }
@@ -1487,7 +2100,11 @@ pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResu
         stored_new,
         duplicates_ignored: duplicates,
         review_required: review,
-        message: format!("{stored_new} new, {duplicates} already seen."),
+        message: if (listed as i64) > fetched && stored_new as usize >= SYNC_MAX_MESSAGES {
+            format!("{stored_new} new. More is waiting - sync again to carry on.")
+        } else {
+            format!("{stored_new} new, {duplicates} already seen.")
+        },
         synced_at: synced_at.clone(),
     })
 }
@@ -1572,12 +2189,28 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary>
         body_excerpt: r.get(13)?,
         is_unread: r.get::<_, i64>(14)? != 0,
         labels: r.get(15)?,
+        is_starred: r.get::<_, i64>(16)? != 0,
+        from_raw: r.get(17)?,
+        to_address: r.get(18)?,
+        reply_to: r.get(19)?,
+        otp_code: r.get(20)?,
+        extracted_amount_cents: r.get(21)?,
+        extracted_currency: r.get(22)?,
+        extracted_quantity: r.get(23)?,
+        extracted_reference: r.get(24)?,
+        trashed_at: r.get(25)?,
+        extracted_unit_cents: r.get(26)?,
+        extracted_basis: r.get(27)?,
+        created_kind: r.get(28)?,
+        created_id: r.get(29)?,
     })
 }
 
 const SUMMARY_COLUMNS: &str = "id, provider, provider_message_id, from_address, from_name, subject,
      snippet, received_at, category, confidence, detected_platform, status, review_reason, body_excerpt,
-     is_unread, IFNULL(labels,'')";
+     is_unread, IFNULL(labels,''), is_starred, from_raw, to_address, reply_to, otp_code,
+     extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference, trashed_at,
+     extracted_unit_cents, extracted_basis, created_kind, created_id";
 
 #[tauri::command]
 pub fn list_mail_messages(
@@ -1801,6 +2434,585 @@ pub fn set_mail_scope(state: State<AppState>, scope: String) -> AppResult<MailCo
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_SCOPE_KEY, scope)?;
     status_impl(&conn)
+}
+
+/// Move messages to TIQR's trash. Reversible; Gmail is untouched.
+#[tauri::command]
+pub fn trash_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("nothing was selected".to_string()));
+    }
+    let conn = state.db.lock().unwrap();
+    let now = Utc::now().to_rfc3339();
+    let mut n = 0usize;
+    for id in &ids {
+        n += conn.execute(
+            "UPDATE mail_messages SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
+            params![now, id],
+        )?;
+    }
+    Ok(n)
+}
+
+/// Put them back.
+#[tauri::command]
+pub fn restore_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("nothing was selected".to_string()));
+    }
+    let conn = state.db.lock().unwrap();
+    let mut n = 0usize;
+    for id in &ids {
+        n += conn.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])?;
+    }
+    Ok(n)
+}
+
+/// Remove rows for good.
+///
+/// marko: "vzdy najskor presunutie do kosa, az potom zmazanie". That rule
+/// is enforced HERE and not in the dialog: anything still live is refused,
+/// and the refusal names how many. A confirm box is a habit; a refusal in
+/// the command is a guarantee, and this is the one irreversible thing in
+/// the whole mail feature.
+///
+/// Gmail is untouched - the message is still in the mailbox and a later
+/// sync will fetch it again, which is the honest behaviour for an app that
+/// holds a read-only scope.
+#[tauri::command]
+pub fn delete_mail_forever(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("nothing was selected".to_string()));
+    }
+    let conn = state.db.lock().unwrap();
+    let live: i64 = {
+        let marks = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT COUNT(*) FROM mail_messages WHERE trashed_at IS NULL AND id IN ({marks})"
+        );
+        let refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?
+    };
+    if live > 0 {
+        return Err(AppError::Validation(format!(
+            "{live} of these are not in the trash yet. Move them to the trash first."
+        )));
+    }
+    let mut n = 0usize;
+    for id in &ids {
+        n += conn.execute("DELETE FROM mail_messages WHERE id = ?1", params![id])?;
+    }
+    Ok(n)
+}
+
+/// Mark several read or unread at once.
+#[tauri::command]
+pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("nothing was selected".to_string()));
+    }
+    let conn = state.db.lock().unwrap();
+    let mut n = 0usize;
+    for id in &ids {
+        n += conn.execute(
+            "UPDATE mail_messages SET is_unread = ?1 WHERE id = ?2",
+            params![if read { 0 } else { 1 }, id],
+        )?;
+    }
+    Ok(n)
+}
+
+// ===========================================================================
+// Turning a message into a record (2.106.0).
+//
+// marko: "nech sa nepletie a radsej robi pomaly order po ordri ze ja si
+// vlastne viem vybrat v maily ci to urobit automaticky alebo manualne".
+//
+// Three rules shape all of this.
+//
+// 1. NOTHING IS GUESSED INTO EXISTENCE. An order needs an event and a sale
+//    needs tickets. This never invents either: it MATCHES against what is
+//    already in the database, by name for an event and by the order's own
+//    `external_reference` for a sale. One match means ready; none or
+//    several means not ready, and the UI says which.
+//
+// 2. IT CANNOT HAPPEN TWICE. `created_kind`/`created_id` on the message is
+//    the guard, checked inside the same lock as the write. A second click,
+//    a second sync and a restart mid-run all hit it.
+//
+// 3. IT USES THE EXISTING BUSINESS LOGIC, never a copy. Finance entries go
+//    through `create_finance_entry_impl`, orders through
+//    `create_order_impl` - the same validation, the same cent allocation,
+//    the same protected rules as when marko types them in by hand.
+// ===========================================================================
+
+/// Automation per record kind: what the SYNC is allowed to do unattended.
+///
+/// `manual` is the default for all three and the one marko described:
+/// the proposal waits, he presses the button. `auto` lets the sync create
+/// it without him - and only ever for a proposal that is already `ready`,
+/// which means every identifier it needed was matched, not guessed.
+/// How often the app syncs by itself, in seconds.
+///
+/// 2.107.0, marko: "nemusim vzdy manualne davat sync ale ze v realnom case
+/// by sa tam zobrazovali maily".
+///
+/// This is POLLING, not push, and the distinction is worth stating because
+/// it is not a shortcut taken here. Gmail's real push (Cloud Pub/Sub)
+/// delivers to a public HTTPS endpoint, and TIQR has no server - it is a
+/// desktop app talking to Google straight from marko's machine. There is
+/// nowhere for Google to push TO. So "real time" is a short poll, and the
+/// honest limit is the interval.
+///
+/// Floor of 30 seconds, and not because of cost - the Gmail quota is far
+/// larger than this could ever use. It is that a sync that has not finished
+/// before the next one starts is just a queue, and the backend refuses an
+/// overlapping run anyway (`sync_in_progress`).
+const MAIL_SYNC_INTERVAL_KEY: &str = "mail_sync_interval_seconds";
+const DEFAULT_SYNC_INTERVAL: i64 = 60;
+
+pub(crate) fn sync_interval_seconds(conn: &Connection) -> i64 {
+    get_setting(conn, MAIL_SYNC_INTERVAL_KEY)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        // 0 means "off"; anything else is clamped into a sane band rather
+        // than trusted, because this value drives a timer.
+        .map(|v| if v <= 0 { 0 } else { v.clamp(30, 3600) })
+        .unwrap_or(DEFAULT_SYNC_INTERVAL)
+}
+
+const MAIL_AUTO_ORDER_KEY: &str = "mail_auto_order";
+const MAIL_AUTO_SALE_KEY: &str = "mail_auto_sale";
+const MAIL_AUTO_FINANCE_KEY: &str = "mail_auto_finance";
+
+fn automation_mode(conn: &Connection, kind: &str) -> String {
+    let key = match kind {
+        "order" => MAIL_AUTO_ORDER_KEY,
+        "sale" => MAIL_AUTO_SALE_KEY,
+        _ => MAIL_AUTO_FINANCE_KEY,
+    };
+    get_setting(conn, key)
+        .ok()
+        .flatten()
+        .filter(|v| v == "auto" || v == "off")
+        .unwrap_or_else(|| "manual".to_string())
+}
+
+/// What a message could become, and whether it is ready to.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailProposal {
+    /// "order" | "sale" | "finance"
+    pub kind: String,
+    /// False when something it needs could not be matched. `blockers` says
+    /// what, in marko's own words rather than a field name.
+    pub ready: bool,
+    pub blockers: Vec<String>,
+    /// A one-line description of exactly what pressing the button does.
+    pub summary: String,
+    pub amount_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub quantity: Option<i64>,
+    /// The record this was matched TO, when it matched one.
+    pub matched_event_id: Option<i64>,
+    pub matched_event_name: Option<String>,
+    pub matched_order_id: Option<i64>,
+    pub matched_order_code: Option<String>,
+    /// Set once something was created from this message - the guard that
+    /// makes a second press a no-op.
+    pub created_kind: Option<String>,
+    pub created_id: Option<i64>,
+}
+
+/// Which kind of record a category wants to become. `None` for anything
+/// this app has no honest mapping for.
+pub(crate) fn proposal_kind_for(category: &str) -> Option<&'static str> {
+    match category {
+        "payout" | "refund" => Some("finance"),
+        "purchase_confirmation" => Some("order"),
+        "sale_confirmation" => Some("sale"),
+        _ => None,
+    }
+}
+
+/// Find the one event this message is about, by name.
+///
+/// Returns `Some` only when EXACTLY ONE event matches. Two events called
+/// "Oasis Live" are a real possibility and picking either would be a coin
+/// toss with marko's data, so that is a blocker, not a choice this makes.
+fn match_event(conn: &Connection, subject: &str) -> AppResult<Option<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM events WHERE name <> ''")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let subject_l = subject.to_lowercase();
+    let mut hits: Vec<(i64, String)> = Vec::new();
+    for row in rows {
+        let (id, name) = row?;
+        let n = name.trim().to_lowercase();
+        // The event's own name has to appear in the subject. Deliberately
+        // not fuzzy: a near-miss here creates an order against the wrong
+        // event, which is worse than asking.
+        if n.len() >= 4 && subject_l.contains(&n) {
+            hits.push((id, name));
+        }
+    }
+    Ok(if hits.len() == 1 { hits.pop() } else { None })
+}
+
+/// Find the one order this message is about, by the reference it quotes.
+///
+/// Matched on `external_reference`, which is a real identifier both sides
+/// agree on - not on a name, an amount or a date.
+fn match_order(conn: &Connection, reference: Option<&str>) -> AppResult<Option<(i64, String)>> {
+    let Some(reference) = reference.map(str::trim).filter(|r| r.len() >= 4) else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT id, code FROM orders
+          WHERE external_reference IS NOT NULL
+            AND LOWER(external_reference) = LOWER(?1)",
+    )?;
+    let rows = stmt.query_map(params![reference], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut hits = rows.collect::<Result<Vec<_>, _>>()?;
+    Ok(if hits.len() == 1 { hits.pop() } else { None })
+}
+
+/// Build the proposal for one message, or `None` when its category maps to
+/// nothing this app can create.
+pub(crate) fn build_proposal(
+    conn: &Connection,
+    m: &MailMessageSummary,
+) -> AppResult<Option<MailProposal>> {
+    let Some(kind) = proposal_kind_for(&m.category) else {
+        return Ok(None);
+    };
+    if is_untrusted(&m.labels) {
+        return Ok(None);
+    }
+
+    let mut blockers: Vec<String> = Vec::new();
+    if m.extracted_amount_cents.is_none() {
+        blockers.push("the message does not state an amount".to_string());
+    }
+    if m.extracted_currency.is_none() {
+        blockers.push("the message does not state a currency".to_string());
+    }
+
+    let (mut ev_id, mut ev_name) = (None, None);
+    let (mut ord_id, mut ord_code) = (None, None);
+
+    match kind {
+        "order" => {
+            match match_event(conn, &m.subject)? {
+                Some((id, name)) => {
+                    ev_id = Some(id);
+                    ev_name = Some(name);
+                }
+                None => blockers
+                    .push("no single event in TIQR matches this subject - open it and pick one".to_string()),
+            }
+            if m.extracted_quantity.is_none() {
+                blockers.push("the message does not say how many tickets".to_string());
+            }
+        }
+        "sale" => match match_order(conn, m.extracted_reference.as_deref())? {
+            Some((id, code)) => {
+                ord_id = Some(id);
+                ord_code = Some(code);
+            }
+            None => blockers.push(
+                "no order in TIQR carries this reference - open the order and record the sale there"
+                    .to_string(),
+            ),
+        },
+        _ => {}
+    }
+
+    let amount = m.extracted_amount_cents;
+    let currency = m.extracted_currency.clone();
+    let summary = match kind {
+        "finance" => format!(
+            "Record {} of {} in Finance",
+            if m.category == "refund" { "a refund" } else { "a payout" },
+            money_words(amount, currency.as_deref())
+        ),
+        "order" => format!(
+            "Create an order for {} ticket(s), {} total",
+            m.extracted_quantity.map(|q| q.to_string()).unwrap_or_else(|| "?".into()),
+            money_words(amount, currency.as_deref())
+        ),
+        _ => format!("Record a sale of {}", money_words(amount, currency.as_deref())),
+    };
+
+    Ok(Some(MailProposal {
+        kind: kind.to_string(),
+        ready: blockers.is_empty(),
+        blockers,
+        summary,
+        amount_cents: amount,
+        currency,
+        quantity: m.extracted_quantity,
+        matched_event_id: ev_id,
+        matched_event_name: ev_name,
+        matched_order_id: ord_id,
+        matched_order_code: ord_code,
+        created_kind: m.created_kind.clone(),
+        created_id: m.created_id,
+    }))
+}
+
+fn money_words(cents: Option<i64>, currency: Option<&str>) -> String {
+    match (cents, currency) {
+        (Some(c), Some(k)) => format!("{}.{:02} {k}", c / 100, (c % 100).abs()),
+        _ => "an unstated amount".to_string(),
+    }
+}
+
+/// Create the record a message proposes.
+///
+/// Returns `(kind, id)` or an error naming what is missing. Everything goes
+/// through the EXISTING creation functions - same validation, same cent
+/// allocation, same protected rules as when marko types it in himself.
+///
+/// The duplicate guard is checked inside this same connection, immediately
+/// before the write, so two clicks or a click racing the sync cannot both
+/// get through.
+pub(crate) fn create_from_mail_impl(
+    conn: &Connection,
+    id: i64,
+    by: &str,
+) -> AppResult<(String, i64)> {
+    let m = conn
+        .query_row(
+            &format!("SELECT {SUMMARY_COLUMNS} FROM mail_messages WHERE id = ?1"),
+            params![id],
+            |r| row_to_summary(r),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
+
+    if let (Some(kind), Some(rid)) = (m.created_kind.clone(), m.created_id) {
+        return Err(AppError::Validation(format!(
+            "this message already created {kind} #{rid}"
+        )));
+    }
+
+    let proposal = build_proposal(conn, &m)?
+        .ok_or_else(|| AppError::Validation("there is nothing to create from this message".to_string()))?;
+    if !proposal.ready {
+        return Err(AppError::Validation(proposal.blockers.join("; ")));
+    }
+
+    let amount = proposal
+        .amount_cents
+        .ok_or_else(|| AppError::Validation("no amount".to_string()))?;
+    let currency = proposal
+        .currency
+        .clone()
+        .ok_or_else(|| AppError::Validation("no currency".to_string()))?;
+    let date = m.received_at.get(..10).unwrap_or("").to_string();
+
+    let created_id = match proposal.kind.as_str() {
+        "finance" => {
+            // A payout is income; a refund is money going back out.
+            let entry_type = if m.category == "refund" { "expense" } else { "income" };
+            let input = crate::models::FinanceEntryInput {
+                entry_type: entry_type.to_string(),
+                entry_date: date.clone(),
+                amount_cents: amount,
+                currency: currency.clone(),
+                scope: "business".to_string(),
+                category_id: None,
+                account_id: None,
+                order_id: proposal.matched_order_id,
+                place: m.detected_platform.clone(),
+                note: Some(format!("From email: {}", m.subject)),
+            };
+            crate::commands::finance_entries::create_finance_entry_impl(conn, &input)?.id
+        }
+        "order" => {
+            let qty = proposal
+                .quantity
+                .filter(|q| *q > 0)
+                .ok_or_else(|| AppError::Validation("no quantity".to_string()))?;
+            // marko's rule: "nerozdelovat fees a cenu listka ale spojit".
+            // The whole total goes into the ticket price; `fees_cents`
+            // carries only the division remainder so the order's own total
+            // still comes to the exact cent the message stated.
+            let unit = amount / qty;
+            let remainder = amount - unit * qty;
+            let input = crate::models::OrderInput {
+                event_id: proposal
+                    .matched_event_id
+                    .ok_or_else(|| AppError::Validation("no event".to_string()))?,
+                supplier_id: None,
+                platform_id: None,
+                purchase_date: date.clone(),
+                quantity: qty,
+                unit_price_cents: unit,
+                fees_cents: remainder,
+                other_costs_cents: 0,
+                currency: currency.clone(),
+                payment_status: Some("paid".to_string()),
+                notes: Some(format!("From email: {}", m.subject)),
+                ticket_type: None,
+                section: None,
+                row_label: None,
+                tier: None,
+                seats: None,
+                restrictions: None,
+            };
+            let order_id = crate::commands::orders::create_order_impl(conn, &input)?;
+            // The reference is what a LATER sale mail will match this
+            // order by (`match_order` above), so it is written onto the
+            // column the order actually keeps one in. `OrderInput` has no
+            // such field - checked, not assumed - so this is a separate
+            // update rather than an invented input field.
+            if let Some(reference) = m.extracted_reference.as_deref() {
+                conn.execute(
+                    "UPDATE orders SET external_reference = ?1 WHERE id = ?2 AND external_reference IS NULL",
+                    params![reference, order_id],
+                )?;
+            }
+            order_id
+        }
+        other => {
+            // A sale needs specific TICKETS, and choosing which of an
+            // order's tickets were sold is not something a subject line
+            // decides. The order is matched and named so marko can record
+            // it there in two clicks - which is still the existing,
+            // tested path rather than a second one invented here.
+            return Err(AppError::Validation(format!(
+                "a {other} has to be recorded on its order, because the message does not say which tickets were sold. Order {} is the one.",
+                proposal.matched_order_code.unwrap_or_else(|| "?".into())
+            )));
+        }
+    };
+
+    conn.execute(
+        "UPDATE mail_messages
+            SET created_kind = ?1, created_id = ?2, created_at = ?3, created_by = ?4,
+                status = 'processed', updated_at = ?3
+          WHERE id = ?5 AND created_id IS NULL",
+        params![proposal.kind, created_id, Utc::now().to_rfc3339(), by, id],
+    )?;
+    log_step(
+        conn,
+        id,
+        "created",
+        &proposal.kind,
+        Some(&format!("{} #{created_id} ({by})", proposal.kind)),
+    )?;
+    Ok((proposal.kind, created_id))
+}
+
+#[tauri::command]
+pub fn get_mail_proposal(state: State<AppState>, id: i64) -> AppResult<Option<MailProposal>> {
+    let conn = state.db.lock().unwrap();
+    let m = conn
+        .query_row(
+            &format!("SELECT {SUMMARY_COLUMNS} FROM mail_messages WHERE id = ?1"),
+            params![id],
+            |r| row_to_summary(r),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
+    build_proposal(&conn, &m)
+}
+
+#[tauri::command]
+pub fn create_from_mail(state: State<AppState>, id: i64) -> AppResult<MailProposal> {
+    {
+        let conn = state.db.lock().unwrap();
+        let (kind, rid) = create_from_mail_impl(&conn, id, "manual")?;
+        let dest = match kind.as_str() {
+            "finance" => DiscordDestination::Finance,
+            "order" => DiscordDestination::Inventory,
+            _ => DiscordDestination::Sales,
+        };
+        // Best effort: a webhook that is off or unreachable must never undo
+        // a record that was created successfully.
+        crate::commands::notifications::notify_discord(
+            &conn,
+            dest,
+            "Created from email",
+            &format!("{kind} #{rid}"),
+            &[],
+        );
+    }
+    get_mail_proposal(state, id)
+}
+
+/// How often the app syncs by itself. `0` turns it off.
+#[tauri::command]
+pub fn set_mail_sync_interval(state: State<AppState>, seconds: i64) -> AppResult<MailConnectionStatus> {
+    if seconds != 0 && !(30..=3600).contains(&seconds) {
+        return Err(AppError::Validation(
+            "the interval must be 0 (off) or between 30 seconds and an hour".to_string(),
+        ));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, MAIL_SYNC_INTERVAL_KEY, &seconds.to_string())?;
+    status_impl(&conn)
+}
+
+/// What the sync may do unattended, per kind.
+#[tauri::command]
+pub fn set_mail_automation(
+    state: State<AppState>,
+    kind: String,
+    mode: String,
+) -> AppResult<MailConnectionStatus> {
+    let key = match kind.as_str() {
+        "order" => MAIL_AUTO_ORDER_KEY,
+        "sale" => MAIL_AUTO_SALE_KEY,
+        "finance" => MAIL_AUTO_FINANCE_KEY,
+        other => {
+            return Err(AppError::Validation(format!(
+                "\"{other}\" is not a record kind - expected order, sale or finance"
+            )))
+        }
+    };
+    if !matches!(mode.as_str(), "off" | "manual" | "auto") {
+        return Err(AppError::Validation(format!(
+            "\"{mode}\" is not a mode - expected off, manual or auto"
+        )));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, key, &mode)?;
+    status_impl(&conn)
+}
+
+/// Gmail's folders, as the UI's left rail shows them.
+///
+/// System labels (INBOX, STARRED, SPAM, TRASH, the CATEGORY_* tabs) and
+/// marko's own are returned together with their `kind`, so the UI can list
+/// his own separately - those are the ones he will go looking for.
+#[tauri::command]
+pub fn list_mail_labels(state: State<AppState>) -> AppResult<Vec<MailLabel>> {
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.name, l.kind,
+                (SELECT COUNT(*) FROM mail_messages m
+                  WHERE ',' || m.labels || ',' LIKE '%,' || l.id || ',%') AS total,
+                (SELECT COUNT(*) FROM mail_messages m
+                  WHERE m.is_unread = 1
+                    AND ',' || m.labels || ',' LIKE '%,' || l.id || ',%') AS unread
+           FROM mail_labels l
+          ORDER BY l.kind, l.name",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(MailLabel {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            kind: r.get(2)?,
+            total: r.get(3)?,
+            unread: r.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 #[tauri::command]
@@ -2545,6 +3757,555 @@ mod tests {
         assert_eq!(dflt, 1);
     }
 
+    // ---- OTP codes --------------------------------------------------------
+
+    #[test]
+    fn a_real_one_time_code_is_found() {
+        let cases = [
+            ("Your verification code is 482913", "", "482913"),
+            ("", "Your security code: 8391", "8391"),
+            ("OTP 55213", "", "55213"),
+            ("Viagogo", "Your one-time passcode is 90210.", "90210"),
+            ("", "Vas overovaci kod je 338172", "338172"),
+            ("", "Kod je 44219", "44219"),
+            // A code at the end of a sentence. The commonest shape there
+            // is, and the first version refused it on the full stop.
+            ("", "Your security code is 773912.", "773912"),
+            ("", "Pin is 4471, valid for 10 minutes", "4471"),
+        ];
+        for (subject, body, want) in cases {
+            assert_eq!(
+                extract_otp(subject, body).as_deref(),
+                Some(want),
+                "subject {subject:?} body {body:?}"
+            );
+        }
+    }
+
+    /// THE HARD HALF. Mail is full of numbers that are not codes, and a box
+    /// that fills up with order numbers is worse than no box.
+    #[test]
+    fn numbers_that_are_not_codes_are_refused() {
+        let cases = [
+            ("Your order 10402931 has shipped", ""),
+            ("Invoice 2024-00318", ""),
+            ("", "Your payout of 1234,00 EUR is on the way"),
+            ("", "The event takes place on 2027"),
+            ("Congratulations, you sold 2 tickets", ""),
+            ("", "Tracking number ab123456 is available"),
+            ("", "Call us on 0800 123 456 for help"),
+            ("Newsletter 4821", ""),
+        ];
+        for (subject, body) in cases {
+            assert_eq!(
+                extract_otp(subject, body),
+                None,
+                "subject {subject:?} body {body:?} must not look like a code"
+            );
+        }
+    }
+
+    /// A keyword is not enough on its own, and neither is a number.
+    #[test]
+    fn a_keyword_with_no_number_and_a_number_with_no_keyword_both_find_nothing() {
+        assert_eq!(extract_otp("Your verification code", "has expired"), None);
+        assert_eq!(extract_otp("", "482913"), None);
+    }
+
+    /// A year is the single most common 4-digit false positive in mail.
+    #[test]
+    fn a_four_digit_year_is_never_taken_as_a_code() {
+        assert_eq!(extract_otp("Your code", "Copyright 2026 Viagogo"), None);
+        // ...but a 4-digit number that is not a plausible year still counts.
+        assert_eq!(extract_otp("Your code is 8312", "").as_deref(), Some("8312"));
+    }
+
+    #[test]
+    fn a_code_too_far_from_its_keyword_is_not_adopted() {
+        let far = format!("Your verification code{}  482913", " ".repeat(OTP_WINDOW + 20));
+        assert_eq!(extract_otp(&far, ""), None);
+    }
+
+    // ---- starred, spam and trust ------------------------------------------
+
+    /// marko: "je jedno kolko ich je a ake su stare" - so the starred query
+    /// must carry NO date bound at all.
+    #[test]
+    fn the_starred_query_has_no_date_window() {
+        let q = starred_query();
+        assert!(q.contains("is:starred"), "{q}");
+        assert!(!q.contains("after:"), "a date window would break the whole point: {q}");
+        assert!(q.contains("in:anywhere"), "starred mail in any folder counts: {q}");
+    }
+
+    #[test]
+    fn the_windowed_query_now_reaches_spam_and_trash_so_they_can_be_browsed() {
+        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "all");
+        assert!(q.contains("in:anywhere"), "{q}");
+        assert!(!q.contains("-in:spam"), "spam is fetched now, just never trusted: {q}");
+    }
+
+    #[test]
+    fn spam_and_trash_are_recognised_as_untrusted_and_nothing_else_is() {
+        assert!(is_untrusted("inbox,spam"));
+        assert!(is_untrusted("trash"));
+        assert!(!is_untrusted("inbox,unread,category_promotions"));
+        assert!(!is_untrusted(""));
+        // A label merely CONTAINING the word is not the word.
+        assert!(!is_untrusted("spamfilter"));
+        assert!(!is_untrusted("not_trash"));
+    }
+
+    #[test]
+    fn gmails_starred_label_becomes_the_starred_flag() {
+        let raw = serde_json::json!({
+            "id": "m1", "internalDate": "1760000000000",
+            "labelIds": ["INBOX", "STARRED"],
+        });
+        let m = fetched_from_gmail(&raw).expect("must parse");
+        assert!(m.is_starred);
+        assert!(!m.is_unread);
+    }
+
+    /// "odkial ide, z akeho mailu" - the raw header and the reply address
+    /// are kept so the detail view can show what really arrived.
+    #[test]
+    fn the_full_sender_headers_are_kept() {
+        let raw = serde_json::json!({
+            "id": "m1", "internalDate": "1760000000000",
+            "payload": { "headers": [
+                { "name": "From", "value": "\"Viagogo\" <noreply@viagogo.com>" },
+                { "name": "To", "value": "me@gmail.com" },
+                { "name": "Reply-To", "value": "support@viagogo.com" },
+            ]},
+        });
+        let m = fetched_from_gmail(&raw).expect("must parse");
+        assert_eq!(m.from_raw, "\"Viagogo\" <noreply@viagogo.com>");
+        assert_eq!(m.from_address, "noreply@viagogo.com");
+        assert_eq!(m.to_address.as_deref(), Some("me@gmail.com"));
+        assert_eq!(m.reply_to.as_deref(), Some("support@viagogo.com"));
+    }
+
+    // ---- reading the numbers ----------------------------------------------
+
+    /// MARKO'S OWN EXAMPLE, as he wrote it: "ked bude nakup 40e kus ale
+    /// podtym budu zaratane aj fees tak normalne to kde su aj fees zaratat
+    /// nie len cena listka".
+    #[test]
+    fn the_total_with_fees_wins_over_the_quoted_per_ticket_price() {
+        let m = extract_money(
+            "2 tickets. Price per ticket 40,00 EUR. Booking fee 7,00 EUR. Order total 94,00 EUR",
+            Some(2),
+        )
+        .expect("must read the total");
+        assert_eq!(m.total_cents, 9400, "the figure with the fees in it");
+        assert_eq!(m.unit_cents, Some(4700), "per ticket is the total divided, not the 40");
+        assert_eq!(m.currency, "EUR");
+        assert_eq!(m.basis, "order total");
+    }
+
+    #[test]
+    fn money_is_read_in_the_shapes_mail_actually_uses() {
+        let cases: &[(&str, Option<i64>, i64, &str, Option<i64>)] = &[
+            ("Order total 94,00 EUR for 2 tickets", Some(2), 9400, "EUR", Some(4700)),
+            ("You paid 240,00 EUR", None, 24000, "EUR", None),
+            ("Celkom 1 234,50 EUR", Some(3), 123450, "EUR", Some(41150)),
+            ("Grand total 1 500,00 EUR", Some(5), 150000, "EUR", Some(30000)),
+            ("Charged $79.99 today", Some(1), 7999, "USD", Some(7999)),
+            ("\u{a3}15.00 service fee refunded", None, 1500, "GBP", None),
+        ];
+        for (text, qty, total, code, unit) in cases {
+            let m = extract_money(text, *qty).unwrap_or_else(|| panic!("{text:?} read nothing"));
+            assert_eq!(m.total_cents, *total, "{text:?}");
+            assert_eq!(m.currency, *code, "{text:?}");
+            assert_eq!(m.unit_cents, *unit, "{text:?}");
+        }
+    }
+
+    /// When EVERY amount is a part and no total is stated, nothing is
+    /// reported. "Ticket price 40 / Service fee 7" does not say whether
+    /// that fee is per ticket or per order, so any total would be invented
+    /// - and the first version invented 47, then halved it to 23,50.
+    #[test]
+    fn ambiguous_parts_with_no_total_are_refused_rather_than_added_up() {
+        assert_eq!(
+            extract_money("Ticket price 40,00 EUR\nService fee 7,00 EUR", Some(2)),
+            None
+        );
+    }
+
+    /// An amount with no currency is not money this app can store, and
+    /// guessing the currency is how totals end up mixed.
+    #[test]
+    fn a_number_with_no_currency_is_not_money() {
+        assert_eq!(extract_money("Your order has shipped", Some(2)), None);
+        assert_eq!(extract_money("2 tickets confirmed", Some(2)), None);
+        assert_eq!(extract_money("Reference 4821", None), None);
+    }
+
+    /// Dividing by an assumed 1 turns a four-ticket order into a per-ticket
+    /// price four times too high, so an unstated quantity yields no unit.
+    #[test]
+    fn no_quantity_means_no_per_ticket_figure_rather_than_a_wrong_one() {
+        let m = extract_money("Order total 94,00 EUR", None).unwrap();
+        assert_eq!(m.total_cents, 9400);
+        assert_eq!(m.unit_cents, None);
+    }
+
+    #[test]
+    fn quantity_is_read_only_when_the_message_states_it() {
+        assert_eq!(extract_quantity("You sold 2 tickets"), Some(2));
+        assert_eq!(extract_quantity("Order of 12 tickets"), Some(12));
+        // Never assumes 1.
+        assert_eq!(extract_quantity("Your ticket is ready"), None);
+        assert_eq!(extract_quantity("Payout 440 EUR"), None);
+    }
+
+    #[test]
+    fn a_reference_needs_digits_and_a_phrase_to_vouch_for_it() {
+        assert_eq!(extract_reference("Order number: TC-88213").as_deref(), Some("TC-88213"));
+        assert_eq!(
+            extract_reference("Transaction ID 8KD92013FF401293X").as_deref(),
+            Some("8KD92013FF401293X")
+        );
+        assert_eq!(extract_reference("Order number: pending"), None);
+        assert_eq!(extract_reference("Thanks for your order"), None);
+    }
+
+    /// Nothing is read out of spam or trash. A number in a phishing mail is
+    /// the last one that should reach a screen offering to act on it.
+    #[test]
+    fn nothing_is_extracted_from_untrusted_mail() {
+        let conn = test_conn();
+        let mut msg = sample_fetched("spam-1");
+        msg.subject = "Your payout of 999,00 EUR is ready".to_string();
+        msg.snippet = Some("Your verification code is 123456".to_string());
+        msg.labels = "spam".to_string();
+        let class = Classification {
+            category: MailCategory::Other,
+            confidence: "low",
+            platform: None,
+            review_reason: None,
+        };
+        upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
+        let row = &list_messages_impl(&conn, &MailMessageFilter::default()).unwrap()[0];
+        assert_eq!(row.extracted_amount_cents, None, "spam must not be read for money");
+        assert_eq!(row.otp_code, None, "spam must never offer a code");
+    }
+
+    // ---- trash ------------------------------------------------------------
+
+    fn one_stored(conn: &Connection, id: &str) -> i64 {
+        let msg = sample_fetched(id);
+        let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
+        upsert_message(conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap().0
+    }
+
+    #[test]
+    fn a_message_starts_out_of_the_trash() {
+        let conn = test_conn();
+        one_stored(&conn, "g1");
+        let rows = list_messages_impl(&conn, &MailMessageFilter::default()).unwrap();
+        assert_eq!(rows[0].trashed_at, None);
+    }
+
+    /// THE RULE marko asked for: "vzdy najskor presunutie do kosa, az potom
+    /// zmazanie". Enforced in the command, not in a dialog.
+    #[test]
+    fn deleting_something_not_in_the_trash_is_refused_and_changes_nothing() {
+        let conn = test_conn();
+        let id = one_stored(&conn, "g1");
+
+        // Mirrors delete_mail_forever's own guard.
+        let live: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_messages WHERE trashed_at IS NULL AND id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 1, "it is live, so a delete must be refused");
+
+        let still: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still, 1, "nothing may have been removed");
+    }
+
+    #[test]
+    fn trashing_then_restoring_round_trips() {
+        let conn = test_conn();
+        let id = one_stored(&conn, "g1");
+        conn.execute(
+            "UPDATE mail_messages SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
+            params![Utc::now().to_rfc3339(), id],
+        )
+        .unwrap();
+        let rows = list_messages_impl(&conn, &MailMessageFilter::default()).unwrap();
+        assert!(rows[0].trashed_at.is_some());
+
+        conn.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])
+            .unwrap();
+        let rows = list_messages_impl(&conn, &MailMessageFilter::default()).unwrap();
+        assert_eq!(rows[0].trashed_at, None);
+    }
+
+    #[test]
+    fn trashing_twice_does_not_move_the_timestamp() {
+        let conn = test_conn();
+        let id = one_stored(&conn, "g1");
+        let first = "2026-01-01T00:00:00Z";
+        for stamp in [first, "2026-06-01T00:00:00Z"] {
+            conn.execute(
+                "UPDATE mail_messages SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
+                params![stamp, id],
+            )
+            .unwrap();
+        }
+        let got: Option<String> = conn
+            .query_row("SELECT trashed_at FROM mail_messages WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got.as_deref(), Some(first), "the original trash time must stand");
+    }
+
+    // ---- the automatic sync interval --------------------------------------
+
+    #[test]
+    fn the_sync_interval_defaults_to_a_minute() {
+        let conn = test_conn();
+        assert_eq!(sync_interval_seconds(&conn), DEFAULT_SYNC_INTERVAL);
+    }
+
+    #[test]
+    fn zero_means_off_and_everything_else_is_clamped_into_a_sane_band() {
+        let conn = test_conn();
+        for (stored, want) in [
+            ("0", 0),
+            ("-5", 0),
+            ("10", 30),      // below the floor
+            ("30", 30),
+            ("300", 300),
+            ("99999", 3600), // above the ceiling
+        ] {
+            set_setting(&conn, MAIL_SYNC_INTERVAL_KEY, stored).unwrap();
+            assert_eq!(sync_interval_seconds(&conn), want, "stored {stored:?}");
+        }
+    }
+
+    /// A value this app cannot read drives a TIMER, so it falls back to the
+    /// default rather than to something arbitrary.
+    #[test]
+    fn an_unreadable_interval_falls_back_to_the_default() {
+        let conn = test_conn();
+        set_setting(&conn, MAIL_SYNC_INTERVAL_KEY, "soon").unwrap();
+        assert_eq!(sync_interval_seconds(&conn), DEFAULT_SYNC_INTERVAL);
+    }
+
+    // ---- proposals and creation -------------------------------------------
+
+    fn seed_event(conn: &Connection, name: &str) -> i64 {
+        conn.execute("INSERT INTO events (name) VALUES (?1)", params![name]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn store(conn: &Connection, subject: &str, labels: &str) -> i64 {
+        let mut msg = sample_fetched(&format!("m-{subject}"));
+        msg.subject = subject.to_string();
+        msg.labels = labels.to_string();
+        msg.snippet = Some(subject.to_string());
+        let body = msg.snippet.clone().unwrap_or_default();
+        let class = if is_untrusted(&msg.labels) {
+            Classification { category: MailCategory::Other, confidence: "low", platform: None, review_reason: None }
+        } else {
+            classify(&msg.from_address, &msg.subject, &body)
+        };
+        upsert_message(conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap().0
+    }
+
+    fn summary_of(conn: &Connection, id: i64) -> MailMessageSummary {
+        conn.query_row(
+            &format!("SELECT {SUMMARY_COLUMNS} FROM mail_messages WHERE id = ?1"),
+            params![id],
+            |r| row_to_summary(r),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_category_with_no_honest_mapping_proposes_nothing() {
+        assert_eq!(proposal_kind_for("other"), None);
+        assert_eq!(proposal_kind_for("event_update"), None);
+        assert_eq!(proposal_kind_for("account_notice"), None);
+        assert_eq!(proposal_kind_for("payout"), Some("finance"));
+        assert_eq!(proposal_kind_for("refund"), Some("finance"));
+        assert_eq!(proposal_kind_for("purchase_confirmation"), Some("order"));
+        assert_eq!(proposal_kind_for("sale_confirmation"), Some("sale"));
+    }
+
+    #[test]
+    fn a_payout_proposes_a_finance_entry_and_is_ready() {
+        let conn = test_conn();
+        let id = store(&conn, "Your payout of 240,00 EUR is on the way", "inbox");
+        let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().expect("a proposal");
+        assert_eq!(p.kind, "finance");
+        assert!(p.ready, "blockers: {:?}", p.blockers);
+        assert_eq!(p.amount_cents, Some(24000));
+        assert_eq!(p.currency.as_deref(), Some("EUR"));
+    }
+
+    /// NOTHING IS GUESSED INTO EXISTENCE. An order needs an event, and when
+    /// none matches the proposal says so instead of inventing one.
+    #[test]
+    fn an_order_with_no_matching_event_is_not_ready_and_says_why() {
+        let conn = test_conn();
+        let id = store(&conn, "Order confirmation 4471982 - total 94,00 EUR for 2 tickets", "inbox");
+        let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().expect("a proposal");
+        assert_eq!(p.kind, "order");
+        assert!(!p.ready);
+        assert!(p.blockers.iter().any(|b| b.contains("event")), "{:?}", p.blockers);
+    }
+
+    #[test]
+    fn an_order_whose_event_matches_exactly_once_is_ready() {
+        let conn = test_conn();
+        seed_event(&conn, "Coldplay Wembley");
+        let id = store(
+            &conn,
+            "Order confirmation for Coldplay Wembley - total 94,00 EUR for 2 tickets",
+            "inbox",
+        );
+        let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().expect("a proposal");
+        assert!(p.ready, "blockers: {:?}", p.blockers);
+        assert_eq!(p.matched_event_name.as_deref(), Some("Coldplay Wembley"));
+    }
+
+    /// Two events of the same name is a real possibility, and picking
+    /// either would be a coin toss with marko's data.
+    #[test]
+    fn two_events_with_the_same_name_block_rather_than_one_being_picked() {
+        let conn = test_conn();
+        seed_event(&conn, "Coldplay Wembley");
+        seed_event(&conn, "Coldplay Wembley");
+        let id = store(
+            &conn,
+            "Order confirmation for Coldplay Wembley - total 94,00 EUR for 2 tickets",
+            "inbox",
+        );
+        let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().expect("a proposal");
+        assert!(!p.ready);
+        assert!(p.blockers.iter().any(|b| b.contains("event")), "{:?}", p.blockers);
+    }
+
+    #[test]
+    fn spam_proposes_nothing_however_convincing_it_is() {
+        let conn = test_conn();
+        let id = store(&conn, "Your payout of 9 999,00 EUR is on the way", "spam");
+        assert!(build_proposal(&conn, &summary_of(&conn, id)).unwrap().is_none());
+    }
+
+    /// Creating runs through the EXISTING finance logic and leaves a link.
+    #[test]
+    fn creating_a_finance_entry_from_a_payout_works_and_records_the_link() {
+        let conn = test_conn();
+        let id = store(&conn, "Your payout of 240,00 EUR is on the way", "inbox");
+        let (kind, rid) = create_from_mail_impl(&conn, id, "manual").unwrap();
+        assert_eq!(kind, "finance");
+
+        let (amount, ty): (i64, String) = conn
+            .query_row(
+                "SELECT amount_cents, entry_type FROM finance_entries WHERE id = ?1",
+                params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 24000);
+        assert_eq!(ty, "income", "a payout is money coming in");
+
+        let m = summary_of(&conn, id);
+        assert_eq!(m.created_kind.as_deref(), Some("finance"));
+        assert_eq!(m.created_id, Some(rid));
+        assert_eq!(m.status, "processed");
+    }
+
+    #[test]
+    fn a_refund_is_recorded_as_money_going_back_out() {
+        let conn = test_conn();
+        let id = store(&conn, "Refund issued - 120,00 EUR", "inbox");
+        let (_, rid) = create_from_mail_impl(&conn, id, "manual").unwrap();
+        let ty: String = conn
+            .query_row("SELECT entry_type FROM finance_entries WHERE id = ?1", params![rid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ty, "expense");
+    }
+
+    /// THE DUPLICATE GUARD. A second press, a second sync and a restart
+    /// mid-run all land here.
+    #[test]
+    fn the_same_message_can_never_create_a_second_record() {
+        let conn = test_conn();
+        let id = store(&conn, "Your payout of 240,00 EUR is on the way", "inbox");
+        create_from_mail_impl(&conn, id, "manual").unwrap();
+
+        let err = create_from_mail_impl(&conn, id, "manual").unwrap_err();
+        assert!(err.to_string().contains("already created"), "{err}");
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM finance_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "exactly one entry, not two");
+    }
+
+    #[test]
+    fn creating_from_a_message_that_is_not_ready_is_refused_and_writes_nothing() {
+        let conn = test_conn();
+        let id = store(&conn, "Order confirmation 4471982 - total 94,00 EUR for 2 tickets", "inbox");
+        assert!(create_from_mail_impl(&conn, id, "manual").is_err());
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// marko's rule, all the way through to the order: "nerozdelovat fees a
+    /// cenu listka ale spojit". The whole total goes into the ticket price
+    /// and `fees_cents` carries only the division remainder, so the order's
+    /// own total is the exact figure the message stated.
+    #[test]
+    fn an_order_created_from_mail_keeps_the_total_to_the_cent() {
+        let conn = test_conn();
+        seed_event(&conn, "Coldplay Wembley");
+        let id = store(
+            &conn,
+            "Order confirmation for Coldplay Wembley - order total 95,00 EUR for 3 tickets",
+            "inbox",
+        );
+        let (kind, order_id) = create_from_mail_impl(&conn, id, "manual").unwrap();
+        assert_eq!(kind, "order");
+
+        let (unit, fees, qty): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT unit_price_cents, fees_cents, quantity FROM orders WHERE id = ?1",
+                params![order_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(qty, 3);
+        assert_eq!(unit * qty + fees, 9500, "the order must total exactly what the mail said");
+        assert_eq!(unit, 3166);
+        assert_eq!(fees, 2, "the remainder, not an invented fee");
+    }
+
+    #[test]
+    fn automation_is_manual_until_it_is_switched() {
+        let conn = test_conn();
+        for kind in ["order", "sale", "finance"] {
+            assert_eq!(automation_mode(&conn, kind), "manual", "{kind}");
+        }
+        set_setting(&conn, MAIL_AUTO_FINANCE_KEY, "auto").unwrap();
+        assert_eq!(automation_mode(&conn, "finance"), "auto");
+        assert_eq!(automation_mode(&conn, "order"), "manual", "one kind does not change another");
+        set_setting(&conn, MAIL_AUTO_FINANCE_KEY, "nonsense").unwrap();
+        assert_eq!(automation_mode(&conn, "finance"), "manual", "a bad value falls back to manual");
+    }
+
     // ---- extra senders ----------------------------------------------------
 
     #[test]
@@ -2611,6 +4372,10 @@ mod tests {
             body_text: "Well done".to_string(),
             is_unread: true,
             labels: "inbox,unread".to_string(),
+            is_starred: false,
+            from_raw: "Viagogo <noreply@viagogo.com>".to_string(),
+            to_address: Some("me@gmail.com".to_string()),
+            reply_to: None,
         }
     }
 
@@ -2748,6 +4513,10 @@ mod tests {
                 body_text: String::new(),
                 is_unread: true,
                 labels: "inbox".to_string(),
+                is_starred: false,
+                from_raw: from.to_string(),
+                to_address: None,
+                reply_to: None,
             };
             let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
             upsert_message(conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
