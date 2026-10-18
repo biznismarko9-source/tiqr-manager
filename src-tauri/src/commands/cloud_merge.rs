@@ -849,8 +849,18 @@ fn merge_inner(conn: &mut Connection, db_path: std::path::PathBuf) -> AppResult<
         [downloaded.to_string_lossy().to_string()],
     )?;
     let merged = (|| -> AppResult<(Vec<MergeTableResult>, Vec<String>)> {
-        let tx = conn.transaction()?;
+        let mut tx = conn.transaction()?;
         let out = merge_attached(&tx)?;
+        // 2.110.0: the settings both computers share - the mailbox, his
+        // mail rules, the webhooks (commands/shared_settings.rs). In a
+        // savepoint of its own: a settings problem must never roll back the
+        // orders, tickets and sales merged above.
+        {
+            let sp = tx.savepoint()?;
+            if crate::commands::shared_settings::merge_from_remote(&sp).is_ok() {
+                sp.commit()?;
+            }
+        }
         tx.commit()?;
         Ok(out)
     })();

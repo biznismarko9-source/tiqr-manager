@@ -18,16 +18,18 @@
 // like a bug: read state is TIQR's own, because the scope is read-only and
 // cannot write a Gmail label; and nothing here creates a sale, an order or
 // a finance entry.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
 import {
   type MailConnectionStatus,
+  type MailFolderCount,
   type MailLabel,
-  type MailMessageFilter,
   type MailMessageSummary,
   type MailProposal,
   type MailReviewOutcome,
+  type MailSyncResult,
 } from "../lib/types";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
 import { IconMail } from "../components/icons";
@@ -36,31 +38,38 @@ import { useToast } from "../lib/toast";
 
 /** Folders this app defines itself, above Gmail's own. */
 type Builtin =
-  | "important"
-  | "otp"
-  | "starred"
   | "inbox"
+  | "important"
+  | "starred"
+  | "finances"
+  | "otp"
   | "review"
   | "promotions"
-  | "social"
-  | "updates"
-  | "forums"
   | "spam"
   | "trash";
 
-const BUILTIN_FOLDERS: { key: Builtin; label: string }[] = [
-  { key: "important", label: "Important" },
-  { key: "otp", label: "OTP codes" },
-  { key: "starred", label: "Starred" },
+/* 2.110.0, in the order marko gave: "hlavny inbox: tam budu vsetky spravy
+   okrem napriklad spamu a promotions, potom bude starred, potom budu
+   finances, potom spam, trash a labels" - and "najskor treba important".
+   Social / Updates / Forums are not folders any more: they are inbox mail,
+   and the Inbox holds them. What each folder contains is decided in ONE
+   place, the backend (commands/mail.rs::folder_expr). `gap` starts a new
+   group in the rail. */
+const BUILTIN_FOLDERS: { key: Builtin; label: string; gap?: boolean }[] = [
   { key: "inbox", label: "Inbox" },
+  { key: "important", label: "Important" },
+  { key: "starred", label: "Starred" },
+  { key: "finances", label: "Finances" },
+  { key: "otp", label: "OTP codes", gap: true },
   { key: "review", label: "Needs review" },
-  { key: "promotions", label: "Promotions" },
-  { key: "social", label: "Social" },
-  { key: "updates", label: "Updates" },
-  { key: "forums", label: "Forums" },
+  { key: "promotions", label: "Promotions", gap: true },
   { key: "spam", label: "Spam" },
   { key: "trash", label: "Trash" },
 ];
+
+/** How many messages one page of a folder loads. Scrolling loads the next
+ *  page - there is no end to how far back a folder goes. */
+const PAGE = 200;
 
 /* Not a folder: the rail's Settings row reuses `folder` as the selected
    pane, and this key can never collide with a Gmail label id - those are
@@ -95,49 +104,7 @@ function formatWhen(iso: string) {
   }
 }
 
-/** Which messages a folder holds. One place, so the rail's counts and the
- *  list can never disagree. */
-function inFolder(m: MailMessageSummary, folder: string): boolean {
-  // TIQR's own trash takes a message out of every other folder - the whole
-  // point of a trash is that things leave where they were. Gmail's own
-  // `trash` label lands in the same folder, so there is one Trash here and
-  // not two.
-  if (m.trashedAt) return folder === "trash";
-  switch (folder) {
-    case "important":
-      return m.category !== "other" && !isJunk(m);
-    case "otp":
-      return !!m.otpCode;
-    case "starred":
-      return m.isStarred;
-    case "review":
-      return m.status === "review_required";
-    case "inbox":
-      return (
-        has(m, "inbox") &&
-        !isJunk(m) &&
-        !has(m, "category_promotions") &&
-        !has(m, "category_social") &&
-        !has(m, "category_updates") &&
-        !has(m, "category_forums")
-      );
-    case "promotions":
-      return has(m, "category_promotions");
-    case "social":
-      return has(m, "category_social");
-    case "updates":
-      return has(m, "category_updates");
-    case "forums":
-      return has(m, "category_forums");
-    case "spam":
-      return has(m, "spam");
-    case "trash":
-      return has(m, "trash");  // the locally-trashed are caught above
-    default:
-      // One of marko's own Gmail labels, matched by its id.
-      return has(m, folder);
-  }
-}
+const fmt = (n: number) => n.toLocaleString();
 
 function FolderRow({
   label,
@@ -156,6 +123,7 @@ function FolderRow({
     <button
       type="button"
       onClick={onClick}
+      title={label}
       className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition ${
         active
           ? "bg-brand-600/15 font-semibold text-brand-700 dark:text-brand-300"
@@ -172,19 +140,22 @@ function FolderRow({
   );
 }
 
-function MailRow({
+/* Memoised: a folder can hold thousands of rows once he has scrolled, and
+   a new page arriving must not re-render every one already on screen. */
+const MailRow = memo(function MailRow({
   m,
   active,
   checked,
-  onClick,
+  onOpen,
   onToggle,
 }: {
   m: MailMessageSummary;
   active: boolean;
   checked: boolean;
-  onClick: () => void;
-  onToggle: () => void;
+  onOpen: (id: number) => void;
+  onToggle: (id: number) => void;
 }) {
+  const onClick = () => onOpen(m.id);
   return (
     <button
       type="button"
@@ -204,7 +175,7 @@ function MailRow({
           onClick={(e) => e.stopPropagation()}
           onChange={(e) => {
             e.stopPropagation();
-            onToggle();
+            onToggle(m.id);
           }}
           aria-label="Select"
         />
@@ -245,9 +216,13 @@ function MailRow({
       )}
     </button>
   );
-}
+});
 
-function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged: () => void }) {
+/** What changed in the reader: a field of this message (patched in place,
+ *  so the list does not jump), or `null` for "something bigger - reload". */
+type ReaderChange = Partial<MailMessageSummary> | null;
+
+function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged: (change: ReaderChange) => void }) {
   const toast = useToast();
   const [body, setBody] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -269,7 +244,8 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
       .getMailBody(message.id)
       .then((b) => {
         setBody(b);
-        onChanged();
+        // Opening marks it read, in TIQR only.
+        onChanged({ isUnread: false });
       })
       .catch((e) => {
         toast.error(errMsg(e));
@@ -398,7 +374,7 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
               )}
             </dl>
             <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
-              Read only - TIQR does not create records from email yet.
+              Read from the message - check it before anything is created from it.
             </p>
           </div>
         )}
@@ -442,7 +418,7 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
                           const p = await api.createFromMail(message.id);
                           setProposal(p);
                           toast.success(`${p.createdKind} #${p.createdId} created`);
-                          onChanged();
+                          onChanged(null);
                         } catch (e) {
                           toast.error(errMsg(e));
                         } finally {
@@ -507,7 +483,7 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
             setBusy(true);
             try {
               await api.setMailReviewOutcome(message.id, "reviewed" as MailReviewOutcome);
-              onChanged();
+              onChanged(null);
             } catch (e) {
               toast.error(errMsg(e));
             } finally {
@@ -523,7 +499,7 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
           onClick={async () => {
             try {
               await api.setMailRead(message.id, message.isUnread);
-              onChanged();
+              onChanged({ isUnread: !message.isUnread });
             } catch (e) {
               toast.error(errMsg(e));
             }
@@ -541,56 +517,113 @@ function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged
 
 export default function MailIntelligence() {
   const toast = useToast();
-  const [folder, setFolder] = useState<string>("important");
+  const [folder, setFolder] = useState<string>("inbox");
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
   const [labels, setLabels] = useState<MailLabel[]>([]);
+  const [counts, setCounts] = useState<Record<string, MailFolderCount>>({});
   const [rows, setRows] = useState<MailMessageSummary[]>([]);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [autoBusy, setAutoBusy] = useState(false);
-  const [syncProgress, setSyncProgress] = useState(0);
-  const [tick, setTick] = useState(0);
+  const [query, setQuery] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<MailSyncResult | null>(lastMailSync());
+  const [nudged, setNudged] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const filter = useMemo<MailMessageFilter>(
-    () => ({ search: search.trim() || null, limit: 2000 }),
-    [search],
-  );
+  /* Which folder and search the screen is showing. A page that comes back
+     after he has already moved on is dropped rather than shown under the
+     wrong folder. */
+  const view = `${folder}|${query ?? ""}`;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
 
-  const visible = useMemo(() => rows.filter((m) => inFolder(m, folder)), [rows, folder]);
-  const open = useMemo(() => visible.find((m) => m.id === openId) ?? null, [visible, openId]);
+  // Typing searches as he types, without a query per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(search.trim() || null), 250);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  /* Counts come from the same `inFolder` the list uses, so the rail can
-     never show a number the folder does not contain. */
-  const countOf = useCallback(
-    (key: string) => {
-      const inIt = rows.filter((m) => inFolder(m, key));
-      return { total: inIt.length, unread: inIt.filter((m) => m.isUnread).length };
-    },
-    [rows],
-  );
+  const open = useMemo(() => rows.find((m) => m.id === openId) ?? null, [rows, openId]);
 
   const loadHeader = useCallback(async () => {
-    const [s, l] = await Promise.all([api.getMailStatus(), api.listMailLabels()]);
+    const [s, l, c] = await Promise.all([api.getMailStatus(), api.listMailLabels(), api.getMailFolderCounts()]);
     setStatus(s);
     setLabels(l);
+    setCounts(Object.fromEntries(c.map((x) => [x.key, x])));
   }, []);
 
-  const loadList = useCallback(async () => {
+  /** The newest page of the folder on screen. */
+  const loadFolder = useCallback(async () => {
+    if (folder === SETTINGS_FOLDER) return;
+    const key = viewRef.current;
     setListLoading(true);
     try {
-      setRows(await api.listMailMessages(filter));
+      const page = await api.listMailFolder(folder, query, null, PAGE);
+      if (viewRef.current !== key) return;
+      setRows(page);
+      setHasMore(page.length === PAGE);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
-      setListLoading(false);
+      if (viewRef.current === key) setListLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter]);
+  }, [folder, query]);
+
+  /** The next, older page - what scrolling to the bottom asks for. */
+  const loadMore = useCallback(async () => {
+    const current = rowsRef.current;
+    if (!hasMore || loadingMore || current.length === 0 || folder === SETTINGS_FOLDER) return;
+    const key = viewRef.current;
+    const last = current[current.length - 1];
+    setLoadingMore(true);
+    try {
+      const page = await api.listMailFolder(folder, query, { receivedAt: last.receivedAt, id: last.id }, PAGE);
+      if (viewRef.current !== key) return;
+      setRows((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        return [...prev, ...page.filter((m) => !seen.has(m.id))];
+      });
+      setHasMore(page.length === PAGE);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setLoadingMore(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folder, query, hasMore, loadingMore]);
+
+  /** New mail arrived: refresh the top of the folder without losing his
+   *  place further down. */
+  const refreshTop = useCallback(async () => {
+    if (folder === SETTINGS_FOLDER) return;
+    const key = viewRef.current;
+    try {
+      const page = await api.listMailFolder(folder, query, null, PAGE);
+      if (viewRef.current !== key) return;
+      const prev = rowsRef.current;
+      if (prev.length <= PAGE || page.length < PAGE) {
+        setRows(page);
+        setHasMore(page.length === PAGE);
+        return;
+      }
+      // He has scrolled past the first page: the fresh first page in
+      // front, and everything older than it that he already had, kept.
+      const edge = page[page.length - 1];
+      const older = prev.filter(
+        (m) => m.receivedAt < edge.receivedAt || (m.receivedAt === edge.receivedAt && m.id < edge.id),
+      );
+      setRows([...page, ...older]);
+    } catch {
+      // Silent: the next run refreshes again.
+    }
+  }, [folder, query]);
 
   useEffect(() => {
     api
@@ -601,16 +634,72 @@ export default function MailIntelligence() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A different folder or search: start from its newest message.
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    setRows([]);
+    setHasMore(false);
+    void loadFolder();
+  }, [loadFolder]);
 
-  const refresh = useCallback(() => {
-    void loadHeader();
-    void loadList();
-  }, [loadHeader, loadList]);
+  /* Every run of the reader (Layout.tsx) is announced; this screen
+     refreshes from it. At most every three seconds while a long first read
+     is pouring mail in - counting 100 000 messages is not free, and nobody
+     reads a list that changes ten times a second. */
+  const lastRefresh = useRef(0);
+  const pendingRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const off = onMailSynced((r) => {
+      setLastRun(r);
+      setNudged(false);
+      if (!(r.storedNew > 0 || r.changed || r.status === "failed")) return;
+      const go = () => {
+        lastRefresh.current = Date.now();
+        pendingRefresh.current = null;
+        void refreshTop();
+        void loadHeader();
+      };
+      const since = Date.now() - lastRefresh.current;
+      if (since >= 3_000) go();
+      else if (!pendingRefresh.current) pendingRefresh.current = setTimeout(go, 3_000 - since);
+    });
+    return () => {
+      off();
+      if (pendingRefresh.current) clearTimeout(pendingRefresh.current);
+      pendingRefresh.current = null;
+    };
+  }, [refreshTop, loadHeader]);
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  const pick = (key: string) => {
+    setFolder(key);
+    setOpenId(null);
+    clearSelection();
+    setConfirmDelete(false);
+  };
+
+  const onOpen = useCallback((id: number) => setOpenId(id), []);
+  const onToggle = useCallback(
+    (id: number) =>
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(id)) next.add(id);
+        return next;
+      }),
+    [],
+  );
+
+  const onReaderChanged = useCallback(
+    (change: ReaderChange) => {
+      if (change && openId !== null) {
+        setRows((prev) => prev.map((m) => (m.id === openId ? { ...m, ...change } : m)));
+      } else {
+        void refreshTop();
+      }
+      void loadHeader();
+    },
+    [openId, refreshTop, loadHeader],
+  );
 
   const bulk = async (what: "trash" | "restore" | "delete" | "read" | "unread") => {
     const ids = [...selected];
@@ -628,103 +717,16 @@ export default function MailIntelligence() {
       clearSelection();
       setConfirmDelete(false);
       setOpenId(null);
-      refresh();
+      void loadFolder();
+      void loadHeader();
     } catch (e) {
       toast.error(errMsg(e));
     }
   };
 
-  /* 2.107.0: the screen keeps itself current.
-     marko: "nemusim vzdy manualne davat sync ale ze v realnom case by sa
-     tam zobrazovali maily".
-
-     This is POLLING and the honest limit is the interval - Gmail's real
-     push needs a public endpoint and TIQR has no server. While this screen
-     is open it runs on marko's configured interval and refreshes the list
-     after each run, so new mail arrives on its own.
-
-     setTimeout and not setInterval: a sync that takes longer than the
-     interval must not stack another one behind it. The backend refuses an
-     overlapping run anyway, but a queue of refused calls is still noise. */
-  useEffect(() => {
-    if (!status?.connected || status.paused) return;
-    const seconds = status.syncIntervalSeconds;
-    if (seconds <= 0) return;
-
-    let stopped = false;
-    const timer = setTimeout(async () => {
-      if (stopped) return;
-      setAutoBusy(true);
-      try {
-        // The automatic poll chains too, but only a few batches at a time
-        // - it is meant to keep up, not to run a backfill in the
-        // background while marko is reading.
-        for (let batch = 0; batch < 3; batch++) {
-          const r = await api.syncMailNow();
-          if (r.status !== "synced") break;
-          // Only reload when something actually arrived - a refresh that
-          // changes nothing still re-renders the list under his cursor.
-          if (r.storedNew > 0) await loadList();
-          if (!r.moreWaiting) break;
-        }
-        await loadHeader();
-      } catch {
-        // Silent on purpose: an automatic run must never throw a toast at
-        // someone who did not ask for it. A real failure is already on the
-        // status strip.
-      } finally {
-        if (!stopped) {
-          setAutoBusy(false);
-          setTick((t) => t + 1);
-        }
-      }
-    }, seconds * 1000);
-
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-    // `tick` is what re-arms the timer after each run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick, status?.connected, status?.paused, status?.syncIntervalSeconds]);
-
-  /* One batch is about six seconds of work, because Google's quota caps
-     this at roughly 50 messages a second however it is written. So a long
-     first sync is CHAINED: each batch stores what it got, the list
-     refreshes, and the next batch starts straight away. Same total time,
-     but mail arrives in visible waves instead of after one long silence.
-
-     Bounded, so a mailbox that keeps reporting more can never spin here
-     forever - it stops and the ordinary poll picks the rest up. */
-  const doSync = async () => {
-    setSyncing(true);
-    let fetched = 0;
-    try {
-      for (let batch = 0; batch < 40; batch++) {
-        const result = await api.syncMailNow();
-        if (result.status === "skipped") {
-          if (batch === 0) toast.info(result.message);
-          break;
-        }
-        if (result.status === "failed") {
-          toast.error(result.message);
-          break;
-        }
-        fetched += result.storedNew;
-        setSyncProgress(fetched);
-        refresh();
-        if (!result.moreWaiting) break;
-        // A breath between batches: it keeps the UI responsive and leaves
-        // Google a little headroom under the per-second quota.
-        await new Promise((r) => setTimeout(r, 250));
-      }
-      if (fetched > 0) toast.success(`${fetched} new message${fetched === 1 ? "" : "s"}`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setSyncing(false);
-      setSyncProgress(0);
-    }
+  const onListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) void loadMore();
   };
 
   if (loading) {
@@ -749,23 +751,46 @@ export default function MailIntelligence() {
           title="No mailbox connected"
           description="Connect a Gmail account to read your inbox here and let TIQR recognise sale, payout and refund mail."
           action={
-            <Link to="/settings/integrations">
-              <Button variant="primary">Connect in Settings</Button>
-            </Link>
+            <Button variant="primary" onClick={() => pick(SETTINGS_FOLDER)}>
+              Connect in Mail settings
+            </Button>
           }
         />
+        {folder === SETTINGS_FOLDER && (
+          <div className="mt-4">
+            <MailSettingsPane status={status!} onStatus={setStatus} />
+          </div>
+        )}
       </div>
     );
   }
 
   /* EVERY one of his own labels, including the empty ones.
-     marko: "nech to cita vsetky zalozky". The old `l.total > 0` hid any
-     label whose mail had not been fetched yet - which during a first sync
-     is most of them, so the rail looked like Gmail with folders missing
-     and there was no way to tell that from a label that is genuinely
-     empty. An empty folder is information; a folder that is not there is
-     a bug report waiting to happen. */
+     marko: "nech to cita vsetky zalozky". An empty folder is information;
+     a folder that is not there is a bug report waiting to happen. */
   const userLabels = labels.filter((l) => l.kind !== "system");
+
+  /* What the reader is doing, in words. A long first read looks exactly
+     like a stuck one unless the screen says which folder it is on and how
+     much is left. */
+  const progress = lastRun?.progress ?? status.progress;
+  const failed = lastRun?.status === "failed";
+  const activity = status.paused
+    ? "Paused"
+    : failed
+      ? "Not reading right now - see below"
+      : lastRun?.rateLimited
+        ? "Google asked TIQR to slow down - carrying on in a moment"
+        : progress.reading
+          ? `Reading ${progress.reading}${progress.waiting > 0 ? ` · ${fmt(progress.waiting)} waiting` : ""}`
+          : status.syncIntervalSeconds > 0
+            ? `Up to date · checks every ${
+                status.syncIntervalSeconds < 60
+                  ? `${status.syncIntervalSeconds}s`
+                  : `${Math.round(status.syncIntervalSeconds / 60)} min`
+              }`
+            : "Up to date";
+  const busy = nudged || (!!progress.reading && !status.paused && !failed);
 
   return (
     /* NOT `h-full`: Layout gives pages no height (PROTECTED_AREAS 2.55.0),
@@ -773,72 +798,66 @@ export default function MailIntelligence() {
     <div>
       <PageHeader
         title="Mail"
-        subtitle={
-          status.accountEmail
-            ? `${status.accountEmail}${status.unreadCount > 0 ? ` · ${status.unreadCount} unread` : ""}`
-            : "Your inbox."
-        }
-
+        subtitle={`${status.accountEmail ?? "Your inbox"} · ${fmt(progress.storedTotal)} messages${
+          status.unreadCount > 0 ? ` · ${fmt(status.unreadCount)} unread` : ""
+        }`}
         actions={
           <>
-            {/* Says out loud that it is keeping itself current, so marko
-                does not sit there wondering whether to press Sync.
-                `PageHeader` has title / subtitle / actions and nothing
-                else - checked, not assumed - so this lives here. */}
-            {status.syncIntervalSeconds > 0 && (
-              <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                {syncing && syncProgress > 0
-                  ? `Fetching... ${syncProgress} so far`
-                  : autoBusy || syncing
-                  ? "Checking for new mail..."
-                  : `Checks every ${
-                      status.syncIntervalSeconds < 60
-                        ? `${status.syncIntervalSeconds}s`
-                        : `${Math.round(status.syncIntervalSeconds / 60)} min`
-                    }`}
-              </span>
-            )}
+            {/* Says out loud that it reads by itself, so marko does not sit
+                there wondering whether to press Sync. */}
+            <span className="flex max-w-[340px] items-center gap-1.5 truncate text-[11px] text-slate-400 dark:text-slate-500">
+              {busy && <Spinner className="h-3 w-3 shrink-0" />}
+              <span className="truncate">{activity}</span>
+            </span>
             <div className="w-56">
-              <Input placeholder="Search mail" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input placeholder="Search this folder" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <Button variant="secondary" disabled={syncing || status.paused} onClick={() => void doSync()}>
-              {syncing ? <Spinner className="h-4 w-4" /> : null}
-              Sync
+            <Button
+              variant="secondary"
+              disabled={status.paused || nudged}
+              onClick={() => {
+                setNudged(true);
+                requestMailSync();
+              }}
+            >
+              Sync now
             </Button>
           </>
         }
       />
 
-      {status.lastError && (
+      {status.lastError && lastRun?.status !== "synced" && (
         <Card className="mb-4 p-3">
           <p className="text-xs text-red-600 dark:text-red-400">{status.lastError}</p>
         </Card>
       )}
 
       <div className="flex gap-4" style={{ height: "calc(100vh - 220px)", minHeight: "440px" }}>
-        {/* Folders - Gmail's own, plus the few this app adds. */}
-        <Card className="flex w-[190px] shrink-0 flex-col overflow-y-auto p-2">
+        {/* Folders - TIQR's own in marko's order, then his Gmail labels.
+            Only the list scrolls; Settings sits BELOW it. It used to be a
+            sticky row inside the scroll, and with enough labels they slid
+            under it and showed through its see-through background. */}
+        <Card className="flex w-[200px] shrink-0 flex-col overflow-hidden p-2">
+          <div className="min-h-0 flex-1 overflow-y-auto">
           {BUILTIN_FOLDERS.map((f) => {
-            const c = countOf(f.key);
+            const c = counts[f.key];
             return (
-              <FolderRow
-                key={f.key}
-                label={f.label}
-                count={c.total}
-                unread={c.unread}
-                active={folder === f.key}
-                onClick={() => {
-                  setFolder(f.key);
-                  setOpenId(null);
-                  clearSelection();
-                  setConfirmDelete(false);
-                }}
-              />
+              <div key={f.key} className={f.gap ? "mt-2 border-t border-slate-200 pt-2 dark:border-slate-800" : ""}>
+                <FolderRow
+                  label={f.label}
+                  count={c?.total ?? 0}
+                  unread={c?.unread ?? 0}
+                  active={folder === f.key}
+                  onClick={() => pick(f.key)}
+                />
+              </div>
             );
           })}
           {userLabels.length > 0 && (
             <>
-              <p className="section-title mt-3 px-2.5 pb-1">Your labels</p>
+              <p className="section-title mt-3 border-t border-slate-200 px-2.5 pb-1 pt-3 dark:border-slate-800">
+                Your labels
+              </p>
               {userLabels.map((l) => (
                 <FolderRow
                   key={l.id}
@@ -846,32 +865,23 @@ export default function MailIntelligence() {
                   count={l.total}
                   unread={l.unread}
                   active={folder === l.id}
-                  onClick={() => {
-                    setFolder(l.id);
-                    setOpenId(null);
-                  }}
+                  onClick={() => pick(l.id)}
                 />
               ))}
             </>
           )}
 
-          {/* Pinned to the bottom of the rail, where marko asked for it:
-              "tu dole dat nastavenia". `mt-auto` is what pins it - the
-              rail is a flex column, so the margin eats whatever space is
-              left and the row sits on the floor however many labels are
-              above it. */}
-          <div className="sticky bottom-0 mt-auto border-t border-slate-200 bg-surface pt-1 dark:border-slate-800">
+          </div>
+
+          {/* At the bottom of the rail, where marko asked for it: "tu dole
+              dat nastavenia". */}
+          <div className="mt-1 shrink-0 border-t border-slate-200 pt-1 dark:border-slate-800">
             <FolderRow
               label="Settings"
               count={0}
               unread={0}
               active={folder === SETTINGS_FOLDER}
-              onClick={() => {
-                setFolder(SETTINGS_FOLDER);
-                setOpenId(null);
-                clearSelection();
-                setConfirmDelete(false);
-              }}
+              onClick={() => pick(SETTINGS_FOLDER)}
             />
           </div>
         </Card>
@@ -879,94 +889,108 @@ export default function MailIntelligence() {
         {folder === SETTINGS_FOLDER ? (
           <MailSettingsPane status={status} onStatus={setStatus} />
         ) : (
-        <>
-        <Card className="flex w-[340px] shrink-0 flex-col overflow-hidden p-0">
-          {selected.size > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
-              <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
-                {selected.size} selected
-              </span>
-              <button
-                type="button"
-                className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
-                onClick={clearSelection}
-              >
-                Clear
-              </button>
-              <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                <Button variant="ghost" onClick={() => void bulk("read")}>
-                  Read
-                </Button>
-                <Button variant="ghost" onClick={() => void bulk("unread")}>
-                  Unread
-                </Button>
-                {folder === "trash" ? (
-                  <>
-                    <Button variant="secondary" onClick={() => void bulk("restore")}>
-                      Restore
+          <>
+            <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
+              {selected.size > 0 && (
+                <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                    {selected.size} selected
+                  </span>
+                  <button
+                    type="button"
+                    className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
+                    onClick={clearSelection}
+                  >
+                    Clear
+                  </button>
+                  <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                    <Button variant="ghost" onClick={() => void bulk("read")}>
+                      Read
                     </Button>
-                    {/* Delete is the one irreversible thing here, so it
-                        asks - and the BACKEND refuses anything not already
-                        in the trash regardless of what this button does. */}
-                    {confirmDelete ? (
-                      <Button variant="danger" onClick={() => void bulk("delete")}>
-                        Delete forever?
-                      </Button>
+                    <Button variant="ghost" onClick={() => void bulk("unread")}>
+                      Unread
+                    </Button>
+                    {folder === "trash" ? (
+                      <>
+                        <Button variant="secondary" onClick={() => void bulk("restore")}>
+                          Restore
+                        </Button>
+                        {/* Delete is the one irreversible thing here, so it
+                            asks - and the BACKEND refuses anything not already
+                            in the trash regardless of what this button does. */}
+                        {confirmDelete ? (
+                          <Button variant="danger" onClick={() => void bulk("delete")}>
+                            Delete forever?
+                          </Button>
+                        ) : (
+                          <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
+                            Delete
+                          </Button>
+                        )}
+                      </>
                     ) : (
-                      <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
-                        Delete
+                      <Button variant="secondary" onClick={() => void bulk("trash")}>
+                        Move to trash
                       </Button>
                     )}
-                  </>
-                ) : (
-                  <Button variant="secondary" onClick={() => void bulk("trash")}>
-                    Move to trash
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-          {listLoading ? (
-            <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
-              <Spinner className="h-4 w-4" /> Loading...
-            </div>
-          ) : visible.length === 0 ? (
-            <div className="p-4">
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nothing here</p>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Press Sync to fetch new mail.</p>
-            </div>
-          ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {visible.map((m) => (
-                <MailRow
-                  key={m.id}
-                  m={m}
-                  active={openId === m.id}
-                  checked={selected.has(m.id)}
-                  onClick={() => setOpenId(m.id)}
-                  onToggle={() =>
-                    setSelected((prev) => {
-                      const next = new Set(prev);
-                      if (!next.delete(m.id)) next.add(m.id);
-                      return next;
-                    })
-                  }
-                />
-              ))}
-            </div>
-          )}
-        </Card>
+                  </div>
+                </div>
+              )}
+              {listLoading && rows.length === 0 ? (
+                <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
+                  <Spinner className="h-4 w-4" /> Loading...
+                </div>
+              ) : rows.length === 0 ? (
+                <div className="p-4">
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                    {query ? "Nothing matches" : progress.reading ? "Nothing here yet" : "Nothing here"}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    {query
+                      ? "No message in this folder matches the search."
+                      : progress.reading
+                        ? `TIQR is reading your mail by itself, newest first - ${progress.reading} now. This folder fills in as it goes.`
+                        : "There is no mail in this folder."}
+                  </p>
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-y-auto" onScroll={onListScroll}>
+                  {rows.map((m) => (
+                    <MailRow
+                      key={m.id}
+                      m={m}
+                      active={openId === m.id}
+                      checked={selected.has(m.id)}
+                      onOpen={onOpen}
+                      onToggle={onToggle}
+                    />
+                  ))}
+                  {hasMore ? (
+                    <div className="flex justify-center p-3">
+                      <Button variant="ghost" disabled={loadingMore} onClick={() => void loadMore()}>
+                        {loadingMore ? <Spinner className="h-4 w-4" /> : null}
+                        Older messages
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="p-3 text-center text-[11px] text-slate-400 dark:text-slate-500">
+                      {progress.reading ? "More arrives as TIQR reads further back." : "That is everything in this folder."}
+                    </p>
+                  )}
+                </div>
+              )}
+            </Card>
 
-        <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
-          {open ? (
-            <Reader message={open} onChanged={refresh} />
-          ) : (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
-            </div>
-          )}
-        </Card>
-        </>
+            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
+              {open ? (
+                <Reader message={open} onChanged={onReaderChanged} />
+              ) : (
+                <div className="flex flex-1 items-center justify-center p-8">
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
+                </div>
+              )}
+            </Card>
+          </>
         )}
       </div>
     </div>

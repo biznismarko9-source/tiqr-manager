@@ -7,6 +7,7 @@ mod finance;
 mod fx;
 mod google_oauth;
 mod google_sheets;
+mod mail_store;
 mod models;
 mod money;
 
@@ -81,8 +82,11 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
-            let conn = db::open_connection(&db_path).map_err(|e| e.to_string())?;
+            let conn = db::open_live_connection(&db_path).map_err(|e| e.to_string())?;
             db::run_migrations(&conn).map_err(|e| e.to_string())?;
+            // 2.110.0: settings set up before this release get a stamp, so
+            // the other computer can receive them (shared_settings.rs).
+            let _ = commands::shared_settings::bootstrap(&conn);
             app.manage(AppState {
                 db: Mutex::new(conn),
                 // 2.0.72: this is the ONE global/legacy file, opened eagerly
@@ -256,6 +260,9 @@ pub fn run() {
             commands::mail::set_mail_read,
             commands::mail::set_mail_scope,
             commands::mail::list_mail_labels,
+            // 2.110.0: a folder is a query - no 200-message window.
+            commands::mail::list_mail_folder,
+            commands::mail::get_mail_folder_counts,
             commands::mail::trash_mail,
             commands::mail::restore_mail,
             commands::mail::delete_mail_forever,

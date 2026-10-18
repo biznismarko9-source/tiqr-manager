@@ -21,6 +21,75 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.110.0 - the mail cache is its own file, and it is locked
+
+`mail_messages`, `mail_processing_log`, `mail_sync_state`, `mail_labels`,
+`mail_fetch_queue`, `mail_sync_sections`, `mail_section_seen`,
+`mail_deleted` and `mail_lock` live in `<main>.mail.sqlite3`, ATTACHED to
+the live connection as schema `mail` (`mail_store.rs`). Only
+`db::open_live_connection` attaches it; a backup being checked or the other
+machine's downloaded copy is opened with `open_connection` and never sees it.
+
+* **No numbered migration may touch a cache table again.** Those run on the
+  downloaded remote copy too, which has no `mail`. A cache schema change is
+  a new `PRAGMA mail.user_version` step in `mail_store::ensure`.
+* **Unqualified SQL is fine; CREATE is not.** Lookups fall through `main`
+  to `mail`; a `CREATE TABLE` without `mail.` lands in `main`.
+* **The lock is a trigger** (`mail_messages_locked`). The only unlock is
+  `mail_store::with_delete_unlocked`, used by `delete_forever_impl` alone.
+  Never add a second caller; "the user can lose mail" is the bug marko asked
+  this to make impossible ("aby tie maily nemohli len tak zmiznut").
+* **Writes to `mail` never set `LOCAL_DIRTY`** (`db::counts_as_user_change`).
+  Mail arriving every second must not push the main file every second.
+* `mail_rules` and `mail_senders` are CONFIG and stay in `main`.
+
+## 2.110.0 - the reading engine's invariants (commands/mail_sync.rs)
+
+* **The tiers ARE marko's order**: new mail, Important, Starred, labels,
+  Finances, Inbox, Promotions, Spam, Trash. Starred and labels are label
+  walks with no date and no filter in them.
+* **A 403 is read for its reason.** `userRateLimitExceeded` /
+  `rateLimitExceeded` is a rate limit (retry, keep the batch queued), not a
+  refusal. Until 2.110.0 it read "Google refused access" and dropped every
+  message that failed from the queue.
+* **Never dequeue a transient failure.** Only a stored message, a 404 and a
+  400 leave the queue; anything else stays or counts an attempt.
+* **An attempt counts against a message only while Google answered for the
+  rest of its batch** (`store_fetched`). No connection never counts, and
+  neither does a server error when nothing in the batch came down - that is
+  the laptop offline or Google down, not the message. Counting those pushed
+  good mail out of the queue (`MAX_ATTEMPTS`) whenever the wifi dropped, and
+  a finished folder is not walked again until history expires.
+* **A run that reached nothing waits** (`TROUBLE_DELAY_MS`, 30 s) and says
+  "Could not reach Gmail" - it never chains every 250 ms against a dead
+  connection. Anything that came back (a page, the history, a message)
+  counts as reaching Gmail.
+* **Never swallow a listing error with `unwrap_or_default`.** That is how
+  2.109.0's starred listing could fail and silently queue nothing.
+* **The checkpoint and walks never travel between machines** - they are in
+  the mail file. Sharing one cursor is how mail stops on one of them (the
+  reason migration 040 gave, still true).
+* A folder Gmail refuses on its FIRST page is set aside (`skip_walk`), never
+  restarted in a loop - it would hold up every folder after it.
+
+## 2.110.0 - a folder is defined in ONE place
+
+`commands/mail.rs::folder_expr` is the only definition of what a folder
+holds. Lists render it per row (`row_atom`), counts render it over a
+materialised row (`count_atom`). Never filter a folder in the frontend again:
+2.107.0-2.109.x filtered the newest 200 rows in the browser (the backend
+silently capped a request for 2 000 at 200), which is why Starred and the
+labels looked empty.
+
+## 2.110.0 - shared settings are newest-wins, automation is not shared
+
+`commands/shared_settings.rs`: the mail group (connection, rules, senders,
+filter, scope, retention, interval) and the notifications group travel
+through the cloud merge, whole, newest stamp wins, deletions included.
+Every write to one of those keys must call `shared_settings::touch`, or it
+never reaches the other computer. `mail_auto_*` must never join a group:
+two computers on Auto would each create the same record from one email.
+
 ## 2.64.0 - a currency column holds a CODE, and two things enforce that
 
 marko's Dashboard was offering "Convert to EUR: € (2)". Converting euros into

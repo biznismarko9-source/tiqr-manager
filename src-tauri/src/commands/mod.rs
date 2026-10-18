@@ -26,6 +26,8 @@ pub mod lookups;
 // 2.100.0: Mail Intelligence (phase 1) - read a mailbox, classify what
 // arrives. Writes no business record; see its module doc comment.
 pub mod mail;
+pub mod mail_sync;
+pub mod shared_settings;
 pub mod notes;
 pub mod notifications;
 pub mod orders;

@@ -2753,6 +2753,33 @@ export interface MailConnectionStatus {
   customQuery: string;
   /** 2.109.0: ids parked in the fetch queue - what is still to come. */
   queueDepth: number;
+  /** 2.110.0: where the reading engine is. */
+  progress: MailSyncProgress;
+  /** 2.110.0: what the mail file takes on disk, in bytes. */
+  storeBytes: number;
+}
+
+/** 2.110.0: the reading engine's progress (commands/mail_sync.rs). It reads
+ *  every folder newest to oldest, in marko's order: Important, Starred,
+ *  his labels, Finances, then everything else. */
+export interface MailSyncProgress {
+  /** The folder being read now ("Starred", "OASIS"), or null once every
+   *  folder is read to its oldest message. */
+  reading?: string | null;
+  /** Listed and not downloaded yet. */
+  waiting: number;
+  foldersDone: number;
+  foldersTotal: number;
+  /** Every message stored on this device. */
+  storedTotal: number;
+}
+
+/** 2.110.0: one folder's numbers, from the same SQL the folder lists with. */
+export interface MailFolderCount {
+  /** `inbox`, `starred`... or a label id such as `label_8`. */
+  key: string;
+  total: number;
+  unread: number;
 }
 
 /** One of marko's mail rules. Order is meaning, not decoration: rules run
@@ -2951,6 +2978,15 @@ export interface MailSyncResult {
   /** True when this run filled its batch and more is waiting. The screen
    *  chains the next batch on this, so a long first sync arrives in waves. */
   moreWaiting: boolean;
+  /** 2.110.0: Google asked to slow down. Nothing was lost; the app waits
+   *  `nextDelayMs` and carries on by itself. */
+  rateLimited: boolean;
+  /** 2.110.0: how long to wait before the next run. */
+  nextDelayMs: number;
+  /** 2.110.0: something on screen may have changed (a star, a label), even
+   *  when nothing new arrived. */
+  changed: boolean;
+  progress: MailSyncProgress;
 }
 
 /** The result of one real call to Gmail's profile endpoint. Reads no mail.

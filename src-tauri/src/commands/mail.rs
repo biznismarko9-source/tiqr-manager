@@ -34,26 +34,21 @@
 //! rather than a connection) is shaped so IMAP drops in beside Gmail rather
 //! than through it, the day that rule is lifted for it.
 //!
-//! ## Why the cursor is a date window, not Gmail's historyId
+//! ## How mail is read (2.110.0)
 //!
-//! The obvious incremental mechanism is `users.history.list` with a stored
-//! `historyId`. This module does NOT use it as its main path, on purpose.
+//! Until 2.109.0 a sync listed one date window (a year) plus starred, into
+//! one capped batch. That is gone. The reading engine is
+//! `commands/mail_sync.rs`: every folder walked newest to oldest in marko's
+//! order - Important, Starred, his labels, Finances, then everything else -
+//! with no date limit, kept on disk, and Gmail's change history for what is
+//! new or re-labelled. Its module comment says why an expired history costs
+//! a re-listing and never lost mail.
 //!
-//! Gmail only keeps history for a short period (Google documents roughly a
-//! week) and answers `404` once a `startHistoryId` is older than that. This
-//! app has no background service and **only runs while marko has it open**
-//! (see KNOWN_BUGS.md, "Documented limitations"). A laptop closed over a
-//! holiday is the normal case, not the edge case - so the history path would
-//! be expired more often than not, and the fallback would be doing the real
-//! work while the "incremental" path collected the bugs.
-//!
-//! So the main path is a date-windowed `users.messages.list`, overlapping the
-//! previous sync by a day, and **deduplication is what makes the overlap
-//! free**: `mail_messages` has a `UNIQUE (provider, account_email,
-//! provider_message_id)` and ingestion is an upsert, so re-seeing a message
-//! costs one no-op write and never a second row. `historyId` is still read
-//! and stored from the profile, because a future push-notification path
-//! needs a starting point - it is just not what correctness rests on.
+//! The mail itself lives in its own file (`mail_store.rs`), locked against
+//! deletion, so cloud sync, restores and account switches never touch it.
+//! **Deduplication** still holds it together: `mail_messages` has a
+//! `UNIQUE (provider, account_email, provider_message_id)` and an id already
+//! stored is skipped before it is ever downloaded.
 //!
 //! ## What is read, what is kept
 //!
@@ -85,10 +80,11 @@ use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_oauth;
 use crate::models::{
-    MailCategoryCount, MailConnectionStatus, MailLabel, MailLogEntry, MailMessageDetail,
+    MailCategoryCount, MailConnectionStatus, MailFolderCount, MailLabel, MailLogEntry, MailMessageDetail,
     MailMessageFilter, MailMessageSummary, MailOverview, MailRule, MailSender, MailSyncResult,
     MailTestResult,
 };
+use std::collections::HashMap;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -114,8 +110,8 @@ pub(crate) const GMAIL_SCOPE: &str = "https://www.googleapis.com/auth/gmail.read
 /// Separate from `google_oauth_refresh_token` (the Sheets sign-in) on
 /// purpose. Two grants, two scopes, two tokens: disconnecting the mailbox
 /// must not sign marko out of Sheets, and vice versa.
-const MAIL_REFRESH_TOKEN_KEY: &str = "mail_gmail_refresh_token";
-const MAIL_ACCOUNT_EMAIL_KEY: &str = "mail_gmail_account_email";
+pub(crate) const MAIL_REFRESH_TOKEN_KEY: &str = "mail_gmail_refresh_token";
+pub(crate) const MAIL_ACCOUNT_EMAIL_KEY: &str = "mail_gmail_account_email";
 /// What Google actually granted, verbatim. Google may grant a SUBSET of what
 /// was asked for, so this is checked rather than assumed.
 const MAIL_GRANTED_SCOPE_KEY: &str = "mail_gmail_granted_scope";
@@ -133,7 +129,7 @@ const MAIL_EXTRA_SENDERS_KEY: &str = "mail_extra_senders";
 /// Gmail's own spam filtering is poor it is still the cheaper way to run.
 const MAIL_SCOPE_KEY: &str = "mail_scope";
 
-fn mail_scope(conn: &Connection) -> AppResult<String> {
+pub(crate) fn mail_scope(conn: &Connection) -> AppResult<String> {
     Ok(get_setting(conn, MAIL_SCOPE_KEY)?
         .filter(|v| v == "known")
         .unwrap_or_else(|| "all".to_string()))
@@ -145,64 +141,45 @@ const DEFAULT_RETENTION_DAYS: i64 = 90;
 /// classification; nowhere near the whole message.
 pub(crate) const BODY_EXCERPT_LIMIT: usize = 600;
 
-/// How many NEW messages one run will fetch in detail.
+/// 2.110.0: the Finances folder - marko's "potom budu finances".
 ///
-/// 2.108.0: deliberately SMALLER than before (was 750), not larger.
-///
-/// marko wants thousands of messages fast. The honest ceiling is Google's,
-/// not this app's: `messages.get` costs 5 quota units and a user gets about
-/// 250 a second, so **about 50 messages per second** is the limit however
-/// the fetch is written. Three thousand messages is a minute, and no amount
-/// of threads changes that.
-///
-/// What CAN change is whether he watches an empty screen for that minute.
-/// So a run is now a SMALL batch - about six seconds of work - that stores
-/// what it got and reports `more_waiting`. The screen chains the next batch
-/// straight away, so mail arrives in visible waves instead of all at the
-/// end. Same total time, completely different to sit in front of.
-const SYNC_MAX_MESSAGES: usize = 300;
+/// Payment providers by sender domain (same suffix rule as everywhere else,
+/// so `mail.paypal.com` counts and `paypal.com.evil.test` does not)...
+pub(crate) const FINANCE_SENDERS: &[&str] = &["paypal.com", "stripe.com", "revolut.com", "wise.com"];
 
-/// Gmail's `messages.list` returns at most 500 ids per page.
-///
-/// 2.109.0: 20 -> 60 pages, i.e. up to 30,000 ids. An id is a short string
-/// parked in a table; it is the FETCHING that costs quota, and that is
-/// capped separately by `FETCH_BATCH`. Listing generously and fetching
-/// slowly is the whole point of the queue.
-const SYNC_MAX_LIST_PAGES: usize = 60;
+/// ...and subject words that mean money moved or is owed, lower-case,
+/// Slovak with and without diacritics because both get typed. "transfer" is
+/// deliberately absent: in this business it is a TICKET transfer far more
+/// often than a bank one.
+pub(crate) const FINANCE_WORDS: &[&str] = &[
+    "payout", "paid out", "refund", "invoice", "receipt", "payment", "výplata", "vyplata", "refundácia",
+    "refundacia", "faktúra", "faktura", "platba", "úhrada", "uhrada", "dobropis", "výpis z účtu",
+    "vypis z uctu", "účtenka", "uctenka",
+];
 
-/// How many ids one listing will collect per query.
-///
-/// This used to be `SYNC_MAX_MESSAGES * 3` and that was a real bug, not a
-/// conservative number. Gmail returns NEWEST FIRST, so with more starred
-/// mail than the cap the same newest few hundred came back every time;
-/// once stored they were filtered out, the queue emptied, the listing ran
-/// again and returned the same ones. **Older starred messages could never
-/// arrive** - exactly what marko reported ("cely starred mi ukazat aj ked
-/// su stare").
-const LIST_MAX_IDS: usize = 30_000;
+/// The single-word subset Gmail is asked for (commands/mail_sync.rs). A
+/// phrase would need quotes in the query.
+pub(crate) const FINANCE_QUERY_WORDS: &[&str] = &[
+    "payout", "refund", "invoice", "receipt", "payment", "výplata", "vyplata", "faktúra", "faktura",
+    "platba", "úhrada", "uhrada", "dobropis",
+];
 
-/// How many messages one RUN downloads.
-///
-/// Small on purpose: marko wants mail to appear as it arrives ("nech sa
-/// vzdy po kazdom urobenom zobrazia"), and at Google's ~50 messages a
-/// second this is roughly a second of work. The screen chains the next
-/// batch immediately, so the list grows in visible steps instead of once
-/// at the end.
-///
-/// This is affordable only because of the queue: the expensive part of a
-/// run used to be the LISTING, which cost the same whether 40 messages or
-/// 300 were then fetched. Now the listing happens once and every run after
-/// it is pure fetching.
-const FETCH_BATCH: usize = 40;
-
-/// A YEAR. marko: "ak je moznost citat co najviac mailov ako to ide".
-///
-/// Affordable only because of the known-id skip above: the first sync walks
-/// as far back as this and later ones cost one list call, because every id
-/// they return is already stored. A run is still capped, so a year's
-/// backlog fills over several runs rather than in one long freeze - and the
-/// result message says so when there is more waiting.
-const INITIAL_BACKFILL_DAYS: i64 = 365;
+/// Is this money mail? Decided once, when the message is stored, and kept in
+/// `mail_messages.finance`. Never for spam or trash - a "your payout" in spam
+/// is exactly the mail not to file under money.
+pub(crate) fn finance_of(from_address: &str, subject: &str, category: &str, labels: &str) -> bool {
+    if is_untrusted(labels) {
+        return false;
+    }
+    if matches!(category, "payout" | "refund") {
+        return true;
+    }
+    if domain_of(from_address).is_some_and(|d| FINANCE_SENDERS.iter().any(|s| domain_matches(&d, s))) {
+        return true;
+    }
+    let s = subject.to_lowercase();
+    FINANCE_WORDS.iter().any(|w| s.contains(w))
+}
 
 /// Gmail labels that mean "do not trust a word of this".
 ///
@@ -218,11 +195,7 @@ pub(crate) fn is_untrusted(labels: &str) -> bool {
     labels.split(',').any(|l| UNTRUSTED_LABELS.contains(&l))
 }
 
-/// How far the window overlaps the previous sync. Free, because ingestion is
-/// idempotent - see the module comment.
-const SYNC_OVERLAP_DAYS: i64 = 1;
-
-const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
+pub(crate) const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 // ---------------------------------------------------------------------------
 // Provider seam.
@@ -287,21 +260,10 @@ pub(crate) struct FetchedMessage {
 pub(crate) fn safe_detail(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for word in raw.split_whitespace() {
-        let lower = word.to_ascii_lowercase();
-        let looks_secret = lower.starts_with("ya29.")
-            || lower.starts_with("1//")
-            || lower.starts_with("bearer")
-            || lower.contains("refresh_token")
-            || lower.contains("access_token")
-            || lower.contains("client_secret")
-            || lower.contains("authorization:")
-            // A long unbroken run of token-ish characters is the shape of a
-            // credential, whatever it is called.
-            || (word.len() >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'));
         if !out.is_empty() {
             out.push(' ');
         }
-        if looks_secret {
+        if looks_secret(word) {
             out.push_str("[redacted]");
         } else {
             out.push_str(word);
@@ -314,6 +276,54 @@ pub(crate) fn safe_detail(raw: &str) -> String {
         let keep = truncate_on_char_boundary(&out, 400).len();
         out.truncate(keep);
         out.push_str("...");
+    }
+    out
+}
+
+/// The shape of a credential, whatever it is called.
+fn looks_secret(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    lower.starts_with("ya29.")
+        || lower.starts_with("1//")
+        || lower.starts_with("bearer")
+        || lower.contains("refresh_token")
+        || lower.contains("access_token")
+        || lower.contains("client_secret")
+        || lower.contains("authorization:")
+        // A long unbroken run of token-ish characters is the shape of a
+        // credential, whatever it is called.
+        || (word.len() >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+}
+
+/// How much of an opened message the reading pane gets - a long newsletter's
+/// worth, not a log line's.
+pub(crate) const BODY_DISPLAY_LIMIT: usize = 100_000;
+
+/// What the reading pane shows: the same credential redaction as
+/// `safe_detail`, but with the message's LINES kept.
+///
+/// 2.110.0: an opened message used to go through `safe_detail` itself, the
+/// log-line redactor - which joins everything into one line and stops at 400
+/// bytes. So every opened mail was its first few sentences in one run of
+/// text, even though `strip_html` keeps paragraphs on purpose (2.104.0).
+pub(crate) fn readable_body(raw: &str) -> String {
+    let capped = truncate_on_char_boundary(raw, BODY_DISPLAY_LIMIT);
+    let mut out = String::with_capacity(capped.len());
+    for (i, line) in capped.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let mut first = true;
+        for word in line.split_whitespace() {
+            if !first {
+                out.push(' ');
+            }
+            first = false;
+            out.push_str(if looks_secret(word) { "[redacted]" } else { word });
+        }
+    }
+    if capped.len() < raw.len() {
+        out.push_str("\n...");
     }
     out
 }
@@ -1249,132 +1259,21 @@ pub(crate) fn classify(from_address: &str, subject: &str, body: &str) -> Classif
 // Gmail HTTP.
 // ---------------------------------------------------------------------------
 
-/// What one HTTP status from Google MEANS. Pure and exhaustive, for the same
-/// reason `interpret_discord_status` is (2.99.0): it is the part with real
-/// branching, and as a pure function the whole table is testable with no
-/// network, no mock server and no new dependency.
-pub(crate) fn interpret_gmail_status(code: u16) -> (&'static str, Option<&'static str>, String) {
-    match code {
-        200..=299 => ("ok", None, "Google accepted the request.".to_string()),
-        400 => (
-            "failed",
-            Some("BAD_REQUEST"),
-            "Google rejected the request as malformed. This is a bug in TIQR, not in your mailbox.".to_string(),
-        ),
-        401 => (
-            "failed",
-            Some("TOKEN_EXPIRED"),
-            "Google would not accept the saved authorisation. Reconnect the mailbox in Settings.".to_string(),
-        ),
-        403 => (
-            "failed",
-            Some("FORBIDDEN"),
-            "Google refused access. Either the Gmail API is not enabled for this app, or the mailbox did not grant permission to read mail.".to_string(),
-        ),
-        404 => (
-            "failed",
-            Some("NOT_FOUND"),
-            "Google could not find what was asked for. If this keeps happening, reconnect the mailbox.".to_string(),
-        ),
-        429 => (
-            "failed",
-            Some("RATE_LIMITED"),
-            "Google is rate-limiting this app. Wait a few minutes and sync again.".to_string(),
-        ),
-        500..=599 => (
-            "failed",
-            Some("GOOGLE_UNAVAILABLE"),
-            "Google had a server error. This is temporary and nothing is wrong with your mailbox.".to_string(),
-        ),
-        other => (
-            "failed",
-            Some("UNEXPECTED_STATUS"),
-            format!("Google answered with an unexpected status ({other})."),
-        ),
-    }
-}
-
-fn gmail_client() -> AppResult<reqwest::blocking::Client> {
+pub(crate) fn gmail_client() -> AppResult<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| AppError::External(format!("could not build an HTTP client: {e}")))
 }
 
-/// One authenticated GET. The token travels in the `Authorization` header and
-/// is never placed in a URL, a log or an error - see `safe_detail`.
+/// One authenticated GET for the commands that are not the reading engine -
+/// Test connection, and opening a message.
+///
+/// 2.110.0: through the engine's own call, so these two also retry a rate
+/// limit and tell a 403 that means "slow down" from one that means "no
+/// permission". Before, every 403 here read "Google refused access".
 fn gmail_get(client: &reqwest::blocking::Client, token: &str, url: &str) -> AppResult<serde_json::Value> {
-    let resp = client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .map_err(|e| AppError::External(safe_detail(&format!("could not reach Gmail: {e}"))))?;
-    let code = resp.status().as_u16();
-    if !(200..=299).contains(&code) {
-        // Google's error BODY is never read - it is the one place a response
-        // could carry something not worth surfacing. The status alone decides
-        // the message, exactly as the Discord webhook does.
-        let (_, _, message) = interpret_gmail_status(code);
-        return Err(AppError::External(message));
-    }
-    resp.json::<serde_json::Value>()
-        .map_err(|e| AppError::External(safe_detail(&format!("Gmail sent a response TIQR could not read: {e}"))))
-}
-
-/// How many messages are fetched at once.
-///
-/// 2.108.0: the fetch used to be one message per HTTP round trip, in a
-/// single loop - 750 messages at roughly 100ms each is over a minute, which
-/// is what marko was watching. These run in parallel instead.
-///
-/// SIX, and not more, because the ceiling here is Google's quota and not
-/// this app's patience: `messages.get` costs 5 quota units and a user gets
-/// about 250 units a second, so **roughly 50 messages per second is the
-/// hard limit** whatever we do. Six workers at ~100ms each lands just under
-/// it. More would only earn 429s and the backoff that follows them, which
-/// is slower than not sending them.
-const FETCH_THREADS: usize = 6;
-
-/// One authenticated GET that survives a rate limit.
-///
-/// 429 and 5xx are the two answers worth trying again - the first says
-/// "slow down", the second says "not my day". Anything else is an answer
-/// and is returned as-is. Three attempts, growing waits, then it gives up:
-/// one message failing must never cost the whole run.
-fn gmail_get_retrying(
-    client: &reqwest::blocking::Client,
-    token: &str,
-    url: &str,
-) -> AppResult<serde_json::Value> {
-    let mut last: Option<AppError> = None;
-    for attempt in 0..3u32 {
-        match client.get(url).bearer_auth(token).send() {
-            Ok(resp) => {
-                let code = resp.status().as_u16();
-                if (200..=299).contains(&code) {
-                    return resp.json::<serde_json::Value>().map_err(|e| {
-                        AppError::External(safe_detail(&format!(
-                            "Gmail sent a response TIQR could not read: {e}"
-                        )))
-                    });
-                }
-                let (_, _, message) = interpret_gmail_status(code);
-                if code == 429 || (500..=599).contains(&code) {
-                    std::thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
-                    last = Some(AppError::External(message));
-                    continue;
-                }
-                return Err(AppError::External(message));
-            }
-            Err(e) => {
-                last = Some(AppError::External(safe_detail(&format!(
-                    "could not reach Gmail: {e}"
-                ))));
-                std::thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
-            }
-        }
-    }
-    Err(last.unwrap_or_else(|| AppError::External("Gmail did not answer".to_string())))
+    crate::commands::mail_sync::gmail_json(client, token, url).map_err(|f| AppError::External(f.message()))
 }
 
 fn jstr(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -1497,7 +1396,7 @@ pub(crate) struct SyncState {
     pub sync_in_progress: bool,
 }
 
-fn read_sync_state(conn: &Connection) -> AppResult<SyncState> {
+pub(crate) fn read_sync_state(conn: &Connection) -> AppResult<SyncState> {
     let row = conn
         .query_row(
             "SELECT account_email, last_sync_at, last_sync_count, last_error, last_error_at, paused, sync_in_progress
@@ -1526,7 +1425,7 @@ fn retention_days(conn: &Connection) -> AppResult<i64> {
         .unwrap_or(DEFAULT_RETENTION_DAYS))
 }
 
-fn log_step(conn: &Connection, message_id: i64, step: &str, outcome: &str, detail: Option<&str>) -> AppResult<()> {
+pub(crate) fn log_step(conn: &Connection, message_id: i64, step: &str, outcome: &str, detail: Option<&str>) -> AppResult<()> {
     conn.execute(
         "INSERT INTO mail_processing_log (message_id, at, step, outcome, detail)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1547,7 +1446,7 @@ fn log_step(conn: &Connection, message_id: i64, step: &str, outcome: &str, detai
 /// "duplicates ignored", and it is read from the database's own answer rather
 /// than from a prior `SELECT`, so two syncs racing cannot both believe they
 /// were first.
-fn upsert_message(
+pub(crate) fn upsert_message(
     conn: &Connection,
     provider: MailProviderKind,
     account_email: &str,
@@ -1593,9 +1492,9 @@ fn upsert_message(
             body_excerpt, first_seen_at, updated_at, is_unread, labels,
             is_starred, from_raw, to_address, reply_to, otp_code,
             extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference,
-            extracted_unit_cents, extracted_basis
+            extracted_unit_cents, extracted_basis, finance, labels_at
          ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                   ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)",
+                   ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
         params![
             provider.as_str(),
             msg.provider_message_id,
@@ -1635,7 +1534,11 @@ fn upsert_message(
             qty,
             reference,
             money.as_ref().and_then(|m| m.unit_cents),
-            money.as_ref().map(|m| m.basis.clone())
+            money.as_ref().map(|m| m.basis.clone()),
+            // 2.110.0: the Finances folder, decided once here.
+            i64::from(finance_of(&msg.from_address, &msg.subject, class.category.as_str(), &msg.labels)),
+            // ...and when these labels were read from Gmail, for the walks.
+            now
         ],
     )?;
     Ok((conn.last_insert_rowid(), true))
@@ -1668,153 +1571,28 @@ pub(crate) fn parse_extra_senders(raw: &str) -> Vec<String> {
     out
 }
 
-/// Builds the Gmail search query for one run.
+/// What the classifier makes of one fetched message.
 ///
-/// ## 2.101.0 - this now asks Gmail for the mail that matters, and nothing else
-///
-/// marko's own words: *"je tam velmi vela spamu co zbytocne pozera"*. The
-/// first version asked for EVERY message in the window and sorted it out
-/// afterwards, which meant downloading and parsing a month of newsletters to
-/// find four real ones. That was wrong twice over - it was slow, and it put
-/// a pile of mail that is none of TIQR's business into TIQR's database.
-///
-/// So the filtering happens at GOOGLE, not here. The query names the
-/// marketplaces and payment providers this app knows (`KNOWN_SENDERS`) plus
-/// whatever marko has added himself, and Gmail returns only those. Spam,
-/// newsletters and private mail are never fetched, never parsed and never
-/// stored - which is a privacy improvement as much as a speed one.
-///
-/// `-in:spam -in:trash` is belt and braces: Gmail excludes both by default,
-/// but a mail that LOOKS like a sale confirmation and is sitting in spam is
-/// exactly the one not to trust.
-///
-/// The date window still overlaps the previous sync by a day; see the module
-/// comment for why that is free.
-pub(crate) fn sync_query(
-    last_sync_at: Option<&str>,
-    now: DateTime<Utc>,
-    senders: &[String],
-    scope: &str,
-    custom: &str,
-) -> String {
-    let since = last_sync_at
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc) - ChronoDuration::days(SYNC_OVERLAP_DAYS))
-        .unwrap_or_else(|| now - ChronoDuration::days(INITIAL_BACKFILL_DAYS));
-
-    // Gmail's `after:` takes YYYY/MM/DD and is exclusive of earlier days.
-    // `-in:spam -in:trash` stays in BOTH modes: a mail that looks like a sale
-    // confirmation and is sitting in spam is exactly the one not to trust,
-    // and "the whole inbox" has never meant the junk folder to anybody.
-    // 2.105.0: `in:anywhere` INCLUDES spam and trash, because marko asked to
-    // be able to tell them apart rather than to have them hidden. What keeps
-    // them harmless is that classification refuses to run on them - see
-    // `UNTRUSTED_LABELS`. `-in:chats` stays: chat logs are not mail.
-    let mut base = format!("after:{} in:anywhere -in:chats", since.format("%Y/%m/%d"));
-    if !custom.is_empty() {
-        base.push(' ');
-        base.push_str(custom);
+/// With metadata-only sync `body_text` is empty, so the snippet - Gmail's
+/// own preview - stands in for it. SPAM AND TRASH ARE NEVER CLASSIFIED: they
+/// are fetched so marko can look in those folders, which is not the same as
+/// believing them - a spam message saying "you sold 4 tickets" must never
+/// reach Important.
+pub(crate) fn classify_fetched(m: &FetchedMessage) -> Classification {
+    if is_untrusted(&m.labels) {
+        return Classification {
+            category: MailCategory::Other,
+            confidence: "low",
+            platform: None,
+            review_reason: None,
+        };
     }
-    if scope != "known" {
-        return base;
-    }
-
-    // 2.109.0: the list comes from `mail_senders`, which marko edits - it is
-    // no longer the array compiled into the binary. An EMPTY list means he
-    // deleted every sender, and the honest reading of that is "watch
-    // nothing in particular", not "secretly watch the seventeen I shipped".
-    // So the query falls back to the whole mailbox rather than to a list he
-    // has already said he does not want.
-    if senders.is_empty() {
-        return base;
-    }
-    let terms: Vec<String> = senders.iter().map(|d| format!("from:{d}")).collect();
-    format!("{base} ({})", terms.join(" OR "))
-}
-
-/// The SECOND query every sync runs: every starred message, ever.
-///
-/// marko: "chcem aby sa mi vsetky starred maily ukazovali a je jedno kolko
-/// ich je a ake su stare". Deliberately has NO `after:` - a date window is
-/// the one thing that would break that requirement, and starring is the
-/// clearest signal a person can give that a message matters.
-pub(crate) fn starred_query() -> String {
-    // Deliberately takes NO arguments: no date window and no custom
-    // filter. marko: "je to jedno ake stare su tie maily ktore mam
-    // oznacene tie musia byt vzdy". Starring is the clearest signal a
-    // person can give that a message matters, so nothing this app offers
-    // is allowed to hide one - not a date, not a scope, not a filter he
-    // wrote for something else.
-    "is:starred in:anywhere".to_string()
-}
-
-/// Lists message ids for one query, walking pages until `cap` or the end.
-fn list_message_ids(
-    http: &reqwest::blocking::Client,
-    token: &str,
-    query: &str,
-    cap: usize,
-) -> AppResult<Vec<String>> {
-    let mut ids: Vec<String> = Vec::new();
-    let mut page: Option<String> = None;
-    for _ in 0..SYNC_MAX_LIST_PAGES {
-        let mut url = format!(
-            "{GMAIL_API}/messages?maxResults=500&q={}",
-            urlencode(query)
-        );
-        if let Some(tok) = &page {
-            url.push_str(&format!("&pageToken={}", urlencode(tok)));
-        }
-        let listing = gmail_get(http, token, &url)?;
-        if let Some(arr) = listing.get("messages").and_then(|m| m.as_array()) {
-            ids.extend(arr.iter().filter_map(|m| jstr(m, "id")));
-        }
-        page = jstr(&listing, "nextPageToken");
-        if page.is_none() || ids.len() >= cap {
-            break;
-        }
-    }
-    Ok(ids)
-}
-
-/// Gmail's own label list: `(id, name, kind)`.
-///
-/// A message carries label IDS, not names, and a label marko made himself is
-/// an opaque `Label_8` there. Without this his own folders would be listed
-/// as "Label_8", which is worse than not listing them.
-fn list_gmail_labels(
-    http: &reqwest::blocking::Client,
-    token: &str,
-) -> AppResult<Vec<(String, String, String)>> {
-    let raw = gmail_get(http, token, &format!("{GMAIL_API}/labels"))?;
-    Ok(raw
-        .get("labels")
-        .and_then(|l| l.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|l| {
-                    Some((
-                        jstr(l, "id")?.to_ascii_lowercase(),
-                        jstr(l, "name")?,
-                        jstr(l, "type").unwrap_or_else(|| "user".to_string()),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-fn save_labels(conn: &Connection, labels: &[(String, String, String)]) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
-    for (id, name, kind) in labels {
-        conn.execute(
-            "INSERT INTO mail_labels (id, name, kind, updated_at) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind,
-                                           updated_at = excluded.updated_at",
-            params![id, name, kind, now],
-        )?;
-    }
-    Ok(())
+    let body = if m.body_text.is_empty() {
+        m.snippet.clone().unwrap_or_default()
+    } else {
+        m.body_text.clone()
+    };
+    classify(&m.from_address, &m.subject, &body)
 }
 
 // ---------------------------------------------------------------------------
@@ -1851,7 +1629,9 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         known_senders: watched_senders(conn)?,
         extra_senders: get_setting(conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default(),
         custom_query: get_setting(conn, MAIL_CUSTOM_QUERY_KEY)?.unwrap_or_default(),
-        queue_depth: queue_depth(conn),
+        queue_depth: crate::commands::mail_sync::queue_depth(conn),
+        progress: crate::commands::mail_sync::progress_of(conn),
+        store_bytes: crate::mail_store::size_bytes(conn),
         scope: mail_scope(conn)?,
         auto_order: automation_mode(conn, "order"),
         auto_sale: automation_mode(conn, "sale"),
@@ -1914,12 +1694,16 @@ pub async fn connect_mail_gmail(
     set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, &account.refresh_token)?;
     set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, &account.email)?;
     set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, &account.granted_scope)?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
          SET provider = ?1, account_email = ?2, last_error = NULL, last_error_at = NULL
          WHERE id = 1",
         params![MailProviderKind::Gmail.as_str(), account.email],
     )?;
+    // 2.110.0: a new sign-in starts every folder walk from the top. Stored
+    // mail is kept, and costs the walks nothing.
+    crate::commands::mail_sync::reset_engine(&conn)?;
     status_impl(&conn)
 }
 
@@ -1940,6 +1724,7 @@ pub fn disconnect_mail(state: State<AppState>) -> AppResult<MailConnectionStatus
     let conn = state.db.lock().unwrap();
     delete_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?;
     delete_setting(&conn, MAIL_GRANTED_SCOPE_KEY)?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
          SET last_history_id = NULL, sync_in_progress = 0, last_error = NULL, last_error_at = NULL
@@ -1970,6 +1755,7 @@ pub fn set_mail_extra_senders(state: State<AppState>, senders: String) -> AppRes
     }
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_EXTRA_SENDERS_KEY, senders.trim())?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     status_impl(&conn)
 }
 
@@ -1980,6 +1766,7 @@ pub fn set_mail_retention_days(state: State<AppState>, days: i64) -> AppResult<M
     }
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_RETENTION_DAYS_KEY, &days.to_string())?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     status_impl(&conn)
 }
 
@@ -2018,7 +1805,7 @@ pub async fn test_mail_connection(state: State<'_, AppState>) -> AppResult<MailT
     };
 
     let outcome = tauri::async_runtime::spawn_blocking(move || -> AppResult<serde_json::Value> {
-        let (access_token, _) = google_oauth::refresh_access_token(&client, &refresh_token)?;
+        let access_token = crate::commands::mail_sync::access_token(&client, &refresh_token)?;
         let http = gmail_client()?;
         gmail_get(&http, &access_token, &format!("{GMAIL_API}/profile"))
     })
@@ -2057,427 +1844,13 @@ pub async fn test_mail_connection(state: State<'_, AppState>) -> AppResult<MailT
     }
 }
 
-/// One sync run.
+/// One run of the reading engine (commands/mail_sync.rs).
 ///
-/// Three phases, and the split matters: the database lock is held for the
-/// first and the third, never across the network. Holding it across an HTTP
-/// call would block every other command in the app for the length of a Gmail
-/// round trip.
+/// The app chains these by itself while there is anything left to read
+/// (Layout.tsx), so the Sync button only ever means "now, not in a minute".
 #[tauri::command]
 pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResult> {
-    let synced_at = Utc::now().to_rfc3339();
-
-    // ---- phase 1: decide whether to run, and claim the run ----------------
-    let claim = {
-        let conn = state.db.lock().unwrap();
-        let st = read_sync_state(&conn)?;
-        let token = get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?;
-        if token.is_none() {
-            return Ok(skipped("No mailbox is connected yet.", &synced_at));
-        }
-        if st.paused {
-            return Ok(skipped("Mail sync is paused.", &synced_at));
-        }
-        if st.sync_in_progress {
-            // Not an error. The 30-minute timer firing while a manual sync is
-            // still running is ordinary, and starting a second one is how the
-            // same message gets fetched twice.
-            return Ok(skipped("A sync is already running.", &synced_at));
-        }
-        let account_email = get_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY)?.unwrap_or_default();
-        conn.execute(
-            "UPDATE mail_sync_state SET sync_in_progress = 1, sync_started_at = ?1 WHERE id = 1",
-            params![synced_at],
-        )?;
-        (token.unwrap_or_default(), account_email, st.last_sync_at)
-    };
-    let (refresh_token, account_email, last_sync_at) = claim;
-
-    let Some(oauth_client) = google_oauth::embedded_oauth_client() else {
-        let conn = state.db.lock().unwrap();
-        finish_run(&conn, Some("This build has no Google client embedded."))?;
-        return Ok(failed("This build has no Google client embedded.", &synced_at));
-    };
-
-    // ---- phase 2: the network, with no database lock held -----------------
-    //
-    // `pending` is what makes mail arrive continuously. When the queue still
-    // holds ids from an earlier run, this run skips listing entirely and
-    // just fetches the next batch - which is why a backlog drains in waves
-    // of FETCH_BATCH instead of in one long silence.
-    let (senders, scope, custom, pending, rules) = {
-        let conn = state.db.lock().unwrap();
-        (
-            watched_senders(&conn)?,
-            mail_scope(&conn)?,
-            get_setting(&conn, MAIL_CUSTOM_QUERY_KEY)?.unwrap_or_default(),
-            peek_queue(&conn, FETCH_BATCH)?,
-            load_rules(&conn)?,
-        )
-    };
-    let query = sync_query(last_sync_at.as_deref(), Utc::now(), &senders, &scope, &custom);
-    let needs_listing = pending.is_empty();
-
-    // Ids already stored, so the run can skip them entirely.
-    //
-    // 2.105.0: this is what made raising the cap to 500 affordable. The old
-    // sync fetched every id the list returned and only THEN noticed it
-    // already had most of them - so a second pass over the same month cost
-    // five hundred round trips to learn nothing.
-    let known: std::collections::HashSet<String> = {
-        let conn = state.db.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT provider_message_id FROM mail_messages")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.collect::<Result<_, _>>()?
-    };
-
-    type FetchOutcome = (
-        Vec<FetchedMessage>,
-        Option<String>,
-        Vec<(String, String, String)>,
-        usize,
-        // ids to park for later, with their priority
-        Vec<(String, i64)>,
-        // ids this run claimed, so they leave the queue whatever happened
-        Vec<String>,
-    );
-    let fetch = tauri::async_runtime::spawn_blocking(move || -> AppResult<FetchOutcome> {
-        let (access_token, _) = google_oauth::refresh_access_token(&oauth_client, &refresh_token)?;
-        let http = gmail_client()?;
-
-        let profile = gmail_get(&http, &access_token, &format!("{GMAIL_API}/profile"))?;
-        let history_id = jstr(&profile, "historyId");
-
-        // Gmail's own folders, so marko's labels show up under their real
-        // names instead of as `Label_8`.
-        let labels = list_gmail_labels(&http, &access_token).unwrap_or_default();
-
-        // TWO queries, and only when the queue has run dry.
-        //
-        // STARRED IS LISTED FIRST, and that ordering is the fix for the bug
-        // marko kept hitting. The old code listed both into one capped
-        // vector; Gmail returns newest-first, so with more starred mail than
-        // the cap, the same newest few hundred came back every single run
-        // and the older ones could never arrive - "je to jedno ake stare su
-        // tie maily ktore mam oznacene tie musia byt vzdy". Listing starred
-        // first, with LIST_MAX_IDS rather than a multiple of the fetch cap,
-        // and parking the whole lot on disk, is what makes "vzdy" true.
-        let mut fresh: Vec<(String, i64)> = Vec::new();
-        let mut listed = 0usize;
-        if needs_listing {
-            let starred =
-                list_message_ids(&http, &access_token, &starred_query(), LIST_MAX_IDS)
-                    .unwrap_or_default();
-            let windowed = list_message_ids(&http, &access_token, &query, LIST_MAX_IDS)?;
-
-            // One id can come from both queries; the first sighting wins, so
-            // a starred message keeps priority 0.
-            let mut seen = std::collections::HashSet::new();
-            for (id, prio) in starred
-                .into_iter()
-                .map(|id| (id, 0i64))
-                .chain(windowed.into_iter().map(|id| (id, 1i64)))
-            {
-                if seen.insert(id.clone()) {
-                    fresh.push((id, prio));
-                }
-            }
-            listed = fresh.len();
-
-            // Anything already stored costs nothing.
-            fresh.retain(|(id, _)| !known.contains(id));
-        }
-
-        // What this run fetches: the queue first, then whatever is left over
-        // from a fresh listing. Everything beyond the batch is parked.
-        let mut batch: Vec<String> = pending.clone();
-        let mut park: Vec<(String, i64)> = Vec::new();
-        for (id, prio) in fresh {
-            if batch.len() < FETCH_BATCH {
-                batch.push(id.clone());
-            }
-            park.push((id, prio));
-        }
-        let ids = batch;
-
-        // PARALLEL. Six workers sharing one client, which keeps its own
-        // connection pool - so this is six requests in flight, not six new
-        // TLS handshakes. `thread::scope` lets them borrow the client and
-        // the token without cloning either.
-        //
-        // METADATA, not `full` (2.104.0): the list needs a sender, a
-        // subject, a date and a preview, not megabytes of marketing HTML.
-        // The body is fetched by `get_mail_body` when a message is actually
-        // opened, and is never stored.
-        let wanted: Vec<&String> = ids.iter().collect();
-        let per = (wanted.len() + FETCH_THREADS - 1) / FETCH_THREADS.max(1);
-        let out: Vec<FetchedMessage> = if wanted.is_empty() {
-            Vec::new()
-        } else {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = wanted
-                    .chunks(per.max(1))
-                    .map(|part| {
-                        let http = &http;
-                        let token = access_token.as_str();
-                        scope.spawn(move || {
-                            let mut got = Vec::with_capacity(part.len());
-                            for id in part {
-                                let url = format!(
-                                    "{GMAIL_API}/messages/{id}?format=metadata\
-                                     &metadataHeaders=From&metadataHeaders=Subject\
-                                     &metadataHeaders=Date&metadataHeaders=To\
-                                     &metadataHeaders=Reply-To"
-                                );
-                                // One message failing must not lose the run.
-                                if let Ok(raw) = gmail_get_retrying(http, token, &url) {
-                                    if let Some(msg) = fetched_from_gmail(&raw) {
-                                        got.push(msg);
-                                    }
-                                }
-                            }
-                            got
-                        })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|h| h.join().unwrap_or_default())
-                    .collect()
-            })
-        };
-        Ok((out, history_id, labels, listed, park, ids))
-    })
-    .await;
-
-    // ---- phase 3: store, and always release the claim ---------------------
-    let (messages, history_id, labels, listed, park, claimed) = match fetch {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            let msg = safe_detail(&e.to_string());
-            let conn = state.db.lock().unwrap();
-            finish_run(&conn, Some(&msg))?;
-            return Ok(failed(&msg, &synced_at));
-        }
-        Err(_) => {
-            let msg = "The sync did not finish cleanly.";
-            let conn = state.db.lock().unwrap();
-            finish_run(&conn, Some(msg))?;
-            return Ok(failed(msg, &synced_at));
-        }
-    };
-
-    // 2.101.0: CLASSIFY BEFORE TAKING THE LOCK.
-    //
-    // Parsing is the slow part - stripping HTML out of a hundred marketing
-    // emails - and it needs no database at all. Doing it under the lock
-    // froze every other command in the app for the whole run, which is what
-    // marko saw before it died. Nothing here touches `conn`.
-    let classified: Vec<(FetchedMessage, Classification)> = messages
-        .into_iter()
-        .map(|m| {
-            // With metadata-only sync `body_text` is empty, so the
-            // snippet - Gmail's own preview - is what stands in for it.
-            // A subject match was always the strong signal anyway; a
-            // body match only ever produced "medium".
-            let body = if m.body_text.is_empty() {
-                m.snippet.clone().unwrap_or_default()
-            } else {
-                m.body_text.clone()
-            };
-            // SPAM AND TRASH ARE NEVER CLASSIFIED. They are fetched so
-            // marko can look in those folders, which is not the same as
-            // believing them - a spam message saying "you sold 4 tickets"
-            // must never reach Important.
-            let c = if is_untrusted(&m.labels) {
-                Classification {
-                    category: MailCategory::Other,
-                    confidence: "low",
-                    platform: None,
-                    review_reason: None,
-                }
-            } else {
-                classify(&m.from_address, &m.subject, &body)
-            };
-            (m, c)
-        })
-        .collect();
-
-    let conn = state.db.lock().unwrap();
-    let fetched = classified.len() as i64;
-    let mut stored_new = 0i64;
-    let mut duplicates = 0i64;
-    let mut review = 0i64;
-    for (msg, class) in &classified {
-        let (row_id, was_new) = upsert_message(&conn, MailProviderKind::Gmail, &account_email, msg, class)?;
-        if was_new {
-            stored_new += 1;
-            log_step(&conn, row_id, "fetched", "ok", Some("Fetched from Gmail."))?;
-            log_step(&conn, row_id, "classified", class.category.as_str(), class.review_reason.as_deref())?;
-            if class.category != MailCategory::Other {
-                review += 1;
-            }
-            // marko's own rules, applied to NEW mail only. A re-sync must
-            // never drag a message he has already dealt with back through
-            // them - a rule that trashes something he restored by hand, at
-            // every sync, is a rule fighting its owner.
-            if !rules.is_empty() {
-                let subj = RuleSubject {
-                    from: &msg.from_address,
-                    subject: &msg.subject,
-                    preview: msg.snippet.as_deref().unwrap_or_default(),
-                };
-                if let Some(hit) = apply_rules(&rules, &subj) {
-                    let _ = run_rule_action(&conn, row_id, &hit);
-                }
-            }
-        } else {
-            duplicates += 1;
-        }
-    }
-
-    // The queue, updated under the same lock as the messages it produced.
-    // Park first, then claim: an id that is both newly listed and in this
-    // batch gets parked and immediately removed, which is cheaper than
-    // working out the overlap and cannot leave a gap.
-    enqueue_ids(&conn, &account_email, &park)?;
-    dequeue_ids(&conn, &claimed)?;
-    let still_queued = queue_depth(&conn);
-
-    // ---- automation: only what marko has switched to `auto` --------------
-    //
-    // "radsej robi pomaly order po ordri" - so this runs per message, only
-    // for a proposal that is already `ready` (every identifier matched, not
-    // guessed), only for a kind set to `auto`, and never for one that has
-    // already created something. A failure here is logged against the
-    // message and never fails the sync: a mail that could not become a
-    // record is still a mail worth having.
-    let mut auto_created = 0i64;
-    for (msg, _) in &classified {
-        let Some(row_id) = conn
-            .query_row(
-                "SELECT id FROM mail_messages
-                  WHERE provider_message_id = ?1 AND account_email = ?2 AND created_id IS NULL",
-                params![msg.provider_message_id, account_email],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?
-        else {
-            continue;
-        };
-        let kind = match proposal_kind_for(
-            &conn
-                .query_row(
-                    "SELECT category FROM mail_messages WHERE id = ?1",
-                    params![row_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .unwrap_or_default(),
-        ) {
-            Some(k) => k,
-            None => continue,
-        };
-        if automation_mode(&conn, kind) != "auto" {
-            continue;
-        }
-        match create_from_mail_impl(&conn, row_id, "auto") {
-            Ok((k, rid)) => {
-                auto_created += 1;
-                let dest = match k.as_str() {
-                    "finance" => DiscordDestination::Finance,
-                    "order" => DiscordDestination::Inventory,
-                    _ => DiscordDestination::Sales,
-                };
-                crate::commands::notifications::notify_discord(
-                    &conn,
-                    dest,
-                    "Created from email",
-                    &format!("{k} #{rid} - {}", msg.subject),
-                    &[],
-                );
-            }
-            Err(e) => {
-                let _ = log_step(&conn, row_id, "auto_create", "skipped", Some(&e.to_string()));
-            }
-        }
-    }
-    let _ = auto_created;
-
-    save_labels(&conn, &labels)?;
-    // More is waiting when the queue still holds ids. The screen chains the
-    // next run immediately on this, which is what makes a long first sync
-    // arrive in waves instead of in one silence.
-    let more_waiting = still_queued > 0;
-
-    if let Some(h) = history_id {
-        conn.execute("UPDATE mail_sync_state SET last_history_id = ?1 WHERE id = 1", params![h])?;
-    }
-    // THE DATE WINDOW ONLY MOVES WHEN THE QUEUE IS EMPTY.
-    //
-    // `last_sync_at` is what the next `after:` is built from. Advancing it
-    // while thousands of ids are still parked would slide the window past
-    // everything that was never fetched, and that mail would then be
-    // outside every future query - fetched never, with nothing to show that
-    // it was missed. So a backlogged run records that it ran, and leaves
-    // the window where it was.
-    if more_waiting {
-        conn.execute(
-            "UPDATE mail_sync_state
-             SET last_sync_count = ?1, last_error = NULL, last_error_at = NULL,
-                 sync_in_progress = 0, sync_started_at = NULL
-             WHERE id = 1",
-            params![stored_new],
-        )?;
-    } else {
-        conn.execute(
-            "UPDATE mail_sync_state
-             SET last_sync_at = ?1, last_sync_count = ?2, last_error = NULL, last_error_at = NULL,
-                 sync_in_progress = 0, sync_started_at = NULL
-             WHERE id = 1",
-            params![synced_at, stored_new],
-        )?;
-    }
-    purge_expired(&conn)?;
-
-    Ok(MailSyncResult {
-        success: true,
-        status: "synced".to_string(),
-        fetched,
-        stored_new,
-        duplicates_ignored: duplicates,
-        review_required: review,
-        more_waiting,
-        message: if more_waiting {
-            // The number is the point: a long first sync looks identical to
-            // a stuck one unless the screen can say how much is left.
-            format!("{stored_new} new - {still_queued} still to fetch...")
-        } else if listed > 0 {
-            format!("{stored_new} new, {duplicates} already seen.")
-        } else {
-            format!("{stored_new} new.")
-        },
-        synced_at: synced_at.clone(),
-    })
-}
-
-fn skipped(message: &str, at: &str) -> MailSyncResult {
-    MailSyncResult {
-        success: false,
-        status: "skipped".to_string(),
-        message: message.to_string(),
-        synced_at: at.to_string(),
-        ..Default::default()
-    }
-}
-
-fn failed(message: &str, at: &str) -> MailSyncResult {
-    MailSyncResult {
-        success: false,
-        status: "failed".to_string(),
-        message: message.to_string(),
-        synced_at: at.to_string(),
-        ..Default::default()
-    }
+    crate::commands::mail_sync::run_once(&state).await
 }
 
 /// Releases the run claim, recording an error if there was one. Called on
@@ -2518,7 +1891,12 @@ pub(crate) fn purge_expired(conn: &Connection) -> AppResult<usize> {
 #[tauri::command]
 pub fn clear_stale_mail_sync(state: State<AppState>) -> AppResult<MailConnectionStatus> {
     let conn = state.db.lock().unwrap();
-    finish_run(&conn, None)?;
+    // 2.110.0: the real run lock is in memory and a crash cannot leave it
+    // set; this only tidies the flag the screen shows, and never while a
+    // run is genuinely under way.
+    if !crate::commands::mail_sync::is_running() {
+        finish_run(&conn, None)?;
+    }
     status_impl(&conn)
 }
 
@@ -2619,7 +1997,9 @@ pub(crate) fn list_messages_impl(
     } else {
         format!("WHERE {}", clauses.join(" AND "))
     };
-    let limit = filter.limit.filter(|l| *l > 0 && *l <= 1000).unwrap_or(200);
+    // 2.110.0: was `<= 1000 ... unwrap_or(200)` - asking for 2 000, as the
+    // screen did, silently got 200. Out-of-range is now clamped, not dropped.
+    let limit = filter.limit.unwrap_or(200).clamp(1, 1000);
     let sql = format!("SELECT {SUMMARY_COLUMNS} FROM mail_messages {where_sql} ORDER BY received_at DESC LIMIT {limit}");
 
     let mut stmt = conn.prepare(&sql)?;
@@ -2729,7 +2109,7 @@ pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<Str
     };
 
     let body = tauri::async_runtime::spawn_blocking(move || -> AppResult<String> {
-        let (access_token, _) = google_oauth::refresh_access_token(&client, &refresh_token)?;
+        let access_token = crate::commands::mail_sync::access_token(&client, &refresh_token)?;
         let http = gmail_client()?;
         let raw = gmail_get(
             &http,
@@ -2753,7 +2133,7 @@ pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<Str
         let conn = state.db.lock().unwrap();
         conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", params![id])?;
     }
-    Ok(safe_detail(&body))
+    Ok(readable_body(&body))
 }
 
 /// Read / unread, by hand. TIQR's own state; see `get_mail_body`.
@@ -2784,6 +2164,7 @@ pub fn set_mail_scope(state: State<AppState>, scope: String) -> AppResult<MailCo
     };
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_SCOPE_KEY, scope)?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     status_impl(&conn)
 }
 
@@ -2827,19 +2208,29 @@ pub fn restore_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
 /// the command is a guarantee, and this is the one irreversible thing in
 /// the whole mail feature.
 ///
-/// Gmail is untouched - the message is still in the mailbox and a later
-/// sync will fetch it again, which is the honest behaviour for an app that
-/// holds a read-only scope.
+/// 2.110.0: this is the ONLY way a stored message can go - the mail file
+/// refuses every other DELETE (mail_store.rs, "The lock") - and the id is
+/// remembered, so a later walk of the folder does not quietly bring it back.
+/// Gmail itself is untouched: the scope is read-only.
 #[tauri::command]
 pub fn delete_mail_forever(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
+    let conn = state.db.lock().unwrap();
+    delete_forever_impl(&conn, &ids)
+}
+
+pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<usize> {
     if ids.is_empty() {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
-    let conn = state.db.lock().unwrap();
     let live: i64 = {
         let marks = vec!["?"; ids.len()].join(",");
+        // In TIQR's trash OR in Gmail's - both are what the Trash folder
+        // shows, so both count as "moved to the trash first".
         let sql = format!(
-            "SELECT COUNT(*) FROM mail_messages WHERE trashed_at IS NULL AND id IN ({marks})"
+            "SELECT COUNT(*) FROM mail_messages
+              WHERE trashed_at IS NULL
+                AND instr(',' || IFNULL(labels, '') || ',', ',trash,') = 0
+                AND id IN ({marks})"
         );
         let refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
         conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?
@@ -2849,10 +2240,19 @@ pub fn delete_mail_forever(state: State<AppState>, ids: Vec<i64>) -> AppResult<u
             "{live} of these are not in the trash yet. Move them to the trash first."
         )));
     }
-    let mut n = 0usize;
-    for id in &ids {
-        n += conn.execute("DELETE FROM mail_messages WHERE id = ?1", params![id])?;
-    }
+    let now = Utc::now().to_rfc3339();
+    let n = crate::mail_store::with_delete_unlocked(conn, |c| {
+        let mut n = 0usize;
+        for id in ids {
+            c.execute(
+                "INSERT OR IGNORE INTO mail_deleted (provider_message_id, deleted_at)
+                 SELECT provider_message_id, ?2 FROM mail_messages WHERE id = ?1",
+                params![id, now],
+            )?;
+            n += c.execute("DELETE FROM mail_messages WHERE id = ?1", params![id])?;
+        }
+        Ok(n)
+    })?;
     Ok(n)
 }
 
@@ -2929,7 +2329,7 @@ pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> 
 /// Appended, never substituted: the date window and `-in:chats` still
 /// apply, so a filter can narrow what arrives but cannot quietly turn the
 /// sync into something unbounded.
-const MAIL_CUSTOM_QUERY_KEY: &str = "mail_custom_query";
+pub(crate) const MAIL_CUSTOM_QUERY_KEY: &str = "mail_custom_query";
 
 /// Cleaned up and bounded. Returns an empty string when there is nothing
 /// usable, never a fragment that would corrupt the query.
@@ -2945,75 +2345,6 @@ pub(crate) fn clean_custom_query(raw: &str) -> String {
         return String::new();
     }
     q.replace(['\n', '\r'], " ")
-}
-
-// ===========================================================================
-// THE FETCH QUEUE  (2.109.0)
-// ===========================================================================
-//
-// marko: "ano toto chcem aby sa vzdy po kazdom urobenom zobrazili".
-//
-// Listing ids and fetching messages cost completely different things at
-// Google: one `messages.list` call returns up to 500 ids for 5 quota units,
-// while each `messages.get` costs 5 units on its own. So listing is nearly
-// free and fetching is the entire bill.
-//
-// That asymmetry is the whole design. A run LISTS once, parks every id it
-// does not already have in this table, and then fetches a small batch. The
-// next run skips the listing entirely and just takes the next batch. Mail
-// appears in waves of `FETCH_BATCH` instead of after one long silence, and
-// nothing is re-listed to achieve it.
-//
-// On disk rather than in memory, deliberately: a first sync over a mailbox
-// with thousands of starred messages takes minutes, and marko closes the
-// app. A queue in memory would start that from scratch every launch,
-// forever. This one picks up mid-backlog.
-
-/// Parks ids for later. `OR IGNORE` on the primary key makes re-listing
-/// harmless, and `MIN(priority)` means a message that is both starred and
-/// inside the date window keeps the better of the two.
-fn enqueue_ids(conn: &Connection, account: &str, ids: &[(String, i64)]) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
-    let mut stmt = conn.prepare(
-        "INSERT INTO mail_fetch_queue (provider_message_id, account_email, queued_at, priority)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(provider_message_id)
-         DO UPDATE SET priority = MIN(priority, excluded.priority)",
-    )?;
-    for (id, prio) in ids {
-        stmt.execute(params![id, account, now, prio])?;
-    }
-    Ok(())
-}
-
-/// The next ids to fetch: starred first, then oldest-queued first.
-fn peek_queue(conn: &Connection, limit: usize) -> AppResult<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT provider_message_id FROM mail_fetch_queue
-         ORDER BY priority ASC, queued_at ASC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-    Ok(rows.collect::<Result<_, _>>()?)
-}
-
-/// Removes ids from the queue whether or not their fetch succeeded.
-///
-/// That is deliberate. A message Google will never return - deleted between
-/// the listing and the fetch, or permanently erroring - would otherwise sit
-/// at the head of the queue and block every message behind it, forever. It
-/// is still in the id list, so the next full listing offers it again; it
-/// just cannot wedge the run.
-fn dequeue_ids(conn: &Connection, ids: &[String]) -> AppResult<()> {
-    let mut stmt = conn.prepare("DELETE FROM mail_fetch_queue WHERE provider_message_id = ?1")?;
-    for id in ids {
-        stmt.execute(params![id])?;
-    }
-    Ok(())
-}
-
-fn queue_depth(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM mail_fetch_queue", [], |r| r.get(0))
-        .unwrap_or(0)
 }
 
 // ===========================================================================
@@ -3142,6 +2473,7 @@ pub fn save_mail_sender(
         if let Some(old) = replaces.as_deref().filter(|o| *o != clean) {
             conn.execute("DELETE FROM mail_senders WHERE domain = ?1", params![old])?;
         }
+        crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     }
     list_mail_senders(state)
 }
@@ -3152,6 +2484,7 @@ pub fn delete_mail_sender(state: State<AppState>, domain: String) -> AppResult<V
         let conn = state.db.lock().unwrap();
         seed_senders(&conn)?;
         conn.execute("DELETE FROM mail_senders WHERE domain = ?1", params![domain.trim()])?;
+        crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     }
     list_mail_senders(state)
 }
@@ -3238,7 +2571,7 @@ pub(crate) fn load_rules(conn: &Connection) -> AppResult<Vec<MailRule>> {
 /// NOTHING here deletes, and nothing here touches Gmail. `trash` sets
 /// TIQR's own `trashed_at`, which is restorable, because marko's standing
 /// rule is "vzdy najskor presunutie do kosa, az potom zmazanie".
-fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> AppResult<bool> {
+pub(crate) fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> AppResult<bool> {
     let changed = match hit.action.as_str() {
         "trash" => conn.execute(
             "UPDATE mail_messages SET trashed_at = ?2 WHERE id = ?1 AND trashed_at IS NULL",
@@ -3345,6 +2678,7 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
                 return Err(AppError::NotFound("That rule no longer exists.".into()));
             }
         }
+        crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     }
     list_mail_rules(state)
 }
@@ -3354,6 +2688,7 @@ pub fn delete_mail_rule(state: State<AppState>, id: String) -> AppResult<Vec<Mai
     {
         let conn = state.db.lock().unwrap();
         conn.execute("DELETE FROM mail_rules WHERE id = ?1", params![id.trim()])?;
+        crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     }
     list_mail_rules(state)
 }
@@ -3409,6 +2744,7 @@ pub fn set_mail_custom_query(state: State<AppState>, query: String) -> AppResult
     }
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_CUSTOM_QUERY_KEY, &clean)?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     Ok(())
 }
 
@@ -3441,7 +2777,7 @@ const MAIL_AUTO_ORDER_KEY: &str = "mail_auto_order";
 const MAIL_AUTO_SALE_KEY: &str = "mail_auto_sale";
 const MAIL_AUTO_FINANCE_KEY: &str = "mail_auto_finance";
 
-fn automation_mode(conn: &Connection, kind: &str) -> String {
+pub(crate) fn automation_mode(conn: &Connection, kind: &str) -> String {
     let key = match kind {
         "order" => MAIL_AUTO_ORDER_KEY,
         "sale" => MAIL_AUTO_SALE_KEY,
@@ -3815,6 +3151,7 @@ pub fn set_mail_sync_interval(state: State<AppState>, seconds: i64) -> AppResult
     }
     let conn = state.db.lock().unwrap();
     set_setting(&conn, MAIL_SYNC_INTERVAL_KEY, &seconds.to_string())?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     status_impl(&conn)
 }
 
@@ -3845,34 +3182,272 @@ pub fn set_mail_automation(
     status_impl(&conn)
 }
 
+// ===========================================================================
+// FOLDERS (2.110.0)
+// ===========================================================================
+//
+// marko: "ani labels neukazuje" and "nechcem 200 message hold limit ale
+// minimalne 100 000". Until 2.110.0 the screen asked for 2 000 messages, the
+// backend quietly capped that at 200 (`list_messages_impl`), and every
+// folder - Starred, his labels, the counts - was filtered out of those 200
+// in the browser. A folder could hold mail the screen would never show.
+//
+// Now a folder IS a query, and this one function is the only place a folder
+// is defined: the list, the counts and the rail all come from it, so they
+// cannot disagree, and there is no limit on how far back a folder scrolls.
+
+/// The folders this app defines, in the order the rail shows them.
+pub(crate) const BUILTIN_FOLDERS: &[&str] =
+    &["inbox", "important", "starred", "finances", "otp", "review", "promotions", "spam", "trash"];
+
+/// A stored label id: lower-case letters, digits and `_` (`label_8`,
+/// `category_updates`). Anything else is not a folder - which is also what
+/// makes it safe to write into the SQL below.
+pub(crate) fn is_label_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 64
+        && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn has_label(label: &str) -> String {
+    debug_assert!(is_label_key(label));
+    format!("instr(',' || IFNULL(labels, '') || ',', ',{label},') > 0")
+}
+
+/// The facts a folder is built from. A folder is a formula over these, and
+/// the formula is written ONCE (`folder_expr`); only how each fact is read
+/// differs between a list and the counts.
+#[derive(Clone, Copy)]
+enum Atom<'a> {
+    Spam,
+    Trash,
+    LocalTrash,
+    Promo,
+    Draft,
+    Sent,
+    Inbox,
+    Starred,
+    Recognised,
+    Finance,
+    Otp,
+    Review,
+    Label(&'a str),
+}
+
+fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
+    use Atom::*;
+    let junk = format!("({} OR {} OR {})", atom(Spam), atom(Trash), atom(LocalTrash));
+    Some(match folder {
+        // "hlavny inbox: tam budu vsetky spravy okrem napriklad spamu a
+        // promotions" - everything received, archived mail included, but
+        // not his own sent mail and not drafts.
+        "inbox" => format!(
+            "NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {})",
+            atom(Promo),
+            atom(Draft),
+            atom(Sent),
+            atom(Inbox)
+        ),
+        "important" => format!("NOT {junk} AND {}", atom(Recognised)),
+        "starred" => format!("NOT {junk} AND {}", atom(Starred)),
+        "finances" => format!("NOT {junk} AND NOT {} AND {}", atom(Promo), atom(Finance)),
+        "otp" => format!("NOT {junk} AND {}", atom(Otp)),
+        "review" => format!("NOT {} AND {}", atom(LocalTrash), atom(Review)),
+        "promotions" => format!("NOT {junk} AND {}", atom(Promo)),
+        "spam" => format!("NOT {} AND {}", atom(LocalTrash), atom(Spam)),
+        "trash" => format!("({} OR {})", atom(Trash), atom(LocalTrash)),
+        key if is_label_key(key) => format!("NOT {junk} AND {}", atom(Label(key))),
+        _ => return None,
+    })
+}
+
+/// A fact read straight off a `mail_messages` row - for lists, which stop
+/// at the first 200 matches.
+fn row_atom(a: Atom) -> String {
+    match a {
+        Atom::Spam => has_label("spam"),
+        Atom::Trash => has_label("trash"),
+        Atom::LocalTrash => "(trashed_at IS NOT NULL)".to_string(),
+        Atom::Promo => has_label("category_promotions"),
+        Atom::Draft => has_label("draft"),
+        Atom::Sent => has_label("sent"),
+        Atom::Inbox => has_label("inbox"),
+        Atom::Starred => "(is_starred = 1)".to_string(),
+        Atom::Recognised => "(category <> 'other')".to_string(),
+        Atom::Finance => "(finance = 1)".to_string(),
+        Atom::Otp => "(otp_code IS NOT NULL)".to_string(),
+        Atom::Review => "(status = 'review_required')".to_string(),
+        Atom::Label(k) => has_label(k),
+    }
+}
+
+/// The same fact, from `COUNT_ROWS` below - where each one was worked out
+/// once per message rather than once per folder that asks.
+fn count_atom(a: Atom) -> String {
+    match a {
+        Atom::Spam => "sp".to_string(),
+        Atom::Trash => "tr".to_string(),
+        Atom::LocalTrash => "tt".to_string(),
+        Atom::Promo => "pr".to_string(),
+        Atom::Draft => "dr".to_string(),
+        Atom::Sent => "se".to_string(),
+        Atom::Inbox => "ib".to_string(),
+        Atom::Starred => "st".to_string(),
+        Atom::Recognised => "imp".to_string(),
+        Atom::Finance => "fin".to_string(),
+        Atom::Otp => "otp".to_string(),
+        Atom::Review => "rev".to_string(),
+        Atom::Label(k) => format!("(instr(l, ',{k},') > 0)"),
+    }
+}
+
+/// Every fact, once per message, MATERIALIZED - so counting nineteen folders
+/// over 100 000 messages builds each message's label list once instead of
+/// fifty times.
+const COUNT_ROWS: &str = "WITH m AS MATERIALIZED (
+    SELECT ',' || IFNULL(labels, '') || ',' AS l, is_unread AS u, (is_starred = 1) AS st,
+           (trashed_at IS NOT NULL) AS tt, (category <> 'other') AS imp, IFNULL(finance = 1, 0) AS fin,
+           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev
+      FROM mail_messages
+), f AS MATERIALIZED (
+    SELECT l, u, st, tt, imp, fin, otp, rev,
+           (instr(l, ',spam,') > 0) AS sp, (instr(l, ',trash,') > 0) AS tr,
+           (instr(l, ',category_promotions,') > 0) AS pr, (instr(l, ',draft,') > 0) AS dr,
+           (instr(l, ',sent,') > 0) AS se, (instr(l, ',inbox,') > 0) AS ib
+      FROM m
+)";
+
+/// One folder as a SQL condition on `mail_messages`, or `None` for
+/// something that is not one.
+pub(crate) fn folder_sql(folder: &str) -> Option<String> {
+    folder_expr(folder, &row_atom)
+}
+
+/// One page of one folder, newest first.
+///
+/// `before` is the last message already on screen; the page continues
+/// strictly older than it. Keyset rather than OFFSET, so page 500 of a
+/// 100 000-message inbox costs what page 1 does.
+pub(crate) fn list_folder_impl(
+    conn: &Connection,
+    folder: &str,
+    search: Option<&str>,
+    before: Option<(&str, i64)>,
+    limit: i64,
+) -> AppResult<Vec<MailMessageSummary>> {
+    let Some(pred) = folder_sql(folder) else {
+        return Err(AppError::Validation(format!("\"{folder}\" is not a mail folder")));
+    };
+    let mut clauses = vec![format!("({pred})")];
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(q) = search.map(str::trim).filter(|q| !q.is_empty()) {
+        let like = format!("%{}%", q.to_lowercase());
+        let n = binds.len() + 1;
+        clauses.push(format!(
+            "(LOWER(from_address) LIKE ?{n} OR LOWER(IFNULL(from_name, '')) LIKE ?{n}
+              OR LOWER(subject) LIKE ?{n} OR LOWER(IFNULL(snippet, '')) LIKE ?{n})"
+        ));
+        binds.push(Box::new(like));
+    }
+    if let Some((at, id)) = before {
+        let a = binds.len() + 1;
+        let b = binds.len() + 2;
+        clauses.push(format!("(received_at < ?{a} OR (received_at = ?{a} AND id < ?{b}))"));
+        binds.push(Box::new(at.to_string()));
+        binds.push(Box::new(id));
+    }
+    let limit = limit.clamp(1, 1000);
+    let sql = format!(
+        "SELECT {SUMMARY_COLUMNS} FROM mail_messages WHERE {} ORDER BY received_at DESC, id DESC LIMIT {limit}",
+        clauses.join(" AND ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |r| row_to_summary(r))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn list_mail_folder(
+    state: State<AppState>,
+    folder: String,
+    search: Option<String>,
+    before_received_at: Option<String>,
+    before_id: Option<i64>,
+    limit: Option<i64>,
+) -> AppResult<Vec<MailMessageSummary>> {
+    let conn = state.db.lock().unwrap();
+    let before = match (&before_received_at, before_id) {
+        (Some(at), Some(id)) => Some((at.as_str(), id)),
+        _ => None,
+    };
+    list_folder_impl(&conn, &folder, search.as_deref(), before, limit.unwrap_or(200))
+}
+
+/// Total and unread for every folder asked for, in ONE pass over the mail.
+pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResult<Vec<MailFolderCount>> {
+    let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k).is_some()).collect();
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut cols = Vec::with_capacity(keys.len() * 2);
+    for k in &keys {
+        let p = folder_expr(k, &count_atom).unwrap_or_default();
+        cols.push(format!("IFNULL(SUM(CASE WHEN {p} THEN 1 ELSE 0 END), 0)"));
+        cols.push(format!("IFNULL(SUM(CASE WHEN ({p}) AND u = 1 THEN 1 ELSE 0 END), 0)"));
+    }
+    let sql = format!("{COUNT_ROWS} SELECT {} FROM f", cols.join(", "));
+    let values: Vec<i64> = conn.query_row(&sql, [], |r| (0..cols.len()).map(|i| r.get::<_, i64>(i)).collect())?;
+    Ok(keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| MailFolderCount { key: (*k).clone(), total: values[i * 2], unread: values[i * 2 + 1] })
+        .collect())
+}
+
+fn user_label_keys(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM mail_labels WHERE kind = 'user' ORDER BY name")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Every folder's numbers for the rail: the built-in ones and his labels.
+#[tauri::command]
+pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolderCount>> {
+    let conn = state.db.lock().unwrap();
+    let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
+    keys.extend(user_label_keys(&conn)?);
+    folder_counts_impl(&conn, &keys)
+}
+
 /// Gmail's folders, as the UI's left rail shows them.
 ///
 /// System labels (INBOX, STARRED, SPAM, TRASH, the CATEGORY_* tabs) and
 /// marko's own are returned together with their `kind`, so the UI can list
 /// his own separately - those are the ones he will go looking for.
+///
+/// 2.110.0: his own labels are counted with `folder_sql`, so the number next
+/// to a label is exactly what opening it shows.
 #[tauri::command]
 pub fn list_mail_labels(state: State<AppState>) -> AppResult<Vec<MailLabel>> {
     let conn = state.db.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT l.id, l.name, l.kind,
-                (SELECT COUNT(*) FROM mail_messages m
-                  WHERE ',' || m.labels || ',' LIKE '%,' || l.id || ',%') AS total,
-                (SELECT COUNT(*) FROM mail_messages m
-                  WHERE m.is_unread = 1
-                    AND ',' || m.labels || ',' LIKE '%,' || l.id || ',%') AS unread
-           FROM mail_labels l
-          ORDER BY l.kind, l.name",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(MailLabel {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            kind: r.get(2)?,
-            total: r.get(3)?,
-            unread: r.get(4)?,
+    let labels: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name, kind FROM mail_labels ORDER BY kind, name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let keys: Vec<String> = labels.iter().filter(|(id, _, kind)| kind == "user" && is_label_key(id)).map(|(id, _, _)| id.clone()).collect();
+    let counts: HashMap<String, (i64, i64)> = folder_counts_impl(&conn, &keys)?
+        .into_iter()
+        .map(|c| (c.key, (c.total, c.unread)))
+        .collect();
+    Ok(labels
+        .into_iter()
+        .map(|(id, name, kind)| {
+            let (total, unread) = counts.get(&id).copied().unwrap_or((0, 0));
+            MailLabel { id, name, kind, total, unread }
         })
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        .collect())
 }
 
 #[tauri::command]
@@ -4336,48 +3911,6 @@ mod tests {
         assert!(!stored.contains("refresh_token"), "{stored}");
     }
 
-    // ---- gmail status table -----------------------------------------------
-
-    #[test]
-    fn a_2xx_from_google_is_ok_and_carries_no_error_code() {
-        for code in [200u16, 201, 204] {
-            let (status, err, _) = interpret_gmail_status(code);
-            assert_eq!(status, "ok", "{code}");
-            assert!(err.is_none(), "{code}");
-        }
-    }
-
-    #[test]
-    fn every_documented_google_failure_maps_to_its_own_code() {
-        let cases = [
-            (400u16, "BAD_REQUEST"),
-            (401, "TOKEN_EXPIRED"),
-            (403, "FORBIDDEN"),
-            (404, "NOT_FOUND"),
-            (429, "RATE_LIMITED"),
-            (500, "GOOGLE_UNAVAILABLE"),
-            (503, "GOOGLE_UNAVAILABLE"),
-        ];
-        for (code, expected) in cases {
-            let (status, err, msg) = interpret_gmail_status(code);
-            assert_eq!(status, "failed", "{code}");
-            assert_eq!(err, Some(expected), "{code}");
-            assert!(!msg.is_empty(), "{code}");
-        }
-    }
-
-    #[test]
-    fn no_google_status_outside_2xx_is_ever_ok() {
-        for code in 100u16..=599 {
-            let (status, _, _) = interpret_gmail_status(code);
-            if (200..=299).contains(&code) {
-                assert_eq!(status, "ok", "{code}");
-            } else {
-                assert_ne!(status, "ok", "{code}");
-            }
-        }
-    }
-
     // ---- gmail payload parsing -------------------------------------------
 
     fn b64(s: &str) -> String {
@@ -4476,153 +4009,7 @@ mod tests {
         assert_eq!(internal_date_to_rfc3339(""), None);
     }
 
-    // ---- sync query -------------------------------------------------------
-
-    fn at(iso: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(iso).unwrap().with_timezone(&Utc)
-    }
-
-    /// The first-sync window, DERIVED from the constant rather than written
-    /// out as a date.
-    ///
-    /// Five tests asserted a hard-coded 30-day window long after
-    /// `INITIAL_BACKFILL_DAYS` became 365, because marko asked to look back
-    /// further. They had been red ever since, describing a rule the app had
-    /// stopped following. Deriving it is what stops that happening a third
-    /// time: change the constant and these follow.
-    fn window_from(now: DateTime<Utc>) -> String {
-        format!(
-            "after:{} ",
-            (now - ChronoDuration::days(INITIAL_BACKFILL_DAYS)).format("%Y/%m/%d")
-        )
-    }
-
-    /// ...and the constant itself is pinned here, because deriving the date
-    /// would otherwise make an accidental change to it invisible.
-    #[test]
-    fn the_backfill_window_is_a_whole_year() {
-        assert_eq!(INITIAL_BACKFILL_DAYS, 365, "marko asked to look a year back, not a month");
-        assert_eq!(SYNC_OVERLAP_DAYS, 1);
-    }
-
-    #[test]
-    fn the_first_sync_looks_back_a_bounded_window() {
-        let now = at("2026-10-17T12:00:00Z");
-        let q = sync_query(None, now, &[], "all", "");
-        assert!(q.starts_with(&window_from(now)), "{q}");
-    }
-
-    #[test]
-    fn a_later_sync_overlaps_the_previous_one_by_a_day() {
-        let q = sync_query(Some("2026-10-15T09:00:00Z"), at("2026-10-17T12:00:00Z"), &[], "all", "");
-        assert!(q.starts_with("after:2026/10/14 "), "{q}");
-    }
-
-    #[test]
-    fn an_unparseable_checkpoint_falls_back_to_the_backfill_window() {
-        let now = at("2026-10-17T12:00:00Z");
-        let q = sync_query(Some("rubbish"), now, &[], "all", "");
-        assert!(q.starts_with(&window_from(now)), "{q}");
-    }
-
-    /// In the `known` scope the query names senders, so Google does the
-    /// filtering and a month of newsletters is never downloaded at all.
-    ///
-    /// 2.109.0: the list is now whatever is in `mail_senders`, passed in -
-    /// it is no longer read from the array compiled into the binary, which
-    /// is what made it uneditable.
-    #[test]
-    fn the_known_scope_asks_for_exactly_the_senders_it_was_given() {
-        let senders = vec!["viagogo.com".to_string(), "paypal.com".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &senders, "known", "");
-        assert!(q.contains("from:viagogo.com"), "{q}");
-        assert!(q.contains("from:paypal.com"), "{q}");
-        assert!(q.contains(" OR "), "several senders must be OR-ed: {q}");
-        assert_eq!(q.matches("from:").count(), 2, "no sender invented: {q}");
-    }
-
-    #[test]
-    fn a_sender_marko_added_is_asked_for_like_any_other() {
-        let senders = vec!["viagogo.com".to_string(), "tickethub.sk".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &senders, "known", "");
-        assert!(q.contains("from:tickethub.sk"), "{q}");
-        assert!(q.contains("from:viagogo.com"), "{q}");
-    }
-
-    /// THE "I DELETED THEM ALL" CASE.
-    ///
-    /// An empty watch list means he removed every sender. The honest
-    /// reading of that is "watch nothing in particular" - falling back to
-    /// the seventeen built-ins would be the app overruling him, silently.
-    #[test]
-    fn an_empty_sender_list_means_the_whole_mailbox_not_the_builtin_list() {
-        let now = at("2026-10-17T12:00:00Z");
-        let q = sync_query(None, now, &[], "known", "");
-        assert!(!q.contains("from:"), "a deleted list must not come back: {q}");
-        assert!(q.starts_with(&window_from(now)), "{q}");
-    }
-
-    /// THE INBOX. marko: "urob normalne z toho mailu normalne cely inbox".
-    /// In the default scope the query names NO sender - the whole mailbox
-    /// comes through, and the UI is what separates it.
-    #[test]
-    fn the_default_scope_asks_for_the_whole_mailbox() {
-        let now = at("2026-10-17T12:00:00Z");
-        let senders = vec!["viagogo.com".to_string()];
-        let q = sync_query(None, now, &senders, "all", "");
-        assert!(!q.contains("from:"), "the whole mailbox must not be filtered by sender: {q}");
-        assert!(q.starts_with(&window_from(now)), "{q}");
-    }
-
-    /// Spam and trash are FETCHED, in both scopes.
-    ///
-    /// This test asserted the opposite until 2.109.0 and had been failing
-    /// since 2.105.0, when marko asked to be able to tell spam and trash
-    /// apart ("vediet rozlisit tiez promotions, spam kos atd") and the
-    /// query changed to `in:anywhere`. The test was never updated, so it
-    /// sat red describing a rule the app had deliberately stopped
-    /// following.
-    ///
-    /// What keeps that safe is NOT the query. It is `is_untrusted`:
-    /// classification refuses to run on spam or trash, so a scam mail
-    /// saying "your payout of 9 999 EUR" can be looked at but can never
-    /// become a finance record. That property has its own tests below.
-    #[test]
-    fn spam_and_trash_are_fetched_so_they_can_be_told_apart() {
-        for scope in ["all", "known"] {
-            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], scope, "");
-            assert!(q.contains("in:anywhere"), "{scope}: {q}");
-            assert!(!q.contains("-in:spam"), "{scope}: spam is a folder to look in: {q}");
-            // Chat logs are still not mail.
-            assert!(q.contains("-in:chats"), "{scope}: {q}");
-        }
-    }
-
-    #[test]
-    fn an_unrecognised_scope_value_falls_back_to_the_whole_mailbox() {
-        let senders = vec!["viagogo.com".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &senders, "nonsense", "");
-        assert!(!q.contains("from:"), "{q}");
-    }
-
     // ---- marko's own Gmail filter ----------------------------------------
-
-    #[test]
-    fn a_custom_filter_is_appended_to_the_window_not_substituted_for_it() {
-        let now = at("2026-10-17T12:00:00Z");
-        let q = sync_query(None, now, &[], "all", "-category:promotions");
-        assert!(q.starts_with(&window_from(now)), "the window must survive: {q}");
-        assert!(q.contains("-category:promotions"), "{q}");
-        assert!(q.contains("in:anywhere"), "{q}");
-    }
-
-    #[test]
-    fn a_custom_filter_survives_alongside_the_sender_list() {
-        let senders = vec!["viagogo.com".to_string()];
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &senders, "known", "has:attachment");
-        assert!(q.contains("has:attachment"), "{q}");
-        assert!(q.contains("from:viagogo.com"), "{q}");
-    }
 
     #[test]
     fn an_unbalanced_filter_is_dropped_rather_than_half_applied() {
@@ -4907,23 +4294,6 @@ mod tests {
     }
 
     // ---- starred, spam and trust ------------------------------------------
-
-    /// marko: "je jedno kolko ich je a ake su stare" - so the starred query
-    /// must carry NO date bound at all.
-    #[test]
-    fn the_starred_query_has_no_date_window() {
-        let q = starred_query();
-        assert!(q.contains("is:starred"), "{q}");
-        assert!(!q.contains("after:"), "a date window would break the whole point: {q}");
-        assert!(q.contains("in:anywhere"), "starred mail in any folder counts: {q}");
-    }
-
-    #[test]
-    fn the_windowed_query_now_reaches_spam_and_trash_so_they_can_be_browsed() {
-        let q = sync_query(None, at("2026-10-17T12:00:00Z"), &[], "all", "");
-        assert!(q.contains("in:anywhere"), "{q}");
-        assert!(!q.contains("-in:spam"), "spam is fetched now, just never trusted: {q}");
-    }
 
     #[test]
     fn spam_and_trash_are_recognised_as_untrusted_and_nothing_else_is() {
@@ -5466,24 +4836,19 @@ mod tests {
                     "{p:?} from {hostile:?} would change the query"
                 );
             }
-            let q = sync_query(None, at("2026-10-17T12:00:00Z"), &parsed, "known", "");
-            // At most one group, and always balanced. Most of these
-            // hostile strings are rejected ENTIRELY, which since 2.109.0
-            // leaves no group at all - so "exactly one" would now fail on
-            // the inputs that are handled best.
-            assert!(q.matches('(').count() <= 1, "at most one group: {q}");
-            assert_eq!(
-                q.matches('(').count(),
-                q.matches(')').count(),
-                "brackets must balance: {q}"
-            );
-            // EXACTLY one, and it is the base query's own. This asserted
-            // zero until 2.109.0 and had been failing since 2.105.0, when
-            // `in:anywhere` became part of every query - the test was
-            // checking for an operator that is now legitimately there.
-            // What it is really guarding is that the hostile string did not
-            // add a SECOND one.
-            assert_eq!(q.matches("in:anywhere").count(), 1, "no injected operator: {q}");
+            // 2.110.0: what reaches Gmail is the Important walk's query.
+            let sections = crate::commands::mail_sync::plan_sections("known", &parsed, &[], "");
+            let Some(q) = sections.iter().find(|s| s.key == "important").and_then(|s| s.q.clone()) else {
+                // Rejected entirely, so no sender query at all - the best
+                // outcome for these inputs.
+                continue;
+            };
+            // Exactly one group, always balanced, and no operator the
+            // hostile string brought with it.
+            assert_eq!(q.matches('(').count(), 1, "one group: {q}");
+            assert_eq!(q.matches('(').count(), q.matches(')').count(), "brackets must balance: {q}");
+            assert!(!q.contains("in:anywhere"), "no injected operator: {q}");
+            assert!(!q.contains("bank.com"), "{q}");
         }
     }
 
@@ -5893,11 +5258,210 @@ mod tests {
         let (id, _) = upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
         log_step(&conn, id, "fetched", "ok", None).unwrap();
 
-        conn.execute("DELETE FROM mail_messages WHERE id = ?1", params![id]).unwrap();
+        // 2.110.0: the only way out is Delete forever, from the trash.
+        conn.execute("UPDATE mail_messages SET trashed_at = 'x' WHERE id = ?1", params![id]).unwrap();
+        assert_eq!(delete_forever_impl(&conn, &[id]).unwrap(), 1);
         let left: i64 = conn
             .query_row("SELECT COUNT(*) FROM mail_processing_log", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0, "the cascade must clean up the log");
+    }
+
+    // ---- 2.110.0 ----------------------------------------------------------
+
+    /// One stored message with exactly the fields a folder looks at.
+    fn put(conn: &Connection, pid: &str, labels: &str, received: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject,
+                                        received_at, first_seen_at, updated_at, labels, is_starred, finance)
+             VALUES ('gmail', ?1, 'me@gmail.com', 'a@b.com', ?1, ?3, ?3, ?3, ?2,
+                     CASE WHEN instr(',' || ?2 || ',', ',starred,') > 0 THEN 1 ELSE 0 END, 0)",
+            params![pid, labels, received],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn folder_pids(conn: &Connection, folder: &str) -> Vec<String> {
+        list_folder_impl(conn, folder, None, None, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.provider_message_id)
+            .collect()
+    }
+
+    #[test]
+    fn each_folder_holds_what_marko_said_it_holds() {
+        let conn = test_conn();
+        put(&conn, "in", "inbox", "2026-10-10T00:00:00Z");
+        put(&conn, "archived", "category_updates", "2026-10-09T00:00:00Z");
+        put(&conn, "promo", "inbox,category_promotions", "2026-10-08T00:00:00Z");
+        put(&conn, "spam", "spam", "2026-10-07T00:00:00Z");
+        put(&conn, "gtrash", "trash", "2026-10-06T00:00:00Z");
+        put(&conn, "sent", "sent", "2026-10-05T00:00:00Z");
+        put(&conn, "star", "inbox,starred", "2026-10-04T00:00:00Z");
+        put(&conn, "label", "label_8", "2026-10-03T00:00:00Z");
+        let local = put(&conn, "ttrash", "inbox,label_8", "2026-10-02T00:00:00Z");
+        conn.execute("UPDATE mail_messages SET trashed_at = 'x' WHERE id = ?1", params![local]).unwrap();
+        conn.execute("UPDATE mail_messages SET finance = 1 WHERE provider_message_id IN ('in', 'promo')", []).unwrap();
+
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["in", "archived", "star", "label"]);
+        assert_eq!(folder_pids(&conn, "starred"), vec!["star"]);
+        assert_eq!(folder_pids(&conn, "label_8"), vec!["label"], "TIQR's trash takes it out of the label");
+        assert_eq!(folder_pids(&conn, "promotions"), vec!["promo"]);
+        assert_eq!(folder_pids(&conn, "finances"), vec!["in"], "promotions are not money mail");
+        assert_eq!(folder_pids(&conn, "spam"), vec!["spam"]);
+        assert_eq!(folder_pids(&conn, "trash"), vec!["gtrash", "ttrash"]);
+        assert!(list_folder_impl(&conn, "'; DROP TABLE mail_messages; --", None, None, 10).is_err());
+    }
+
+    #[test]
+    fn a_folder_has_no_200_message_window() {
+        let conn = test_conn();
+        // 450 newer messages that are NOT starred, and one starred one
+        // older than all of them - the exact shape that left Starred empty.
+        for i in 0..450 {
+            put(&conn, &format!("n{i:03}"), "inbox", &format!("2026-10-{:02}T00:00:{:02}Z", 10 + i / 60, i % 60));
+        }
+        put(&conn, "old_star", "inbox,starred", "2024-01-01T00:00:00Z");
+        assert_eq!(folder_pids(&conn, "starred"), vec!["old_star"]);
+        let counts = folder_counts_impl(&conn, &["starred".to_string(), "inbox".to_string()]).unwrap();
+        assert_eq!(counts[0].total, 1);
+        assert_eq!(counts[1].total, 451);
+    }
+
+    #[test]
+    fn paging_walks_a_folder_to_its_oldest_message_without_gaps_or_repeats() {
+        let conn = test_conn();
+        for i in 0..25 {
+            // Two messages share every timestamp, so the id breaks the tie.
+            put(&conn, &format!("m{i:02}"), "inbox", &format!("2026-10-01T00:00:{:02}Z", i / 2));
+        }
+        let mut seen = Vec::new();
+        let mut before: Option<(String, i64)> = None;
+        loop {
+            let page = list_folder_impl(&conn, "inbox", None, before.as_ref().map(|(a, i)| (a.as_str(), *i)), 4).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            let last = page.last().unwrap();
+            before = Some((last.received_at.clone(), last.id));
+            seen.extend(page.into_iter().map(|m| m.provider_message_id));
+        }
+        assert_eq!(seen.len(), 25);
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 25, "no message twice");
+    }
+
+    #[test]
+    fn the_rail_counts_come_from_the_same_definition_as_the_lists() {
+        let conn = test_conn();
+        put(&conn, "a", "inbox,starred", "2026-10-01T00:00:00Z");
+        put(&conn, "b", "inbox,label_3", "2026-10-02T00:00:00Z");
+        put(&conn, "c", "spam,starred", "2026-10-03T00:00:00Z");
+        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE provider_message_id = 'a'", []).unwrap();
+        let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
+        keys.push("label_3".into());
+        for c in folder_counts_impl(&conn, &keys).unwrap() {
+            let listed = list_folder_impl(&conn, &c.key, None, None, 1000).unwrap();
+            assert_eq!(c.total, listed.len() as i64, "{}", c.key);
+            assert_eq!(c.unread, listed.iter().filter(|m| m.is_unread).count() as i64, "{}", c.key);
+        }
+    }
+
+    /// marko: "minimalne 100 000". Run with
+    /// `cargo test --lib -- --ignored a_hundred_thousand_messages --nocapture`.
+    #[test]
+    #[ignore]
+    fn a_hundred_thousand_messages_stay_fast() {
+        let conn = test_conn();
+        let tx = conn.unchecked_transaction().unwrap();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject,
+                                                snippet, received_at, first_seen_at, updated_at, labels, is_starred,
+                                                finance, category)
+                     VALUES ('gmail', ?1, 'me@gmail.com', 'x@shop.com', 'A subject line of normal length here',
+                             'A preview of about the length Gmail gives, a couple of sentences of it.', ?2, ?2, ?2,
+                             ?3, ?4, ?5, ?6)",
+                )
+                .unwrap();
+            for i in 0..100_000i64 {
+                let labels = match i % 10 {
+                    0 => "inbox,category_promotions",
+                    1 => "inbox,starred",
+                    2 => "category_updates,label_7",
+                    3 => "spam",
+                    _ => "inbox,unread",
+                };
+                let at = format!("2026-{:02}-{:02}T{:02}:{:02}:00Z", 1 + i % 12, 1 + i % 28, i % 24, i % 60);
+                stmt.execute(params![format!("id{i}"), at, labels, i64::from(i % 10 == 1), i64::from(i % 50 == 0), if i % 20 == 0 { "payout" } else { "other" }])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+        let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
+        keys.extend((0..10).map(|i| format!("label_{i}")));
+        let t = std::time::Instant::now();
+        let counts = folder_counts_impl(&conn, &keys).unwrap();
+        let counts_ms = t.elapsed().as_millis();
+        let t = std::time::Instant::now();
+        let page = list_folder_impl(&conn, "inbox", None, None, 200).unwrap();
+        let inbox_ms = t.elapsed().as_millis();
+        let t = std::time::Instant::now();
+        let rare = list_folder_impl(&conn, "label_9", None, None, 200).unwrap();
+        let rare_ms = t.elapsed().as_millis();
+        let last = page.last().unwrap();
+        let t = std::time::Instant::now();
+        let next = list_folder_impl(&conn, "inbox", None, Some((&last.received_at, last.id)), 200).unwrap();
+        let next_ms = t.elapsed().as_millis();
+        println!("100k: counts {counts_ms} ms, inbox page {inbox_ms} ms, empty label {rare_ms} ms, next page {next_ms} ms");
+        assert_eq!(counts.iter().find(|c| c.key == "starred").unwrap().total, 10_000);
+        assert_eq!(page.len(), 200);
+        assert_eq!(next.len(), 200);
+        assert!(rare.is_empty());
+    }
+
+
+    #[test]
+    fn delete_forever_refuses_live_mail_and_remembers_what_it_deleted() {
+        let conn = test_conn();
+        let msg = sample_fetched("g1");
+        let class = classify(&msg.from_address, &msg.subject, &msg.body_text);
+        let (id, _) = upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap();
+        assert!(delete_forever_impl(&conn, &[id]).is_err(), "not in the trash yet");
+        // In Gmail's trash counts as in the trash - that is what the folder shows.
+        conn.execute("UPDATE mail_messages SET labels = 'trash' WHERE id = ?1", params![id]).unwrap();
+        assert_eq!(delete_forever_impl(&conn, &[id]).unwrap(), 1);
+        let remembered: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mail_deleted WHERE provider_message_id = 'g1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remembered, 1, "so a later walk never brings it back");
+        let queued = crate::commands::mail_sync::enqueue(&conn, "me", &["g1".into()], 50, "x").unwrap();
+        assert_eq!(queued, 0);
+    }
+
+    #[test]
+    fn money_mail_is_recognised_for_the_finances_folder() {
+        assert!(finance_of("service@paypal.com", "Receipt for your payment", "other", "inbox"));
+        assert!(finance_of("noreply@mail.revolut.com", "Hello", "other", "inbox"));
+        assert!(finance_of("x@viagogo.com", "Payout sent", "payout", "inbox"));
+        assert!(finance_of("fakturacia@firma.sk", "Faktúra č. 2026001", "other", "inbox"));
+        assert!(!finance_of("news@shop.com", "Big autumn sale", "other", "inbox"));
+        assert!(!finance_of("service@paypal.com", "Your payout", "payout", "spam"), "never from spam");
+        assert!(!finance_of("x@paypal.com.evil.test", "Hello", "other", "inbox"), "lookalike domain");
+    }
+
+    #[test]
+    fn an_opened_message_keeps_its_lines_and_is_not_cut_at_400_bytes() {
+        let body = format!("Hello Marko,\n\n{}\nToken: ya29.SOMETHINGSECRETLOOKING", "word ".repeat(200));
+        let out = readable_body(&body);
+        assert!(out.starts_with("Hello Marko,\n\n"), "{out}");
+        assert!(out.len() > 900, "{}", out.len());
+        assert!(!out.contains("ya29."), "credentials are still redacted");
+        let huge = "é".repeat(BODY_DISPLAY_LIMIT);
+        assert!(readable_body(&huge).ends_with("..."));
     }
 
     // ---- 2.109.1: text wider than one byte --------------------------------

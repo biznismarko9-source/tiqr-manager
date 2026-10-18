@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.109.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.110.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,72 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.110.0 - Mail rebuilt: its own locked file, a reading engine that walks
+every folder newest to oldest by itself, folders straight from the
+database, and the same setup on both computers.**
+
+What marko reported after 2.109.1: a 403 "Google refused access" during
+sync; Starred and his labels empty ("ani labels neukazuje"); "napisalo ze
+fetched a nic tu nedalo"; he wants it to read by itself, newest first, in
+the order Important, Starred, labels, Finances, then everything else; no
+200-message limit ("minimalne 100 000"); the same mail and webhooks on two
+computers; mail that cannot just disappear, stored safely and small.
+
+**Root causes found (each one confirmed in code, not guessed):**
+* `list_messages_impl` capped a request for 2 000 at 200 (`<= 1000 ...
+  unwrap_or(200)`), and the Mail screen filtered every folder out of those
+  200 in the browser. Old starred mail and labelled mail could be stored
+  and never shown.
+* Gmail answers rate limits with 403 (`userRateLimitExceeded`). The app
+  read every 403 as "refused access", never retried it, ended the run on
+  it, and dequeued every message that failed to download ("whatever
+  happened") - and six parallel fetch workers sat right on Google's
+  per-user ceiling, so it happened.
+* Already-stored messages never had their star or labels updated (known
+  ids were skipped, upserts never overwrite), and labelled mail older than
+  the one-year window was never listed at all.
+* The starred listing's errors were swallowed (`unwrap_or_default`).
+
+**What exists now:**
+* `mail_store.rs` - the mail file, its schema (`user_version` 1), the
+  one-time move out of main (then `VACUUM main`), the delete-lock trigger.
+  See PROTECTED_AREAS "2.110.0".
+* `commands/mail_sync.rs` - the engine: `plan_sections`, per-folder walks
+  on disk (`mail_sync_sections`), a tiered queue (`priority`, `seq`,
+  `attempts`), label flags with end-of-walk reconciliation
+  (`mail_section_seen`, `labels_at`), Gmail history for new mail and label
+  changes (404 -> every walk from the top), reason-aware `failure_from`, a
+  shared rate-limit pause, a cached access token, an in-memory run lock.
+  Offline or Google down: nothing counts against a queued message unless
+  Google answered for the rest of its batch, and a run that reached nothing
+  waits 30 s (`TROUBLE_DELAY_MS`) instead of chaining.
+* `commands/mail.rs` - `folder_expr` (the only folder definition),
+  `list_mail_folder` (keyset paging, no limit), `get_mail_folder_counts`,
+  `finance_of` (stored as `mail_messages.finance`), `readable_body` (an
+  opened mail keeps its lines - was `safe_detail`'s one 400-byte line),
+  `delete_forever_impl` (unlock + `mail_deleted` tombstone).
+* `commands/shared_settings.rs` - newest-wins groups through the merge.
+* Frontend: the reader loop is in `Layout.tsx` (`lib/mailSync.ts` announces
+  each run); `MailIntelligence.tsx` loads folders from the backend with
+  infinite scroll; the rail is Inbox, Important, Starred, Finances | OTP,
+  Needs review | Promotions, Spam, Trash | labels | Settings (Social/
+  Updates/Forums are inbox mail now). `MailSettingsPane.tsx`: the rule
+  editor's text field was nested inside the 124px match-select wrapper -
+  fixed; rule rows read as sentences; texts no longer mention a date window.
+
+**Measured, debug build, 100 000 messages** (`a_hundred_thousand_messages_
+stay_fast`, `#[ignore]`): a folder page 1-2 ms, the next page 2 ms, an
+empty label 0.2 s, all 19 folder counts 0.7 s (was 2.4 s before the
+materialised `COUNT_ROWS`). Release SQLite is compiled optimised and is
+faster still. The screen refreshes counts at most every 3 s.
+
+**Not verified here:** a real Gmail mailbox (no account in the sandbox),
+real rate-limit behaviour, two real computers. The UI was rendered in
+Chromium against a mocked backend (temporary harness, not committed).
+
+Migrations: still 45 numbered ones, next is **046** - the mail schema is
+NOT a numbered migration (see PROTECTED_AREAS).
 
 **2.109.1 - fix: the app closed a few seconds into a mail sync.** No
 behaviour change, no migration (next is still **046**).

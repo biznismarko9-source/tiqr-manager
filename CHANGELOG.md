@@ -16,6 +16,40 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.110.0 - Mail nanovo: číta sám, od najnovšieho, bez limitu, na oboch počítačoch
+
+**Prečo Starred a labels ukazovali „Nothing here".** Obrazovka si pýtala
+2 000 mailov, backend potichu vrátil len najnovších **200** a každý
+priečinok sa filtroval z tých 200 v prehliadači. Starší označený mail mohol
+byť uložený a nikdy sa neukázal. Teraz je priečinok dotaz do databázy, bez
+limitu, ďalšie maily sa načítajú pri scrollovaní.
+
+**Prečo „Google refused access".** Google hlási „spomaľ" aj ako 403. Appka
+to čítala ako odmietnutie, neskúsila znova a maily, ktoré sa práve nestiahli,
+vypadli z fronty. Teraz sa číta dôvod v odpovedi, appka počká a pokračuje
+sama; nič sa nestratí. Bez internetu napíše, že Gmail je nedostupný, skúša
+znova každých 30 sekúnd a z fronty nevyhodí nič.
+
+**Číta sám, v poradí: Important → Starred → labels → Finances → všetko
+ostatné**, v každom priečinku od najnovšieho po najstarší, bez dátumového
+limitu. Kde skončil, je na disku. Sync netreba stláčať.
+
+**Maily vo vlastnom, zamknutom súbore** (`tiqr-manager.mail.sqlite3`).
+Cloud sync, obnova zo zálohy ani prepnutie účtu sa ho nedotknú, a databáza
+odmietne zmazať mail inak než cez **Delete forever** v koši. Ukladá sa len
+hlavička a krátky náhľad, nikdy telo.
+
+**Dva počítače:** pripojenie, pravidlá, odosielatelia, filter aj webhooky sú
+rovnaké na oboch (platí novšia zmena). Maily si každý číta z Gmailu sám.
+Automatické vytváranie ostáva per počítač.
+
+**Ďalej:** priečinky Inbox (všetko okrem spamu, koša a promotions),
+Important, Starred, Finances, OTP, Needs review, Promotions, Spam, Trash,
+labels. Otvorený mail už nie je jeden riadok s 400 znakmi. V nastaveniach
+opravené pole pravidla (bolo stlačené pod výberom), texty bez „date window".
+1440 Rust testov, 0 červených (54 nových; 17 starých odišlo s kódom, ktorý
+testovali); obrazovka vykreslená a skontrolovaná.
+
 ## 2.109.1 - Oprava: appka padala pár sekúnd po spustení syncu
 
 **Príčina.** Pri ukladaní každého nového mailu sa z predmetu a náhľadu číta

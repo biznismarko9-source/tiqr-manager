@@ -4011,7 +4011,8 @@ function DiscordCard() {
       <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
         Posts to a Discord channel through a webhook. In Discord: Channel settings &rarr; Integrations &rarr;
         Webhooks &rarr; New Webhook &rarr; Copy Webhook URL. Anyone who has that URL can post to the channel, so
-        treat it like a password.
+        treat it like a password. Saved here, the same webhooks are used on your other computer through cloud
+        sync.
       </p>
 
       <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">

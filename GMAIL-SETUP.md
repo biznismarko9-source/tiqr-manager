@@ -126,24 +126,40 @@ nepustí.
 1. V **Mail → Settings** klikni **Test connection**.
    Má sa objaviť zelené **Reachable** a tvoja adresa. Toto volanie
    **nečíta ani jeden mail** — len sa pýta Googlu, či token funguje.
-2. Choď na **Mail** v ľavom menu → **Sync now**.
-3. Prvý beh pozerá **30 dní dozadu** plus **všetky označené (starred)
-   maily bez ohľadu na vek**.
+2. **Nemusíš nič stláčať.** Od verzie **2.110.0** appka začne čítať sama,
+   pár sekúnd po pripojení, a číta ďalej sama.
+3. Číta po priečinkoch, v každom **od najnovšieho po najstarší**, bez
+   dátumového limitu, v tomto poradí: **Important** (odosielatelia, ktorých
+   sleduješ), **Starred**, **tvoje labels**, **Finances** — a až potom
+   všetko ostatné (Inbox, Promotions, Spam, Trash).
 
-Sťahuje sa po dávkach po 40 a v hlavičke vidíš, koľko ešte ostáva. Zoznam
-je uložený na disku, takže prvý sync prežije aj zavretie appky — po
-otvorení pokračuje tam, kde skončil.
-
-Potom sa to synchronizuje samo v intervale, ktorý si nastavíš v
-**Mail → Settings → Fetching and keeping**. Appka nemá službu na pozadí —
-keď je zavretá, nesynchronizuje sa nič.
+V hlavičke Mailu vidíš, ktorý priečinok práve číta a koľko ešte čaká. Kde
+skončil, je uložené na disku, takže pokračuje aj po zavretí a otvorení
+appky. Keď je všetko prečítané, kontroluje nové maily v intervale z
+**Mail → Settings → Reading and keeping**. Appka nemá službu na pozadí —
+keď je zavretá, nečíta nič.
 
 ---
 
 ## Keď to nejde: ako zistiť, ktorá z dvoch príčin to je
 
-Chyba **„Google refused access"** má presne dve príčiny a appka ti sama
-povie, ktorú máš.
+Od **2.110.0** appka číta z odpovede Googlu, *prečo* odmietol, a povie to
+vlastnými slovami:
+
+- **„Google asked TIQR to slow down"** — nie je to chyba. Google obmedzuje,
+  koľko sa dá čítať za sekundu. Nič sa nestratí, appka chvíľu počká a
+  pokračuje sama. (Do 2.109.1 sa toto mylne hlásilo ako „Google refused
+  access" a maily, ktoré sa práve nestiahli, vypadli z fronty.)
+- **„Could not reach Gmail"** — počítač nie je na internete. Appka to skúsi
+  znova každých 30 sekúnd a z fronty nevyhodí nič.
+
+Skutočné odmietnutie má dve príčiny:
+
+- **„…connected without permission to read mail"** — chýba povolenie, pozri
+  nižšie.
+- **„The Gmail API is switched off…"** — krok 2.
+
+Pre obe platí toto:
 
 Pozri sa do **Mail → Settings → Mailbox**:
 
@@ -183,17 +199,24 @@ zmizne bez akéhokoľvek overovania.
 
 ---
 
-## Prečo sa schránka nesynchronizuje medzi počítačmi
+## Dva počítače (od 2.110.0)
 
-Pripojenie schránky je **viazané na jeden počítač** a je to zámer, nie
-nedorobok. Dôvody sú v `migrations/040_mail_intelligence.sql`, v skratke:
+**Pripojenie, pravidlá, odosielatelia, filter aj webhooky sú na oboch
+počítačoch rovnaké** — prejdú cez cloud sync. Pripojíš schránku na jednom
+a druhý ju dostane pri ďalšom syncu; odpojíš na jednom, odpojí sa aj na
+druhom. Ak niečo zmeníš na oboch, platí novšia zmena.
 
-- Povolenie od Googlu je vydané tomu stroju, ktorý sa prihlásil.
-- Keby si dva počítače delili jeden synchronizačný bod, mail by na jednom
-  z nich potichu prestal chodiť.
+**Samotné maily necestujú.** Každý počítač si ich číta z Gmailu sám, do
+vlastného súboru `tiqr-manager.mail.sqlite3` vedľa hlavnej databázy. Tak
+ostáva malý aj súbor, ktorý ide na Drive, a čo počítač prečítal, nemôže
+prepísať ten druhý. To je aj to, čo bolo dôvodom pôvodného „každý počítač
+zvlášť" v `migrations/040_mail_intelligence.sql`: spoločný bod, odkiaľ sa
+číta, by jednému z nich potichu zastavil mail. Ten bod ostáva na každom
+počítači vlastný.
 
-Takže **krok 5–7 sprav na každom počítači zvlášť.** Kroky 1–4 sú spoločné
-a robia sa raz.
+**Na každom počítači zvlášť ostáva:** pauza, a čo smie TIQR vytvoriť samo
+(orders / sales / finance na „Automatic"). Dva počítače na Automatic by
+z toho istého mailu vytvorili ten istý záznam dvakrát.
 
 Záznamy, ktoré z mailu raz vzniknú (predaje, financie), sa medzi počítačmi
 synchronizujú normálne ako všetko ostatné.

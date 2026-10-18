@@ -377,6 +377,16 @@ fn is_bookkeeping_table(table: &str) -> bool {
     )
 }
 
+/// What the update hook counts as "marko changed something".
+///
+/// 2.110.0: nothing in the `mail` schema does. That file never travels to
+/// the other machine (mail_store.rs), and a message arriving every second
+/// during a long first sync would otherwise keep the cloud copy permanently
+/// "changed" and push the whole main file over and over.
+fn counts_as_user_change(db: &str, table: &str) -> bool {
+    db != "mail" && !is_bookkeeping_table(table)
+}
+
 pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     // journal_mode returns a row with the resulting mode, so query_row it explicitly.
@@ -394,11 +404,28 @@ pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     // returns `()`, not `Result<()>` - verified against the crate's own source
     // at tag v0.32.1, `src/hooks/mod.rs:380`, after docs.rs was read the other
     // way round. Adding `?` is a compile error on both platforms.
-    conn.update_hook(Some(|_action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
-        if !is_bookkeeping_table(table) {
+    conn.update_hook(Some(|_action: rusqlite::hooks::Action, db: &str, table: &str, _rowid: i64| {
+        if counts_as_user_change(db, table) {
             LOCAL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }));
+    Ok(conn)
+}
+
+/// 2.110.0: THE connection the app works on - the main file with its mail
+/// file attached. Only the live database gets one: a backup being checked or
+/// a copy downloaded from the other machine is opened with `open_connection`
+/// and never sees the mail (mail_store.rs).
+pub fn open_live_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
+    let conn = open_connection(path)?;
+    // Mail is optional; the app starting is not. If the mail file cannot be
+    // attached (locked, unwritable), the app opens without it and mail stays
+    // where it was until a start where it can - `mail_store::ensure` moves
+    // it then. Mail commands report an error meanwhile; nothing else is
+    // affected.
+    if let Err(e) = crate::mail_store::attach(&conn, &crate::mail_store::mail_db_path(path)) {
+        eprintln!("TIQR: the mail file could not be opened, starting without it: {e}");
+    }
     Ok(conn)
 }
 
@@ -442,6 +469,9 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             crate::codes::backfill_event_codes(conn)?;
         }
     }
+    // 2.110.0: the mail cache's own schema, and the one-time move of the
+    // cache out of this file. A no-op unless the mail file is attached.
+    crate::mail_store::ensure(conn)?;
     Ok(())
 }
 
@@ -453,8 +483,28 @@ pub fn test_conn() -> Connection {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("enable foreign keys");
+    // 2.110.0: the same two-file layout the app runs on.
+    crate::mail_store::attach_in_memory(&conn).expect("attach in-memory mail file");
     run_migrations(&conn).expect("run migrations");
     conn
+}
+
+#[cfg(test)]
+mod change_hook_tests {
+    use super::counts_as_user_change;
+
+    #[test]
+    fn mail_arriving_is_never_a_change_to_push() {
+        assert!(!counts_as_user_change("mail", "mail_messages"));
+        assert!(!counts_as_user_change("mail", "mail_fetch_queue"));
+    }
+
+    #[test]
+    fn his_own_records_and_mail_rules_still_are() {
+        assert!(counts_as_user_change("main", "orders"));
+        assert!(counts_as_user_change("main", "mail_rules"));
+        assert!(!counts_as_user_change("main", "app_settings"));
+    }
 }
 
 #[cfg(test)]
