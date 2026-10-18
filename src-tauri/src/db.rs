@@ -291,6 +291,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "043_mail_automation",
         include_str!("../migrations/043_mail_automation.sql"),
     ),
+    // 2.109.0: the fetch queue, so mail arrives continuously and a long
+    // first sync survives the app being closed.
+    (
+        "044_mail_fetch_queue",
+        include_str!("../migrations/044_mail_fetch_queue.sql"),
+    ),
+    // 2.109.0: marko's own mail rules, and a sender list he can edit
+    // instead of one hard-coded in the binary.
+    (
+        "045_mail_rules_and_senders",
+        include_str!("../migrations/045_mail_rules_and_senders.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.

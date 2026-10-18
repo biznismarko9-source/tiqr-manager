@@ -1,7 +1,8 @@
 # Mail Intelligence — ako pripojiť Gmail, krok po kroku
 
 Toto je jednorazové nastavenie na strane Googlu plus pripojenie v appke.
-Platí od verzie **2.100.0**.
+Platí od verzie **2.100.0**. Nastavenia sa v **2.109.0** presunuli
+z Settings priamo do Mailu — pozri krok 5.
 
 **Dôležité rozdelenie, aby si nerobil zbytočnú prácu dvakrát:**
 
@@ -88,7 +89,10 @@ nepustí.
 
 ## KROK 5 — Pripoj schránku v appke
 
-1. V TIQR otvor **Settings → Integrations → Email**.
+1. V TIQR otvor **Mail** (ľavé menu) → dole v zozname zložiek **Settings**.
+
+   > Od verzie **2.109.0** sú tu, nie v Settings → Integrations. Tam ostal
+   > len riadok s odkazom sem.
 2. Ak už tam svieti „Connected", klikni najprv **Disconnect.**
 
    **Toto nepreskakuj**, ak si sa už raz pokúšal pripojiť pred krokom 3.
@@ -119,15 +123,20 @@ nepustí.
 
 ## KROK 7 — Over a spusti
 
-1. V Settings klikni **Test connection**.
+1. V **Mail → Settings** klikni **Test connection**.
    Má sa objaviť zelené **Reachable** a tvoja adresa. Toto volanie
    **nečíta ani jeden mail** — len sa pýta Googlu, či token funguje.
 2. Choď na **Mail** v ľavom menu → **Sync now**.
-3. Prvý beh pozerá **30 dní dozadu**, maximálne 100 správ.
+3. Prvý beh pozerá **30 dní dozadu** plus **všetky označené (starred)
+   maily bez ohľadu na vek**.
 
-Potom sa to synchronizuje samo **každých 15 minút, kým máš appku
-otvorenú**. Appka nemá službu na pozadí — keď je zavretá, nesynchronizuje
-sa nič.
+Sťahuje sa po dávkach po 40 a v hlavičke vidíš, koľko ešte ostáva. Zoznam
+je uložený na disku, takže prvý sync prežije aj zavretie appky — po
+otvorení pokračuje tam, kde skončil.
+
+Potom sa to synchronizuje samo v intervale, ktorý si nastavíš v
+**Mail → Settings → Fetching and keeping**. Appka nemá službu na pozadí —
+keď je zavretá, nesynchronizuje sa nič.
 
 ---
 
@@ -136,7 +145,7 @@ sa nič.
 Chyba **„Google refused access"** má presne dve príčiny a appka ti sama
 povie, ktorú máš.
 
-Pozri sa do **Settings → Integrations → Email**:
+Pozri sa do **Mail → Settings → Mailbox**:
 
 **Je tam červený pruh o povolení na mail?**
 → Token nemá Gmail. Sprav krok 3, potom **Disconnect** a krok 5–6 znova,

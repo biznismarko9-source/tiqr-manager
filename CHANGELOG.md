@@ -16,6 +16,91 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.109.0 - Mail: vlastné pravidlá, nastavenia v maily, starred vždy
+
+**Nastavenia sú teraz v Maily, dole v zozname zložiek.** Presne tam, kde si
+chcel - pri maily, nie tri obrazovky ďalej. V Settings → Integrations ostal
+jeden riadok s odkazom, aby si ich tam zbytočne nehľadal.
+
+**Pravidlá.** "Ktorú hlavičku rovno riešiť, ktorú rovno do koša." Pravidlo
+je: pozri sa na *jedno* pole (odosielateľ / predmet / náhľad), hľadaj
+*jeden* text, urob *jednu* vec. Štyri akcie: do koša, označiť prečítané,
+poslať do Needs review, a **Keep** - ktorý zastaví zoznam, takže široké
+pravidlo nemôže zjesť order confirmation. Idú zhora dole, prvá zhoda
+vyhráva, a poradie sa dá meniť šípkami. Pri každom vidíš, koľkokrát už
+zabralo. Tlačidlo "Run rules on mail I already have" ich pustí na to, čo už
+máš - inak by platili len na budúce maily a nedalo by sa overiť, či robia,
+čo si myslel.
+
+**Nič z toho nesiaha do Gmailu.** Appka má read-only prístup. "Do koša"
+znamená do koša TIQR-u, odkiaľ sa dá vrátiť. Žiadne pravidlo nikdy nemaže.
+
+**Odosielatelia sa dajú upravovať.** Tých 17 domén bolo doteraz zadrôtovaných
+v binárke. Teraz sa dajú prepísať, zmazať aj pridať, a je to jeden zoznam
+namiesto dvoch (tvoje staré "also watch these" sa automaticky prenesú).
+Keď zmažeš všetky, appka ťahá celú schránku - nevráti si potichu svojich 17.
+
+**Starred konečne naozaj vždy.** Bola tam reálna chyba: starred aj bežné
+maily sa listovali do jedného stropu 900, Gmail vracia od najnovších, takže
+pri viac ako 900 označených sa tých istých 900 vracalo dookola a staršie
+sa **nemali ako dostať dnu**. Teraz má starred vlastné listovanie až do
+30 000, ide **prvý v poradí**, a neplatí naň ani dátumové okno ani tvoj
+vlastný filter.
+
+**Maily pribúdajú priebežne.** Zoznam ID sa uloží na disk (`mail_fetch_queue`)
+a sťahuje sa po 40. Vidíš "ostáva ešte X", prvý sync prežije zavretie appky,
+a kým sa dobieha pozadu, dátumové okno sa neposúva - inak by sa nestiahnuté
+maily dostali mimo dosah navždy.
+
+**Vlastný Gmail filter.** Napíšeš napr. `-category:promotions`,
+`has:attachment`, `label:PULLS`. Pridáva sa k oknu, nikdy ho nenahrádza.
+Nevyvážené zátvorky alebo úvodzovky sa odmietnu celé, nie polovične.
+
+**Všetky záložky**, aj prázdne. Doteraz sa skrývali tie, z ktorých sa ešte
+nič nestiahlo - čo pri prvom syncu znamenalo skoro všetky.
+
+**Rust testy.** Tri testy boli červené od 2.105.0 - kontrolovali `-in:spam`
+a nulové `in:anywhere`, teda pravidlá, ktoré appka zámerne prestala
+dodržiavať, keď si pýtal vidieť spam a kôš. Opravené proti tomu, čo appka
+naozaj robí. Pribudlo 25 nových testov (pravidlá, domény, filter).
+
+**Jedna reálna chyba chytená pred odoslaním:** nový SQL dotaz čítal stĺpec
+`preview`, ktorý sa v databáze volá `snippet` - padlo by to až za behu.
+Našiel to nový kontrolór SQL stĺpcov, ktorý som naňho napísal a najprv
+overil na troch zámerne pokazených kópiách.
+
+## 2.108.0 - Oprava padania + rýchlosť
+
+**Prečo appka padala, a bola to moja chyba.** Na štyroch miestach som bral
+okno okolo sumy obyčajným počítaním bajtov. V angličtine to prejde. Stačí
+jedno euro, jedna dĺžeň alebo emoji pri cene a ten bajt padne doprostred
+znaku - a Rust na tom **panikuje**. Dialo sa to **vnútri zámku databázy**,
+takže sa zámok otrávil a padlo všetko ostatné s ním. **Jeden cudzí znak
+v jednom reklamnom maili zabil celú appku.**
+
+Nehádal som to - overil: dve z piatich bežných slovenských správ to zhodia,
+vrátane úplne obyčajného "Ďakujeme za objednávku. Cena za lístok 40,00 EUR".
+Je na to test presne s tými vetami.
+
+Je to tá istá trieda chyby, akú som opravil v 2.101.0 pri čistení HTML - a
+potom ju zaviedol inde. Pravidlo si tentoraz píšem natvrdo do kódu:
+**nikdy nekrájať text počítaním bajtov.**
+
+**Rýchlosť.** Predtým to ťahalo jednu správu na jeden HTTP request, za
+sebou - 8 správ za sekundu. Teraz beží šesť naraz, s opakovaním pri
+preťažení.
+
+**Ale musím ti povedať strop na rovinu:** Google účtuje 5 jednotiek za
+správu a dáva ich asi 250 za sekundu, čiže **~50 správ za sekundu je limit**,
+nech to napíšem akokoľvek. Dvadsať vlákien by zarobilo len chyby. Niekoľko
+tisíc za pár sekúnd teda nejde - 3000 správ je minúta, to je Googlova
+matematika, nie moja lenivosť.
+
+**Čo som spravil namiesto toho:** jeden beh je teraz malá dávka (~6 sekúnd),
+uloží čo stiahol a hneď naväzuje ďalšia. Zoznam sa po každej dávke obnoví,
+takže maily **pribúdajú vo vlnách a vidíš počítadlo**, namiesto toho aby si
+minútu civel na prázdnu obrazovku. Rovnaký celkový čas, úplne iný pocit.
+
 ## 2.107.1 - Oprava buildu: tri vydania sa vôbec nepreložili
 
 Mal si pravdu a je to horšie než spadnutý test: **2.105, 2.106 ani 2.107 sa

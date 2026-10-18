@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.107.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.109.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,105 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.109.0 - Mail: rules, settings moved into Mail, starred that actually
+always arrives.**
+
+Migrations **044** (`mail_fetch_queue`) and **045** (`mail_rules`,
+`mail_senders`) were added; the fresh-file canary in
+`commands/database.rs` is now **45**. The next new migration is **046**.
+
+**THE STARRED BUG, confirmed by calculation before it was fixed.** Both
+queries listed into one vector capped at `SYNC_MAX_MESSAGES * 3` = 900.
+Gmail returns newest-first, so with more than 900 starred messages the same
+newest 900 came back on every run, were filtered out as already-stored, and
+the older ones **could never arrive**. marko: "je to jedno ake stare su tie
+maily ktore mam oznacene tie musia byt vzdy". Starred now lists separately
+up to `LIST_MAX_IDS` (30 000), is queued at priority 0 so it drains FIRST,
+and `starred_query()` deliberately takes **no arguments** - no date window,
+no scope, no custom filter can hide a starred message.
+
+**THE FETCH QUEUE** (`mail_fetch_queue`, migration 044). Listing costs 5
+quota units for up to 500 ids; each `messages.get` costs 5 on its own. So a
+run lists ONCE, parks every unknown id on disk, and fetches `FETCH_BATCH`
+(40) per run. Mail arrives in waves instead of one silence, and a long
+first sync survives the app being closed. `last_sync_at` is deliberately
+NOT advanced while the queue is non-empty - moving the window past ids that
+were never fetched would put that mail outside every future query, with
+nothing to show it was missed.
+
+**RULES** (`mail_rules`, migration 045). One field, one needle, one action;
+first match wins in `position` order. Actions are `trash` (TIQR's own
+trash - reversible, Gmail untouched), `read`, `review`, and `keep`, which
+writes nothing and exists purely to stop later rules. `keep` is what makes
+a broad rule safe to write. Nothing deletes, and the `gmail.readonly` scope
+means nothing reaches Gmail.
+
+**SENDERS ARE EDITABLE** (`mail_senders`, migration 045). `KNOWN_SENDERS`
+is now only a SEED, applied once via `seed_senders` behind a marker setting
+so a domain marko deleted never comes back. `sync_query` takes the live
+list; an EMPTY list falls back to the whole mailbox rather than silently
+restoring the built-ins. `detect_platform` still uses the built-in array -
+that is brand recognition for classification, not a watch list, and was
+left alone deliberately.
+
+**SETTINGS MOVED.** `EmailIntegrationCard` (366 lines) was deleted from
+`Settings.tsx`; everything now lives in `src/components/MailSettingsPane.tsx`,
+reached from a Settings row pinned to the bottom of Mail's folder rail.
+Settings -> Integrations keeps a one-line pointer rather than vanishing.
+`MailTestLine` moved with it. **`GMAIL-SETUP.md` steps 5-7 still say
+"Settings -> Integrations -> Email" and need updating.**
+
+**THREE RUST TESTS HAD BEEN RED SINCE 2.105.0.** They asserted `-in:spam`
+and zero `in:anywhere` - rules the app deliberately stopped following when
+marko asked to be able to browse spam and trash. They were fixed against
+what the app actually does; `is_untrusted` is what still keeps spam
+harmless, and has its own tests.
+
+**A NEW CHECKER, and it found a real bug.** `scratchpad/sqlcols.py` checks
+every column named in a SQL string against the migrations. Its first
+version silently skipped half of `mail.rs` because a regex scan for string
+literals desynchronises on a `"` inside a comment - so it now walks the
+source with a real lexer and PRINTS the query count, because "OK" after
+checking nothing is not a pass. It found `IFNULL(preview, '')` where the
+column is `snippet` - a runtime-only failure. Negative-tested on three
+deliberately broken copies; clean across 1068 queries in the backend.
+
+**2.108.0 - the crash, and the speed ceiling.**
+
+**THE CRASH, and it was mine.** Four places took a window around a currency
+mark with plain byte arithmetic - `&hay[pos.saturating_sub(28)..pos]`. One
+euro sign, one Slovak diacritic or one emoji near the price and the offset
+lands mid-character; slicing a `&str` there panics. It happened inside
+`upsert_message`, which runs while the database mutex is HELD - so the mutex
+was poisoned and every later lock in the app panicked too. **One foreign
+character in one marketing email killed the whole app**, which is exactly
+what marko kept seeing.
+
+Proven, not assumed: two of five ordinary Slovak bodies panic in the old
+code, including "Dakujeme za objednavku. Cena za listok 40,00 EUR". There is
+a test with those exact bodies now.
+
+**Same class as the `strip_html` byte/char bug fixed in 2.101.0, which I
+then reintroduced somewhere else.** The rule, written down this time:
+**never index a `&str` with arithmetic** - everything goes through
+`safe_slice`.
+
+**SPEED - and the honest ceiling.** The fetch was one message per HTTP round
+trip, sequentially: 8 messages a second. It is now six workers sharing one
+client, with 429 backoff. Six is as many as is worth having, because the
+limit is Google's: `messages.get` costs 5 quota units and a user gets about
+250 a second, so **roughly 50 messages per second is the hard ceiling**
+however it is written. Twenty workers would earn 429s, not throughput.
+
+So "several thousand in a few seconds" is not reachable - three thousand
+messages is a minute, by Google's arithmetic. What IS reachable is not
+making him watch an empty screen for that minute: a run is now a SMALL
+batch (300, about six seconds) that stores what it got and reports
+`more_waiting`, and the screen chains the next batch straight away. Same
+total time, arriving in visible waves with a running count.
+
+131 tests in `mail.rs`.
 
 **2.107.1 - the build was broken for three releases and no test ran at all.**
 

@@ -2748,6 +2748,39 @@ export interface MailConnectionStatus {
    *  HTTPS endpoint and TIQR has no server - it talks to Google straight
    *  from this machine, so there is nowhere for Google to push to. */
   syncIntervalSeconds: number;
+  /** 2.109.0: marko's own Gmail search terms, appended to the windowed
+   *  query. Never applied to starred mail. */
+  customQuery: string;
+  /** 2.109.0: ids parked in the fetch queue - what is still to come. */
+  queueDepth: number;
+}
+
+/** One of marko's mail rules. Order is meaning, not decoration: rules run
+ *  top to bottom and the first match wins, which is what lets a narrow
+ *  `keep` protect a message from a broad `trash` below it. */
+export interface MailRule {
+  /** Empty when creating; the backend mints it. */
+  id: string;
+  position: number;
+  enabled: boolean;
+  field: "from" | "subject" | "preview";
+  matchKind: "contains" | "equals" | "starts" | "ends";
+  needle: string;
+  /** Every action is LOCAL to TIQR. The Gmail scope is read-only, so none
+   *  of these touches the mailbox at Google. */
+  action: "trash" | "read" | "review" | "keep";
+  createdAt: string;
+  hits: number;
+  lastHitAt: string | null;
+}
+
+/** A sender domain TIQR watches. `builtin` says where the row came from and
+ *  grants no privilege - a built-in row deletes like any other. */
+export interface MailSender {
+  domain: string;
+  label: string;
+  builtin: boolean;
+  addedAt: string;
 }
 
 /** The categories the deterministic classifier can produce. `other` is where
@@ -2915,6 +2948,9 @@ export interface MailSyncResult {
   reviewRequired: number;
   message: string;
   syncedAt: string;
+  /** True when this run filled its batch and more is waiting. The screen
+   *  chains the next batch on this, so a long first sync arrives in waves. */
+  moreWaiting: boolean;
 }
 
 /** The result of one real call to Gmail's profile endpoint. Reads no mail.

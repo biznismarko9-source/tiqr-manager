@@ -3349,6 +3349,54 @@ pub struct MailConnectionStatus {
     /// How often the app syncs by itself, in seconds. `0` is off. This is
     /// polling, not push: TIQR has no server for Google to push to.
     pub sync_interval_seconds: i64,
+    /// 2.109.0: marko's own Gmail search terms, appended to the windowed
+    /// query. Raw as he typed it. Never applied to starred mail - see
+    /// commands/mail.rs::starred_query.
+    pub custom_query: String,
+    /// 2.109.0: how many ids are parked in `mail_fetch_queue`, so the UI can
+    /// say "4 812 still to fetch" instead of looking stalled during a long
+    /// first sync.
+    pub queue_depth: i64,
+}
+
+/// One of marko's mail rules, exactly as `mail_rules` stores it.
+///
+/// Carries its own `hits` because a rules screen that cannot say which rules
+/// ever fire is a screen full of guesses.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailRule {
+    /// Empty when the frontend is asking for a NEW rule to be created; the
+    /// backend mints the id, so two machines can never argue about one.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub position: i64,
+    pub enabled: bool,
+    /// "from" | "subject" | "preview"
+    pub field: String,
+    /// "contains" | "equals" | "starts" | "ends"
+    pub match_kind: String,
+    pub needle: String,
+    /// "trash" | "read" | "review" | "keep"
+    pub action: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub hits: i64,
+    #[serde(default)]
+    pub last_hit_at: Option<String>,
+}
+
+/// A sender domain TIQR watches. `builtin` only records where the row came
+/// from - it grants no privilege, and a built-in row deletes like any other.
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSender {
+    pub domain: String,
+    pub label: String,
+    pub builtin: bool,
+    pub added_at: String,
 }
 
 /// The Overview screen's counters. Every one is a real `COUNT(*)`; none is a
@@ -3500,6 +3548,10 @@ pub struct MailSyncResult {
     pub review_required: i64,
     pub message: String,
     pub synced_at: String,
+    /// True when this run filled its batch and there is more to fetch.
+    /// The Mail screen chains the next batch straight away on this, so a
+    /// long first sync arrives in visible waves rather than in one silence.
+    pub more_waiting: bool,
 }
 
 /// What a test of the mailbox connection found. Same three-valued `status`

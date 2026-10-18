@@ -271,6 +271,16 @@ pub fn run() {
             commands::mail::get_mail_message,
             commands::mail::set_mail_review_outcome,
             commands::mail::get_mail_overview,
+            // 2.109.0: settings that live inside Mail itself - his own
+            // rules, his own sender list, his own Gmail filter.
+            commands::mail::list_mail_rules,
+            commands::mail::save_mail_rule,
+            commands::mail::delete_mail_rule,
+            commands::mail::apply_mail_rules_now,
+            commands::mail::list_mail_senders,
+            commands::mail::save_mail_sender,
+            commands::mail::delete_mail_sender,
+            commands::mail::set_mail_custom_query,
             commands::settings::get_app_setting,
             commands::settings::set_app_setting,
             commands::settings::get_anthropic_api_key_configured,

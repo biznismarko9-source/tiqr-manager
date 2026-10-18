@@ -70,6 +70,8 @@ import type {
   MergeLogEntry,
   MailConnectionStatus,
   MailLabel,
+  MailRule,
+  MailSender,
   MailMessageDetail,
   MailMessageFilter,
   MailMessageSummary,
@@ -825,6 +827,24 @@ export const api = {
   setMailSyncInterval: (seconds: number) =>
     invoke<MailConnectionStatus>("set_mail_sync_interval", { seconds }),
   setMailRead: (id: number, read: boolean) => invoke<void>("set_mail_read", { id, read }),
+  /** 2.109.0 - Mail's own settings. These live in Mail, not in Settings:
+   *  marko asked for them where the mail is. */
+  listMailRules: () => invoke<MailRule[]>("list_mail_rules"),
+  /** Creates when `rule.id` is empty, updates otherwise. Returns the whole
+   *  list so the screen never has to guess the new order. */
+  saveMailRule: (rule: MailRule) => invoke<MailRule[]>("save_mail_rule", { rule }),
+  deleteMailRule: (id: string) => invoke<MailRule[]>("delete_mail_rule", { id }),
+  /** Runs the rules over mail already stored, and returns how many messages
+   *  changed. Nothing is deleted - the worst case is TIQR's own trash. */
+  applyMailRulesNow: () => invoke<number>("apply_mail_rules_now"),
+  listMailSenders: () => invoke<MailSender[]>("list_mail_senders"),
+  /** Adds a sender, or renames one when `replaces` names an existing row. */
+  saveMailSender: (domain: string, replaces?: string) =>
+    invoke<MailSender[]>("save_mail_sender", { domain, replaces: replaces ?? null }),
+  deleteMailSender: (domain: string) => invoke<MailSender[]>("delete_mail_sender", { domain }),
+  /** Gmail's own search syntax, appended to the window. Rejected rather
+   *  than half-applied when brackets or quotes do not balance. */
+  setMailCustomQuery: (query: string) => invoke<void>("set_mail_custom_query", { query }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),

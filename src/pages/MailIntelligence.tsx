@@ -31,6 +31,7 @@ import {
 } from "../lib/types";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
 import { IconMail } from "../components/icons";
+import { MailSettingsPane } from "../components/MailSettingsPane";
 import { useToast } from "../lib/toast";
 
 /** Folders this app defines itself, above Gmail's own. */
@@ -60,6 +61,11 @@ const BUILTIN_FOLDERS: { key: Builtin; label: string }[] = [
   { key: "spam", label: "Spam" },
   { key: "trash", label: "Trash" },
 ];
+
+/* Not a folder: the rail's Settings row reuses `folder` as the selected
+   pane, and this key can never collide with a Gmail label id - those are
+   `INBOX`, `STARRED` or `Label_8`, never a double underscore. */
+const SETTINGS_FOLDER = "__settings";
 
 const CATEGORY_LABELS: Record<string, string> = {
   sale_confirmation: "Sale",
@@ -545,6 +551,7 @@ export default function MailIntelligence() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [autoBusy, setAutoBusy] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(0);
   const [tick, setTick] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -649,11 +656,16 @@ export default function MailIntelligence() {
       if (stopped) return;
       setAutoBusy(true);
       try {
-        const r = await api.syncMailNow();
-        // Only reload when something actually arrived - a refresh that
-        // changes nothing still re-renders the list under his cursor.
-        if (r.status === "synced" && r.storedNew > 0) {
-          await loadList();
+        // The automatic poll chains too, but only a few batches at a time
+        // - it is meant to keep up, not to run a backfill in the
+        // background while marko is reading.
+        for (let batch = 0; batch < 3; batch++) {
+          const r = await api.syncMailNow();
+          if (r.status !== "synced") break;
+          // Only reload when something actually arrived - a refresh that
+          // changes nothing still re-renders the list under his cursor.
+          if (r.storedNew > 0) await loadList();
+          if (!r.moreWaiting) break;
         }
         await loadHeader();
       } catch {
@@ -676,18 +688,42 @@ export default function MailIntelligence() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick, status?.connected, status?.paused, status?.syncIntervalSeconds]);
 
+  /* One batch is about six seconds of work, because Google's quota caps
+     this at roughly 50 messages a second however it is written. So a long
+     first sync is CHAINED: each batch stores what it got, the list
+     refreshes, and the next batch starts straight away. Same total time,
+     but mail arrives in visible waves instead of after one long silence.
+
+     Bounded, so a mailbox that keeps reporting more can never spin here
+     forever - it stops and the ordinary poll picks the rest up. */
   const doSync = async () => {
     setSyncing(true);
+    let fetched = 0;
     try {
-      const result = await api.syncMailNow();
-      if (result.status === "synced") toast.success(result.message);
-      else if (result.status === "skipped") toast.info(result.message);
-      else toast.error(result.message);
-      refresh();
+      for (let batch = 0; batch < 40; batch++) {
+        const result = await api.syncMailNow();
+        if (result.status === "skipped") {
+          if (batch === 0) toast.info(result.message);
+          break;
+        }
+        if (result.status === "failed") {
+          toast.error(result.message);
+          break;
+        }
+        fetched += result.storedNew;
+        setSyncProgress(fetched);
+        refresh();
+        if (!result.moreWaiting) break;
+        // A breath between batches: it keeps the UI responsive and leaves
+        // Google a little headroom under the per-second quota.
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (fetched > 0) toast.success(`${fetched} new message${fetched === 1 ? "" : "s"}`);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
       setSyncing(false);
+      setSyncProgress(0);
     }
   };
 
@@ -722,7 +758,14 @@ export default function MailIntelligence() {
     );
   }
 
-  const userLabels = labels.filter((l) => l.kind !== "system" && l.total > 0);
+  /* EVERY one of his own labels, including the empty ones.
+     marko: "nech to cita vsetky zalozky". The old `l.total > 0` hid any
+     label whose mail had not been fetched yet - which during a first sync
+     is most of them, so the rail looked like Gmail with folders missing
+     and there was no way to tell that from a label that is genuinely
+     empty. An empty folder is information; a folder that is not there is
+     a bug report waiting to happen. */
+  const userLabels = labels.filter((l) => l.kind !== "system");
 
   return (
     /* NOT `h-full`: Layout gives pages no height (PROTECTED_AREAS 2.55.0),
@@ -744,7 +787,9 @@ export default function MailIntelligence() {
                 else - checked, not assumed - so this lives here. */}
             {status.syncIntervalSeconds > 0 && (
               <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                {autoBusy || syncing
+                {syncing && syncProgress > 0
+                  ? `Fetching... ${syncProgress} so far`
+                  : autoBusy || syncing
                   ? "Checking for new mail..."
                   : `Checks every ${
                       status.syncIntervalSeconds < 60
@@ -809,8 +854,32 @@ export default function MailIntelligence() {
               ))}
             </>
           )}
+
+          {/* Pinned to the bottom of the rail, where marko asked for it:
+              "tu dole dat nastavenia". `mt-auto` is what pins it - the
+              rail is a flex column, so the margin eats whatever space is
+              left and the row sits on the floor however many labels are
+              above it. */}
+          <div className="sticky bottom-0 mt-auto border-t border-slate-200 bg-surface pt-1 dark:border-slate-800">
+            <FolderRow
+              label="Settings"
+              count={0}
+              unread={0}
+              active={folder === SETTINGS_FOLDER}
+              onClick={() => {
+                setFolder(SETTINGS_FOLDER);
+                setOpenId(null);
+                clearSelection();
+                setConfirmDelete(false);
+              }}
+            />
+          </div>
         </Card>
 
+        {folder === SETTINGS_FOLDER ? (
+          <MailSettingsPane status={status} onStatus={setStatus} />
+        ) : (
+        <>
         <Card className="flex w-[340px] shrink-0 flex-col overflow-hidden p-0">
           {selected.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
@@ -897,6 +966,8 @@ export default function MailIntelligence() {
             </div>
           )}
         </Card>
+        </>
+        )}
       </div>
     </div>
   );
