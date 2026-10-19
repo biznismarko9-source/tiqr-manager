@@ -230,7 +230,9 @@ export default function Transactions({ entries, categories, accounts, transfers,
           Please select at least one date.
         </div>
       ) : (
-        <Card>
+        // 2.113.0: clipped to its rounded edge (the last row's hover fill and
+        // the sticky header used to show square corners outside it).
+        <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 dark:border-slate-800 px-4 py-3">
             <h3 className="mr-auto text-sm font-semibold text-slate-800 dark:text-slate-200">Transactions</h3>
             <div className="relative">
@@ -269,7 +271,7 @@ export default function Transactions({ entries, categories, accounts, transfers,
           </div>
           {rows.length === 0 ? (
             <div className="p-6">
-              <EmptyState icon={<IconSearch className="h-5 w-5" />} title="No transactions match these filters" />
+              <EmptyState bare icon={<IconSearch className="h-5 w-5" />} title="No transactions match these filters" />
             </div>
           ) : (
             /* 2.23.0: the height cap is what makes the wheel work here.

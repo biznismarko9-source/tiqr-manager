@@ -37,6 +37,7 @@ import { Badge, Button, Card, EmptyState, Input, PageHeader, Spinner } from "../
 import { IconMail } from "../components/icons";
 import { MailSettingsPane } from "../components/MailSettingsPane";
 import { useToast } from "../lib/toast";
+import { useFillHeight, useRemeasure } from "../lib/useFillHeight";
 
 /** Folders this app defines itself, above Gmail's own. */
 type Builtin =
@@ -730,6 +731,11 @@ export default function MailIntelligence() {
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) void loadMore();
   };
 
+  // 2.113.0: the panes reach the bottom of the window (lib/useFillHeight.ts).
+  const panesRef = useRef<HTMLDivElement>(null);
+  const panesHeight = useFillHeight(panesRef);
+  useRemeasure([loading, status?.connected]);
+
   if (loading) {
     return (
       <div>
@@ -848,7 +854,11 @@ export default function MailIntelligence() {
         </Card>
       )}
 
-      <div className="flex gap-4" style={{ height: "calc(100vh - 266px)", minHeight: "440px" }}>
+      <div
+        ref={panesRef}
+        className="flex gap-4"
+        style={{ height: panesHeight ? `${panesHeight}px` : "calc(100vh - 168px)", minHeight: "440px" }}
+      >
         {/* Folders - TIQR's own in marko's order, then his Gmail labels.
             Only the list scrolls; Settings sits BELOW it. It used to be a
             sticky row inside the scroll, and with enough labels they slid

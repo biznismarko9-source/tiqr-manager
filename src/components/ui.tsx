@@ -810,17 +810,25 @@ export function EmptyState({
   title,
   description,
   action,
+  bare = false,
 }: {
   icon?: ReactNode;
   title: string;
   description?: string;
   action?: ReactNode;
+  /** 2.113.0: inside a card already - no second surface and edge, which
+   *  drew a card inside the card (Finance). */
+  bare?: boolean;
 }) {
   // 2.6.0: the icon now sits in a soft, bordered medallion instead of
   // floating as a large grey glyph, and the whole block sits on a real
   // (dashed) surface. Same props, same call sites.
   return (
-    <div className="flex flex-col items-center justify-center gap-1 rounded-xl bg-surface-muted px-6 py-14 text-center shadow-card">
+    <div
+      className={`flex flex-col items-center justify-center gap-1 text-center ${
+        bare ? "px-6 py-10" : "rounded-xl bg-surface-muted px-6 py-14 shadow-card"
+      }`}
+    >
       {icon && (
         <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-surface text-slate-400 shadow-card dark:text-slate-500">
           {icon}
@@ -1516,7 +1524,7 @@ export function RowFormTable({
           {/* The shell already scrolls (see .table-shell in index.css), so a
               sticky header costs nothing and a twenty-row tour keeps its
               column names. */}
-          <thead className="sticky top-0 z-10 bg-surface">
+          <thead className="sticky top-0 z-10 bg-[var(--table-head)]">
             <tr>
               <th className="th-c w-[28px]" aria-label="Row" />
               {head.map((h, i) => (

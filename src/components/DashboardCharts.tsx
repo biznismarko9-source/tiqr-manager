@@ -127,6 +127,16 @@ export function CashflowChart({
   const W = 760;
   const H = 230;
   const PAD = { top: 18, right: 14, bottom: 26, left: 48 };
+  // 2.113.0: the axis says "12.3k", not "€12,345.67" - a full amount does
+  // not fit the 48px gutter and ran out of the card's left edge (Finance).
+  // The hover line below still shows the exact figure.
+  const axisLabel = (cents: number) => {
+    const v = Math.abs(cents) / 100;
+    const sign = cents < 0 ? "-" : "";
+    if (v >= 1_000_000) return `${sign}${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+    if (v >= 1_000) return `${sign}${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`;
+    return `${sign}${Math.round(v)}`;
+  };
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
 
@@ -213,7 +223,7 @@ export function CashflowChart({
               textAnchor="end"
               className="fill-slate-400 text-[11px] tabular-nums dark:fill-slate-500"
             >
-              {formatValue(g.v)}
+              {axisLabel(g.v)}
             </text>
           </g>
         ))}
