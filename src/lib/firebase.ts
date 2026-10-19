@@ -44,6 +44,9 @@ export const auth = getAuth(app);
 // firestore.rules (repo root) for the security rules that make the "never
 // again from this app" part actually enforced, not just a convention. Do not
 // reach for this for anything else without updating that rules file too.
+// 2.112.0: live sync between computers (lib/liveSync.ts) is the third use -
+// users/{uid}/rows|parts|settings|devices, each account its own, with the
+// rules for it in the same file.
 export const db = getFirestore(app);
 
 // 2.5.2: "Forgot password?" (see lib/auth.tsx's requestPasswordReset) - the

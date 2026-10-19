@@ -75,29 +75,30 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-/// One table's part of a merge.
-struct MergeTable {
-    name: &'static str,
+/// One table's part of a merge. 2.112.0: live sync (commands/live_sync.rs)
+/// walks the same list, so a table added here travels both ways.
+pub(crate) struct MergeTable {
+    pub(crate) name: &'static str,
     /// Foreign keys that must be translated from the other machine's ids to
     /// this one's. The parent is `None` for `marketplaces`, which carries no
     /// `uid` because these same migrations seed it identically on every
     /// machine - so its ids already match and are copied through untouched.
-    fks: &'static [(&'static str, Option<&'static str>)],
+    pub(crate) fks: &'static [(&'static str, Option<&'static str>)],
     /// The column that identifies the same row across machines when the
     /// schema itself says so with `UNIQUE(name)`. Rows matching an existing
     /// local one are linked to it, not inserted.
-    natural_key: Option<&'static str>,
+    pub(crate) natural_key: Option<&'static str>,
     /// `(counter, prefix)` for `codes::next_code`, for tables whose `code`
     /// this app actually mints. `None` on a table it never mints one for
     /// (`payments`): a colliding code there is reported and skipped rather
     /// than re-issued in a format this app has never produced.
-    code: Option<(&'static str, &'static str)>,
+    pub(crate) code: Option<(&'static str, &'static str)>,
 }
 
 /// Parents before children - the whole reason id translation always has an
 /// answer by the time it is asked for. Checked by a test against the
 /// schema's own foreign keys, not trusted to stay right by hand.
-const MERGE_TABLES: &[MergeTable] = &[
+pub(crate) const MERGE_TABLES: &[MergeTable] = &[
     // 2.51.0: Notes. Standalone (no fks out of note_sheets), and note_rows
     // names its parent so the other machine's sheet ids are translated to
     // this one's - parent before child, same as every pair below.
@@ -355,7 +356,7 @@ fn translate_id(conn: &Connection, parent: &str, remote_id: i64) -> AppResult<Op
 /// a merge could leave `order:CELINE` reading 3 while `CELINE-004` had already
 /// arrived. That is exactly the days-later UNIQUE failure this function exists
 /// to prevent, just one counter row over.
-fn reconcile_counter(conn: &Connection, table: &str, counter: &str, prefix: &str) -> AppResult<()> {
+pub(crate) fn reconcile_counter(conn: &Connection, table: &str, counter: &str, prefix: &str) -> AppResult<()> {
     conn.execute(
         &format!(
             "UPDATE counters SET value = MAX(value, COALESCE(
@@ -660,6 +661,18 @@ fn apply_tombstones(conn: &Connection, reasons: &mut Vec<String>) -> AppResult<V
 /// Split out from the command so it can be tested against two real databases
 /// without Drive, Tauri or a network anywhere in the picture.
 pub(crate) fn merge_attached(conn: &Connection) -> AppResult<(Vec<MergeTableResult>, Vec<String>)> {
+    // 2.112.0: what the Drive file brings is the other computer's, not an
+    // edit made here, so live sync must not send it on stamped "now" - that
+    // stamp would beat a newer edit the other computer made since. Its
+    // deletions are still sent (live_sync::install_triggers): a deletion is
+    // final either way.
+    crate::commands::live_sync::set_applying(conn, true)?;
+    let out = merge_attached_quietly(conn);
+    crate::commands::live_sync::set_applying(conn, false)?;
+    out
+}
+
+fn merge_attached_quietly(conn: &Connection) -> AppResult<(Vec<MergeTableResult>, Vec<String>)> {
     let mut reasons: Vec<String> = Vec::new();
     // Deletions first - see `apply_tombstones` for why the order matters.
     let deleted = apply_tombstones(conn, &mut reasons)?;

@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.112.0 - Živý sync: zmena na jednom počítači je o pár sekúnd na druhom
+
+**Všetko ako jedna appka.** Objednávka, lístok, predaj, úprava, zmazanie,
+poznámka aj mailové pravidlo sa na druhom počítači objaví do pár sekúnd,
+kým sú oba zapnuté. Počítač, ktorý bol vypnutý, si všetko, čo zmeškal,
+dotiahne hneď po otvorení. Doteraz išiel celý súbor cez Google Drive len pri
+otvorení a zatvorení appky a **úprava** záznamu, ktorý mali oba počítače,
+neprešla nikdy.
+
+**Novšia úprava vyhrá**, na oboch počítačoch rovnako, a zmazanie platí vždy.
+Rozhodujú o tom aj pravidlá vo Firebase, takže dva počítače, ktoré pošlú
+zmenu v tej istej sekunde, si ju navzájom neprepíšu. Rovnaká platforma
+napísaná na oboch počítačoch ostane jedna. Dve objednávky s tým istým
+kódom dostanú dva kódy, na oboch počítačoch tie isté. Lístok, ktorý príde
+skôr ako jeho objednávka, počká, kým objednávka dorazí.
+
+**Obrazovky sa obnovia samy** (Dashboard, Events, Orders, Inventory, Sales,
+Pulls, Finance, detaily, zoznam poznámok) a zaškrtnuté riadky ostanú. V
+bočnom paneli je riadok so stavom (*Live*, *Sending 12*, *Offline · 4
+queued*), v Settings → Data je karta **Live sync**.
+
+**Zapína sa na každom počítači zvlášť** (jednorazová ponuka hore). Pred
+prvým použitím treba raz vložiť nové `firestore.rules` do Firebase konzoly
+(Firestore Database → Rules → Publish). **Prihlásenie do Gmailu cez Firebase
+necestuje**: schránka sa pripája na každom počítači sama, pravidlá
+a webhooky prejdú. Keď sú živé oba počítače, Google Drive slúži už len ako
+záloha a pri spustení sa nepýta na zlučovanie. Po obnovení zálohy sa živý
+sync na tom počítači pozastaví, aby obnovu hneď neprepísal, a appka to
+povie.
+
+Migrácia **046**, ďalšia je 047. Nových 23 Rust testov simuluje dva
+počítače a Firestore s rovnakým pravidlom. Kontrola proti Firestore
+emulátoru so skutočnými `firestore.rules` prešla v 9 krokoch. `npm test`:
+21 testov. Nebolo to overené so skutočným Firebase projektom ani na dvoch
+skutočných počítačoch.
+
 ## 2.111.0 - Mail podľa priority: nové, potom všetky Starred, potom všetky labels, až potom história
 
 **Poradie podľa toho, čo mail je, nie aký je starý.** Najprv nové maily,

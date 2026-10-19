@@ -2,12 +2,12 @@ rules_version = '2';
 
 // TIQR Manager - Firestore security rules.
 //
-// 2.0.71: added for the account-approval gate; 2.23.0 added the suggestion
-// box as the second (and so far only other) use -
-// (stop one person from registering multiple accounts). This is the ONLY
-// thing Firestore is used for in this app - see src/lib/firebase.ts's own
-// comment on `db` before reaching for Firestore anywhere else without
-// updating this file too.
+// 2.0.71: added for the account-approval gate (stop one person from
+// registering multiple accounts); 2.23.0 added the suggestion box; 2.112.0
+// added live sync between computers (the users/{uid}/rows|parts|settings|
+// devices block below). Those three are everything Firestore is used for in
+// this app - see src/lib/firebase.ts's own comment on `db` before reaching
+// for Firestore anywhere else without updating this file too.
 //
 // HOW TO APPLY THIS: Firebase Console -> your TIQR Manager project ->
 // Firestore Database -> Rules tab -> replace everything there with the
@@ -88,6 +88,82 @@ service cloud.firestore {
 
       // Triaging happens in the Console, the same asymmetry approval uses.
       allow update, delete: if false;
+    }
+
+    // 2.112.0: live sync between marko's computers (src/lib/liveSync.ts,
+    // src-tauri/src/commands/live_sync.rs). Everything sits under the
+    // signed-in account's own users/{uid}, and nobody else's is readable or
+    // writable - not even by another approved account.
+    //
+    //   rows/{table~uid}   one document per record
+    //   parts/{id}         the body of a record too big for one document
+    //   settings/{group}   mail rules + senders, webhooks
+    //   devices/{id}       which computers sync live
+    //
+    // The one rule that matters most is `replacesStored`: a document is only
+    // ever replaced by a NEWER version of the record, and a deletion is only
+    // ever replaced by another deletion. Two computers sending at the same
+    // moment therefore cannot undo each other's newer change, and nothing can
+    // bring a deleted record back - whichever reaches Firestore first.
+    match /users/{userId}/rows/{docId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validRow(docId);
+      allow update: if isOwner(userId) && validRow(docId) && replacesStored();
+      allow delete: if false;
+    }
+
+    match /users/{userId}/parts/{partId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+                            && request.resource.data.keys().hasOnly(['p'])
+                            && request.resource.data.p is string;
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/settings/{group} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validSettings(group);
+      allow update: if isOwner(userId) && validSettings(group)
+                    && request.resource.data.stamp > resource.data.stamp;
+      allow delete: if false;
+    }
+
+    match /users/{userId}/devices/{deviceId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+                            && request.resource.data.keys().hasOnly(['live', 'lastSeen', 'platform'])
+                            && request.resource.data.live is bool;
+      allow delete: if isOwner(userId);
+    }
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function validRow(docId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['t', 'u', 'h', 'del', 'dev', 'at', 'body', 'parts'])
+          && d.t is string && d.u is string && docId == d.t + '~' + d.u
+          && d.h is int && d.del is bool && d.dev is string
+          && (d.get('body', null) is string || d.get('parts', null) is int)
+          && d.at == request.time;
+    }
+
+    // Newer by the hybrid clock `h`; for the same clock, the higher device id
+    // - so both computers always agree which version that is.
+    function replacesStored() {
+      let next = request.resource.data;
+      let cur = resource.data;
+      return (next.del == true && cur.del != true)
+          || (next.del == cur.del
+              && (next.h > cur.h || (next.h == cur.h && next.dev > cur.dev)));
+    }
+
+    function validSettings(group) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['group', 'stamp', 'dev', 'body', 'at'])
+          && d.group == group && d.stamp is string && d.body is string
+          && d.at == request.time;
     }
 
     // Everything else is denied by default (no rule matches -> no access) -

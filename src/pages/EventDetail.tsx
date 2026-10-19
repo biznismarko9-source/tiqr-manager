@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type { EventWithStats, FinanceEntry, OrderRecord, SaleGroup, SeatEntry, Ticket, TicketStatus } from "../lib/types";
 import { formatDate, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatsSummary } from "../lib/format";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Figure, Figures, LoadingBlock } from "../components/ui";
@@ -122,6 +123,9 @@ export default function EventDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(load);
 
   if (!event) return <LoadingBlock />;
 

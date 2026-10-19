@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, Ticket, TicketStatus, TicketUpdateInput } from "../lib/types";
 import { formatDateNumeric, formatMoney, formatSeatsSummary } from "../lib/format";
 import { RESTRICTION_TONE_CLASS, TICKET_RESTRICTIONS } from "../lib/restrictions";
@@ -205,6 +206,9 @@ export function TicketsView({
       .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(load);
 
   useEffect(() => {
     const t = setTimeout(load, 200);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import { PageHeader, SEGMENTED_TRACK, segmentedItemClass } from "../components/ui";
 import { useToast } from "../lib/toast";
 import type { FinanceData } from "./finance/shared";
@@ -51,8 +52,9 @@ export default function Finance() {
   });
   const [loading, setLoading] = useState(true);
 
-  const load = () => {
-    setLoading(true);
+  // 2.112.0: `quiet` refreshes in place, for changes from the other computer.
+  const load = (quiet = false) => {
+    if (!quiet) setLoading(true);
     Promise.all([
       api.listFinanceEntries(),
       api.listFinanceCategories(),
@@ -67,9 +69,11 @@ export default function Finance() {
       .finally(() => setLoading(false));
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, []);
+  useEffect(() => load(), []);
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(() => load(true));
 
-  const tabProps: FinanceData = { ...data, loading, reload: load };
+  const tabProps: FinanceData = { ...data, loading, reload: () => load() };
 
   return (
     <div>

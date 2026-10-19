@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type { Note, NotepadHit } from "../lib/types";
 import { Button, ConfirmDialog, EmptyState, Input, Modal, ModalFooter, TableSkeleton } from "../components/ui";
 import { IconChevronDown, IconChevronUp, IconPlus, IconSearch } from "../components/icons";
@@ -52,6 +53,8 @@ const TEMPLATES: { key: string; label: string; pages: string[] }[] = [
   { key: "sale", label: "Predaj", pages: ["Predaj", "Kupec", "Cena", "Prevod", "Poznámky"] },
 ];
 
+const NOTE_TABLES = ["notes", "note_pages", "note_images", "note_links"] as const;
+
 export default function Notes() {
   const toast = useToast();
   const [notes, setNotes] = useState<Note[] | null>(null);
@@ -82,6 +85,11 @@ export default function Notes() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 2.112.0: notes from the other computer appear in the list by
+  // themselves. The note open in the editor is left alone - reloading it
+  // under the cursor would eat what is being typed.
+  useDataChanged(() => void load(), NOTE_TABLES);
 
   useEffect(() => {
     const q = query.trim();

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import OrderRowsModal from "./OrderRowsModal";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventWithStats, OrderInput, OrderPaymentStatus, Platform } from "../lib/types";
@@ -250,6 +251,9 @@ export default function Orders() {
       .then(setOrders)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(load);
 
   useEffect(() => {
     load();

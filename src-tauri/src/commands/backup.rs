@@ -207,6 +207,9 @@ pub(crate) fn snapshot_db_to(conn: &Connection, dest_path: &Path) -> AppResult<(
 fn perform_restore(conn: &mut Connection, src_path: &Path) -> AppResult<()> {
     backup_file_into(src_path, conn)?;
     crate::db::run_migrations(conn)?;
+    // 2.112.0: or live sync would bring back over the copy everything the
+    // other computer changed since - see live_sync::pause_after_restore.
+    crate::commands::live_sync::pause_after_restore(conn)?;
     Ok(())
 }
 

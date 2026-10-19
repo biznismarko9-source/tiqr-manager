@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type { AttentionCenterItem, DashboardData, DashboardTab, FinanceSummary, UpcomingEventAlert } from "../lib/types";
 import {
   computeTrend,
@@ -279,6 +280,15 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 2.112.0: changes from the other computer, refreshed in place - without
+  // the skeleton `load` shows in between.
+  useDataChanged(() => {
+    api
+      .getDashboard({ period, from: from || undefined, to: to || undefined })
+      .then(setData)
+      .catch(() => {});
+  });
 
   useEffect(() => {
     let cancelled = false;

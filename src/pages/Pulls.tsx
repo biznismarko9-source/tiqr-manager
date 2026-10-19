@@ -4,6 +4,7 @@ import PullRowsModal from "./PullRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type {
   OrderRecord,
   Platform,
@@ -237,6 +238,9 @@ function GivenPulls() {
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(() => load(search));
 
   // 2.0.65: sorts by `eventDate` (what the table's own "Date" column shows),
   // not `createdAt` - see PULL_SORT_LABELS' own comment above for why this
@@ -1082,6 +1086,9 @@ function ReceivedPulls() {
       .then(setPulls)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(() => load(search));
 
   // 2.0.65: sorts by `eventDate` (what the table's own "Date" column
   // shows), not `createdAt` - same genuine bug fix as GivenPulls' own

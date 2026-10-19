@@ -22,6 +22,18 @@ from old reports.
 
 ## Open
 
+- **Live sync (2.112.0): newest edit wins per RECORD, not per field.** Two
+  computers editing different fields of the same order within the same few
+  seconds: the later save wins the whole order on both. By decision (marko
+  agreed "novšia úprava vyhrá"); a field-level merge would need per-column
+  clocks.
+- **Live sync: the note open in the editor is not refreshed** when the other
+  computer edits the same note - the list is, the open note shows the new
+  text after reopening. Reloading under the cursor would eat typing.
+- **Live sync: not verified against the real Firebase project** - only the
+  emulator with the same rules (scripts/live-sync-emulator-check.ts). The
+  first run after marko publishes the rules is the real check.
+
 - **`cloud_sync_local_dirty` can read `false` while unsynced work exists.**
   Proven once, with cost. In `pre-restore-20261001-164651520.sqlite3` the
   flag is `false` and `cloud_sync_last_sync_at` is `2026-09-30T13:23`, while

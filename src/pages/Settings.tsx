@@ -34,6 +34,7 @@ import { formatDateTime } from "../lib/format";
 import { readAutoSyncLog } from "../lib/autoSyncLog";
 import { PREFERRED_CURRENCIES, savePreferredCurrency, usePreferredCurrency } from "../lib/preferredCurrency";
 import { addDoc, collection, getDocs, limit, orderBy, query, serverTimestamp } from "firebase/firestore";
+import { LiveSyncCard } from "../components/LiveSyncCard";
 import { auth, db } from "../lib/firebase";
 import {
   Badge,
@@ -1179,6 +1180,9 @@ export default function Settings() {
                 title="Keeping your data safe"
                 hint="Copies of this database, and the one action that can replace it. Read each button before pressing it."
               >
+              {/* 2.112.0: live sync first - it is how the two computers stay
+                  level now; the Drive card below is the backup copy. */}
+              <LiveSyncCard />
               {/* 2.12.0: Cloud sync sits above Backup/Restore because it is
                   the same concern - moving this database between machines -
                   just automatic. It reuses the very same snapshot and restore

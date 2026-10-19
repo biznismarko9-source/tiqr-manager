@@ -23,6 +23,7 @@
 // move mail into TIQR's own trash, where it can be moved straight back.
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import { requestMailSync } from "../lib/mailSync";
 import { lastSyncText, laneViews, syncHeadline } from "../lib/mailSyncStatus";
 import {
@@ -158,6 +159,8 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
+const MAIL_GROUP = ["settings:mail"] as const;
+
 export function MailSettingsPane({
   status,
   onStatus,
@@ -197,6 +200,9 @@ export function MailSettingsPane({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 2.112.0: rules and senders changed on the other computer arrive live.
+  useDataChanged(() => void load(), MAIL_GROUP);
 
   /* ---- rules --------------------------------------------------------- */
 

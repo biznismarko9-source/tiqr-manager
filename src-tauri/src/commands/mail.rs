@@ -114,7 +114,7 @@ pub(crate) const MAIL_REFRESH_TOKEN_KEY: &str = "mail_gmail_refresh_token";
 pub(crate) const MAIL_ACCOUNT_EMAIL_KEY: &str = "mail_gmail_account_email";
 /// What Google actually granted, verbatim. Google may grant a SUBSET of what
 /// was asked for, so this is checked rather than assumed.
-const MAIL_GRANTED_SCOPE_KEY: &str = "mail_gmail_granted_scope";
+pub(crate) const MAIL_GRANTED_SCOPE_KEY: &str = "mail_gmail_granted_scope";
 const MAIL_RETENTION_DAYS_KEY: &str = "mail_retention_days";
 /// 2.101.0: extra sender domains marko adds himself, so a marketplace this
 /// app does not know about can still be watched without a new release.

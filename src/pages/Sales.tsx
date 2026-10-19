@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import AiImportPanel from "../components/AiImportPanel";
 import { isIsoDate, matchByName } from "../lib/aiImport";
 import type { EventCategory, EventWithStats, OrderRecord, Platform, SaleBatchInput, SaleGroup, SalePaymentStatus, Ticket } from "../lib/types";
@@ -256,6 +257,9 @@ export default function Sales() {
       .then(setGroups)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(load);
 
   // 2.0.59: tab split happens client-side on data the page already fetched.
   // 2.2.10: bucketed by isSaleGroupDone (see its own doc comment above) -

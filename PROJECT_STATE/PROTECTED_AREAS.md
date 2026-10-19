@@ -21,6 +21,43 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.112.0 - live sync's invariants (commands/live_sync.rs, lib/liveSyncSession.ts)
+
+* **The list of tables that travel is `cloud_merge::MERGE_TABLES`, and only
+  that.** `live_sync::install_triggers` builds three triggers per table from
+  it at every start (dropped and recreated, so the update trigger's column
+  list is always current). A table added there travels both ways; a table
+  that is not there never does.
+* **The triggers capture once `sync_control.seeded_at` is set, on or off.**
+  Off only stops SENDING. Never make them stop at `enabled = 0`: turning live
+  sync back on relies on the outbox holding what changed meanwhile, stamped
+  when it changed - there is no second seed.
+* **`applying = 1` means "not an edit made here"** and silences the insert and
+  update triggers: `live_sync::apply` and `cloud_merge::merge_attached` set
+  it. Deletions are captured even then, on purpose (cascades, name-matched
+  lookups). Anything else that writes rows that are NOT marko's own edits -
+  a future import from the other computer - must set it too, or it is sent
+  on stamped "now" and beats a newer edit made over there.
+* **The version of a record is its hybrid clock `h`, then the device id.**
+  The same rule is in three places that must agree: `apply_doc` (Rust),
+  `replaces` (lib/liveSyncCore.ts) and `replacesStored` (firestore.rules).
+  A deletion beats any edit and is replaced only by a deletion - in all three.
+* **The device id lives in `<db>.device` next to the database, never in it.**
+  A Sync down copies the whole database file; an id inside it would make two
+  computers take each other's changes for their own.
+* **References travel as uids** (`{"$ref": uid}`), never local ids - including
+  `sheet_alerts.row_id`, which has no foreign key (`SOFT_REFS`). A new column
+  pointing at another record WITHOUT a foreign key must be added there.
+* **The Gmail credential never goes to Firestore** (`NOT_LIVE`). Do not add a
+  secret to a shared settings group without adding it there too.
+* **A whole-database replacement pauses live sync** (`backup::perform_restore`
+  -> `pause_after_restore`). Every restore path goes through it; a new one
+  must too, or the restore undoes itself within seconds.
+* **Firestore layout and rules go together.** `users/{uid}/rows|parts|
+  settings|devices`; a new field on a row document must be added to
+  `validRow`'s `hasOnly` list in firestore.rules, AND marko must publish the
+  rules again. Check it with `scripts/live-sync-emulator-check.ts`.
+
 ## 2.110.0 - the mail cache is its own file, and it is locked
 
 `mail_messages`, `mail_processing_log`, `mail_sync_state`, `mail_labels`,

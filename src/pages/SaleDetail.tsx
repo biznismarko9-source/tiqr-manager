@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type { Platform, Sale, SaleEditInput, SalePaymentStatus } from "../lib/types";
 import { formatDate, formatDateNumeric, formatMoney, formatMoneyOrMixed, formatPercentOrMixed, formatSeatLocation } from "../lib/format";
 import {
@@ -87,6 +88,18 @@ export default function SaleDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 2.112.0: changes from the other computer, shown without a click - and
+  // without clearing what is ticked, except lines that are gone.
+  useDataChanged(() => {
+    api
+      .listSalesByGroup(saleId)
+      .then((list) => {
+        setLines(list);
+        setSelected((prev) => new Set([...prev].filter((id) => list.some((s) => s.ticketId === id))));
+      })
+      .catch((e) => toast.error(errMsg(e)));
+  });
 
   const header = useMemo(() => {
     if (!lines || lines.length === 0) return null;
