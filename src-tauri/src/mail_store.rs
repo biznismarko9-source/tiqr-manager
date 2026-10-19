@@ -43,7 +43,9 @@
 //! The numbered migrations in `migrations/` run on EVERY file, including a
 //! downloaded copy from the other machine that has no `mail` attached. They
 //! must never touch a cache table again. A change to this schema is a new
-//! `user_version` step in `ensure`, not a numbered migration.
+//! `user_version` step in `ensure`, not a numbered migration - `SCHEMA_V1`
+//! (2.110.0) and `SCHEMA_V2` (2.111.0) so far, and a released step is never
+//! edited, only followed by the next one.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -107,6 +109,14 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
     if version < 1 {
         conn.execute_batch(SCHEMA_V1)?;
         conn.execute_batch("PRAGMA mail.user_version = 1;")?;
+    }
+    if version < 2 {
+        // One transaction with the version bump, so a crash half way leaves
+        // version 1 behind and the whole step runs again on the next start.
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_V2)?;
+        tx.execute_batch("PRAGMA mail.user_version = 2;")?;
+        tx.commit()?;
     }
     relocate(conn)?;
     Ok(())
@@ -411,6 +421,50 @@ BEGIN
 END;
 "#;
 
+/// 2.111.0. The queue says where each id was found, how it is doing and when
+/// it may be tried again: a message that keeps failing steps aside and is
+/// tried later, instead of leaving the queue until its folder happens to be
+/// walked again (which, for a finished folder, was only after Gmail's history
+/// expired).
+///
+/// The lanes are also renumbered - new mail, Starred, labels, and only then
+/// the rest (commands/mail_sync.rs) - so ids queued by 2.110.0 move to the new
+/// numbers: Important was 10, Starred 20 and labels 30.
+const SCHEMA_V2: &str = r#"
+ALTER TABLE mail.mail_fetch_queue ADD COLUMN source TEXT NOT NULL DEFAULT '';
+ALTER TABLE mail.mail_fetch_queue ADD COLUMN status TEXT NOT NULL DEFAULT 'queued';
+ALTER TABLE mail.mail_fetch_queue ADD COLUMN last_error TEXT;
+ALTER TABLE mail.mail_fetch_queue ADD COLUMN updated_at TEXT;
+ALTER TABLE mail.mail_fetch_queue ADD COLUMN next_attempt_at TEXT;
+
+UPDATE mail.mail_fetch_queue
+   SET priority = CASE priority WHEN 10 THEN 30 WHEN 20 THEN 10 WHEN 30 THEN 20 ELSE priority END;
+UPDATE mail.mail_sync_sections
+   SET tier = CASE tier WHEN 10 THEN 30 WHEN 20 THEN 10 WHEN 30 THEN 20 ELSE tier END;
+UPDATE mail.mail_fetch_queue
+   SET source = CASE priority
+                    WHEN 0 THEN 'new' WHEN 10 THEN 'starred' WHEN 20 THEN 'label'
+                    WHEN 30 THEN 'important' WHEN 40 THEN 'finances' WHEN 50 THEN 'inbox'
+                    WHEN 60 THEN 'promotions' WHEN 70 THEN 'spam' WHEN 80 THEN 'trash'
+                    ELSE 'backlog' END,
+       updated_at = queued_at
+ WHERE source = '';
+
+-- `seq` for the next id without reading the whole queue, and the few ids
+-- waiting to be tried again without reading the rest.
+CREATE INDEX IF NOT EXISTS mail.idx_mail_queue_seq ON mail_fetch_queue (seq);
+CREATE INDEX IF NOT EXISTS mail.idx_mail_queue_retry ON mail_fetch_queue (next_attempt_at)
+    WHERE next_attempt_at IS NOT NULL;
+
+-- When every folder was last sent back to the top because Gmail's change
+-- history was lost - at most once an hour (commands/mail_sync.rs).
+ALTER TABLE mail.mail_sync_state ADD COLUMN walks_reset_at TEXT;
+-- Runs in a row that Google rate-limited, and that reached nothing at all:
+-- each one waits longer than the last, and the first good run resets both.
+ALTER TABLE mail.mail_sync_state ADD COLUMN rate_limit_streak INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mail.mail_sync_state ADD COLUMN trouble_streak INTEGER NOT NULL DEFAULT 0;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +487,90 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    /// Scenario 15: a mail file exactly as 2.110.0 left it - messages, a
+    /// queue numbered the old way, walks - goes through schema 2 with nothing
+    /// lost and every queued id still in its own lane.
+    #[test]
+    fn mail_from_2_110_survives_schema_2_and_every_queued_id_keeps_its_lane() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        attach_in_memory(&conn).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch("PRAGMA mail.user_version = 1;").unwrap();
+        insert_message(&conn, "kept1");
+        insert_message(&conn, "kept2");
+        conn.execute(
+            "UPDATE mail.mail_messages SET labels = 'inbox,starred,label_3', is_starred = 1
+              WHERE provider_message_id = 'kept1'",
+            [],
+        )
+        .unwrap();
+        // 2.110.0 numbered Important 10, Starred 20, labels 30.
+        for (pid, prio, seq) in [("imp", 10, 1), ("star", 20, 2), ("lab", 30, 3), ("fin", 40, 4), ("new", 0, 5)] {
+            conn.execute(
+                "INSERT INTO mail.mail_fetch_queue (provider_message_id, account_email, queued_at, priority, seq, attempts)
+                 VALUES (?1, 'me', '2026-10-17T00:00:00+00:00', ?2, ?3, 2)",
+                rusqlite::params![pid, prio, seq],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO mail.mail_sync_sections (key, title, tier, spec, page_token)
+             VALUES ('important', 'Important', 10, '', 'P'), ('starred', 'Starred', 20, '', NULL),
+                    ('label:label_3', 'OASIS', 30, '', 'Q');",
+        )
+        .unwrap();
+
+        crate::db::run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "every message is still here");
+        let (labels, starred): (String, i64) = conn
+            .query_row(
+                "SELECT labels, is_starred FROM mail_messages WHERE provider_message_id = 'kept1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((labels.as_str(), starred), ("inbox,starred,label_3", 1));
+
+        let queue: Vec<(String, i64, String, String, i64)> = conn
+            .prepare(
+                "SELECT provider_message_id, priority, source, status, attempts FROM mail_fetch_queue ORDER BY seq",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        use crate::commands::mail_sync::{TIER_FINANCES, TIER_IMPORTANT, TIER_LABELS, TIER_NEW, TIER_STARRED};
+        let q = |s: &str| queue.iter().find(|r| r.0 == s).cloned().unwrap();
+        assert_eq!(q("imp").1, TIER_IMPORTANT);
+        assert_eq!(q("star").1, TIER_STARRED);
+        assert_eq!(q("lab").1, TIER_LABELS);
+        assert_eq!(q("fin").1, TIER_FINANCES);
+        assert_eq!(q("new").1, TIER_NEW);
+        assert_eq!((q("star").2.as_str(), q("star").3.as_str(), q("star").4), ("starred", "queued", 2));
+        let tiers: Vec<(String, i64)> = conn
+            .prepare("SELECT key, tier FROM mail_sync_sections ORDER BY key")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            tiers,
+            vec![("important".into(), TIER_IMPORTANT), ("label:label_3".into(), TIER_LABELS), ("starred".into(), TIER_STARRED)]
+        );
+        // Still locked, and running it again changes nothing.
+        assert!(conn.execute("DELETE FROM mail_messages", []).is_err());
+        ensure(&conn).unwrap();
+        let again: i64 = conn.query_row("SELECT priority FROM mail_fetch_queue WHERE provider_message_id = 'star'", [], |r| r.get(0)).unwrap();
+        assert_eq!(again, TIER_STARRED, "the renumbering ran once, not twice");
     }
 
     #[test]

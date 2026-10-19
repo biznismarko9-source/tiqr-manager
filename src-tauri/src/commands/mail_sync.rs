@@ -1,51 +1,71 @@
-//! 2.110.0 - the mail reading engine.
+//! 2.110.0, reworked in 2.111.0 - the mail reading engine.
 //!
-//! marko, in his own order:
+//! marko: "labels a starred messages musi brat vsetky a je to jedno ake su
+//! stare ale tie su hlavne", "chcem aby to citalo spravy od najmladsiej po
+//! najstarsiu po tych castiach a samo" - and in 2.111.0 the order made exact:
+//! new mail first, then EVERY starred message, then EVERY message in his
+//! labels, and only then the ordinary history. What decides is what a message
+//! IS, not how old it is: a starred mail from last year comes down before an
+//! ordinary one from yesterday.
 //!
-//! * "najskor treba important, starred, labels, finance a az potom vsetko
-//!   ostatne"
-//! * "chcem aby to citalo spravy od najmladsiej po najstarsiu po tych
-//!   castiach a samo, nie ze ja vzdy sync musim davat"
-//! * "labels a starred messages musi brat vsetky a je to jedno ake su stare"
+//! ## The lanes
 //!
-//! ## What one run does
+//! | lane | what | found by |
+//! |------|------|----------|
+//! | 0 new | anything that arrived, any folder | Gmail's change history |
+//! | 10 starred | every message with Gmail's `STARRED`, any age | a walk of `labelIds=STARRED` |
+//! | 20 labels | every message in one of his own labels, any age | a walk per label |
+//! | 30-80 backlog | Important (his watched senders), Finances, Inbox, Promotions, Spam, Trash | a walk per folder |
 //!
-//! A run is small - about a second - and the app chains them by itself
-//! (Layout.tsx) while anything is left to read, then keeps checking for new
-//! mail on marko's interval. Every run, in this order:
+//! System labels: `STARRED` is lane 10. `INBOX`, the `CATEGORY_*` tabs,
+//! `SPAM` and `TRASH` are backlog folders. Gmail's own `IMPORTANT` marker,
+//! `UNREAD` and the categories are kept on each message but rank nothing -
+//! Gmail puts `IMPORTANT` on a large share of all mail. `SENT`, `DRAFT` and
+//! `CHAT` are not read, unless a message is starred or in one of his labels.
 //!
-//! 1. **New mail and changes**, from Gmail's own change history, once per
-//!    interval. New messages jump the queue, and a star or a label added or
-//!    taken off in Gmail is applied to the message already stored.
-//! 2. **One page of one folder**, while the queue is running low: the first
-//!    folder in marko's order that has not been walked to its oldest message
-//!    yet. Ids already stored cost nothing; the rest are queued in that
-//!    folder's place in the order.
-//! 3. **One batch from the queue**: folder order first, newest first inside a
-//!    folder.
+//! ## Finding, then downloading
 //!
-//! Every folder walks from its newest message to its oldest, with no date
-//! limit, and where the walk has got to is kept on disk - close the app
-//! halfway through and the next start carries on from the same page.
+//! Finding a message (its id, from a listing or the history) and downloading
+//! it (`messages.get`, metadata only) are separate steps, joined by the queue
+//! `mail_fetch_queue`. Every run, about a second, chained by the app itself
+//! (Layout.tsx) while there is work:
 //!
-//! ## History, and why it can expire without anything being lost
+//! 1. **The change history**, every `HISTORY_EVERY_SECS` - new ids go to lane
+//!    0; a star or label added to a message not here yet moves it up to lane
+//!    10 or 20; a change to a stored message is applied in place, with no
+//!    download.
+//! 2. **One page of one folder**: the first folder, in lane order, not walked
+//!    to its oldest message yet - and only while fewer than `LOW_WATER` ids
+//!    can be downloaded, so finding stays just ahead of downloading.
+//! 3. **One batch from the queue**: lane first, then the order Gmail listed
+//!    them in, which inside a folder is newest first.
 //!
-//! Gmail keeps change history for about a week and answers 404 for anything
-//! older. This app only runs while marko has it open, so after a holiday that
-//! is the normal case. It costs one thing: every folder is walked again from
-//! the top. Already-stored ids are skipped in SQL, so a walk over a mailbox
-//! that is already here is listing only - a few minutes for 100 000
-//! messages, not a re-download.
+//! An id found by several walks is queued ONCE, at the best lane it has, and
+//! an id already stored is never queued: a starred message in three labels is
+//! downloaded once, and walking mail that is already here costs listing only.
+//! The lane is chosen again for every batch (40 messages); a request already
+//! in flight is never cut off.
 //!
-//! ## When Google says "slow down"
+//! ## When something goes wrong
 //!
-//! Gmail answers a rate limit with 429 OR with 403 (`userRateLimitExceeded`,
-//! `rateLimitExceeded`). Until 2.110.0 a 403 was always reported as "Google
-//! refused access", was never retried, and every message that failed to
-//! download was dropped from the queue - so the more marko synced, the more
-//! mail went missing. Now the reason in Google's answer is read (the reason code only,
-//! never the text), a rate limit pauses every worker, the batch stays queued,
-//! and the app is told when to carry on.
+//! * **Google says "slow down"** (429, or 403 `rateLimitExceeded`): every
+//!   worker pauses, the batch stays queued, and the next run waits - longer
+//!   for each such run in a row, with jitter, and never less than Google's
+//!   `Retry-After`. Until 2.110.0 this 403 read "Google refused access" and the
+//!   messages that failed were dropped.
+//! * **No connection, or Google failing everything**: nothing counts against
+//!   any message; the run says so and waits, longer each time in a row.
+//! * **One message failing** while the rest of its batch comes down: it steps
+//!   aside (30 s, doubling), and after `MAX_ATTEMPTS` it is parked and tried
+//!   again every few hours. Never dropped - the queue is the only record that
+//!   it still has to come down.
+//! * **History lost** - expired (404, Gmail keeps about a week) or no longer
+//!   accepted (400): a fresh starting point is taken and every folder is
+//!   walked again from the top. Stored mail is untouched and costs listing
+//!   only. At most once an hour (`RESCAN_GUARD_SECS`).
+//! * **A crash**: the queue and every walk's page are on disk, and everything
+//!   a run writes is one transaction (`run_once`), so the next start carries
+//!   on from the same place.
 use crate::commands::mail::{
     apply_rules, automation_mode, classify_fetched, clean_custom_query, create_from_mail_impl,
     domain_matches, domain_of, fetched_from_gmail, finance_of, gmail_client, load_rules, log_step,
@@ -59,7 +79,7 @@ use crate::commands::sheets_sync::get_setting;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_oauth;
-use crate::models::{MailSyncProgress, MailSyncResult};
+use crate::models::{MailLaneProgress, MailSyncProgress, MailSyncResult};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -69,20 +89,25 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// marko's order.
+// The lanes.
 // ---------------------------------------------------------------------------
 
-/// The queue drains lowest first. The gaps are deliberate, so a folder can be
-/// slotted in later without renumbering the rest.
+/// The queue drains lowest first: new mail, every starred message, every
+/// message in his labels - and only then the backlog, which keeps marko's
+/// 2.110.0 order inside it (Important, Finances, then the rest). The gaps
+/// leave room for a lane without renumbering the others.
 pub(crate) const TIER_NEW: i64 = 0;
-pub(crate) const TIER_IMPORTANT: i64 = 10;
-pub(crate) const TIER_STARRED: i64 = 20;
-pub(crate) const TIER_LABELS: i64 = 30;
+pub(crate) const TIER_STARRED: i64 = 10;
+pub(crate) const TIER_LABELS: i64 = 20;
+pub(crate) const TIER_IMPORTANT: i64 = 30;
 pub(crate) const TIER_FINANCES: i64 = 40;
 pub(crate) const TIER_INBOX: i64 = 50;
 pub(crate) const TIER_PROMOTIONS: i64 = 60;
 pub(crate) const TIER_SPAM: i64 = 70;
 pub(crate) const TIER_TRASH: i64 = 80;
+
+/// From here down is the ordinary historical backlog.
+pub(crate) const TIER_BACKLOG: i64 = TIER_IMPORTANT;
 
 /// How many messages one run downloads - about a second of work.
 const FETCH_BATCH: usize = 40;
@@ -91,31 +116,53 @@ const FETCH_BATCH: usize = 40;
 /// costs 5 of the 250 quota units a user gets per second, so ~50 messages a
 /// second is Google's ceiling - and six workers sat right on it, which is
 /// where the 403s marko saw came from. Four stays under it with room.
+///
+/// Gmail's batch endpoint (`/batch/gmail/v1`) was considered and left out:
+/// every call inside a batch is charged the same 5 units, so it cannot beat
+/// that ceiling, and the connections here are already kept alive.
 const FETCH_THREADS: usize = 4;
 
-/// The next folder page is listed only while fewer than this many ids wait.
-/// Listing runs a little ahead of downloading, never a whole mailbox ahead.
+/// The next folder page is listed only while fewer than this many ids can be
+/// downloaded. Finding runs a little ahead of downloading, never a whole
+/// mailbox ahead.
 const LOW_WATER: i64 = 200;
 
 /// Gmail's label list is re-read this often, so a label made in Gmail shows
 /// up without a restart.
 const LABELS_EVERY_SECS: i64 = 300;
 
-/// A message that fails this many times leaves the queue, and the next walk
-/// of its folder offers it again. Only a failure while Google answered for
-/// the rest of its batch counts - see `store_fetched`.
-const MAX_ATTEMPTS: i64 = 5;
+/// The change history - new mail - is read at most this often. While there
+/// is work, runs come a second apart, so new mail never waits for a long
+/// first read to finish; when everything is read, runs (and so history reads)
+/// come on marko's interval.
+const HISTORY_EVERY_SECS: i64 = 20;
 
-/// How long the app waits after Google asked it to slow down.
+/// A message that fails while the rest of its batch comes down is tried again
+/// after this, doubling each time...
+const RETRY_FIRST_MS: i64 = 30_000;
+
+/// ...and after this many tries it is parked: still queued, tried again every
+/// `PARKED_RETRY_MS`, and out of everyone else's way.
+const MAX_ATTEMPTS: i64 = 5;
+const PARKED_RETRY_MS: i64 = 6 * 3_600_000;
+
+/// After Google asked to slow down: this long, doubling for each such run in
+/// a row, up to `RATE_LIMIT_MAX_MS`.
 const RATE_LIMIT_PAUSE_MS: i64 = 20_000;
+const RATE_LIMIT_MAX_MS: i64 = 5 * 60_000;
 
 /// The pause between chained runs while there is more to read.
 const CHAIN_DELAY_MS: i64 = 250;
 
-/// How long the app waits when a run got nothing at all because Gmail could
-/// not be reached, or Google had a server error - a laptop that lost its
-/// wifi, mostly. Chaining runs a quarter of a second apart would only spin.
+/// After a run that reached nothing at all because Gmail could not be
+/// reached, or Google failed everything - a laptop that lost its wifi,
+/// mostly: this long, doubling each time in a row, up to `TROUBLE_MAX_MS`,
+/// which is short enough to notice the connection coming back.
 const TROUBLE_DELAY_MS: i64 = 30_000;
+const TROUBLE_MAX_MS: i64 = 2 * 60_000;
+
+/// Every folder walked again after lost history at most this often.
+const RESCAN_GUARD_SECS: i64 = 3600;
 
 /// History pages read in one run. Beyond this the checkpoint moves to the
 /// last record read and the rest is read next time.
@@ -123,6 +170,15 @@ const HISTORY_MAX_PAGES: usize = 40;
 
 /// Rows from before 2.110.0 get their Finances flag this many at a time.
 const FINANCE_BACKFILL_CHUNK: i64 = 2000;
+
+/// `base` doubled `n` times, capped at `cap`, and then shortened by up to a
+/// quarter at random - so two computers, or four workers, that were told to
+/// wait at the same moment do not all come back at the same moment.
+pub(crate) fn backoff_ms(base: i64, n: u32, cap: i64) -> i64 {
+    let full = base.saturating_mul(1i64 << n.min(20)).min(cap).max(0);
+    let jitter = (rand::random::<u32>() % 1000) as i64;
+    full - full / 4 * jitter / 1000
+}
 
 // ---------------------------------------------------------------------------
 // Folders.
@@ -182,8 +238,10 @@ impl Section {
         )
     }
 
-    pub(crate) fn list_url(&self, page: Option<&str>) -> String {
-        let mut url = format!("{GMAIL_API}/messages?maxResults=500");
+    /// One page of this folder, 500 ids (Gmail's most), newest first. `api` is
+    /// Gmail's base URL - a test points it at a fake Gmail.
+    pub(crate) fn list_url(&self, api: &str, page: Option<&str>) -> String {
+        let mut url = format!("{api}/messages?maxResults=500");
         if let Some(q) = &self.q {
             url.push_str(&format!("&q={}", urlencode(q)));
         }
@@ -217,24 +275,24 @@ pub(crate) fn finance_query() -> String {
     format!("({}) -category:promotions -in:chats", terms.join(" OR "))
 }
 
-/// The folders, in marko's order: Important, Starred, his labels, Finances,
-/// and only then everything else - the inbox, promotions, spam and trash.
+/// The folders, in lane order: Starred, then his labels, and only then the
+/// backlog - Important, Finances, the inbox, promotions, spam and trash.
 ///
-/// Starred and labels are LABEL walks with no date in them at all: "je to
-/// jedno ake su stare". Spam and Trash are walked so they can be looked in;
-/// what is in them is still never trusted (commands/mail.rs::is_untrusted).
+/// Starred and labels are LABEL walks with no date and no filter in them at
+/// all: "je to jedno ake su stare". A label walk lists every message in that
+/// label wherever it sits - archived mail included, not only the inbox - but
+/// not spam or trash, which is what Gmail's own label view does too. Spam and
+/// Trash are walked so they can be looked in; what is in them is still never
+/// trusted (commands/mail.rs::is_untrusted).
 ///
-/// In the `known` scope only the first four are walked - the mail that
-/// matters, and none of the rest. An EMPTY sender list there still means the
-/// whole mailbox (2.109.0: a list he emptied must not quietly come back as
-/// the built-in one, and "watch nothing" is not a mailbox).
+/// In the `known` scope only Starred, the labels, Important and Finances are
+/// walked - the mail that matters, and none of the rest. An EMPTY sender list
+/// there still means the whole mailbox (2.109.0: a list he emptied must not
+/// quietly come back as the built-in one, and "watch nothing" is not a
+/// mailbox).
 pub(crate) fn plan_sections(scope: &str, senders: &[String], labels: &[UserLabel], custom: &str) -> Vec<Section> {
     let whole_mailbox = scope != "known" || senders.is_empty();
     let mut out = Vec::new();
-    if !senders.is_empty() {
-        let terms = senders.iter().map(|d| format!("from:{d}")).collect::<Vec<_>>().join(" OR ");
-        out.push(Section::search("important", "Important", TIER_IMPORTANT, format!("({terms}) -in:chats")));
-    }
     out.push(Section::label("starred".into(), "Starred".into(), TIER_STARRED, "STARRED", false));
     let mut sorted = labels.to_vec();
     sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -246,6 +304,10 @@ pub(crate) fn plan_sections(scope: &str, senders: &[String], labels: &[UserLabel
             &l.gmail_id,
             false,
         ));
+    }
+    if !senders.is_empty() {
+        let terms = senders.iter().map(|d| format!("from:{d}")).collect::<Vec<_>>().join(" OR ");
+        out.push(Section::search("important", "Important", TIER_IMPORTANT, format!("({terms}) -in:chats")));
     }
     out.push(Section::search("finances", "Finances", TIER_FINANCES, finance_query()));
     if whole_mailbox {
@@ -379,34 +441,70 @@ pub(crate) fn queue_depth(conn: &Connection) -> i64 {
         .unwrap_or(0)
 }
 
-/// Queues ids that are not stored yet. Already-stored and deleted-forever
-/// ids are skipped in SQL, which is what makes walking a folder that is
-/// already here cost nothing but the listing. An id queued twice keeps the
-/// better of its two places in the order.
-pub(crate) fn enqueue(conn: &Connection, account: &str, ids: &[String], tier: i64, now: &str) -> AppResult<usize> {
+/// Queued ids that can be downloaded right now - not the ones waiting to be
+/// tried again.
+fn due_count(conn: &Connection, now: &str) -> AppResult<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM mail_fetch_queue WHERE next_attempt_at IS NULL OR next_attempt_at <= ?1",
+        params![now],
+        |r| r.get(0),
+    )?)
+}
+
+/// Queues ids that are not stored yet, at `tier`, saying where they were
+/// found (`source`: a folder's key, or `history`). Already-stored and
+/// deleted-forever ids are skipped in SQL, which is what makes walking a
+/// folder that is already here cost nothing but the listing.
+///
+/// An id that is already queued is never queued twice: it moves UP when it
+/// was found again in a better lane - a message first met in the inbox walk
+/// and then in Starred becomes a starred one - and is left alone otherwise.
+/// Returns how many ids were queued or moved up.
+pub(crate) fn enqueue(
+    conn: &Connection,
+    account: &str,
+    ids: &[String],
+    tier: i64,
+    source: &str,
+    now: &str,
+) -> AppResult<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
     let mut seq: i64 = conn.query_row("SELECT IFNULL(MAX(seq), 0) FROM mail_fetch_queue", [], |r| r.get(0))?;
     let mut stmt = conn.prepare(
-        "INSERT INTO mail_fetch_queue (provider_message_id, account_email, queued_at, priority, seq)
-         SELECT ?1, ?2, ?3, ?4, ?5
+        "INSERT INTO mail_fetch_queue (provider_message_id, account_email, queued_at, priority, seq, source, status, updated_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?3
           WHERE NOT EXISTS (SELECT 1 FROM mail_messages WHERE provider_message_id = ?1)
             AND NOT EXISTS (SELECT 1 FROM mail_deleted WHERE provider_message_id = ?1)
-         ON CONFLICT(provider_message_id) DO UPDATE SET priority = MIN(priority, excluded.priority)",
+         ON CONFLICT(provider_message_id) DO UPDATE
+            SET priority = excluded.priority, source = excluded.source, updated_at = excluded.updated_at
+          WHERE excluded.priority < mail_fetch_queue.priority",
     )?;
     let mut n = 0usize;
     for id in ids {
         seq += 1;
-        n += stmt.execute(params![id, account, now, tier, seq])?;
+        n += stmt.execute(params![id, account, now, tier, seq, source])?;
     }
     Ok(n)
 }
 
-/// The next ids to download: marko's order first, then the order they were
-/// listed in - which inside one folder is newest first.
-pub(crate) fn peek(conn: &Connection, limit: usize) -> AppResult<Vec<String>> {
+/// The next ids to download: the best lane first, then the order they were
+/// found in - which inside one folder is Gmail's own, newest first - and the
+/// id itself, so the same queue always gives the same batch. A message
+/// waiting to be tried again is not offered before its time.
+///
+/// The date is not part of it because nothing knows it yet: a listing and the
+/// history give an id and nothing more, and the date is what downloading the
+/// message finds out.
+pub(crate) fn peek(conn: &Connection, limit: usize, now: &str) -> AppResult<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT provider_message_id FROM mail_fetch_queue ORDER BY priority ASC, seq ASC LIMIT ?1",
+        "SELECT provider_message_id FROM mail_fetch_queue
+          WHERE next_attempt_at IS NULL OR next_attempt_at <= ?2
+          ORDER BY priority ASC, seq ASC, provider_message_id ASC
+          LIMIT ?1",
     )?;
-    let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+    let rows = stmt.query_map(params![limit as i64, now], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
@@ -418,16 +516,48 @@ fn dequeue(conn: &Connection, ids: &[String]) -> AppResult<()> {
     Ok(())
 }
 
-/// One more failed attempt. Past `MAX_ATTEMPTS` the id leaves the queue so
-/// one bad message cannot hold a slot forever; the next walk of its folder
-/// offers it again.
-fn bump_attempts(conn: &Connection, ids: &[String]) -> AppResult<()> {
-    let mut stmt = conn.prepare("UPDATE mail_fetch_queue SET attempts = attempts + 1 WHERE provider_message_id = ?1")?;
-    for id in ids {
-        stmt.execute(params![id])?;
+/// One more failed try for each id, with what went wrong. The message steps
+/// aside until `next_attempt_at` - `RETRY_FIRST_MS`, doubling - and after
+/// `MAX_ATTEMPTS` it is parked and tried again every `PARKED_RETRY_MS`.
+///
+/// Never deleted. Until 2.111.0 the fifth failure removed the id, and it came
+/// back only when its folder was walked again - for a finished folder, only
+/// after Gmail's history expired. A starred message could go missing for that
+/// long.
+fn note_failures(conn: &Connection, failed: &[(String, String)], now: DateTime<Utc>) -> AppResult<()> {
+    let mut read = conn.prepare("SELECT attempts FROM mail_fetch_queue WHERE provider_message_id = ?1")?;
+    let mut write = conn.prepare(
+        "UPDATE mail_fetch_queue
+            SET attempts = ?2, status = ?3, last_error = ?4, next_attempt_at = ?5, updated_at = ?6
+          WHERE provider_message_id = ?1",
+    )?;
+    for (pid, why) in failed {
+        let Some(before) = read.query_row(params![pid], |r| r.get::<_, i64>(0)).optional()? else {
+            continue;
+        };
+        let attempts = before + 1;
+        let (status, wait_ms) = if attempts >= MAX_ATTEMPTS {
+            ("parked", PARKED_RETRY_MS)
+        } else {
+            ("retrying", backoff_ms(RETRY_FIRST_MS, (attempts - 1) as u32, PARKED_RETRY_MS))
+        };
+        let at = (now + chrono::Duration::milliseconds(wait_ms)).to_rfc3339();
+        write.execute(params![pid, attempts, status, safe_detail(why), at, now.to_rfc3339()])?;
     }
-    conn.execute("DELETE FROM mail_fetch_queue WHERE attempts >= ?1", params![MAX_ATTEMPTS])?;
     Ok(())
+}
+
+/// How long until the first message waiting to be tried again is due, if
+/// any is.
+fn next_retry_in_ms(conn: &Connection, now: DateTime<Utc>) -> AppResult<Option<i64>> {
+    let next: Option<String> = conn.query_row(
+        "SELECT MIN(next_attempt_at) FROM mail_fetch_queue WHERE next_attempt_at > ?1",
+        params![now.to_rfc3339()],
+        |r| r.get(0),
+    )?;
+    Ok(next
+        .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+        .map(|t| (t.with_timezone(&Utc) - now).num_milliseconds().max(0)))
 }
 
 // ---------------------------------------------------------------------------
@@ -544,7 +674,7 @@ fn apply_listing(
         )?;
         conn.execute("DELETE FROM mail_section_seen WHERE section = ?1", params![section.key])?;
     }
-    enqueue(conn, account, ids, section.tier, now)?;
+    enqueue(conn, account, ids, section.tier, &section.key, now)?;
     let mut changed = 0usize;
     if let Some(flag) = &section.flag {
         let mut seen = conn.prepare(
@@ -649,21 +779,6 @@ fn is_user_label(l: &str) -> bool {
     l.starts_with("label_")
 }
 
-/// Where a brand-new message goes in the queue. New mail is first - that is
-/// what "real time" means - except junk, which keeps its own late place.
-pub(crate) fn new_mail_tier(labels: &[String]) -> i64 {
-    let kept = has(labels, "starred") || labels.iter().any(|l| is_user_label(l));
-    if has(labels, "spam") {
-        TIER_SPAM
-    } else if has(labels, "trash") {
-        TIER_TRASH
-    } else if has(labels, "category_promotions") && !kept {
-        TIER_PROMOTIONS
-    } else {
-        TIER_NEW
-    }
-}
-
 fn is_stored(conn: &Connection, pid: &str) -> AppResult<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM mail_messages WHERE provider_message_id = ?1)",
@@ -673,14 +788,28 @@ fn is_stored(conn: &Connection, pid: &str) -> AppResult<bool> {
 }
 
 /// Applies history events in order. Returns (stored messages changed, ids
-/// queued).
+/// queued or moved up).
+///
+/// * A new message goes to lane 0 whatever folder it landed in - a new
+///   promotion or spam is still new, and one is a handful, not a backlog. Not
+///   drafts, chat logs, or mail he only sent.
+/// * A star or one of his labels added to a message that is not here yet
+///   moves it to lane 10 or 20 - up from wherever a walk had queued it.
+/// * Anything added to or taken off a STORED message - a star, a label, the
+///   inbox, spam, trash - is applied to it in place. Nothing is downloaded
+///   again: the change is all there is to know.
+///
+/// Repeating an event changes nothing: a flag is added only where missing and
+/// taken off only where present, and an id is queued once.
 ///
 /// TIQR's own read state is deliberately left alone (migration 041): Gmail's
 /// UNREAD going on or off is not applied, so a message he marked read here
 /// is not turned unread because his phone saw it differently.
 pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryEvent], now: &str) -> AppResult<(usize, usize)> {
     let mut changed = 0usize;
-    let mut queued = 0usize;
+    let mut arrived: Vec<String> = Vec::new();
+    let mut starred: Vec<String> = Vec::new();
+    let mut labelled: Vec<String> = Vec::new();
     for ev in events {
         match ev {
             HistoryEvent::Added { id, labels } => {
@@ -691,7 +820,7 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
                 if has(labels, "sent") && !has(labels, "inbox") && !kept {
                     continue;
                 }
-                queued += enqueue(conn, account, std::slice::from_ref(id), new_mail_tier(labels), now)?;
+                arrived.push(id.clone());
             }
             HistoryEvent::LabelsAdded { id, labels } => {
                 if is_stored(conn, id)? {
@@ -700,9 +829,9 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
                     }
                 } else if has(labels, "starred") {
                     // An old message he just starred in Gmail.
-                    queued += enqueue(conn, account, std::slice::from_ref(id), TIER_STARRED, now)?;
+                    starred.push(id.clone());
                 } else if labels.iter().any(|l| is_user_label(l)) {
-                    queued += enqueue(conn, account, std::slice::from_ref(id), TIER_LABELS, now)?;
+                    labelled.push(id.clone());
                 }
             }
             HistoryEvent::LabelsRemoved { id, labels } => {
@@ -712,6 +841,9 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
             }
         }
     }
+    let mut queued = enqueue(conn, account, &arrived, TIER_NEW, "history", now)?;
+    queued += enqueue(conn, account, &starred, TIER_STARRED, "history:starred", now)?;
+    queued += enqueue(conn, account, &labelled, TIER_LABELS, "history:label", now)?;
     Ok((changed, queued))
 }
 
@@ -766,6 +898,14 @@ impl GmailFailure {
 
     fn is_rate_limit(&self) -> bool {
         matches!(self, GmailFailure::RateLimited { .. })
+    }
+
+    /// Google's own `Retry-After`, when it sent one with a rate limit.
+    fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            GmailFailure::RateLimited { retry_after_secs } => *retry_after_secs,
+            _ => None,
+        }
     }
 
     /// No answer at all, or Google having a moment. Says nothing about the
@@ -831,18 +971,26 @@ fn wait_for_pause() {
     }
 }
 
+/// Tries per request before the failure is handed back to the run.
+const REQUEST_ATTEMPTS: u32 = 3;
+
 /// One authenticated GET, with backoff for a rate limit and for Google's own
-/// bad moments. Three attempts; a rate limit that outlasts them is returned
-/// so the run can stop and the app can wait.
+/// bad moments: exponential, with jitter, and never shorter than Google's
+/// `Retry-After`. A rate limit that outlasts the tries is returned so the run
+/// can stop and the app can wait; a timeout (the client's 30 s) counts as no
+/// connection.
 pub(crate) fn gmail_json(http: &reqwest::blocking::Client, token: &str, url: &str) -> Result<Value, GmailFailure> {
     let mut last = GmailFailure::Network;
-    for attempt in 0..3u32 {
+    for attempt in 0..REQUEST_ATTEMPTS {
+        let again = attempt + 1 < REQUEST_ATTEMPTS;
         wait_for_pause();
         let resp = match http.get(url).bearer_auth(token).send() {
             Ok(r) => r,
             Err(_) => {
                 last = GmailFailure::Network;
-                std::thread::sleep(Duration::from_millis(400u64 << attempt));
+                if again {
+                    std::thread::sleep(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
+                }
                 continue;
             }
         };
@@ -858,12 +1006,18 @@ pub(crate) fn gmail_json(http: &reqwest::blocking::Client, token: &str, url: &st
         let body = resp.text().unwrap_or_default();
         match failure_from(code, &body, retry_after) {
             GmailFailure::RateLimited { retry_after_secs } => {
-                let wait = retry_after_secs.map(|s| s.saturating_mul(1000)).unwrap_or(1000u64 << attempt);
-                pause_all_for(wait.min(30_000));
+                // Every worker waits, not just this one - they share the quota.
+                let wait = match retry_after_secs {
+                    Some(s) => s.saturating_mul(1000).min(30_000) as i64,
+                    None => backoff_ms(1000, attempt, 30_000),
+                };
+                pause_all_for(wait.clamp(0, 30_000) as u64);
                 last = GmailFailure::RateLimited { retry_after_secs };
             }
             GmailFailure::Server(c) => {
-                std::thread::sleep(Duration::from_millis(400u64 << attempt));
+                if again {
+                    std::thread::sleep(Duration::from_millis(backoff_ms(400, attempt, 5_000) as u64));
+                }
                 last = GmailFailure::Server(c);
             }
             other => return Err(other),
@@ -952,6 +1106,8 @@ struct Plan {
     listing: Option<(Section, Option<String>)>,
     batch: Vec<String>,
     interval_secs: i64,
+    /// Gmail's base URL: `GMAIL_API`, or a fake Gmail in a test.
+    api: String,
 }
 
 #[derive(Debug)]
@@ -974,6 +1130,8 @@ struct Net {
     fetched: Vec<(String, Fetched)>,
     stop: Option<GmailFailure>,
     rate_limited: bool,
+    /// The longest `Retry-After` Google sent with a rate limit this run.
+    retry_after_secs: Option<u64>,
     /// The first failure that goes away by itself (`is_transient`). When
     /// nothing at all came down, the run says so and waits.
     trouble: Option<GmailFailure>,
@@ -1029,20 +1187,21 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
     let sections = plan_sections(&scope, &senders, &labels, &custom);
     sync_section_rows(conn, &sections, &now_s)?;
 
-    // 0 is "only when I press Sync"; a pressed Sync still reads history,
-    // just not more often than every half minute.
+    // 0 is "only when I press Sync"; a pressed Sync still reads history.
     let interval_secs = sync_interval_seconds(conn);
     let need_profile = st.last_history_id.is_none();
     let labels_due = due(st.labels_checked_at.as_deref(), LABELS_EVERY_SECS, now);
     let history_from = if need_profile {
         None
-    } else if due(st.history_checked_at.as_deref(), interval_secs.max(30), now) {
+    } else if due(st.history_checked_at.as_deref(), HISTORY_EVERY_SECS, now) {
         st.last_history_id.clone()
     } else {
         None
     };
-    let listing = if queue_depth(conn) < LOW_WATER { next_walk(conn, &sections)? } else { None };
-    let batch = peek(conn, FETCH_BATCH)?;
+    // Measured against what can be downloaded now, so messages waiting to
+    // be tried again never stop the walks from going on.
+    let listing = if due_count(conn, &now_s)? < LOW_WATER { next_walk(conn, &sections)? } else { None };
+    let batch = peek(conn, FETCH_BATCH, &now_s)?;
     Ok(Ok(Plan {
         refresh_token,
         account_email,
@@ -1054,6 +1213,7 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
         listing,
         batch,
         interval_secs,
+        api: GMAIL_API.to_string(),
     }))
 }
 
@@ -1064,9 +1224,16 @@ impl Net {
         }
     }
 
+    fn note_rate_limit(&mut self, f: &GmailFailure) {
+        self.rate_limited = true;
+        if let Some(s) = f.retry_after_secs() {
+            self.retry_after_secs = Some(self.retry_after_secs.map_or(s, |t| t.max(s)));
+        }
+    }
+
     fn stopped_by(mut self, f: GmailFailure) -> Net {
         if f.is_rate_limit() {
-            self.rate_limited = true;
+            self.note_rate_limit(&f);
         } else {
             self.stop = Some(f);
         }
@@ -1091,12 +1258,12 @@ fn parse_labels(v: &Value) -> Vec<(String, String, String)> {
         .unwrap_or_default()
 }
 
-fn read_history(http: &reqwest::blocking::Client, token: &str, from: &str) -> Result<HistoryRead, GmailFailure> {
+fn read_history(http: &reqwest::blocking::Client, token: &str, api: &str, from: &str) -> Result<HistoryRead, GmailFailure> {
     let mut out = HistoryRead::default();
     let mut page: Option<String> = None;
     for _ in 0..HISTORY_MAX_PAGES {
         let mut url = format!(
-            "{GMAIL_API}/history?startHistoryId={}&maxResults=500\
+            "{api}/history?startHistoryId={}&maxResults=500\
              &historyTypes=messageAdded&historyTypes=labelAdded&historyTypes=labelRemoved",
             urlencode(from)
         );
@@ -1128,10 +1295,11 @@ fn read_history(http: &reqwest::blocking::Client, token: &str, from: &str) -> Re
 fn list_page(
     http: &reqwest::blocking::Client,
     token: &str,
+    api: &str,
     section: &Section,
     page: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), GmailFailure> {
-    let v = gmail_json(http, token, &section.list_url(page))?;
+    let v = gmail_json(http, token, &section.list_url(api, page))?;
     let ids = v
         .get("messages")
         .and_then(|m| m.as_array())
@@ -1142,7 +1310,7 @@ fn list_page(
 
 /// METADATA only - sender, subject, date, labels and Gmail's preview. The
 /// body is fetched when a message is opened and never stored.
-fn fetch_batch(http: &reqwest::blocking::Client, token: &str, ids: &[String]) -> Vec<(String, Fetched)> {
+fn fetch_batch(http: &reqwest::blocking::Client, token: &str, api: &str, ids: &[String]) -> Vec<(String, Fetched)> {
     if ids.is_empty() {
         return Vec::new();
     }
@@ -1160,7 +1328,7 @@ fn fetch_batch(http: &reqwest::blocking::Client, token: &str, ids: &[String]) ->
                                 return (id.clone(), Fetched::Skipped);
                             }
                             let url = format!(
-                                "{GMAIL_API}/messages/{}?format=metadata\
+                                "{api}/messages/{}?format=metadata\
                                  &metadataHeaders=From&metadataHeaders=Subject\
                                  &metadataHeaders=Date&metadataHeaders=To\
                                  &metadataHeaders=Reply-To",
@@ -1194,27 +1362,31 @@ fn fetch_batch(http: &reqwest::blocking::Client, token: &str, ids: &[String]) ->
     })
 }
 
-/// Everything that talks to Google, with no lock held.
-fn network(plan: &Plan, client: &google_oauth::OAuthClient) -> AppResult<Net> {
-    let token = access_token(client, &plan.refresh_token)?;
-    let http = gmail_client()?;
+/// Everything that talks to Google, with no lock held. `token` is a live
+/// access token (`access_token`); `http` is `gmail_client()`, or a test's.
+fn network(plan: &Plan, http: &reqwest::blocking::Client, token: &str) -> AppResult<Net> {
+    let api = plan.api.as_str();
     let mut net = Net::default();
 
     if plan.need_profile {
-        match gmail_json(&http, &token, &format!("{GMAIL_API}/profile")) {
+        // The starting point for the change history, taken before any walk
+        // lists a page - so whatever arrives while a long first read is under
+        // way is in the history.
+        match gmail_json(http, token, &format!("{api}/profile")) {
             Ok(v) => net.profile_history = str_of(&v, "historyId"),
-            Err(f) => return Ok(net.stopped_by(f)),
+            Err(f) if f.stops_the_run() || f.is_rate_limit() => return Ok(net.stopped_by(f)),
+            Err(f) => net.note_trouble(&f),
         }
     }
     if plan.labels_due {
-        match gmail_json(&http, &token, &format!("{GMAIL_API}/labels")) {
+        match gmail_json(http, token, &format!("{api}/labels")) {
             Ok(v) => net.labels = Some(parse_labels(&v)),
             Err(f) if f.stops_the_run() || f.is_rate_limit() => return Ok(net.stopped_by(f)),
             Err(f) => net.note_trouble(&f),
         }
     }
     if let Some(from) = &plan.history_from {
-        let r = read_history(&http, &token, from);
+        let r = read_history(http, token, api, from);
         if let Err(f) = &r {
             if f.stops_the_run() || f.is_rate_limit() {
                 return Ok(net.stopped_by(f.clone()));
@@ -1224,7 +1396,7 @@ fn network(plan: &Plan, client: &google_oauth::OAuthClient) -> AppResult<Net> {
         net.history = Some(r);
     }
     if let Some((section, page)) = &plan.listing {
-        let r = list_page(&http, &token, section, page.as_deref());
+        let r = list_page(http, token, api, section, page.as_deref());
         if let Err(f) = &r {
             if f.stops_the_run() || f.is_rate_limit() {
                 return Ok(net.stopped_by(f.clone()));
@@ -1233,18 +1405,22 @@ fn network(plan: &Plan, client: &google_oauth::OAuthClient) -> AppResult<Net> {
         }
         net.listing = Some(r);
     }
-    net.fetched = fetch_batch(&http, &token, &plan.batch);
+    net.fetched = fetch_batch(http, token, api, &plan.batch);
     let mut trouble = None;
+    let mut limits = Vec::new();
     for (_, f) in &net.fetched {
         if let Fetched::Failed(f) = f {
             if f.is_rate_limit() {
-                net.rate_limited = true;
+                limits.push(f.clone());
             } else if f.stops_the_run() && net.stop.is_none() {
                 net.stop = Some(f.clone());
             } else if trouble.is_none() {
                 trouble = Some(f.clone());
             }
         }
+    }
+    for f in &limits {
+        net.note_rate_limit(f);
     }
     if let Some(f) = trouble {
         net.note_trouble(&f);
@@ -1273,12 +1449,15 @@ struct Stored {
     new_rows: Vec<(i64, String)>,
 }
 
-fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>, now: &str) -> AppResult<Stored> {
+/// Stores what came down and settles each id in the queue: stored, gone or
+/// refused ids leave it; a failure is noted against the message (see
+/// `note_failures`) only when it was the message's own.
+fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>, now: DateTime<Utc>) -> AppResult<Stored> {
     let rules = load_rules(conn)?;
     let answered = fetched.iter().any(|(_, f)| matches!(f, Fetched::Got(..) | Fetched::Gone));
     let mut out = Stored::default();
     let mut done: Vec<String> = Vec::new();
-    let mut failed: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
     for (pid, f) in fetched {
         match f {
             Fetched::Got(msg, class) => {
@@ -1323,22 +1502,28 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
             Fetched::Failed(f) if f.is_rate_limit() || f.stops_the_run() => {}
             // A failure counts against the MESSAGE only when Google answered
             // for others in the same batch - otherwise it was the connection
-            // or Google, and counting it would push good mail out of the
-            // queue every time the laptop went offline for a few minutes.
+            // or Google, and counting it would push good mail aside every
+            // time the laptop went offline for a few minutes.
             Fetched::Failed(GmailFailure::Network) => {}
             Fetched::Failed(_) if !answered => {}
-            Fetched::Failed(_) => failed.push(pid),
+            Fetched::Failed(f) => failed.push((pid, f.message())),
         }
     }
-    let _ = now;
     dequeue(conn, &done)?;
-    bump_attempts(conn, &failed)?;
+    note_failures(conn, &failed, now)?;
     Ok(out)
 }
 
+/// A Discord message about a record Automatic created, sent once the run's
+/// transaction is committed - never with it open.
+type Notice = (DiscordDestination, String);
+
 /// Only what marko has switched to `auto`, only for a proposal that is
-/// already `ready`, and never twice - the 2.106.0 rules, unchanged.
-fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) {
+/// already `ready`, and never twice - the 2.106.0 rules, unchanged. Each
+/// record is made inside its own savepoint: one that fails half way leaves
+/// nothing behind, and the rest of the run goes on.
+fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> {
+    let mut notices = Vec::new();
     for (row_id, subject) in new_rows {
         let category: String = conn
             .query_row(
@@ -1353,26 +1538,26 @@ fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) {
         if automation_mode(conn, kind) != "auto" {
             continue;
         }
+        if conn.execute_batch("SAVEPOINT mail_auto_create").is_err() {
+            continue;
+        }
         match create_from_mail_impl(conn, *row_id, "auto") {
             Ok((k, rid)) => {
+                let _ = conn.execute_batch("RELEASE mail_auto_create");
                 let dest = match k.as_str() {
                     "finance" => DiscordDestination::Finance,
                     "order" => DiscordDestination::Inventory,
                     _ => DiscordDestination::Sales,
                 };
-                crate::commands::notifications::notify_discord(
-                    conn,
-                    dest,
-                    "Created from email",
-                    &format!("{k} #{rid} - {subject}"),
-                    &[],
-                );
+                notices.push((dest, format!("{k} #{rid} - {subject}")));
             }
             Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK TO mail_auto_create; RELEASE mail_auto_create");
                 let _ = log_step(conn, *row_id, "auto_create", "skipped", Some(&e.to_string()));
             }
         }
     }
+    notices
 }
 
 /// Labels exactly as Gmail has them now. A label deleted in Gmail leaves
@@ -1418,26 +1603,133 @@ fn backfill_finance(conn: &Connection) -> AppResult<usize> {
     Ok(rows.len())
 }
 
-/// Where the engine is, for the screen.
-pub(crate) fn progress_of(conn: &Connection) -> MailSyncProgress {
-    let waiting = queue_depth(conn);
-    let sections: Vec<(String, i64)> = conn
-        .prepare("SELECT title, done FROM mail_sync_sections ORDER BY tier, title")
+/// One folder walk, as the progress needs it.
+struct WalkRow {
+    title: String,
+    tier: i64,
+    done: bool,
+    started: bool,
+}
+
+/// A lane's discovery from its walks: every one finished - "complete"; any
+/// under way - "discovering"; none begun yet - "pending". A lane with no
+/// walk at all (no labels) has nothing left to find.
+fn lane_discovery<'a>(walks: impl Iterator<Item = &'a WalkRow>) -> String {
+    let mut any = false;
+    let mut all_done = true;
+    let mut started = false;
+    for w in walks {
+        any = true;
+        all_done &= w.done;
+        started |= !w.done && w.started;
+    }
+    if !any || all_done {
+        "complete".to_string()
+    } else if started {
+        "discovering".to_string()
+    } else {
+        "pending".to_string()
+    }
+}
+
+/// Where the engine is, for the screen. Cheap enough for every run: the
+/// queue is kept to a few hundred ids, the walks to one row per folder.
+pub(crate) fn progress_of(conn: &Connection, now: DateTime<Utc>) -> MailSyncProgress {
+    let now_s = now.to_rfc3339();
+    // (queued, due now) per lane: 0 new, 1 starred, 2 labels, 3 backlog.
+    let mut lanes = [(0i64, 0i64); 4];
+    let mut first_due_tier: Option<i64> = None;
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT priority, COUNT(*),
+                SUM(CASE WHEN next_attempt_at IS NULL OR next_attempt_at <= ?1 THEN 1 ELSE 0 END)
+           FROM mail_fetch_queue GROUP BY priority ORDER BY priority",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![now_s], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        }) {
+            for (tier, queued, due) in rows.flatten() {
+                let lane = match tier {
+                    t if t <= TIER_NEW => 0,
+                    t if t <= TIER_STARRED => 1,
+                    t if t <= TIER_LABELS => 2,
+                    _ => 3,
+                };
+                lanes[lane].0 += queued;
+                lanes[lane].1 += due;
+                if due > 0 && first_due_tier.is_none() {
+                    first_due_tier = Some(tier);
+                }
+            }
+        }
+    }
+    let walks: Vec<WalkRow> = conn
+        .prepare("SELECT title, tier, done, page_token IS NOT NULL OR pass_started_at IS NOT NULL FROM mail_sync_sections ORDER BY tier, title")
         .and_then(|mut s| {
-            let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            let rows = s.query_map([], |r| {
+                Ok(WalkRow {
+                    title: r.get(0)?,
+                    tier: r.get(1)?,
+                    done: r.get::<_, i64>(2)? != 0,
+                    started: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
             rows.collect::<Result<Vec<_>, _>>()
         })
         .unwrap_or_default();
-    let reading = sections.iter().find(|(_, done)| *done == 0).map(|(t, _)| t.clone());
-    let stored_total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0))
-        .unwrap_or(0);
+    let (stored_total, last_success_at, anchored): (i64, Option<String>, bool) = (
+        conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap_or(0),
+        conn.query_row("SELECT last_sync_at FROM mail_sync_state WHERE id = 1", [], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+            .flatten(),
+        conn.query_row(
+            "SELECT last_history_id IS NOT NULL FROM mail_sync_state WHERE id = 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false),
+    );
+
+    // What is being worked on: the best lane with something to download now,
+    // or with a folder still being walked - whichever comes first.
+    let first_walk = walks.iter().find(|w| !w.done);
+    let tier = match (first_due_tier, first_walk.map(|w| w.tier)) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let (phase, reading) = match tier {
+        None => ("idle", None),
+        Some(t) if t <= TIER_NEW => ("new", Some("New mail".to_string())),
+        Some(t) if t <= TIER_STARRED => ("starred", Some("Starred".to_string())),
+        // A label being walked is named; labelled mail being downloaded
+        // may come from any of them, so it is just "Labels".
+        Some(t) if t <= TIER_LABELS => {
+            let walking = first_walk.filter(|w| w.tier == t).map(|w| w.title.clone());
+            ("labels", Some(walking.unwrap_or_else(|| "Labels".to_string())))
+        }
+        // Each backlog lane is one folder.
+        Some(t) => {
+            let title = walks.iter().find(|w| w.tier == t).map(|w| w.title.clone());
+            ("backlog", Some(title.unwrap_or_else(|| "History".to_string())))
+        }
+    };
+    let lane = |i: usize, discovery: String| MailLaneProgress { waiting: lanes[i].0, discovery };
     MailSyncProgress {
-        reading: reading.or_else(|| (waiting > 0).then(|| "New mail".to_string())),
-        waiting,
-        folders_done: sections.iter().filter(|(_, d)| *d != 0).count() as i64,
-        folders_total: sections.len() as i64,
+        reading,
+        waiting: lanes.iter().map(|l| l.0).sum(),
+        folders_done: walks.iter().filter(|w| w.done).count() as i64,
+        folders_total: walks.len() as i64,
         stored_total,
+        phase: phase.to_string(),
+        new_mail: lane(0, if anchored { "watching" } else { "pending" }.to_string()),
+        starred: lane(1, lane_discovery(walks.iter().filter(|w| w.tier == TIER_STARRED))),
+        labels: lane(2, lane_discovery(walks.iter().filter(|w| w.tier == TIER_LABELS))),
+        backlog: lane(3, lane_discovery(walks.iter().filter(|w| w.tier >= TIER_BACKLOG))),
+        due: lanes.iter().map(|l| l.1).sum(),
+        retry_later: lanes.iter().map(|l| l.0 - l.1).sum(),
+        last_success_at,
     }
 }
 
@@ -1457,13 +1749,60 @@ fn outcome(status: &str, message: String, at: &str, progress: MailSyncProgress) 
         status: status.to_string(),
         message,
         synced_at: at.to_string(),
-        more_waiting: progress.waiting > 0 || progress.folders_done < progress.folders_total,
+        more_waiting: progress.due > 0 || progress.folders_done < progress.folders_total,
         progress,
         ..Default::default()
     }
 }
 
-fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppResult<MailSyncResult> {
+/// Gmail's change history can no longer be read from where this computer got
+/// to: expired (404 - Gmail keeps about a week, and the app only runs while
+/// it is open) or no longer accepted (400). A fresh starting point is taken
+/// on the next run, and every folder is walked again from the top, so
+/// whatever changed in between is found. Stored mail is not touched and costs
+/// listing only; the queue is kept.
+///
+/// At most once an hour: only a request this app got wrong could fail like
+/// this again straight away, and that must not keep sending every walk back
+/// to the start. Returns whether the walks were sent back.
+fn history_lost(conn: &Connection, now: DateTime<Utc>) -> AppResult<bool> {
+    let now_s = now.to_rfc3339();
+    conn.execute(
+        "UPDATE mail_sync_state SET last_history_id = NULL, history_checked_at = ?1 WHERE id = 1",
+        params![now_s],
+    )?;
+    let last: Option<String> = conn
+        .query_row("SELECT walks_reset_at FROM mail_sync_state WHERE id = 1", [], |r| r.get(0))
+        .optional()?
+        .flatten();
+    if !due(last.as_deref(), RESCAN_GUARD_SECS, now) {
+        return Ok(false);
+    }
+    reset_walks(conn)?;
+    conn.execute("UPDATE mail_sync_state SET walks_reset_at = ?1 WHERE id = 1", params![now_s])?;
+    Ok(true)
+}
+
+/// One more run in a row that failed this way; returns the count BEFORE it.
+fn bump_streak(conn: &Connection, column: &str) -> AppResult<u32> {
+    let before: i64 = conn
+        .query_row(&format!("SELECT {column} FROM mail_sync_state WHERE id = 1"), [], |r| r.get(0))
+        .optional()?
+        .unwrap_or(0);
+    conn.execute(&format!("UPDATE mail_sync_state SET {column} = ?1 WHERE id = 1"), params![before + 1])?;
+    Ok(before.clamp(0, 20) as u32)
+}
+
+/// What one run changed - all of it inside the caller's transaction - and
+/// what is left to do once that is committed.
+struct Applied {
+    result: MailSyncResult,
+    notices: Vec<Notice>,
+    /// The retention purge ran, so freed space can be given back.
+    reclaim: bool,
+}
+
+fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppResult<Applied> {
     let now_s = now.to_rfc3339();
     let mut changed = false;
 
@@ -1481,6 +1820,7 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
         )?;
     }
     let history_ran = net.history.is_some();
+    let mut walks_reset = false;
     match &net.history {
         Some(Ok(read)) => {
             let (c, _) = apply_history(conn, &plan.account_email, &read.events, &now_s)?;
@@ -1490,64 +1830,66 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
             }
             conn.execute("UPDATE mail_sync_state SET history_checked_at = ?1 WHERE id = 1", params![now_s])?;
         }
-        Some(Err(GmailFailure::NotFound)) => {
-            // History expired. Every folder from the top - see the module
-            // comment for why that costs listing and not downloading.
-            reset_walks(conn)?;
-            conn.execute(
-                "UPDATE mail_sync_state SET last_history_id = NULL, history_checked_at = ?1 WHERE id = 1",
-                params![now_s],
-            )?;
+        Some(Err(GmailFailure::NotFound | GmailFailure::BadRequest)) => {
+            walks_reset = history_lost(conn, now)?;
         }
         _ => {}
     }
     let mut skipped_folder: Option<String> = None;
-    if let (Some((section, page_used)), Some(result)) = (&plan.listing, &net.listing) {
-        match result {
-            Ok((ids, next)) => {
-                changed |= apply_listing(conn, &plan.account_email, section, page_used.as_deref(), ids, next.as_deref(), &now_s)? > 0;
+    // A page listed in the same run that sent every walk back to the top
+    // belongs to the walk that was just thrown away; applying it would carry
+    // that walk on from where it was.
+    if !walks_reset {
+        if let (Some((section, page_used)), Some(result)) = (&plan.listing, &net.listing) {
+            match result {
+                Ok((ids, next)) => {
+                    changed |=
+                        apply_listing(conn, &plan.account_email, section, page_used.as_deref(), ids, next.as_deref(), &now_s)?
+                            > 0;
+                }
+                // A page token Gmail no longer accepts: that folder from the top.
+                Err(GmailFailure::BadRequest | GmailFailure::NotFound) if page_used.is_some() => {
+                    restart_walk(conn, &section.key)?
+                }
+                // The FIRST page refused: the folder itself is what Gmail will
+                // not take (a label deleted a moment ago, a filter it cannot
+                // read). Restarting would refuse again forever and hold up every
+                // folder after it in the order - so it is set aside, and said.
+                Err(GmailFailure::BadRequest | GmailFailure::NotFound) => {
+                    skip_walk(conn, &section.key, &now_s)?;
+                    skipped_folder = Some(section.title.clone());
+                }
+                Err(_) => {}
             }
-            // A page token Gmail no longer accepts: that folder from the top.
-            Err(GmailFailure::BadRequest | GmailFailure::NotFound) if page_used.is_some() => {
-                restart_walk(conn, &section.key)?
-            }
-            // The FIRST page refused: the folder itself is what Gmail will
-            // not take (a label deleted a moment ago, a filter it cannot
-            // read). Restarting would refuse again forever and hold up every
-            // folder after it in the order - so it is set aside, and said.
-            Err(GmailFailure::BadRequest | GmailFailure::NotFound) => {
-                skip_walk(conn, &section.key, &now_s)?;
-                skipped_folder = Some(section.title.clone());
-            }
-            Err(_) => {}
         }
     }
 
-    let stored = store_fetched(conn, plan, net.fetched, &now_s)?;
-    run_automation(conn, &stored.new_rows);
+    let stored = store_fetched(conn, plan, net.fetched, now)?;
+    let notices = run_automation(conn, &stored.new_rows);
     backfill_finance(conn)?;
     if history_ran {
         purge_expired(conn)?;
-        crate::mail_store::reclaim(conn);
     }
+    let changed = changed || stored.stored_new > 0;
+    let finish = |result: MailSyncResult| Applied { result, notices, reclaim: history_ran };
 
-    let progress = progress_of(conn);
-    let more = progress.waiting > 0 || progress.folders_done < progress.folders_total;
+    // Something only marko can fix: said, and looked at again on his
+    // interval.
     if let Some(stop) = &net.stop {
         if *stop == GmailFailure::Unauthorized {
             forget_access_token();
         }
         record_failure(conn, &stop.message())?;
-        let mut r = outcome("failed", stop.message(), &now_s, progress);
+        let mut r = outcome("failed", stop.message(), &now_s, progress_of(conn, now));
         r.stored_new = stored.stored_new;
         r.fetched = stored.fetched;
         r.next_delay_ms = (plan.interval_secs.max(60)) * 1000;
-        r.changed = changed || stored.stored_new > 0;
-        return Ok(r);
+        r.changed = changed;
+        return Ok(finish(r));
     }
     // Offline, or Google having a moment, and nothing at all came back:
-    // said, and tried again in half a minute rather than every quarter of a
-    // second.
+    // said, and tried again after a pause that grows while it lasts - never
+    // every quarter of a second.
     let reached = stored.fetched > 0
         || net.profile_history.is_some()
         || net.labels.is_some()
@@ -1555,20 +1897,28 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
         || matches!(net.listing, Some(Ok(_)));
     if !reached {
         if let Some(t) = &net.trouble {
+            let streak = bump_streak(conn, "trouble_streak")?;
             record_failure(conn, &t.message())?;
-            let mut r = outcome("failed", t.message(), &now_s, progress);
-            r.next_delay_ms = TROUBLE_DELAY_MS;
+            let mut r = outcome("failed", t.message(), &now_s, progress_of(conn, now));
+            r.next_delay_ms = backoff_ms(TROUBLE_DELAY_MS, streak, TROUBLE_MAX_MS);
             r.changed = changed;
-            return Ok(r);
+            return Ok(finish(r));
         }
     }
+    let rate_streak = if net.rate_limited { Some(bump_streak(conn, "rate_limit_streak")?) } else { None };
+    // A run Google turned away before anything came down is not a sync, so
+    // "last synced" does not move for it.
+    let synced = !net.rate_limited || stored.fetched > 0;
     conn.execute(
         "UPDATE mail_sync_state
-            SET last_sync_at = ?1, last_sync_count = ?2, last_error = NULL, last_error_at = NULL,
-                sync_in_progress = 0, sync_started_at = NULL
+            SET last_sync_at = CASE WHEN ?4 THEN ?1 ELSE last_sync_at END, last_sync_count = ?2,
+                last_error = NULL, last_error_at = NULL, sync_in_progress = 0, sync_started_at = NULL,
+                trouble_streak = 0, rate_limit_streak = CASE WHEN ?3 THEN rate_limit_streak ELSE 0 END
           WHERE id = 1",
-        params![now_s, stored.stored_new],
+        params![now_s, stored.stored_new, net.rate_limited, synced],
     )?;
+    let progress = progress_of(conn, now);
+    let more = progress.due > 0 || progress.folders_done < progress.folders_total;
     let message = if net.rate_limited {
         GmailFailure::RateLimited { retry_after_secs: None }.message()
     } else if let Some(title) = &skipped_folder {
@@ -1583,12 +1933,19 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
     } else {
         format!("{} new. Everything is read.", stored.stored_new)
     };
-    let next_delay_ms = if net.rate_limited {
-        RATE_LIMIT_PAUSE_MS
+    let next_delay_ms = if let Some(streak) = rate_streak {
+        let google = net.retry_after_secs.map_or(0, |s| (s as i64).saturating_mul(1000));
+        backoff_ms(RATE_LIMIT_PAUSE_MS, streak, RATE_LIMIT_MAX_MS).max(google)
     } else if more {
         CHAIN_DELAY_MS
     } else {
-        plan.interval_secs * 1000
+        // Everything read: new mail on his interval - sooner when a message
+        // that failed is due again before it.
+        let every = plan.interval_secs * 1000;
+        match next_retry_in_ms(conn, now)? {
+            Some(ms) if every > 0 => every.min(ms.max(CHAIN_DELAY_MS)),
+            _ => every,
+        }
     };
     let mut r = outcome("synced", message, &now_s, progress);
     r.fetched = stored.fetched;
@@ -1597,8 +1954,8 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
     r.review_required = stored.review;
     r.rate_limited = net.rate_limited;
     r.next_delay_ms = next_delay_ms;
-    r.changed = changed || stored.stored_new > 0;
-    Ok(r)
+    r.changed = changed;
+    Ok(finish(r))
 }
 
 fn skipped(message: &str, at: &str, progress: MailSyncProgress) -> MailSyncResult {
@@ -1607,13 +1964,33 @@ fn skipped(message: &str, at: &str, progress: MailSyncProgress) -> MailSyncResul
     r
 }
 
+/// Runs `apply` in ONE transaction - a crash or an error half way leaves the
+/// database exactly as the run found it, and the next run does the same work
+/// again - then, with it committed, gives back freed space and sends the
+/// Discord messages for anything Automatic created.
+fn apply_committed(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppResult<MailSyncResult> {
+    let Applied { result, notices, reclaim } = {
+        let tx = conn.unchecked_transaction()?;
+        let applied = apply(&tx, plan, net, now)?;
+        tx.commit()?;
+        applied
+    };
+    if reclaim {
+        crate::mail_store::reclaim(conn);
+    }
+    for (dest, text) in notices {
+        crate::commands::notifications::notify_discord(conn, dest, "Created from email", &text, &[]);
+    }
+    Ok(result)
+}
+
 /// One run of the engine. See the module comment for what it does.
 pub(crate) async fn run_once(state: &AppState) -> AppResult<MailSyncResult> {
     let now = Utc::now();
     let at = now.to_rfc3339();
     let Some(_guard) = RunGuard::claim() else {
         let conn = state.db.lock().unwrap();
-        return Ok(skipped("A sync is already running.", &at, progress_of(&conn)));
+        return Ok(skipped("A sync is already running.", &at, progress_of(&conn, now)));
     };
     let plan = {
         let conn = state.db.lock().unwrap();
@@ -1625,34 +2002,47 @@ pub(crate) async fn run_once(state: &AppState) -> AppResult<MailSyncResult> {
                 )?;
                 p
             }
-            Err(reason) => return Ok(skipped(reason, &at, progress_of(&conn))),
+            Err(reason) => return Ok(skipped(reason, &at, progress_of(&conn, now))),
         }
     };
     let Some(client) = google_oauth::embedded_oauth_client() else {
         let conn = state.db.lock().unwrap();
         let msg = "This build has no Google client embedded.";
         record_failure(&conn, msg)?;
-        return Ok(outcome("failed", msg.to_string(), &at, progress_of(&conn)));
+        return Ok(outcome("failed", msg.to_string(), &at, progress_of(&conn, now)));
     };
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        let net = network(&plan, &client);
+        let net = access_token(&client, &plan.refresh_token)
+            .and_then(|token| Ok((token, gmail_client()?)))
+            .and_then(|(token, http)| network(&plan, &http, &token));
         (plan, net)
     })
     .await;
     let conn = state.db.lock().unwrap();
     match joined {
-        Ok((plan, Ok(net))) => apply(&conn, &plan, net, now),
+        Ok((plan, Ok(net))) => match apply_committed(&conn, &plan, net, now) {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                // Rolled back whole: nothing of this run is half-written,
+                // and the next run does the same work again.
+                let msg = safe_detail(&e.to_string());
+                record_failure(&conn, &msg)?;
+                let mut r = outcome("failed", msg, &at, progress_of(&conn, now));
+                r.next_delay_ms = TROUBLE_DELAY_MS;
+                Ok(r)
+            }
+        },
         Ok((plan, Err(e))) => {
             let msg = safe_detail(&e.to_string());
             record_failure(&conn, &msg)?;
-            let mut r = outcome("failed", msg, &at, progress_of(&conn));
+            let mut r = outcome("failed", msg, &at, progress_of(&conn, now));
             r.next_delay_ms = plan.interval_secs.max(60) * 1000;
             Ok(r)
         }
         Err(_) => {
             let msg = "The sync did not finish cleanly.";
             record_failure(&conn, msg)?;
-            let mut r = outcome("failed", msg.to_string(), &at, progress_of(&conn));
+            let mut r = outcome("failed", msg.to_string(), &at, progress_of(&conn, now));
             r.next_delay_ms = TROUBLE_DELAY_MS;
             Ok(r)
         }
@@ -1665,7 +2055,10 @@ pub(crate) fn reset_engine(conn: &Connection) -> AppResult<()> {
     reset_walks(conn)?;
     conn.execute("DELETE FROM mail_fetch_queue", [])?;
     conn.execute(
-        "UPDATE mail_sync_state SET last_history_id = NULL, history_checked_at = NULL, labels_checked_at = NULL WHERE id = 1",
+        "UPDATE mail_sync_state
+            SET last_history_id = NULL, history_checked_at = NULL, labels_checked_at = NULL,
+                walks_reset_at = NULL, rate_limit_streak = 0, trouble_streak = 0
+          WHERE id = 1",
         [],
     )?;
     forget_access_token();
@@ -1675,10 +2068,25 @@ pub(crate) fn reset_engine(conn: &Connection) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::sheets_sync::set_setting;
     use crate::db::test_conn;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::sync::Arc;
 
     const NOW: &str = "2026-10-18T12:00:00+00:00";
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    fn now() -> DateTime<Utc> {
+        at(NOW)
+    }
+
+    fn later(secs: i64) -> DateTime<Utc> {
+        now() + chrono::Duration::seconds(secs)
+    }
 
     fn insert(conn: &Connection, pid: &str, labels: &str, starred: bool, first_seen: &str) -> i64 {
         conn.execute(
@@ -1700,26 +2108,105 @@ mod tests {
         .unwrap()
     }
 
+    fn rows_for(conn: &Connection, pid: &str) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM mail_messages WHERE provider_message_id = ?1", params![pid], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// (priority, source, status, attempts) of one queued id.
+    fn queued(conn: &Connection, pid: &str) -> Option<(i64, String, String, i64)> {
+        conn.query_row(
+            "SELECT priority, source, status, attempts FROM mail_fetch_queue WHERE provider_message_id = ?1",
+            params![pid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .unwrap()
+    }
+
     fn label(id: &str, name: &str) -> UserLabel {
         UserLabel { gmail_id: id.to_string(), name: name.to_string() }
     }
 
-    // ---- marko's order ----------------------------------------------------
+    fn section(key: &str, labels: &[UserLabel]) -> Section {
+        plan_sections("all", &["viagogo.com".to_string()], labels, "").into_iter().find(|s| s.key == key).unwrap()
+    }
+
+    fn starred_section() -> Section {
+        section("starred", &[])
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn fetched_as(id: &str, from: &str, subject: &str, labels: &str) -> FetchedMessage {
+        FetchedMessage {
+            provider_message_id: id.into(),
+            provider_thread_id: None,
+            from_address: from.into(),
+            from_name: None,
+            subject: subject.into(),
+            snippet: Some(subject.into()),
+            received_at: NOW.into(),
+            body_text: String::new(),
+            is_unread: true,
+            labels: labels.into(),
+            is_starred: labels.split(',').any(|l| l == "starred"),
+            from_raw: from.into(),
+            to_address: None,
+            reply_to: None,
+        }
+    }
+
+    fn fetched(from: &str, subject: &str, labels: &str) -> FetchedMessage {
+        fetched_as("x", from, subject, labels)
+    }
+
+    fn got(id: &str, labels: &str) -> (String, Fetched) {
+        let m = fetched_as(id, "a@b.com", "hello", labels);
+        let c = classify_fetched(&m);
+        (id.to_string(), Fetched::Got(Box::new(m), c))
+    }
+
+    fn plan_with(batch: &[&str]) -> Plan {
+        Plan {
+            refresh_token: "r".into(),
+            account_email: "me@gmail.com".into(),
+            known_scope: false,
+            senders: Vec::new(),
+            need_profile: false,
+            labels_due: false,
+            history_from: None,
+            listing: None,
+            batch: ids(batch),
+            interval_secs: 60,
+            api: GMAIL_API.to_string(),
+        }
+    }
+
+    fn apply_now(conn: &Connection, plan: &Plan, net: Net, when: DateTime<Utc>) -> MailSyncResult {
+        apply_committed(conn, plan, net, when).unwrap()
+    }
+
+    // ---- the lanes and the folders ----------------------------------------
 
     #[test]
-    fn folders_are_read_in_markos_order() {
+    fn folders_are_walked_starred_then_labels_then_the_backlog() {
         let senders = vec!["viagogo.com".to_string()];
         let labels = vec![label("Label_2", "PULLS"), label("Label_1", "OASIS")];
         let keys: Vec<String> = plan_sections("all", &senders, &labels, "").into_iter().map(|s| s.key).collect();
         assert_eq!(
             keys,
             vec![
-                "important", "starred", "label:label_1", "label:label_2", "finances", "inbox", "promotions",
+                "starred", "label:label_1", "label:label_2", "important", "finances", "inbox", "promotions",
                 "spam", "trash"
             ]
         );
         let tiers: Vec<i64> = plan_sections("all", &senders, &labels, "").into_iter().map(|s| s.tier).collect();
-        assert!(tiers.windows(2).all(|w| w[0] <= w[1]), "the order IS the tiers: {tiers:?}");
+        assert!(tiers.windows(2).all(|w| w[0] <= w[1]), "the order IS the lanes: {tiers:?}");
+        assert!(TIER_NEW < TIER_STARRED && TIER_STARRED < TIER_LABELS && TIER_LABELS < TIER_BACKLOG);
+        assert_eq!(TIER_BACKLOG, TIER_IMPORTANT, "Important is history, not a priority lane");
     }
 
     #[test]
@@ -1729,9 +2216,14 @@ mod tests {
             if s.key == "starred" || s.key.starts_with("label:") {
                 assert!(s.q.is_none(), "{} must be a plain label walk: {:?}", s.key, s.q);
                 assert!(s.flag.is_some());
-                assert!(!s.list_url(None).contains("after"), "{}", s.list_url(None));
+                let url = s.list_url(GMAIL_API, None);
+                assert!(!url.contains("after") && !url.contains("q="), "{url}");
             }
         }
+        let starred = starred_section().list_url(GMAIL_API, None);
+        assert!(starred.contains("labelIds=STARRED"), "Gmail's own starred state: {starred}");
+        let oasis = section("label:label_1", &labels).list_url(GMAIL_API, None);
+        assert!(oasis.contains("labelIds=Label_1"), "Gmail's id, case and all: {oasis}");
     }
 
     #[test]
@@ -1753,6 +2245,7 @@ mod tests {
             assert!(q.contains(part), "{q}");
         }
         assert!(!q.contains("after:"), "no date limit - newest to oldest, all of it: {q}");
+        assert!(!q.contains("in:inbox"), "archived mail is history too: {q}");
     }
 
     #[test]
@@ -1761,7 +2254,7 @@ mod tests {
             .into_iter()
             .map(|s| s.key)
             .collect();
-        assert_eq!(keys, vec!["important", "starred", "label:label_1", "finances"]);
+        assert_eq!(keys, vec!["starred", "label:label_1", "important", "finances"]);
     }
 
     #[test]
@@ -1774,7 +2267,7 @@ mod tests {
     #[test]
     fn spam_and_trash_are_listed_with_spam_and_trash_included() {
         for s in plan_sections("all", &[], &[], "") {
-            let url = s.list_url(None);
+            let url = s.list_url(GMAIL_API, None);
             if s.key == "spam" || s.key == "trash" {
                 assert!(url.contains("includeSpamTrash=true"), "{url}");
             } else {
@@ -1786,10 +2279,12 @@ mod tests {
     #[test]
     fn a_query_is_encoded_for_the_url() {
         let s = plan_sections("all", &[], &[], "").into_iter().find(|s| s.key == "finances").unwrap();
-        let url = s.list_url(Some("tok en"));
+        let url = s.list_url(GMAIL_API, Some("tok en"));
+        assert!(url.starts_with(GMAIL_API), "{url}");
         assert!(!url.contains(' '), "{url}");
         assert!(url.contains("pageToken=tok+en"), "{url}");
         assert!(url.contains("from:paypal.com"), "{url}");
+        assert!(url.contains("maxResults=500"), "Gmail's biggest page: {url}");
     }
 
     // ---- Google's answers -------------------------------------------------
@@ -1804,6 +2299,7 @@ mod tests {
         let other = r#"{"error":{"errors":[{"reason":"rateLimitExceeded"}]}}"#;
         assert!(failure_from(403, other, Some(7)).is_rate_limit());
         assert_eq!(failure_from(429, "", Some(7)), GmailFailure::RateLimited { retry_after_secs: Some(7) });
+        assert_eq!(failure_from(429, "", Some(7)).retry_after_secs(), Some(7));
     }
 
     #[test]
@@ -1838,47 +2334,307 @@ mod tests {
         }
     }
 
+    #[test]
+    fn backoff_doubles_stays_under_its_cap_and_is_never_shortened_by_more_than_a_quarter() {
+        for _ in 0..200 {
+            let a = backoff_ms(1000, 0, 60_000);
+            let b = backoff_ms(1000, 3, 60_000);
+            let c = backoff_ms(1000, 30, 60_000);
+            assert!((750..=1000).contains(&a), "{a}");
+            assert!((6000..=8000).contains(&b), "{b}");
+            assert!((45_000..=60_000).contains(&c), "{c}");
+        }
+        // Jitter, not one fixed number for everyone.
+        let spread: HashSet<i64> = (0..50).map(|_| backoff_ms(20_000, 0, 60_000)).collect();
+        assert!(spread.len() > 1);
+    }
+
     // ---- the queue --------------------------------------------------------
 
     #[test]
-    fn the_queue_skips_what_is_stored_or_deleted_and_drains_in_markos_order() {
+    fn the_queue_skips_what_is_stored_or_deleted_and_keeps_the_best_lane() {
         let conn = test_conn();
         insert(&conn, "stored", "inbox", false, NOW);
         conn.execute("INSERT INTO mail_deleted (provider_message_id, deleted_at) VALUES ('deleted', 'x')", [])
             .unwrap();
-        enqueue(&conn, "me", &["i1".into(), "i2".into(), "stored".into(), "deleted".into()], TIER_INBOX, NOW)
-            .unwrap();
-        enqueue(&conn, "me", &["s1".into(), "s2".into()], TIER_STARRED, NOW).unwrap();
-        // The same id from a better folder keeps the better place.
-        enqueue(&conn, "me", &["i2".into()], TIER_STARRED, NOW).unwrap();
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["i2", "s1", "s2", "i1"]);
+        enqueue(&conn, "me", &ids(&["i1", "i2", "stored", "deleted"]), TIER_INBOX, "inbox", NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["s1", "s2"]), TIER_STARRED, "starred", NOW).unwrap();
+        // The same id from a better folder keeps the better place...
+        enqueue(&conn, "me", &ids(&["i2"]), TIER_STARRED, "starred", NOW).unwrap();
+        // ...and a worse one never takes it away.
+        assert_eq!(enqueue(&conn, "me", &ids(&["s1"]), TIER_INBOX, "inbox", NOW).unwrap(), 0);
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["i2", "s1", "s2", "i1"]);
         assert_eq!(queue_depth(&conn), 4);
+        assert_eq!(queued(&conn, "s1").unwrap().1, "starred");
     }
 
     #[test]
     fn inside_one_folder_the_newest_comes_first() {
         let conn = test_conn();
         // Gmail lists newest first, page after page.
-        enqueue(&conn, "me", &["newest".into(), "newer".into()], TIER_INBOX, NOW).unwrap();
-        enqueue(&conn, "me", &["older".into(), "oldest".into()], TIER_INBOX, NOW).unwrap();
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["newest", "newer", "older", "oldest"]);
+        enqueue(&conn, "me", &ids(&["newest", "newer"]), TIER_INBOX, "inbox", NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["older", "oldest"]), TIER_INBOX, "inbox", NOW).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["newest", "newer", "older", "oldest"]);
+        // The same queue gives the same batch every time.
+        assert_eq!(peek(&conn, 3, NOW).unwrap(), peek(&conn, 3, NOW).unwrap());
+    }
+
+    /// Scenario 1.
+    #[test]
+    fn new_mail_comes_before_ordinary_history() {
+        let conn = test_conn();
+        let backlog: Vec<String> = (0..300).map(|i| format!("old{i}")).collect();
+        enqueue(&conn, "me", &backlog, TIER_INBOX, "inbox", NOW).unwrap();
+        let ev = vec![HistoryEvent::Added { id: "fresh".into(), labels: vec!["inbox".into(), "unread".into()] }];
+        apply_history(&conn, "me", &ev, NOW).unwrap();
+        let batch = peek(&conn, FETCH_BATCH, NOW).unwrap();
+        assert_eq!(batch[0], "fresh", "found last, downloaded first");
+        assert_eq!(queued(&conn, "fresh").unwrap().0, TIER_NEW);
+    }
+
+    /// Scenario 2.
+    #[test]
+    fn a_starred_mail_from_last_year_comes_before_yesterdays_ordinary_mail() {
+        let conn = test_conn();
+        let inbox = section("inbox", &[]);
+        let starred = starred_section();
+        sync_section_rows(&conn, &[starred.clone(), inbox.clone()], NOW).unwrap();
+        // The inbox walk happens to meet yesterday's mail first...
+        apply_listing(&conn, "me", &inbox, None, &ids(&["yesterday", "last_week"]), Some("p2"), NOW).unwrap();
+        // ...and Starred meets the year-old one after it.
+        apply_listing(&conn, "me", &starred, None, &ids(&["last_year"]), None, NOW).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["last_year", "yesterday", "last_week"]);
+        assert_eq!(queued(&conn, "last_year").unwrap().0, TIER_STARRED);
+    }
+
+    /// Scenario 3.
+    #[test]
+    fn a_labelled_mail_from_last_year_comes_before_ordinary_history() {
+        let conn = test_conn();
+        let labels = vec![label("Label_7", "NFL MEXICO")];
+        let inbox = section("inbox", &labels);
+        let nfl = section("label:label_7", &labels);
+        sync_section_rows(&conn, &[nfl.clone(), inbox.clone()], NOW).unwrap();
+        apply_listing(&conn, "me", &inbox, None, &ids(&["yesterday"]), Some("p2"), NOW).unwrap();
+        apply_listing(&conn, "me", &nfl, None, &ids(&["archived_last_year"]), None, NOW).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["archived_last_year", "yesterday"]);
+        let (tier, source, ..) = queued(&conn, "archived_last_year").unwrap();
+        assert_eq!((tier, source.as_str()), (TIER_LABELS, "label:label_7"));
+    }
+
+    /// Scenario 4.
+    #[test]
+    fn a_message_in_several_labels_is_queued_once_and_stored_once_with_all_of_them() {
+        let conn = test_conn();
+        let labels = vec![label("Label_1", "A"), label("Label_2", "B")];
+        let a = section("label:label_1", &labels);
+        let b = section("label:label_2", &labels);
+        sync_section_rows(&conn, &[a.clone(), b.clone()], NOW).unwrap();
+        apply_listing(&conn, "me", &a, None, &ids(&["m"]), Some("p2"), NOW).unwrap();
+        apply_listing(&conn, "me", &b, None, &ids(&["m"]), Some("p2"), NOW).unwrap();
+        assert_eq!(queue_depth(&conn), 1);
+
+        let stored = store_fetched(&conn, &plan_with(&["m"]), vec![got("m", "inbox,label_1,label_2")], now()).unwrap();
+        assert_eq!(stored.stored_new, 1);
+        assert_eq!(queue_depth(&conn), 0);
+        // Both walks meet it again: still one row, each label once.
+        apply_listing(&conn, "me", &a, Some("p2"), &ids(&["m"]), None, NOW).unwrap();
+        apply_listing(&conn, "me", &b, Some("p2"), &ids(&["m"]), None, NOW).unwrap();
+        assert_eq!(rows_for(&conn, "m"), 1);
+        let (labels, _) = labels_of(&conn, "m");
+        assert_eq!(labels, "inbox,label_1,label_2");
+        assert_eq!(queue_depth(&conn), 0, "stored mail is never queued again");
+    }
+
+    /// Scenario 5 (and see the end-to-end run below, which counts requests).
+    #[test]
+    fn starred_and_labelled_is_queued_once_in_the_better_lane() {
+        let conn = test_conn();
+        let labels = vec![label("Label_1", "A")];
+        let starred = starred_section();
+        let a = section("label:label_1", &labels);
+        sync_section_rows(&conn, &[starred.clone(), a.clone()], NOW).unwrap();
+        apply_listing(&conn, "me", &a, None, &ids(&["both"]), None, NOW).unwrap();
+        apply_listing(&conn, "me", &starred, None, &ids(&["both"]), None, NOW).unwrap();
+        assert_eq!(queue_depth(&conn), 1);
+        assert_eq!(queued(&conn, "both").unwrap().0, TIER_STARRED);
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["both"], "offered once, so fetched once");
+    }
+
+    /// Scenario 6.
+    #[test]
+    fn a_queued_history_message_moves_up_when_starred_finds_it() {
+        let conn = test_conn();
+        let inbox = section("inbox", &[]);
+        let starred = starred_section();
+        sync_section_rows(&conn, &[starred.clone(), inbox.clone()], NOW).unwrap();
+        apply_listing(&conn, "me", &inbox, None, &ids(&["m", "other"]), Some("p2"), NOW).unwrap();
+        assert_eq!(queued(&conn, "m").unwrap().0, TIER_INBOX);
+        apply_listing(&conn, "me", &starred, None, &ids(&["m"]), None, "2026-10-18T12:00:05+00:00").unwrap();
+        let (tier, source, status, attempts) = queued(&conn, "m").unwrap();
+        assert_eq!((tier, source.as_str(), status.as_str(), attempts), (TIER_STARRED, "starred", "queued", 0));
+        assert_eq!(queue_depth(&conn), 2, "moved, not copied");
+        // A message starred in Gmail while it waits moves up the same way.
+        let ev = vec![HistoryEvent::LabelsAdded { id: "other".into(), labels: vec!["starred".into()] }];
+        apply_history(&conn, "me", &ev, NOW).unwrap();
+        assert_eq!(queued(&conn, "other").unwrap().0, TIER_STARRED);
+        assert_eq!(queued(&conn, "other").unwrap().1, "history:starred");
+    }
+
+    /// Scenario 7.
+    #[test]
+    fn new_mail_is_downloaded_while_a_long_backlog_is_being_read() {
+        let conn = test_conn();
+        let backlog: Vec<String> = (0..500).map(|i| format!("h{i}")).collect();
+        enqueue(&conn, "me", &backlog, TIER_INBOX, "inbox", NOW).unwrap();
+        // A first batch of history is downloaded...
+        let first = peek(&conn, FETCH_BATCH, NOW).unwrap();
+        let got_first: Vec<_> = first.iter().map(|id| got(id, "inbox")).collect();
+        store_fetched(&conn, &plan_with(&[]), got_first, now()).unwrap();
+        // ...then new mail arrives, half way through the backlog.
+        let ev = vec![HistoryEvent::Added { id: "arrived".into(), labels: vec!["inbox".into()] }];
+        apply_history(&conn, "me", &ev, NOW).unwrap();
+        let next = peek(&conn, FETCH_BATCH, NOW).unwrap();
+        assert_eq!(next[0], "arrived", "the very next batch, not after 460 old ones");
+        assert_eq!(queue_depth(&conn), 461);
+    }
+
+    /// Scenario 12.
+    #[test]
+    fn a_failing_message_steps_aside_and_is_never_dropped() {
+        let conn = test_conn();
+        enqueue(&conn, "me", &ids(&["bad", "good1", "good2"]), TIER_STARRED, "starred", NOW).unwrap();
+        let plan = plan_with(&["bad", "good1", "good2"]);
+        let batch = vec![
+            ("bad".to_string(), Fetched::Failed(GmailFailure::Server(500))),
+            got("good1", "inbox,starred"),
+            got("good2", "inbox,starred"),
+        ];
+        store_fetched(&conn, &plan, batch, now()).unwrap();
+        let (_, _, status, attempts) = queued(&conn, "bad").unwrap();
+        assert_eq!((status.as_str(), attempts), ("retrying", 1));
+        let last_error: String = conn
+            .query_row("SELECT last_error FROM mail_fetch_queue WHERE provider_message_id = 'bad'", [], |r| r.get(0))
+            .unwrap();
+        assert!(last_error.contains("server error"), "{last_error}");
+        // Out of the way at once: the next batch does not wait for it...
+        enqueue(&conn, "me", &ids(&["good3"]), TIER_INBOX, "inbox", NOW).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["good3"]);
+        // ...and back when its time comes.
+        let later_s = later(60).to_rfc3339();
+        assert_eq!(peek(&conn, 10, &later_s).unwrap(), vec!["bad", "good3"]);
+
+        // Failing every time: parked, still queued, tried every few hours.
+        let mut when = later(60);
+        for _ in 1..MAX_ATTEMPTS {
+            let batch = vec![("bad".to_string(), Fetched::Failed(GmailFailure::Server(500))), got("x", "inbox")];
+            store_fetched(&conn, &plan, batch, when).unwrap();
+            when += chrono::Duration::hours(7);
+        }
+        let (_, _, status, attempts) = queued(&conn, "bad").unwrap();
+        assert_eq!((status.as_str(), attempts), ("parked", MAX_ATTEMPTS));
+        let p = progress_of(&conn, when - chrono::Duration::hours(7));
+        assert_eq!(p.retry_later, 1);
+        assert!(peek(&conn, 10, &(when + chrono::Duration::hours(6)).to_rfc3339()).unwrap().contains(&"bad".to_string()));
     }
 
     #[test]
-    fn a_message_that_keeps_failing_eventually_gives_its_slot_up() {
+    fn nothing_but_messages_waiting_to_be_retried_does_not_keep_runs_spinning() {
         let conn = test_conn();
-        enqueue(&conn, "me", &["bad".into(), "good".into()], TIER_INBOX, NOW).unwrap();
-        for _ in 0..MAX_ATTEMPTS {
-            bump_attempts(&conn, &["bad".into()]).unwrap();
+        let sections = plan_sections("all", &[], &[], "");
+        sync_section_rows(&conn, &sections, NOW).unwrap();
+        conn.execute("UPDATE mail_sync_sections SET done = 1", []).unwrap();
+        enqueue(&conn, "me", &ids(&["bad"]), TIER_INBOX, "inbox", NOW).unwrap();
+        let batch = vec![("bad".to_string(), Fetched::Failed(GmailFailure::Server(500))), got("ok", "inbox")];
+        let net = Net { fetched: batch, ..Default::default() };
+        let r = apply_now(&conn, &plan_with(&["bad", "ok"]), net, now());
+        assert_eq!(r.status, "synced");
+        assert!(!r.more_waiting, "only a message waiting for its retry time is left");
+        assert!(r.next_delay_ms > CHAIN_DELAY_MS && r.next_delay_ms <= 60_000, "{}", r.next_delay_ms);
+        assert_eq!(r.progress.due, 0);
+        assert_eq!(r.progress.retry_later, 1);
+    }
+
+    #[test]
+    fn an_hour_offline_pushes_nothing_aside() {
+        let conn = test_conn();
+        enqueue(&conn, "me", &ids(&["a", "b"]), TIER_STARRED, "starred", NOW).unwrap();
+        let plan = plan_with(&["a", "b"]);
+        for _ in 0..MAX_ATTEMPTS * 3 {
+            let got = vec![
+                ("a".to_string(), Fetched::Failed(GmailFailure::Network)),
+                ("b".to_string(), Fetched::Skipped),
+            ];
+            store_fetched(&conn, &plan, got, now()).unwrap();
         }
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["good"]);
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["a", "b"]);
+        assert_eq!(queued(&conn, "a").unwrap().3, 0);
+    }
+
+    #[test]
+    fn a_google_error_counts_against_a_message_only_while_google_answers_for_others() {
+        let conn = test_conn();
+        enqueue(&conn, "me", &ids(&["bad", "good"]), TIER_INBOX, "inbox", NOW).unwrap();
+        let plan = plan_with(&["bad", "good"]);
+        // Google failing for everything: not this message's fault.
+        for _ in 0..MAX_ATTEMPTS {
+            store_fetched(&conn, &plan, vec![("bad".into(), Fetched::Failed(GmailFailure::Server(503)))], now())
+                .unwrap();
+        }
+        assert_eq!(queued(&conn, "bad").unwrap().3, 0);
+        // Google fine for the other one: this message is the problem.
+        store_fetched(
+            &conn,
+            &plan,
+            vec![("bad".into(), Fetched::Failed(GmailFailure::Server(500))), got("good", "inbox")],
+            now(),
+        )
+        .unwrap();
+        assert_eq!(queued(&conn, "bad").unwrap().3, 1);
+        assert!(queued(&conn, "good").is_none(), "the one that came down left the queue");
+    }
+
+    #[test]
+    fn offline_says_so_and_waits_longer_each_time_instead_of_spinning() {
+        let conn = test_conn();
+        sync_section_rows(&conn, &plan_sections("all", &[], &[], ""), NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["a"]), TIER_STARRED, "starred", NOW).unwrap();
+        let offline = || Net {
+            fetched: vec![("a".into(), Fetched::Failed(GmailFailure::Network))],
+            trouble: Some(GmailFailure::Network),
+            ..Default::default()
+        };
+        let first = apply_now(&conn, &plan_with(&["a"]), offline(), now());
+        assert_eq!(first.status, "failed");
+        assert!(first.message.contains("Could not reach Gmail"), "{}", first.message);
+        assert!((TROUBLE_DELAY_MS * 3 / 4..=TROUBLE_DELAY_MS).contains(&first.next_delay_ms), "{}", first.next_delay_ms);
+        let second = apply_now(&conn, &plan_with(&["a"]), offline(), later(30));
+        assert!(second.next_delay_ms > first.next_delay_ms, "{} then {}", first.next_delay_ms, second.next_delay_ms);
+        for i in 0..10 {
+            let r = apply_now(&conn, &plan_with(&["a"]), offline(), later(60 + i));
+            assert!(r.next_delay_ms <= TROUBLE_MAX_MS, "{}", r.next_delay_ms);
+        }
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["a"], "still queued");
+
+        // A page listed before the connection went: that counts as reaching
+        // Gmail, so the next run follows straight away - and the streak ends.
+        let net = Net {
+            listing: Some(Ok((ids(&["n1"]), Some("p2".into())))),
+            fetched: vec![("a".into(), Fetched::Failed(GmailFailure::Network))],
+            trouble: Some(GmailFailure::Network),
+            ..Default::default()
+        };
+        let mut plan = plan_with(&["a"]);
+        plan.listing = Some((starred_section(), None));
+        let r = apply_now(&conn, &plan, net, later(200));
+        assert_eq!(r.status, "synced");
+        assert_eq!(r.next_delay_ms, CHAIN_DELAY_MS);
+        let streak: i64 =
+            conn.query_row("SELECT trouble_streak FROM mail_sync_state WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(streak, 0);
     }
 
     // ---- folder walks -----------------------------------------------------
-
-    fn starred_section() -> Section {
-        plan_sections("all", &[], &[], "").into_iter().find(|s| s.key == "starred").unwrap()
-    }
 
     #[test]
     fn walking_starred_marks_mail_that_was_stored_before_it_was_starred() {
@@ -1886,12 +2642,12 @@ mod tests {
         insert(&conn, "old", "inbox", false, "2026-01-01T00:00:00+00:00");
         let s = starred_section();
         sync_section_rows(&conn, &[s.clone()], NOW).unwrap();
-        apply_listing(&conn, "me", &s, None, &["old".into(), "new".into()], Some("p2"), NOW).unwrap();
+        apply_listing(&conn, "me", &s, None, &ids(&["old", "new"]), Some("p2"), NOW).unwrap();
         let (labels, starred) = labels_of(&conn, "old");
         assert_eq!(starred, 1);
         assert!(labels.split(',').any(|l| l == "starred"), "{labels}");
-        // The one not stored yet is queued at Starred's place.
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["new"]);
+        // Only what is missing is queued: the stored one is not downloaded again.
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["new"]);
     }
 
     #[test]
@@ -1903,7 +2659,7 @@ mod tests {
         insert(&conn, "in_trash", "trash,starred", true, before);
         let s = starred_section();
         sync_section_rows(&conn, &[s.clone()], NOW).unwrap();
-        apply_listing(&conn, "me", &s, None, &["still".into()], Some("p2"), NOW).unwrap();
+        apply_listing(&conn, "me", &s, None, &ids(&["still"]), Some("p2"), NOW).unwrap();
         // A message starred WHILE the walk ran (history set labels_at now).
         insert(&conn, "mid_walk", "inbox,starred", true, "2026-10-18T12:00:30+00:00");
         apply_listing(&conn, "me", &s, Some("p2"), &[], None, "2026-10-18T12:01:00+00:00").unwrap();
@@ -1919,18 +2675,18 @@ mod tests {
     }
 
     #[test]
-    fn walks_resume_where_they_stopped_and_follow_markos_order() {
+    fn walks_resume_where_they_stopped_and_follow_the_lanes() {
         let conn = test_conn();
         let sections = plan_sections("all", &["viagogo.com".into()], &[], "");
         sync_section_rows(&conn, &sections, NOW).unwrap();
         let (first, page) = next_walk(&conn, &sections).unwrap().unwrap();
-        assert_eq!((first.key.as_str(), page), ("important", None));
-        apply_listing(&conn, "me", &first, None, &["a".into()], Some("TOKEN2"), NOW).unwrap();
+        assert_eq!((first.key.as_str(), page), ("starred", None));
+        apply_listing(&conn, "me", &first, None, &ids(&["a"]), Some("TOKEN2"), NOW).unwrap();
         let (again, page) = next_walk(&conn, &sections).unwrap().unwrap();
-        assert_eq!((again.key.as_str(), page.as_deref()), ("important", Some("TOKEN2")));
+        assert_eq!((again.key.as_str(), page.as_deref()), ("starred", Some("TOKEN2")));
         apply_listing(&conn, "me", &again, Some("TOKEN2"), &[], None, NOW).unwrap();
         let (next, _) = next_walk(&conn, &sections).unwrap().unwrap();
-        assert_eq!(next.key, "starred");
+        assert_eq!(next.key, "important", "no labels, so the backlog is next");
     }
 
     #[test]
@@ -1969,6 +2725,35 @@ mod tests {
         sync_section_rows(&conn, &fixed, NOW).unwrap();
         let done: i64 = conn.query_row("SELECT done FROM mail_sync_sections WHERE key='inbox'", [], |r| r.get(0)).unwrap();
         assert_eq!(done, 0);
+    }
+
+    /// Scenario 9.
+    #[test]
+    fn a_restart_carries_on_with_the_same_queue_and_the_same_page() {
+        let dir = std::env::temp_dir().join(format!("tiqr-mail-restart-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let main = dir.join("tiqr-manager.sqlite3");
+        let _ = std::fs::remove_file(&main);
+        let _ = std::fs::remove_file(crate::mail_store::mail_db_path(&main));
+        let sections = plan_sections("all", &[], &[label("Label_1", "A")], "");
+        let before = {
+            let conn = crate::db::open_live_connection(&main).unwrap();
+            crate::db::run_migrations(&conn).unwrap();
+            sync_section_rows(&conn, &sections, NOW).unwrap();
+            let starred = starred_section();
+            apply_listing(&conn, "me", &starred, None, &ids(&["s1", "s2"]), Some("PAGE2"), NOW).unwrap();
+            enqueue(&conn, "me", &ids(&["n1"]), TIER_NEW, "history", NOW).unwrap();
+            peek(&conn, 10, NOW).unwrap()
+        };
+        // The app closes here - or crashes; nothing was in memory.
+        let conn = crate::db::open_live_connection(&main).unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), before);
+        assert_eq!(before, vec!["n1", "s1", "s2"]);
+        let (walk, page) = next_walk(&conn, &sections).unwrap().unwrap();
+        assert_eq!((walk.key.as_str(), page.as_deref()), ("starred", Some("PAGE2")));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- history ----------------------------------------------------------
@@ -2019,49 +2804,123 @@ mod tests {
         assert_eq!((labels.as_str(), starred), ("inbox", 0));
         let unread: i64 = conn.query_row("SELECT SUM(is_unread) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(unread, 0, "TIQR's own read state is never taken from Gmail");
-        // New mail first, the draft never, spam at the back.
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["n1", "sp"]);
+        // New mail first - spam too, it is new - and the draft never.
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["n1", "sp"]);
+        assert_eq!(queued(&conn, "sp").unwrap().0, TIER_NEW);
     }
 
+    /// Scenario 8.
     #[test]
-    fn an_old_message_starred_in_gmail_is_fetched_even_though_no_walk_will_meet_it() {
+    fn stars_and_labels_follow_gmail_both_ways_without_downloading_again() {
         let conn = test_conn();
-        let ev = vec![HistoryEvent::LabelsAdded { id: "ancient".into(), labels: vec!["starred".into()] }];
+        insert(&conn, "m", "inbox", false, NOW);
+        let on = vec![
+            HistoryEvent::LabelsAdded { id: "m".into(), labels: vec!["starred".into(), "label_7".into()] },
+            HistoryEvent::LabelsRemoved { id: "m".into(), labels: vec!["inbox".into()] },
+        ];
+        apply_history(&conn, "me", &on, NOW).unwrap();
+        assert_eq!(labels_of(&conn, "m"), ("starred,label_7".to_string(), 1), "starred, labelled, archived");
+        let off = vec![
+            HistoryEvent::LabelsRemoved { id: "m".into(), labels: vec!["starred".into(), "label_7".into()] },
+            HistoryEvent::LabelsAdded { id: "m".into(), labels: vec!["trash".into()] },
+        ];
+        apply_history(&conn, "me", &off, NOW).unwrap();
+        assert_eq!(labels_of(&conn, "m"), ("trash".to_string(), 0));
+        assert_eq!(queue_depth(&conn), 0, "a change to stored mail is applied, never downloaded again");
+
+        // Not stored yet: a label added moves it to the labels lane.
+        let ev = vec![HistoryEvent::LabelsAdded { id: "elsewhere".into(), labels: vec!["label_7".into()] }];
         apply_history(&conn, "me", &ev, NOW).unwrap();
-        let tier: i64 = conn
-            .query_row("SELECT priority FROM mail_fetch_queue WHERE provider_message_id = 'ancient'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(tier, TIER_STARRED);
+        assert_eq!(queued(&conn, "elsewhere").unwrap().0, TIER_LABELS);
     }
 
     #[test]
-    fn junk_keeps_its_late_place_even_when_it_is_new() {
-        assert_eq!(new_mail_tier(&["inbox".into()]), TIER_NEW);
-        assert_eq!(new_mail_tier(&["spam".into()]), TIER_SPAM);
-        assert_eq!(new_mail_tier(&["category_promotions".into()]), TIER_PROMOTIONS);
-        assert_eq!(new_mail_tier(&["category_promotions".into(), "starred".into()]), TIER_NEW);
+    fn the_same_history_twice_changes_nothing_the_second_time() {
+        let conn = test_conn();
+        insert(&conn, "s1", "inbox", false, NOW);
+        let (events, ..) = parse_history_page(&history_fixture());
+        apply_history(&conn, "me", &events, NOW).unwrap();
+        let labels_once = labels_of(&conn, "s1");
+        let queue_once = peek(&conn, 10, NOW).unwrap();
+        let (changed, queued_again) = apply_history(&conn, "me", &events, NOW).unwrap();
+        assert_eq!((changed, queued_again), (0, 0));
+        assert_eq!(labels_of(&conn, "s1"), labels_once);
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), queue_once);
     }
 
-    // ---- what is kept -----------------------------------------------------
-
-    fn fetched(from: &str, subject: &str, labels: &str) -> FetchedMessage {
-        FetchedMessage {
-            provider_message_id: "x".into(),
-            provider_thread_id: None,
-            from_address: from.into(),
-            from_name: None,
-            subject: subject.into(),
-            snippet: None,
-            received_at: NOW.into(),
-            body_text: String::new(),
-            is_unread: true,
-            labels: labels.into(),
-            is_starred: labels.contains("starred"),
-            from_raw: from.into(),
-            to_address: None,
-            reply_to: None,
-        }
+    #[test]
+    fn history_is_read_every_twenty_seconds_while_there_is_work() {
+        let conn = test_conn();
+        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        conn.execute(
+            "UPDATE mail_sync_state SET last_history_id = '100', history_checked_at = ?1 WHERE id = 1",
+            params![NOW],
+        )
+        .unwrap();
+        // His interval is ten minutes; that is for when everything is read.
+        set_setting(&conn, "mail_sync_interval_seconds", "600").unwrap();
+        let soon = make_plan(&conn, later(5)).unwrap().unwrap();
+        assert!(soon.history_from.is_none());
+        let due_now = make_plan(&conn, later(HISTORY_EVERY_SECS)).unwrap().unwrap();
+        assert_eq!(due_now.history_from.as_deref(), Some("100"));
     }
+
+    /// Scenario 11.
+    #[test]
+    fn lost_history_walks_every_folder_again_and_keeps_every_message() {
+        let conn = test_conn();
+        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        let sections = plan_sections("all", &[], &[], "");
+        sync_section_rows(&conn, &sections, NOW).unwrap();
+        conn.execute("UPDATE mail_sync_sections SET done = 1, passes = 1", []).unwrap();
+        conn.execute("UPDATE mail_sync_state SET last_history_id = '100' WHERE id = 1", []).unwrap();
+        insert(&conn, "kept", "inbox,starred", true, NOW);
+        enqueue(&conn, "me", &ids(&["waiting"]), TIER_STARRED, "starred", NOW).unwrap();
+
+        // A page of the inbox walk came back in the same run as the 404.
+        let mut plan = plan_with(&[]);
+        plan.history_from = Some("100".into());
+        plan.listing = Some((section("inbox", &[]), Some("OLD_PAGE".into())));
+        let net = Net {
+            history: Some(Err(GmailFailure::NotFound)),
+            listing: Some(Ok((ids(&["x"]), Some("NEXT".into())))),
+            ..Default::default()
+        };
+        let r = apply_now(&conn, &plan, net, now());
+        assert_eq!(r.status, "synced");
+        let anchor: Option<String> =
+            conn.query_row("SELECT last_history_id FROM mail_sync_state WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert!(anchor.is_none(), "a fresh starting point is taken next run");
+        let not_done: i64 =
+            conn.query_row("SELECT COUNT(*) FROM mail_sync_sections WHERE done = 0 AND page_token IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(not_done, sections.len() as i64, "every folder from the top - the stale page was not applied");
+        assert_eq!(rows_for(&conn, "kept"), 1);
+        assert_eq!(labels_of(&conn, "kept").1, 1);
+        assert!(queued(&conn, "waiting").is_some(), "the queue is kept");
+        assert!(queued(&conn, "x").is_none());
+
+        // The next run takes the fresh starting point.
+        assert!(make_plan(&conn, later(1)).unwrap().unwrap().need_profile);
+
+        // A cursor refused again straight away (400) does not send the walks
+        // back a second time within the hour...
+        conn.execute("UPDATE mail_sync_sections SET done = 1 WHERE key = 'starred'", []).unwrap();
+        conn.execute("UPDATE mail_sync_state SET last_history_id = '300' WHERE id = 1", []).unwrap();
+        let net = Net { history: Some(Err(GmailFailure::BadRequest)), ..Default::default() };
+        apply_now(&conn, &plan_with(&[]), net, later(600));
+        let starred_done: i64 =
+            conn.query_row("SELECT done FROM mail_sync_sections WHERE key = 'starred'", [], |r| r.get(0)).unwrap();
+        assert_eq!(starred_done, 1);
+        // ...but does after it.
+        conn.execute("UPDATE mail_sync_state SET last_history_id = '300' WHERE id = 1", []).unwrap();
+        let net = Net { history: Some(Err(GmailFailure::BadRequest)), ..Default::default() };
+        apply_now(&conn, &plan_with(&[]), net, later(RESCAN_GUARD_SECS + 10));
+        let starred_done: i64 =
+            conn.query_row("SELECT done FROM mail_sync_sections WHERE key = 'starred'", [], |r| r.get(0)).unwrap();
+        assert_eq!(starred_done, 0);
+    }
+
+    // ---- what is kept, and what it creates --------------------------------
 
     #[test]
     fn the_known_scope_keeps_watched_senders_money_and_anything_he_marked() {
@@ -2077,118 +2936,378 @@ mod tests {
         assert!(!keep(fetched("news@shop.com", "Big sale", "inbox")));
     }
 
+    /// Scenario 13.
+    #[test]
+    fn syncing_the_same_mail_again_creates_no_second_message_and_no_second_record() {
+        let conn = test_conn();
+        set_setting(&conn, "mail_auto_finance", "auto").unwrap();
+        let payout = || {
+            let m = fetched_as("p1", "noreply@viagogo.com", "Your payout of 240,00 EUR is on the way", "inbox");
+            let c = classify_fetched(&m);
+            ("p1".to_string(), Fetched::Got(Box::new(m), c))
+        };
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        };
+        for round in 0..3 {
+            enqueue(&conn, "me", &ids(&["p1"]), TIER_NEW, "history", NOW).unwrap();
+            let net = Net { fetched: vec![payout()], ..Default::default() };
+            let r = apply_now(&conn, &plan_with(&["p1"]), net, later(round));
+            assert_eq!(r.stored_new, i64::from(round == 0), "round {round}");
+            // The same event delivered again by the history.
+            let ev = vec![HistoryEvent::Added { id: "p1".into(), labels: vec!["inbox".into()] }];
+            apply_history(&conn, "me", &ev, NOW).unwrap();
+            assert_eq!(queue_depth(&conn), 0, "stored mail is never queued again");
+        }
+        assert_eq!(count("mail_messages"), 1);
+        assert_eq!(count("finance_entries"), 1, "Automatic created it once");
+    }
+
+    #[test]
+    fn a_record_automatic_fails_to_create_leaves_nothing_half_written() {
+        let conn = test_conn();
+        set_setting(&conn, "mail_auto_finance", "auto").unwrap();
+        let m = fetched_as("p1", "noreply@viagogo.com", "Your payout of 240,00 EUR is on the way", "inbox");
+        let c = classify_fetched(&m);
+        let (row, _) = upsert_message(&conn, MailProviderKind::Gmail, "me@gmail.com", &m, &c).unwrap();
+        // The finance table refuses every insert: creation fails half way.
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER no_finance BEFORE INSERT ON finance_entries BEGIN SELECT RAISE(ABORT, 'nope'); END;",
+        )
+        .unwrap();
+        let notices = run_automation(&conn, &[(row, "x".into())]);
+        assert!(notices.is_empty());
+        let created: Option<i64> =
+            conn.query_row("SELECT created_id FROM mail_messages WHERE id = ?1", params![row], |r| r.get(0)).unwrap();
+        assert!(created.is_none(), "the message is not marked as having made a record it did not make");
+    }
+
+    /// Scenario 14 (the backend half; src/lib/mailRows.test.ts is the screen's).
+    #[test]
+    fn stored_mail_is_listed_while_a_long_read_is_under_way() {
+        let conn = test_conn();
+        for i in 0..30 {
+            insert(&conn, &format!("here{i}"), "inbox", false, NOW);
+        }
+        let sections = plan_sections("all", &[], &[], "");
+        sync_section_rows(&conn, &sections, NOW).unwrap();
+        apply_listing(&conn, "me", &starred_section(), None, &ids(&["w1", "w2"]), Some("p2"), NOW).unwrap();
+        conn.execute("UPDATE mail_sync_state SET sync_in_progress = 1 WHERE id = 1", []).unwrap();
+        let page = crate::commands::mail::list_folder_impl(&conn, "inbox", None, None, 200).unwrap();
+        assert_eq!(page.len(), 30, "everything already here, straight away");
+        let p = progress_of(&conn, now());
+        assert_eq!(p.stored_total, 30);
+        assert_eq!(p.starred.waiting, 2);
+        assert_eq!(p.starred.discovery, "discovering", "more starred mail may still be found");
+    }
+
+    // ---- progress ---------------------------------------------------------
+
+    #[test]
+    fn progress_counts_each_lane_and_never_guesses_a_total() {
+        let conn = test_conn();
+        let labels = vec![label("Label_1", "OASIS")];
+        let sections = plan_sections("all", &[], &labels, "");
+        sync_section_rows(&conn, &sections, NOW).unwrap();
+        // Before anything: new mail is not followed yet, every lane is pending.
+        let p = progress_of(&conn, now());
+        assert_eq!(p.new_mail.discovery, "pending");
+        assert_eq!(p.starred.discovery, "pending");
+        assert_eq!(p.labels.discovery, "pending");
+        assert_eq!(p.backlog.discovery, "pending");
+        assert_eq!(p.phase, "starred");
+
+        conn.execute("UPDATE mail_sync_state SET last_history_id = '1', last_sync_at = ?1 WHERE id = 1", params![NOW])
+            .unwrap();
+        apply_listing(&conn, "me", &starred_section(), None, &ids(&["s1", "s2"]), None, NOW).unwrap();
+        let oasis = section("label:label_1", &labels);
+        apply_listing(&conn, "me", &oasis, None, &ids(&["l1"]), Some("p2"), NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["n1"]), TIER_NEW, "history", NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["h1", "h2", "h3"]), TIER_INBOX, "inbox", NOW).unwrap();
+
+        let p = progress_of(&conn, now());
+        assert_eq!((p.new_mail.waiting, p.new_mail.discovery.as_str()), (1, "watching"));
+        assert_eq!((p.starred.waiting, p.starred.discovery.as_str()), (2, "complete"));
+        assert_eq!((p.labels.waiting, p.labels.discovery.as_str()), (1, "discovering"));
+        assert_eq!((p.backlog.waiting, p.backlog.discovery.as_str()), (3, "pending"));
+        assert_eq!((p.waiting, p.due, p.retry_later), (7, 7, 0));
+        assert_eq!(p.phase, "new");
+        assert_eq!(p.reading.as_deref(), Some("New mail"));
+        assert_eq!(p.last_success_at.as_deref(), Some(NOW));
+    }
+
     #[test]
     fn progress_names_the_folder_being_read() {
         let conn = test_conn();
         let sections = plan_sections("all", &[], &[], "");
         sync_section_rows(&conn, &sections, NOW).unwrap();
         conn.execute("UPDATE mail_sync_sections SET done = 1 WHERE key = 'starred'", []).unwrap();
-        let p = progress_of(&conn);
+        let p = progress_of(&conn, now());
         assert_eq!(p.reading.as_deref(), Some("Finances"));
+        assert_eq!(p.phase, "backlog");
         assert_eq!(p.folders_done, 1);
         assert_eq!(p.folders_total, sections.len() as i64);
     }
 
-    // ---- when Gmail cannot be reached -------------------------------------
+    #[test]
+    fn rate_limited_runs_wait_longer_each_time_and_never_less_than_google_said() {
+        let conn = test_conn();
+        let limited = |retry: Option<u64>| Net { rate_limited: true, retry_after_secs: retry, ..Default::default() };
+        let first = apply_now(&conn, &plan_with(&[]), limited(None), now());
+        assert!(first.rate_limited);
+        assert!((RATE_LIMIT_PAUSE_MS * 3 / 4..=RATE_LIMIT_PAUSE_MS).contains(&first.next_delay_ms), "{}", first.next_delay_ms);
+        let second = apply_now(&conn, &plan_with(&[]), limited(None), later(30));
+        assert!(second.next_delay_ms > first.next_delay_ms, "{} then {}", first.next_delay_ms, second.next_delay_ms);
+        let told = apply_now(&conn, &plan_with(&[]), limited(Some(900)), later(90));
+        assert!(told.next_delay_ms >= 900_000, "Google's Retry-After wins: {}", told.next_delay_ms);
+        // One good run and it starts gently again.
+        apply_now(&conn, &plan_with(&[]), Net::default(), later(1000));
+        let again = apply_now(&conn, &plan_with(&[]), limited(None), later(1001));
+        assert!(again.next_delay_ms <= RATE_LIMIT_PAUSE_MS, "{}", again.next_delay_ms);
+    }
 
-    fn plan_with(batch: &[&str]) -> Plan {
-        Plan {
-            refresh_token: "r".into(),
-            account_email: "me@gmail.com".into(),
-            known_scope: false,
-            senders: Vec::new(),
-            need_profile: false,
-            labels_due: false,
-            history_from: None,
-            listing: None,
-            batch: batch.iter().map(|s| s.to_string()).collect(),
-            interval_secs: 60,
+    // ---- against a fake Gmail ---------------------------------------------
+    //
+    // A real HTTP server on 127.0.0.1, answering like Gmail does, so the
+    // URLs, the JSON and the retries are exercised for real - with no
+    // account and no credentials anywhere.
+
+    type Answer = (u16, Vec<(&'static str, String)>, String);
+
+    struct FakeGmail {
+        api: String,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakeGmail {
+        fn start(route: impl Fn(&str) -> Answer + Send + Sync + 'static) -> FakeGmail {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let api = format!("http://{}", listener.local_addr().unwrap());
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let route = Arc::new(route);
+            let log = seen.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let route = route.clone();
+                    let log = log.clone();
+                    std::thread::spawn(move || {
+                        let mut head = Vec::new();
+                        let mut buf = [0u8; 4096];
+                        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => head.extend_from_slice(&buf[..n]),
+                            }
+                        }
+                        let text = String::from_utf8_lossy(&head).to_string();
+                        let target = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+                        log.lock().unwrap().push(target.clone());
+                        let (code, headers, body) = route(&target);
+                        let mut out = format!(
+                            "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                            body.len()
+                        );
+                        for (k, v) in headers {
+                            out.push_str(&format!("{k}: {v}\r\n"));
+                        }
+                        out.push_str("\r\n");
+                        out.push_str(&body);
+                        let _ = stream.write_all(out.as_bytes());
+                    });
+                }
+            });
+            FakeGmail { api, seen }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
         }
     }
 
-    fn attempts(conn: &Connection, pid: &str) -> i64 {
-        conn.query_row(
-            "SELECT attempts FROM mail_fetch_queue WHERE provider_message_id = ?1",
-            params![pid],
-            |r| r.get(0),
-        )
-        .unwrap()
+    fn ok(v: Value) -> Answer {
+        (200, Vec::new(), v.to_string())
+    }
+
+    fn client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap()
+    }
+
+    fn listing(list: &[&str]) -> Answer {
+        let messages: Vec<Value> = list.iter().map(|id| json!({"id": id, "threadId": format!("t-{id}")})).collect();
+        ok(json!({"messages": messages, "resultSizeEstimate": list.len()}))
+    }
+
+    fn message(id: &str, subject: &str, labels: &[&str], days_old: i64) -> Answer {
+        let ms = (now() - chrono::Duration::days(days_old)).timestamp_millis();
+        ok(json!({
+            "id": id, "threadId": format!("t-{id}"), "labelIds": labels, "snippet": subject,
+            "internalDate": ms.to_string(),
+            "payload": {"headers": [
+                {"name": "From", "value": "Shop <news@shop.example>"},
+                {"name": "Subject", "value": subject},
+            ]}
+        }))
+    }
+
+    /// Scenario 10.
+    #[test]
+    fn a_rate_limit_from_gmail_is_waited_out_and_the_request_tried_again() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let n = calls.clone();
+        let gmail = FakeGmail::start(move |_| {
+            if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                let body = r#"{"error":{"code":403,"errors":[{"reason":"userRateLimitExceeded"}]}}"#;
+                (403, vec![("Retry-After", "1".to_string())], body.to_string())
+            } else {
+                ok(json!({"emailAddress": "me@gmail.com", "historyId": "1"}))
+            }
+        });
+        let started = std::time::Instant::now();
+        let v = gmail_json(&client(), "t", &format!("{}/profile", gmail.api)).unwrap();
+        assert_eq!(v["historyId"], "1");
+        assert_eq!(gmail.requests().len(), 2, "asked again after the wait");
+        assert!(started.elapsed() >= Duration::from_millis(900), "Google's Retry-After was waited out");
     }
 
     #[test]
-    fn an_hour_offline_pushes_nothing_out_of_the_queue() {
+    fn a_server_error_is_retried_and_one_that_lasts_is_handed_back() {
+        let gmail = FakeGmail::start(|_| (503, Vec::new(), "{}".to_string()));
+        let err = gmail_json(&client(), "t", &format!("{}/profile", gmail.api)).unwrap_err();
+        assert_eq!(err, GmailFailure::Server(503));
+        assert_eq!(gmail.requests().len(), REQUEST_ATTEMPTS as usize);
+    }
+
+    /// Scenarios 1, 2, 3, 5 and 7, end to end: plan, HTTP, store - the way
+    /// `run_once` runs them, against a mailbox where the ordinary mail is the
+    /// newest and the starred and labelled mail is a year old. The folders are
+    /// big enough that each lane is still downloading when the next one is
+    /// found, so it is the QUEUE that has to keep the order, not luck.
+    #[test]
+    fn a_whole_mailbox_comes_down_new_then_starred_then_labels_then_history() {
         let conn = test_conn();
-        enqueue(&conn, "me", &["a".into(), "b".into()], TIER_STARRED, NOW).unwrap();
-        let plan = plan_with(&["a", "b"]);
-        for _ in 0..MAX_ATTEMPTS * 3 {
-            let got = vec![
-                ("a".to_string(), Fetched::Failed(GmailFailure::Network)),
-                ("b".to_string(), Fetched::Skipped),
-            ];
-            store_fetched(&conn, &plan, got, NOW).unwrap();
+        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
+        let arrived = Arc::new(AtomicBool::new(false));
+        let flag = arrived.clone();
+        let named = |prefix: &str, n: usize| -> Vec<String> { (0..n).map(|i| format!("{prefix}{i:03}")).collect() };
+        let starred = named("s", 60);
+        let labelled = named("lab", 150);
+        let history = named("h", 120);
+        let (st, lb, hi) = (starred.clone(), labelled.clone(), history.clone());
+        let gmail = FakeGmail::start(move |target| {
+            let path = target.split('?').next().unwrap_or("");
+            let refs = |v: &[String]| -> Vec<String> { v.to_vec() };
+            match path {
+                "/profile" => ok(json!({"emailAddress": "me@gmail.com", "historyId": "100"})),
+                "/labels" => ok(json!({"labels": [
+                    {"id": "INBOX", "name": "INBOX", "type": "system"},
+                    {"id": "STARRED", "name": "STARRED", "type": "system"},
+                    {"id": "IMPORTANT", "name": "IMPORTANT", "type": "system"},
+                    {"id": "Label_1", "name": "OASIS", "type": "user"}
+                ]})),
+                "/history" if flag.load(Ordering::SeqCst) && target.contains("startHistoryId=100") => ok(json!({
+                    "history": [{"id": "101", "messagesAdded": [{"message": {"id": "brand_new", "labelIds": ["INBOX", "UNREAD"]}}]}],
+                    "historyId": "101"
+                })),
+                "/history" => ok(json!({"historyId": if flag.load(Ordering::SeqCst) { "101" } else { "100" }})),
+                "/messages" if target.contains("labelIds=STARRED") => {
+                    let mut all = vec!["both".to_string()];
+                    all.extend(refs(&st));
+                    listing(&all.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                }
+                "/messages" if target.contains("labelIds=Label_1") => {
+                    let mut all = vec!["both".to_string()];
+                    all.extend(refs(&lb));
+                    listing(&all.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                }
+                "/messages" if target.contains("q=-in:sent") => {
+                    // Starred mail is in the inbox walk too. The labelled mail
+                    // is in Promotions, which the inbox walk leaves out - so
+                    // only the queue can keep it ahead of the history.
+                    let mut all = refs(&hi);
+                    all.extend(refs(&st));
+                    all.push("both".into());
+                    listing(&all.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                }
+                "/messages" if target.contains("labelIds=CATEGORY_PROMOTIONS") => {
+                    listing(&lb.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                }
+                "/messages" => listing(&[]),
+                p if p.starts_with("/messages/") => {
+                    let id = &p["/messages/".len()..];
+                    if id == "both" {
+                        message(id, "starred and labelled", &["STARRED", "Label_1", "IMPORTANT"], 400)
+                    } else if id == "brand_new" {
+                        message(id, "just arrived", &["INBOX", "UNREAD"], 0)
+                    } else if id.starts_with("lab") {
+                        message(id, "a year-old label", &["Label_1", "CATEGORY_PROMOTIONS"], 370)
+                    } else if id.starts_with('s') {
+                        message(id, "a year-old star", &["STARRED"], 365)
+                    } else {
+                        message(id, "ordinary", &["INBOX"], 1)
+                    }
+                }
+                _ => (404, Vec::new(), "{}".to_string()),
+            }
+        });
+
+        let mut when = now();
+        let mut results = Vec::new();
+        for i in 0..60 {
+            if i == 4 {
+                arrived.store(true, Ordering::SeqCst);
+                when += chrono::Duration::seconds(HISTORY_EVERY_SECS);
+            }
+            let mut plan = make_plan(&conn, when).unwrap().expect("connected");
+            plan.api = gmail.api.clone();
+            let net = network(&plan, &client(), "test-token").unwrap();
+            let r = apply_committed(&conn, &plan, net, when).unwrap();
+            let done = !r.more_waiting;
+            results.push(r);
+            when += chrono::Duration::seconds(1);
+            if done {
+                break;
+            }
         }
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["a", "b"]);
-        assert_eq!(attempts(&conn, "a"), 0);
-    }
+        let messages: Vec<&String> = results.iter().map(|r| &r.message).collect();
+        assert!(results.iter().all(|r| r.status == "synced"), "{messages:?}");
+        assert!(!results.last().unwrap().more_waiting, "everything came down: {messages:?}");
 
-    #[test]
-    fn a_google_error_counts_against_a_message_only_while_google_answers_for_others() {
-        let conn = test_conn();
-        enqueue(&conn, "me", &["bad".into(), "good".into()], TIER_INBOX, NOW).unwrap();
-        let plan = plan_with(&["bad", "good"]);
-        // Google failing for everything: not this message's fault.
-        for _ in 0..MAX_ATTEMPTS {
-            store_fetched(&conn, &plan, vec![("bad".into(), Fetched::Failed(GmailFailure::Server(503)))], NOW)
-                .unwrap();
+        // The order things were downloaded in is the order they were stored.
+        let order: Vec<String> = conn
+            .prepare("SELECT provider_message_id FROM mail_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let pos = |id: &str| order.iter().position(|x| x == id).unwrap_or_else(|| panic!("{id} never stored"));
+        let first = |ids: &[String]| ids.iter().map(|id| pos(id)).min().unwrap();
+        let last = |ids: &[String]| ids.iter().map(|id| pos(id)).max().unwrap();
+        assert_eq!(order.len(), starred.len() + labelled.len() + history.len() + 2);
+        assert!(pos("both") < first(&labelled), "starred and labelled counts as starred");
+        assert!(last(&starred) < first(&labelled), "every star before any label");
+        assert!(last(&labelled) < first(&history), "a year-old label before yesterday's ordinary mail");
+        assert!(pos("brand_new") < last(&labelled), "new mail did not wait behind the labels still queued");
+        assert!(pos("brand_new") < first(&history));
+
+        // Each message was downloaded exactly once - "both" too.
+        let gets: Vec<String> = gmail.requests().into_iter().filter(|t| t.starts_with("/messages/")).collect();
+        let unique: HashSet<&String> = gets.iter().collect();
+        assert_eq!(gets.len(), unique.len(), "no message downloaded twice");
+        assert_eq!(gets.len(), order.len());
+        assert_eq!(gets.iter().filter(|t| t.starts_with("/messages/both?")).count(), 1);
+        assert!(gets.iter().all(|t| t.contains("format=metadata")), "metadata only, never bodies");
+
+        // Every label kept, on one row; Gmail's IMPORTANT kept but ranks nothing.
+        assert_eq!(rows_for(&conn, "both"), 1);
+        let (labels, is_starred) = labels_of(&conn, "both");
+        assert_eq!(is_starred, 1);
+        for l in ["starred", "label_1", "important"] {
+            assert!(labels.split(',').any(|x| x == l), "{l} in {labels}");
         }
-        assert_eq!(attempts(&conn, "bad"), 0);
-        // Google fine for the other one: this message is the problem.
-        let m = fetched("a@b.com", "hello", "inbox");
-        let c = classify_fetched(&m);
-        store_fetched(
-            &conn,
-            &plan,
-            vec![
-                ("bad".into(), Fetched::Failed(GmailFailure::Server(500))),
-                ("good".into(), Fetched::Got(Box::new(m), c)),
-            ],
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(attempts(&conn, "bad"), 1);
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["bad"], "the one that came down left the queue");
-    }
-
-    #[test]
-    fn offline_says_so_and_waits_instead_of_spinning() {
-        let conn = test_conn();
-        sync_section_rows(&conn, &plan_sections("all", &[], &[], ""), NOW).unwrap();
-        enqueue(&conn, "me", &["a".into()], TIER_STARRED, NOW).unwrap();
-        let now = DateTime::parse_from_rfc3339(NOW).unwrap().with_timezone(&Utc);
-        let net = Net {
-            fetched: vec![("a".into(), Fetched::Failed(GmailFailure::Network))],
-            trouble: Some(GmailFailure::Network),
-            ..Default::default()
-        };
-        let r = apply(&conn, &plan_with(&["a"]), net, now).unwrap();
-        assert_eq!(r.status, "failed");
-        assert_eq!(r.next_delay_ms, TROUBLE_DELAY_MS);
-        assert!(r.message.contains("Could not reach Gmail"), "{}", r.message);
-        assert_eq!(peek(&conn, 10).unwrap(), vec!["a"], "still queued");
-
-        // A page listed before the connection went: that counts as reaching
-        // Gmail, so the next run follows straight away.
-        let starred = starred_section();
-        let net = Net {
-            listing: Some(Ok((vec!["n1".into()], Some("p2".into())))),
-            fetched: vec![("a".into(), Fetched::Failed(GmailFailure::Network))],
-            trouble: Some(GmailFailure::Network),
-            ..Default::default()
-        };
-        let mut plan = plan_with(&["a"]);
-        plan.listing = Some((starred, None));
-        let r = apply(&conn, &plan, net, now).unwrap();
-        assert_eq!(r.status, "synced");
-        assert_eq!(r.next_delay_ms, CHAIN_DELAY_MS);
+        let oasis = crate::commands::mail::list_folder_impl(&conn, "label_1", None, None, 500).unwrap();
+        assert_eq!(oasis.len(), labelled.len() + 1, "the label folder shows all of its messages");
     }
 }

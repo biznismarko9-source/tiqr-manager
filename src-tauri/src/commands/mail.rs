@@ -1630,7 +1630,7 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         extra_senders: get_setting(conn, MAIL_EXTRA_SENDERS_KEY)?.unwrap_or_default(),
         custom_query: get_setting(conn, MAIL_CUSTOM_QUERY_KEY)?.unwrap_or_default(),
         queue_depth: crate::commands::mail_sync::queue_depth(conn),
-        progress: crate::commands::mail_sync::progress_of(conn),
+        progress: crate::commands::mail_sync::progress_of(conn, Utc::now()),
         store_bytes: crate::mail_store::size_bytes(conn),
         scope: mail_scope(conn)?,
         auto_order: automation_mode(conn, "order"),
@@ -5438,7 +5438,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM mail_deleted WHERE provider_message_id = 'g1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remembered, 1, "so a later walk never brings it back");
-        let queued = crate::commands::mail_sync::enqueue(&conn, "me", &["g1".into()], 50, "x").unwrap();
+        let queued = crate::commands::mail_sync::enqueue(&conn, "me", &["g1".into()], 50, "inbox", "x").unwrap();
         assert_eq!(queued, 0);
     }
 

@@ -21,7 +21,7 @@ Price Checker) marketplace pages the user opens himself.
 
 ## Version
 
-**2.110.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.111.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2645,46 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.111.0 - mail synced by priority lanes: new mail, then every starred
+message, then every labelled message, then the history.** marko's spec:
+priority by what a message IS, not its age; discovery separate from
+download; a persistent queue that never drops work; Gmail limits respected;
+an inbox that stays usable with an honest sync status.
+
+**What changed (commands/mail_sync.rs, mail_store.rs):**
+* Lanes renumbered: NEW 0, STARRED 10, LABELS 20, then IMPORTANT 30 and the
+  rest of the backlog. Walk order follows. All new mail (history
+  `messagesAdded`) is lane 0. History is read every 20 s while there is work.
+* Mail schema v2 (`SCHEMA_V2`): queue `source`, `status`
+  (queued/retrying/parked), `last_error`, `updated_at`, `next_attempt_at`;
+  `mail_sync_state.walks_reset_at`, `rate_limit_streak`, `trouble_streak`;
+  indexes on `seq` and `next_attempt_at`; 2.110.0 queue priorities and walk
+  tiers renumbered in place.
+* `enqueue` only moves an id up (and records the better source); `peek` is
+  `ORDER BY priority, seq, id` over DUE ids; failures back off per message and
+  park after 5 instead of being deleted.
+* Run-level backoff with jitter (`backoff_ms`) and streaks; `Retry-After`
+  honoured. History 404/400 re-anchors and re-walks at most once an hour.
+* `apply_committed`: one transaction per run, savepoint per Automatic
+  record, Discord after commit. `network(plan, http, token)` takes its client
+  and base URL so tests run it against a fake Gmail on 127.0.0.1.
+* Progress: lanes with exact queued counts and a discovery state
+  (pending/discovering/complete/watching), due, retryLater, lastSuccessAt.
+* Frontend: `lib/mailSyncStatus.ts` (status words), `lib/mailRows.ts` (refresh
+  keeps unchanged row objects and everything scrolled to), a status line on
+  the Mail screen, Sync resumes when paused. `npm test` runs the two pure
+  modules' tests in Node (22.18+, no new dependency).
+
+**Verified:** cargo test (Rust) incl. an end-to-end run against a fake
+Gmail HTTP server that only passes if the QUEUE keeps the lane order
+(mutation-checked: moving labels after the inbox, starred after labels, or
+new mail into the backlog each fails it); `npm test`; `npm run build`; the
+screen rendered in Chromium against a mocked backend. **Not verified:** a
+real Gmail account, real quota behaviour.
+
+Migrations: still 45 numbered ones, next is **046** (the mail file has its
+own `user_version`, now 2).
 
 **2.110.0 - Mail rebuilt: its own locked file, a reading engine that walks
 every folder newest to oldest by itself, folders straight from the

@@ -128,16 +128,24 @@ nepustí.
    **nečíta ani jeden mail** — len sa pýta Googlu, či token funguje.
 2. **Nemusíš nič stláčať.** Od verzie **2.110.0** appka začne čítať sama,
    pár sekúnd po pripojení, a číta ďalej sama.
-3. Číta po priečinkoch, v každom **od najnovšieho po najstarší**, bez
-   dátumového limitu, v tomto poradí: **Important** (odosielatelia, ktorých
-   sleduješ), **Starred**, **tvoje labels**, **Finances** — a až potom
-   všetko ostatné (Inbox, Promotions, Spam, Trash).
+3. Od verzie **2.111.0** číta v tomto poradí — podľa toho, **čo** mail je,
+   nie podľa toho, aký je starý:
+   1. **nové maily** (čo práve prišlo — aj uprostred dlhého prvého čítania),
+   2. **všetky Starred**, aj roky staré,
+   3. **všetky maily v tvojich labeloch**, aj archivované a roky staré,
+   4. a až potom **ostatná história**: Important (odosielatelia, ktorých
+      sleduješ), Finances, Inbox, Promotions, Spam, Trash — v každom
+      priečinku od najnovšieho po najstarší, bez dátumového limitu.
 
-V hlavičke Mailu vidíš, ktorý priečinok práve číta a koľko ešte čaká. Kde
-skončil, je uložené na disku, takže pokračuje aj po zavretí a otvorení
-appky. Keď je všetko prečítané, kontroluje nové maily v intervale z
-**Mail → Settings → Reading and keeping**. Appka nemá službu na pozadí —
-keď je zavretá, nečíta nič.
+   Mail, ktorý je zároveň označený hviezdičkou aj v labeli, sa stiahne raz.
+
+Nad zoznamom mailov je riadok, ktorý hovorí, čo appka práve robí a koľko
+ešte stiahne v každom kroku (*New mail · Starred · Labels · History*).
+Číslo so znamienkom **+** znamená, že appka ešte hľadá ďalšie — celkový
+počet sa nevymýšľa. Kde skončila, je uložené na disku, takže pokračuje aj
+po zavretí a otvorení appky. Keď je všetko prečítané, kontroluje nové maily
+v intervale z **Mail → Settings → Reading and keeping**. Appka nemá službu
+na pozadí — keď je zavretá, nečíta nič.
 
 ---
 
@@ -150,8 +158,12 @@ vlastnými slovami:
   koľko sa dá čítať za sekundu. Nič sa nestratí, appka chvíľu počká a
   pokračuje sama. (Do 2.109.1 sa toto mylne hlásilo ako „Google refused
   access" a maily, ktoré sa práve nestiahli, vypadli z fronty.)
-- **„Could not reach Gmail"** — počítač nie je na internete. Appka to skúsi
-  znova každých 30 sekúnd a z fronty nevyhodí nič.
+- **„Could not reach Gmail"** — počítač nie je na internete. Appka to skúša
+  znova sama (najprv o 30 sekúnd, potom zriedkavejšie, najviac po 2 minútach)
+  a z fronty nevyhodí nič.
+- **„Retrying later"** v riadku nad mailmi — niekoľko mailov Gmail tentokrát
+  nevydal. Ostávajú vo fronte a appka ich skúsi znova sama; nič netreba
+  robiť.
 
 Skutočné odmietnutie má dve príčiny:
 

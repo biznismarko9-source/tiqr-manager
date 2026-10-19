@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.111.0 - Mail podľa priority: nové, potom všetky Starred, potom všetky labels, až potom história
+
+**Poradie podľa toho, čo mail je, nie aký je starý.** Najprv nové maily,
+potom **všetky** maily s hviezdičkou (aj roky staré), potom **všetky** maily
+v tvojich labeloch (aj archivované), a až potom ostatná história —
+Important, Finances, Inbox, Promotions, Spam, Trash, každý priečinok od
+najnovšieho. Hviezdička spred roka príde skôr ako obyčajný mail zo včera.
+Important (sledovaní odosielatelia) je teraz súčasť histórie, hneď za
+labelmi.
+
+**Poradie drží fronta, nie náhoda.** Každý mail je vo fronte raz, v
+najlepšom pruhu, v akom ho appka našla — mail z Inboxu, ktorý sa neskôr
+nájde v Starred, sa posunie dopredu. Mail s hviezdičkou aj v troch labeloch
+sa stiahne raz. Nové maily sa kontrolujú každých 20 sekúnd, aj uprostred
+dlhého prvého čítania, a idú pred všetko ostatné.
+
+**Nič nevypadne.** Mail, ktorý Gmail opakovane nevydá, sa už po piatom
+pokuse nezmaže z fronty — odstúpi nabok a skúša sa znova (najprv o 30 s,
+potom zriedkavejšie, nakoniec každých 6 hodín). Pri „spomaľ" od Googlu
+appka čaká dlhšie s každým ďalším razom a nikdy menej, ako Google povie.
+Keď Gmail zabudne históriu zmien, appka prejde všetky priečinky znova —
+najviac raz za hodinu. Celý jeden krok sa zapisuje naraz, takže pád appky
+nič nenechá napoly.
+
+**Nad zoznamom mailov je riadok so stavom:** čo práve číta (*„Starred first
+- the rest of your history follows"*), koľko ešte stiahne v každom pruhu
+(číslo s **+** znamená, že ešte hľadá ďalšie — celkový počet sa
+nevymýšľa), koľko čaká na ďalší pokus a kedy bol posledný sync. Zoznam sa
+pri dlhom čítaní obnovuje bez preskakovania a prekresľuje len zmenené
+riadky. Keď je čítanie pozastavené, tlačidlo **Sync now** ho obnoví.
+
+Mailový súbor má novú verziu schémy (2); fronta z 2.110.0 sa prečísluje na
+mieste, nič sa nestratí. 1461 Rust testov, 0 červených (29 nových, z toho
+celý beh proti falošnému Gmailu), 11 testov obrazovky (`npm test`); s
+naozajstnou Gmail schránkou to overené nie je.
+
 ## 2.110.0 - Mail nanovo: číta sám, od najnovšieho, bez limitu, na oboch počítačoch
 
 **Prečo Starred a labels ukazovali „Nothing here".** Obrazovka si pýtala

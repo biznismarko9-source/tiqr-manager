@@ -32,7 +32,9 @@ machine's downloaded copy is opened with `open_connection` and never sees it.
 
 * **No numbered migration may touch a cache table again.** Those run on the
   downloaded remote copy too, which has no `mail`. A cache schema change is
-  a new `PRAGMA mail.user_version` step in `mail_store::ensure`.
+  a new `PRAGMA mail.user_version` step in `mail_store::ensure` -
+  `SCHEMA_V1` (2.110.0), `SCHEMA_V2` (2.111.0). A released step is never
+  edited, only followed by the next.
 * **Unqualified SQL is fine; CREATE is not.** Lookups fall through `main`
   to `mail`; a `CREATE TABLE` without `mail.` lands in `main`.
 * **The lock is a trigger** (`mail_messages_locked`). The only unlock is
@@ -43,27 +45,45 @@ machine's downloaded copy is opened with `open_connection` and never sees it.
   Mail arriving every second must not push the main file every second.
 * `mail_rules` and `mail_senders` are CONFIG and stay in `main`.
 
-## 2.110.0 - the reading engine's invariants (commands/mail_sync.rs)
+## 2.111.0 - the reading engine's invariants (commands/mail_sync.rs)
 
-* **The tiers ARE marko's order**: new mail, Important, Starred, labels,
-  Finances, Inbox, Promotions, Spam, Trash. Starred and labels are label
-  walks with no date and no filter in them.
+* **The lanes are by what a message IS, not its age**: new mail (0), every
+  starred message (10), every message in his own labels (20), and only then
+  the backlog (30-80: Important, Finances, Inbox, Promotions, Spam, Trash -
+  marko's 2.110.0 order kept INSIDE the backlog). A year-old star comes
+  before yesterday's ordinary mail. Starred and labels are label walks with
+  no date and no filter in them. Renumbering the lanes needs a mail schema
+  step that renumbers queued ids and walk tiers too (SCHEMA_V2 did).
+* **The queue keeps the order, not the discovery.** One id, one row
+  (`provider_message_id` is the key); `enqueue` only ever moves an id UP to a
+  better lane, recording where it was found (`source`). Walks find in lane
+  order, but a later walk's ids are often queued while an earlier lane is
+  still downloading - `peek`'s `ORDER BY priority, seq, id` is what keeps a
+  label ahead of the history then. The end-to-end test against the fake
+  Gmail is built so only the queue can get that right.
+* **All new mail is lane 0**, promotions and spam included (drafts, chats
+  and sent-only mail are not read at all). The history is read every
+  `HISTORY_EVERY_SECS` while there is work, so new mail never waits for a
+  long first read.
+* **Never drop a queued message.** A failure counts against a message only
+  while Google answered for the rest of its batch (`store_fetched`); it then
+  steps aside (`next_attempt_at`, 30 s doubling) and after `MAX_ATTEMPTS` is
+  parked and retried every 6 h. Until 2.111.0 the fifth failure deleted it,
+  and a finished folder is only walked again after history expires.
+* **Only due ids count** - for `LOW_WATER`, for "more waiting", for runs to
+  chain. Counting parked ids would stop the walks, or spin every 250 ms.
 * **A 403 is read for its reason.** `userRateLimitExceeded` /
-  `rateLimitExceeded` is a rate limit (retry, keep the batch queued), not a
-  refusal. Until 2.110.0 it read "Google refused access" and dropped every
-  message that failed from the queue.
-* **Never dequeue a transient failure.** Only a stored message, a 404 and a
-  400 leave the queue; anything else stays or counts an attempt.
-* **An attempt counts against a message only while Google answered for the
-  rest of its batch** (`store_fetched`). No connection never counts, and
-  neither does a server error when nothing in the batch came down - that is
-  the laptop offline or Google down, not the message. Counting those pushed
-  good mail out of the queue (`MAX_ATTEMPTS`) whenever the wifi dropped, and
-  a finished folder is not walked again until history expires.
-* **A run that reached nothing waits** (`TROUBLE_DELAY_MS`, 30 s) and says
-  "Could not reach Gmail" - it never chains every 250 ms against a dead
-  connection. Anything that came back (a page, the history, a message)
-  counts as reaching Gmail.
+  `rateLimitExceeded` is a rate limit (keep the batch, pause every worker),
+  not a refusal. Run-level waits grow per run in a row (`*_streak` in
+  `mail_sync_state`), with jitter, never below Google's `Retry-After`.
+* **A run that reached nothing waits** (30 s doubling to 2 min) and says
+  "Could not reach Gmail" - never chains against a dead connection.
+* **Lost history (404 or 400) re-anchors and walks everything again, at most
+  once an hour** (`walks_reset_at`). A page listed in that same run is NOT
+  applied - it would carry the thrown-away walk on.
+* **One run, one transaction** (`apply_committed`). Automatic's records get a
+  savepoint each, and their Discord messages go out after the commit - never
+  a network call with the transaction open.
 * **Never swallow a listing error with `unwrap_or_default`.** That is how
   2.109.0's starred listing could fail and silently queue nothing.
 * **The checkpoint and walks never travel between machines** - they are in
@@ -71,6 +91,8 @@ machine's downloaded copy is opened with `open_connection` and never sees it.
   reason migration 040 gave, still true).
 * A folder Gmail refuses on its FIRST page is set aside (`skip_walk`), never
   restarted in a loop - it would hold up every folder after it.
+* **The status never guesses a total.** Lane counts are what is queued;
+  "discovering" says more may come (the screen shows `N+`).
 
 ## 2.110.0 - a folder is defined in ONE place
 
