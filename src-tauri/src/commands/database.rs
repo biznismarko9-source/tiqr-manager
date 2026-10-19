@@ -75,6 +75,8 @@ pub(crate) fn switch_active_database_impl(state: &AppState, target_path: PathBuf
     // 2.110.0: with that account's own mail file attached (mail_store.rs).
     let new_conn = crate::db::open_live_connection(&target_path)?;
     crate::db::run_migrations(&new_conn)?;
+    // 2.113.0: that account's tokens and keys out of its database file.
+    crate::secrets::adopt_from_database(&new_conn)?;
     *conn_guard = new_conn; // old Connection drops here - WAL flushed, same as a normal app quit
     crate::db::LOCAL_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     // After the flag is handed over, not before: the stamp this may write on

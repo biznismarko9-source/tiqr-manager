@@ -10,6 +10,8 @@ mod google_sheets;
 mod mail_store;
 mod models;
 mod money;
+// 2.113.0: credentials beside the database, never in it.
+mod secrets;
 
 use db::AppState;
 use std::collections::HashMap;
@@ -84,6 +86,10 @@ pub fn run() {
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
             let conn = db::open_live_connection(&db_path).map_err(|e| e.to_string())?;
             db::run_migrations(&conn).map_err(|e| e.to_string())?;
+            // 2.113.0: tokens and keys out of the database file (secrets.rs).
+            if let Err(e) = secrets::adopt_from_database(&conn) {
+                eprintln!("TIQR: could not move sign-ins out of the database: {e}");
+            }
             // 2.110.0: settings set up before this release get a stamp, so
             // the other computer can receive them (shared_settings.rs).
             let _ = commands::shared_settings::bootstrap(&conn);

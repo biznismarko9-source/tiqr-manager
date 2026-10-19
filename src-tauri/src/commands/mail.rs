@@ -75,7 +75,7 @@
 
 use crate::commands::google_auth;
 use crate::commands::notifications::DiscordDestination;
-use crate::commands::sheets_sync::{delete_setting, get_setting, set_setting};
+use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_oauth;
@@ -1601,8 +1601,8 @@ pub(crate) fn classify_fetched(m: &FetchedMessage) -> Classification {
 
 fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
     let state = read_sync_state(conn)?;
-    let token = get_setting(conn, MAIL_REFRESH_TOKEN_KEY)?;
-    let granted = get_setting(conn, MAIL_GRANTED_SCOPE_KEY)?.unwrap_or_default();
+    let token = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY)?;
+    let granted = crate::secrets::get(conn, MAIL_GRANTED_SCOPE_KEY)?.unwrap_or_default();
     Ok(MailConnectionStatus {
         connected: token.is_some(),
         account_email: get_setting(conn, MAIL_ACCOUNT_EMAIL_KEY)?.or(state.account_email),
@@ -1691,9 +1691,9 @@ pub async fn connect_mail_gmail(
     }
 
     let conn = state.db.lock().unwrap();
-    set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, &account.refresh_token)?;
+    crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, &account.refresh_token)?;
     set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, &account.email)?;
-    set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, &account.granted_scope)?;
+    crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, &account.granted_scope)?;
     crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
@@ -1722,8 +1722,8 @@ pub fn cancel_connect_mail(state: State<AppState>) -> AppResult<()> {
 #[tauri::command]
 pub fn disconnect_mail(state: State<AppState>) -> AppResult<MailConnectionStatus> {
     let conn = state.db.lock().unwrap();
-    delete_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?;
-    delete_setting(&conn, MAIL_GRANTED_SCOPE_KEY)?;
+    crate::secrets::delete(&conn, MAIL_REFRESH_TOKEN_KEY)?;
+    crate::secrets::delete(&conn, MAIL_GRANTED_SCOPE_KEY)?;
     crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
@@ -1779,7 +1779,7 @@ pub async fn test_mail_connection(state: State<'_, AppState>) -> AppResult<MailT
     let tested_at = Utc::now().to_rfc3339();
     let refresh_token = {
         let conn = state.db.lock().unwrap();
-        get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?
+        crate::secrets::get(&conn, MAIL_REFRESH_TOKEN_KEY)?
     };
     let Some(refresh_token) = refresh_token else {
         return Ok(MailTestResult {
@@ -2097,7 +2097,7 @@ pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<Str
             )
             .optional()?
             .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
-        (pid, get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?)
+        (pid, crate::secrets::get(&conn, MAIL_REFRESH_TOKEN_KEY)?)
     };
     let Some(refresh_token) = refresh_token else {
         return Err(AppError::Validation("no mailbox is connected".to_string()));
@@ -5196,9 +5196,9 @@ mod tests {
     fn the_status_never_carries_the_stored_token() {
         let conn = test_conn();
         let secret = "1//0gFAKEREFRESHTOKENVALUE-abcdefghijklmnop";
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, secret).unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, secret).unwrap();
         set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
-        set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, GMAIL_SCOPE).unwrap();
+        crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, GMAIL_SCOPE).unwrap();
 
         let st = status_impl(&conn).unwrap();
         assert!(st.connected, "it must still report that a mailbox IS connected");
@@ -5212,8 +5212,8 @@ mod tests {
     #[test]
     fn a_grant_that_did_not_include_the_mail_scope_is_reported_as_not_granted() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "token").unwrap();
-        set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, "openid email").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "token").unwrap();
+        crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, "openid email").unwrap();
         let st = status_impl(&conn).unwrap();
         assert!(st.connected);
         assert!(!st.gmail_scope_granted, "a subset grant must not read as full access");

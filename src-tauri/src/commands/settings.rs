@@ -63,12 +63,12 @@ pub fn set_app_setting(state: State<AppState>, key: String, value: String) -> Ap
 
 pub(crate) const ANTHROPIC_API_KEY_SETTING: &str = "anthropic_api_key";
 
+// 2.113.0: the key moved out of `app_secrets` into the secrets file beside
+// the database (secrets.rs) - `app_secrets` is a table of the database file,
+// and the file is what the Drive backup uploads. The rules above still hold:
+// presence flag only, the value never goes back to the frontend.
 pub(crate) fn get_anthropic_api_key_configured_impl(conn: &Connection) -> AppResult<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM app_secrets WHERE key = ?1 AND value != '')",
-        params![ANTHROPIC_API_KEY_SETTING],
-        |r| r.get(0),
-    )?)
+    Ok(crate::secrets::get(conn, ANTHROPIC_API_KEY_SETTING)?.is_some_and(|v| !v.trim().is_empty()))
 }
 
 #[tauri::command]
@@ -85,15 +85,9 @@ pub fn get_anthropic_api_key_configured(state: State<AppState>) -> AppResult<boo
 pub(crate) fn set_anthropic_api_key_impl(conn: &Connection, key: &str) -> AppResult<()> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
-        conn.execute("DELETE FROM app_secrets WHERE key = ?1", params![ANTHROPIC_API_KEY_SETTING])?;
-        return Ok(());
+        return crate::secrets::delete(conn, ANTHROPIC_API_KEY_SETTING);
     }
-    conn.execute(
-        "INSERT INTO app_secrets (key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![ANTHROPIC_API_KEY_SETTING, trimmed],
-    )?;
-    Ok(())
+    crate::secrets::set(conn, ANTHROPIC_API_KEY_SETTING, trimmed)
 }
 
 #[tauri::command]
@@ -114,11 +108,7 @@ pub fn set_anthropic_api_key(state: State<AppState>, key: String) -> AppResult<(
 /// field that writes it stays fully functional either way.
 #[allow(dead_code)]
 pub(crate) fn read_anthropic_api_key(conn: &Connection) -> Option<String> {
-    conn.query_row("SELECT value FROM app_secrets WHERE key = ?1", params![ANTHROPIC_API_KEY_SETTING], |r| {
-        r.get::<_, String>(0)
-    })
-    .ok()
-    .filter(|v| !v.trim().is_empty())
+    crate::secrets::get(conn, ANTHROPIC_API_KEY_SETTING).ok().flatten().filter(|v| !v.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -147,8 +137,9 @@ mod anthropic_api_key_tests {
         set_anthropic_api_key_impl(&conn, "sk-ant-old").unwrap();
         set_anthropic_api_key_impl(&conn, "sk-ant-new").unwrap();
         assert_eq!(read_anthropic_api_key(&conn).as_deref(), Some("sk-ant-new"));
+        // 2.113.0: and never in the database file.
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM app_secrets", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1, "must upsert, never duplicate");
+        assert_eq!(count, 0, "the key lives beside the database, not in it");
     }
 
     #[test]

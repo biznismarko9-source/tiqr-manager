@@ -1171,7 +1171,7 @@ fn engine_state(conn: &Connection) -> AppResult<EngineState> {
 }
 
 fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'static str>> {
-    let Some(refresh_token) = get_setting(conn, MAIL_REFRESH_TOKEN_KEY)? else {
+    let Some(refresh_token) = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY)? else {
         return Ok(Err("No mailbox is connected yet."));
     };
     let st = engine_state(conn)?;
@@ -2851,7 +2851,7 @@ mod tests {
     #[test]
     fn history_is_read_every_twenty_seconds_while_there_is_work() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         conn.execute(
             "UPDATE mail_sync_state SET last_history_id = '100', history_checked_at = ?1 WHERE id = 1",
             params![NOW],
@@ -2869,7 +2869,7 @@ mod tests {
     #[test]
     fn lost_history_walks_every_folder_again_and_keeps_every_message() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         let sections = plan_sections("all", &[], &[], "");
         sync_section_rows(&conn, &sections, NOW).unwrap();
         conn.execute("UPDATE mail_sync_sections SET done = 1, passes = 1", []).unwrap();
@@ -3186,7 +3186,7 @@ mod tests {
     #[test]
     fn a_whole_mailbox_comes_down_new_then_starred_then_labels_then_history() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
         let arrived = Arc::new(AtomicBool::new(false));
         let flag = arrived.clone();

@@ -95,41 +95,35 @@ function initialsFor(name: string): string {
 // money"; it went with the group rather than sitting here unused.)
 type NavItem = { to: string; label: string; icon: typeof IconGauge; end?: boolean };
 
-const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: IconGauge, end: true },
-  // 2.35.1 folded /inventory into /tickets; 2.39.0 folded Orders and
-  // Inventory into one list at /orders; 2.43.0 takes the wrapper off
-  // entirely. The five working screens sit flat, in the order the job runs:
-  // the event exists, you buy stock for it, you sell it, and a pull is the
-  // variant where you bought it for someone else.
-  { to: "/events", label: "Events", icon: IconCalendarDays },
-  { to: "/orders", label: "Inventory", icon: IconPackage },
-  { to: "/sales", label: "Sales", icon: IconReceipt },
-  // Finance is deliberately last and deliberately NOT grouped with the four
-  // above: it covers money that has nothing to do with tickets (rent, fees,
+// 2.113.0: three groups, in marko's order - "aj tuto cast rozdelit na 3
+// casti": the ticket business (Dashboard, Events, Inventory, Sales), then
+// Finance on its own, then Mail and Notes. Still only links, no headers and
+// nothing to open or close (PROTECTED_AREAS, 2.43.0) - just a hairline
+// between the groups. Pulls was not in his list; it stays where 2.98.0 put
+// it at his request, at the very bottom under everything ("a pull is a
+// favour done on somebody else's card", not his own stock).
+const NAV_GROUPS: NavItem[][] = [
+  [
+    { to: "/", label: "Dashboard", icon: IconGauge, end: true },
+    // 2.35.1 folded /inventory into /tickets; 2.39.0 folded Orders and
+    // Inventory into one list at /orders; 2.43.0 takes the wrapper off
+    // entirely - in the order the job runs: the event exists, you buy stock
+    // for it, you sell it.
+    { to: "/events", label: "Events", icon: IconCalendarDays },
+    { to: "/orders", label: "Inventory", icon: IconPackage },
+    { to: "/sales", label: "Sales", icon: IconReceipt },
+  ],
+  // Finance covers money that has nothing to do with tickets (rent, fees,
   // personal spend) and owns its own four tabs, categories and accounts.
-  { to: "/finance", label: "Finance", icon: IconWallet },
-  // 2.54.0: Sheets - his own tables, nothing else. Its own top-level row,
-  // separate from Finance, which also keeps the rail flat: every row is a real
-  // destination, no groups (PROTECTED_AREAS, 2.43.0). Shipped as "Workspace"
-  // (2.52.0) then "Notes" (2.53.0); marko asked for "realne google sheets
-  // uplne jednoduche" and chose tables only, so the label says what it is.
-  // 2.61.0: Notes. The 2.51-2.57 spreadsheet is gone from the app entirely -
-  // marko: "to co tam pise stare harky kde su sheets tak to uplne zmazat". Its
-  // TABLES are deliberately still in the database (see 2.61.0 in
-  // CURRENT_STATE.md): dropping them is not reversible and he has not asked
-  // for the data itself to go.
-  { to: "/notes", label: "Notes", icon: IconClipboard },
-  // 2.100.0: Mail Intelligence. Its own row rather than a Settings page,
-  // because it is somewhere you GO to look at a list - the same reason
-  // Notes is a row. It sits under Notes and above Pulls: like Notes it is
-  // a place you read rather than a place you record stock.
-  { to: "/mail", label: "Mail", icon: IconMail },
-  /* 2.98.0: Pulls sits at the bottom, under everything, at marko's
-     request. It is the one section that is not about his own stock - a pull
-     is a favour done on somebody else's card - so it reads better as the
-     last thing rather than wedged between Sales and Finance. */
-  { to: "/pulls", label: "Pulls", icon: IconUsers },
+  [{ to: "/finance", label: "Finance", icon: IconWallet }],
+  [
+    // 2.100.0: Mail Intelligence - somewhere you GO to look at a list.
+    { to: "/mail", label: "Mail", icon: IconMail },
+    // 2.61.0: Notes. The 2.51-2.57 spreadsheet is gone from the app; its
+    // TABLES are deliberately still in the database (CURRENT_STATE 2.61.0).
+    { to: "/notes", label: "Notes", icon: IconClipboard },
+    { to: "/pulls", label: "Pulls", icon: IconUsers },
+  ],
 ];
 
 // Shared by every NavLink below, so the active/hover look is defined in
@@ -770,16 +764,20 @@ export default function Layout() {
 
         {/* 2.25.0: `data-tour` anchors only - see components/Tour.tsx. */}
         <nav data-tour="nav" className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
-          {NAV.map((item) => (
-            <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
-              {({ isActive }) => (
-                <>
-                  {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
-                  <item.icon className="h-[17px] w-[17px] shrink-0" />
-                  <span className="truncate">{item.label}</span>
-                </>
-              )}
-            </NavLink>
+          {NAV_GROUPS.map((group, g) => (
+            <div key={g} className={g > 0 ? "mt-2 space-y-0.5 border-t border-slate-200/70 pt-2 dark:border-slate-800/80" : "space-y-0.5"}>
+              {group.map((item) => (
+                <NavLink key={item.to} data-tour={`nav:${item.to}`} to={item.to} end={item.end} className={navLinkClass}>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && <span className={NAV_ACTIVE_BAR} aria-hidden="true" />}
+                      <item.icon className="h-[17px] w-[17px] shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
