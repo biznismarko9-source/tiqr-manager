@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import type {
   Account,
   FinanceCategory,
@@ -155,6 +156,22 @@ export default function OrderDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 2.112.0: changes from the other computer, shown without a click - and
+  // without clearing what is ticked, except tickets that are gone.
+  useDataChanged(() => {
+    api.getOrder(orderId).then(setOrder).catch((e) => toast.error(errMsg(e)));
+    api
+      .listTickets({ orderId, sortBy: "code", sortDir: "asc" })
+      .then((list) => {
+        setTickets(list);
+        setSelected((prev) => new Set([...prev].filter((id) => list.some((t) => t.id === id))));
+      })
+      .catch((e) => toast.error(errMsg(e)));
+    api.getOrderSalesSummary(orderId).then(setSalesSummary).catch(() => {});
+    api.listFinanceEntriesForOrder(orderId).then(setFinanceEntriesForOrder).catch(() => {});
+    loadPullsReceived();
+  });
 
   if (!order) return <LoadingBlock />;
 

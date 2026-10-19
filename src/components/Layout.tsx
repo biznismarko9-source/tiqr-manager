@@ -23,6 +23,17 @@ import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from "../lib/updater";
 import { api, errMsg } from "../lib/api";
 import { recordAutoSync } from "../lib/autoSyncLog";
 import { onMailSyncRequested, publishMailSync } from "../lib/mailSync";
+import { auth } from "../lib/firebase";
+import {
+  driveIsBackupOnly,
+  liveSyncView,
+  onLiveSync,
+  setLiveSyncEnabled,
+  startLiveSync,
+  waitForLiveSync,
+  type LiveSyncView,
+} from "../lib/liveSync";
+import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -145,11 +156,20 @@ const NAV_ACTIVE =
   "bg-brand-500/[0.12] font-semibold text-brand-700 dark:text-brand-300";
 const NAV_IDLE =
   "font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100";
+
 const NAV_ACTIVE_BAR =
   "absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-500";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `${NAV_BASE} ${isActive ? NAV_ACTIVE : NAV_IDLE}`;
+
+// 2.112.0: the live sync line's dot, by `phaseTone`.
+const LIVE_DOT: Record<"ok" | "busy" | "warn" | "off", string> = {
+  ok: "bg-emerald-500",
+  busy: "bg-sky-500 animate-pulse",
+  warn: "bg-amber-500",
+  off: "bg-slate-300 dark:bg-slate-600",
+};
 
 export default function Layout() {
   const toast = useToast();
@@ -186,6 +206,35 @@ export default function Layout() {
   }, [toast]);
   const { user, logout } = useAuth();
   const location = useLocation();
+  // 2.112.0: live sync between computers (lib/liveSync.ts). Started here,
+  // for the whole app, once Firebase says who is signed in - the records go
+  // under that account's own space in Firestore.
+  const [live, setLive] = useState<LiveSyncView>(liveSyncView());
+  // Asked once per database: records leave this computer only when he says so.
+  const [liveOffer, setLiveOffer] = useState(false);
+  // Paused because the database was just replaced from a copy - said once.
+  const [livePaused, setLivePaused] = useState(false);
+  const [liveOfferBusy, setLiveOfferBusy] = useState(false);
+  // Decided at launch (see the Drive tick): Drive is only the backup copy,
+  // because every computer seen lately syncs live.
+  const driveBackupOnly = useRef(false);
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const off = onLiveSync(setLive);
+    const stop = startLiveSync(uid);
+    api
+      .liveSyncStatus()
+      .then((s) => {
+        setLiveOffer(!s.decided);
+        setLivePaused(s.pausedAfterRestore);
+      })
+      .catch(() => {});
+    return () => {
+      off();
+      stop();
+    };
+  }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
   // 2.13.1 checked and told; 2.14.0 acts - marko asked for the hand-off
@@ -385,6 +434,27 @@ export default function Layout() {
       try {
         const plan = await api.cloudSyncAuto();
         if (cancelled) return;
+        // 2.112.0: with live sync on here AND on every other computer, all
+        // their changes already arrived record by record. Combining the Drive
+        // copy would ask a question with nothing behind it (and a reload),
+        // so Drive is left as the backup it now is. Any computer still
+        // without live sync keeps the old way, unchanged.
+        if (plan.action !== "off" && plan.action !== "offline") {
+          const uid = auth.currentUser?.uid;
+          const liveReady = uid ? await waitForLiveSync(20_000) : false;
+          driveBackupOnly.current = liveReady && uid ? await driveIsBackupOnly(uid) : false;
+          if (cancelled) return;
+          if (driveBackupOnly.current && (plan.action === "pull" || plan.action === "merge")) {
+            recordAutoSync({
+              at: Date.now(),
+              action: "idle",
+              reason: "Live sync keeps both computers level - Google Drive is the backup copy.",
+              error: null,
+            });
+            setSyncFailure(null);
+            return;
+          }
+        }
         if (plan.action === "push") {
           setSyncActivity({ label: "Saving your changes to Google Drive", blocking: false });
           await api.cloudSyncPush();
@@ -532,7 +602,17 @@ export default function Layout() {
           closing = true;
           try {
             const plan = await api.cloudSyncAuto().catch(() => null);
-            if (plan?.action === "push") {
+            // 2.112.0: Drive is only the backup while every computer syncs
+            // live - this one's copy is as complete as any, so it replaces
+            // the backup even when the other computer sent one later.
+            const backup = driveBackupOnly.current && !!plan?.localDirty && plan.action !== "off" && plan.action !== "offline";
+            if (backup) {
+              setSyncActivity({ label: "Saving the backup before closing", blocking: false });
+              await Promise.race([
+                api.cloudSyncPush(true).catch(() => undefined),
+                new Promise((r) => setTimeout(r, CLOSE_SYNC_TIMEOUT_MS)),
+              ]);
+            } else if (plan?.action === "push") {
               setSyncActivity({ label: "Saving your changes before closing", blocking: false });
               // Whichever finishes first. The timeout is not a fallback for a
               // broken upload - it is the promise that the window closes.
@@ -703,6 +783,23 @@ export default function Layout() {
           ))}
         </nav>
 
+        {/* 2.112.0: live sync in a few words. Green when live, amber when it
+            needs something - the detail is one click away in Settings. */}
+        {live.phase !== "off" && (
+          <div className="border-t border-slate-100 px-2 py-1.5 dark:border-slate-800/80">
+            <Link
+              to="/settings/data"
+              title={live.detail ?? "Live sync between your computers"}
+              className={`${NAV_BASE} w-full ${NAV_IDLE}`}
+            >
+              <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center">
+                <span className={`h-2 w-2 rounded-full ${LIVE_DOT[phaseTone(live.phase)]}`} />
+              </span>
+              <span className="flex-1 truncate text-left">{phaseLabel(live.phase, live.outbox)}</span>
+            </Link>
+          </div>
+        )}
+
         {/* 2.4.4: one-click light/dark toggle - see the isDark/setThemeMode
             comment above. Sits in its own bordered row directly above the
             profile widget, exactly where marko asked for it. 2.6.0: same
@@ -796,6 +893,81 @@ export default function Layout() {
             2.6.0: still no max-width cap (that decision stands) - only the
             gutter changed, 24px -> 28px horizontal / 20px vertical, which is
             the app's page inset every screen now shares. */}
+        {liveOffer && live.phase === "off" && (
+          // 2.112.0: asked once. Records only leave this computer when he
+          // says so - and both computers have to say it.
+          <div className="flex flex-wrap items-center gap-2 border-b border-brand-200 bg-brand-50 px-7 py-2 text-xs text-brand-900 dark:border-brand-500/25 dark:bg-brand-500/10 dark:text-brand-200">
+            <span>
+              <strong className="font-semibold">Live sync between your computers.</strong> Every change shows up on your
+              other computer within seconds, through your TIQR account. Turn it on on both computers.
+            </span>
+            <button
+              type="button"
+              disabled={liveOfferBusy}
+              onClick={async () => {
+                const uid = auth.currentUser?.uid;
+                if (!uid) return;
+                setLiveOfferBusy(true);
+                try {
+                  await setLiveSyncEnabled(uid, true);
+                  setLiveOffer(false);
+                  toast.success("Live sync is on. Turn it on on your other computer too.");
+                } catch (e) {
+                  toast.error(errMsg(e));
+                } finally {
+                  setLiveOfferBusy(false);
+                }
+              }}
+              className="rounded-md bg-brand-600 px-2 py-1 font-semibold text-white transition hover:bg-brand-500 disabled:opacity-60"
+            >
+              {liveOfferBusy ? "Turning on…" : "Turn on"}
+            </button>
+            <button
+              type="button"
+              disabled={liveOfferBusy}
+              onClick={async () => {
+                const uid = auth.currentUser?.uid;
+                setLiveOffer(false);
+                if (uid) await setLiveSyncEnabled(uid, false).catch(() => undefined);
+              }}
+              className="ml-auto text-brand-800/70 hover:text-brand-950 dark:text-brand-300/70 dark:hover:text-brand-100"
+            >
+              Not now
+            </button>
+          </div>
+        )}
+        {livePaused && live.phase === "off" && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-7 py-2 text-xs text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
+            <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              <strong className="font-semibold">Live sync is paused on this computer</strong> - its data was just
+              replaced from a saved copy. Turning it on again brings in what changed on the other computer since.
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                const uid = auth.currentUser?.uid;
+                if (!uid) return;
+                try {
+                  await setLiveSyncEnabled(uid, true);
+                  setLivePaused(false);
+                } catch (e) {
+                  toast.error(errMsg(e));
+                }
+              }}
+              className="rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition hover:bg-amber-500"
+            >
+              Turn on again
+            </button>
+            <button
+              type="button"
+              onClick={() => setLivePaused(false)}
+              className="ml-auto text-amber-700/70 hover:text-amber-900 dark:text-amber-400/70 dark:hover:text-amber-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {syncFailure && (
           <div className="flex flex-wrap items-center gap-2 border-b border-red-200 bg-red-50 px-7 py-2 text-xs text-red-800 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-300">
             <IconAlertTriangle className="h-3.5 w-3.5 shrink-0" />

@@ -2451,6 +2451,80 @@ export interface CloudSyncAutoPlan {
   remoteNewer: boolean;
 }
 
+// --- Live sync (2.112.0) - commands/live_sync.rs ----------------------
+
+export interface LiveSyncStatus {
+  enabled: boolean;
+  /** Whether on/off was ever decided for this database. */
+  decided: boolean;
+  deviceId: string;
+  /** Firestore's commit time of the last change read, seconds + nanos. */
+  cursorS: number | null;
+  cursorNs: number | null;
+  /** Changes made here, not sent yet. */
+  outbox: number;
+  /** Changes from the other computer waiting for a record they point at. */
+  waiting: number;
+  seededAt: string | null;
+  lastPushAt: string | null;
+  lastPullAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  /** Off because this database was just replaced from a saved copy. */
+  pausedAfterRestore: boolean;
+}
+
+/** One record as it travels - `SyncDoc` in commands/live_sync.rs. */
+export interface LiveSyncDoc {
+  id: string;
+  t: string;
+  u: string;
+  h: number;
+  del: boolean;
+  d: Record<string, unknown>;
+  dev: string;
+}
+
+export interface LiveSyncOutItem {
+  table: string;
+  rowId: number;
+  hlc: number;
+  doc: LiveSyncDoc;
+}
+
+export interface LiveSyncSettingsDoc {
+  group: string;
+  stamp: string;
+  keys: Record<string, string | null>;
+  tables: Record<string, Record<string, unknown>[]>;
+  dev: string;
+}
+
+export interface LiveSyncTake {
+  items: LiveSyncOutItem[];
+  settings: LiveSyncSettingsDoc[];
+}
+
+export interface LiveSyncAck {
+  table: string;
+  rowId: number;
+  hlc: number;
+  uid: string;
+  /** False when Firestore already held a version at least as new. */
+  written: boolean;
+}
+
+export interface LiveSyncApplyOutcome {
+  applied: number;
+  unchanged: number;
+  older: number;
+  deleted: number;
+  pending: number;
+  conflicts: number;
+  changedTables: string[];
+  reasons: string[];
+}
+
 export interface CloudSyncStatus {
   enabled: boolean;
   /** False when nobody is signed in with Google, or this build has no OAuth

@@ -66,7 +66,7 @@ pub(crate) const NOTIFICATIONS: Group = Group {
     tables: &[],
 };
 
-const GROUPS: &[&Group] = &[&MAIL, &NOTIFICATIONS];
+pub(crate) const GROUPS: &[&Group] = &[&MAIL, &NOTIFICATIONS];
 
 /// What an untouched group from before 2.110.0 is stamped with: older than
 /// any real change, so the first real edit on either computer wins - and two

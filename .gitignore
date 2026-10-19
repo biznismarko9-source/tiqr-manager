@@ -20,3 +20,4 @@ dist-installer
 *service_account*.json
 credentials.json
 google-credentials.json
+firestore-debug.log

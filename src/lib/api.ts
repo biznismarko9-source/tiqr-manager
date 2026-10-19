@@ -46,6 +46,12 @@ import type {
   CsvImportResult,
   CloudRevision,
   CloudSyncAutoPlan,
+  LiveSyncAck,
+  LiveSyncApplyOutcome,
+  LiveSyncDoc,
+  LiveSyncSettingsDoc,
+  LiveSyncStatus,
+  LiveSyncTake,
   CloudSyncStatus,
   CsvPreview,
   CurrencyConversion,
@@ -477,6 +483,20 @@ export const api = {
   cloudMergePull: () => invoke<MergeOutcome>("cloud_merge_pull"),
   /** What past merges did (2.20.0), newest first. Read-only. */
   cloudMergeHistory: () => invoke<MergeLogEntry[]>("cloud_merge_history"),
+
+  // --- Live sync (2.112.0) - commands/live_sync.rs, driven by lib/liveSync.ts.
+  liveSyncStatus: () => invoke<LiveSyncStatus>("live_sync_status"),
+  /** The first time it is turned on, every record is queued for the first send. */
+  liveSyncSetEnabled: (enabled: boolean) => invoke<LiveSyncStatus>("live_sync_set_enabled", { enabled }),
+  /** The next changes to send, parents first - nothing is removed until acked. */
+  liveSyncTake: (limit: number) => invoke<LiveSyncTake>("live_sync_take", { limit }),
+  liveSyncAck: (acks: LiveSyncAck[], settings: { group: string; stamp: string }[]) =>
+    invoke<void>("live_sync_ack", { acks, settings }),
+  /** The other computer's changes, in one transaction; newer edit wins. */
+  liveSyncApply: (docs: LiveSyncDoc[]) => invoke<LiveSyncApplyOutcome>("live_sync_apply", { docs }),
+  liveSyncApplySettings: (docs: LiveSyncSettingsDoc[]) => invoke<string[]>("live_sync_apply_settings", { docs }),
+  liveSyncSetCursor: (seconds: number, nanos: number) => invoke<void>("live_sync_set_cursor", { seconds, nanos }),
+  liveSyncReport: (error: string | null) => invoke<void>("live_sync_report", { error }),
   /** Earlier versions of the sync file that Google Drive still holds
    *  (2.20.0). One metadata request, no file content. */
   cloudSyncRevisions: () => invoke<CloudRevision[]>("cloud_sync_revisions"),

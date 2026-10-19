@@ -232,3 +232,11 @@ z toho istého mailu vytvorili ten istý záznam dvakrát.
 
 Záznamy, ktoré z mailu raz vzniknú (predaje, financie), sa medzi počítačmi
 synchronizujú normálne ako všetko ostatné.
+
+**S živým syncom (od 2.112.0)** prejdú pravidlá, odosielatelia, filter
+a webhooky na druhý počítač do pár sekúnd. **Prihlásenie do Gmailu však
+cez Firebase necestuje** — na každom počítači sa schránka pripája sama
+(raz, tlačidlom Connect Gmail). Heslo k TIQR účtu tak nikdy nie je cesta
+do tvojej schránky. Ak na jednom počítači pripojíš inú schránku, druhý
+počítač svoje staré pripojenie zahodí a vypýta si nové pre tú novú adresu.
+Odpojenie na jednom počítači druhý neodpojí.

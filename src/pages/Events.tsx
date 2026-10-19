@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { useDataChanged } from "../lib/dataChanged";
 import AiImportPanel from "../components/AiImportPanel";
 import EventRowsModal from "./EventRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
@@ -147,6 +148,9 @@ export default function Events() {
       .then(setEvents)
       .catch((e) => toast.error(errMsg(e)));
   };
+
+  // 2.112.0: changes from the other computer, shown without a click.
+  useDataChanged(load);
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {

@@ -22,6 +22,7 @@ pub mod finance_recurring;
 pub mod firebase_google_auth;
 pub mod google_auth;
 pub mod inventory_intelligence;
+pub mod live_sync;
 pub mod lookups;
 // 2.100.0: Mail Intelligence (phase 1) - read a mailbox, classify what
 // arrives. Writes no business record; see its module doc comment.

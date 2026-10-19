@@ -17,11 +17,13 @@ TIQR Manager - a local-first, offline-by-default desktop app (Tauri 2 +
 React/TypeScript frontend, Rust + SQLite backend) for ticket resellers.
 No server of its own; the only outbound calls are the user's own machine
 talking directly to Google Sheets, Firebase Auth, an FX-rate API, and (for
-Price Checker) marketplace pages the user opens himself.
+Price Checker) marketplace pages the user opens himself. Since 2.112.0, live
+sync between marko's computers also goes through Firestore, under the
+signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.111.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.112.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
@@ -2645,6 +2647,39 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.112.0 - live sync between computers.** marko: "ako by sme vedeli urobit
+nejaky sync ktory v realnom case ... by tam boli insta informacie", "ze
+vsetko by ako keby fungovalo spolu". Every change on one computer reaches the
+other within seconds; newer edit wins; Drive becomes the backup.
+
+* **Rust** (`commands/live_sync.rs`, migration **046**): `sync_control`
+  (enabled, applying, hlc, cursor, seeded_at), `sync_outbox` (one entry per
+  record), `sync_row_meta` (version last sent/applied), `sync_uid_alias`
+  (lookups matched by name), `sync_pending` (waiting for a parent). Triggers
+  from MERGE_TABLES; `seed`, `take`/`ack`, `apply` (newer wins, deletion
+  wins, same content = same version, FK-aware handling of a deleted parent,
+  code clash -> lower uid keeps it, legacy-uid clash reported), settings
+  groups minus the Gmail credential, `pause_after_restore`, device id in
+  `<db>.device`. Commands `live_sync_*` (8).
+* **Frontend**: `lib/liveSyncCore.ts` (pure rules, `npm test`),
+  `lib/liveSyncSession.ts` (one session against Firestore: catch-up in pages
+  from the cursor, a listener, push with server-side newer-wins and a
+  per-record fallback, parts for big records, settings, device registry),
+  `lib/liveSync.ts` (the app's singleton + helpers), `lib/dataChanged.ts`
+  (screens refresh by themselves), `components/LiveSyncCard.tsx`, Layout
+  (start, sidebar line, one-time offer, restore-pause banner, Drive becomes
+  backup-only when every recent computer is live).
+* **firestore.rules**: `users/{uid}/rows|parts|settings|devices`, owner only,
+  `replacesStored` = newer-wins + deletion-final. marko must publish it.
+* **Verified**: 23 Rust tests (two computers + a fake Firestore with the
+  same rule; 4 mutations each caught), 9-step check against the Firestore
+  emulator with the real rules (`scripts/live-sync-emulator-check.ts`),
+  `npm test` 21, `npm run build`, UI rendered against a mocked backend.
+  **Not verified**: the real Firebase project, real quotas, two real
+  computers.
+
+Migrations: 46 numbered ones, next is **047**.
 
 **2.111.0 - mail synced by priority lanes: new mail, then every starred
 message, then every labelled message, then the history.** marko's spec:

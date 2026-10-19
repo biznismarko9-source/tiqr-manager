@@ -303,6 +303,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "045_mail_rules_and_senders",
         include_str!("../migrations/045_mail_rules_and_senders.sql"),
     ),
+    (
+        "046_live_sync",
+        include_str!("../migrations/046_live_sync.sql"),
+    ),
 ];
 
 /// Resolves the per-user, per-installation database file path.
@@ -373,7 +377,18 @@ pub static LOCAL_DIRTY: AtomicBool = AtomicBool::new(false);
 fn is_bookkeeping_table(table: &str) -> bool {
     matches!(
         table,
-        "app_settings" | "counters" | "notification_log" | "sheet_sync_links" | "schema_migrations"
+        "app_settings"
+            | "counters"
+            | "notification_log"
+            | "sheet_sync_links"
+            | "schema_migrations"
+            // 2.112.0: live sync's own bookkeeping (migration 046). Sending a
+            // change must not itself look like a change to send.
+            | "sync_control"
+            | "sync_outbox"
+            | "sync_row_meta"
+            | "sync_uid_alias"
+            | "sync_pending"
     )
 }
 
@@ -469,6 +484,9 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             crate::codes::backfill_event_codes(conn)?;
         }
     }
+    // 2.112.0: live sync's change capture - one set of triggers per table
+    // that travels, built from cloud_merge's MERGE_TABLES (live_sync.rs).
+    crate::commands::live_sync::install_triggers(conn)?;
     // 2.110.0: the mail cache's own schema, and the one-time move of the
     // cache out of this file. A no-op unless the mail file is attached.
     crate::mail_store::ensure(conn)?;
