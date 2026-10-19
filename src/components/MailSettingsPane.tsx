@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { requestMailSync } from "../lib/mailSync";
+import { lastSyncText, laneViews, syncHeadline } from "../lib/mailSyncStatus";
 import {
   type MailConnectionStatus,
   type MailRule,
@@ -368,24 +369,31 @@ export function MailSettingsPane({
           )}
         </div>
 
-        {/* Where the reader is. A long first read looks exactly like a
-            stuck one unless this says which folder and how much is left. */}
+        {/* Where the reader is, in the same words as the Mail screen
+            (lib/mailSyncStatus.ts). A long first read looks exactly like a
+            stuck one unless this says which lane and how much is left. */}
         {connected && (
           <div className="mb-3 rounded-lg bg-surface-muted px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
-            <p>
-              {status.progress.reading ? (
-                <>
-                  Reading <span className="font-medium text-slate-800 dark:text-slate-100">{status.progress.reading}</span>
-                  {status.progress.waiting > 0 && <> &middot; {status.progress.waiting.toLocaleString()} waiting</>}
-                </>
-              ) : (
-                "Everything is read, newest to oldest. New mail comes in by itself."
-              )}
+            <p className="font-medium text-slate-800 dark:text-slate-100">
+              {syncHeadline({
+                progress: status.progress,
+                paused: status.paused,
+                failed: false,
+                rateLimited: false,
+                intervalSeconds: status.syncIntervalSeconds,
+              })}
             </p>
-            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-              {status.progress.foldersDone} of {status.progress.foldersTotal} folders read to the end &middot;{" "}
+            <ul className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+              {laneViews(status.progress, (n) => n.toLocaleString()).map((l) => (
+                <li key={l.key} className="contents" title={l.hint}>
+                  <span className="text-slate-500 dark:text-slate-400">{l.label}</span>
+                  <span className="tabular-nums">{l.text}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
               {status.progress.storedTotal.toLocaleString()} messages on this computer &middot;{" "}
-              {bytes(status.storeBytes)}
+              {bytes(status.storeBytes)} &middot; {lastSyncText(status.progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
             </p>
           </div>
         )}

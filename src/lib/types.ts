@@ -2759,19 +2759,45 @@ export interface MailConnectionStatus {
   storeBytes: number;
 }
 
-/** 2.110.0: the reading engine's progress (commands/mail_sync.rs). It reads
- *  every folder newest to oldest, in marko's order: Important, Starred,
- *  his labels, Finances, then everything else. */
+/** 2.110.0: the reading engine's progress (commands/mail_sync.rs). 2.111.0:
+ *  it works in lanes - new mail, then every starred message, then every
+ *  message in his labels, and only then the history, each folder newest to
+ *  oldest. */
 export interface MailSyncProgress {
-  /** The folder being read now ("Starred", "OASIS"), or null once every
-   *  folder is read to its oldest message. */
+  /** The folder being read now ("Starred", "OASIS"), or null once
+   *  everything found is downloaded and every folder is read to the end. */
   reading?: string | null;
-  /** Listed and not downloaded yet. */
+  /** Found and not downloaded yet, in every lane - including messages
+   *  waiting to be tried again. */
   waiting: number;
   foldersDone: number;
   foldersTotal: number;
   /** Every message stored on this device. */
   storedTotal: number;
+  /** 2.111.0: the lane being worked on. */
+  phase: "new" | "starred" | "labels" | "backlog" | "idle";
+  /** 2.111.0: the four lanes, in the order they are worked. */
+  newMail: MailLaneProgress;
+  starred: MailLaneProgress;
+  labels: MailLaneProgress;
+  backlog: MailLaneProgress;
+  /** 2.111.0: queued messages that can be downloaded right now. */
+  due: number;
+  /** 2.111.0: messages that failed and wait for a later try. */
+  retryLater: number;
+  /** 2.111.0: when a run last finished without an error. */
+  lastSuccessAt?: string | null;
+}
+
+/** 2.111.0: one lane of the queue. `waiting` is exact - what is queued;
+ *  whether it can still grow is `discovery`, never a guessed total. */
+export interface MailLaneProgress {
+  waiting: number;
+  /** "pending" - not looked for yet, an earlier lane goes first;
+   *  "discovering" - being listed now, so `waiting` can still grow;
+   *  "complete" - every message in the lane has been found;
+   *  "watching" - new mail: Gmail's change history is being followed. */
+  discovery: "pending" | "discovering" | "complete" | "watching";
 }
 
 /** 2.110.0: one folder's numbers, from the same SQL the folder lists with. */

@@ -22,6 +22,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
+import { mergeTopPage } from "../lib/mailRows";
+import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone } from "../lib/mailSyncStatus";
 import {
   type MailConnectionStatus,
   type MailFolderCount,
@@ -105,6 +107,14 @@ function formatWhen(iso: string) {
 }
 
 const fmt = (n: number) => n.toLocaleString();
+
+/** How a lane's state reads in the sync status line. */
+const LANE_TONE: Record<LaneTone, string> = {
+  active: "text-slate-700 dark:text-slate-200",
+  done: "text-emerald-600 dark:text-emerald-400",
+  waiting: "text-slate-400 dark:text-slate-500",
+  warn: "text-amber-600 dark:text-amber-400",
+};
 
 function FolderRow({
   label,
@@ -600,26 +610,17 @@ export default function MailIntelligence() {
   }, [folder, query, hasMore, loadingMore]);
 
   /** New mail arrived: refresh the top of the folder without losing his
-   *  place further down. */
+   *  place further down - and without drawing again the rows that did not
+   *  change (lib/mailRows.ts). */
   const refreshTop = useCallback(async () => {
     if (folder === SETTINGS_FOLDER) return;
     const key = viewRef.current;
     try {
       const page = await api.listMailFolder(folder, query, null, PAGE);
       if (viewRef.current !== key) return;
-      const prev = rowsRef.current;
-      if (prev.length <= PAGE || page.length < PAGE) {
-        setRows(page);
-        setHasMore(page.length === PAGE);
-        return;
-      }
-      // He has scrolled past the first page: the fresh first page in
-      // front, and everything older than it that he already had, kept.
-      const edge = page[page.length - 1];
-      const older = prev.filter(
-        (m) => m.receivedAt < edge.receivedAt || (m.receivedAt === edge.receivedAt && m.id < edge.id),
-      );
-      setRows([...page, ...older]);
+      const merged = mergeTopPage(rowsRef.current, page, PAGE);
+      setRows(merged.rows);
+      if (merged.hasMore !== null) setHasMore(merged.hasMore);
     } catch {
       // Silent: the next run refreshes again.
     }
@@ -770,27 +771,20 @@ export default function MailIntelligence() {
      a folder that is not there is a bug report waiting to happen. */
   const userLabels = labels.filter((l) => l.kind !== "system");
 
-  /* What the reader is doing, in words. A long first read looks exactly
-     like a stuck one unless the screen says which folder it is on and how
-     much is left. */
+  /* What the reader is doing, in words (lib/mailSyncStatus.ts). A long
+     first read looks exactly like a stuck one unless the screen says which
+     lane it is on and how much each still has to download. */
   const progress = lastRun?.progress ?? status.progress;
   const failed = lastRun?.status === "failed";
-  const activity = status.paused
-    ? "Paused"
-    : failed
-      ? "Not reading right now - see below"
-      : lastRun?.rateLimited
-        ? "Google asked TIQR to slow down - carrying on in a moment"
-        : progress.reading
-          ? `Reading ${progress.reading}${progress.waiting > 0 ? ` · ${fmt(progress.waiting)} waiting` : ""}`
-          : status.syncIntervalSeconds > 0
-            ? `Up to date · checks every ${
-                status.syncIntervalSeconds < 60
-                  ? `${status.syncIntervalSeconds}s`
-                  : `${Math.round(status.syncIntervalSeconds / 60)} min`
-              }`
-            : "Up to date";
-  const busy = nudged || (!!progress.reading && !status.paused && !failed);
+  const headline = syncHeadline({
+    progress,
+    paused: status.paused,
+    failed,
+    rateLimited: !!lastRun?.rateLimited,
+    intervalSeconds: status.syncIntervalSeconds,
+  });
+  const lanes = laneViews(progress, fmt);
+  const busy = nudged || isReading(progress, status.paused, failed);
 
   return (
     /* NOT `h-full`: Layout gives pages no height (PROTECTED_AREAS 2.55.0),
@@ -798,33 +792,55 @@ export default function MailIntelligence() {
     <div>
       <PageHeader
         title="Mail"
-        subtitle={`${status.accountEmail ?? "Your inbox"} · ${fmt(progress.storedTotal)} messages${
+        subtitle={`${status.accountEmail ?? "Your inbox"} · ${fmt(progress.storedTotal)} on this computer${
           status.unreadCount > 0 ? ` · ${fmt(status.unreadCount)} unread` : ""
         }`}
         actions={
           <>
-            {/* Says out loud that it reads by itself, so marko does not sit
-                there wondering whether to press Sync. */}
-            <span className="flex max-w-[340px] items-center gap-1.5 truncate text-[11px] text-slate-400 dark:text-slate-500">
-              {busy && <Spinner className="h-3 w-3 shrink-0" />}
-              <span className="truncate">{activity}</span>
-            </span>
             <div className="w-56">
               <Input placeholder="Search this folder" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+            {/* Sync asks the one reader (Layout.tsx) to go now; when reading
+                is paused, the same button resumes it. */}
             <Button
               variant="secondary"
-              disabled={status.paused || nudged}
-              onClick={() => {
+              disabled={nudged}
+              onClick={async () => {
                 setNudged(true);
-                requestMailSync();
+                try {
+                  if (status.paused) setStatus(await api.setMailPaused(false));
+                  requestMailSync();
+                } catch (e) {
+                  setNudged(false);
+                  toast.error(errMsg(e));
+                }
               }}
             >
-              Sync now
+              {status.paused ? "Resume" : "Sync now"}
             </Button>
           </>
         }
       />
+
+      {/* The reader at a glance: which lane it is on, what each lane still
+          has to download, and when it last finished. Says out loud that it
+          reads by itself, so marko does not sit there wondering whether to
+          press Sync. */}
+      <Card className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-[11px]">
+        <span className="flex min-w-0 items-center gap-1.5 font-medium text-slate-700 dark:text-slate-200">
+          {busy && <Spinner className="h-3 w-3 shrink-0" />}
+          <span className="truncate">{headline}</span>
+        </span>
+        {lanes.map((l) => (
+          <span key={l.key} title={l.hint} className="whitespace-nowrap">
+            <span className="text-slate-400 dark:text-slate-500">{l.label}</span>{" "}
+            <span className={`tabular-nums ${LANE_TONE[l.tone]}`}>{l.text}</span>
+          </span>
+        ))}
+        <span className="ml-auto whitespace-nowrap text-slate-400 dark:text-slate-500">
+          {lastSyncText(progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+        </span>
+      </Card>
 
       {status.lastError && lastRun?.status !== "synced" && (
         <Card className="mb-4 p-3">
@@ -832,7 +848,7 @@ export default function MailIntelligence() {
         </Card>
       )}
 
-      <div className="flex gap-4" style={{ height: "calc(100vh - 220px)", minHeight: "440px" }}>
+      <div className="flex gap-4" style={{ height: "calc(100vh - 266px)", minHeight: "440px" }}>
         {/* Folders - TIQR's own in marko's order, then his Gmail labels.
             Only the list scrolls; Settings sits BELOW it. It used to be a
             sticky row inside the scroll, and with enough labels they slid
