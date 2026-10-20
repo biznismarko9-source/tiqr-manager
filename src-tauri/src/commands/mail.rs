@@ -2182,6 +2182,7 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
             i + o
         },
         sync_interval_seconds: sync_interval_seconds(conn),
+        skip_folders: skipped_folders(conn),
         // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
             .query_row(
@@ -3058,13 +3059,31 @@ pub(crate) fn rule_matches(rule: &MailRule, subject: &RuleSubject) -> bool {
     if !rule.enabled || rule.needle.trim().is_empty() {
         return false;
     }
+    let any;
     let hay = match rule.field.as_str() {
         "from" => subject.from,
         "subject" => subject.subject,
         "preview" => subject.preview,
+        // 2.114.0: the sender, the subject or the preview - whichever says it.
+        "any" => {
+            any = format!("{}\n{}\n{}", subject.from, subject.subject, subject.preview);
+            &any
+        }
         _ => return false,
     }
     .to_lowercase();
+    if rule.field == "any" && matches!(rule.match_kind.as_str(), "equals" | "starts" | "ends") {
+        // "Sender or subject is exactly ..." means either one of them.
+        let needle = rule.needle.trim().to_lowercase();
+        return [subject.from, subject.subject, subject.preview].iter().any(|h| {
+            let h = h.to_lowercase();
+            match rule.match_kind.as_str() {
+                "equals" => h == needle,
+                "starts" => h.starts_with(&needle),
+                _ => h.ends_with(&needle),
+            }
+        });
+    }
     let needle = rule.needle.trim().to_lowercase();
     match rule.match_kind.as_str() {
         "contains" => hay.contains(&needle),
@@ -3130,6 +3149,11 @@ pub(crate) fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> 
               WHERE id = ?1 AND status <> 'review_required'",
             params![row_id],
         )?,
+        // 2.114.0: TIQR's own star, as the star button sets it.
+        "star" => conn.execute(
+            "UPDATE mail_messages SET is_starred = 1, starred_here = 1 WHERE id = ?1 AND is_starred = 0",
+            params![row_id],
+        )?,
         // 2.113.0: a folder that no longer exists moves nothing.
         action if action.starts_with("move:") => {
             let target = &action["move:".len()..];
@@ -3168,9 +3192,9 @@ pub fn list_mail_rules(state: State<AppState>) -> AppResult<Vec<MailRule>> {
 /// Creates or updates one rule. An empty `id` means "new".
 #[tauri::command]
 pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<MailRule>> {
-    const FIELDS: &[&str] = &["from", "subject", "preview"];
+    const FIELDS: &[&str] = &["from", "subject", "preview", "any"];
     const KINDS: &[&str] = &["contains", "equals", "starts", "ends"];
-    const ACTIONS: &[&str] = &["trash", "read", "review", "keep"];
+    const ACTIONS: &[&str] = &["trash", "read", "review", "keep", "star"];
     // 2.113.0: "move:<place>" moves new mail from a sender straight into a
     // folder - one of marko's own, a label, or Inbox / Finances / Promotions.
     let moves_to = rule.action.strip_prefix("move:");
@@ -3294,6 +3318,32 @@ pub fn apply_mail_rules_now(state: State<AppState>) -> AppResult<i64> {
         }
     }
     Ok(touched)
+}
+
+/// 2.114.0: how many messages already here a rule would act on - shown while
+/// the rule is written, so it is never a guess. Whether it is switched on
+/// does not matter for the count.
+pub(crate) fn count_rule_matches(conn: &Connection, rule: &MailRule) -> AppResult<i64> {
+    let rule = MailRule { enabled: true, ..rule.clone() };
+    if rule.needle.trim().is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = conn.prepare("SELECT from_address, subject, IFNULL(snippet, '') FROM mail_messages WHERE trashed_at IS NULL")?;
+    let mut n = 0i64;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let (from, subject, preview): (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        if rule_matches(&rule, &RuleSubject { from: &from, subject: &subject, preview: &preview }) {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn count_mail_rule_matches(state: State<AppState>, rule: MailRule) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    count_rule_matches(&conn, &rule)
 }
 
 #[tauri::command]
@@ -5127,6 +5177,39 @@ pub fn unmute_mail_sender(state: State<AppState>, who: String) -> AppResult<Vec<
 }
 
 // ===========================================================================
+// WHAT IS NOT READ AT ALL (2.114.0)
+// ===========================================================================
+//
+// marko: "co a ako prijat". Promotions, Spam and Trash can each be left out
+// of reading altogether: no walk of the folder, nothing new from it queued
+// (mail_sync.rs). What is already in TIQR stays; a starred message or one in
+// one of his labels is still read wherever Gmail keeps it.
+
+pub(crate) const MAIL_SKIP_FOLDERS_KEY: &str = "mail_skip_folders";
+const SKIPPABLE: &[&str] = &["promotions", "spam", "trash"];
+
+pub(crate) fn skipped_folders(conn: &Connection) -> Vec<String> {
+    get_setting(conn, MAIL_SKIP_FOLDERS_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .split(',')
+        .map(|f| f.trim().to_string())
+        .filter(|f| SKIPPABLE.contains(&f.as_str()))
+        .collect()
+}
+
+#[tauri::command]
+pub fn set_mail_skip_folders(state: State<AppState>, folders: Vec<String>) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    let mut keep: Vec<&str> = SKIPPABLE.iter().copied().filter(|f| folders.iter().any(|x| x == f)).collect();
+    keep.dedup();
+    set_setting(&conn, MAIL_SKIP_FOLDERS_KEY, &keep.join(","))?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
+    status_impl(&conn)
+}
+
+// ===========================================================================
 // MOVING MAIL (2.113.0)
 // ===========================================================================
 //
@@ -5929,6 +6012,36 @@ mod tests {
 
     fn subject_of<'a>(from: &'a str, subject: &'a str, preview: &'a str) -> RuleSubject<'a> {
         RuleSubject { from, subject, preview }
+    }
+
+    /// 2.114.0: "rules lepsie" - one rule for the sender or the subject,
+    /// a star, and how many messages it would take before it is saved.
+    #[test]
+    fn a_rule_can_look_anywhere_star_and_say_what_it_would_catch() {
+        let conn = test_conn();
+        let m = |pid: &str, from: &str, subject: &str| {
+            conn.execute(
+                "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                            received_at, first_seen_at, updated_at, labels)
+                 VALUES ('gmail', ?1, 'me', ?2, ?3, '', 'x', 'x', 'x', 'inbox')",
+                params![pid, from, subject],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let a = m("a", "news@oasisinet.com", "Tour dates");
+        let b = m("b", "x@y.com", "Oasis presale tomorrow");
+        m("c", "x@y.com", "Weekly deals");
+        let any = rule("any", "contains", "oasis", "star");
+        assert_eq!(count_rule_matches(&conn, &any).unwrap(), 2, "the sender of one, the subject of the other");
+        assert_eq!(count_rule_matches(&conn, &rule("any", "equals", "weekly deals", "read")).unwrap(), 1);
+        assert_eq!(count_rule_matches(&conn, &MailRule { enabled: false, ..any.clone() }).unwrap(), 2, "a rule switched off still counts");
+        let hit = apply_rules(&[any], &RuleSubject { from: "news@oasisinet.com", subject: "Tour dates", preview: "" }).unwrap();
+        assert!(run_rule_action(&conn, a, &hit).unwrap());
+        let starred: (i64, Option<i64>) =
+            conn.query_row("SELECT is_starred, starred_here FROM mail_messages WHERE id = ?1", [a], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(starred, (1, Some(1)), "starred the way the star button does it");
+        let _ = b;
     }
 
     #[test]

@@ -3453,6 +3453,9 @@ pub struct MailConnectionStatus {
     /// 2.104.0: `"all"` (the whole mailbox) or `"known"` (marketplace
     /// senders only).
     pub scope: String,
+    /// 2.114.0: folders TIQR does not read at all - "promotions", "spam",
+    /// "trash" (Settings, What is read).
+    pub skip_folders: Vec<String>,
     pub unread_count: i64,
     /// "off" | "manual" | "auto", per record kind. `manual` is the default
     /// and the one marko described: the proposal waits for his button.

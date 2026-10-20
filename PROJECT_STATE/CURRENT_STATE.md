@@ -23,7 +23,7 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.113.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.114.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2648,6 +2648,31 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.114.0 - simpler webhooks, the right buyer name, bulk delete, AI cleanup
+of Promotions, more mail settings** (report: `history/REDESIGN-2.114.0-REPORT.md`):
+* `mail_facts::key_facts` reads "Label: value" lines first (they take their
+  kind's places), colon-less rows second; `HEADING_WORDS` are never values;
+  personal facts only when the text asks to send/transfer tickets
+  (`asks_to_deliver`) or the label names the buyer (`names_the_buyer`).
+* Discord embeds are a title plus a few lines (`lines`, `when_line`,
+  `place_line`, `seats_line`), no fields; mail reference in the footer.
+  `DiscordMailConfig` (`discord.mail_options`): which mail kinds post
+  (`mail_kind_on` in `plan`), key details, personal (off = never sent; the
+  preview then shows dots), preview.
+* `list_mail_folder_ids` (select all = whole folder/search); bulk trash,
+  restore, read, star in one transaction; `delete_forever_impl` checks in
+  chunks of 500.
+* `commands/mail_cleanup.rs` (new): `scan_promotions` (free keep rules,
+  then `claude-haiku-5-5`, 60 per request, 3 in parallel, at most 10 per
+  click, domain/subject/140-char preview only, thinking disabled, effort
+  low, one letter per line), answers kept in `mail_ai` task `triage`;
+  `list_promo_suggestions` (J/? still in Promotions). Frontend
+  `components/PromoCleanup.tsx`; trash only on marko's click.
+* Mail settings: `mail_skip_folders` (promotions/spam/trash; `make_plan`
+  drops their walks and queued rows, `apply_history` skips their new mail
+  unless starred/labelled), rule field `any`, action `star`,
+  `count_mail_rule_matches`, Muted senders and Discord sections.
 
 **2.113.1 - fixes reported right after 2.113.0** (report:
 `history/REDESIGN-2.113.1-REPORT.md`):

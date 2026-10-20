@@ -21,6 +21,21 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.114.0 - compact Discord messages, the Promotions cleanup
+
+- **A Discord message is a title and a few whole lines.** No field grid;
+  the mail description is built line by line under 1500 characters so a
+  spoiler is never cut. Personal details off means they are never sent
+  (the preview shows dots), not merely unspoilered.
+- **The Promotions cleanup never moves mail by itself.** `scan_promotions`
+  only records J/K/? per message (`mail_ai` task `triage`); only marko's
+  click trashes, into TIQR's restorable Trash. Starred, marketplace,
+  recognised, code-carrying and moved mail is kept by rule and never sent to
+  the AI; only the sender's domain, the subject and 140 characters of the
+  preview are sent.
+- **Select all is the whole folder** (`list_mail_folder_ids`), so bulk
+  actions must stay transactional and chunked (thousands of ids).
+
 ## 2.113.1 - table cells, row lines, the Discord logo, key details, link downloads, mute, stars
 
 - **`overflow-wrap: anywhere` belongs to `table-fixed` tables only.** In an

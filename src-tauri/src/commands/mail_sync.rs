@@ -854,6 +854,12 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
     let mut arrived: Vec<String> = Vec::new();
     let mut starred: Vec<String> = Vec::new();
     let mut labelled: Vec<String> = Vec::new();
+    let skip = mail::skipped_folders(conn);
+    let skipped = |labels: &[String]| {
+        (skip.iter().any(|f| f == "spam") && has(labels, "spam"))
+            || (skip.iter().any(|f| f == "trash") && has(labels, "trash"))
+            || (skip.iter().any(|f| f == "promotions") && has(labels, "category_promotions"))
+    };
     for ev in events {
         match ev {
             HistoryEvent::Added { id, labels } => {
@@ -862,6 +868,11 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
                 }
                 let kept = has(labels, "starred") || labels.iter().any(|l| is_user_label(l));
                 if has(labels, "sent") && !has(labels, "inbox") && !kept {
+                    continue;
+                }
+                // 2.114.0: a folder marko does not read - unless he starred
+                // or labelled the message.
+                if !kept && skipped(labels) {
                     continue;
                 }
                 arrived.push(id.clone());
@@ -1228,7 +1239,16 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
     let senders = watched_senders(conn)?;
     let custom = clean_custom_query(&get_setting(conn, MAIL_CUSTOM_QUERY_KEY)?.unwrap_or_default());
     let labels = user_labels(conn)?;
-    let sections = plan_sections(&scope, &senders, &labels, &custom);
+    // 2.114.0: a folder marko does not want read is not walked, and what
+    // its walk had queued is not downloaded.
+    let skip = mail::skipped_folders(conn);
+    let sections: Vec<Section> = plan_sections(&scope, &senders, &labels, &custom)
+        .into_iter()
+        .filter(|s| !skip.contains(&s.key))
+        .collect();
+    for key in &skip {
+        conn.execute("DELETE FROM mail_fetch_queue WHERE source = ?1", params![key])?;
+    }
     sync_section_rows(conn, &sections, &now_s)?;
 
     // 0 is "only when I press Sync"; a pressed Sync still reads history.
@@ -2971,6 +2991,30 @@ mod tests {
         assert_eq!(labels_of(&conn, "m").1, 1);
         let here: Option<i64> = conn.query_row("SELECT starred_here FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(here, None, "Gmail's change is the latest word");
+    }
+
+    /// 2.114.0: "co a ako prijat" - a folder marko does not read is not
+    /// walked and nothing new from it is queued, unless he starred it.
+    #[test]
+    fn a_folder_left_out_is_not_walked_and_its_new_mail_not_queued() {
+        let conn = test_conn();
+        set_setting(&conn, mail::MAIL_SKIP_FOLDERS_KEY, "spam,promotions,nonsense").unwrap();
+        assert_eq!(mail::skipped_folders(&conn), vec!["spam", "promotions"], "only what can be left out");
+        let events = vec![
+            HistoryEvent::Added { id: "sp".into(), labels: vec!["spam".into()] },
+            HistoryEvent::Added { id: "promo".into(), labels: vec!["inbox".into(), "category_promotions".into()] },
+            HistoryEvent::Added { id: "starred_promo".into(), labels: vec!["category_promotions".into(), "starred".into()] },
+            HistoryEvent::Added { id: "in".into(), labels: vec!["inbox".into()] },
+        ];
+        apply_history(&conn, "me", &events, NOW).unwrap();
+        assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["starred_promo", "in"]);
+        let keys: Vec<String> = plan_sections("all", &[], &[], "")
+            .into_iter()
+            .filter(|s| !mail::skipped_folders(&conn).contains(&s.key))
+            .map(|s| s.key)
+            .collect();
+        assert!(!keys.iter().any(|k| k == "spam" || k == "promotions"), "{keys:?}");
+        assert!(keys.iter().any(|k| k == "trash"));
     }
 
     /// Scenario 8.

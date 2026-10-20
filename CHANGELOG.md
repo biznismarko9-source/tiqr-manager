@@ -16,6 +16,72 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.114.0 - Jednoduché webhooky, správne meno kupujúceho, hromadné mazanie, AI upratanie Promotions, viac nastavení mailu
+
+**Meno vo webhooku.** Pri viagogo maili „Ticket Holder Details / Full Name:
+Luis Somoza" Discord ukázal „Ticket Holder: Details": nadpis sa čítal ako
+meno a skutočné meno sa už nezmestilo. Teraz platí:
+
+- Riadky „Menovka: hodnota" (s dvojbodkou) sa čítajú prvé a majú prednosť
+  pred riadkami tabuľky bez dvojbodky.
+- Slová nadpisov (Details, Information, Summary...) nie sú nikdy hodnota.
+- Výsledok pri tomto maili je „Full Name: Luis Somoza" a „Email Address:
+  d1jedi@aol.com".
+- Osobné údaje sa ukazujú len v maili, ktorý žiada poslať lístky niekomu,
+  alebo pri menovke, ktorá kupujúceho priamo menuje (Ticket holder, Buyer,
+  Recipient). Potvrdenie objednávky, ktoré ťa oslovuje menom, ich nemá.
+
+**Jednoduché webhooky.** Každá správa v Discorde je nadpis a pár krátkych
+riadkov, bez mriežky polí:
+
+- Nákup: „2 tickets bought on Ticketmaster for €225.00", 📅 dátum a miesto,
+  💺 sedadlá.
+- Predaj: suma, zisk a ROI, dátum, sedadlá.
+- Event: dátum a miesto, lístky (koľko, na sklade, predané), nakúpené a
+  predané.
+- Financie: suma a miesto, dátum, účet, Business/Personal, poznámka.
+- Mail: odosielateľ · lístky · suma. Ďalej 📤 komu (spoiler), ⏰ dokedy,
+  🎫 event, 💶 iná cena a 💺 sedadlá. Úvodné slová mailu sú tam len vtedy,
+  keď nič lepšie nie je známe.
+- Číslo objednávky je pri logu dole.
+
+**Hromadné mazanie.** Nad zoznamom je *Select all*, potom *Select all 1,840*
+pre celý priečinok (nie len načítanú stranu), a *Delete*. Delete presúva do
+Koša a pri viac ako 50 mailoch sa najprv opýta. Z Koša *Delete N forever*.
+Všetko sa robí v jednej transakcii, takže aj tisíce mailov idú hneď.
+
+**AI upratanie Promotions.** V priečinku Promotions je *Clean up with AI*:
+
+- Bez AI a zadarmo sa vždy ponechá mail s hviezdičkou, od predajcu lístkov,
+  s kódom, rozpoznaný ako objednávka alebo predaj, alebo mail, ktorý si
+  presunul.
+- Zvyšok ide na najlacnejší model: doména odosielateľa (nie adresa),
+  predmet a pár slov náhľadu, 60 mailov na dopyt, bez premýšľania, s
+  najnižším úsilím. Odpoveď je jedno písmeno na mail.
+- Každý mail sa kontroluje len raz. 1000 promotions stojí približne cent.
+- Okno ukáže „isto junk" (zaškrtnuté) a „neviem" (nezaškrtnuté), so
+  zhrnutím a cenou.
+- Nič sa nepresunie bez tvojho kliknutia na *Move N to Trash*; z Koša sa
+  dá všetko vrátiť.
+
+**Viac nastavení mailu** (Mail → Settings):
+
+- **What is read**: či TIQR vôbec číta Promotions, Spam a Kôš. Vypnutý
+  priečinok sa nečíta a nové maily z neho sa nesťahujú; s hviezdičkou alebo
+  v tvojom štítku áno.
+- **Rules**: pole *Sender, subject or preview*, akcia *Star it* a počet
+  mailov, ktoré by pravidlo chytilo, priamo pri písaní.
+- **Muted senders**: zoznam, pridanie adresy alebo domény na 1/7/30 dní
+  alebo navždy, *Unmute*.
+- **Discord**: či sa dôležité maily posielajú samy a ktoré druhy (predaje,
+  nákupy, výplaty a refundy, zrušenia a zmeny, aktualizácie objednávok).
+  Ďalej čo správa nesie: kľúčové údaje, osobné údaje (vypnuté = nikdy sa
+  nepošlú) a úvodné slová.
+
+`cargo test` 1577 prešlo (4 ignorované, ako doteraz), `npm test` 38, build v poriadku; obrazovky (výber
+všetkého, potvrdenie, AI upratanie, nové nastavenia) skontrolované v
+prehliadači. Žiadna nová migrácia, ďalšia je 047.
+
 ## 2.113.1 - Opravy po 2.113.0 a mail: kľúčové údaje, stiahnutie z odkazu, stíšenie, hviezdičky, zmeny z Gmailu
 
 **Finance → Transactions už nie je rozbité.** Stĺpce Category a Amount sa

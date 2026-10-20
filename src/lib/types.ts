@@ -1353,6 +1353,25 @@ export interface NotificationStatus {
   discordMailSet: boolean;
   /** 2.113.0: what posts by itself, per kind. */
   discordAuto: DiscordAutoConfig;
+  /** 2.114.0: which mail is passed on, and what its message carries. */
+  discordMailOptions: DiscordMailConfig;
+}
+
+/** 2.114.0: "co posielat dalej, ako posielat" (commands/discord.rs). */
+export interface DiscordMailConfig {
+  sales: boolean;
+  purchases: boolean;
+  /** Payouts and refunds. */
+  money: boolean;
+  /** Cancellations and event changes. */
+  changes: boolean;
+  /** "Your tickets are ready", transfers, delivery updates. */
+  orderUpdates: boolean;
+  keyDetails: boolean;
+  /** Names, e-mails, phones, addresses - always as spoilers. Off: never sent. */
+  personal: boolean;
+  /** The opening words, when nothing better is known. */
+  preview: boolean;
 }
 
 /** 2.113.0: which records announce themselves on Discord when they are
@@ -1390,6 +1409,8 @@ export interface NotificationConfigInput {
   /** 2.113.0. An empty string removes the webhook. */
   discordMail?: string | null;
   discordAuto?: DiscordAutoConfig | null;
+  /** 2.114.0. */
+  discordMailOptions?: DiscordMailConfig | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
@@ -2863,6 +2884,8 @@ export interface MailConnectionStatus {
    *  senders only). */
   scope: "all" | "known";
   unreadCount: number;
+  /** 2.114.0: folders TIQR does not read at all. */
+  skipFolders: ("promotions" | "spam" | "trash")[];
   /** What the SYNC may do unattended, per record kind. `manual` is the
    *  default and the one marko described: the proposal waits for his
    *  button. `auto` only ever acts on a proposal that is already ready. */
@@ -2953,13 +2976,14 @@ export interface MailRule {
   id: string;
   position: number;
   enabled: boolean;
-  field: "from" | "subject" | "preview";
+  /** 2.114.0: `any` - the sender, the subject or the preview. */
+  field: "from" | "subject" | "preview" | "any";
   matchKind: "contains" | "equals" | "starts" | "ends";
   needle: string;
   /** Every action is LOCAL to TIQR. The Gmail scope is read-only, so none
    *  of these touches the mailbox at Google. 2.113.0: `move:<place>` files
    *  the message in TIQR - `move:finances`, `move:label_8`, `move:tiqr_2`. */
-  action: "trash" | "read" | "review" | "keep" | `move:${string}`;
+  action: "trash" | "read" | "review" | "keep" | "star" | `move:${string}`;
   createdAt: string;
   hits: number;
   lastHitAt: string | null;

@@ -287,6 +287,8 @@ pub fn run() {
             commands::mail::list_mail_folder_ids,
             commands::mail_cleanup::scan_promotions,
             commands::mail_cleanup::list_promo_suggestions,
+            commands::mail::set_mail_skip_folders,
+            commands::mail::count_mail_rule_matches,
             commands::mail_view::mail_ai,
             commands::mail::set_mail_read,
             commands::mail::set_mail_scope,

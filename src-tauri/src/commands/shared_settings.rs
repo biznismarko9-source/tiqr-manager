@@ -64,6 +64,8 @@ pub(crate) const MAIL: Group = Group {
         "mail_remote_images",
         // 2.113.1: muted senders (mail.rs).
         "mail_muted",
+        // 2.114.0: folders not read at all (mail.rs).
+        "mail_skip_folders",
     ],
     tables: &["mail_rules", "mail_senders"],
 };

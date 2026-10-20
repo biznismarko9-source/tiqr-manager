@@ -960,6 +960,10 @@ export const api = {
   /** Gmail's own search syntax, appended to the window. Rejected rather
    *  than half-applied when brackets or quotes do not balance. */
   setMailCustomQuery: (query: string) => invoke<void>("set_mail_custom_query", { query }),
+  /** 2.114.0: folders TIQR does not read at all. */
+  setMailSkipFolders: (folders: string[]) => invoke<MailConnectionStatus>("set_mail_skip_folders", { folders }),
+  /** 2.114.0: how many messages already here a rule would act on. */
+  countMailRuleMatches: (rule: MailRule) => invoke<number>("count_mail_rule_matches", { rule }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),

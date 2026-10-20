@@ -30,6 +30,13 @@ from old reports.
   until marko enables Pages (Settings -> Pages -> Deploy from a branch ->
   `main` / `/docs`). The Discord logo no longer depends on it.
 
+- **Promotions cleanup and the new webhooks (2.114.0): checked with fakes
+  only.** The AI sorting was not run against the real API here (no key in
+  this environment); its request shape follows the API reference and is
+  unit-tested, and an answer that cannot be read leaves a message "not
+  sure", never junk. Discord's new compact messages were checked as JSON in
+  tests, not in a real Discord client.
+
 - **A star set in TIQR stays on that computer (2.113.1).** The Gmail access
   is read-only, so the star does not reach Gmail and the other computer does
   not see it (read state and moves behave the same). Reading a mail in TIQR
