@@ -7,7 +7,7 @@ purpose and documented, it belongs in `PROTECTED_AREAS.md`, not here.
 
 This file starts clean as of 2.1.9 rather than being backfilled from the
 project's full history - the detailed per-release history already exists
-in the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files at the repo root, and
+in the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files in `history/`, and
 mining ~105 of them for anything still-open would itself be the kind of
 full-repo audit this protocol exists to avoid. See CURRENT_STATE.md's
 "Known task-list debt" note for a short list of old, un-triaged task
@@ -21,6 +21,19 @@ still-reproducible gap in code that hasn't changed since, not a backfill
 from old reports.
 
 ## Open
+
+- **Mail reader (2.113.0): not run against a real Gmail mailbox, a real
+  Discord server or WebView2 on real Windows** - only fakes in the Rust
+  tests and screens in Chromium with a mocked backend. The PDF preview
+  relies on the webview's own PDF viewer; if it shows nothing, Open still
+  works.
+- **Mail: the paperclip shows only after a message was opened once** -
+  `has_attachments` is learned from the full message, and the list is read
+  as metadata only. Reading every message in full to know would cost far
+  more Gmail quota and disk.
+- **Mail: pictures from the web are fetched at the first open**, so a sender
+  can see that first download (tracking pixels are dropped, later opens
+  read TIQR's copy). Turning "Copy pictures from the web" off avoids it.
 
 - **Live sync (2.112.0): newest edit wins per RECORD, not per field.** Two
   computers editing different fields of the same order within the same few

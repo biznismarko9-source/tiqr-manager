@@ -316,7 +316,14 @@ pub(crate) fn create_finance_entry_impl(conn: &Connection, input: &FinanceEntryI
 #[tauri::command]
 pub fn create_finance_entry(state: State<AppState>, input: FinanceEntryInput) -> AppResult<FinanceEntry> {
     let conn = state.db.lock().unwrap();
-    create_finance_entry_impl(&conn, &input)
+    let entry = create_finance_entry_impl(&conn, &input)?;
+    // 2.113.0: the Finance channel hears about it (commands/discord.rs).
+    crate::commands::discord::announce(
+        &conn,
+        crate::commands::discord::Subject::Finance(entry.id),
+        crate::commands::discord::Occasion::Created,
+    );
+    Ok(entry)
 }
 
 /// Core logic behind `update_finance_entry` - full-row update (every editable

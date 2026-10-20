@@ -20,7 +20,9 @@ const TONE_BADGE: Record<"ok" | "busy" | "warn" | "off", string> = {
   off: "available",
 };
 
-export function LiveSyncCard() {
+/** `embedded`: drawn inside Settings' one sync card (2.113.0), as its first
+ *  part, instead of as a card of its own. */
+export function LiveSyncCard({ embedded = false }: { embedded?: boolean }) {
   const toast = useToast();
   const [status, setStatus] = useState<LiveSyncStatus | null>(null);
   const [live, setLive] = useState<LiveSyncView>(liveSyncView());
@@ -46,12 +48,18 @@ export function LiveSyncCard() {
   };
 
   const enabled = status?.enabled ?? false;
+  const Shell = embedded ? EmbeddedShell : Card;
   return (
-    <Card className="p-5">
-      <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Live sync</h3>
+    <Shell className="p-5">
+      {embedded ? (
+        <p className="section-title mb-1">Live between your computers</p>
+      ) : (
+        <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Live sync</h3>
+      )}
       <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
         Every change - an order, a sale, a note, a mail rule - shows up on your other computer within seconds. If both
-        computers changed the same record, the newer change wins. Google Drive stays as the backup copy.
+        computers changed the same record, the newer change wins.
+        {embedded ? "" : " Google Drive stays as the backup copy."}
       </p>
       {!uid ? (
         <p className="text-xs text-amber-700 dark:text-amber-400">Sign in to your TIQR account first.</p>
@@ -142,6 +150,10 @@ export function LiveSyncCard() {
           )}
         </>
       )}
-    </Card>
+    </Shell>
   );
+}
+
+function EmbeddedShell({ children }: { className?: string; children: React.ReactNode }) {
+  return <div>{children}</div>;
 }

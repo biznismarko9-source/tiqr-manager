@@ -240,7 +240,9 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
               description="e.g. rent, subscriptions, insurance - add one and it'll show up here when it's due."
             />
           ) : (
-            <Card>
+            // 2.113.0: clipped like the accounts card above, so the sticky
+            // header's square corners stay inside the rounded edge.
+            <Card className="overflow-hidden p-0">
               <div className="table-flush max-h-[calc(100vh-24rem)]">
                 <table className="w-full border-collapse">
                   <thead>

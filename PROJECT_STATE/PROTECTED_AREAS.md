@@ -6,8 +6,8 @@ together per the TIQR development protocol - see `CURRENT_STATE.md` and
 `KNOWN_BUGS.md` in this same folder). A running checklist of things in
 this codebase that are easy to break, or easy to forget, when touching
 the areas they cover - not a changelog (see `CHANGELOG.md` for that going
-forward, or the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files at the repo
-root for the detailed per-release history), just traps worth knowing
+forward, or the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files in
+`history/` for the detailed per-release history), just traps worth knowing
 about before working here again. New entries go at the top, dated by the
 version that found them.
 
@@ -20,6 +20,53 @@ bootstrap of this same file, written from first-hand knowledge of the
 older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
+
+## 2.113.0 - the mail reader's two walls, secrets out of the database, the release zip
+
+- **A message's HTML reaches the screen only through BOTH walls.** Rust
+  cleans it (`mail_view.rs::builder`, ammonia: no script, handler, form,
+  frame or object; `a href` only http/https/mailto; an `img src` survives
+  only as a `tiqr-img:<sha>` token for a picture TIQR copied itself), and
+  the screen shows it only inside `MailHtmlFrame`'s iframe:
+  `sandbox="allow-same-origin"` WITHOUT `allow-scripts`, document from
+  `lib/mailText.ts::readerDocument` with the CSP meta first
+  (`default-src 'none'; img-src data:`). Never render mail HTML with
+  `dangerouslySetInnerHTML`, never add `allow-scripts` or `allow-popups`,
+  and never loosen the CSP to let the frame fetch anything - pictures are
+  fetched by Rust (`fetch_remote_image`: public IPs only, pinned resolve,
+  manual redirects, raster sniffed, size caps). `allow-same-origin` is
+  there only so the parent can measure the frame and catch its clicks;
+  with no script allowed inside, the frame cannot reach the app.
+- **Links open only through `MailReader`'s `onLink`** (http/https/mailto,
+  confirm on a text/target mismatch or in Spam/Trash). `<base
+  target="_blank">` plus the sandbox (no popups) means an uncaught click
+  does nothing - keep both.
+- **Attachments:** what a file IS comes from its bytes (`sniff_kind`), not
+  its name or declared type. Open only `pdf | image | text | office` and
+  never a `dangerous_extension`; HTML/SVG previews as text. Previews build
+  a Blob with the sniffed type (`previewType`), never the declared one.
+- **The AI helper runs only on a click**, the email is data inside
+  `<email>` tags (tags neutralised), input capped, answers kept in
+  `mail_ai`. Do not add a background or automatic AI call in Mail without
+  marko asking - "čo najmenej usagu".
+- **Credentials live in `<stem>.secrets.json`** (`secrets.rs`), not in the
+  database: the Gmail refresh token and scope, the Google sign-in token,
+  the Anthropic key. `adopt_from_database` moves any it finds on every open,
+  account switch and restore (secure_delete). A new credential goes through
+  `secrets::get/set`, never `set_setting`, or it lands in the Drive copy,
+  restore points and live sync again. `settings.rs`'s generic get/set serve
+  screen preferences only (`is_screen_preference`).
+- **Records from mail are made on ONE computer** (`mail_records_computer`,
+  shared) and only for mail after `mail_auto_<kind>_since` (per computer;
+  absent = "from now"). Both are what stop a second computer, or switching
+  Automatic on, from creating records out of old mail.
+- **The release zip is three things** - `1-CLICK-UPDATE.bat`,
+  `AKO-ZACAT.txt`, `tiqr-manager/` (the repository + `release.ps1`). The
+  `.bat` runs `tiqr-manager\release.ps1`; anything at the zip's top never
+  reaches the repository. The deletion guard runs AFTER `git add -A` on
+  `git diff --cached --name-status -M`, so a move (234 files into
+  `history/` in this release) is a rename, not a deletion. Moving it back
+  before `git add` would stop every release that moves files.
 
 ## 2.112.0 - live sync's invariants (commands/live_sync.rs, lib/liveSyncSession.ts)
 
@@ -4650,8 +4697,10 @@ to any task touching Finance, Orders, or Sheets sync.
   marko doesn't want them this time - ask, or flag the interpretation
   plainly and let him correct it, rather than silently skipping the report
   for good.
-- **Secrets stay plain text in `app_settings`** - this is an accepted,
-  existing trust boundary across the whole app (Google OAuth refresh
-  token, Pushover user key, Firebase config, etc.), not something to
-  unilaterally "fix" by adding encryption without marko explicitly asking
-  for that specific change.
+- **Secrets are plain text, but since 2.113.0 not in the database** - the
+  OAuth tokens and the Anthropic key live in `<stem>.secrets.json` beside
+  it (see the 2.113.0 entry at the top), because marko asked that tokens
+  never end up in an unwanted cloud copy. The file itself is still plain
+  text; encrypting it is a separate change to make only when marko asks
+  for that specifically. Other settings (Pushover user key, Firebase
+  config, ...) are still in `app_settings`.

@@ -1,3 +1,4 @@
+use crate::commands::discord;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
@@ -228,7 +229,10 @@ pub fn create_event(state: State<AppState>, input: EventInput) -> AppResult<Even
         ],
     )?;
     let id = conn.last_insert_rowid();
-    Ok(conn.query_row(PLAIN_SELECT_SQL, [id], map_event_plain)?)
+    let event = conn.query_row(PLAIN_SELECT_SQL, [id], map_event_plain)?;
+    // 2.113.0: the Inventory channel hears about it (commands/discord.rs).
+    discord::announce(&conn, discord::Subject::Event(id), discord::Occasion::Created);
+    Ok(event)
 }
 
 #[tauri::command]

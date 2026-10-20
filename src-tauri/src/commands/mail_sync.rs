@@ -66,15 +66,16 @@
 //! * **A crash**: the queue and every walk's page are on disk, and everything
 //!   a run writes is one transaction (`run_once`), so the next start carries
 //!   on from the same place.
+use crate::commands::mail;
 use crate::commands::mail::{
-    apply_rules, automation_mode, classify_fetched, clean_custom_query, create_from_mail_impl,
+    apply_rules, classify_fetched, clean_custom_query, create_from_mail_impl,
     domain_matches, domain_of, fetched_from_gmail, finance_of, gmail_client, load_rules, log_step,
-    mail_scope, proposal_kind_for, purge_expired, run_rule_action, safe_detail, sync_interval_seconds,
+    mail_scope, purge_expired, run_rule_action, safe_detail, sync_interval_seconds,
     upsert_message, urlencode, watched_senders, Classification, FetchedMessage, MailCategory,
     MailProviderKind, RuleSubject, FINANCE_QUERY_WORDS, FINANCE_SENDERS, GMAIL_API, MAIL_ACCOUNT_EMAIL_KEY,
     MAIL_CUSTOM_QUERY_KEY, MAIL_REFRESH_TOKEN_KEY,
 };
-use crate::commands::notifications::DiscordDestination;
+use crate::commands::discord::{self, Occasion, Subject};
 use crate::commands::sheets_sync::get_setting;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
@@ -1171,7 +1172,7 @@ fn engine_state(conn: &Connection) -> AppResult<EngineState> {
 }
 
 fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'static str>> {
-    let Some(refresh_token) = get_setting(conn, MAIL_REFRESH_TOKEN_KEY)? else {
+    let Some(refresh_token) = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY)? else {
         return Ok(Err("No mailbox is connected yet."));
     };
     let st = engine_state(conn)?;
@@ -1308,8 +1309,32 @@ fn list_page(
     Ok((ids, str_of(&v, "nextPageToken")))
 }
 
-/// METADATA only - sender, subject, date, labels and Gmail's preview. The
-/// body is fetched when a message is opened and never stored.
+/// How recent a message must be for its body to be read on arrival.
+const BODY_ON_ARRIVAL_DAYS: i64 = 14;
+/// How much of a body is read for its numbers.
+const BODY_READ_CHARS: usize = 20_000;
+
+/// 2.113.0: whether a message's body is worth downloading as it arrives.
+///
+/// Only when it could become a record - a purchase, a sale, a payout or a
+/// refund, from a marketplace TIQR knows - and it is recent enough for
+/// Automatic to act on. Its numbers are then read from the whole message
+/// instead of Gmail's 200-character preview ("metadata first, the body when
+/// it is needed"). An older one is read again when marko opens it.
+pub(crate) fn wants_body(m: &mail::FetchedMessage, c: &mail::Classification, now: DateTime<Utc>) -> bool {
+    let candidate = matches!(
+        c.category,
+        MailCategory::PurchaseConfirmation | MailCategory::SaleConfirmation | MailCategory::Payout | MailCategory::Refund
+    );
+    let recent = DateTime::parse_from_rfc3339(&m.received_at)
+        .map(|at| now.signed_duration_since(at.with_timezone(&Utc)) <= chrono::Duration::days(BODY_ON_ARRIVAL_DAYS))
+        .unwrap_or(false);
+    candidate && c.platform.is_some() && recent && !mail::is_untrusted(&m.labels)
+}
+
+/// METADATA - sender, subject, date, labels and Gmail's preview - and, for
+/// the few messages `wants_body` picks, the text of the body to read the
+/// numbers from. Nothing else is downloaded until a message is opened.
 fn fetch_batch(http: &reqwest::blocking::Client, token: &str, api: &str, ids: &[String]) -> Vec<(String, Fetched)> {
     if ids.is_empty() {
         return Vec::new();
@@ -1336,8 +1361,16 @@ fn fetch_batch(http: &reqwest::blocking::Client, token: &str, api: &str, ids: &[
                             );
                             let outcome = match gmail_json(http, token, &url) {
                                 Ok(raw) => match fetched_from_gmail(&raw) {
-                                    Some(m) => {
+                                    Some(mut m) => {
                                         let c = classify_fetched(&m);
+                                        if wants_body(&m, &c, Utc::now()) {
+                                            // A body that does not come is no failure of the
+                                            // message: it is read from its preview instead.
+                                            let full = format!("{api}/messages/{}?format=full", urlencode(id));
+                                            if let Some(payload) = gmail_json(http, token, &full).ok().and_then(|v| v.get("payload").cloned()) {
+                                                m.body_text = mail::clip_chars(&mail::extract_body_text(&payload), BODY_READ_CHARS);
+                                            }
+                                        }
                                         Fetched::Got(Box::new(m), c)
                                     }
                                     None => Fetched::Gone,
@@ -1447,6 +1480,10 @@ struct Stored {
     duplicates: i64,
     review: i64,
     new_rows: Vec<(i64, String)>,
+    /// 2.113.0: the new rows Gmail's change history brought - mail that
+    /// ARRIVED since TIQR started watching, as opposed to mail a walk through
+    /// a folder found. Only these can be announced on Discord as news.
+    arrived: Vec<i64>,
 }
 
 /// Stores what came down and settles each id in the queue: stored, gone or
@@ -1491,6 +1528,16 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
                         }
                     }
                     out.new_rows.push((row_id, msg.subject.clone()));
+                    let source: Option<String> = conn
+                        .query_row(
+                            "SELECT source FROM mail_fetch_queue WHERE provider_message_id = ?1",
+                            params![pid],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if source.as_deref() == Some("history") {
+                        out.arrived.push(row_id);
+                    }
                 } else {
                     out.duplicates += 1;
                 }
@@ -1514,46 +1561,67 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
     Ok(out)
 }
 
-/// A Discord message about a record Automatic created, sent once the run's
-/// transaction is committed - never with it open.
-type Notice = (DiscordDestination, String);
+/// A Discord message - about a record Automatic created, or an important
+/// email that just arrived - sent once the run's transaction is committed,
+/// never with it open (commands/discord.rs).
+type Notice = (Subject, Occasion);
 
-/// Only what marko has switched to `auto`, only for a proposal that is
-/// already `ready`, and never twice - the 2.106.0 rules, unchanged. Each
-/// record is made inside its own savepoint: one that fails half way leaves
-/// nothing behind, and the rest of the run goes on.
+/// At most this many emails are announced from one run, so a burst of mail
+/// is a few messages in the channel rather than a wall of them.
+const MAIL_NEWS_PER_RUN: usize = 5;
+
+/// The important emails among those that just arrived, after Automatic has
+/// had its turn - a message that became a record is announced as that record.
+fn mail_news(conn: &Connection, arrived: &[i64], now: DateTime<Utc>) -> Vec<Notice> {
+    arrived
+        .iter()
+        .filter(|id| discord::mail_is_news(conn, **id, now))
+        .take(MAIL_NEWS_PER_RUN)
+        .map(|id| (Subject::Mail(*id), Occasion::MailArrived))
+        .collect()
+}
+
+/// 2.113.0: Automatic, on new mail only, and only when every figure is
+/// certain (`mail::build_proposal` and its auto verdict). Each record is made
+/// inside its own savepoint: one that fails half way leaves nothing behind,
+/// and the rest of the run goes on. What it decided - made, or left for
+/// marko and why - is kept on the message for the screen.
 fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> {
     let mut notices = Vec::new();
-    for (row_id, subject) in new_rows {
-        let category: String = conn
+    for (row_id, _subject) in new_rows {
+        let summary = conn
             .query_row(
-                "SELECT category FROM mail_messages WHERE id = ?1 AND created_id IS NULL",
+                &format!("SELECT {} FROM mail_messages WHERE id = ?1 AND created_id IS NULL", mail::summary_columns()),
                 params![row_id],
-                |r| r.get(0),
+                |r| mail::summary_from_row(r),
             )
-            .unwrap_or_default();
-        let Some(kind) = proposal_kind_for(&category) else {
+            .optional()
+            .ok()
+            .flatten();
+        let Some(m) = summary else { continue };
+        let Ok(Some(proposal)) = mail::build_proposal(conn, &m) else { continue };
+        if proposal.mode != "auto" {
             continue;
-        };
-        if automation_mode(conn, kind) != "auto" {
+        }
+        if !proposal.auto_ready {
+            mail::record_decision(conn, *row_id, "review", &proposal.auto_reason);
             continue;
         }
         if conn.execute_batch("SAVEPOINT mail_auto_create").is_err() {
             continue;
         }
-        match create_from_mail_impl(conn, *row_id, "auto") {
+        match create_from_mail_impl(conn, *row_id, "auto", &mail::MailCreateOverrides::default()) {
             Ok((k, rid)) => {
                 let _ = conn.execute_batch("RELEASE mail_auto_create");
-                let dest = match k.as_str() {
-                    "finance" => DiscordDestination::Finance,
-                    "order" => DiscordDestination::Inventory,
-                    _ => DiscordDestination::Sales,
-                };
-                notices.push((dest, format!("{k} #{rid} - {subject}")));
+                mail::record_decision(conn, *row_id, "created", "Automatic made it - every figure matched.");
+                if let Ok(subject) = Subject::parse(&k, rid) {
+                    notices.push((subject, Occasion::FromMail { auto: true }));
+                }
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK TO mail_auto_create; RELEASE mail_auto_create");
                 let _ = log_step(conn, *row_id, "auto_create", "skipped", Some(&e.to_string()));
+                mail::record_decision(conn, *row_id, "review", &e.to_string());
             }
         }
     }
@@ -1865,7 +1933,8 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
     }
 
     let stored = store_fetched(conn, plan, net.fetched, now)?;
-    let notices = run_automation(conn, &stored.new_rows);
+    let mut notices = run_automation(conn, &stored.new_rows);
+    notices.extend(mail_news(conn, &stored.arrived, now));
     backfill_finance(conn)?;
     if history_ran {
         purge_expired(conn)?;
@@ -1978,8 +2047,8 @@ fn apply_committed(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>)
     if reclaim {
         crate::mail_store::reclaim(conn);
     }
-    for (dest, text) in notices {
-        crate::commands::notifications::notify_discord(conn, dest, "Created from email", &text, &[]);
+    for (subject, occasion) in notices {
+        discord::announce(conn, subject, occasion);
     }
     Ok(result)
 }
@@ -2851,7 +2920,7 @@ mod tests {
     #[test]
     fn history_is_read_every_twenty_seconds_while_there_is_work() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         conn.execute(
             "UPDATE mail_sync_state SET last_history_id = '100', history_checked_at = ?1 WHERE id = 1",
             params![NOW],
@@ -2869,7 +2938,7 @@ mod tests {
     #[test]
     fn lost_history_walks_every_folder_again_and_keeps_every_message() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         let sections = plan_sections("all", &[], &[], "");
         sync_section_rows(&conn, &sections, NOW).unwrap();
         conn.execute("UPDATE mail_sync_sections SET done = 1, passes = 1", []).unwrap();
@@ -2941,6 +3010,8 @@ mod tests {
     fn syncing_the_same_mail_again_creates_no_second_message_and_no_second_record() {
         let conn = test_conn();
         set_setting(&conn, "mail_auto_finance", "auto").unwrap();
+        // 2.113.0: switched on before the mail arrived.
+        set_setting(&conn, "mail_auto_finance_since", "2026-10-01T00:00:00+00:00").unwrap();
         let payout = || {
             let m = fetched_as("p1", "noreply@viagogo.com", "Your payout of 240,00 EUR is on the way", "inbox");
             let c = classify_fetched(&m);
@@ -2961,6 +3032,36 @@ mod tests {
         }
         assert_eq!(count("mail_messages"), 1);
         assert_eq!(count("finance_entries"), 1, "Automatic created it once");
+    }
+
+    /// 2.113.0: Discord hears about mail that ARRIVED - found by Gmail's
+    /// change history - never about mail a walk through a folder dug up, and
+    /// never more than a handful from one run.
+    #[test]
+    fn only_mail_that_arrived_while_tiqr_watched_is_announced_and_only_a_few_per_run() {
+        let conn = test_conn();
+        let sale = |id: &str| {
+            let m = fetched_as(id, "noreply@stubhub.com", "You sold your tickets", "inbox");
+            let c = classify_fetched(&m);
+            (id.to_string(), Fetched::Got(Box::new(m), c))
+        };
+        enqueue(&conn, "me", &ids(&["arrived"]), TIER_NEW, "history", NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["walked"]), TIER_INBOX, "inbox", NOW).unwrap();
+        let stored =
+            store_fetched(&conn, &plan_with(&["arrived", "walked"]), vec![sale("arrived"), sale("walked")], at(NOW)).unwrap();
+        let arrived: i64 = conn
+            .query_row("SELECT id FROM mail_messages WHERE provider_message_id = 'arrived'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.arrived, vec![arrived]);
+        assert_eq!(mail_news(&conn, &stored.arrived, at(NOW)), vec![(Subject::Mail(arrived), Occasion::MailArrived)]);
+
+        let burst: Vec<String> = (0..8).map(|i| format!("burst{i}")).collect();
+        enqueue(&conn, "me", &burst, TIER_NEW, "history", NOW).unwrap();
+        let got: Vec<_> = burst.iter().map(|id| sale(id)).collect();
+        let refs: Vec<&str> = burst.iter().map(String::as_str).collect();
+        let stored = store_fetched(&conn, &plan_with(&refs), got, at(NOW)).unwrap();
+        assert_eq!(stored.arrived.len(), 8);
+        assert_eq!(mail_news(&conn, &stored.arrived, at(NOW)).len(), MAIL_NEWS_PER_RUN);
     }
 
     #[test]
@@ -3150,6 +3251,49 @@ mod tests {
         }))
     }
 
+    /// 2.113.0: "metadata first, the body when it is needed". A fresh payout
+    /// from a marketplace is read from its whole body; a newsletter is not
+    /// downloaded beyond its metadata at all.
+    #[test]
+    fn only_mail_that_could_become_a_record_has_its_body_read_on_arrival() {
+        use base64::Engine;
+        let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("Thanks!\nTotal paid 240,00 EUR\nSee you");
+        let ms = now().timestamp_millis().to_string();
+        let full_calls = Arc::new(AtomicU64::new(0));
+        let counter = full_calls.clone();
+        let gmail = FakeGmail::start(move |target| {
+            let headers = |from: &str, subject: &str| json!([{"name": "From", "value": from}, {"name": "Subject", "value": subject}]);
+            if target.contains("format=full") {
+                counter.fetch_add(1, Ordering::SeqCst);
+                return ok(json!({"id": "pay", "payload": {"mimeType": "text/plain", "headers": headers("Viagogo <noreply@viagogo.com>", "Your payout is on the way"), "body": {"data": body}}}));
+            }
+            if target.starts_with("/messages/pay") {
+                return ok(json!({"id": "pay", "threadId": "t1", "labelIds": ["INBOX"], "snippet": "Your payout is on the way", "internalDate": ms,
+                                 "payload": {"headers": headers("Viagogo <noreply@viagogo.com>", "Your payout is on the way")}}));
+            }
+            ok(json!({"id": "news", "threadId": "t2", "labelIds": ["INBOX"], "snippet": "Big sale", "internalDate": ms,
+                      "payload": {"headers": headers("Shop <news@shop.example>", "Big sale this weekend")}}))
+        });
+        let got = fetch_batch(&client(), "tok", &gmail.api, &ids(&["pay", "news"]));
+        assert_eq!(full_calls.load(Ordering::SeqCst), 1, "one body, for the payout only");
+        let body_of = |id: &str| match &got.iter().find(|(i, _)| i == id).unwrap().1 {
+            Fetched::Got(m, _) => m.body_text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(body_of("pay").contains("Total paid 240,00 EUR"));
+        assert_eq!(body_of("news"), "");
+
+        // ...and its numbers come from that body, with the words they came from.
+        let conn = test_conn();
+        let Fetched::Got(m, c) = &got.iter().find(|(i, _)| i == "pay").unwrap().1 else { unreachable!() };
+        let (row, _) = upsert_message(&conn, MailProviderKind::Gmail, "me", m, c).unwrap();
+        let (amount, evidence): (Option<i64>, Option<String>) = conn
+            .query_row("SELECT extracted_amount_cents, extracted_evidence FROM mail_messages WHERE id = ?1", [row], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(amount, Some(24000));
+        assert!(evidence.unwrap().contains("Total paid 240,00 EUR"));
+    }
+
     /// Scenario 10.
     #[test]
     fn a_rate_limit_from_gmail_is_waited_out_and_the_request_tried_again() {
@@ -3186,7 +3330,7 @@ mod tests {
     #[test]
     fn a_whole_mailbox_comes_down_new_then_starred_then_labels_then_history() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
         set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
         let arrived = Arc::new(AtomicBool::new(false));
         let flag = arrived.clone();

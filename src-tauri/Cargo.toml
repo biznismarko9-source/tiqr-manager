@@ -1,6 +1,6 @@
 [package]
 name = "tiqr-manager"
-version = "2.112.0"
+version = "2.113.0"
 description = "TIQR Manager - local-first ticket reselling manager"
 authors = ["TIQR"]
 edition = "2021"
@@ -95,6 +95,14 @@ base64 = "0.22"
 # authenticates as a fixed machine identity rather than a human signing in.
 rand = "0.9"
 sha2 = "0.10"
+# 2.113.0: the mail reader. ammonia (built on html5ever, the HTML parser
+# Firefox's Servo uses) turns an email's HTML into markup with no script, no
+# event handler and no link but http/https/mailto before it reaches the
+# screen; encoding_rs reads a body in whatever charset it was sent in
+# (Slovak mail still arrives as ISO-8859-2 / Windows-1250). See
+# commands/mail_view.rs.
+ammonia = "4"
+encoding_rs = "0.8"
 
 [profile.release]
 panic = "abort"

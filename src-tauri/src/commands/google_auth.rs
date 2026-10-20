@@ -52,7 +52,7 @@ pub fn get_google_sign_in_status(state: State<'_, AppState>) -> AppResult<Google
 }
 
 fn google_sign_out_impl(conn: &Connection) -> AppResult<()> {
-    delete_setting(conn, REFRESH_TOKEN_KEY)?;
+    crate::secrets::delete(conn, REFRESH_TOKEN_KEY)?;
     delete_setting(conn, EMAIL_KEY)?;
     Ok(())
 }
@@ -115,7 +115,7 @@ pub async fn start_google_sign_in(state: State<'_, AppState>, app: tauri::AppHan
     let account = result?;
 
     let conn = state.db.lock().unwrap();
-    set_setting(&conn, REFRESH_TOKEN_KEY, &account.refresh_token)?;
+    crate::secrets::set(&conn, REFRESH_TOKEN_KEY, &account.refresh_token)?;
     set_setting(&conn, EMAIL_KEY, &account.email)?;
     sign_in_status_impl(&conn)
 }
@@ -171,7 +171,7 @@ pub fn cancel_google_sign_in(state: State<AppState>) -> AppResult<()> {
 /// the person thinks they are using, with no explanation. Surfacing it
 /// instead ("please sign in again") is the honest failure mode.
 pub(crate) fn active_oauth_access_token(conn: &Connection) -> AppResult<Option<String>> {
-    let Some(refresh_token) = get_setting(conn, REFRESH_TOKEN_KEY)? else {
+    let Some(refresh_token) = crate::secrets::get(conn, REFRESH_TOKEN_KEY)? else {
         return Ok(None);
     };
     let Some(client) = google_oauth::embedded_oauth_client() else {
@@ -259,12 +259,12 @@ mod tests {
     #[test]
     fn sign_out_forgets_both_the_refresh_token_and_the_email() {
         let conn = test_conn();
-        set_setting(&conn, REFRESH_TOKEN_KEY, "fake-refresh-token").unwrap();
+        crate::secrets::set(&conn, REFRESH_TOKEN_KEY, "fake-refresh-token").unwrap();
         set_setting(&conn, EMAIL_KEY, "marko@example.com").unwrap();
 
         google_sign_out_impl(&conn).unwrap();
 
-        assert_eq!(get_setting(&conn, REFRESH_TOKEN_KEY).unwrap(), None);
+        assert_eq!(crate::secrets::get(&conn, REFRESH_TOKEN_KEY).unwrap(), None);
         let status = sign_in_status_impl(&conn).unwrap();
         assert_eq!(status.signed_in_email, None);
     }
@@ -329,7 +329,7 @@ mod tests {
         // google_sheets::embedded_service_account's "not configured"
         // convention.
         let conn = test_conn();
-        set_setting(&conn, REFRESH_TOKEN_KEY, "fake-refresh-token").unwrap();
+        crate::secrets::set(&conn, REFRESH_TOKEN_KEY, "fake-refresh-token").unwrap();
         assert_eq!(active_oauth_access_token(&conn).unwrap(), None);
     }
 }

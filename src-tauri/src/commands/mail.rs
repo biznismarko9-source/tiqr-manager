@@ -74,8 +74,7 @@
 //! and it is the one to keep green when phase 2 adds AI extraction.
 
 use crate::commands::google_auth;
-use crate::commands::notifications::DiscordDestination;
-use crate::commands::sheets_sync::{delete_setting, get_setting, set_setting};
+use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::google_oauth;
@@ -293,39 +292,6 @@ fn looks_secret(word: &str) -> bool {
         // A long unbroken run of token-ish characters is the shape of a
         // credential, whatever it is called.
         || (word.len() >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
-}
-
-/// How much of an opened message the reading pane gets - a long newsletter's
-/// worth, not a log line's.
-pub(crate) const BODY_DISPLAY_LIMIT: usize = 100_000;
-
-/// What the reading pane shows: the same credential redaction as
-/// `safe_detail`, but with the message's LINES kept.
-///
-/// 2.110.0: an opened message used to go through `safe_detail` itself, the
-/// log-line redactor - which joins everything into one line and stops at 400
-/// bytes. So every opened mail was its first few sentences in one run of
-/// text, even though `strip_html` keeps paragraphs on purpose (2.104.0).
-pub(crate) fn readable_body(raw: &str) -> String {
-    let capped = truncate_on_char_boundary(raw, BODY_DISPLAY_LIMIT);
-    let mut out = String::with_capacity(capped.len());
-    for (i, line) in capped.split('\n').enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        let mut first = true;
-        for word in line.split_whitespace() {
-            if !first {
-                out.push(' ');
-            }
-            first = false;
-            out.push_str(if looks_secret(word) { "[redacted]" } else { word });
-        }
-    }
-    if capped.len() < raw.len() {
-        out.push_str("\n...");
-    }
-    out
 }
 
 /// Turns an HTML part into plain text.
@@ -823,13 +789,28 @@ fn looks_like_a_year(code: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Currency codes and symbols worth recognising, as `(needle, code)`.
+///
+/// 2.113.0: a letter code counts only as a word of its own - "eur" inside
+/// "Europe" or "pln" inside a longer word is not money - and a `$` with a
+/// country in front of it ("CA$", "A$") is that country's dollar. A bare `$`
+/// is still read as US dollars: that is what it means on every marketplace
+/// TIQR knows.
 const MONEY_MARKS: &[(&str, &str)] = &[
     ("eur", "EUR"), ("\u{20ac}", "EUR"),
-    ("usd", "USD"), ("$", "USD"),
+    ("usd", "USD"), ("us$", "USD"), ("ca$", "CAD"), ("c$", "CAD"), ("au$", "AUD"), ("a$", "AUD"), ("$", "USD"),
     ("gbp", "GBP"), ("\u{a3}", "GBP"),
     ("czk", "CZK"), ("k\u{10d}", "CZK"),
-    ("pln", "PLN"),
+    ("pln", "PLN"), ("z\u{142}", "PLN"),
+    ("chf", "CHF"), ("huf", "HUF"), ("sek", "SEK"), ("nok", "NOK"), ("dkk", "DKK"),
+    ("ron", "RON"), ("bgn", "BGN"), ("cad", "CAD"), ("aud", "AUD"),
 ];
+
+/// Symbols English mail writes BEFORE the number ("€40", "$12"). A code, or a
+/// symbol written after the number ("40 €", "40 EUR", "120 Kč"), is looked
+/// for the other way round first.
+fn prefers_after(needle: &str) -> bool {
+    matches!(needle, "\u{20ac}" | "\u{a3}" | "$" | "us$" | "ca$" | "c$" | "au$" | "a$")
+}
 
 /// What one message says about money.
 ///
@@ -865,110 +846,150 @@ pub(crate) struct MoneyRead {
     /// "largest amount". Shown in the UI so the reading can be argued with
     /// rather than taken on trust.
     pub basis: String,
+    /// 2.113.0: a phrase in the message SAID this is the total ("Order
+    /// total", "Celkom"). A "largest amount" reading is a guess, and a guess
+    /// never creates a record by itself (`mail::auto_verdict`).
+    pub sure: bool,
+    /// 2.113.0: the words it was read from, as the message has them - what
+    /// the screen shows next to the number.
+    pub source: String,
+    /// 2.113.0: read from the body rather than the subject or the preview.
+    pub in_body: bool,
 }
 
-/// Phrases that mean "this is the whole thing, fees included".
+/// 2.113.0: how many tickets, and the words that said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuantityRead {
+    pub n: i64,
+    pub source: String,
+    pub in_body: bool,
+}
+
+/// 2.113.0: the reference a message quotes, and the words around it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReferenceRead {
+    pub value: String,
+    pub source: String,
+    pub in_body: bool,
+}
+
+/// Everything read out of one message, each value with its evidence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Reading {
+    pub money: Option<MoneyRead>,
+    pub quantity: Option<QuantityRead>,
+    pub reference: Option<ReferenceRead>,
+    /// True when the body was read too, not only the subject and preview.
+    pub from_body: bool,
+}
+
+/// Phrases that mean "this is the whole thing, fees included". A trailing
+/// `*` is a stem ("celkov*" is celková, celkovo, celkovej...). Every phrase
+/// counts only from the start of a word: "subtotal" is not a "total".
 const TOTAL_LABELS: &[&str] = &[
-    "order total", "grand total", "total paid", "total cost", "total price",
-    "total charged", "amount paid", "amount charged", "you paid", "total due",
-    "total:", "total ", "celkom", "spolu", "celkov", "k \u{fa}hrade", "cena celkom",
+    "order total", "grand total", "total paid", "total cost", "total price", "total charged",
+    "total amount", "amount paid", "amount charged", "amount due", "you paid", "total due",
+    "total", "celkom", "spolu", "celkov*", "k \u{fa}hrade", "cena celkom", "suma celkom",
+    "gesamt*", "summe", "zaplaten*", "you will receive", "you'll receive", "payout amount",
+    "payout of", "refund of", "payment of",
 ];
 
 /// Phrases that mean the opposite - a PART, never the figure to record.
 /// An amount wearing one of these is refused as a total even if it is the
 /// only one in the message.
 const PART_LABELS: &[&str] = &[
-    "per ticket", "each", "per seat", "ticket price", "price per",
-    "za kus", "kus", "za listok", "za l\u{ed}stok", "subtotal", "medzis\u{fa}\u{10d}et",
-    "booking fee", "service fee", "delivery", "fee", "poplatok", "doprava", "vat", "dph",
+    "per ticket", "each", "per seat", "ticket price", "price per", "unit price",
+    "za kus", "kus", "za listok", "za l\u{ed}stok", "subtotal", "sub-total", "medzis\u{fa}\u{10d}et",
+    "booking fee", "service fee", "delivery", "fee", "fees", "poplatok", "poplatky", "doprava",
+    "vat", "dph", "tax", "geb\u{fc}hr*", "zzgl",
 ];
 
-/// Read the money out of a message.
-///
-/// Walks every amount it can find, asks what each one is called, and then
-/// chooses: a labelled total wins; failing that the LARGEST amount wins,
-/// because a total with fees added is by definition bigger than the parts
-/// it is made of. An amount labelled as a part never wins on its own.
-pub(crate) fn extract_money(text: &str, quantity: Option<i64>) -> Option<MoneyRead> {
-    let hay = text.to_lowercase();
-    let found = find_amounts(&hay);
-    if found.is_empty() {
-        return None;
+/// Text lowered one character at a time, so an index means the same
+/// character in both. Lowering a whole `str` can change its length (`İ` is
+/// two characters lowered), and evidence is cut from the original - the
+/// 2.108.0 lesson: **never index text with arithmetic on a different copy**.
+struct Hay {
+    orig: Vec<char>,
+    low: Vec<char>,
+}
+
+impl Hay {
+    fn new(text: &str) -> Hay {
+        let orig: Vec<char> = text.chars().collect();
+        let low = orig.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+        Hay { orig, low }
     }
 
-    // A labelled total, if the message states one.
-    let labelled = found
-        .iter()
-        .filter(|a| a.label.as_deref().is_some_and(|l| TOTAL_LABELS.contains(&l)))
-        .max_by_key(|a| a.cents);
+    fn len(&self) -> usize {
+        self.low.len()
+    }
 
-    let (chosen, basis) = match labelled {
-        // The DECISION is already made; this only names it. A window
-        // containing "order total" also contains "total ", so the longest
-        // phrase present is the honest description of what was matched.
-        Some(a) => {
-            let name = TOTAL_LABELS
-                .iter()
-                .filter(|l| hay.contains(**l))
-                .max_by_key(|l| l.len())
-                .map(|l| l.trim_end_matches([' ', ':']).to_string())
-                .or_else(|| a.label.clone())
-                .unwrap_or_else(|| "total".to_string());
-            (a, name)
+    fn letter_at(&self, i: Option<usize>) -> bool {
+        i.and_then(|i| self.low.get(i)).is_some_and(|c| c.is_alphabetic())
+    }
+
+    fn digit_at(&self, i: usize) -> bool {
+        self.low.get(i).is_some_and(|c| c.is_ascii_digit())
+    }
+
+    /// Every place `needle` occurs. A needle that starts with a letter must
+    /// start a word; one that ends with a letter must end one, unless it is
+    /// a stem (`*`).
+    fn find_all(&self, needle: &str) -> Vec<usize> {
+        let stem = needle.ends_with('*');
+        let n: Vec<char> = needle.trim_end_matches('*').chars().collect();
+        let mut out = Vec::new();
+        if n.is_empty() || n.len() > self.len() {
+            return out;
         }
-        None => {
-            // No total stated. The largest amount is the total - that is
-            // what "fees are included in it" means arithmetically. But if
-            // the ONLY amounts are explicitly parts, there is no total to
-            // report and guessing one would be worse than saying nothing.
-            let usable: Vec<&Amount> = found
-                .iter()
-                .filter(|a| !a.label.as_deref().is_some_and(|l| PART_LABELS.contains(&l)))
-                .collect();
-            if usable.is_empty() {
-                // EVERY amount is a part and no total is stated. Adding
-                // them is unsound and the first version did it anyway:
-                // "Ticket price 40 EUR / Service fee 7 EUR" for 2 tickets
-                // gave 47 as the order total and then 23,50 per ticket,
-                // which is nonsense. The message does not say whether that
-                // fee is per ticket or per order, and there is no way to
-                // tell - so nothing is reported.
-                //
-                // This is the same rule as everywhere else in this app:
-                // a missing number stays missing. marko can read the mail.
-                return None;
+        let left_word = n[0].is_alphabetic();
+        let right_word = !stem && n[n.len() - 1].is_alphabetic();
+        for i in 0..=self.len() - n.len() {
+            if self.low[i..i + n.len()] != n[..] {
+                continue;
             }
-            let pick = *usable.iter().max_by_key(|a| a.cents)?;
-            (pick, "largest amount".to_string())
+            if left_word && self.letter_at(i.checked_sub(1)) {
+                continue;
+            }
+            if right_word && self.letter_at(Some(i + n.len())) {
+                continue;
+            }
+            out.push(i);
         }
-    };
+        out
+    }
 
-    Some(MoneyRead {
-        total_cents: chosen.cents,
-        currency: chosen.currency.clone(),
-        unit_cents: quantity.filter(|q| *q > 0).map(|q| chosen.cents / q),
-        basis,
-    })
+    /// The words around `[from, to)` on their own line, for the screen.
+    fn excerpt(&self, from: usize, to: usize) -> String {
+        let len = self.orig.len();
+        let from = from.min(len);
+        let to = to.clamp(from, len);
+        let mut a = from.saturating_sub(32);
+        if let Some(nl) = self.orig[a..from].iter().rposition(|c| *c == '\n') {
+            a += nl + 1;
+        }
+        let mut b = (to + 32).min(len);
+        if let Some(nl) = self.orig[to..b].iter().position(|c| *c == '\n') {
+            b = to + nl;
+        }
+        let flat = self.orig[a..b].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+        let lead = if a > 0 && self.orig[a - 1] != '\n' { "…" } else { "" };
+        let tail = if b < len && self.orig[b] != '\n' { "…" } else { "" };
+        format!("{lead}{flat}{tail}")
+    }
 }
 
 /// A slice of `s` that can never split a character in half.
 ///
 /// 2.108.0 - THIS IS THE CRASH marko kept hitting ("a pada apka stale").
-///
 /// Four places took a window around a currency mark with plain byte
-/// arithmetic - `&hay[pos.saturating_sub(28)..pos]`. In English that is
-/// fine. One `€`, one Slovak diacritic or one emoji near the price and the
-/// offset lands mid-character, and slicing a `&str` there is an immediate
-/// panic: "byte index is not a char boundary".
+/// arithmetic, and one `€` or emoji near a price made the offset land
+/// mid-character: an immediate panic, inside `upsert_message`, with the
+/// database mutex held - so every later lock in the app panicked too.
 ///
-/// The panic happened inside `upsert_message`, which runs while the
-/// database mutex is held - so the mutex was POISONED and every later
-/// `state.db.lock()` in the whole app panicked too. One foreign character
-/// in one marketing email killed the app, not just that message.
-///
-/// Same class as the `strip_html` byte/char bug fixed in 2.101.0, which I
-/// then reintroduced here. The rule, written down this time: **never index
-/// a `&str` with arithmetic - go through this.**
+/// 2.113.0: the readers below work on characters (`Hay`) and no longer cut
+/// a `&str` at all. This stays as the rule for anything that still has to.
+#[cfg_attr(not(test), allow(dead_code))]
 fn safe_slice(s: &str, from: usize, to: usize) -> &str {
     let mut a = from.min(s.len());
     let mut b = to.min(s.len());
@@ -986,67 +1007,117 @@ fn safe_slice(s: &str, from: usize, to: usize) -> &str {
     &s[a..b]
 }
 
-/// The last money-shaped number in `s`, as integer cents.
-///
-/// 2.107.1: this was deleted by accident when `extract_money` was rewritten
-/// around the total - the rewrite replaced a block that happened to contain
-/// it, and `find_amounts` kept calling it. CI caught it as E0425. None of
-/// my own checks cover "a function that is called but no longer exists",
-/// which is why `undefined_fns.py` now does.
-///
-/// LAST, not first, because the run of text handed in is what precedes a
-/// currency mark - "total of 2 tickets 440,00" puts the amount at the end.
-///
-/// Separator handling is the fiddly part: two digits after `,` or `.` is a
-/// decimal, three is a thousands group and the number simply continues. A
-/// space is only ever a thousands separator, never a decimal point.
-fn amount_cents_in(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    let mut best: Option<i64> = None;
-    let mut i = 0usize;
-    while i < b.len() {
-        if !b[i].is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut whole = String::new();
-        let mut frac = String::new();
-        let mut seen_sep = false;
-        while i < b.len() {
-            let c = b[i];
-            if c.is_ascii_digit() {
-                if seen_sep {
-                    frac.push(c as char);
-                } else {
-                    whole.push(c as char);
-                }
-                i += 1;
-            } else if (c == b',' || c == b'.' || c == b' ')
-                && !seen_sep
-                && b.get(i + 1).is_some_and(|n| n.is_ascii_digit())
-            {
-                let run = b[i + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
-                if run == 2 && c != b' ' {
-                    seen_sep = true;
-                } else if run != 3 {
-                    break;
-                }
-                i += 1;
-            } else {
-                break;
+fn is_space(c: char) -> bool {
+    matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\t')
+}
+
+fn is_group_sep(c: char) -> bool {
+    matches!(c, ',' | '.' | ' ' | '\u{a0}' | '\u{202f}' | '\'')
+}
+
+/// "1 234,50" -> 123450. `None` for anything that is not ONE amount written
+/// one consistent way: three digits after every thousands separator, the
+/// same separator every time, and at most two decimals after the last `,`
+/// or `.`. "12 40,00" is two numbers, not twelve hundred and forty.
+pub(crate) fn parse_amount(t: &[char]) -> Option<i64> {
+    if t.is_empty() || !t[0].is_ascii_digit() || !t[t.len() - 1].is_ascii_digit() {
+        return None;
+    }
+    let mut groups: Vec<String> = vec![String::new()];
+    let mut seps: Vec<char> = Vec::new();
+    for &c in t {
+        if c.is_ascii_digit() {
+            groups.last_mut()?.push(c);
+        } else if is_group_sep(c) {
+            if groups.last()?.is_empty() {
+                return None;
             }
-        }
-        if i > start && !whole.is_empty() && whole.len() <= 9 {
-            if let (Ok(w), Ok(f)) = (
-                whole.parse::<i64>(),
-                if frac.is_empty() { Ok(0) } else { frac.parse::<i64>() },
-            ) {
-                best = Some(w * 100 + f);
-            }
+            seps.push(c);
+            groups.push(String::new());
+        } else {
+            return None;
         }
     }
-    best
+    let mut frac = String::new();
+    if let (Some(&last), Some(tail)) = (seps.last(), groups.last()) {
+        if matches!(last, ',' | '.') && (1..=2).contains(&tail.len()) {
+            frac = groups.pop()?;
+            seps.pop();
+        }
+    }
+    if let Some(&g) = seps.first() {
+        if seps.iter().any(|s| *s != g)
+            || !(1..=3).contains(&groups[0].len())
+            || groups[1..].iter().any(|x| x.len() != 3)
+        {
+            return None;
+        }
+    }
+    let whole = groups.concat();
+    if whole.is_empty() || whole.len() > 9 {
+        return None;
+    }
+    let w: i64 = whole.parse().ok()?;
+    let f: i64 = match frac.len() {
+        0 => 0,
+        1 => frac.parse::<i64>().ok()? * 10,
+        _ => frac.parse().ok()?,
+    };
+    Some(w * 100 + f)
+}
+
+/// The amount written right after `i` - at most two spaces in between - as
+/// `(cents, start, end)`.
+fn number_after(h: &Hay, i: usize) -> Option<(i64, usize, usize)> {
+    let mut j = i;
+    let mut gap = 0;
+    while j < h.len() && is_space(h.low[j]) && gap < 2 {
+        j += 1;
+        gap += 1;
+    }
+    if !h.digit_at(j) {
+        return None;
+    }
+    let mut end = j;
+    while end < h.len() {
+        let c = h.low[end];
+        if c.is_ascii_digit() || (is_group_sep(c) && h.digit_at(end + 1)) {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    // The longest run that is one valid amount, never cut inside digits.
+    (j + 1..=end)
+        .rev()
+        .filter(|e| h.low[e - 1].is_ascii_digit() && !(*e < end && h.low[*e].is_ascii_digit()))
+        .find_map(|e| parse_amount(&h.low[j..e]).map(|c| (c, j, e)))
+}
+
+/// The amount written right before `i`, the same way.
+fn number_before(h: &Hay, i: usize) -> Option<(i64, usize, usize)> {
+    let mut k = i;
+    let mut gap = 0;
+    while k > 0 && is_space(h.low[k - 1]) && gap < 2 {
+        k -= 1;
+        gap += 1;
+    }
+    if k == 0 || !h.low[k - 1].is_ascii_digit() {
+        return None;
+    }
+    let end = k;
+    let mut start = k;
+    while start > 0 {
+        let c = h.low[start - 1];
+        if c.is_ascii_digit() || (is_group_sep(c) && start >= 2 && h.low[start - 2].is_ascii_digit()) {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    (start..end)
+        .filter(|s| h.low[*s].is_ascii_digit() && !(*s > start && h.low[*s - 1].is_ascii_digit()))
+        .find_map(|s| parse_amount(&h.low[s..end]).map(|c| (c, s, end)))
 }
 
 #[derive(Debug, Clone)]
@@ -1055,97 +1126,421 @@ struct Amount {
     currency: String,
     /// The total- or part-phrase closest in front of it, if any.
     label: Option<String>,
+    /// Where it was found, from its label (when it has one) to its end.
+    span: (usize, usize),
+    /// In the subject or Gmail's preview, rather than deeper in the body.
+    head: bool,
+    /// In the subject itself - the head's first line.
+    in_subject: bool,
 }
 
-/// Every `(amount, currency)` in the text, each tagged with the phrase that
-/// precedes it.
-fn find_amounts(hay: &str) -> Vec<Amount> {
-    let mut out: Vec<Amount> = Vec::new();
-    for (needle, code) in MONEY_MARKS {
-        let mut from = 0usize;
-        while let Some(rel) = hay[from..].find(needle) {
-            let pos = from + rel;
-            let before = safe_slice(&hay, pos.saturating_sub(28), pos);
-            let after_start = (pos + needle.len()).min(hay.len());
-            let after = safe_slice(&hay, after_start, after_start + 20);
-            if let Some(cents) = amount_cents_in(before).or_else(|| amount_cents_in(after)) {
-                out.push(Amount {
-                    cents,
-                    currency: (*code).to_string(),
-                    label: label_before(hay, pos),
-                });
+/// Every total- or part-phrase in the text, found once: `(start, end, len,
+/// text)`, where a stem reaches to the end of its word.
+fn labels_in(h: &Hay) -> Vec<(usize, usize, usize, String)> {
+    let mut out = Vec::new();
+    for label in TOTAL_LABELS.iter().chain(PART_LABELS.iter()) {
+        let text = label.trim_end_matches('*');
+        let n = text.chars().count();
+        for at in h.find_all(label) {
+            let mut end = at + n;
+            if label.ends_with('*') {
+                while end < h.len() && h.low[end].is_alphabetic() {
+                    end += 1;
+                }
             }
-            from = pos + needle.len();
+            out.push((at, end, n, text.to_string()));
         }
     }
-    // Two marks can describe one amount ("EUR 40 €"); one per value is enough.
-    out.sort_by_key(|a| a.cents);
-    out.dedup_by_key(|a| a.cents);
     out
 }
 
-/// The total- or part-phrase nearest in front of `pos`, within a line's
-/// worth of text. Nearest, not first: "total price per ticket" ends in the
-/// phrase that actually describes the number.
-fn label_before(hay: &str, pos: usize) -> Option<String> {
-    let window = safe_slice(hay, pos.saturating_sub(48), pos);
-    TOTAL_LABELS
+/// The phrase nearest in front of `pos`, on the same line and within a few
+/// words. Nearest, not first: "total price per ticket" ends in the phrase
+/// that actually describes the number. Of two phrases ending at the same
+/// place ("order total" and "total"), the longer one names it. A phrase in
+/// front of an EARLIER amount (`after` is where that one ended) belongs to
+/// that one: in "Order total 94,00 EUR (2 350,00 CZK)" only the first is it.
+fn label_before(h: &Hay, labels: &[(usize, usize, usize, String)], pos: usize, after: usize) -> Option<(String, usize)> {
+    let mut from = pos.saturating_sub(48).max(after.min(pos));
+    if let Some(nl) = h.low[from..pos].iter().rposition(|c| *c == '\n') {
+        from += nl + 1;
+    }
+    labels
         .iter()
-        .chain(PART_LABELS.iter())
-        .filter_map(|l| window.rfind(l).map(|at| (at, (*l).to_string())))
-        .max_by_key(|(at, _)| *at)
-        .map(|(_, l)| l)
+        .filter(|(at, end, _, _)| *at >= from && *end <= pos)
+        .max_by_key(|(_, end, len, _)| (*end, *len))
+        .map(|(at, _, _, text)| (text.clone(), *at))
+}
+
+fn is_total_label(l: &str) -> bool {
+    TOTAL_LABELS.iter().any(|t| t.trim_end_matches('*') == l)
+}
+
+fn is_part_label(l: &str) -> bool {
+    PART_LABELS.iter().any(|t| t.trim_end_matches('*') == l)
+}
+
+/// Every amount in the text with the phrase in front of it. A number belongs
+/// to one currency mark only - "EUR 40 €" is one amount - and where two marks
+/// overlap ("US$" and the `$` inside it) the longer one is the mark.
+fn find_amounts(h: &Hay, head: bool) -> Vec<Amount> {
+    let mut marks: Vec<(usize, usize, &str, &str)> = Vec::new();
+    for (needle, code) in MONEY_MARKS {
+        let len = needle.chars().count();
+        for at in h.find_all(needle) {
+            marks.push((at, len, needle, code));
+        }
+    }
+    marks.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut kept: Vec<(usize, usize, &str, &str)> = Vec::new();
+    for m in marks {
+        if !kept.iter().any(|k| m.0 >= k.0 && m.0 + m.1 <= k.0 + k.1) {
+            kept.push(m);
+        }
+    }
+    let labels = labels_in(h);
+    let subject_end = if head { h.low.iter().position(|c| *c == '\n').unwrap_or(h.len()) } else { 0 };
+    let mut claimed: Vec<(usize, usize)> = Vec::new();
+    let mut out = Vec::new();
+    let mut prev_end = 0usize;
+    for (at, len, needle, code) in kept {
+        let free = |n: Option<(i64, usize, usize)>, claimed: &[(usize, usize)]| {
+            n.filter(|(_, s, e)| !claimed.iter().any(|(cs, ce)| s < ce && cs < e))
+        };
+        let after = free(number_after(h, at + len), &claimed);
+        let before = free(number_before(h, at), &claimed);
+        let pick = if prefers_after(needle) { after.or(before) } else { before.or(after) };
+        let Some((cents, s, e)) = pick else { continue };
+        claimed.push((s, e));
+        let first = s.min(at);
+        let label = label_before(h, &labels, first, prev_end);
+        let start = label.as_ref().map(|(_, at)| *at).unwrap_or(first);
+        prev_end = prev_end.max(e.max(at + len));
+        out.push(Amount {
+            cents,
+            currency: (*code).to_string(),
+            label: label.map(|(l, _)| l),
+            span: (start, e.max(at + len)),
+            head,
+            in_subject: head && first < subject_end,
+        });
+    }
+    out
+}
+
+/// Read the money out of a message's head (subject and preview) and body.
+///
+/// Walks every amount it can find, asks what each one is called, and then
+/// chooses: a labelled total wins - the most specific label, then the
+/// largest; failing that the LARGEST amount in the head wins, in the
+/// currency most of the head's amounts are in, because a total with fees
+/// added is by definition bigger than the parts it is made of. An amount
+/// labelled as a part never wins on its own, and a body without a labelled
+/// total is not guessed from: a long body quotes amounts that are no part of
+/// the purchase ("earn up to €500").
+fn read_money(head: &Hay, body: &Hay, quantity: Option<i64>) -> Option<MoneyRead> {
+    let mut found = find_amounts(head, true);
+    found.extend(find_amounts(body, false));
+    let text_of = |a: &Amount| if a.head { head.excerpt(a.span.0, a.span.1) } else { body.excerpt(a.span.0, a.span.1) };
+
+    let labelled = found
+        .iter()
+        .filter(|a| a.label.as_deref().is_some_and(is_total_label))
+        .max_by_key(|a| (a.label.as_ref().map(|l| l.chars().count()).unwrap_or(0), a.cents));
+    let (chosen, basis, sure) = match labelled {
+        Some(a) => (a, a.label.clone().unwrap_or_else(|| "total".to_string()), true),
+        None => {
+            // EVERY amount is a part and no total is stated: adding them is
+            // unsound. "Ticket price 40 EUR / Service fee 7 EUR" for 2
+            // tickets does not say whether that fee is per ticket or per
+            // order, so nothing is reported. A missing number stays missing.
+            let usable: Vec<&Amount> =
+                found.iter().filter(|a| a.head && !a.label.as_deref().is_some_and(is_part_label)).collect();
+            // ONE amount in the subject and no other there: the subject is the
+            // message's own summary of itself ("Your payout of 240,00 EUR").
+            let in_subject: Vec<&&Amount> = usable.iter().filter(|a| a.in_subject).collect();
+            if let [only] = in_subject.as_slice() {
+                let a: &Amount = only;
+                return Some(MoneyRead {
+                    total_cents: a.cents,
+                    currency: a.currency.clone(),
+                    unit_cents: quantity.filter(|q| *q > 0).map(|q| a.cents / q),
+                    basis: "the amount in the subject".to_string(),
+                    sure: true,
+                    source: text_of(a),
+                    in_body: false,
+                });
+            }
+            let mut tally: Vec<(&str, usize)> = Vec::new();
+            for a in &usable {
+                match tally.iter_mut().find(|(c, _)| *c == a.currency) {
+                    Some(t) => t.1 += 1,
+                    None => tally.push((a.currency.as_str(), 1)),
+                }
+            }
+            let mut main = *tally.first()?;
+            for t in &tally[1..] {
+                if t.1 > main.1 {
+                    main = *t;
+                }
+            }
+            let pick = *usable.iter().filter(|a| a.currency == main.0).max_by_key(|a| a.cents)?;
+            (pick, "largest amount".to_string(), false)
+        }
+    };
+    Some(MoneyRead {
+        total_cents: chosen.cents,
+        currency: chosen.currency.clone(),
+        unit_cents: quantity.filter(|q| *q > 0).map(|q| chosen.cents / q),
+        basis,
+        sure,
+        source: text_of(chosen),
+        in_body: !chosen.head,
+    })
+}
+
+/// Read the money out of one piece of text (all of it treated as the head).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn extract_money(text: &str, quantity: Option<i64>) -> Option<MoneyRead> {
+    read_money(&Hay::new(text), &Hay::new(""), quantity)
+}
+
+/// Words for a ticket, in the languages marko's mail comes in.
+const TICKET_WORDS: &[&str] = &[
+    "tickets", "ticket", "seats", "seat", "tix", "listky", "l\u{ed}stky", "l\u{ed}stok", "listok",
+    "l\u{ed}stkov", "listkov", "vstupenky", "vstupenka", "vstupeniek", "vstupenku", "billets", "billet",
+    "entradas", "entrada", "karten", "eintrittskarten", "biglietti", "bilety", "bilet\u{f3}w",
+];
+
+/// Labels a count follows: "Quantity: 2", "Počet: 2", "Tickets: 2".
+const QUANTITY_LABELS: &[&str] = &["number of tickets", "quantity", "qty", "po\u{10d}et", "anzahl", "menge"];
+
+fn word_at(h: &Hay, j: usize, words: &[&str]) -> Option<usize> {
+    words.iter().find_map(|w| {
+        let n: Vec<char> = w.chars().collect();
+        let fits = j + n.len() <= h.len() && h.low[j..j + n.len()] == n[..] && !h.letter_at(Some(j + n.len()));
+        fits.then_some(n.len())
+    })
+}
+
+/// A count of 1 to 3 digits starting at `j` that is a number of its own -
+/// not part of "#123", "12-34", "2,50" or "2nd".
+fn count_at(h: &Hay, j: usize) -> Option<(i64, usize)> {
+    let mut e = j;
+    while e < h.len() && h.low[e].is_ascii_digit() {
+        e += 1;
+    }
+    if e == j || e - j > 3 || h.letter_at(Some(e)) || (is_group_sep(*h.low.get(e).unwrap_or(&' ')) && h.digit_at(e + 1)) {
+        return None;
+    }
+    let n: i64 = h.low[j..e].iter().collect::<String>().parse().ok()?;
+    (1..=200).contains(&n).then_some((n, e))
+}
+
+/// Every count of tickets the text states, as `(n, start, end)`.
+fn quantities_in(h: &Hay) -> Vec<(i64, usize, usize)> {
+    let mut out = Vec::new();
+    // "2 tickets", "2x VIP tickets", "2 × Standing ticket", "Vaše 2 lístky".
+    let mut i = 0;
+    while i < h.len() {
+        let standalone = i == 0 || is_space(h.low[i - 1]) || matches!(h.low[i - 1], '(' | '"' | '\'' | '\u{201e}' | '\u{ab}' | '\n');
+        if !h.digit_at(i) || !standalone {
+            i += 1;
+            continue;
+        }
+        let Some((n, mut j)) = count_at(h, i) else {
+            while h.digit_at(i) {
+                i += 1;
+            }
+            continue;
+        };
+        let start = i;
+        i = j;
+        let skip_spaces = |mut j: usize| {
+            let s = j;
+            while j < h.len() && is_space(h.low[j]) && j - s < 2 {
+                j += 1;
+            }
+            j
+        };
+        j = skip_spaces(j);
+        if matches!(h.low.get(j), Some('x' | '\u{d7}')) && !h.letter_at(Some(j + 1)) {
+            j = skip_spaces(j + 1);
+        }
+        for _ in 0..=2 {
+            if let Some(len) = word_at(h, j, TICKET_WORDS) {
+                out.push((n, start, j + len));
+                break;
+            }
+            let ws = j;
+            while j < h.len() && h.low[j].is_alphabetic() {
+                j += 1;
+            }
+            let after = skip_spaces(j);
+            if j == ws || j - ws > 14 || after == j {
+                break;
+            }
+            j = after;
+        }
+    }
+    // "Quantity: 2", "Počet 2", and "Tickets: 2" / "Ticket x 2" - the ticket
+    // words only with a colon or an x, because "Ticket 1 of 2" is a name.
+    let labelled = QUANTITY_LABELS.iter().map(|l| (*l, false)).chain(TICKET_WORDS.iter().map(|l| (*l, true)));
+    for (label, strict) in labelled {
+        let len = label.chars().count();
+        for at in h.find_all(label) {
+            let mut j = at + len;
+            while j < h.len() && is_space(h.low[j]) {
+                j += 1;
+            }
+            let marked = matches!(h.low.get(j), Some(':' | 'x' | '\u{d7}'));
+            if strict && !marked {
+                continue;
+            }
+            if marked {
+                j += 1;
+                while j < h.len() && is_space(h.low[j]) {
+                    j += 1;
+                }
+            }
+            if let Some((n, e)) = count_at(h, j) {
+                out.push((n, at, e));
+            }
+        }
+    }
+    out
+}
+
+/// How many tickets: the head's first count; failing that the body's, when
+/// every count in it agrees. Two different counts is not a count.
+fn read_quantity(head: &Hay, body: &Hay) -> Option<QuantityRead> {
+    if let Some((n, s, e)) = quantities_in(head).into_iter().min_by_key(|(_, s, _)| *s) {
+        return Some(QuantityRead { n, source: head.excerpt(s, e), in_body: false });
+    }
+    let found = quantities_in(body);
+    let (n, s, e) = *found.iter().min_by_key(|(_, s, _)| *s)?;
+    found.iter().all(|(m, _, _)| *m == n).then(|| QuantityRead { n, source: body.excerpt(s, e), in_body: true })
 }
 
 /// How many tickets the message says. `None` when it does not say - never 1.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn extract_quantity(text: &str) -> Option<i64> {
-    let hay = text.to_lowercase();
-    for word in ["tickets", "ticket", "listky", "l\u{ed}stky", "l\u{ed}stok", "seats", "x ticket"] {
-        let Some(at) = hay.find(word) else { continue };
-        // 2.109.1: THIS was the sync crash. `hay[at - 12..at]` was the one
-        // window 2.108.0 did not route through `safe_slice`, and 12 bytes
-        // in front of "tickets" is the middle of the emoji in
-        // "🎟️ Your tickets" - a panic, which a release build turns into
-        // the whole app closing a few seconds into a sync.
-        let digits: String = safe_slice(&hay, at.saturating_sub(12), at)
-            .chars()
-            .rev()
-            .skip_while(|c| !c.is_ascii_digit())
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        let n: i64 = digits.chars().rev().collect::<String>().parse().ok()?;
-        if (1..=200).contains(&n) {
-            return Some(n);
+    read_quantity(&Hay::new(text), &Hay::new("")).map(|q| q.n)
+}
+
+/// The phrases a reference follows, most specific first. A plain "order"
+/// is last, and needs a number of at least four digits after it.
+const REFERENCE_KEYS: &[&str] = &[
+    "order number", "order no", "order id", "order #", "order ref", "order reference",
+    "booking reference", "booking ref", "booking number", "booking id", "reference number",
+    "confirmation number", "confirmation code", "transaction id", "transaction number",
+    "sale id", "sale number", "reference", "ref", "\u{10d}\u{ed}slo objedn\u{e1}vky", "objedn\u{e1}vka",
+    "bestellnummer", "auftragsnummer", "order",
+];
+
+/// The order / booking / transaction reference the message quotes.
+///
+/// This is what matches a later email to an existing TIQR record (an order
+/// keeps it in `external_reference`, a sale in `buyer_reference`), so it is
+/// read strictly: a phrase that vouches for it, then a token with a digit.
+fn read_reference(h: &Hay, in_body: bool) -> Option<ReferenceRead> {
+    for key in REFERENCE_KEYS {
+        let plain_order = *key == "order";
+        let len = key.chars().count();
+        for at in h.find_all(key) {
+            let mut j = at + len;
+            loop {
+                while j < h.len() && (is_space(h.low[j]) || matches!(h.low[j], ':' | '#' | '.' | '-' | '=')) {
+                    j += 1;
+                }
+                match word_at(h, j, &["is", "no", "nr", "number", "\u{10d}"]) {
+                    Some(n) => j += n,
+                    None => break,
+                }
+            }
+            let ts = j;
+            while j < h.len() && (h.orig[j].is_ascii_alphanumeric() || matches!(h.orig[j], '-' | '_' | '/')) {
+                j += 1;
+            }
+            while j > ts && matches!(h.orig[j - 1], '-' | '_' | '/') {
+                j -= 1;
+            }
+            let token: String = h.orig[ts..j].iter().collect();
+            let digits = token.chars().filter(|c| c.is_ascii_digit()).count();
+            let ok = (4..=40).contains(&token.chars().count()) && digits > 0 && (!plain_order || digits >= 4);
+            if ok {
+                return Some(ReferenceRead { value: token, source: h.excerpt(at, j), in_body });
+            }
         }
     }
     None
 }
 
-/// The order / booking / transaction reference the message quotes.
-///
-/// This is the field that will eventually MATCH a mail to an existing TIQR
-/// record, which is why it is worth reading now even though nothing matches
-/// on it yet.
+/// The order / booking / transaction reference in one piece of text.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn extract_reference(text: &str) -> Option<String> {
-    let lower = text.to_lowercase();
-    for kw in ["order number", "order id", "order #", "order no", "booking reference",
-               "booking number", "reference", "transaction id", "confirmation number",
-               "objedn\u{e1}vka", "\u{10d}\u{ed}slo objedn\u{e1}vky"] {
-        let Some(at) = lower.find(kw) else { continue };
-        let from = at + kw.len();
-        let window = safe_slice(text, from, from + 40);
-        let token: String = window
-            .chars()
-            .skip_while(|c| !c.is_ascii_alphanumeric())
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        // A reference has digits in it; a word that merely follows the
-        // phrase does not count.
-        if token.len() >= 4 && token.len() <= 40 && token.chars().any(|c| c.is_ascii_digit()) {
-            return Some(token);
-        }
+    read_reference(&Hay::new(text), false).map(|r| r.value)
+}
+
+/// 2.113.0: how much of a body is kept to match it to a record later.
+pub(crate) const EXTRACT_TEXT_CHARS: usize = 6000;
+
+/// The first `max` characters of `s`, never cut inside one.
+pub(crate) fn clip_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// 2.113.0: a message opened for the first time is read again from its whole
+/// text. An older one arrived before its body was worth downloading, so its
+/// numbers came from a 200-character preview. Only for a message that can
+/// still become a record - one that already did keeps what it was made from.
+pub(crate) fn reread_with_body(conn: &Connection, id: i64, body: &str) -> AppResult<()> {
+    let row: Option<(String, Option<String>, String, Option<i64>)> = conn
+        .query_row(
+            "SELECT subject, snippet, category, created_id FROM mail_messages WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((subject, snippet, category, created)) = row else {
+        return Ok(());
+    };
+    if created.is_some() || proposal_kind_for(&category).is_none() || body.trim().is_empty() {
+        return Ok(());
     }
-    None
+    let reading = read_message(&format!("{subject}\n{}", snippet.unwrap_or_default()), body);
+    conn.execute(
+        "UPDATE mail_messages
+            SET extracted_amount_cents = ?2, extracted_currency = ?3, extracted_quantity = ?4, extracted_reference = ?5,
+                extracted_unit_cents = ?6, extracted_basis = ?7, extracted_evidence = ?8, extract_text = ?9
+          WHERE id = ?1",
+        params![
+            id,
+            reading.money.as_ref().map(|m| m.total_cents),
+            reading.money.as_ref().map(|m| m.currency.clone()),
+            reading.quantity.as_ref().map(|q| q.n),
+            reading.reference.as_ref().map(|r| r.value.clone()),
+            reading.money.as_ref().and_then(|m| m.unit_cents),
+            reading.money.as_ref().map(|m| m.basis.clone()),
+            evidence_json(&reading),
+            clip_chars(body, EXTRACT_TEXT_CHARS),
+        ],
+    )?;
+    Ok(())
+}
+
+/// 2.113.0: everything a message says, read once, with the words for each.
+///
+/// `head` is the subject and Gmail's preview; `body` is the message text when
+/// it was downloaded (only for mail that could become a record - see
+/// `mail_sync::fetch_batch`), otherwise empty. Quantity first: the per-ticket
+/// price is the total divided by it.
+pub(crate) fn read_message(head: &str, body: &str) -> Reading {
+    let (h, b) = (Hay::new(head), Hay::new(body));
+    let quantity = read_quantity(&h, &b);
+    let money = read_money(&h, &b, quantity.as_ref().map(|q| q.n));
+    let reference = read_reference(&h, false).or_else(|| read_reference(&b, true));
+    Reading { money, quantity, reference, from_body: !body.trim().is_empty() }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1476,13 +1871,17 @@ pub(crate) fn upsert_message(
         "review_required"
     };
 
-    let readable = format!("{}\n{}", msg.subject, msg.snippet.as_deref().unwrap_or(""));
+    let head = format!("{}\n{}", msg.subject, msg.snippet.as_deref().unwrap_or(""));
     let trustworthy = !is_untrusted(&msg.labels);
-    // Quantity FIRST: the per-ticket price is the total divided by it, so
-    // the money reading needs to know how many tickets there were.
-    let qty = if trustworthy { extract_quantity(&readable) } else { None };
-    let money = if trustworthy { extract_money(&readable, qty) } else { None };
-    let reference = if trustworthy { extract_reference(&readable) } else { None };
+    // 2.113.0: one reading, with the words each figure came from. The body
+    // is there only for mail that could become a record (mail_sync.rs,
+    // `wants_body`); everything else is read from its subject and preview.
+    let reading = if trustworthy { read_message(&head, &msg.body_text) } else { Reading::default() };
+    let qty = reading.quantity.as_ref().map(|q| q.n);
+    let money = reading.money.clone();
+    let reference = reading.reference.as_ref().map(|r| r.value.clone());
+    let evidence = evidence_json(&reading);
+    let extract_text = (trustworthy && !msg.body_text.trim().is_empty()).then(|| clip_chars(&msg.body_text, EXTRACT_TEXT_CHARS));
 
     conn.execute(
         "INSERT INTO mail_messages (
@@ -1492,9 +1891,9 @@ pub(crate) fn upsert_message(
             body_excerpt, first_seen_at, updated_at, is_unread, labels,
             is_starred, from_raw, to_address, reply_to, otp_code,
             extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference,
-            extracted_unit_cents, extracted_basis, finance, labels_at
+            extracted_unit_cents, extracted_basis, finance, labels_at, extracted_evidence, extract_text
          ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                   ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
+                   ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
         params![
             provider.as_str(),
             msg.provider_message_id,
@@ -1538,7 +1937,9 @@ pub(crate) fn upsert_message(
             // 2.110.0: the Finances folder, decided once here.
             i64::from(finance_of(&msg.from_address, &msg.subject, class.category.as_str(), &msg.labels)),
             // ...and when these labels were read from Gmail, for the walks.
-            now
+            now,
+            evidence,
+            extract_text
         ],
     )?;
     Ok((conn.last_insert_rowid(), true))
@@ -1601,8 +2002,8 @@ pub(crate) fn classify_fetched(m: &FetchedMessage) -> Classification {
 
 fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
     let state = read_sync_state(conn)?;
-    let token = get_setting(conn, MAIL_REFRESH_TOKEN_KEY)?;
-    let granted = get_setting(conn, MAIL_GRANTED_SCOPE_KEY)?.unwrap_or_default();
+    let token = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY)?;
+    let granted = crate::secrets::get(conn, MAIL_GRANTED_SCOPE_KEY)?.unwrap_or_default();
     Ok(MailConnectionStatus {
         connected: token.is_some(),
         account_email: get_setting(conn, MAIL_ACCOUNT_EMAIL_KEY)?.or(state.account_email),
@@ -1636,6 +2037,14 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         auto_order: automation_mode(conn, "order"),
         auto_sale: automation_mode(conn, "sale"),
         auto_finance: automation_mode(conn, "finance"),
+        automation_here: automation_runs_here(conn).unwrap_or(true),
+        translate_to: crate::commands::mail_view::translate_target(conn),
+        remote_images: get_setting(conn, crate::commands::mail_view::MAIL_REMOTE_IMAGES_KEY)?.as_deref() != Some("off"),
+        ai_calls_this_month: crate::commands::mail_view::mail_ai_usage_this_month(conn).0,
+        ai_tokens_this_month: {
+            let (_, i, o) = crate::commands::mail_view::mail_ai_usage_this_month(conn);
+            i + o
+        },
         sync_interval_seconds: sync_interval_seconds(conn),
         unread_count: conn
             .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
@@ -1691,9 +2100,9 @@ pub async fn connect_mail_gmail(
     }
 
     let conn = state.db.lock().unwrap();
-    set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, &account.refresh_token)?;
+    crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, &account.refresh_token)?;
     set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, &account.email)?;
-    set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, &account.granted_scope)?;
+    crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, &account.granted_scope)?;
     crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
@@ -1722,8 +2131,8 @@ pub fn cancel_connect_mail(state: State<AppState>) -> AppResult<()> {
 #[tauri::command]
 pub fn disconnect_mail(state: State<AppState>) -> AppResult<MailConnectionStatus> {
     let conn = state.db.lock().unwrap();
-    delete_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?;
-    delete_setting(&conn, MAIL_GRANTED_SCOPE_KEY)?;
+    crate::secrets::delete(&conn, MAIL_REFRESH_TOKEN_KEY)?;
+    crate::secrets::delete(&conn, MAIL_GRANTED_SCOPE_KEY)?;
     crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
     conn.execute(
         "UPDATE mail_sync_state
@@ -1779,7 +2188,7 @@ pub async fn test_mail_connection(state: State<'_, AppState>) -> AppResult<MailT
     let tested_at = Utc::now().to_rfc3339();
     let refresh_token = {
         let conn = state.db.lock().unwrap();
-        get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?
+        crate::secrets::get(&conn, MAIL_REFRESH_TOKEN_KEY)?
     };
     let Some(refresh_token) = refresh_token else {
         return Ok(MailTestResult {
@@ -1882,6 +2291,16 @@ pub(crate) fn purge_expired(conn: &Connection) -> AppResult<usize> {
          WHERE received_at < ?1 AND (body_excerpt IS NOT NULL OR snippet IS NOT NULL)",
         params![cutoff],
     )?;
+    // 2.113.0: the text TIQR kept of an opened message, and the text it read
+    // numbers from, go with the rest. Attachments stay - marko keeps those.
+    conn.execute(
+        "DELETE FROM mail_bodies WHERE message_id IN (SELECT id FROM mail_messages WHERE received_at < ?1)",
+        params![cutoff],
+    )?;
+    conn.execute(
+        "UPDATE mail_messages SET extract_text = NULL WHERE received_at < ?1 AND extract_text IS NOT NULL",
+        params![cutoff],
+    )?;
     Ok(n)
 }
 
@@ -1898,6 +2317,15 @@ pub fn clear_stale_mail_sync(state: State<AppState>) -> AppResult<MailConnection
         finish_run(&conn, None)?;
     }
     status_impl(&conn)
+}
+
+/// The columns `summary_from_row` reads, for a query elsewhere.
+pub(crate) fn summary_columns() -> &'static str {
+    SUMMARY_COLUMNS
+}
+
+pub(crate) fn summary_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary> {
+    row_to_summary(r)
 }
 
 fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary> {
@@ -1932,6 +2360,8 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary>
         extracted_basis: r.get(27)?,
         created_kind: r.get(28)?,
         created_id: r.get(29)?,
+        moved_to: r.get(30)?,
+        has_attachments: r.get::<_, i64>(31)? != 0,
     })
 }
 
@@ -1939,7 +2369,7 @@ const SUMMARY_COLUMNS: &str = "id, provider, provider_message_id, from_address, 
      snippet, received_at, category, confidence, detected_platform, status, review_reason, body_excerpt,
      is_unread, IFNULL(labels,''), is_starred, from_raw, to_address, reply_to, otp_code,
      extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference, trashed_at,
-     extracted_unit_cents, extracted_basis, created_kind, created_id";
+     extracted_unit_cents, extracted_basis, created_kind, created_id, moved_to, has_attachments";
 
 #[tauri::command]
 pub fn list_mail_messages(
@@ -2075,68 +2505,8 @@ pub fn set_mail_review_outcome(
     get_mail_message(state, id)
 }
 
-/// Fetch ONE message's full text from Gmail, on demand.
-///
-/// This is what makes the inbox an inbox without turning the database into a
-/// copy of the mailbox. The sync stores headers only; the body is pulled
-/// when marko actually opens a message, shown, and **never stored**. Close
-/// the message and it is gone from this app again.
-///
-/// Returns PLAIN TEXT. The HTML is stripped in Rust (`strip_html`) and the
-/// UI renders it as text - there is no path in this app that hands a message
-/// body to the DOM as markup, which is the whole reason it is stripped.
-#[tauri::command]
-pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<String> {
-    let (provider_message_id, refresh_token) = {
-        let conn = state.db.lock().unwrap();
-        let pid: String = conn
-            .query_row(
-                "SELECT provider_message_id FROM mail_messages WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
-        (pid, get_setting(&conn, MAIL_REFRESH_TOKEN_KEY)?)
-    };
-    let Some(refresh_token) = refresh_token else {
-        return Err(AppError::Validation("no mailbox is connected".to_string()));
-    };
-    let Some(client) = google_oauth::embedded_oauth_client() else {
-        return Err(AppError::Validation(
-            "this build has no Google client embedded".to_string(),
-        ));
-    };
-
-    let body = tauri::async_runtime::spawn_blocking(move || -> AppResult<String> {
-        let access_token = crate::commands::mail_sync::access_token(&client, &refresh_token)?;
-        let http = gmail_client()?;
-        let raw = gmail_get(
-            &http,
-            &access_token,
-            &format!("{GMAIL_API}/messages/{provider_message_id}?format=full"),
-        )?;
-        let payload = raw.get("payload").cloned().unwrap_or(serde_json::Value::Null);
-        let text = extract_body_text(&payload);
-        Ok(if text.trim().is_empty() {
-            jstr(&raw, "snippet").unwrap_or_default()
-        } else {
-            text
-        })
-    })
-    .await
-    .map_err(|_| AppError::External("the message did not finish loading".to_string()))??;
-
-    // Opening a message marks it read HERE. Gmail is untouched - the scope
-    // this app holds is read-only and cannot write a label. The UI says so.
-    {
-        let conn = state.db.lock().unwrap();
-        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", params![id])?;
-    }
-    Ok(readable_body(&body))
-}
-
-/// Read / unread, by hand. TIQR's own state; see `get_mail_body`.
+/// Read / unread, by hand. TIQR's own state - opening a message marks it
+/// read here (mail_view.rs::get_mail_view), never in Gmail.
 #[tauri::command]
 pub fn set_mail_read(state: State<AppState>, id: i64, read: bool) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
@@ -2586,6 +2956,15 @@ pub(crate) fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> 
               WHERE id = ?1 AND status <> 'review_required'",
             params![row_id],
         )?,
+        // 2.113.0: a folder that no longer exists moves nothing.
+        action if action.starts_with("move:") => {
+            let target = &action["move:".len()..];
+            if valid_move_target(conn, target)? {
+                move_mail_impl(conn, &[row_id], target)?
+            } else {
+                0
+            }
+        }
         // `keep` is a guard, not an edit. Its whole job was done by
         // `apply_rules` returning early so no later rule could act.
         _ => 0,
@@ -2618,6 +2997,9 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
     const FIELDS: &[&str] = &["from", "subject", "preview"];
     const KINDS: &[&str] = &["contains", "equals", "starts", "ends"];
     const ACTIONS: &[&str] = &["trash", "read", "review", "keep"];
+    // 2.113.0: "move:<place>" moves new mail from a sender straight into a
+    // folder - one of marko's own, a label, or Inbox / Finances / Promotions.
+    let moves_to = rule.action.strip_prefix("move:");
 
     let needle = rule.needle.trim();
     if needle.is_empty() {
@@ -2628,9 +3010,15 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
     }
     if !FIELDS.contains(&rule.field.as_str())
         || !KINDS.contains(&rule.match_kind.as_str())
-        || !ACTIONS.contains(&rule.action.as_str())
+        || !(ACTIONS.contains(&rule.action.as_str()) || moves_to.is_some())
     {
         return Err(AppError::Validation("That is not a rule this version understands.".into()));
+    }
+    if let Some(target) = moves_to {
+        let conn = state.db.lock().unwrap();
+        if !valid_move_target(&conn, target)? {
+            return Err(AppError::Validation("Pick a folder for the rule to move mail into.".into()));
+        }
     }
 
     {
@@ -2776,6 +3164,9 @@ pub(crate) fn sync_interval_seconds(conn: &Connection) -> i64 {
 const MAIL_AUTO_ORDER_KEY: &str = "mail_auto_order";
 const MAIL_AUTO_SALE_KEY: &str = "mail_auto_sale";
 const MAIL_AUTO_FINANCE_KEY: &str = "mail_auto_finance";
+/// 2.113.0: which computer makes records from mail. Travels with the mail
+/// settings (shared_settings.rs), so both computers agree on one.
+pub(crate) const MAIL_AUTO_DEVICE_KEY: &str = "mail_records_computer";
 
 pub(crate) fn automation_mode(conn: &Connection, kind: &str) -> String {
     let key = match kind {
@@ -2788,6 +3179,126 @@ pub(crate) fn automation_mode(conn: &Connection, kind: &str) -> String {
         .flatten()
         .filter(|v| v == "auto" || v == "off")
         .unwrap_or_else(|| "manual".to_string())
+}
+
+fn since_key(kind: &str) -> &'static str {
+    match kind {
+        "order" => "mail_auto_order_since",
+        "sale" => "mail_auto_sale_since",
+        _ => "mail_auto_finance_since",
+    }
+}
+
+/// 2.113.0: when Automatic was switched on for `kind` on this computer. Mail
+/// that arrived before that is never made into a record by itself - turning
+/// Automatic on must not reach into years of history. A computer that was
+/// already on Automatic before this existed starts counting now.
+pub(crate) fn auto_since(conn: &Connection, kind: &str) -> AppResult<String> {
+    if let Some(at) = get_setting(conn, since_key(kind))? {
+        return Ok(at);
+    }
+    let now = Utc::now().to_rfc3339();
+    set_setting(conn, since_key(kind), &now)?;
+    Ok(now)
+}
+
+/// This computer's id, or `None` for a database with no file behind it (a
+/// test) - which is then the only computer there is.
+fn this_device(conn: &Connection) -> Option<String> {
+    let file: String = conn
+        .query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| r.get(0))
+        .ok()?;
+    if file.is_empty() {
+        return None;
+    }
+    crate::commands::live_sync::device_id(std::path::Path::new(&file)).ok()
+}
+
+/// 2.113.0: whether records are made from mail on THIS computer.
+///
+/// Both computers read the same mailbox. If both made records, every order
+/// would arrive twice - once from each, through live sync. So one computer
+/// does it: the one where Automatic was last switched on. The other still
+/// shows every proposal and creates on a click.
+pub(crate) fn automation_runs_here(conn: &Connection) -> AppResult<bool> {
+    let Some(me) = this_device(conn) else {
+        return Ok(true);
+    };
+    match get_setting(conn, MAIL_AUTO_DEVICE_KEY)? {
+        Some(owner) if !owner.is_empty() => Ok(owner == me),
+        _ => {
+            claim_automation(conn)?;
+            Ok(true)
+        }
+    }
+}
+
+fn claim_automation(conn: &Connection) -> AppResult<()> {
+    if let Some(me) = this_device(conn) {
+        if get_setting(conn, MAIL_AUTO_DEVICE_KEY)?.as_deref() != Some(me.as_str()) {
+            set_setting(conn, MAIL_AUTO_DEVICE_KEY, &me)?;
+            crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)?;
+        }
+    }
+    Ok(())
+}
+
+// ===========================================================================
+// FROM MAIL TO RECORD (2.106.0, reworked 2.113.0)
+// ===========================================================================
+//
+// marko: "doladit tie automaticke orders, sales, finances", and the rule
+// that came with it: "AI nesmie rozhodovat naslepo - kazdy navrh musi mat zdrojove
+// udaje, mieru istoty a kontrolu duplicit. Nejednoznacne pripady patria na
+// manualne potvrdenie." And: "opakovane spracovanie nesmie vytvorit druhu
+// objednavku alebo financny zaznam."
+//
+// So every proposal carries:
+//  - EVIDENCE: each figure with the words it was read from, and how sure;
+//  - DUPLICATES: records that already look like this one - the same
+//    reference, another email of the same conversation, or the same event,
+//    total and date;
+//  - the AUTO VERDICT: whether Automatic would make it, and if not, why.
+//
+// Automatic makes a record only when ALL of these hold; anything less waits
+// for marko's click, with the reason on screen:
+//  - the kind is set to Automatic, Automatic runs on THIS computer, and the
+//    message arrived after Automatic was switched on;
+//  - a marketplace TIQR knows sent it and the subject says what it is;
+//  - every figure is certain: the total was stated as a total, the count of
+//    tickets was stated, exactly one event (for a sale: exactly the unsold
+//    tickets it sold) matched;
+//  - nothing like it exists yet, and no mail rule asked to review it.
+//
+// A sale needs the TICKETS that were sold. They are matched only when there
+// is no choice to make: one order holds the event's unsold tickets, and the
+// email's count is all of them (Automatic), or at least that many (a click,
+// which shows exactly which ones it would sell first).
+
+/// One thing a proposal rests on, as the screen shows it.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailEvidence {
+    /// "Type" | "Amount" | "Tickets" | "Event" | "Sold tickets" | "Platform" | "Reference"
+    pub field: String,
+    pub value: String,
+    /// The words it was read from, or how it was matched.
+    pub source: String,
+    /// "high" | "medium" | "low"
+    pub confidence: String,
+}
+
+/// A record that already looks like the one a proposal would make.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailDuplicate {
+    /// "order" | "sale" | "finance"
+    pub kind: String,
+    pub id: i64,
+    /// Its code, or for a finance entry its date and amount.
+    pub label: String,
+    /// Why it looks the same.
+    pub reason: String,
 }
 
 /// What a message could become, and whether it is ready to.
@@ -2814,6 +3325,52 @@ pub struct MailProposal {
     /// makes a second press a no-op.
     pub created_kind: Option<String>,
     pub created_id: Option<i64>,
+    /// 2.113.0: the least sure thing it rests on - "high" | "medium" | "low".
+    pub confidence: String,
+    pub evidence: Vec<MailEvidence>,
+    pub duplicates: Vec<MailDuplicate>,
+    /// For a sale: exactly which tickets it would sell, and in words.
+    pub ticket_ids: Vec<i64>,
+    pub tickets_label: Option<String>,
+    /// The platform in TIQR the sender matched, if one did.
+    pub platform_id: Option<i64>,
+    pub platform_name: Option<String>,
+    /// For a finance entry: "income" | "expense", or `None` when it is not
+    /// clear which (a refund from a platform used both ways).
+    pub entry_type: Option<String>,
+    /// The date the record would carry (the day the email arrived).
+    pub date: String,
+    /// The reference it would keep, so a later email finds it.
+    pub reference: Option<String>,
+    /// "off" | "manual" | "auto" for this kind.
+    pub mode: String,
+    /// Whether Automatic would make it by itself, and if not, why not.
+    pub auto_ready: bool,
+    pub auto_reason: String,
+    /// What Automatic did when the message arrived ("created" | "review"),
+    /// when it ran.
+    pub decision: Option<String>,
+    pub decision_reason: Option<String>,
+    /// What was created, for the screen ("ORD-000012").
+    pub created_label: Option<String>,
+}
+
+/// marko's corrections from the review form - anything left out keeps what
+/// was read from the message.
+#[derive(Debug, serde::Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MailCreateOverrides {
+    pub event_id: Option<i64>,
+    pub quantity: Option<i64>,
+    pub amount_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub date: Option<String>,
+    pub platform_id: Option<i64>,
+    pub reference: Option<String>,
+    pub ticket_ids: Option<Vec<i64>>,
+    pub entry_type: Option<String>,
+    /// The possible duplicates were shown, and marko wants it anyway.
+    pub allow_duplicate: bool,
 }
 
 /// Which kind of record a category wants to become. `None` for anything
@@ -2827,27 +3384,67 @@ pub(crate) fn proposal_kind_for(category: &str) -> Option<&'static str> {
     }
 }
 
-/// Find the one event this message is about, by name.
-///
-/// Returns `Some` only when EXACTLY ONE event matches. Two events called
-/// "Oasis Live" are a real possibility and picking either would be a coin
-/// toss with marko's data, so that is a blocker, not a choice this makes.
-fn match_event(conn: &Connection, subject: &str) -> AppResult<Option<(i64, String)>> {
+fn confidence_rank(c: &str) -> u8 {
+    match c {
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    }
+}
+
+/// How an event matched a message.
+#[derive(Debug, Clone, PartialEq)]
+enum EventMatch {
+    /// One event, and where its name was found.
+    One(i64, String, &'static str),
+    /// Several events carry a name the message quotes.
+    Many(Vec<String>),
+    None,
+}
+
+/// Events whose whole name appears in `text`. A name inside a longer
+/// matching name ("Oasis" in "Oasis Live") gives way to the longer one.
+fn events_named_in(names: &[(i64, String)], text: &str) -> Vec<(i64, String)> {
+    let hay = Hay::new(text);
+    let mut hits: Vec<(i64, String)> = names
+        .iter()
+        .filter(|(_, name)| {
+            let needle: String = name.trim().chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+            needle.chars().count() >= 4 && !hay.find_all(&needle).is_empty()
+        })
+        .cloned()
+        .collect();
+    let lower: Vec<String> = hits.iter().map(|(_, n)| n.trim().to_lowercase()).collect();
+    let keep: Vec<bool> = lower
+        .iter()
+        .map(|n| !lower.iter().any(|other| other != n && other.contains(n.as_str())))
+        .collect();
+    let mut i = 0;
+    hits.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
+    hits
+}
+
+/// The ONE event a message is about. Its name has to appear in the subject
+/// or, failing that, in the email's text. Deliberately not fuzzy: a near
+/// miss creates an order against the wrong event, which is worse than asking.
+fn match_event(conn: &Connection, subject: &str, text: &str) -> AppResult<EventMatch> {
     let mut stmt = conn.prepare("SELECT id, name FROM events WHERE name <> ''")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-    let subject_l = subject.to_lowercase();
-    let mut hits: Vec<(i64, String)> = Vec::new();
-    for row in rows {
-        let (id, name) = row?;
-        let n = name.trim().to_lowercase();
-        // The event's own name has to appear in the subject. Deliberately
-        // not fuzzy: a near-miss here creates an order against the wrong
-        // event, which is worse than asking.
-        if n.len() >= 4 && subject_l.contains(&n) {
-            hits.push((id, name));
+    let names: Vec<(i64, String)> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+    for (hits, place) in [(events_named_in(&names, subject), "subject"), (events_named_in(&names, text), "text")] {
+        match hits.len() {
+            0 => continue,
+            1 => {
+                let (id, name) = hits.into_iter().next().unwrap_or_default();
+                return Ok(EventMatch::One(id, name, place));
+            }
+            _ => return Ok(EventMatch::Many(hits.into_iter().map(|(_, n)| n).collect())),
         }
     }
-    Ok(if hits.len() == 1 { hits.pop() } else { None })
+    Ok(EventMatch::None)
 }
 
 /// Find the one order this message is about, by the reference it quotes.
@@ -2870,59 +3467,492 @@ fn match_order(conn: &Connection, reference: Option<&str>) -> AppResult<Option<(
     Ok(if hits.len() == 1 { hits.pop() } else { None })
 }
 
-/// Build the proposal for one message, or `None` when its category maps to
-/// nothing this app can create.
-pub(crate) fn build_proposal(
+/// The platform in TIQR a sender is: `(id, name, kind)`. Exactly the name
+/// first, then a single platform whose name starts with it ("Ticketmaster
+/// UK" for "Ticketmaster").
+fn match_platform(conn: &Connection, detected: Option<&str>) -> AppResult<Option<(i64, String, String)>> {
+    let Some(name) = detected.map(str::trim).filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    let exact: Option<(i64, String, String)> = conn
+        .query_row(
+            "SELECT id, name, kind FROM platforms WHERE LOWER(name) = LOWER(?1) ORDER BY id LIMIT 1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    if exact.is_some() {
+        return Ok(exact);
+    }
+    let mut stmt = conn.prepare("SELECT id, name, kind FROM platforms WHERE LOWER(name) LIKE LOWER(?1) || '%'")?;
+    let mut hits: Vec<(i64, String, String)> =
+        stmt.query_map(params![name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    Ok(if hits.len() == 1 { hits.pop() } else { None })
+}
+
+/// Which unsold tickets a sale email sold.
+#[derive(Debug, Clone, PartialEq)]
+struct SaleTickets {
+    order_id: i64,
+    order_code: String,
+    ticket_ids: Vec<i64>,
+    /// True when there was no choice: the order's unsold tickets ARE the count.
+    exact: bool,
+    label: String,
+}
+
+fn sale_tickets(
     conn: &Connection,
-    m: &MailMessageSummary,
-) -> AppResult<Option<MailProposal>> {
+    event_id: Option<i64>,
+    order: Option<(i64, String)>,
+    qty: i64,
+) -> AppResult<Result<SaleTickets, String>> {
+    let rows: Vec<(i64, String, i64, String, String, String)> = {
+        let (sql, key) = match (&order, event_id) {
+            (Some((oid, _)), _) => (
+                "SELECT o.id, o.code, t.id, IFNULL(t.section,''), IFNULL(t.row_label,''), IFNULL(t.seat,'')
+                   FROM tickets t JOIN orders o ON o.id = t.order_id
+                  WHERE o.id = ?1 AND t.status IN ('available','listed') ORDER BY t.id",
+                *oid,
+            ),
+            (None, Some(eid)) => (
+                "SELECT o.id, o.code, t.id, IFNULL(t.section,''), IFNULL(t.row_label,''), IFNULL(t.seat,'')
+                   FROM tickets t JOIN orders o ON o.id = t.order_id
+                  WHERE t.event_id = ?1 AND t.status IN ('available','listed') ORDER BY o.id, t.id",
+                eid,
+            ),
+            (None, None) => return Ok(Err("no event in TIQR matches this email - open it and pick one".to_string())),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut orders: Vec<(i64, String)> = Vec::new();
+    for (oid, code, ..) in &rows {
+        if !orders.iter().any(|(o, _)| o == oid) {
+            orders.push((*oid, code.clone()));
+        }
+    }
+    match orders.len() {
+        0 => return Ok(Err("no unsold tickets for this event in TIQR".to_string())),
+        1 => {}
+        n => {
+            return Ok(Err(format!(
+                "the unsold tickets for this event are in {n} orders - choose which ones were sold"
+            )))
+        }
+    }
+    let (order_id, order_code) = orders.remove(0);
+    let unsold = rows.len() as i64;
+    if unsold < qty {
+        return Ok(Err(format!(
+            "the email says {qty} sold, but {order_code} has only {unsold} unsold"
+        )));
+    }
+    let chosen: Vec<&(i64, String, i64, String, String, String)> = rows.iter().take(qty as usize).collect();
+    let seats: Vec<String> = chosen
+        .iter()
+        .map(|(_, _, _, sec, row, seat)| {
+            [sec.as_str(), row.as_str(), seat.as_str()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" ")
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    let label = format!(
+        "{qty} of {unsold} unsold in {order_code}{}",
+        if seats.is_empty() { String::new() } else { format!(" ({})", seats.join(", ")) }
+    );
+    Ok(Ok(SaleTickets {
+        order_id,
+        order_code,
+        ticket_ids: chosen.iter().map(|r| r.2).collect(),
+        exact: unsold == qty,
+        label,
+    }))
+}
+
+/// `%` and `_` stand for themselves in a LIKE pattern.
+fn like_escape(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// The figures a record would carry, for the duplicate check.
+struct Shape<'a> {
+    kind: &'a str,
+    amount: Option<i64>,
+    currency: Option<&'a str>,
+    date: &'a str,
+    event_id: Option<i64>,
+    reference: Option<&'a str>,
+    entry_type: Option<&'a str>,
+}
+
+/// Records that already look like the one `shape` describes. Three ways
+/// something is the same record: another email of this conversation already
+/// made one; a record carries the same reference; or one has the same event
+/// (or type), total, currency and a date within three days.
+fn find_duplicates(conn: &Connection, message_id: i64, shape: &Shape) -> AppResult<Vec<MailDuplicate>> {
+    let mut out: Vec<MailDuplicate> = Vec::new();
+    let push = |out: &mut Vec<MailDuplicate>, d: MailDuplicate| {
+        if !out.iter().any(|o| o.kind == d.kind && o.id == d.id) {
+            out.push(d);
+        }
+    };
+    let thread: Option<String> = conn
+        .query_row("SELECT provider_thread_id FROM mail_messages WHERE id = ?1", [message_id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    if let Some(thread) = thread.filter(|t| !t.is_empty()) {
+        let mut stmt = conn.prepare(
+            "SELECT created_id FROM mail_messages
+              WHERE provider_thread_id = ?1 AND id <> ?2 AND created_kind = ?3 AND created_id IS NOT NULL",
+        )?;
+        let ids: Vec<i64> = stmt.query_map(params![thread, message_id, shape.kind], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        for id in ids {
+            push(&mut out, MailDuplicate {
+                kind: shape.kind.to_string(),
+                id,
+                label: record_label(conn, shape.kind, id).unwrap_or_else(|| format!("#{id}")),
+                reason: "another email of this conversation already made it".to_string(),
+            });
+        }
+    }
+    let reference = shape.reference.map(str::trim).filter(|r| r.len() >= 4);
+    let (Some(amount), Some(currency)) = (shape.amount, shape.currency) else {
+        return Ok(out);
+    };
+    match shape.kind {
+        "order" => {
+            if let Some(r) = reference {
+                let mut stmt = conn.prepare(
+                    "SELECT id, code FROM orders WHERE external_reference IS NOT NULL AND LOWER(external_reference) = LOWER(?1)",
+                )?;
+                let hits: Vec<(i64, String)> = stmt.query_map(params![r], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+                for (id, code) in hits {
+                    push(&mut out, MailDuplicate { kind: "order".into(), id, label: code, reason: format!("it already carries the reference {r}") });
+                }
+            }
+            if let Some(event) = shape.event_id {
+                let mut stmt = conn.prepare(
+                    "SELECT id, code FROM orders
+                      WHERE event_id = ?1 AND total_cost_cents = ?2 AND currency = ?3
+                        AND ABS(julianday(substr(purchase_date, 1, 10)) - julianday(?4)) <= 3",
+                )?;
+                let hits: Vec<(i64, String)> = stmt
+                    .query_map(params![event, amount, currency, shape.date], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                for (id, code) in hits {
+                    push(&mut out, MailDuplicate { kind: "order".into(), id, label: code, reason: "same event, same total, bought within three days".to_string() });
+                }
+            }
+        }
+        "sale" => {
+            if let Some(r) = reference {
+                let mut stmt = conn.prepare(
+                    "SELECT MIN(id), MIN(code) FROM sales WHERE buyer_reference IS NOT NULL AND LOWER(buyer_reference) = LOWER(?1)
+                      GROUP BY COALESCE(batch_id, 'single:' || id)",
+                )?;
+                let hits: Vec<(i64, String)> = stmt.query_map(params![r], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+                for (id, code) in hits {
+                    push(&mut out, MailDuplicate { kind: "sale".into(), id, label: code, reason: format!("it already carries the reference {r}") });
+                }
+            }
+            if let Some(event) = shape.event_id {
+                let mut stmt = conn.prepare(
+                    "SELECT MIN(s.id), MIN(s.code) FROM sales s JOIN tickets t ON t.id = s.ticket_id
+                      WHERE t.event_id = ?1 AND s.currency = ?3
+                        AND ABS(julianday(substr(s.sale_date, 1, 10)) - julianday(?4)) <= 3
+                      GROUP BY COALESCE(s.batch_id, 'single:' || s.id)
+                     HAVING SUM(s.sale_price_cents) = ?2",
+                )?;
+                let hits: Vec<(i64, String)> = stmt
+                    .query_map(params![event, amount, currency, shape.date], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                for (id, code) in hits {
+                    push(&mut out, MailDuplicate { kind: "sale".into(), id, label: code, reason: "same event, same total, sold within three days".to_string() });
+                }
+            }
+        }
+        _ => {
+            let mut stmt = conn.prepare(
+                "SELECT id, entry_date FROM finance_entries
+                  WHERE amount_cents = ?1 AND currency = ?2 AND (?3 IS NULL OR entry_type = ?3)
+                    AND ABS(julianday(substr(entry_date, 1, 10)) - julianday(?4)) <= 3",
+            )?;
+            let hits: Vec<(i64, String)> = stmt
+                .query_map(params![amount, currency, shape.entry_type, shape.date], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            for (id, date) in hits {
+                push(&mut out, MailDuplicate {
+                    kind: "finance".into(),
+                    id,
+                    label: format!("{} on {date}", money_words(Some(amount), Some(currency))),
+                    reason: "same amount within three days".to_string(),
+                });
+            }
+            if let Some(r) = reference {
+                let mut stmt = conn.prepare("SELECT id, entry_date, amount_cents, currency FROM finance_entries WHERE note LIKE '%' || ?1 || '%' ESCAPE '\\'")?;
+                let hits: Vec<(i64, String, i64, String)> =
+                    stmt.query_map(params![like_escape(r)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+                for (id, date, cents, cur) in hits {
+                    push(&mut out, MailDuplicate {
+                        kind: "finance".into(),
+                        id,
+                        label: format!("{} on {date}", money_words(Some(cents), Some(&cur))),
+                        reason: format!("its note carries the reference {r}"),
+                    });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A created record's code, for the screen.
+fn record_label(conn: &Connection, kind: &str, id: i64) -> Option<String> {
+    let sql = match kind {
+        "order" => "SELECT code FROM orders WHERE id = ?1",
+        "sale" => "SELECT COALESCE(batch_id, code) FROM sales WHERE id = ?1",
+        _ => "SELECT entry_type || ' ' || printf('%.2f', amount_cents / 100.0) || ' ' || currency FROM finance_entries WHERE id = ?1",
+    };
+    conn.query_row(sql, [id], |r| r.get(0)).optional().ok().flatten()
+}
+
+/// The stored evidence for one field: `(source, in_body, sure)`.
+fn stored_evidence(raw: Option<&str>, field: &str) -> Option<(String, bool, bool)> {
+    let v: serde_json::Value = serde_json::from_str(raw?).ok()?;
+    let f = v.get(field)?;
+    Some((
+        f.get("source")?.as_str()?.to_string(),
+        f.get("body").and_then(|b| b.as_bool()).unwrap_or(false),
+        f.get("sure").and_then(|b| b.as_bool()).unwrap_or(false),
+    ))
+}
+
+/// What a message's reading is stored as: the words for each figure.
+pub(crate) fn evidence_json(r: &Reading) -> Option<String> {
+    let mut v = serde_json::Map::new();
+    if let Some(m) = &r.money {
+        v.insert("amount".into(), serde_json::json!({ "source": m.source, "sure": m.sure, "body": m.in_body }));
+    }
+    if let Some(q) = &r.quantity {
+        v.insert("quantity".into(), serde_json::json!({ "source": q.source, "body": q.in_body }));
+    }
+    if let Some(x) = &r.reference {
+        v.insert("reference".into(), serde_json::json!({ "source": x.source, "body": x.in_body }));
+    }
+    if v.is_empty() {
+        return None;
+    }
+    v.insert("body".into(), serde_json::Value::Bool(r.from_body));
+    Some(serde_json::Value::Object(v).to_string())
+}
+
+/// The extra facts a proposal needs that the list row does not carry.
+struct ProposalFacts {
+    evidence: Option<String>,
+    text: String,
+    decision: Option<String>,
+    decision_reason: Option<String>,
+    rule_review: bool,
+}
+
+fn proposal_facts(conn: &Connection, id: i64) -> AppResult<ProposalFacts> {
+    let (evidence, text, decision, decision_reason): (Option<String>, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT extracted_evidence, extract_text, auto_decision, auto_reason FROM mail_messages WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
+    let rule_review: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM mail_processing_log WHERE message_id = ?1 AND step = 'rule' AND outcome IN ('review','trash'))",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    Ok(ProposalFacts { evidence, text: text.unwrap_or_default(), decision, decision_reason, rule_review })
+}
+
+/// Build the proposal for one message, or `None` when its category maps to
+/// nothing this app can create - or that kind is switched Off.
+pub(crate) fn build_proposal(conn: &Connection, m: &MailMessageSummary) -> AppResult<Option<MailProposal>> {
     let Some(kind) = proposal_kind_for(&m.category) else {
         return Ok(None);
     };
     if is_untrusted(&m.labels) {
         return Ok(None);
     }
+    let mode = automation_mode(conn, kind);
+    if mode == "off" && m.created_id.is_none() {
+        return Ok(None);
+    }
+    let facts = proposal_facts(conn, m.id)?;
+    let date = m.received_at.get(..10).unwrap_or("").to_string();
+    let text = format!("{}\n{}", m.snippet.as_deref().unwrap_or(""), facts.text);
 
     let mut blockers: Vec<String> = Vec::new();
-    if m.extracted_amount_cents.is_none() {
-        blockers.push("the message does not state an amount".to_string());
+    let mut evidence: Vec<MailEvidence> = Vec::new();
+    let ev = |field: &str, value: String, source: String, confidence: &str| MailEvidence {
+        field: field.to_string(),
+        value,
+        source,
+        confidence: confidence.to_string(),
+    };
+
+    evidence.push(ev(
+        "Type",
+        category_label_for(&m.category).to_string(),
+        match (&m.detected_platform, m.confidence.as_str()) {
+            (Some(p), "high") => format!("sent by {p}, and the subject says so"),
+            (Some(p), _) => format!("sent by {p}; the subject does not say it outright"),
+            (None, _) => "the wording says so; the sender is not a marketplace TIQR knows".to_string(),
+        },
+        &m.confidence,
+    ));
+
+    let amount = m.extracted_amount_cents;
+    let currency = m.extracted_currency.clone();
+    match (amount, currency.as_deref()) {
+        (Some(a), Some(c)) => {
+            let (source, _, sure) = stored_evidence(facts.evidence.as_deref(), "amount")
+                .unwrap_or_else(|| (m.extracted_basis.clone().unwrap_or_default(), false, false));
+            let sure = sure || m.extracted_basis.as_deref().is_some_and(|b| b != "largest amount" && facts.evidence.is_none());
+            evidence.push(ev(
+                "Amount",
+                money_words(Some(a), Some(c)),
+                if source.is_empty() { "read from the message".into() } else { source },
+                if sure { "high" } else { "low" },
+            ));
+        }
+        _ => blockers.push("the message does not state an amount and a currency".to_string()),
     }
-    if m.extracted_currency.is_none() {
-        blockers.push("the message does not state a currency".to_string());
+
+    let platform = match_platform(conn, m.detected_platform.as_deref())?;
+    if let Some(p) = &m.detected_platform {
+        evidence.push(match &platform {
+            Some((_, name, _)) => ev("Platform", name.clone(), format!("{p} is one of your platforms"), "high"),
+            // Not a doubt about the record - it is made without a platform.
+            None => ev("Platform", p.clone(), "not one of your platforms yet, so the record has none".to_string(), "high"),
+        });
+    }
+
+    let reference = m.extracted_reference.clone();
+    if let Some(r) = &reference {
+        let (source, _, _) = stored_evidence(facts.evidence.as_deref(), "reference").unwrap_or_default();
+        evidence.push(ev("Reference", r.clone(), if source.is_empty() { "read from the message".into() } else { source }, "high"));
     }
 
     let (mut ev_id, mut ev_name) = (None, None);
     let (mut ord_id, mut ord_code) = (None, None);
+    let mut ticket_ids: Vec<i64> = Vec::new();
+    let mut tickets_label = None;
+    let mut entry_type: Option<String> = None;
 
-    match kind {
-        "order" => {
-            match match_event(conn, &m.subject)? {
-                Some((id, name)) => {
-                    ev_id = Some(id);
-                    ev_name = Some(name);
-                }
-                None => blockers
-                    .push("no single event in TIQR matches this subject - open it and pick one".to_string()),
+    if kind == "order" || kind == "sale" {
+        match m.extracted_quantity {
+            Some(q) => {
+                let (source, in_body, _) = stored_evidence(facts.evidence.as_deref(), "quantity").unwrap_or_default();
+                evidence.push(ev(
+                    "Tickets",
+                    q.to_string(),
+                    if source.is_empty() { "read from the message".into() } else { source },
+                    if in_body { "medium" } else { "high" },
+                ));
             }
-            if m.extracted_quantity.is_none() {
-                blockers.push("the message does not say how many tickets".to_string());
+            None => blockers.push("the message does not say how many tickets".to_string()),
+        }
+        let by_ref = if kind == "sale" { match_order(conn, reference.as_deref())? } else { None };
+        match match_event(conn, &m.subject, &text)? {
+            EventMatch::One(id, name, place) => {
+                ev_id = Some(id);
+                ev_name = Some(name.clone());
+                evidence.push(ev(
+                    "Event",
+                    name,
+                    if place == "subject" { "named in the subject".into() } else { "named in the email".into() },
+                    if place == "subject" { "high" } else { "medium" },
+                ));
+            }
+            EventMatch::Many(names) => blockers.push(format!(
+                "{} events in TIQR match this email ({}) - pick one",
+                names.len(),
+                names.join(", ")
+            )),
+            EventMatch::None if by_ref.is_none() => {
+                blockers.push("no event in TIQR matches this email - create it, or pick one".to_string())
+            }
+            EventMatch::None => {}
+        }
+        if kind == "sale" {
+            if let Some(q) = m.extracted_quantity.filter(|q| *q > 0) {
+                match sale_tickets(conn, ev_id, by_ref.clone(), q)? {
+                    Ok(t) => {
+                        evidence.push(ev(
+                            "Sold tickets",
+                            t.label.clone(),
+                            if t.exact {
+                                "these are all of its unsold tickets".into()
+                            } else {
+                                "the first unsold ones - check they are the right seats".into()
+                            },
+                            if t.exact { "high" } else { "medium" },
+                        ));
+                        ord_id = Some(t.order_id);
+                        ord_code = Some(t.order_code.clone());
+                        ticket_ids = t.ticket_ids.clone();
+                        tickets_label = Some(t.label);
+                    }
+                    Err(why) => blockers.push(why),
+                }
             }
         }
-        "sale" => match match_order(conn, m.extracted_reference.as_deref())? {
-            Some((id, code)) => {
-                ord_id = Some(id);
-                ord_code = Some(code);
-            }
-            None => blockers.push(
-                "no order in TIQR carries this reference - open the order and record the sale there"
-                    .to_string(),
-            ),
-        },
-        _ => {}
+    } else {
+        // Money in or out. A payout is in; a refund is in from where marko
+        // BUYS and out from where marko SELLS; a platform used both ways says
+        // nothing, and then marko says it.
+        entry_type = match (m.category.as_str(), platform.as_ref().map(|p| p.2.as_str())) {
+            ("payout", _) => Some("income".into()),
+            ("refund", Some("purchase")) => Some("income".into()),
+            ("refund", Some("sale")) => Some("expense".into()),
+            _ => None,
+        };
+        match &entry_type {
+            Some(t) => evidence.push(ev(
+                "Direction",
+                if t == "income" { "Money in".into() } else { "Money out".into() },
+                if m.category == "payout" {
+                    "a payout is money in".to_string()
+                } else if t == "income" {
+                    "a refund from where you buy".to_string()
+                } else {
+                    "a refund from where you sell".to_string()
+                },
+                "high",
+            )),
+            None => blockers.push("it is not clear whether this refund is money in or out - choose".to_string()),
+        }
+        if let Some((oid, code)) = match_order(conn, reference.as_deref())? {
+            ord_id = Some(oid);
+            ord_code = Some(code);
+        }
     }
 
-    let amount = m.extracted_amount_cents;
-    let currency = m.extracted_currency.clone();
+    let duplicates = find_duplicates(
+        conn,
+        m.id,
+        &Shape {
+            kind,
+            amount,
+            currency: currency.as_deref(),
+            date: &date,
+            event_id: ev_id,
+            reference: reference.as_deref(),
+            entry_type: entry_type.as_deref(),
+        },
+    )?;
+
     let summary = match kind {
         "finance" => format!(
             "Record {} of {} in Finance",
@@ -2934,10 +3964,19 @@ pub(crate) fn build_proposal(
             m.extracted_quantity.map(|q| q.to_string()).unwrap_or_else(|| "?".into()),
             money_words(amount, currency.as_deref())
         ),
-        _ => format!("Record a sale of {}", money_words(amount, currency.as_deref())),
+        _ => format!(
+            "Record a sale of {} ticket(s) for {}",
+            m.extracted_quantity.map(|q| q.to_string()).unwrap_or_else(|| "?".into()),
+            money_words(amount, currency.as_deref())
+        ),
     };
-
-    Ok(Some(MailProposal {
+    let confidence = evidence
+        .iter()
+        .map(|e| e.confidence.as_str())
+        .min_by_key(|c| confidence_rank(c))
+        .unwrap_or("low")
+        .to_string();
+    let mut p = MailProposal {
         kind: kind.to_string(),
         ready: blockers.is_empty(),
         blockers,
@@ -2951,7 +3990,87 @@ pub(crate) fn build_proposal(
         matched_order_code: ord_code,
         created_kind: m.created_kind.clone(),
         created_id: m.created_id,
-    }))
+        confidence,
+        evidence,
+        duplicates,
+        ticket_ids,
+        tickets_label,
+        platform_id: platform.as_ref().map(|p| p.0),
+        platform_name: platform.map(|p| p.1),
+        entry_type,
+        date,
+        reference,
+        mode: mode.clone(),
+        auto_ready: false,
+        auto_reason: String::new(),
+        decision: facts.decision.clone(),
+        decision_reason: facts.decision_reason.clone(),
+        created_label: match (&m.created_kind, m.created_id) {
+            (Some(k), Some(id)) => record_label(conn, k, id),
+            _ => None,
+        },
+    };
+    let (ready, reason) = auto_verdict(conn, m, &p, &facts)?;
+    p.auto_ready = ready;
+    p.auto_reason = reason;
+    Ok(Some(p))
+}
+
+/// Whether Automatic may make this record by itself, and in words why not.
+/// See the section comment above for the rule.
+fn auto_verdict(conn: &Connection, m: &MailMessageSummary, p: &MailProposal, facts: &ProposalFacts) -> AppResult<(bool, String)> {
+    let what = match p.kind.as_str() {
+        "order" => "orders",
+        "sale" => "sales",
+        _ => "finance entries",
+    };
+    if p.created_id.is_some() {
+        return Ok((false, "Already made.".to_string()));
+    }
+    if p.mode != "auto" {
+        return Ok((false, format!("Automatic is not on for {what} - it waits for your click.")));
+    }
+    if !automation_runs_here(conn)? {
+        return Ok((false, "Automatic runs on your other computer, so this one only proposes.".to_string()));
+    }
+    let since = auto_since(conn, &p.kind)?;
+    let arrived_before = match (DateTime::parse_from_rfc3339(&m.received_at), DateTime::parse_from_rfc3339(&since)) {
+        (Ok(at), Ok(since)) => at < since,
+        _ => true,
+    };
+    if arrived_before {
+        return Ok((false, format!("It arrived before Automatic was switched on for {what}.")));
+    }
+    if m.trashed_at.is_some() || facts.rule_review {
+        return Ok((false, "One of your mail rules asked to look at it yourself.".to_string()));
+    }
+    if m.confidence != "high" {
+        return Ok((false, "The sender or the subject is not certain enough.".to_string()));
+    }
+    if !p.ready {
+        return Ok((false, format!("Not everything matched: {}.", p.blockers.join("; "))));
+    }
+    if !p.duplicates.is_empty() {
+        return Ok((false, "Something like it already exists - check before creating.".to_string()));
+    }
+    if let Some(e) = p.evidence.iter().find(|e| e.confidence != "high") {
+        return Ok((false, format!("{} is not certain ({}).", e.field, e.source)));
+    }
+    Ok((true, "Everything matched and nothing like it exists - Automatic makes it.".to_string()))
+}
+
+fn category_label_for(category: &str) -> &'static str {
+    match category {
+        "sale_confirmation" => "Sale confirmation",
+        "purchase_confirmation" => "Purchase confirmation",
+        "payout" => "Payout",
+        "refund" => "Refund",
+        "cancellation" => "Cancellation",
+        "event_update" => "Event change",
+        "order_status" => "Order update",
+        "account_notice" => "Account notice",
+        _ => "Email",
+    }
 }
 
 fn money_words(cents: Option<i64>, currency: Option<&str>) -> String {
@@ -2961,19 +4080,23 @@ fn money_words(cents: Option<i64>, currency: Option<&str>) -> String {
     }
 }
 
-/// Create the record a message proposes.
+/// Create the record a message proposes, with marko's corrections.
 ///
 /// Returns `(kind, id)` or an error naming what is missing. Everything goes
 /// through the EXISTING creation functions - same validation, same cent
-/// allocation, same protected rules as when marko types it in himself.
+/// allocation, same protected rules as when marko types it in by hand - and
+/// everything happens inside the caller's transaction or savepoint, so the
+/// record and the email's "this made X" mark are written together or not at
+/// all.
 ///
 /// The duplicate guard is checked inside this same connection, immediately
 /// before the write, so two clicks or a click racing the sync cannot both
-/// get through.
+/// get through. Automatic (`by == "auto"`) never creates past a duplicate.
 pub(crate) fn create_from_mail_impl(
     conn: &Connection,
     id: i64,
     by: &str,
+    overrides: &MailCreateOverrides,
 ) -> AppResult<(String, i64)> {
     let m = conn
         .query_row(
@@ -2985,32 +4108,119 @@ pub(crate) fn create_from_mail_impl(
         .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
 
     if let (Some(kind), Some(rid)) = (m.created_kind.clone(), m.created_id) {
+        return Err(AppError::Validation(format!("this message already created {kind} #{rid}")));
+    }
+    let proposal = build_proposal(conn, &m)?
+        .ok_or_else(|| AppError::Validation("there is nothing to create from this message".to_string()))?;
+    let auto = by == "auto";
+    if auto && !proposal.auto_ready {
+        return Err(AppError::Validation(proposal.auto_reason));
+    }
+
+    // What the record will carry: marko's correction, else what was read.
+    let amount = overrides.amount_cents.or(proposal.amount_cents).filter(|a| *a > 0);
+    let currency = overrides
+        .currency
+        .clone()
+        .or_else(|| proposal.currency.clone())
+        .map(|c| crate::fx::normalize_currency(&c))
+        .filter(|c| !c.is_empty());
+    let date = overrides
+        .date
+        .clone()
+        .filter(|d| chrono::NaiveDate::parse_from_str(d.get(..10).unwrap_or(""), "%Y-%m-%d").is_ok())
+        .map(|d| d[..10].to_string())
+        .unwrap_or_else(|| proposal.date.clone());
+    let quantity = overrides.quantity.or(proposal.quantity).filter(|q| *q > 0);
+    let event_id = overrides.event_id.or(proposal.matched_event_id);
+    let platform_id = overrides.platform_id.or(proposal.platform_id);
+    let reference = overrides
+        .reference
+        .clone()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .or_else(|| proposal.reference.clone());
+    let entry_type = overrides.entry_type.clone().or_else(|| proposal.entry_type.clone());
+
+    let mut missing: Vec<&str> = Vec::new();
+    if amount.is_none() {
+        missing.push("an amount");
+    }
+    if currency.is_none() {
+        missing.push("a currency");
+    }
+    match proposal.kind.as_str() {
+        "order" => {
+            if quantity.is_none() {
+                missing.push("how many tickets");
+            }
+            if event_id.is_none() {
+                missing.push("the event");
+            }
+        }
+        "sale" => {
+            if quantity.is_none() && overrides.ticket_ids.is_none() {
+                missing.push("how many tickets");
+            }
+        }
+        _ => {
+            if !matches!(entry_type.as_deref(), Some("income" | "expense")) {
+                missing.push("whether it is money in or out");
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(AppError::Validation(format!("still needed: {}", missing.join(", "))));
+    }
+    let (amount, currency) = (amount.unwrap_or(0), currency.unwrap_or_default());
+
+    // For a sale, the tickets: the ones marko picked, else the proposal's,
+    // else matched again against the event marko picked.
+    let tickets: Vec<i64> = if proposal.kind == "sale" {
+        match overrides.ticket_ids.clone().filter(|t| !t.is_empty()) {
+            Some(t) => t,
+            None if overrides.event_id.is_none() && overrides.quantity.is_none() && !proposal.ticket_ids.is_empty() => {
+                proposal.ticket_ids.clone()
+            }
+            None => match sale_tickets(conn, event_id, None, quantity.unwrap_or(0))? {
+                Ok(t) => t.ticket_ids,
+                Err(why) => return Err(AppError::Validation(why)),
+            },
+        }
+    } else {
+        Vec::new()
+    };
+
+    let duplicates = find_duplicates(
+        conn,
+        id,
+        &Shape {
+            kind: &proposal.kind,
+            amount: Some(amount),
+            currency: Some(&currency),
+            date: &date,
+            event_id,
+            reference: reference.as_deref(),
+            entry_type: entry_type.as_deref(),
+        },
+    )?;
+    if !duplicates.is_empty() && (auto || !overrides.allow_duplicate) {
+        let d = &duplicates[0];
         return Err(AppError::Validation(format!(
-            "this message already created {kind} #{rid}"
+            "{} looks like the same record ({}) - confirm to create it anyway",
+            d.label, d.reason
         )));
     }
 
-    let proposal = build_proposal(conn, &m)?
-        .ok_or_else(|| AppError::Validation("there is nothing to create from this message".to_string()))?;
-    if !proposal.ready {
-        return Err(AppError::Validation(proposal.blockers.join("; ")));
-    }
-
-    let amount = proposal
-        .amount_cents
-        .ok_or_else(|| AppError::Validation("no amount".to_string()))?;
-    let currency = proposal
-        .currency
-        .clone()
-        .ok_or_else(|| AppError::Validation("no currency".to_string()))?;
-    let date = m.received_at.get(..10).unwrap_or("").to_string();
-
+    let note = format!(
+        "From email: {}{}",
+        m.subject,
+        reference.as_deref().map(|r| format!(" · ref {r}")).unwrap_or_default()
+    );
     let created_id = match proposal.kind.as_str() {
         "finance" => {
-            // A payout is income; a refund is money going back out.
-            let entry_type = if m.category == "refund" { "expense" } else { "income" };
             let input = crate::models::FinanceEntryInput {
-                entry_type: entry_type.to_string(),
+                entry_type: entry_type.clone().unwrap_or_else(|| "income".into()),
                 entry_date: date.clone(),
                 amount_cents: amount,
                 currency: currency.clone(),
@@ -3018,32 +4228,26 @@ pub(crate) fn create_from_mail_impl(
                 category_id: None,
                 account_id: None,
                 order_id: proposal.matched_order_id,
-                place: m.detected_platform.clone(),
-                note: Some(format!("From email: {}", m.subject)),
+                place: proposal.platform_name.clone().or_else(|| m.detected_platform.clone()),
+                note: Some(note),
             };
             crate::commands::finance_entries::create_finance_entry_impl(conn, &input)?.id
         }
         "order" => {
-            let qty = proposal
-                .quantity
-                .filter(|q| *q > 0)
-                .ok_or_else(|| AppError::Validation("no quantity".to_string()))?;
+            let qty = quantity.unwrap_or(1);
             // marko's rule: "nerozdelovat fees a cenu listka ale spojit".
             // The whole total goes into the ticket price; `fees_cents`
             // carries only the division remainder so the order's own total
             // still comes to the exact cent the message stated.
             let unit = amount / qty;
-            let remainder = amount - unit * qty;
             let input = crate::models::OrderInput {
-                event_id: proposal
-                    .matched_event_id
-                    .ok_or_else(|| AppError::Validation("no event".to_string()))?,
+                event_id: event_id.unwrap_or(0),
                 supplier_id: None,
-                platform_id: None,
+                platform_id,
                 purchase_date: date.clone(),
                 quantity: qty,
                 unit_price_cents: unit,
-                fees_cents: remainder,
+                fees_cents: amount - unit * qty,
                 other_costs_cents: 0,
                 currency: currency.clone(),
                 payment_status: Some("paid".to_string()),
@@ -3056,29 +4260,43 @@ pub(crate) fn create_from_mail_impl(
                 restrictions: None,
             };
             let order_id = crate::commands::orders::create_order_impl(conn, &input)?;
-            // The reference is what a LATER sale mail will match this
-            // order by (`match_order` above), so it is written onto the
-            // column the order actually keeps one in. `OrderInput` has no
-            // such field - checked, not assumed - so this is a separate
-            // update rather than an invented input field.
-            if let Some(reference) = m.extracted_reference.as_deref() {
+            // The reference is what a LATER email matches this order by.
+            if let Some(r) = reference.as_deref() {
                 conn.execute(
                     "UPDATE orders SET external_reference = ?1 WHERE id = ?2 AND external_reference IS NULL",
-                    params![reference, order_id],
+                    params![r, order_id],
                 )?;
             }
             order_id
         }
-        other => {
-            // A sale needs specific TICKETS, and choosing which of an
-            // order's tickets were sold is not something a subject line
-            // decides. The order is matched and named so marko can record
-            // it there in two clicks - which is still the existing,
-            // tested path rather than a second one invented here.
-            return Err(AppError::Validation(format!(
-                "a {other} has to be recorded on its order, because the message does not say which tickets were sold. Order {} is the one.",
-                proposal.matched_order_code.unwrap_or_else(|| "?".into())
-            )));
+        _ => {
+            if tickets.is_empty() {
+                return Err(AppError::Validation("no tickets to sell".to_string()));
+            }
+            // The total over the tickets, to the cent: the remainder on the
+            // first line, as an order splits its fees.
+            let n = tickets.len() as i64;
+            let each = amount / n;
+            let lines = tickets
+                .iter()
+                .enumerate()
+                .map(|(i, t)| crate::models::SaleBatchLineInput {
+                    ticket_id: *t,
+                    sale_price_cents: if i == 0 { amount - each * (n - 1) } else { each },
+                    selling_fees_cents: 0,
+                })
+                .collect();
+            let input = crate::models::SaleBatchInput {
+                lines,
+                platform_id,
+                sale_date: date.clone(),
+                payment_status: Some("pending".to_string()),
+                buyer_reference: reference.clone(),
+                notes: Some(format!("From email: {}", m.subject)),
+                currency: Some(currency.clone()),
+            };
+            let ids = crate::commands::sales::insert_sales_batch(conn, &input)?;
+            *ids.first().ok_or_else(|| AppError::Other("the sale was not written".to_string()))?
         }
     };
 
@@ -3089,14 +4307,16 @@ pub(crate) fn create_from_mail_impl(
           WHERE id = ?5 AND created_id IS NULL",
         params![proposal.kind, created_id, Utc::now().to_rfc3339(), by, id],
     )?;
-    log_step(
-        conn,
-        id,
-        "created",
-        &proposal.kind,
-        Some(&format!("{} #{created_id} ({by})", proposal.kind)),
-    )?;
+    log_step(conn, id, "created", &proposal.kind, Some(&format!("{} #{created_id} ({by})", proposal.kind)))?;
     Ok((proposal.kind, created_id))
+}
+
+/// What Automatic decided about a message, kept for the screen.
+pub(crate) fn record_decision(conn: &Connection, id: i64, decision: &str, reason: &str) {
+    let _ = conn.execute(
+        "UPDATE mail_messages SET auto_decision = ?2, auto_reason = ?3 WHERE id = ?1",
+        params![id, decision, reason],
+    );
 }
 
 #[tauri::command]
@@ -3113,32 +4333,63 @@ pub fn get_mail_proposal(state: State<AppState>, id: i64) -> AppResult<Option<Ma
     build_proposal(&conn, &m)
 }
 
+/// marko's click: create what a message proposes, with marko's corrections.
+/// One transaction: the record and the email's mark together or not at all.
 #[tauri::command]
-pub fn create_from_mail(state: State<AppState>, id: i64) -> AppResult<MailProposal> {
+pub fn create_from_mail(
+    state: State<AppState>,
+    id: i64,
+    overrides: Option<MailCreateOverrides>,
+) -> AppResult<MailProposal> {
     {
-        let conn = state.db.lock().unwrap();
-        let (kind, rid) = create_from_mail_impl(&conn, id, "manual")?;
-        let dest = match kind.as_str() {
-            "finance" => DiscordDestination::Finance,
-            "order" => DiscordDestination::Inventory,
-            _ => DiscordDestination::Sales,
-        };
+        let mut conn = state.db.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (kind, rid) = create_from_mail_impl(&tx, id, "manual", &overrides.unwrap_or_default())?;
+        tx.commit()?;
         // Best effort: a webhook that is off or unreachable must never undo
-        // a record that was created successfully.
-        crate::commands::notifications::notify_discord(
-            &conn,
-            dest,
-            "Created from email",
-            &format!("{kind} #{rid}"),
-            &[],
-        );
+        // a record that was created successfully (commands/discord.rs).
+        if let Ok(subject) = crate::commands::discord::Subject::parse(&kind, rid) {
+            crate::commands::discord::announce(&conn, subject, crate::commands::discord::Occasion::FromMail { auto: false });
+        }
     }
-    // `get_mail_proposal` returns an Option - a message whose category maps
-    // to nothing has no proposal. Here one was just created FROM a
-    // proposal, so it exists; saying so with a clear error beats an
-    // `unwrap` that would panic the command if that ever stopped holding.
     get_mail_proposal(state, id)?
         .ok_or_else(|| AppError::Other("the record was created but its summary could not be re-read".to_string()))
+}
+
+/// The unsold tickets a sale email could have sold, for the review form's
+/// picker: every unsold ticket of one event, with its order and seat.
+#[tauri::command]
+pub fn list_mail_sale_candidates(state: State<AppState>, event_id: i64) -> AppResult<Vec<MailSaleCandidate>> {
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT t.id, o.code, IFNULL(t.section,''), IFNULL(t.row_label,''), IFNULL(t.seat,''), t.status
+           FROM tickets t JOIN orders o ON o.id = t.order_id
+          WHERE t.event_id = ?1 AND t.status IN ('available','listed')
+          ORDER BY o.id, t.id",
+    )?;
+    let rows = stmt.query_map([event_id], |r| {
+        Ok(MailSaleCandidate {
+            ticket_id: r.get(0)?,
+            order_code: r.get(1)?,
+            section: r.get(2)?,
+            row_label: r.get(3)?,
+            seat: r.get(4)?,
+            status: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// One unsold ticket a sale email could be about.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSaleCandidate {
+    pub ticket_id: i64,
+    pub order_code: String,
+    pub section: String,
+    pub row_label: String,
+    pub seat: String,
+    pub status: String,
 }
 
 /// How often the app syncs by itself. `0` turns it off.
@@ -3178,7 +4429,45 @@ pub fn set_mail_automation(
         )));
     }
     let conn = state.db.lock().unwrap();
+    let was = automation_mode(&conn, &kind);
     set_setting(&conn, key, &mode)?;
+    // 2.113.0: switching Automatic on starts its clock - only mail from now
+    // on - and makes this the computer that does it.
+    if mode == "auto" && was != "auto" {
+        set_setting(&conn, since_key(&kind), &Utc::now().to_rfc3339())?;
+        claim_automation(&conn)?;
+    }
+    status_impl(&conn)
+}
+
+/// 2.113.0: the reader's two choices. Either may be left out.
+#[tauri::command]
+pub fn set_mail_reader_options(
+    state: State<AppState>,
+    translate_to: Option<String>,
+    remote_images: Option<bool>,
+) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    if let Some(lang) = translate_to {
+        let lang = lang.trim().to_ascii_lowercase();
+        if crate::commands::mail_view::language_name(&lang) == "Slovak" && lang != "sk" {
+            return Err(AppError::Validation("TIQR cannot translate into that language.".into()));
+        }
+        set_setting(&conn, crate::commands::mail_view::MAIL_TRANSLATE_TO_KEY, &lang)?;
+    }
+    if let Some(on) = remote_images {
+        set_setting(&conn, crate::commands::mail_view::MAIL_REMOTE_IMAGES_KEY, if on { "on" } else { "off" })?;
+    }
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
+    status_impl(&conn)
+}
+
+/// 2.113.0: "Run Automatic here" - this computer takes over making records
+/// from mail; the other one goes back to proposing.
+#[tauri::command]
+pub fn claim_mail_automation(state: State<AppState>) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    claim_automation(&conn)?;
     status_impl(&conn)
 }
 
@@ -3232,31 +4521,54 @@ enum Atom<'a> {
     Otp,
     Review,
     Label(&'a str),
+    /// 2.113.0: still where Gmail has it - marko has not moved it in TIQR.
+    Unmoved,
+    /// 2.113.0: marko moved it here in TIQR.
+    MovedTo(&'a str),
 }
+
+/// 2.113.0: one of marko's own folders in TIQR (`tiqr_3`). Never a Gmail
+/// label id - Gmail's own are `label_<n>` and the system names.
+pub(crate) fn is_local_folder_key(key: &str) -> bool {
+    key.strip_prefix("tiqr_").is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The places a message can be moved to besides marko's own folders and labels.
+pub(crate) const MOVE_TARGETS: &[&str] = &["inbox", "finances", "promotions"];
 
 fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
     use Atom::*;
     let junk = format!("({} OR {} OR {})", atom(Spam), atom(Trash), atom(LocalTrash));
+    // 2.113.0: "aby som vedel dane maily presunut tak kde chcem". A message
+    // marko moved is in the place it was moved to and in no other place; the
+    // views across places (Important, Starred, Codes, Review) still show it.
+    let placed = |own: String, key: &str| {
+        format!("(({} AND {own}) OR ({} AND NOT {}))", atom(Unmoved), atom(MovedTo(key)), atom(LocalTrash))
+    };
     Some(match folder {
         // "hlavny inbox: tam budu vsetky spravy okrem napriklad spamu a
         // promotions" - everything received, archived mail included, but
         // not his own sent mail and not drafts.
-        "inbox" => format!(
-            "NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {})",
-            atom(Promo),
-            atom(Draft),
-            atom(Sent),
-            atom(Inbox)
+        "inbox" => placed(
+            format!(
+                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}))",
+                atom(Promo),
+                atom(Draft),
+                atom(Sent),
+                atom(Inbox)
+            ),
+            "inbox",
         ),
         "important" => format!("NOT {junk} AND {}", atom(Recognised)),
         "starred" => format!("NOT {junk} AND {}", atom(Starred)),
-        "finances" => format!("NOT {junk} AND NOT {} AND {}", atom(Promo), atom(Finance)),
+        "finances" => placed(format!("(NOT {junk} AND NOT {} AND {})", atom(Promo), atom(Finance)), "finances"),
         "otp" => format!("NOT {junk} AND {}", atom(Otp)),
         "review" => format!("NOT {} AND {}", atom(LocalTrash), atom(Review)),
-        "promotions" => format!("NOT {junk} AND {}", atom(Promo)),
-        "spam" => format!("NOT {} AND {}", atom(LocalTrash), atom(Spam)),
-        "trash" => format!("({} OR {})", atom(Trash), atom(LocalTrash)),
-        key if is_label_key(key) => format!("NOT {junk} AND {}", atom(Label(key))),
+        "promotions" => placed(format!("(NOT {junk} AND {})", atom(Promo)), "promotions"),
+        "spam" => format!("NOT {} AND {} AND {}", atom(LocalTrash), atom(Spam), atom(Unmoved)),
+        "trash" => format!("({} OR ({} AND {}))", atom(LocalTrash), atom(Trash), atom(Unmoved)),
+        key if is_local_folder_key(key) => format!("({} AND NOT {})", atom(MovedTo(key)), atom(LocalTrash)),
+        key if is_label_key(key) => placed(format!("(NOT {junk} AND {})", atom(Label(key))), key),
         _ => return None,
     })
 }
@@ -3278,6 +4590,9 @@ fn row_atom(a: Atom) -> String {
         Atom::Otp => "(otp_code IS NOT NULL)".to_string(),
         Atom::Review => "(status = 'review_required')".to_string(),
         Atom::Label(k) => has_label(k),
+        Atom::Unmoved => "(moved_to IS NULL)".to_string(),
+        // `k` is a checked key (see `folder_expr`), never free text.
+        Atom::MovedTo(k) => format!("(moved_to = '{k}')"),
     }
 }
 
@@ -3298,6 +4613,8 @@ fn count_atom(a: Atom) -> String {
         Atom::Otp => "otp".to_string(),
         Atom::Review => "rev".to_string(),
         Atom::Label(k) => format!("(instr(l, ',{k},') > 0)"),
+        Atom::Unmoved => "(mv IS NULL)".to_string(),
+        Atom::MovedTo(k) => format!("(mv = '{k}')"),
     }
 }
 
@@ -3307,10 +4624,10 @@ fn count_atom(a: Atom) -> String {
 const COUNT_ROWS: &str = "WITH m AS MATERIALIZED (
     SELECT ',' || IFNULL(labels, '') || ',' AS l, is_unread AS u, (is_starred = 1) AS st,
            (trashed_at IS NOT NULL) AS tt, (category <> 'other') AS imp, IFNULL(finance = 1, 0) AS fin,
-           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev
+           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv
       FROM mail_messages
 ), f AS MATERIALIZED (
-    SELECT l, u, st, tt, imp, fin, otp, rev,
+    SELECT l, u, st, tt, imp, fin, otp, rev, mv,
            (instr(l, ',spam,') > 0) AS sp, (instr(l, ',trash,') > 0) AS tr,
            (instr(l, ',category_promotions,') > 0) AS pr, (instr(l, ',draft,') > 0) AS dr,
            (instr(l, ',sent,') > 0) AS se, (instr(l, ',inbox,') > 0) AS ib
@@ -3411,13 +4728,168 @@ fn user_label_keys(conn: &Connection) -> AppResult<Vec<String>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Every folder's numbers for the rail: the built-in ones and his labels.
+/// Every folder's numbers for the rail: the built-in ones, the Gmail labels
+/// and marko's own folders.
 #[tauri::command]
 pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolderCount>> {
     let conn = state.db.lock().unwrap();
+    forget_moves_to_gone_places(&conn)?;
     let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
     keys.extend(user_label_keys(&conn)?);
+    keys.extend(local_folders(&conn).into_iter().map(|f| f.id));
     folder_counts_impl(&conn, &keys)
+}
+
+// ===========================================================================
+// MOVING MAIL (2.113.0)
+// ===========================================================================
+//
+// marko: "aby som vedel dane maily presunut tak kde chcem do ineho miesta".
+// TIQR's own, exactly like read state: Gmail is read-only to this app and is
+// never changed. A message can go to the Inbox, Finances, Promotions, one of
+// the Gmail labels, or one of marko's own folders here - and back to where
+// Gmail has it. The own folders travel to the other computer with the mail
+// settings (`mail_folders`, shared_settings.rs), so a rule that moves mail
+// into one works on both; which message was moved by hand stays on the
+// computer it was moved on, like everything else about a message.
+
+/// One of marko's own folders in TIQR.
+#[derive(Debug, Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLocalFolder {
+    pub id: String,
+    pub name: String,
+}
+
+pub(crate) const MAIL_FOLDERS_KEY: &str = "mail_folders";
+
+pub(crate) fn local_folders(conn: &Connection) -> Vec<MailLocalFolder> {
+    get_setting(conn, MAIL_FOLDERS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<MailLocalFolder>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| is_local_folder_key(&f.id))
+        .collect()
+}
+
+fn save_local_folders(conn: &Connection, folders: &[MailLocalFolder]) -> AppResult<()> {
+    let raw = serde_json::to_string(folders).map_err(|e| AppError::Other(e.to_string()))?;
+    set_setting(conn, MAIL_FOLDERS_KEY, &raw)?;
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+/// Whether `target` is somewhere a message can be moved to right now.
+pub(crate) fn valid_move_target(conn: &Connection, target: &str) -> AppResult<bool> {
+    if MOVE_TARGETS.contains(&target) {
+        return Ok(true);
+    }
+    if is_local_folder_key(target) {
+        return Ok(local_folders(conn).iter().any(|f| f.id == target));
+    }
+    if is_label_key(target) {
+        return Ok(conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM mail_labels WHERE id = ?1 AND kind = 'user')", [target], |r| r.get(0))?);
+    }
+    Ok(false)
+}
+
+/// A folder that is gone - deleted here, deleted on the other computer, or a
+/// label deleted in Gmail - takes no message with it: what was moved there
+/// goes back to where Gmail has it.
+pub(crate) fn forget_moves_to_gone_places(conn: &Connection) -> AppResult<usize> {
+    let mut stmt = conn.prepare("SELECT DISTINCT moved_to FROM mail_messages WHERE moved_to IS NOT NULL")?;
+    let targets: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let mut n = 0;
+    for t in targets {
+        if !valid_move_target(conn, &t)? {
+            n += conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE moved_to = ?1", [&t])?;
+        }
+    }
+    Ok(n)
+}
+
+/// Moves messages - `target` empty puts them back where Gmail has them.
+pub(crate) fn move_mail_impl(conn: &Connection, ids: &[i64], target: &str) -> AppResult<usize> {
+    let target = target.trim();
+    if !target.is_empty() && !valid_move_target(conn, target)? {
+        return Err(AppError::Validation("That is not a place a message can be moved to.".into()));
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut n = 0;
+    for id in ids {
+        n += if target.is_empty() {
+            conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE id = ?1", [id])?
+        } else {
+            // Moving a message out of TIQR's trash brings it back first.
+            conn.execute(
+                "UPDATE mail_messages SET moved_to = ?2, moved_at = ?3, trashed_at = NULL WHERE id = ?1",
+                params![id, target, now],
+            )?
+        };
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn move_mail(state: State<AppState>, ids: Vec<i64>, target: String) -> AppResult<usize> {
+    let conn = state.db.lock().unwrap();
+    move_mail_impl(&conn, &ids, &target)
+}
+
+fn folder_name(raw: &str, folders: &[MailLocalFolder], except: Option<&str>) -> AppResult<String> {
+    let name: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err(AppError::Validation("A folder name is 1 to 40 characters.".into()));
+    }
+    if folders.iter().any(|f| Some(f.id.as_str()) != except && f.name.eq_ignore_ascii_case(&name)) {
+        return Err(AppError::Validation("You already have a folder with that name.".into()));
+    }
+    Ok(name)
+}
+
+#[tauri::command]
+pub fn list_mail_local_folders(state: State<AppState>) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    Ok(local_folders(&conn))
+}
+
+#[tauri::command]
+pub fn create_mail_local_folder(state: State<AppState>, name: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    let name = folder_name(&name, &folders, None)?;
+    if folders.len() >= 100 {
+        return Err(AppError::Validation("That is a hundred folders already.".into()));
+    }
+    let next = folders.iter().filter_map(|f| f.id.strip_prefix("tiqr_")?.parse::<u32>().ok()).max().unwrap_or(0) + 1;
+    folders.push(MailLocalFolder { id: format!("tiqr_{next}"), name });
+    save_local_folders(&conn, &folders)?;
+    Ok(folders)
+}
+
+#[tauri::command]
+pub fn rename_mail_local_folder(state: State<AppState>, id: String, name: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    let name = folder_name(&name, &folders, Some(&id))?;
+    let folder = folders.iter_mut().find(|f| f.id == id).ok_or_else(|| AppError::NotFound("That folder is gone.".into()))?;
+    folder.name = name;
+    save_local_folders(&conn, &folders)?;
+    Ok(folders)
+}
+
+/// The folder goes; its messages go back to where Gmail has them - nothing
+/// in it is deleted.
+#[tauri::command]
+pub fn delete_mail_local_folder(state: State<AppState>, id: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    folders.retain(|f| f.id != id);
+    save_local_folders(&conn, &folders)?;
+    conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE moved_to = ?1", [&id])?;
+    Ok(folders)
 }
 
 /// Gmail's folders, as the UI's left rail shows them.
@@ -4422,6 +5894,115 @@ mod tests {
         assert_eq!(extract_reference("Thanks for your order"), None);
     }
 
+    // ---- 2.113.0: the readers, sharpened ------------------------------------
+
+    #[test]
+    fn a_subtotal_is_a_part_never_the_total() {
+        let m = extract_money("Subtotal 80,00 EUR. Booking fee 14,00 EUR. Total 94,00 EUR", Some(2)).unwrap();
+        assert_eq!((m.total_cents, m.basis.as_str(), m.sure), (9400, "total", true));
+        assert_eq!(extract_money("Subtotal: 80,00 EUR", Some(2)), None, "only a part, so no total");
+    }
+
+    #[test]
+    fn a_currency_code_counts_only_as_a_word_of_its_own() {
+        assert_eq!(extract_money("Explore Europe 2026 with us", None), None);
+        assert_eq!(extract_money("Explanation: 12 tickets left", None), None);
+        let m = extract_money("Total 40,00 EUR.", None).unwrap();
+        assert_eq!((m.total_cents, m.currency.as_str()), (4000, "EUR"));
+    }
+
+    #[test]
+    fn a_symbol_before_the_number_takes_the_number_after_it() {
+        // The second € used to take 94.00 - the number in FRONT of it.
+        let m = extract_money("Total: €94.00 Service fee: €5.00", None).unwrap();
+        assert_eq!(m.total_cents, 9400);
+        let m = extract_money("Celkom: 94,00 € poplatok 5,00 €", None).unwrap();
+        assert_eq!(m.total_cents, 9400, "and a symbol after the number, the number before it");
+        assert_eq!(extract_money("Charged CA$120.00", None).unwrap().currency, "CAD");
+        assert_eq!(extract_money("Paid A$50.00", None).unwrap().currency, "AUD");
+        assert_eq!(extract_money("Paid US$50.00", None).unwrap().currency, "USD");
+    }
+
+    #[test]
+    fn amounts_in_two_currencies_are_never_compared_with_each_other() {
+        let m = extract_money("Order total 94,00 EUR (about 2 350,00 CZK)", Some(2)).unwrap();
+        assert_eq!((m.total_cents, m.currency.as_str()), (9400, "EUR"));
+        // No label: the head's main currency, then its largest amount.
+        let m = extract_money("Payment 40,00 EUR, 12,00 EUR fee waived, 1 000,00 CZK", None).unwrap();
+        assert_eq!((m.total_cents, m.currency.as_str(), m.sure), (4000, "EUR", false));
+    }
+
+    #[test]
+    fn two_numbers_side_by_side_are_not_read_as_one() {
+        assert_eq!(parse_amount(&"12 40,00".chars().collect::<Vec<_>>()), None);
+        assert_eq!(parse_amount(&"1 234,50".chars().collect::<Vec<_>>()), Some(123450));
+        assert_eq!(parse_amount(&"1.234,50".chars().collect::<Vec<_>>()), Some(123450));
+        assert_eq!(parse_amount(&"1,234.50".chars().collect::<Vec<_>>()), Some(123450));
+        assert_eq!(parse_amount(&"1,234".chars().collect::<Vec<_>>()), Some(123400));
+        assert_eq!(parse_amount(&"40,5".chars().collect::<Vec<_>>()), Some(4050));
+        assert_eq!(parse_amount(&"1.234,567".chars().collect::<Vec<_>>()), None);
+        let m = extract_money("Section 12 40,00 EUR total", None).unwrap();
+        assert_eq!(m.total_cents, 4000);
+    }
+
+    #[test]
+    fn an_order_number_is_not_a_number_of_tickets() {
+        assert_eq!(extract_quantity("Order #123 - your tickets"), None);
+        assert_eq!(extract_quantity("Order 4521: your tickets are ready"), None);
+        assert_eq!(extract_quantity("Ticket 1 of 2 - Section 112"), None);
+        assert_eq!(extract_quantity("3 days left to sell your tickets"), None);
+        assert_eq!(extract_quantity("2 x Standing Ticket"), Some(2));
+        assert_eq!(extract_quantity("2× VIP tickets"), Some(2));
+        assert_eq!(extract_quantity("Your 4 general admission tickets"), Some(4));
+        assert_eq!(extract_quantity("Quantity: 3"), Some(3));
+        assert_eq!(extract_quantity("Tickets: 2"), Some(2));
+        assert_eq!(extract_quantity("Počet: 2"), Some(2));
+        assert_eq!(extract_quantity("Predali ste 2 vstupenky"), Some(2));
+    }
+
+    #[test]
+    fn a_reference_is_read_only_after_a_phrase_that_starts_a_word() {
+        assert_eq!(extract_reference("Update your preferences 123456"), None);
+        assert_eq!(extract_reference("Objednávka č. 2024-778 je potvrdená").as_deref(), Some("2024-778"));
+        assert_eq!(extract_reference("Order 18833211 is confirmed").as_deref(), Some("18833211"));
+        assert_eq!(extract_reference("Order confirmation for Oasis"), None);
+        assert_eq!(extract_reference("Booking reference: ABC123/LON.").as_deref(), Some("ABC123/LON"));
+    }
+
+    #[test]
+    fn every_reading_carries_the_words_it_came_from() {
+        let r = read_message(
+            "Your order is confirmed",
+            "Thanks Marko!\nOrder number: TC-88213\n2 x Standing Ticket\nOrder total 94,00 EUR\nSee you there",
+        );
+        let money = r.money.unwrap();
+        assert_eq!((money.total_cents, money.unit_cents, money.sure), (9400, Some(4700), true));
+        assert_eq!(money.source, "Order total 94,00 EUR");
+        let q = r.quantity.unwrap();
+        assert_eq!((q.n, q.source.as_str()), (2, "2 x Standing Ticket"));
+        let reference = r.reference.unwrap();
+        assert_eq!((reference.value.as_str(), reference.source.as_str()), ("TC-88213", "Order number: TC-88213"));
+        assert!(r.from_body);
+    }
+
+    #[test]
+    fn a_body_with_no_stated_total_is_not_guessed_from() {
+        // "Earn up to €500" is the largest amount in it, and no part of the order.
+        let r = read_message("Your order is confirmed", "Earn up to €500 in rewards. Ticket price 40,00 EUR");
+        assert_eq!(r.money, None);
+        // ...while the subject and preview still count when they say it.
+        let r = read_message("You paid 120,00 EUR", "Earn up to €500 in rewards");
+        assert_eq!(r.money.map(|m| (m.total_cents, m.sure)), Some((12000, true)));
+    }
+
+    #[test]
+    fn a_long_body_is_read_in_a_blink() {
+        let body = "Lorem ipsum 12,00 EUR dolor sit amet, total 4,00 EUR. 3 tickets.\n".repeat(400);
+        let started = std::time::Instant::now();
+        let _ = read_message("Your order", &body);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
     /// Nothing is read out of spam or trash. A number in a phishing mail is
     /// the last one that should reach a screen offering to act on it.
     #[test]
@@ -4608,6 +6189,7 @@ mod tests {
 
     fn store(conn: &Connection, subject: &str, labels: &str) -> i64 {
         let mut msg = sample_fetched(&format!("m-{subject}"));
+        msg.provider_thread_id = Some(format!("t-{subject}"));
         msg.subject = subject.to_string();
         msg.labels = labels.to_string();
         msg.snippet = Some(subject.to_string());
@@ -4706,7 +6288,7 @@ mod tests {
     fn creating_a_finance_entry_from_a_payout_works_and_records_the_link() {
         let conn = test_conn();
         let id = store(&conn, "Your payout of 240,00 EUR is on the way", "inbox");
-        let (kind, rid) = create_from_mail_impl(&conn, id, "manual").unwrap();
+        let (kind, rid) = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
         assert_eq!(kind, "finance");
 
         let (amount, ty): (i64, String) = conn
@@ -4725,15 +6307,34 @@ mod tests {
         assert_eq!(m.status, "processed");
     }
 
+    /// 2.113.0: a refund is money back from where marko BUYS and money out
+    /// from where marko SELLS. Where the platform does not say, marko does.
     #[test]
-    fn a_refund_is_recorded_as_money_going_back_out() {
+    fn a_refund_goes_the_way_its_platform_says_and_is_asked_otherwise() {
         let conn = test_conn();
+        let entry_type = |rid: i64| -> String {
+            conn.query_row("SELECT entry_type FROM finance_entries WHERE id = ?1", params![rid], |r| r.get(0)).unwrap()
+        };
+        // Viagogo is not one of marko's platforms yet: it is not clear.
         let id = store(&conn, "Refund issued - 120,00 EUR", "inbox");
-        let (_, rid) = create_from_mail_impl(&conn, id, "manual").unwrap();
-        let ty: String = conn
-            .query_row("SELECT entry_type FROM finance_entries WHERE id = ?1", params![rid], |r| r.get(0))
-            .unwrap();
-        assert_eq!(ty, "expense");
+        let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().unwrap();
+        assert_eq!(p.entry_type, None);
+        assert!(!p.ready && p.blockers.iter().any(|b| b.contains("money in or out")), "{:?}", p.blockers);
+        let err = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap_err();
+        assert!(err.to_string().contains("money in or out"), "{err}");
+        let pick = MailCreateOverrides { entry_type: Some("expense".into()), ..Default::default() };
+        let (_, rid) = create_from_mail_impl(&conn, id, "manual", &pick).unwrap();
+        assert_eq!(entry_type(rid), "expense");
+
+        // Where marko sells, a refund is money out; where marko buys, money in.
+        conn.execute("INSERT INTO platforms (name, kind) VALUES ('Viagogo', 'sale')", []).unwrap();
+        let id = store(&conn, "Refund issued - 80,00 EUR", "inbox");
+        let (_, rid) = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
+        assert_eq!(entry_type(rid), "expense");
+        conn.execute("UPDATE platforms SET kind = 'purchase' WHERE name = 'Viagogo'", []).unwrap();
+        let id = store(&conn, "Refund issued - 60,00 EUR", "inbox");
+        let (_, rid) = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
+        assert_eq!(entry_type(rid), "income");
     }
 
     /// THE DUPLICATE GUARD. A second press, a second sync and a restart
@@ -4742,9 +6343,9 @@ mod tests {
     fn the_same_message_can_never_create_a_second_record() {
         let conn = test_conn();
         let id = store(&conn, "Your payout of 240,00 EUR is on the way", "inbox");
-        create_from_mail_impl(&conn, id, "manual").unwrap();
+        create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
 
-        let err = create_from_mail_impl(&conn, id, "manual").unwrap_err();
+        let err = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap_err();
         assert!(err.to_string().contains("already created"), "{err}");
 
         let n: i64 = conn
@@ -4757,7 +6358,7 @@ mod tests {
     fn creating_from_a_message_that_is_not_ready_is_refused_and_writes_nothing() {
         let conn = test_conn();
         let id = store(&conn, "Order confirmation 4471982 - total 94,00 EUR for 2 tickets", "inbox");
-        assert!(create_from_mail_impl(&conn, id, "manual").is_err());
+        assert!(create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).is_err());
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
     }
@@ -4775,7 +6376,7 @@ mod tests {
             "Order confirmation for Coldplay Wembley - order total 95,00 EUR for 3 tickets",
             "inbox",
         );
-        let (kind, order_id) = create_from_mail_impl(&conn, id, "manual").unwrap();
+        let (kind, order_id) = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
         assert_eq!(kind, "order");
 
         let (unit, fees, qty): (i64, i64, i64) = conn
@@ -4789,6 +6390,291 @@ mod tests {
         assert_eq!(unit * qty + fees, 9500, "the order must total exactly what the mail said");
         assert_eq!(unit, 3166);
         assert_eq!(fees, 2, "the remainder, not an invented fee");
+    }
+
+    // ---- 2.113.0: Automatic, with its evidence -------------------------------
+
+    /// A message from `from`, its own conversation, arrived `received`.
+    fn store_from(conn: &Connection, from: &str, subject: &str, received: &str) -> i64 {
+        let mut msg = sample_fetched(&format!("m-{subject}-{received}"));
+        msg.provider_thread_id = Some(format!("t-{subject}-{received}"));
+        msg.from_address = from.to_string();
+        msg.subject = subject.to_string();
+        msg.snippet = Some(subject.to_string());
+        msg.received_at = received.to_string();
+        msg.body_text = String::new();
+        let class = classify(&msg.from_address, &msg.subject, &msg.subject);
+        upsert_message(conn, MailProviderKind::Gmail, "me@gmail.com", &msg, &class).unwrap().0
+    }
+
+    fn proposal(conn: &Connection, id: i64) -> MailProposal {
+        build_proposal(conn, &summary_of(conn, id)).unwrap().expect("a proposal")
+    }
+
+    fn auto_on(conn: &Connection, kind: &str) {
+        let key = match kind {
+            "order" => MAIL_AUTO_ORDER_KEY,
+            "sale" => MAIL_AUTO_SALE_KEY,
+            _ => MAIL_AUTO_FINANCE_KEY,
+        };
+        set_setting(conn, key, "auto").unwrap();
+        set_setting(conn, since_key(kind), "2026-10-01T00:00:00+00:00").unwrap();
+    }
+
+    const VIAGOGO: &str = "noreply@viagogo.com";
+    const STUBHUB: &str = "noreply@stubhub.com";
+    const DAY: &str = "2026-10-17T10:00:00+00:00";
+
+    #[test]
+    fn automatic_makes_a_sure_payout_and_shows_what_it_rests_on() {
+        let conn = test_conn();
+        auto_on(&conn, "finance");
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        let p = proposal(&conn, id);
+        assert!(p.auto_ready, "{}", p.auto_reason);
+        assert_eq!(p.confidence, "high");
+        let amount = p.evidence.iter().find(|e| e.field == "Amount").unwrap();
+        assert_eq!((amount.value.as_str(), amount.source.as_str()), ("240.00 EUR", "Your payout of 240,00 EUR is on the way"));
+        assert!(p.duplicates.is_empty());
+    }
+
+    #[test]
+    fn automatic_never_reaches_into_mail_from_before_it_was_switched_on() {
+        let conn = test_conn();
+        auto_on(&conn, "finance");
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", "2026-09-20T10:00:00+00:00");
+        let p = proposal(&conn, id);
+        assert!(p.ready, "a click still makes it");
+        assert!(!p.auto_ready && p.auto_reason.contains("before Automatic"), "{}", p.auto_reason);
+    }
+
+    #[test]
+    fn a_guess_at_the_amount_is_never_made_by_itself() {
+        let conn = test_conn();
+        auto_on(&conn, "finance");
+        // Two amounts and no word for either: "the largest" is a guess.
+        let id = store_from(&conn, VIAGOGO, "Payout sent", DAY);
+        conn.execute(
+            "UPDATE mail_messages SET extracted_amount_cents = 24000, extracted_currency = 'EUR',
+                    extracted_basis = 'largest amount',
+                    extracted_evidence = '{\"amount\":{\"source\":\"40,00 EUR and 240,00 EUR\",\"sure\":false,\"body\":false},\"body\":false}'
+              WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let p = proposal(&conn, id);
+        assert!(p.ready);
+        assert_eq!(p.confidence, "low");
+        assert!(!p.auto_ready && p.auto_reason.contains("Amount is not certain"), "{}", p.auto_reason);
+    }
+
+    #[test]
+    fn a_record_that_already_exists_stops_automatic_and_needs_a_confirmed_click() {
+        let conn = test_conn();
+        auto_on(&conn, "finance");
+        conn.execute(
+            "INSERT INTO finance_entries (entry_type, entry_date, amount_cents, currency, scope)
+             VALUES ('income', '2026-10-16', 24000, 'EUR', 'business')",
+            [],
+        )
+        .unwrap();
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        let p = proposal(&conn, id);
+        assert_eq!(p.duplicates.len(), 1, "{:?}", p.duplicates);
+        assert!(p.duplicates[0].reason.contains("same amount"));
+        assert!(!p.auto_ready && p.auto_reason.contains("already exists"), "{}", p.auto_reason);
+        // A plain click is refused and says why; a confirmed one goes ahead.
+        let err = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap_err();
+        assert!(err.to_string().contains("confirm"), "{err}");
+        assert!(create_from_mail_impl(&conn, id, "auto", &MailCreateOverrides::default()).is_err());
+        let yes = MailCreateOverrides { allow_duplicate: true, ..Default::default() };
+        create_from_mail_impl(&conn, id, "manual", &yes).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM finance_entries", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    /// One payout announced twice - "on the way", then "sent" - in one
+    /// conversation is ONE payout.
+    #[test]
+    fn a_second_email_of_the_same_conversation_is_the_same_record() {
+        let conn = test_conn();
+        let first = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        let second = store_from(&conn, VIAGOGO, "Payout of 240,00 EUR sent", "2026-10-19T09:00:00+00:00");
+        conn.execute("UPDATE mail_messages SET provider_thread_id = 'same' WHERE id IN (?1, ?2)", [first, second]).unwrap();
+        create_from_mail_impl(&conn, first, "manual", &MailCreateOverrides::default()).unwrap();
+        let p = proposal(&conn, second);
+        assert!(p.duplicates.iter().any(|d| d.reason.contains("conversation")), "{:?}", p.duplicates);
+    }
+
+    #[test]
+    fn an_order_carrying_the_same_reference_is_the_same_order() {
+        let conn = test_conn();
+        let event = seed_event(&conn, "Coldplay Wembley");
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, unit_price_cents, total_cost_cents, currency, external_reference)
+             VALUES ('COLD-001', ?1, '2026-09-01', 2, 4700, 9400, 'EUR', 'TM-77812')",
+            [event],
+        )
+        .unwrap();
+        let id = store_from(
+            &conn,
+            "noreply@ticketmaster.com",
+            "Order confirmation for Coldplay Wembley - order number TM-77812 - order total 94,00 EUR for 2 tickets",
+            DAY,
+        );
+        let p = proposal(&conn, id);
+        assert_eq!(p.reference.as_deref(), Some("TM-77812"));
+        assert!(p.duplicates.iter().any(|d| d.label == "COLD-001" && d.reason.contains("reference")), "{:?}", p.duplicates);
+    }
+
+    fn seed_unsold(conn: &Connection, event: i64, code: &str, n: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO orders (code, event_id, purchase_date, quantity, unit_price_cents, total_cost_cents, currency)
+             VALUES (?1, ?2, '2026-09-01', ?3, 10000, ?3 * 10000, 'EUR')",
+            params![code, event, n],
+        )
+        .unwrap();
+        let order = conn.last_insert_rowid();
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO tickets (code, event_id, order_id, section, row_label, seat, purchase_cost_cents, currency)
+                 VALUES (?1, ?2, ?3, '112', 'F', ?4, 10000, 'EUR')",
+                params![format!("{code}-{i}"), event, order, (14 + i).to_string()],
+            )
+            .unwrap();
+        }
+        order
+    }
+
+    /// The Sales channel's first real message: a sale email that names the
+    /// event and the count sells exactly those unsold tickets.
+    #[test]
+    fn a_sale_email_sells_the_unsold_tickets_of_its_event() {
+        let conn = test_conn();
+        auto_on(&conn, "sale");
+        let event = seed_event(&conn, "Oasis Live");
+        seed_unsold(&conn, event, "OASIS-001", 2);
+        conn.execute("INSERT INTO platforms (name, kind) VALUES ('StubHub', 'sale')", []).unwrap();
+        let id = store_from(&conn, STUBHUB, "You sold 2 tickets for Oasis Live - 600,00 EUR - sale id SH-4410", DAY);
+        let p = proposal(&conn, id);
+        assert!(p.ready, "{:?}", p.blockers);
+        assert_eq!(p.ticket_ids.len(), 2);
+        assert!(p.tickets_label.as_deref().unwrap().starts_with("2 of 2 unsold in OASIS-001"), "{:?}", p.tickets_label);
+        assert!(p.auto_ready, "{}", p.auto_reason);
+
+        let (kind, sale_id) = create_from_mail_impl(&conn, id, "auto", &MailCreateOverrides::default()).unwrap();
+        assert_eq!(kind, "sale");
+        let rows: Vec<(i64, String, Option<String>, Option<i64>)> = conn
+            .prepare("SELECT sale_price_cents, currency, buyer_reference, platform_id FROM sales ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.iter().map(|r| r.0).sum::<i64>(), 60000, "the total to the cent");
+        assert!(rows.iter().all(|r| r.1 == "EUR" && r.2.as_deref() == Some("SH-4410") && r.3.is_some()));
+        let sold: i64 = conn.query_row("SELECT COUNT(*) FROM tickets WHERE status = 'sold'", [], |r| r.get(0)).unwrap();
+        assert_eq!(sold, 2);
+        assert_eq!(summary_of(&conn, id).created_id, Some(sale_id));
+        // A second email quoting the same sale is the same sale.
+        let again = store_from(&conn, STUBHUB, "You sold 2 tickets for Oasis Live - 600,00 EUR - sale id SH-4410", "2026-10-18T10:00:00+00:00");
+        assert!(proposal(&conn, again).duplicates.iter().any(|d| d.kind == "sale"));
+    }
+
+    #[test]
+    fn a_sale_with_a_choice_of_tickets_waits_for_marko_to_pick_them() {
+        let conn = test_conn();
+        auto_on(&conn, "sale");
+        let event = seed_event(&conn, "Oasis Live");
+        seed_unsold(&conn, event, "OASIS-001", 3);
+        let id = store_from(&conn, STUBHUB, "You sold 2 tickets for Oasis Live - 600,00 EUR", DAY);
+        let p = proposal(&conn, id);
+        assert!(p.ready, "a click sells the first two: {:?}", p.blockers);
+        assert!(!p.auto_ready, "but which two is marko's call: {}", p.auto_reason);
+        assert!(p.evidence.iter().any(|e| e.field == "Sold tickets" && e.confidence == "medium"));
+
+        // In two orders, nothing is picked at all.
+        seed_unsold(&conn, event, "OASIS-002", 1);
+        let p = proposal(&conn, id);
+        assert!(!p.ready && p.blockers.iter().any(|b| b.contains("2 orders")), "{:?}", p.blockers);
+        // ...until marko does.
+        let picks: Vec<i64> = conn
+            .prepare("SELECT id FROM tickets WHERE code IN ('OASIS-001-0', 'OASIS-002-0') ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let pick = MailCreateOverrides { ticket_ids: Some(picks.clone()), ..Default::default() };
+        create_from_mail_impl(&conn, id, "manual", &pick).unwrap();
+        let sold: Vec<i64> = conn
+            .prepare("SELECT ticket_id FROM sales ORDER BY ticket_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(sold, picks);
+    }
+
+    #[test]
+    fn an_event_he_picks_is_used_when_none_matched() {
+        let conn = test_conn();
+        let event = seed_event(&conn, "Elan Kosice");
+        let id = store_from(&conn, "noreply@ticketmaster.com", "Order confirmation - order total 94,00 EUR for 2 tickets", DAY);
+        assert!(!proposal(&conn, id).ready);
+        let pick = MailCreateOverrides { event_id: Some(event), ..Default::default() };
+        let (_, order) = create_from_mail_impl(&conn, id, "manual", &pick).unwrap();
+        let (ev, total): (i64, i64) =
+            conn.query_row("SELECT event_id, total_cost_cents FROM orders WHERE id = ?1", [order], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((ev, total), (event, 9400));
+    }
+
+    #[test]
+    fn off_means_no_proposal_at_all() {
+        let conn = test_conn();
+        set_setting(&conn, MAIL_AUTO_FINANCE_KEY, "off").unwrap();
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        assert!(build_proposal(&conn, &summary_of(&conn, id)).unwrap().is_none());
+        assert!(create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).is_err());
+    }
+
+    #[test]
+    fn a_rule_that_asks_for_review_keeps_automatic_away() {
+        let conn = test_conn();
+        auto_on(&conn, "finance");
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        log_step(&conn, id, "rule", "review", None).unwrap();
+        let p = proposal(&conn, id);
+        assert!(!p.auto_ready && p.auto_reason.contains("rules"), "{}", p.auto_reason);
+    }
+
+    /// Two computers read one mailbox; only one makes records from it.
+    #[test]
+    fn automatic_runs_on_one_computer_only() {
+        let dir = std::env::temp_dir().join(format!("tiqr-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiqr-manager.sqlite3");
+        let _ = std::fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::mail_store::attach_in_memory(&conn).unwrap();
+        crate::db::run_migrations(&conn).unwrap();
+
+        assert!(automation_runs_here(&conn).unwrap(), "the first to look claims it");
+        let me = get_setting(&conn, MAIL_AUTO_DEVICE_KEY).unwrap().unwrap();
+        set_setting(&conn, MAIL_AUTO_DEVICE_KEY, "0123456789abcdef0123456789abcdef").unwrap();
+        assert!(!automation_runs_here(&conn).unwrap(), "the other computer has it");
+        auto_on(&conn, "finance");
+        let id = store_from(&conn, VIAGOGO, "Your payout of 240,00 EUR is on the way", DAY);
+        let p = proposal(&conn, id);
+        assert!(!p.auto_ready && p.auto_reason.contains("other computer"), "{}", p.auto_reason);
+        claim_automation(&conn).unwrap();
+        assert_eq!(get_setting(&conn, MAIL_AUTO_DEVICE_KEY).unwrap().as_deref(), Some(me.as_str()));
+        assert!(proposal(&conn, id).auto_ready);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -5196,9 +7082,9 @@ mod tests {
     fn the_status_never_carries_the_stored_token() {
         let conn = test_conn();
         let secret = "1//0gFAKEREFRESHTOKENVALUE-abcdefghijklmnop";
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, secret).unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, secret).unwrap();
         set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
-        set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, GMAIL_SCOPE).unwrap();
+        crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, GMAIL_SCOPE).unwrap();
 
         let st = status_impl(&conn).unwrap();
         assert!(st.connected, "it must still report that a mailbox IS connected");
@@ -5212,8 +7098,8 @@ mod tests {
     #[test]
     fn a_grant_that_did_not_include_the_mail_scope_is_reported_as_not_granted() {
         let conn = test_conn();
-        set_setting(&conn, MAIL_REFRESH_TOKEN_KEY, "token").unwrap();
-        set_setting(&conn, MAIL_GRANTED_SCOPE_KEY, "openid email").unwrap();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "token").unwrap();
+        crate::secrets::set(&conn, MAIL_GRANTED_SCOPE_KEY, "openid email").unwrap();
         let st = status_impl(&conn).unwrap();
         assert!(st.connected);
         assert!(!st.gmail_scope_granted, "a subset grant must not read as full access");
@@ -5313,6 +7199,78 @@ mod tests {
         assert_eq!(folder_pids(&conn, "spam"), vec!["spam"]);
         assert_eq!(folder_pids(&conn, "trash"), vec!["gtrash", "ttrash"]);
         assert!(list_folder_impl(&conn, "'; DROP TABLE mail_messages; --", None, None, 10).is_err());
+    }
+
+    /// 2.113.0: "aby som vedel dane maily presunut tak kde chcem".
+    #[test]
+    fn a_moved_message_is_where_marko_put_it_and_nowhere_else() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO mail_labels (id, name, kind, updated_at) VALUES ('label_8', 'OASIS', 'user', 'x')", []).unwrap();
+        let a = put(&conn, "a", "inbox", "2026-10-10T00:00:00Z");
+        let b = put(&conn, "b", "inbox", "2026-10-09T00:00:00Z");
+        let junk = put(&conn, "junk", "spam", "2026-10-08T00:00:00Z");
+        let folders = {
+            let mut f = local_folders(&conn);
+            f.push(MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() });
+            save_local_folders(&conn, &f).unwrap();
+            local_folders(&conn)
+        };
+        assert_eq!(folders.len(), 1);
+
+        assert_eq!(move_mail_impl(&conn, &[a], "tiqr_1").unwrap(), 1);
+        assert_eq!(move_mail_impl(&conn, &[b], "label_8").unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "inbox"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "tiqr_1"), vec!["a"]);
+        assert_eq!(folder_pids(&conn, "label_8"), vec!["b"]);
+        let counts = folder_counts_impl(&conn, &["inbox".into(), "tiqr_1".into(), "label_8".into()]).unwrap();
+        assert_eq!(counts.iter().map(|c| c.total).collect::<Vec<_>>(), vec![0, 1, 1], "counts agree with the lists");
+
+        // Out of Spam and into the Inbox: in the Inbox, out of Spam.
+        move_mail_impl(&conn, &[junk], "inbox").unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["junk"]);
+        assert!(folder_pids(&conn, "spam").is_empty());
+        // ...and still never trusted.
+        assert!(is_untrusted(&summary_of(&conn, junk).labels));
+
+        // Back to where Gmail has it.
+        move_mail_impl(&conn, &[b], "").unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["b", "junk"]);
+
+        // Nowhere that does not exist.
+        assert!(move_mail_impl(&conn, &[a], "tiqr_9").is_err());
+        assert!(move_mail_impl(&conn, &[a], "starred").is_err(), "a view is not a place");
+        assert!(move_mail_impl(&conn, &[a], "x'; DROP TABLE mail_messages; --").is_err());
+
+        // A folder deleted - here or on the other computer - takes nothing with it.
+        save_local_folders(&conn, &[]).unwrap();
+        assert_eq!(forget_moves_to_gone_places(&conn).unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["a", "b", "junk"]);
+    }
+
+    #[test]
+    fn a_rule_can_move_new_mail_into_a_folder() {
+        let conn = test_conn();
+        save_local_folders(&conn, &[MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() }]).unwrap();
+        let id = put(&conn, "v", "inbox", "2026-10-10T00:00:00Z");
+        let hit = RuleHit { rule_id: "r1".into(), action: "move:tiqr_1".into() };
+        assert!(run_rule_action(&conn, id, &hit).unwrap());
+        assert_eq!(folder_pids(&conn, "tiqr_1"), vec!["v"]);
+        let gone = RuleHit { rule_id: "r1".into(), action: "move:tiqr_7".into() };
+        let other = put(&conn, "w", "inbox", "2026-10-11T00:00:00Z");
+        assert!(!run_rule_action(&conn, other, &gone).unwrap(), "a folder that is gone moves nothing");
+    }
+
+    #[test]
+    fn folder_keys_are_checked_before_they_reach_sql() {
+        assert!(is_local_folder_key("tiqr_12"));
+        assert!(!is_local_folder_key("tiqr_"));
+        assert!(!is_local_folder_key("tiqr_1a"));
+        assert!(!is_local_folder_key("label_8"));
+        let names = vec![MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() }];
+        assert!(folder_name("  ", &names, None).is_err());
+        assert!(folder_name("viagogo", &names, None).is_err(), "names are unique, whatever the case");
+        assert_eq!(folder_name("  Oasis   2026 ", &names, None).unwrap(), "Oasis 2026");
+        assert_eq!(folder_name("Viagogo", &names, Some("tiqr_1")).unwrap(), "Viagogo", "renaming to itself is fine");
     }
 
     #[test]
@@ -5451,17 +7409,6 @@ mod tests {
         assert!(!finance_of("news@shop.com", "Big autumn sale", "other", "inbox"));
         assert!(!finance_of("service@paypal.com", "Your payout", "payout", "spam"), "never from spam");
         assert!(!finance_of("x@paypal.com.evil.test", "Hello", "other", "inbox"), "lookalike domain");
-    }
-
-    #[test]
-    fn an_opened_message_keeps_its_lines_and_is_not_cut_at_400_bytes() {
-        let body = format!("Hello Marko,\n\n{}\nToken: ya29.SOMETHINGSECRETLOOKING", "word ".repeat(200));
-        let out = readable_body(&body);
-        assert!(out.starts_with("Hello Marko,\n\n"), "{out}");
-        assert!(out.len() > 900, "{}", out.len());
-        assert!(!out.contains("ya29."), "credentials are still redacted");
-        let huge = "é".repeat(BODY_DISPLAY_LIMIT);
-        assert!(readable_body(&huge).ends_with("..."));
     }
 
     // ---- 2.109.1: text wider than one byte --------------------------------

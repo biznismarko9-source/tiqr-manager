@@ -35,6 +35,7 @@ import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { completionStatus } from "../lib/completion";
 import { DELIVERY_STATUS_OPTIONS, RESALE_STATUS_OPTIONS } from "./Tickets";
+import { SendToDiscordButton } from "../components/Discord";
 
 // 2.0.69: the only 2 payment statuses this page's inline Payout-status edit
 // ever offers - "refunded" is deliberately excluded, it's its own dedicated
@@ -272,6 +273,9 @@ export default function SaleDetail() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* 2.113.0: one message for the whole sale - any of its lines
+              stands for all of them. Hidden until Discord is set up. */}
+          {lines.length > 0 && <SendToDiscordButton kind="sale" id={lines[0].id} />}
           <Button variant="danger" onClick={() => setGroupDeleteOpen(true)}>
             <IconTrash className="h-4 w-4" /> Delete entire sale
           </Button>

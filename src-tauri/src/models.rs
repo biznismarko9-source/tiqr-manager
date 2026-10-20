@@ -1648,6 +1648,32 @@ pub struct DiscordChannelConfig {
     pub sales: String,
     pub finance: String,
     pub inventory: String,
+    /// 2.113.0: important mail (a cancellation, a date change) that belongs
+    /// to none of the three above; also where a mail summary goes when its
+    /// own channel is not set.
+    pub mail: String,
+    /// 2.113.0: what is posted by itself, per kind. A missing block (every
+    /// config before 2.113.0) is all on: marko asked for webhooks that fire.
+    pub auto: DiscordAutoConfig,
+}
+
+/// 2.113.0: which records announce themselves when they are created.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordAutoConfig {
+    pub events: bool,
+    pub orders: bool,
+    pub sales: bool,
+    pub finance: bool,
+    /// A summary of an important email - a sale, a purchase, a payout, a
+    /// refund, a cancellation or a date change - when it arrives.
+    pub mail: bool,
+}
+
+impl Default for DiscordAutoConfig {
+    fn default() -> Self {
+        DiscordAutoConfig { events: true, orders: true, sales: true, finance: true, mail: true }
+    }
 }
 
 /// 2.99.0: the structured result of ONE webhook test.
@@ -1678,6 +1704,37 @@ pub struct DiscordTestResult {
     pub test_id: String,
     /// Only set when Discord returned 429 and told us how long to wait.
     pub retry_after_seconds: Option<u64>,
+}
+
+/// 2.113.0: one message TIQR posted to Discord, or tried to. Settings lists
+/// the last few (commands/discord.rs), so a webhook that stopped working says
+/// so instead of going quiet.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordDelivery {
+    /// RFC3339, when the attempt finished.
+    pub at: String,
+    /// "sales" | "finance" | "inventory" | "mail"
+    pub destination: String,
+    /// What the message was about ("New sale · Oasis").
+    pub title: String,
+    /// "delivered" | "failed" | "unknown" - the same three as a test.
+    pub status: String,
+    /// Safe to show: never a URL or a response body.
+    pub message: String,
+    /// True for the "Send to Discord" button, false for an automatic post.
+    pub manual: bool,
+}
+
+/// 2.113.0: the answer to the "Send to Discord" button.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordSendResult {
+    pub success: bool,
+    /// "delivered" | "failed" | "unknown"
+    pub status: String,
+    pub destination: String,
+    pub message: String,
 }
 
 /// 2.0.78: ntfy (https://ntfy.sh) replaced Pushover as this app's mobile-
@@ -1717,6 +1774,9 @@ pub struct NotificationStatus {
     pub discord_sales_set: bool,
     pub discord_finance_set: bool,
     pub discord_inventory_set: bool,
+    /// 2.113.0.
+    pub discord_mail_set: bool,
+    pub discord_auto: DiscordAutoConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1755,6 +1815,11 @@ pub struct NotificationConfigInput {
     pub discord_finance: Option<String>,
     #[serde(default)]
     pub discord_inventory: Option<String>,
+    /// 2.113.0.
+    #[serde(default)]
+    pub discord_mail: Option<String>,
+    #[serde(default)]
+    pub discord_auto: Option<DiscordAutoConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per
@@ -3346,6 +3411,16 @@ pub struct MailConnectionStatus {
     pub auto_order: String,
     pub auto_sale: String,
     pub auto_finance: String,
+    /// 2.113.0: whether THIS computer makes records from mail. Two computers
+    /// reading one mailbox would otherwise both make every order.
+    pub automation_here: bool,
+    /// 2.113.0: the reader - the language Translate writes in, whether
+    /// pictures on the web are copied into TIQR, and what the AI helper used
+    /// this month (calls, tokens in, tokens out).
+    pub translate_to: String,
+    pub remote_images: bool,
+    pub ai_calls_this_month: i64,
+    pub ai_tokens_this_month: i64,
     /// How often the app syncs by itself, in seconds. `0` is off. This is
     /// polling, not push: TIQR has no server for Google to push to.
     pub sync_interval_seconds: i64,
@@ -3543,6 +3618,11 @@ pub struct MailMessageSummary {
     /// Promotions / Social tabs, which are Gmail's own categories rather
     /// than ones this app invented.
     pub labels: String,
+    /// 2.113.0: where marko moved it in TIQR (a folder key, one of the Gmail
+    /// labels or one of marko's own folders); `None` = where Gmail has it.
+    pub moved_to: Option<String>,
+    /// 2.113.0: true once the message was opened and seen to carry files.
+    pub has_attachments: bool,
 }
 
 /// One message plus its whole audit trail - the "what did it detect, what did

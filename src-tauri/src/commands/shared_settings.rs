@@ -45,16 +45,23 @@ pub(crate) struct Group {
 pub(crate) const MAIL: Group = Group {
     name: "mail",
     stamp_key: "shared_mail_at",
+    // 2.113.0: no credential. The Gmail refresh token and its granted scope
+    // live beside each computer's database (secrets.rs) and are never part
+    // of a file that travels - each computer connects the mailbox itself.
     keys: &[
-        "mail_gmail_refresh_token",
         "mail_gmail_account_email",
-        "mail_gmail_granted_scope",
         "mail_scope",
         "mail_custom_query",
         "mail_retention_days",
         "mail_sync_interval_seconds",
         "mail_extra_senders",
         "mail_senders_seeded",
+        // 2.113.0: which computer makes records from mail (mail.rs), the own
+        // mail folders, and the reader's choices (mail_view.rs).
+        "mail_records_computer",
+        "mail_folders",
+        "mail_translate_to",
+        "mail_remote_images",
     ],
     tables: &["mail_rules", "mail_senders"],
 };
@@ -201,9 +208,10 @@ mod tests {
     }
 
     #[test]
-    fn a_computer_with_nothing_set_up_receives_the_mailbox_rules_and_webhooks() {
+    fn a_computer_with_nothing_set_up_receives_the_rules_and_webhooks_but_never_a_credential() {
         let local = test_conn();
         let path = with_remote(&local, |r| {
+            // A file from before 2.113.0 still holds the token in app_settings.
             set_setting(r, "mail_gmail_refresh_token", "1//token").unwrap();
             set_setting(r, "mail_gmail_account_email", "biznismarko9@gmail.com").unwrap();
             set_setting(r, "notification_config", "{\"discord\":{\"enabled\":true}}").unwrap();
@@ -217,7 +225,10 @@ mod tests {
         });
         let taken = merge_from_remote(&local).unwrap();
         assert_eq!(taken, vec!["mail", "notifications"]);
-        assert_eq!(get_setting(&local, "mail_gmail_refresh_token").unwrap().as_deref(), Some("1//token"));
+        // 2.113.0: the mailbox address travels, the credential does not.
+        assert_eq!(get_setting(&local, "mail_gmail_account_email").unwrap().as_deref(), Some("biznismarko9@gmail.com"));
+        assert_eq!(get_setting(&local, "mail_gmail_refresh_token").unwrap(), None);
+        assert_eq!(crate::secrets::get(&local, crate::secrets::GMAIL_REFRESH_TOKEN).unwrap(), None);
         assert!(get_setting(&local, "notification_config").unwrap().unwrap().contains("discord"));
         let rules: i64 = local.query_row("SELECT COUNT(*) FROM main.mail_rules", [], |r| r.get(0)).unwrap();
         assert_eq!(rules, 1);
@@ -246,17 +257,20 @@ mod tests {
         done(&local, path);
     }
 
+    /// 2.113.0 reverses 2.110.0 here on purpose: the credential is each
+    /// computer's own (secrets.rs), so a newer mail group from the other
+    /// computer - even one disconnected there - leaves this sign-in alone.
     #[test]
-    fn disconnecting_on_one_computer_disconnects_the_other_instead_of_coming_back() {
+    fn a_newer_mail_group_from_the_other_computer_never_takes_this_computers_sign_in() {
         let local = test_conn();
-        set_setting(&local, "mail_gmail_refresh_token", "1//old").unwrap();
+        crate::secrets::set(&local, crate::secrets::GMAIL_REFRESH_TOKEN, "1//mine").unwrap();
         set_setting(&local, MAIL.stamp_key, "2026-10-01T00:00:00+00:00").unwrap();
         let path = with_remote(&local, |r| {
             // Disconnected there, later: no token, a newer stamp.
             set_setting(r, MAIL.stamp_key, "2026-10-18T00:00:00+00:00").unwrap();
         });
-        merge_from_remote(&local).unwrap();
-        assert!(get_setting(&local, "mail_gmail_refresh_token").unwrap().is_none());
+        assert_eq!(merge_from_remote(&local).unwrap(), vec!["mail"]);
+        assert_eq!(crate::secrets::get(&local, crate::secrets::GMAIL_REFRESH_TOKEN).unwrap().as_deref(), Some("1//mine"));
         done(&local, path);
     }
 

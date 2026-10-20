@@ -358,7 +358,7 @@ function ReportCard({ title, icon, children, note }: { title: string; icon?: Rea
 
 function BreakdownList({ rows, showSwatch }: { rows: BreakdownRow[]; showSwatch?: boolean }) {
   if (rows.length === 0)
-    return <EmptyState icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />;
+    return <EmptyState bare icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />;
   const totalCents = rows.reduce((s, r) => s + r.totalCents, 0);
   const maxVal = Math.max(1, ...rows.map((r) => r.totalCents));
   return (

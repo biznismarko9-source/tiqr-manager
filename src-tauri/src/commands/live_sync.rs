@@ -1134,8 +1134,8 @@ pub(crate) fn settings_apply(conn: &Connection, docs: &[SettingsDoc]) -> AppResu
                 let Some(theirs) = incoming.filter(|v| !v.is_empty()) else { continue };
                 let ours = get_setting(&tx, k)?;
                 if ours.as_deref().is_some_and(|o| !o.is_empty() && !o.eq_ignore_ascii_case(theirs)) {
-                    delete_setting(&tx, MAIL_REFRESH_TOKEN_KEY)?;
-                    delete_setting(&tx, MAIL_GRANTED_SCOPE_KEY)?;
+                    crate::secrets::delete(&tx, MAIL_REFRESH_TOKEN_KEY)?;
+                    crate::secrets::delete(&tx, MAIL_GRANTED_SCOPE_KEY)?;
                     other_mailbox = true;
                 }
                 set_setting(&tx, k, theirs)?;
@@ -1983,7 +1983,7 @@ mod tests {
         let mut cloud = Cloud::default();
         let mut a = Computer::new(A, "");
         let mut b = Computer::new(B, "");
-        set_setting(&a.conn, MAIL_REFRESH_TOKEN_KEY, "1//secret-of-a").unwrap();
+        crate::secrets::set(&a.conn, MAIL_REFRESH_TOKEN_KEY, "1//secret-of-a").unwrap();
         set_setting(&a.conn, MAIL_ACCOUNT_EMAIL_KEY, "biznismarko9@gmail.com").unwrap();
         a.exec(
             "INSERT INTO mail_rules (id, position, enabled, field, match_kind, needle, action, created_at)
@@ -1999,24 +1999,24 @@ mod tests {
         assert_eq!(b.one::<i64>("SELECT COUNT(*) FROM mail_rules WHERE id = 'r1'"), 1);
         assert!(get_setting(&b.conn, "notification_config").unwrap().unwrap().contains("discord"));
         assert_eq!(get_setting(&b.conn, MAIL_ACCOUNT_EMAIL_KEY).unwrap().as_deref(), Some("biznismarko9@gmail.com"));
-        assert_eq!(get_setting(&b.conn, MAIL_REFRESH_TOKEN_KEY).unwrap(), None);
+        assert_eq!(crate::secrets::get(&b.conn, MAIL_REFRESH_TOKEN_KEY).unwrap(), None);
 
         // B connects the same mailbox itself, then edits a rule: A keeps its
         // own connection, and nothing is echoed.
-        set_setting(&b.conn, MAIL_REFRESH_TOKEN_KEY, "1//secret-of-b").unwrap();
+        crate::secrets::set(&b.conn, MAIL_REFRESH_TOKEN_KEY, "1//secret-of-b").unwrap();
         b.exec("UPDATE mail_rules SET needle = 'payouts'");
         touch(&b.conn, &MAIL).unwrap();
         b.push(&mut cloud);
         a.pull(&cloud);
         assert_eq!(a.one::<String>("SELECT needle FROM mail_rules"), "payouts");
-        assert_eq!(get_setting(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap().as_deref(), Some("1//secret-of-a"));
+        assert_eq!(crate::secrets::get(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap().as_deref(), Some("1//secret-of-a"));
 
         // A computer with no mailbox never disconnects one that has it.
         let c_side = Computer::new("cccccccccccccccccccccccccccccccc", "");
         touch(&c_side.conn, &MAIL).unwrap();
         c_side.push(&mut cloud);
         a.pull(&cloud);
-        assert_eq!(get_setting(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap().as_deref(), Some("1//secret-of-a"));
+        assert_eq!(crate::secrets::get(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap().as_deref(), Some("1//secret-of-a"));
 
         // Another mailbox connected on B: A's credential is for the wrong
         // account now, and goes.
@@ -2024,7 +2024,7 @@ mod tests {
         touch(&b.conn, &MAIL).unwrap();
         b.push(&mut cloud);
         a.pull(&cloud);
-        assert_eq!(get_setting(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap(), None);
+        assert_eq!(crate::secrets::get(&a.conn, MAIL_REFRESH_TOKEN_KEY).unwrap(), None);
         assert_eq!(get_setting(&a.conn, MAIL_ACCOUNT_EMAIL_KEY).unwrap().as_deref(), Some("other@gmail.com"));
     }
 

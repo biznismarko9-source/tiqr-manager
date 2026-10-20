@@ -58,6 +58,7 @@ import { DELIVERY_STATUS_OPTIONS, TicketEditModal } from "./Tickets";
 import { orderCompletionChecks } from "./Orders";
 import { completionStatus } from "../lib/completion";
 import { PullReceivedFormModal } from "./Pulls";
+import { SendToDiscordButton } from "../components/Discord";
 
 // 2.0.69: the 3 real statuses a ticket can freely move between outside of a
 // sale - same closed set TicketStatusBar's own 3 buttons already offer, and
@@ -258,6 +259,8 @@ export default function OrderDetail() {
               <IconPlus className="h-4 w-4" /> Add sale
             </Button>
           )}
+          {/* 2.113.0: hidden until Discord is set up. */}
+          <SendToDiscordButton kind="order" id={order.id} />
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>

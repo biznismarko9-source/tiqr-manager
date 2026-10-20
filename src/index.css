@@ -100,6 +100,9 @@
     --surface: #ffffff;
     --surface-muted: theme("colors.slate.100");
     --surface-raised: #ffffff;
+    /* 2.113.0: a sticky table header's fill - always OPAQUE, see
+       `.table-shell thead th` below. Light mode was already solid. */
+    --table-head: theme("colors.slate.100");
     /* 2.29.4: DARKER than the page, not lighter. For the chrome that sits
        under the content rather than on top of it - the sidebar and the
        segmented tracks. Marko asked for both to be darker. */
@@ -147,6 +150,12 @@
     /* Raised stays nearly OPAQUE: a dialog sits over dimmed content, and
        text on a translucent dialog has two backgrounds competing under it. */
     --surface-raised: #1b1130;
+    /* 2.113.0: the glass tint already composited over the violet void, as
+       one SOLID colour. marko: rows scrolling under the Inventory header
+       showed through it ("aby sa to nekrizilo") - the header was painted with
+       `--surface-muted`, which since 2.96.0 is 8.5% white, i.e. 91.5% see-
+       through. */
+    --table-head: #1c1528;
     /* Still UNDER the page, same as it always was - see the light-mode note. */
     --surface-sunken: rgba(0,0,0,.30);
     /* `--line` stays on slate-800: several hundred places spell
@@ -471,8 +480,10 @@
     /* Opaque on purpose: a translucent sticky header lets rows show through
        as they scroll under it. This is the same class of dark-mode bug 2.4.4
        fixed once on the old Control Center table - fixed here for every
-       table in the app instead of one page at a time. */
-    background-color: var(--surface-muted);
+       table in the app instead of one page at a time. 2.113.0: and fixed
+       AGAIN - 2.96.0's glass turned `--surface-muted` translucent and this
+       rule with it. Its own token now, which no theme may make translucent. */
+    background-color: var(--table-head);
     box-shadow: inset 0 -1px 0 0 var(--line);
   }
   .table-flush {

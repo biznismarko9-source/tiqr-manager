@@ -4,7 +4,7 @@ Read this file first, every session, before touching anything. Then read
 `KNOWN_BUGS.md` and `PROTECTED_AREAS.md` (same folder). Only after that,
 open the specific files the current task actually needs - do not re-scan
 the repo, and do not open the `REDESIGN-*-REPORT.md` / `*-REPORT.md`
-history files at the repo root unless the current bug plausibly
+history files in `history/` unless the current bug plausibly
 originates there or marko points at one directly.
 
 This file is the source of truth for "what is TIQR Manager right now."
@@ -23,8 +23,9 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.112.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
-`src-tauri/Cargo.toml`, `release.ps1`'s `$Version`, and
+**2.113.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+`src-tauri/Cargo.toml`, and - in the release zip, no longer in the
+repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
 `PROTECTED_AREAS.md` ("2.1.6" entry) before ever bumping it by hand, there
 are more places than the obvious 3 files. (2.2.6 was briefly shipped as an
@@ -2648,6 +2649,60 @@ itself before this release and still is not.
 
 ## Current focus / most recent work
 
+**2.113.0 - mail shown as designed, Discord for every record, one sync, a
+simpler repository.** One long request from marko; the Slovak report is
+`history/REDESIGN-2.113.0-REPORT.md`.
+
+* **Mail reader** (`commands/mail_view.rs`, `components/MailReader.tsx`,
+  `lib/mailText.ts`): a message is fetched once (`format=full`), its HTML
+  cleaned by `ammonia` (no script/handler/form/frame, links http/https/
+  mailto only), bodies decoded with `encoding_rs`, kept in `mail_bodies`.
+  Pictures: `cid:` from the message, web ones fetched by Rust (public IPs,
+  80/443, pinned resolve, raster sniffed, 3 MB / 40 / 15 MB caps, pixels of
+  2 px dropped) into `<stem>.mail-files/img`. Shown ONLY in an iframe with
+  `sandbox="allow-same-origin"` (no allow-scripts) and a CSP meta
+  `default-src 'none'` (`readerDocument`); the parent catches link clicks
+  (mismatch / Spam-Trash confirm, hover chip with Copy), marks the OTP code.
+  Attachments (`mail_attachments`): View (image/PDF/text by bytes), Open
+  (only non-executable kinds, Mark-of-the-Web on Windows), Save. Translate /
+  Summary (`mail_ai`): on a click only, the cheapest Claude model, thinking
+  off, 12 000 chars max, kept per message; usage per month in the status.
+* **Moving mail**: `moved_to` on the message (TIQR's own, Gmail untouched),
+  `folder_expr`'s `placed` atom, own folders `tiqr_<n>` in the shared
+  setting `mail_folders`, rule action `move:<place>`, Move to menu, drag and
+  drop rows onto the rail (`DRAG_MIME`).
+* **Automatic** (`mail.rs`): readers rewritten on characters; proposals carry
+  evidence, confidence and duplicates; Automatic only on mail after
+  `mail_auto_*_since`, on the one computer in `mail_records_computer`, when
+  everything is certain and no duplicate exists; review form
+  (`components/MailProposal.tsx`, `MailCreateOverrides`).
+* **Discord** (`commands/discord.rs`): every new event/order/sale/finance
+  entry announces itself (`DiscordAutoConfig`, per kind), important mail as a
+  summary (max 5 per run, never an OTP), Send to Discord everywhere,
+  `allowed_mentions` empty, Millis timestamps, one sender thread, last 20
+  deliveries; Settings card compact after the first setup.
+* **Secrets** (`secrets.rs`): Gmail/Google tokens and the Anthropic key in
+  `<stem>.secrets.json`, adopted out of the database on every open, never in
+  the Drive copy, restore points, Sync down or live sync.
+* **One sync**: Settings -> Data's single "Sync between your computers" card
+  (live part = `LiveSyncCard embedded`, Drive part in backup words while
+  live, hand tools under Advanced); a dirty backup is force-saved at launch
+  when every computer is live (Layout tick).
+* **Also**: sidebar in three groups (Pulls kept at the bottom per 2.98.0),
+  Pulls Active/Completed (`lib/pullStatus.ts`), opaque sticky headers,
+  Finance spacing, panes fill the window (`lib/useFillHeight.ts`), Mail
+  settings in sections.
+* **Repository**: 234 history files in `history/`; the release zip is
+  `1-CLICK-UPDATE.bat` + `AKO-ZACAT.txt` + `tiqr-manager/`; release.ps1's
+  deletion guard counts after `git add -A` with rename detection.
+* **Verified**: `cargo test --locked` (see CHANGELOG), `npm test` 33, the
+  9-step Firestore emulator check, `npm run build`, screens rendered against
+  a mocked backend (dark and light). **Not verified**: a real Gmail mailbox,
+  a real Discord server, WebView2 on real Windows.
+
+Mail store: schema 3 (`mail_store.rs`). Migrations: 46 numbered ones, next
+is **047**.
+
 **2.112.0 - live sync between computers.** marko: "ako by sme vedeli urobit
 nejaky sync ktory v realnom case ... by tam boli insta informacie", "ze
 vsetko by ako keby fungovalo spolu". Every change on one computer reaches the
@@ -5167,8 +5222,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 114 of
-them as of 2.2.8. These are not read by default under this protocol; only
+`*-REPORT.md` file in `history/` (Slovak, written for marko; at the repo
+root until 2.113.0 moved them) - 114 of them as of 2.2.8. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

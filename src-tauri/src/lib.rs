@@ -10,6 +10,8 @@ mod google_sheets;
 mod mail_store;
 mod models;
 mod money;
+// 2.113.0: credentials beside the database, never in it.
+mod secrets;
 
 use db::AppState;
 use std::collections::HashMap;
@@ -84,6 +86,10 @@ pub fn run() {
             let db_path = db::resolve_db_path(&handle).map_err(|e| e.to_string())?;
             let conn = db::open_live_connection(&db_path).map_err(|e| e.to_string())?;
             db::run_migrations(&conn).map_err(|e| e.to_string())?;
+            // 2.113.0: tokens and keys out of the database file (secrets.rs).
+            if let Err(e) = secrets::adopt_from_database(&conn) {
+                eprintln!("TIQR: could not move sign-ins out of the database: {e}");
+            }
             // 2.110.0: settings set up before this release get a stamp, so
             // the other computer can receive them (shared_settings.rs).
             let _ = commands::shared_settings::bootstrap(&conn);
@@ -256,6 +262,10 @@ pub fn run() {
             commands::notifications::test_desktop_notification,
             commands::notifications::test_ntfy_notification,
             commands::notifications::test_discord_webhook,
+            // 2.113.0: the "Send to Discord" button, and what was sent.
+            commands::discord::send_to_discord,
+            commands::discord::get_discord_deliveries,
+            commands::discord::preview_discord,
             commands::notifications::check_and_send_notifications,
             // 2.100.0: Mail Intelligence (phase 1).
             commands::mail::get_mail_status,
@@ -265,7 +275,11 @@ pub fn run() {
             commands::mail::set_mail_paused,
             commands::mail::set_mail_retention_days,
             commands::mail::set_mail_extra_senders,
-            commands::mail::get_mail_body,
+            commands::mail_view::get_mail_view,
+            commands::mail_view::read_mail_attachment,
+            commands::mail_view::open_mail_attachment,
+            commands::mail_view::save_mail_attachment,
+            commands::mail_view::mail_ai,
             commands::mail::set_mail_read,
             commands::mail::set_mail_scope,
             commands::mail::list_mail_labels,
@@ -278,6 +292,14 @@ pub fn run() {
             commands::mail::set_mail_read_bulk,
             commands::mail::get_mail_proposal,
             commands::mail::create_from_mail,
+            commands::mail::list_mail_sale_candidates,
+            commands::mail::claim_mail_automation,
+            commands::mail::set_mail_reader_options,
+            commands::mail::move_mail,
+            commands::mail::list_mail_local_folders,
+            commands::mail::create_mail_local_folder,
+            commands::mail::rename_mail_local_folder,
+            commands::mail::delete_mail_local_folder,
             commands::mail::set_mail_automation,
             commands::mail::set_mail_sync_interval,
             commands::mail::test_mail_connection,

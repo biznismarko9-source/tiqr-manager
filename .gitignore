@@ -21,3 +21,15 @@ dist-installer
 credentials.json
 google-credentials.json
 firestore-debug.log
+
+# 2.113.0: what belongs to a release zip and never to the repository. The zip
+# holds 1-CLICK-UPDATE.bat and AKO-ZACAT.txt next to a tiqr-manager folder;
+# release.ps1 inside that folder removes itself from the clone before it
+# commits. These lines keep any of them from being committed by hand.
+/release.ps1
+/1-CLICK-UPDATE.bat
+/AKO-ZACAT.txt
+*.zip
+# What Windows leaves in folders by itself.
+Thumbs.db
+desktop.ini

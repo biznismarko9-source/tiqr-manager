@@ -457,7 +457,9 @@ export default function Overview({ entries, categories, accounts, loading, reloa
               row for no visible reason. Same five figures, same order within
               each band - only the grouping and the two labels are new. */}
           <p className="section-title mb-2">What you have · not affected by the period filter</p>
-          <Figures>
+          {/* 2.113.0: spaced - `Figures` is a bare Card with no margin, so the
+              next label used to sit right on its bottom edge. */}
+          <Figures className="mb-5">
             {/* 2.80.0: icons and accents, the same optional props the rest of
                 the app's metric cards carry since 2.74.0. The accents say what
                 the figure IS: emerald for money actually in the accounts,
@@ -477,7 +479,7 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             )}
           </Figures>
           <p className="section-title mb-2">What moved · in the selected period</p>
-          <Figures>
+          <Figures className="mb-5">
             <Figure
               label="Income"
               value={formatMoney(incomeCents, "EUR")}
@@ -493,14 +495,14 @@ export default function Overview({ entries, categories, accounts, loading, reloa
             />
           </Figures>
           {unassigned.count > 0 && (
-            <p className="-mt-4 mb-2 text-xs text-slate-500 dark:text-slate-400">
+            <p className="-mt-3 mb-3 text-xs text-slate-500 dark:text-slate-400">
               {unassigned.count} of these entr{unassigned.count === 1 ? "y has" : "ies have"} no account, so{" "}
               {unassigned.count === 1 ? "it is" : "they are"} counted here but move no balance - a net{" "}
               {formatMoney(unassigned.cents, "EUR")} difference between this block and the accounts above.
             </p>
           )}
           {excludedNonEurCount > 0 && (
-            <p className="-mt-4 mb-6 text-xs text-slate-500 dark:text-slate-400">
+            <p className={`${unassigned.count > 0 ? "" : "-mt-3 "}mb-5 text-xs text-slate-500 dark:text-slate-400`}>
               {excludedNonEurCount} entr{excludedNonEurCount === 1 ? "y" : "ies"} in this period{" "}
               {excludedNonEurCount === 1 ? "isn't" : "aren't"} in EUR yet, so{" "}
               {excludedNonEurCount === 1 ? "it isn't" : "they aren't"} included above - convert with the banner up top.
@@ -566,7 +568,7 @@ function CategoryBreakdownCard({ rows }: { rows: CategoryBreakdownRow[] }) {
       </div>
       {rows.length === 0 ? (
         <div className="p-4">
-          <EmptyState icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />
+          <EmptyState bare icon={<IconBarChart className="h-5 w-5" />} title="No expenses in this period yet" />
         </div>
       ) : (
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -807,9 +809,10 @@ function ForecastCard({ forecast, loading }: { forecast: CashflowForecast | null
         </span>
       </div>
       {loading ? (
-        <PanelSkeleton lines={3} className="shadow-none" />
+        <PanelSkeleton lines={3} className="bg-transparent p-0 shadow-none" />
       ) : !forecast || !forecast.available ? (
         <EmptyState
+              bare
               icon={<IconTrendingUp className="h-5 w-5" />}
               title="Forecast unavailable"
               description="Add an active EUR account on the Accounts tab to see a forecast."

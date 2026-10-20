@@ -227,8 +227,13 @@ zvlášť" v `migrations/040_mail_intelligence.sql`: spoločný bod, odkiaľ sa
 počítači vlastný.
 
 **Na každom počítači zvlášť ostáva:** pauza, a čo smie TIQR vytvoriť samo
-(orders / sales / finance na „Automatic"). Dva počítače na Automatic by
-z toho istého mailu vytvorili ten istý záznam dvakrát.
+(orders / sales / finance na „Automatic"). Od 2.113.0 však záznamy z mailov
+robí **len jeden počítač** - ten, pri ktorom v Mail settings → Automatic
+stojí „This computer makes the records". Druhý ich len navrhuje a tlačidlo
+**Make them here** to kedykoľvek presunie. TIQR navyše pred každým
+vytvorením hľadá rovnaký záznam (rovnaké číslo objednávky, rovnaká
+konverzácia, alebo rovnaký event, suma a dátum), takže ten istý mail
+nevytvorí záznam dvakrát.
 
 Záznamy, ktoré z mailu raz vzniknú (predaje, financie), sa medzi počítačmi
 synchronizujú normálne ako všetko ostatné.
@@ -240,3 +245,10 @@ cez Firebase necestuje** — na každom počítači sa schránka pripája sama
 do tvojej schránky. Ak na jednom počítači pripojíš inú schránku, druhý
 počítač svoje staré pripojenie zahodí a vypýta si nové pre tú novú adresu.
 Odpojenie na jednom počítači druhý neodpojí.
+
+**Od 2.113.0** nie je prihlásenie do Gmailu (ani do Googlu) v databáze, ale
+v súbore `<databáza>.secrets.json` vedľa nej. Preto nejde do zálohy v Google
+Drive, do bodov obnovy ani do živého syncu. Netreba nič robiť: pri prvom
+spustení 2.113.0 sa prihlásenie presunie do toho súboru samo. Kto obnoví
+zálohu na **inom** počítači, pripojí tam Gmail znova (Connect Gmail);
+obnovenie zálohy na tom istom počítači prihlásenie nezmení.

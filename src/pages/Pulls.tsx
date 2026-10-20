@@ -42,12 +42,15 @@ import {
   SEGMENTED_TRACK,
   Select,
   segmentedItemClass,
+  TabSwitcher,
   Textarea,
 } from "../components/ui";
 import { LookupSelect } from "../components/LookupSelect";
 import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconTrash, IconUsers } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
+import { useListTab } from "../lib/useListTab";
+import { isPullDone, isReceivedPullDone } from "../lib/pullStatus";
 import { completionStatus } from "../lib/completion";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
@@ -113,6 +116,15 @@ const WARNING_WINDOW_DAYS = 3;
 
 type TransferFilter = "all" | "pending" | "done";
 type PullCategory = "given" | "received";
+
+// 2.113.0: marko - "rozdelit dalej pulls na dokoncene a nedokoncene". The same
+// Active / Completed split Orders, Sales, Events and Inventory have, each
+// list remembering its own choice.
+const PULL_TABS: { key: "active" | "completed"; label: string }[] = [
+  { key: "active", label: "Active" },
+  { key: "completed", label: "Completed" },
+];
+
 
 function warningLabel(daysLeft: number): string {
   if (daysLeft > 0) return `${daysLeft}d left`;
@@ -192,6 +204,7 @@ function GivenPulls() {
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [search, setSearch] = useState(lastPullsSearch ?? "");
   const [statusFilter, setStatusFilter] = useState<TransferFilter>("all");
+  const [tab, setTab] = useListTab("pullsTab", ["active", "completed"] as const);
   // 2.0.65: Platform + date-range filters, matching Orders/Tickets - new
   // list_pulls_impl params added specifically for this (see pulls.rs).
   const [platformId, setPlatformId] = useState<number | "">("");
@@ -226,7 +239,9 @@ function GivenPulls() {
   }, []);
 
   const load = (q?: string, filter?: TransferFilter) => {
-    const f = filter ?? statusFilter;
+    // 2.113.0: the transfer filter narrows Active only - everything on
+    // Completed is transferred by definition.
+    const f = tab === "completed" ? "all" : (filter ?? statusFilter);
     api
       .listPulls({
         search: q || undefined,
@@ -257,6 +272,7 @@ function GivenPulls() {
     withDate.sort((a, b) => dir * ((a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id));
     return [...withDate, ...withoutDate];
   })();
+  const visiblePulls = sortedPulls.filter((p) => isPullDone(p) === (tab === "completed"));
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -267,9 +283,11 @@ function GivenPulls() {
     });
   };
 
-  const allSelected = pulls !== null && pulls.length > 0 && pulls.every((p) => selected.has(p.id));
+  // 2.113.0: only what this tab shows - "select all" never reaches a pull
+  // that is out of sight on the other tab.
+  const allSelected = visiblePulls.length > 0 && visiblePulls.every((p) => selected.has(p.id));
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set((pulls ?? []).map((p) => p.id)));
+    setSelected(allSelected ? new Set() : new Set(visiblePulls.map((p) => p.id)));
   };
 
   const exitSelectionMode = () => {
@@ -306,7 +324,12 @@ function GivenPulls() {
     const t = setTimeout(() => load(search), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, statusFilter, platformId, dateFrom, dateTo]);
+  }, [search, statusFilter, platformId, dateFrom, dateTo, tab]);
+
+  // A selection belongs to the tab it was made on.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [tab]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -383,14 +406,16 @@ function GivenPulls() {
             />
           </div>
         </div>
-        <div className="w-44">
-          <span className="label">Status</span>
-          <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
-            <option value="all">All pulls</option>
-            <option value="pending">Not transferred yet</option>
-            <option value="done">Transferred</option>
-          </Select>
-        </div>
+        {tab === "active" && (
+          <div className="w-44">
+            <span className="label">Status</span>
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as TransferFilter)}>
+              <option value="all">All active</option>
+              <option value="pending">Not transferred yet</option>
+              <option value="done">Transferred, not paid</option>
+            </Select>
+          </div>
+        )}
         <div className="w-40">
           <span className="label">Platform</span>
           <Select value={platformId} onChange={(e) => setPlatformId(e.target.value ? Number(e.target.value) : "")}>
@@ -425,6 +450,7 @@ function GivenPulls() {
             ))}
           </Select>
         </div>
+        <TabSwitcher tabs={PULL_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
 
       {selectionMode && (
@@ -446,7 +472,7 @@ function GivenPulls() {
 
       {pulls === null ? (
         <TableSkeleton />
-      ) : pulls.length === 0 ? (
+      ) : pulls.length === 0 && tab === "active" && statusFilter === "all" && !search ? (
         <EmptyState
           icon={<IconUsers className="h-8 w-8" />}
           title="No pulls yet"
@@ -455,6 +481,16 @@ function GivenPulls() {
             <Button variant="primary" onClick={() => setNewOpen(true)}>
               <IconPlus className="h-4 w-4" /> New Pull
             </Button>
+          }
+        />
+      ) : visiblePulls.length === 0 ? (
+        <EmptyState
+          icon={<IconUsers className="h-8 w-8" />}
+          title={tab === "active" ? "No active pulls" : "No completed pulls yet"}
+          description={
+            tab === "active"
+              ? "Nothing waiting - every pull that matches is paid and transferred, under Completed."
+              : "A pull moves here once it is both paid and transferred."
           }
         />
       ) : (
@@ -581,7 +617,7 @@ function GivenPulls() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sortedPulls.map((p) => {
+              {visiblePulls.map((p) => {
                 const daysLeft = p.eventDate ? daysUntil(p.eventDate) : null;
                 const seatsSummary = formatSeatsSummary([{ section: p.section, rowLabel: p.rowLabel, seat: p.seat }]);
                 const showWarning = !p.transferDone && daysLeft !== null && daysLeft <= WARNING_WINDOW_DAYS;
@@ -1060,6 +1096,7 @@ function ReceivedPulls() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [sortBy, setSortBy] = useState(lastPullsReceivedSortBy);
+  const [tab, setTab] = useListTab("pullsReceivedTab", ["active", "completed"] as const);
   // undefined = modal closed, null = create mode, a PullReceived = edit mode.
   const [modalPull, setModalPull] = useState<PullReceived | null | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<PullReceived | null>(null);
@@ -1102,6 +1139,7 @@ function ReceivedPulls() {
     withDate.sort((a, b) => dir * ((a.eventDate as string).localeCompare(b.eventDate as string) || a.id - b.id));
     return [...withDate, ...withoutDate];
   })();
+  const visiblePulls = sortedPulls.filter((p) => isReceivedPullDone(p) === (tab === "completed"));
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -1112,9 +1150,11 @@ function ReceivedPulls() {
     });
   };
 
-  const allSelected = pulls !== null && pulls.length > 0 && pulls.every((p) => selected.has(p.id));
+  // 2.113.0: only what this tab shows - "select all" never reaches a pull
+  // that is out of sight on the other tab.
+  const allSelected = visiblePulls.length > 0 && visiblePulls.every((p) => selected.has(p.id));
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set((pulls ?? []).map((p) => p.id)));
+    setSelected(allSelected ? new Set() : new Set(visiblePulls.map((p) => p.id)));
   };
 
   const exitSelectionMode = () => {
@@ -1152,6 +1192,11 @@ function ReceivedPulls() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, dateFrom, dateTo]);
+
+  // A selection belongs to the tab it was made on.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [tab]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -1222,6 +1267,7 @@ function ReceivedPulls() {
             ))}
           </Select>
         </div>
+        <TabSwitcher tabs={PULL_TABS} active={tab} onChange={setTab} className="ml-auto" />
       </div>
 
       {selectionMode && (
@@ -1243,7 +1289,7 @@ function ReceivedPulls() {
 
       {pulls === null ? (
         <TableSkeleton />
-      ) : pulls.length === 0 ? (
+      ) : pulls.length === 0 && tab === "active" && !search ? (
         <EmptyState
           icon={<IconLink className="h-8 w-8" />}
           title="No received pulls yet"
@@ -1252,6 +1298,16 @@ function ReceivedPulls() {
             <Button variant="primary" onClick={() => setModalPull(null)}>
               <IconPlus className="h-4 w-4" /> New received pull
             </Button>
+          }
+        />
+      ) : visiblePulls.length === 0 ? (
+        <EmptyState
+          icon={<IconLink className="h-8 w-8" />}
+          title={tab === "active" ? "No active received pulls" : "No completed received pulls yet"}
+          description={
+            tab === "active"
+              ? "Every received pull that matches is linked to an order or its event is over - they are under Completed."
+              : "A received pull moves here once its tickets are linked to an order, or once the event is over."
           }
         />
       ) : (
@@ -1324,7 +1380,7 @@ function ReceivedPulls() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {sortedPulls.map((p) => (
+              {visiblePulls.map((p) => (
                 <tr
                   key={p.id}
                   className="cursor-pointer"

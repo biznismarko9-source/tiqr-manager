@@ -14,13 +14,17 @@
 // commands/mail.rs::UNTRUSTED_LABELS): a spam message claiming a sale can
 // never reach Important.
 //
-// Two things this still is not, said in the UI rather than left to look
-// like a bug: read state is TIQR's own, because the scope is read-only and
-// cannot write a Gmail label; and nothing here creates a sale, an order or
-// a finance entry.
+// One thing this still is not, said in the UI rather than left to look like
+// a bug: read state and where a message is filed are TIQR's own, because the
+// scope is read-only and cannot write a Gmail label.
+//
+// 2.113.0: the message is shown the way it was designed, safely
+// (components/MailReader.tsx), and mail can be moved anywhere - with Move
+// to, or by dragging it onto a folder in the rail, including marko's own folders
+// ("aby som vedel dane maily presunut tak kde chcem do ineho miesta").
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
 import { mergeTopPage } from "../lib/mailRows";
 import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone } from "../lib/mailSyncStatus";
@@ -28,15 +32,23 @@ import {
   type MailConnectionStatus,
   type MailFolderCount,
   type MailLabel,
+  type MailLocalFolder,
   type MailMessageSummary,
-  type MailProposal,
-  type MailReviewOutcome,
   type MailSyncResult,
 } from "../lib/types";
-import { Badge, Button, Card, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
-import { IconMail } from "../components/icons";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
+import { IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconTrash } from "../components/icons";
 import { MailSettingsPane } from "../components/MailSettingsPane";
+import {
+  categoryLabel,
+  isJunk,
+  MailMoveMenu,
+  MailReader,
+  type MailPlace,
+  type ReaderChange,
+} from "../components/MailReader";
 import { useToast } from "../lib/toast";
+import { useFillHeight, useRemeasure } from "../lib/useFillHeight";
 
 /** Folders this app defines itself, above Gmail's own. */
 type Builtin =
@@ -78,23 +90,6 @@ const PAGE = 200;
    `INBOX`, `STARRED` or `Label_8`, never a double underscore. */
 const SETTINGS_FOLDER = "__settings";
 
-const CATEGORY_LABELS: Record<string, string> = {
-  sale_confirmation: "Sale",
-  purchase_confirmation: "Purchase",
-  payout: "Payout",
-  refund: "Refund",
-  cancellation: "Cancellation",
-  event_update: "Event update",
-  order_status: "Order status",
-  account_notice: "Account notice",
-  other: "Other",
-};
-
-const categoryLabel = (c: string) => CATEGORY_LABELS[c] ?? c;
-const labelsOf = (m: MailMessageSummary) => m.labels.split(",");
-const has = (m: MailMessageSummary, l: string) => labelsOf(m).includes(l);
-const isJunk = (m: MailMessageSummary) => has(m, "spam") || has(m, "trash");
-
 function formatWhen(iso: string) {
   try {
     const d = new Date(iso);
@@ -116,39 +111,127 @@ const LANE_TONE: Record<LaneTone, string> = {
   warn: "text-amber-600 dark:text-amber-400",
 };
 
+/** What a dragged message carries: the ids, as JSON. Only TIQR's own rows
+ *  set it, so a file dragged in from the desktop is never a "move". */
+const DRAG_MIME = "application/x-tiqr-mail";
+
+/** Built-in folders a message can be dropped on. The others are views
+ *  across places (Important, Starred, Codes, Needs review) and Spam, which
+ *  only Gmail decides. */
+const DROPPABLE = new Set<string>(["inbox", "finances", "promotions", "trash"]);
+
+/** Views show a message wherever it is filed, so a move leaves it there. */
+const VIEWS = new Set<string>(["important", "starred", "otp", "review"]);
+
 function FolderRow({
   label,
   count,
   unread,
   active,
   onClick,
+  onDropIds,
+  actions,
 }: {
   label: string;
   count: number;
   unread: number;
   active: boolean;
   onClick: () => void;
+  /** Set when messages can be dropped here. */
+  onDropIds?: (ids: number[]) => void;
+  /** Small buttons shown on hover (rename, delete). */
+  actions?: React.ReactNode;
 }) {
+  const [over, setOver] = useState(false);
+  const drop = onDropIds
+    ? {
+        onDragOver: (e: React.DragEvent) => {
+          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setOver(true);
+        },
+        onDragLeave: () => setOver(false),
+        onDrop: (e: React.DragEvent) => {
+          setOver(false);
+          const raw = e.dataTransfer.getData(DRAG_MIME);
+          if (!raw) return;
+          e.preventDefault();
+          try {
+            const ids = JSON.parse(raw);
+            if (Array.isArray(ids) && ids.every((n) => typeof n === "number")) onDropIds(ids);
+          } catch {
+            // Not ours.
+          }
+        },
+      }
+    : {};
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition ${
-        active
-          ? "bg-brand-600/15 font-semibold text-brand-700 dark:text-brand-300"
-          : "text-slate-600 hover:bg-surface-muted dark:text-slate-300"
-      }`}
-    >
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {unread > 0 ? (
-        <span className="num shrink-0 text-[11px] font-semibold text-brand-600 dark:text-brand-400">{unread}</span>
-      ) : count > 0 ? (
-        <span className="num shrink-0 text-[11px] text-slate-400 dark:text-slate-500">{count}</span>
-      ) : null}
-    </button>
+    <div className="group relative" {...drop}>
+      <button
+        type="button"
+        onClick={onClick}
+        title={label}
+        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition ${
+          over
+            ? "bg-brand-500/20 ring-2 ring-brand-500/60"
+            : active
+              ? "bg-brand-600/15 font-semibold text-brand-700 dark:text-brand-300"
+              : "text-slate-600 hover:bg-surface-muted dark:text-slate-300"
+        }`}
+      >
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {unread > 0 ? (
+          <span className={`num shrink-0 text-[11px] font-semibold text-brand-600 dark:text-brand-400 ${actions ? "group-hover:invisible" : ""}`}>
+            {unread}
+          </span>
+        ) : count > 0 ? (
+          <span className={`num shrink-0 text-[11px] text-slate-400 dark:text-slate-500 ${actions ? "group-hover:invisible" : ""}`}>
+            {count}
+          </span>
+        ) : null}
+      </button>
+      {actions && (
+        <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 group-hover:flex">{actions}</div>
+      )}
+    </div>
   );
 }
+
+/** One name typed into the rail - a new folder, or a new name for one. */
+function FolderNameInput({
+  initial,
+  onDone,
+}: {
+  initial: string;
+  onDone: (name: string | null) => void;
+}) {
+  const [name, setName] = useState(initial);
+  const done = useRef(false);
+  const finish = (v: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(v);
+  };
+  return (
+    <input
+      autoFocus
+      maxLength={40}
+      placeholder="Folder name"
+      value={name}
+      onChange={(e) => setName(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") finish(name.trim() || null);
+        if (e.key === "Escape") finish(null);
+      }}
+      onBlur={() => finish(name.trim() || null)}
+      className="my-0.5 w-full rounded-lg border border-brand-400 bg-surface px-2.5 py-1 text-[12.5px] text-slate-800 outline-none dark:text-slate-100"
+    />
+  );
+}
+
+const railIcon =
+  "rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700/60 dark:hover:text-slate-200";
 
 /* Memoised: a folder can hold thousands of rows once he has scrolled, and
    a new page arriving must not re-render every one already on screen. */
@@ -156,22 +239,31 @@ const MailRow = memo(function MailRow({
   m,
   active,
   checked,
+  movedName,
   onOpen,
   onToggle,
+  onDragStart,
+  onCopyCode,
 }: {
   m: MailMessageSummary;
   active: boolean;
   checked: boolean;
+  /** Where it was moved to, when that is not the folder on screen. */
+  movedName: string | null;
   onOpen: (id: number) => void;
   onToggle: (id: number) => void;
+  onDragStart: (id: number, e: React.DragEvent) => void;
+  onCopyCode: (code: string) => void;
 }) {
   const onClick = () => onOpen(m.id);
   return (
     <button
       type="button"
       onClick={onClick}
+      draggable
+      onDragStart={(e) => onDragStart(m.id, e)}
       className={`w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
-        active ? "bg-brand-600/10" : "hover:bg-surface-muted"
+        active ? "bg-brand-600/10" : checked ? "bg-brand-500/[0.05]" : "hover:bg-surface-muted"
       }`}
     >
       <div className="flex items-baseline gap-2">
@@ -198,6 +290,9 @@ const MailRow = memo(function MailRow({
         >
           {m.fromName ?? m.fromAddress}
         </span>
+        {m.hasAttachments && (
+          <IconPaperclip className="h-3 w-3 shrink-0 self-center text-slate-400 dark:text-slate-500" aria-label="Has attachments" />
+        )}
         <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400 dark:text-slate-500">
           {formatWhen(m.receivedAt)}
         </span>
@@ -209,327 +304,46 @@ const MailRow = memo(function MailRow({
       >
         {m.subject || "(no subject)"}
       </p>
-      {/* The code, right in the list. A one-time code is useless slowly -
-          by the time you have opened the mail and gone back, half the
-          window is gone. */}
+      {/* The code, right in the list - and one click copies it. A one-time
+          code is useless slowly: by the time you have opened the mail and
+          gone back, half the window is gone. */}
       {m.otpCode ? (
-        <p className="num mt-1 text-base font-bold tracking-[0.18em] text-brand-600 dark:text-brand-400">
+        <span
+          role="button"
+          tabIndex={-1}
+          title="Click to copy"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCopyCode(m.otpCode!);
+          }}
+          className="num -mx-1 mt-1 inline-block rounded px-1 text-base font-bold tracking-[0.18em] text-brand-600 hover:bg-brand-500/10 dark:text-brand-400"
+        >
           {m.otpCode}
-        </p>
+        </span>
       ) : (
         m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>
       )}
-      {m.category !== "other" && !isJunk(m) && (
-        <div className="mt-1">
-          <Badge tone="sold">{categoryLabel(m.category)}</Badge>
+      {((m.category !== "other" && !isJunk(m)) || movedName) && (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          {m.category !== "other" && !isJunk(m) && <Badge tone="sold">{categoryLabel(m.category)}</Badge>}
+          {movedName && (
+            <span className="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-px text-[10.5px] text-slate-500 dark:text-slate-400">
+              <IconFolder className="h-2.5 w-2.5" />
+              {movedName}
+            </span>
+          )}
         </div>
       )}
     </button>
   );
 });
 
-/** What changed in the reader: a field of this message (patched in place,
- *  so the list does not jump), or `null` for "something bigger - reload". */
-type ReaderChange = Partial<MailMessageSummary> | null;
-
-function Reader({ message, onChanged }: { message: MailMessageSummary; onChanged: (change: ReaderChange) => void }) {
-  const toast = useToast();
-  const [body, setBody] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [showHeaders, setShowHeaders] = useState(false);
-  const [proposal, setProposal] = useState<MailProposal | null>(null);
-  const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    setBody(null);
-    setLoading(true);
-    setShowHeaders(false);
-    setProposal(null);
-    api
-      .getMailProposal(message.id)
-      .then(setProposal)
-      .catch(() => setProposal(null));
-    api
-      .getMailBody(message.id)
-      .then((b) => {
-        setBody(b);
-        // Opening marks it read, in TIQR only.
-        onChanged({ isUnread: false });
-      })
-      .catch((e) => {
-        toast.error(errMsg(e));
-        setBody("");
-      })
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.id]);
-
-  const junk = isJunk(message);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          {message.subject || "(no subject)"}
-        </h2>
-
-        {/* "odkial ide, z akeho mailu" - the real address first, the
-            display name second, because a display name is whatever the
-            sender typed and the address is not. */}
-        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          {message.fromName && (
-            <span className="text-sm text-slate-700 dark:text-slate-200">{message.fromName}</span>
-          )}
-          <span className="break-all font-mono text-xs text-slate-500 dark:text-slate-400">
-            &lt;{message.fromAddress}&gt;
-          </span>
-          <button
-            type="button"
-            onClick={() => setShowHeaders((v) => !v)}
-            className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
-          >
-            {showHeaders ? "Hide details" : "Details"}
-          </button>
-        </div>
-
-        {showHeaders && (
-          <dl className="mt-2 space-y-1 rounded-lg bg-surface-muted px-3 py-2 text-[11px]">
-            {[
-              ["From", message.fromRaw ?? message.fromAddress],
-              ["To", message.toAddress],
-              ["Reply-To", message.replyTo],
-              ["Gmail labels", message.labels || null],
-            ].map(([k, v]) =>
-              v ? (
-                <div key={k} className="flex gap-2">
-                  <dt className="w-24 shrink-0 text-slate-500 dark:text-slate-400">{k}</dt>
-                  <dd className="min-w-0 break-all font-mono text-slate-600 dark:text-slate-300">{v}</dd>
-                </div>
-              ) : null,
-            )}
-            {/* A reply address that disagrees with the sender is the single
-                most useful thing on this panel, so it is pointed at. */}
-            {message.replyTo && !message.replyTo.includes(message.fromAddress) && (
-              <p className="pt-1 text-amber-600 dark:text-amber-400">
-                A reply would go somewhere other than the sender.
-              </p>
-            )}
-          </dl>
-        )}
-
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-slate-400 dark:text-slate-500">
-            {new Date(message.receivedAt).toLocaleString()}
-          </span>
-          {message.isStarred && <span className="text-[11px] text-amber-500">&#9733; Starred</span>}
-          {message.category !== "other" && !junk && <Badge tone="sold">{categoryLabel(message.category)}</Badge>}
-          {junk && <Badge tone="cancelled">{has(message, "spam") ? "spam" : "trash"}</Badge>}
-        </div>
-
-        {message.otpCode && (
-          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
-            <p className="section-title">One-time code</p>
-            <p className="num mt-1 text-2xl font-bold tracking-[0.3em] text-brand-600 dark:text-brand-400">
-              {message.otpCode}
-            </p>
-          </div>
-        )}
-
-        {/* What the message SAYS, read out of it. Shown and not acted on:
-            creating an order or a sale from these is the next release, and
-            marko gets to see whether the numbers are right first. */}
-        {(message.extractedAmountCents != null ||
-          message.extractedQuantity != null ||
-          message.extractedReference) && !junk && (
-          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
-            <p className="section-title">What TIQR read</p>
-            <dl className="mt-1.5 flex flex-wrap gap-x-6 gap-y-1 text-xs">
-              {message.extractedAmountCents != null && (
-                <div>
-                  <dt className="text-slate-500 dark:text-slate-400">
-                    Total{message.extractedBasis ? ` (${message.extractedBasis})` : ""}
-                  </dt>
-                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
-                    {(message.extractedAmountCents / 100).toFixed(2)} {message.extractedCurrency}
-                  </dd>
-                </div>
-              )}
-              {/* Per ticket is the TOTAL divided - fees already in it -
-                  never a per-ticket price quoted in the mail, because that
-                  one leaves the fees out and is not what a ticket cost. */}
-              {message.extractedUnitCents != null && (
-                <div>
-                  <dt className="text-slate-500 dark:text-slate-400">Per ticket (incl. fees)</dt>
-                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
-                    {(message.extractedUnitCents / 100).toFixed(2)} {message.extractedCurrency}
-                  </dd>
-                </div>
-              )}
-              {message.extractedQuantity != null && (
-                <div>
-                  <dt className="text-slate-500 dark:text-slate-400">Tickets</dt>
-                  <dd className="num text-sm text-slate-800 dark:text-slate-200">
-                    {message.extractedQuantity}
-                  </dd>
-                </div>
-              )}
-              {message.extractedReference && (
-                <div>
-                  <dt className="text-slate-500 dark:text-slate-400">Reference</dt>
-                  <dd className="font-mono text-sm text-slate-800 dark:text-slate-200">
-                    {message.extractedReference}
-                  </dd>
-                </div>
-              )}
-            </dl>
-            <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
-              Read from the message - check it before anything is created from it.
-            </p>
-          </div>
-        )}
-
-        {/* WHAT THIS COULD BECOME.
-            Nothing is guessed into existence: an order needs an event and
-            a sale needs an order, and those are MATCHED against what is
-            already in TIQR. When nothing matches, the card says so in
-            words rather than offering a button that would invent one. */}
-        {proposal && (
-          <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
-            {proposal.createdId ? (
-              <>
-                <p className="section-title">Already done</p>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
-                  This created {proposal.createdKind} #{proposal.createdId}.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="section-title">TIQR can make this</p>
-                <p className="mt-1 text-sm text-slate-800 dark:text-slate-200">{proposal.summary}</p>
-                {proposal.matchedEventName && (
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    Event: {proposal.matchedEventName}
-                  </p>
-                )}
-                {proposal.matchedOrderCode && (
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    Order: {proposal.matchedOrderCode}
-                  </p>
-                )}
-                {proposal.ready ? (
-                  <div className="mt-2">
-                    <Button
-                      variant="primary"
-                      disabled={creating}
-                      onClick={async () => {
-                        setCreating(true);
-                        try {
-                          const p = await api.createFromMail(message.id);
-                          setProposal(p);
-                          toast.success(`${p.createdKind} #${p.createdId} created`);
-                          onChanged(null);
-                        } catch (e) {
-                          toast.error(errMsg(e));
-                        } finally {
-                          setCreating(false);
-                        }
-                      }}
-                    >
-                      {creating ? <Spinner className="h-4 w-4" /> : null}
-                      {proposal.kind === "finance"
-                        ? "Record in Finance"
-                        : proposal.kind === "order"
-                          ? "Create order"
-                          : "Record sale"}
-                    </Button>
-                  </div>
-                ) : (
-                  <ul className="mt-2 space-y-0.5">
-                    {proposal.blockers.map((b) => (
-                      <li key={b} className="text-xs text-amber-600 dark:text-amber-400">
-                        {b}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {junk && (
-          <p className="mt-3 rounded-lg bg-surface-muted px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400">
-            This is in {has(message, "spam") ? "Spam" : "Trash"}. TIQR never classifies these and will never act
-            on one, however convincing it looks.
-          </p>
-        )}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {loading ? (
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <Spinner className="h-4 w-4" /> Loading from Gmail...
-          </div>
-        ) : body ? (
-          /* PLAIN TEXT, always. The HTML was stripped in Rust before this
-             reached the frontend, and there is deliberately no path here
-             that renders a message body as markup. */
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700 dark:text-slate-300">
-            {body}
-          </p>
-        ) : (
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Nothing to show - this message has no readable text.
-          </p>
-        )}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-800">
-        <Button
-          variant="secondary"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await api.setMailReviewOutcome(message.id, "reviewed" as MailReviewOutcome);
-              onChanged(null);
-            } catch (e) {
-              toast.error(errMsg(e));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Mark reviewed
-        </Button>
-        <Button
-          variant="ghost"
-          disabled={busy}
-          onClick={async () => {
-            try {
-              await api.setMailRead(message.id, message.isUnread);
-              onChanged({ isUnread: !message.isUnread });
-            } catch (e) {
-              toast.error(errMsg(e));
-            }
-          }}
-        >
-          {message.isUnread ? "Mark read" : "Mark unread"}
-        </Button>
-        <span className="text-[11px] text-slate-400 dark:text-slate-500">
-          Read state is TIQR&apos;s own - Gmail is never changed.
-        </span>
-      </div>
-    </div>
-  );
-}
-
 export default function MailIntelligence() {
   const toast = useToast();
   const [folder, setFolder] = useState<string>("inbox");
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
   const [labels, setLabels] = useState<MailLabel[]>([]);
+  const [localFolders, setLocalFolders] = useState<MailLocalFolder[]>([]);
   const [counts, setCounts] = useState<Record<string, MailFolderCount>>({});
   const [rows, setRows] = useState<MailMessageSummary[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -543,6 +357,9 @@ export default function MailIntelligence() {
   const [nudged, setNudged] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** A folder being named: `null` id = a new one. */
+  const [naming, setNaming] = useState<{ id: string | null; name: string } | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<MailLocalFolder | null>(null);
 
   /* Which folder and search the screen is showing. A page that comes back
      after he has already moved on is dropped rather than shown under the
@@ -552,6 +369,8 @@ export default function MailIntelligence() {
   viewRef.current = view;
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   // Typing searches as he types, without a query per keystroke.
   useEffect(() => {
@@ -562,9 +381,15 @@ export default function MailIntelligence() {
   const open = useMemo(() => rows.find((m) => m.id === openId) ?? null, [rows, openId]);
 
   const loadHeader = useCallback(async () => {
-    const [s, l, c] = await Promise.all([api.getMailStatus(), api.listMailLabels(), api.getMailFolderCounts()]);
+    const [s, l, f, c] = await Promise.all([
+      api.getMailStatus(),
+      api.listMailLabels(),
+      api.listMailLocalFolders(),
+      api.getMailFolderCounts(),
+    ]);
     setStatus(s);
     setLabels(l);
+    setLocalFolders(f);
     setCounts(Object.fromEntries(c.map((x) => [x.key, x])));
   }, []);
 
@@ -689,6 +514,29 @@ export default function MailIntelligence() {
       }),
     [],
   );
+  const onCopyCode = useCallback(
+    async (code: string) => {
+      if (await copyText(code)) toast.success(`Code ${code} copied`);
+      else toast.error("Couldn't copy - open the message and select it.");
+    },
+    [toast],
+  );
+
+  /* Dragging a row carries it - or every selected row, when it is one of
+     them - onto a folder in the rail. */
+  const onDragStart = useCallback((id: number, e: React.DragEvent) => {
+    const sel = selectedRef.current;
+    const ids = sel.has(id) ? [...sel] : [id];
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
+    e.dataTransfer.setData("text/plain", `${ids.length} message${ids.length === 1 ? "" : "s"}`);
+    e.dataTransfer.effectAllowed = "move";
+    const ghost = document.createElement("div");
+    ghost.textContent = ids.length === 1 ? "Move 1 message" : `Move ${ids.length} messages`;
+    ghost.className = "fixed -left-[999px] top-0 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white";
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 14, 14);
+    setTimeout(() => ghost.remove(), 0);
+  }, []);
 
   const onReaderChanged = useCallback(
     (change: ReaderChange) => {
@@ -702,8 +550,52 @@ export default function MailIntelligence() {
     [openId, refreshTop, loadHeader],
   );
 
-  const bulk = async (what: "trash" | "restore" | "delete" | "read" | "unread") => {
-    const ids = [...selected];
+  /* EVERY one of marko's own labels, including the empty ones.
+     marko: "nech to cita vsetky zalozky". An empty folder is information;
+     a folder that is not there is a bug report waiting to happen. */
+  const userLabels = useMemo(() => labels.filter((l) => l.kind !== "system"), [labels]);
+
+  /* 2.113.0: everywhere a message can be moved to - "aby som vedel dane
+     maily presunut tak kde chcem do ineho miesta". */
+  const places = useMemo<MailPlace[]>(
+    () => [
+      { key: "inbox", label: "Inbox", group: "TIQR" },
+      { key: "finances", label: "Finances", group: "TIQR" },
+      { key: "promotions", label: "Promotions", group: "TIQR" },
+      ...userLabels.map((l) => ({ key: l.id, label: l.name, group: "Your labels" as const })),
+      ...localFolders.map((f) => ({ key: f.id, label: f.name, group: "Your folders" as const })),
+    ],
+    [userLabels, localFolders],
+  );
+  const placeName = useCallback((key: string) => places.find((p) => p.key === key)?.label ?? null, [places]);
+
+  /** After a change to some messages: the ones that left this folder go
+   *  from the list at once, without losing the place in it, and the top of the
+   *  folder and the counts are read again. */
+  const settle = (ids: number[], gone: boolean, patch?: Partial<MailMessageSummary>) => {
+    const hit = new Set(ids);
+    setRows((prev) =>
+      gone ? prev.filter((m) => !hit.has(m.id)) : patch ? prev.map((m) => (hit.has(m.id) ? { ...m, ...patch } : m)) : prev,
+    );
+    clearSelection();
+    setConfirmDelete(false);
+    void refreshTop();
+    void loadHeader().catch(() => undefined);
+  };
+
+  const moveIds = async (ids: number[], target: string) => {
+    if (ids.length === 0 || target === folder) return;
+    try {
+      const n = await api.moveMail(ids, target);
+      const where = target ? `to ${placeName(target) ?? target}` : "back to where Gmail has it";
+      toast.success(`${n} message${n === 1 ? "" : "s"} moved ${where}`);
+      settle(ids, !VIEWS.has(folder), { movedTo: target || null, trashedAt: null });
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const bulk = async (what: "trash" | "restore" | "delete" | "read" | "unread", ids = [...selected]) => {
     if (ids.length === 0) return;
     try {
       const n =
@@ -715,11 +607,34 @@ export default function MailIntelligence() {
               ? await api.deleteMailForever(ids)
               : await api.setMailReadBulk(ids, what === "read");
       toast.success(`${n} message${n === 1 ? "" : "s"} updated`);
-      clearSelection();
-      setConfirmDelete(false);
-      setOpenId(null);
-      void loadFolder();
+      if (what === "read" || what === "unread") settle(ids, false, { isUnread: what === "unread" });
+      else settle(ids, what === "delete" || (what === "trash") !== (folder === "trash"));
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  /* ---- marko's own folders ---------------------------------------------- */
+
+  const saveFolderName = async (id: string | null, name: string | null) => {
+    setNaming(null);
+    if (!name) return;
+    try {
+      const next = id ? await api.renameMailLocalFolder(id, name) : await api.createMailLocalFolder(name);
+      setLocalFolders(next);
+      if (!id) toast.success(`Folder "${name}" made - drag mail onto it, or use Move to.`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const removeFolder = async (f: MailLocalFolder) => {
+    setDeletingFolder(null);
+    try {
+      setLocalFolders(await api.deleteMailLocalFolder(f.id));
+      if (folder === f.id) pick("inbox");
       void loadHeader();
+      toast.success(`Folder "${f.name}" deleted - its mail is back where Gmail has it.`);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -729,6 +644,11 @@ export default function MailIntelligence() {
     const el = e.currentTarget;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) void loadMore();
   };
+
+  // 2.113.0: the panes reach the bottom of the window (lib/useFillHeight.ts).
+  const panesRef = useRef<HTMLDivElement>(null);
+  const panesHeight = useFillHeight(panesRef);
+  useRemeasure([loading, status?.connected]);
 
   if (loading) {
     return (
@@ -766,11 +686,6 @@ export default function MailIntelligence() {
     );
   }
 
-  /* EVERY one of his own labels, including the empty ones.
-     marko: "nech to cita vsetky zalozky". An empty folder is information;
-     a folder that is not there is a bug report waiting to happen. */
-  const userLabels = labels.filter((l) => l.kind !== "system");
-
   /* What the reader is doing, in words (lib/mailSyncStatus.ts). A long
      first read looks exactly like a stuck one unless the screen says which
      lane it is on and how much each still has to download. */
@@ -785,6 +700,7 @@ export default function MailIntelligence() {
   });
   const lanes = laneViews(progress, fmt);
   const busy = nudged || isReading(progress, status.paused, failed);
+  const dropOn = (key: string) => (ids: number[]) => void (key === "trash" ? bulk("trash", ids) : moveIds(ids, key));
 
   return (
     /* NOT `h-full`: Layout gives pages no height (PROTECTED_AREAS 2.55.0),
@@ -848,45 +764,111 @@ export default function MailIntelligence() {
         </Card>
       )}
 
-      <div className="flex gap-4" style={{ height: "calc(100vh - 266px)", minHeight: "440px" }}>
-        {/* Folders - TIQR's own in marko's order, then his Gmail labels.
-            Only the list scrolls; Settings sits BELOW it. It used to be a
-            sticky row inside the scroll, and with enough labels they slid
-            under it and showed through its see-through background. */}
+      <div
+        ref={panesRef}
+        className="flex gap-4"
+        style={{ height: panesHeight ? `${panesHeight}px` : "calc(100vh - 168px)", minHeight: "440px" }}
+      >
+        {/* Folders - TIQR's own in marko's order, then the Gmail labels, then
+            marko's own folders. Only the list scrolls; Settings sits BELOW it.
+            Mail can be dropped on any place it can be moved to. */}
         <Card className="flex w-[200px] shrink-0 flex-col overflow-hidden p-2">
           <div className="min-h-0 flex-1 overflow-y-auto">
-          {BUILTIN_FOLDERS.map((f) => {
-            const c = counts[f.key];
-            return (
-              <div key={f.key} className={f.gap ? "mt-2 border-t border-slate-200 pt-2 dark:border-slate-800" : ""}>
-                <FolderRow
-                  label={f.label}
-                  count={c?.total ?? 0}
-                  unread={c?.unread ?? 0}
-                  active={folder === f.key}
-                  onClick={() => pick(f.key)}
-                />
-              </div>
-            );
-          })}
-          {userLabels.length > 0 && (
-            <>
-              <p className="section-title mt-3 border-t border-slate-200 px-2.5 pb-1 pt-3 dark:border-slate-800">
-                Your labels
-              </p>
-              {userLabels.map((l) => (
-                <FolderRow
-                  key={l.id}
-                  label={l.name}
-                  count={l.total}
-                  unread={l.unread}
-                  active={folder === l.id}
-                  onClick={() => pick(l.id)}
-                />
-              ))}
-            </>
-          )}
+            {BUILTIN_FOLDERS.map((f) => {
+              const c = counts[f.key];
+              return (
+                <div key={f.key} className={f.gap ? "mt-2 border-t border-slate-200 pt-2 dark:border-slate-800" : ""}>
+                  <FolderRow
+                    label={f.label}
+                    count={c?.total ?? 0}
+                    unread={c?.unread ?? 0}
+                    active={folder === f.key}
+                    onClick={() => pick(f.key)}
+                    onDropIds={DROPPABLE.has(f.key) ? dropOn(f.key) : undefined}
+                  />
+                </div>
+              );
+            })}
+            {userLabels.length > 0 && (
+              <>
+                <p className="section-title mt-3 border-t border-slate-200 px-2.5 pb-1 pt-3 dark:border-slate-800">
+                  Your labels
+                </p>
+                {userLabels.map((l) => (
+                  <FolderRow
+                    key={l.id}
+                    label={l.name}
+                    count={counts[l.id]?.total ?? l.total}
+                    unread={counts[l.id]?.unread ?? l.unread}
+                    active={folder === l.id}
+                    onClick={() => pick(l.id)}
+                    onDropIds={dropOn(l.id)}
+                  />
+                ))}
+              </>
+            )}
 
+            {/* 2.113.0: marko's own folders, in TIQR only. They travel to the
+                other computer with the mail settings. */}
+            <div className="mt-3 flex items-center border-t border-slate-200 pt-3 dark:border-slate-800">
+              <p className="section-title min-w-0 flex-1 truncate px-2.5 pb-1">Your folders</p>
+              <button
+                type="button"
+                title="New folder"
+                aria-label="New folder"
+                className={railIcon}
+                onClick={() => setNaming({ id: null, name: "" })}
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {localFolders.map((f) =>
+              naming?.id === f.id ? (
+                <FolderNameInput key={f.id} initial={f.name} onDone={(name) => void saveFolderName(f.id, name)} />
+              ) : (
+                <FolderRow
+                  key={f.id}
+                  label={f.name}
+                  count={counts[f.id]?.total ?? 0}
+                  unread={counts[f.id]?.unread ?? 0}
+                  active={folder === f.id}
+                  onClick={() => pick(f.id)}
+                  onDropIds={dropOn(f.id)}
+                  actions={
+                    <>
+                      <button
+                        type="button"
+                        title="Rename"
+                        aria-label={`Rename ${f.name}`}
+                        className={railIcon}
+                        onClick={() => setNaming({ id: f.id, name: f.name })}
+                      >
+                        <IconPencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete folder"
+                        aria-label={`Delete ${f.name}`}
+                        className={railIcon}
+                        onClick={() => setDeletingFolder(f)}
+                      >
+                        <IconTrash className="h-3 w-3" />
+                      </button>
+                    </>
+                  }
+                />
+              ),
+            )}
+            {naming?.id === null && <FolderNameInput initial="" onDone={(name) => void saveFolderName(null, name)} />}
+            {localFolders.length === 0 && naming?.id !== null && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-slate-400 hover:bg-surface-muted hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                onClick={() => setNaming({ id: null, name: "" })}
+              >
+                <IconFolder className="h-3.5 w-3.5" /> New folder
+              </button>
+            )}
           </div>
 
           {/* At the bottom of the rail, where marko asked for it: "tu dole
@@ -903,15 +885,13 @@ export default function MailIntelligence() {
         </Card>
 
         {folder === SETTINGS_FOLDER ? (
-          <MailSettingsPane status={status} onStatus={setStatus} />
+          <MailSettingsPane status={status} onStatus={setStatus} localFolders={localFolders} labels={userLabels} />
         ) : (
           <>
             <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
               {selected.size > 0 && (
-                <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
-                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
-                    {selected.size} selected
-                  </span>
+                <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{selected.size} selected</span>
                   <button
                     type="button"
                     className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
@@ -919,34 +899,40 @@ export default function MailIntelligence() {
                   >
                     Clear
                   </button>
-                  <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                    <Button variant="ghost" onClick={() => void bulk("read")}>
+                  <div className="ml-auto flex flex-wrap items-center gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => void bulk("read")}>
                       Read
                     </Button>
-                    <Button variant="ghost" onClick={() => void bulk("unread")}>
+                    <Button variant="ghost" size="sm" onClick={() => void bulk("unread")}>
                       Unread
                     </Button>
+                    <MailMoveMenu
+                      places={places}
+                      current={folder}
+                      align="right"
+                      onPick={(t) => void moveIds([...selected], t)}
+                    />
                     {folder === "trash" ? (
                       <>
-                        <Button variant="secondary" onClick={() => void bulk("restore")}>
+                        <Button variant="secondary" size="sm" onClick={() => void bulk("restore")}>
                           Restore
                         </Button>
                         {/* Delete is the one irreversible thing here, so it
                             asks - and the BACKEND refuses anything not already
                             in the trash regardless of what this button does. */}
                         {confirmDelete ? (
-                          <Button variant="danger" onClick={() => void bulk("delete")}>
+                          <Button variant="danger" size="sm" onClick={() => void bulk("delete")}>
                             Delete forever?
                           </Button>
                         ) : (
-                          <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
+                          <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(true)}>
                             Delete
                           </Button>
                         )}
                       </>
                     ) : (
-                      <Button variant="secondary" onClick={() => void bulk("trash")}>
-                        Move to trash
+                      <Button variant="secondary" size="sm" onClick={() => void bulk("trash")}>
+                        Trash
                       </Button>
                     )}
                   </div>
@@ -964,9 +950,11 @@ export default function MailIntelligence() {
                   <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                     {query
                       ? "No message in this folder matches the search."
-                      : progress.reading
-                        ? `TIQR is reading your mail by itself, newest first - ${progress.reading} now. This folder fills in as it goes.`
-                        : "There is no mail in this folder."}
+                      : localFolders.some((f) => f.id === folder)
+                        ? "Drag mail onto this folder in the list on the left, or open a message and use Move to."
+                        : progress.reading
+                          ? `TIQR is reading your mail by itself, newest first - ${progress.reading} now. This folder fills in as it goes.`
+                          : "There is no mail in this folder."}
                   </p>
                 </div>
               ) : (
@@ -977,8 +965,11 @@ export default function MailIntelligence() {
                       m={m}
                       active={openId === m.id}
                       checked={selected.has(m.id)}
+                      movedName={m.movedTo && m.movedTo !== folder ? placeName(m.movedTo) : null}
                       onOpen={onOpen}
                       onToggle={onToggle}
+                      onDragStart={onDragStart}
+                      onCopyCode={onCopyCode}
                     />
                   ))}
                   {hasMore ? (
@@ -999,16 +990,37 @@ export default function MailIntelligence() {
 
             <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
               {open ? (
-                <Reader message={open} onChanged={onReaderChanged} />
+                <MailReader
+                  message={open}
+                  status={status}
+                  places={places}
+                  placeName={placeName}
+                  onMove={(ids, t) => void moveIds(ids, t)}
+                  onTrash={(ids, restore) => void bulk(restore ? "restore" : "trash", ids)}
+                  onChanged={onReaderChanged}
+                />
               ) : (
-                <div className="flex flex-1 items-center justify-center p-8">
+                <div className="flex flex-1 flex-col items-center justify-center gap-1 p-8 text-center">
                   <p className="text-sm text-slate-500 dark:text-slate-400">Pick a message to read it.</p>
+                  <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                    Drag messages onto a folder on the left to move them.
+                  </p>
                 </div>
               )}
             </Card>
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!deletingFolder}
+        title={`Delete the folder "${deletingFolder?.name ?? ""}"?`}
+        message="No mail is deleted: what is in it goes back to where Gmail has it. A rule that moves mail here stops moving it."
+        confirmLabel="Delete folder"
+        danger
+        onCancel={() => setDeletingFolder(null)}
+        onConfirm={() => deletingFolder && void removeFolder(deletingFolder)}
+      />
     </div>
   );
 }
