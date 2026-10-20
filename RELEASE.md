@@ -9,14 +9,38 @@ secret values live only in GitHub repository settings.
 
 ```
 1. Bump the version   (9 occurrences across 7 files - see below)
-2. Run 1-CLICK-UPDATE.bat
-3. Watch the Actions run
-4. Verify the release page
+2. Unzip the release zip into a new, empty folder
+3. Run 1-CLICK-UPDATE.bat
+4. Watch the Actions run
+5. Verify the release page
 ```
 
-`1-CLICK-UPDATE.bat` runs `release.ps1`, which mirrors this folder into a
-fresh clone of the GitHub repo, cross-checks the version, commits, deletes and
-re-pushes the tag. The tag push is what starts the build.
+### The release zip (2.113.0)
+
+Three things, and only three:
+
+```
+1-CLICK-UPDATE.bat   what marko double-clicks
+AKO-ZACAT.txt        how to start, in Slovak
+tiqr-manager/        this repository, plus release.ps1
+```
+
+`1-CLICK-UPDATE.bat` runs `tiqr-manager\release.ps1`, which mirrors the
+`tiqr-manager` folder into a fresh clone of the GitHub repo, removes itself
+from the clone, cross-checks the version, commits, deletes and re-pushes the
+tag. The tag push is what starts the build. The `.bat` and the guide sit
+outside the mirrored folder, so they never land in the repository (and
+`.gitignore` names them, in case one is ever copied in by hand).
+
+Until 2.112.0 the zip was the repository itself with `release.ps1`, the
+`.bat` and a note at its top - which is how those last two ended up
+committed. 2.113.0 removed them from the repository.
+
+**The mass-deletion guard** in `release.ps1` runs after `git add -A` and
+counts only files that are really gone (`git diff --cached --name-status
+-M`). Counted before it, as it was until 2.112.0, a file that moved to
+another folder looked like a deletion - and 2.113.0 moved 234 old reports
+into `history/`. More than five real deletions still stop the release.
 
 ### The version lives in 7 files (9 occurrences)
 
@@ -28,8 +52,8 @@ rest — so bump all of them:
 | `package.json` | `"version"` |
 | `src-tauri/tauri.conf.json` | `"version"` |
 | `src-tauri/Cargo.toml` | `version` |
-| `release.ps1` | `$Version` **and** `$CommitMsg` |
-| `1-CLICK-UPDATE.bat` | title **and** echo line |
+| `release.ps1` (in the zip's `tiqr-manager` folder, not in the repo) | `$Version` **and** `$CommitMsg` |
+| `1-CLICK-UPDATE.bat` (at the top of the zip, not in the repo) | title **and** echo line |
 | `src-tauri/Cargo.lock` | the `tiqr-manager` package entry (regenerate with `cargo check`) |
 | `package-lock.json` | the two root `""` entries (regenerate with `npm install --package-lock-only`) |
 
@@ -162,7 +186,7 @@ missing, incomplete, or has an entry without a signature.
 ### Developer
 
 1. Bump the version in all 7 files
-2. Run `1-CLICK-UPDATE.bat`
+2. Unzip the release zip into a new, empty folder and run `1-CLICK-UPDATE.bat`
 3. Actions run goes green — including **verify-release**
 4. Release page has a `.exe`, a `.dmg` and `latest.json`
 5. Install the `.exe` on a clean Windows machine

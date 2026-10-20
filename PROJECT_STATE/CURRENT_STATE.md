@@ -4,7 +4,7 @@ Read this file first, every session, before touching anything. Then read
 `KNOWN_BUGS.md` and `PROTECTED_AREAS.md` (same folder). Only after that,
 open the specific files the current task actually needs - do not re-scan
 the repo, and do not open the `REDESIGN-*-REPORT.md` / `*-REPORT.md`
-history files at the repo root unless the current bug plausibly
+history files in `history/` unless the current bug plausibly
 originates there or marko points at one directly.
 
 This file is the source of truth for "what is TIQR Manager right now."
@@ -5167,8 +5167,8 @@ finds.
 ## Where the detailed history lives
 
 Every past release has its own `REDESIGN-X.Y.Z-REPORT.md` or
-`*-REPORT.md` file at the repo root (Slovak, written for marko) - 114 of
-them as of 2.2.8. These are not read by default under this protocol; only
+`*-REPORT.md` file in `history/` (Slovak, written for marko; at the repo
+root until 2.113.0 moved them) - 114 of them as of 2.2.8. These are not read by default under this protocol; only
 open one when the current bug plausibly traces back to that specific
 release, or marko points at it directly.
 

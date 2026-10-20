@@ -7,7 +7,7 @@ purpose and documented, it belongs in `PROTECTED_AREAS.md`, not here.
 
 This file starts clean as of 2.1.9 rather than being backfilled from the
 project's full history - the detailed per-release history already exists
-in the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files at the repo root, and
+in the `REDESIGN-*-REPORT.md` / `*-REPORT.md` files in `history/`, and
 mining ~105 of them for anything still-open would itself be the kind of
 full-repo audit this protocol exists to avoid. See CURRENT_STATE.md's
 "Known task-list debt" note for a short list of old, un-triaged task

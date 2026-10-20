@@ -3,7 +3,7 @@
 Short, append-only entries, newest at the top - one entry per completed
 task under the TIQR development protocol (see step 8). This is not a
 replacement for the detailed `REDESIGN-X.Y.Z-REPORT.md` / `*-REPORT.md`
-files at the repo root (one per release, written for marko, in Slovak) -
+files in `history/` (one per release, written for marko, in Slovak) -
 those still get written for real releases. This log exists so a future
 session can see recent activity at a glance without opening any of them.
 
