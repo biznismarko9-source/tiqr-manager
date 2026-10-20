@@ -20,7 +20,7 @@
 //
 // 2.113.0: the message is shown the way it was designed, safely
 // (components/MailReader.tsx), and mail can be moved anywhere - with Move
-// to, or by dragging it onto a folder in the rail, including his own folders
+// to, or by dragging it onto a folder in the rail, including marko's own folders
 // ("aby som vedel dane maily presunut tak kde chcem do ineho miesta").
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
@@ -550,7 +550,7 @@ export default function MailIntelligence() {
     [openId, refreshTop, loadHeader],
   );
 
-  /* EVERY one of his own labels, including the empty ones.
+  /* EVERY one of marko's own labels, including the empty ones.
      marko: "nech to cita vsetky zalozky". An empty folder is information;
      a folder that is not there is a bug report waiting to happen. */
   const userLabels = useMemo(() => labels.filter((l) => l.kind !== "system"), [labels]);
@@ -570,7 +570,7 @@ export default function MailIntelligence() {
   const placeName = useCallback((key: string) => places.find((p) => p.key === key)?.label ?? null, [places]);
 
   /** After a change to some messages: the ones that left this folder go
-   *  from the list at once, without losing his place, and the top of the
+   *  from the list at once, without losing the place in it, and the top of the
    *  folder and the counts are read again. */
   const settle = (ids: number[], gone: boolean, patch?: Partial<MailMessageSummary>) => {
     const hit = new Set(ids);
@@ -614,7 +614,7 @@ export default function MailIntelligence() {
     }
   };
 
-  /* ---- his own folders ------------------------------------------------- */
+  /* ---- marko's own folders ---------------------------------------------- */
 
   const saveFolderName = async (id: string | null, name: string | null) => {
     setNaming(null);
@@ -769,8 +769,8 @@ export default function MailIntelligence() {
         className="flex gap-4"
         style={{ height: panesHeight ? `${panesHeight}px` : "calc(100vh - 168px)", minHeight: "440px" }}
       >
-        {/* Folders - TIQR's own in marko's order, then his Gmail labels, then
-            his own folders. Only the list scrolls; Settings sits BELOW it.
+        {/* Folders - TIQR's own in marko's order, then the Gmail labels, then
+            marko's own folders. Only the list scrolls; Settings sits BELOW it.
             Mail can be dropped on any place it can be moved to. */}
         <Card className="flex w-[200px] shrink-0 flex-col overflow-hidden p-2">
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -808,7 +808,7 @@ export default function MailIntelligence() {
               </>
             )}
 
-            {/* 2.113.0: his own folders, in TIQR only. They travel to his
+            {/* 2.113.0: marko's own folders, in TIQR only. They travel to the
                 other computer with the mail settings. */}
             <div className="mt-3 flex items-center border-t border-slate-200 pt-3 dark:border-slate-800">
               <p className="section-title min-w-0 flex-1 truncate px-2.5 pb-1">Your folders</p>

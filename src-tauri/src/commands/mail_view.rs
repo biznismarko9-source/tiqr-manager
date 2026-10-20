@@ -1114,7 +1114,7 @@ pub async fn open_mail_attachment(app: tauri::AppHandle, state: State<'_, AppSta
 }
 
 /// Saves an attachment wherever marko picks. Returns the file name, or
-/// `None` when he cancelled.
+/// `None` when the dialog was cancelled.
 #[tauri::command]
 pub async fn save_mail_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: i64, part_id: String) -> AppResult<Option<String>> {
     let (path, filename, _) = attachment_file(&state, id, &part_id).await?;

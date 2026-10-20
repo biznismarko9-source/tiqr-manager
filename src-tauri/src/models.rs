@@ -3618,8 +3618,8 @@ pub struct MailMessageSummary {
     /// Promotions / Social tabs, which are Gmail's own categories rather
     /// than ones this app invented.
     pub labels: String,
-    /// 2.113.0: where marko moved it in TIQR (a folder key, one of his
-    /// labels or one of his own folders); `None` = where Gmail has it.
+    /// 2.113.0: where marko moved it in TIQR (a folder key, one of the Gmail
+    /// labels or one of marko's own folders); `None` = where Gmail has it.
     pub moved_to: Option<String>,
     /// 2.113.0: true once the message was opened and seen to carry files.
     pub has_attachments: bool,

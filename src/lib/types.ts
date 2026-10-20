@@ -3063,7 +3063,7 @@ export interface MailMessageSummary {
    *  `unread`, `category_promotions`, `category_social`... */
   labels: string;
   /** 2.113.0: where marko moved it in TIQR - `inbox`, `finances`,
-   *  `promotions`, one of his labels or one of his own folders (`tiqr_3`).
+   *  `promotions`, one of the Gmail labels or one of marko's own folders (`tiqr_3`).
    *  Null = where Gmail has it. Gmail itself is never changed. */
   movedTo?: string | null;
   /** 2.113.0: true once it was opened and seen to carry files. */

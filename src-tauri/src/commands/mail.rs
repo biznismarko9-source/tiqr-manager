@@ -2998,7 +2998,7 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
     const KINDS: &[&str] = &["contains", "equals", "starts", "ends"];
     const ACTIONS: &[&str] = &["trash", "read", "review", "keep"];
     // 2.113.0: "move:<place>" moves new mail from a sender straight into a
-    // folder - one of his, a label, or Inbox / Finances / Promotions.
+    // folder - one of marko's own, a label, or Inbox / Finances / Promotions.
     let moves_to = rule.action.strip_prefix("move:");
 
     let needle = rule.needle.trim();
@@ -3247,8 +3247,8 @@ fn claim_automation(conn: &Connection) -> AppResult<()> {
 // FROM MAIL TO RECORD (2.106.0, reworked 2.113.0)
 // ===========================================================================
 //
-// marko: "doladit tie automaticke orders, sales, finances", and the rule he
-// set for it: "AI nesmie rozhodovat naslepo - kazdy navrh musi mat zdrojove
+// marko: "doladit tie automaticke orders, sales, finances", and the rule
+// that came with it: "AI nesmie rozhodovat naslepo - kazdy navrh musi mat zdrojove
 // udaje, mieru istoty a kontrolu duplicit. Nejednoznacne pripady patria na
 // manualne potvrdenie." And: "opakovane spracovanie nesmie vytvorit druhu
 // objednavku alebo financny zaznam."
@@ -3369,7 +3369,7 @@ pub struct MailCreateOverrides {
     pub reference: Option<String>,
     pub ticket_ids: Option<Vec<i64>>,
     pub entry_type: Option<String>,
-    /// He saw the possible duplicates listed and wants it anyway.
+    /// The possible duplicates were shown, and marko wants it anyway.
     pub allow_duplicate: bool,
 }
 
@@ -3910,8 +3910,8 @@ pub(crate) fn build_proposal(conn: &Connection, m: &MailMessageSummary) -> AppRe
         }
     } else {
         // Money in or out. A payout is in; a refund is in from where marko
-        // BUYS and out from where he SELLS; a platform used both ways says
-        // nothing, and then he says it.
+        // BUYS and out from where marko SELLS; a platform used both ways says
+        // nothing, and then marko says it.
         entry_type = match (m.category.as_str(), platform.as_ref().map(|p| p.2.as_str())) {
             ("payout", _) => Some("income".into()),
             ("refund", Some("purchase")) => Some("income".into()),
@@ -4084,7 +4084,7 @@ fn money_words(cents: Option<i64>, currency: Option<&str>) -> String {
 ///
 /// Returns `(kind, id)` or an error naming what is missing. Everything goes
 /// through the EXISTING creation functions - same validation, same cent
-/// allocation, same protected rules as when marko types it in himself - and
+/// allocation, same protected rules as when marko types it in by hand - and
 /// everything happens inside the caller's transaction or savepoint, so the
 /// record and the email's "this made X" mark are written together or not at
 /// all.
@@ -4174,8 +4174,8 @@ pub(crate) fn create_from_mail_impl(
     }
     let (amount, currency) = (amount.unwrap_or(0), currency.unwrap_or_default());
 
-    // For a sale, the tickets: his pick, else the proposal's, else matched
-    // again against the event he picked.
+    // For a sale, the tickets: the ones marko picked, else the proposal's,
+    // else matched again against the event marko picked.
     let tickets: Vec<i64> = if proposal.kind == "sale" {
         match overrides.ticket_ids.clone().filter(|t| !t.is_empty()) {
             Some(t) => t,
@@ -4333,7 +4333,7 @@ pub fn get_mail_proposal(state: State<AppState>, id: i64) -> AppResult<Option<Ma
     build_proposal(&conn, &m)
 }
 
-/// marko's click: create what a message proposes, with his corrections.
+/// marko's click: create what a message proposes, with marko's corrections.
 /// One transaction: the record and the email's mark together or not at all.
 #[tauri::command]
 pub fn create_from_mail(
@@ -4533,14 +4533,14 @@ pub(crate) fn is_local_folder_key(key: &str) -> bool {
     key.strip_prefix("tiqr_").is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// The places a message can be moved to besides his own folders and labels.
+/// The places a message can be moved to besides marko's own folders and labels.
 pub(crate) const MOVE_TARGETS: &[&str] = &["inbox", "finances", "promotions"];
 
 fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
     use Atom::*;
     let junk = format!("({} OR {} OR {})", atom(Spam), atom(Trash), atom(LocalTrash));
     // 2.113.0: "aby som vedel dane maily presunut tak kde chcem". A message
-    // marko moved is in the place he moved it to and in no other place; the
+    // marko moved is in the place it was moved to and in no other place; the
     // views across places (Important, Starred, Codes, Review) still show it.
     let placed = |own: String, key: &str| {
         format!("(({} AND {own}) OR ({} AND NOT {}))", atom(Unmoved), atom(MovedTo(key)), atom(LocalTrash))
@@ -4728,8 +4728,8 @@ fn user_label_keys(conn: &Connection) -> AppResult<Vec<String>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Every folder's numbers for the rail: the built-in ones, his labels and
-/// his own folders.
+/// Every folder's numbers for the rail: the built-in ones, the Gmail labels
+/// and marko's own folders.
 #[tauri::command]
 pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolderCount>> {
     let conn = state.db.lock().unwrap();
@@ -4747,11 +4747,11 @@ pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolde
 // marko: "aby som vedel dane maily presunut tak kde chcem do ineho miesta".
 // TIQR's own, exactly like read state: Gmail is read-only to this app and is
 // never changed. A message can go to the Inbox, Finances, Promotions, one of
-// his Gmail labels, or one of his own folders here - and back to where Gmail
-// has it. His own folders travel to the other computer with the mail
+// the Gmail labels, or one of marko's own folders here - and back to where
+// Gmail has it. The own folders travel to the other computer with the mail
 // settings (`mail_folders`, shared_settings.rs), so a rule that moves mail
-// into one works on both; which message he moved by hand stays on the
-// computer he moved it on, like everything else about a message.
+// into one works on both; which message was moved by hand stays on the
+// computer it was moved on, like everything else about a message.
 
 /// One of marko's own folders in TIQR.
 #[derive(Debug, Serialize, serde::Deserialize, Clone, PartialEq)]
@@ -6308,14 +6308,14 @@ mod tests {
     }
 
     /// 2.113.0: a refund is money back from where marko BUYS and money out
-    /// from where he SELLS. Where the platform does not say, he does.
+    /// from where marko SELLS. Where the platform does not say, marko does.
     #[test]
     fn a_refund_goes_the_way_its_platform_says_and_is_asked_otherwise() {
         let conn = test_conn();
         let entry_type = |rid: i64| -> String {
             conn.query_row("SELECT entry_type FROM finance_entries WHERE id = ?1", params![rid], |r| r.get(0)).unwrap()
         };
-        // Viagogo is not one of his platforms yet: it is not clear.
+        // Viagogo is not one of marko's platforms yet: it is not clear.
         let id = store(&conn, "Refund issued - 120,00 EUR", "inbox");
         let p = build_proposal(&conn, &summary_of(&conn, id)).unwrap().unwrap();
         assert_eq!(p.entry_type, None);
@@ -6326,7 +6326,7 @@ mod tests {
         let (_, rid) = create_from_mail_impl(&conn, id, "manual", &pick).unwrap();
         assert_eq!(entry_type(rid), "expense");
 
-        // Where he sells, a refund is money out; where he buys, money in.
+        // Where marko sells, a refund is money out; where marko buys, money in.
         conn.execute("INSERT INTO platforms (name, kind) VALUES ('Viagogo', 'sale')", []).unwrap();
         let id = store(&conn, "Refund issued - 80,00 EUR", "inbox");
         let (_, rid) = create_from_mail_impl(&conn, id, "manual", &MailCreateOverrides::default()).unwrap();
@@ -6591,14 +6591,14 @@ mod tests {
         let id = store_from(&conn, STUBHUB, "You sold 2 tickets for Oasis Live - 600,00 EUR", DAY);
         let p = proposal(&conn, id);
         assert!(p.ready, "a click sells the first two: {:?}", p.blockers);
-        assert!(!p.auto_ready, "but which two is his call: {}", p.auto_reason);
+        assert!(!p.auto_ready, "but which two is marko's call: {}", p.auto_reason);
         assert!(p.evidence.iter().any(|e| e.field == "Sold tickets" && e.confidence == "medium"));
 
-        // In two orders, nothing is picked for him at all.
+        // In two orders, nothing is picked at all.
         seed_unsold(&conn, event, "OASIS-002", 1);
         let p = proposal(&conn, id);
         assert!(!p.ready && p.blockers.iter().any(|b| b.contains("2 orders")), "{:?}", p.blockers);
-        // ...until he does.
+        // ...until marko does.
         let picks: Vec<i64> = conn
             .prepare("SELECT id FROM tickets WHERE code IN ('OASIS-001-0', 'OASIS-002-0') ORDER BY id")
             .unwrap()

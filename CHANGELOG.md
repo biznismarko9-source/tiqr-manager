@@ -16,6 +16,83 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.113.0 - Mail ako v poriadnom mailovom programe, Discord pri každom zázname, jeden sync, jednoduchší repozitár
+
+**Mail sa zobrazí tak, ako bol navrhnutý** - obrázky, tabuľky, tlačidlá -
+a pritom bezpečne. Rust mail najprv vyčistí (žiadny skript, formulár ani
+rámec, odkazy len http, https a mailto) a appka ho ukáže v okne, v ktorom
+nemôže bežať nič a z internetu sa nenačíta nič. Obrázky z mailu sa
+skopírujú do TIQR, aj tie z webu (len verejné adresy, len skutočné obrázky,
+s limitom veľkosti). Sledovacie pixely sa vynechajú a obrázky z webu stiahne
+TIQR len raz, pri prvom otvorení - odosielateľ tak môže vidieť nanajvýš toto
+prvé stiahnutie, nie každé ďalšie čítanie. Kto nechce ani to, vypne v Mail
+settings → Reading „Copy pictures from the web into TIQR".
+
+**Odkazy sú klikateľné** a otvoria sa v prehliadači. Keď text odkazu ukazuje
+inú stránku, než kam odkaz naozaj vedie (typický phishing), alebo je mail v
+Spame či v Koši, appka sa najprv opýta. Po prejdení myšou nad odkaz sa
+ukáže, kam vedie, s tlačidlom **Copy link**. **OTP kódy sa skopírujú jedným
+klikom** - v zozname, v karte s kódom aj priamo v texte mailu.
+
+**Prílohy:** pri každom maile zoznam s **View** (obrázky, PDF, text priamo v
+TIQR), **Open** (vo vlastnom programe, len súbory, ktoré nemôžu nič
+spustiť; na Windows označené ako stiahnuté z internetu) a **Save** kamkoľvek.
+Program (.exe a podobne) TIQR neotvorí, iba uloží.
+
+**Translate a Summary** na klik. AI pomocník beží na najlacnejšom modeli,
+dlhý mail sa skráti a každá odpoveď sa uloží k mailu, takže ten istý klik sa
+neplatí dvakrát. Bez kliknutia AI nerobí nič. Jazyk prekladu je v Mail
+settings → Reading, spolu s tým, koľko AI tento mesiac minula.
+
+**Presúvanie mailov kamkoľvek:** tlačidlo **Move to** pri maile aj pre viac
+označených mailov, alebo potiahnutie mailov na priečinok vľavo. Cieľom môže
+byť Inbox, Finances, Promotions, Gmail label alebo **vlastný priečinok**
+(pridať, premenovať a zmazať priamo v zozname vľavo; prenesie sa aj na
+druhý počítač). Pravidlo vie nový mail rovno presunúť do priečinka. V
+Gmaile sa nikdy nič nezmení.
+
+**Mail settings v sekciách** ako hlavné Settings: Mailbox, Reading, What is
+read, Rules a Automatic.
+
+**Automatické orders, sales a finance nikdy naslepo.** Každý návrh ukazuje
+každé číslo so slovami, z ktorých bolo prečítané, a mieru istoty, plus
+záznamy, ktoré už vyzerajú rovnako (rovnaké číslo objednávky, rovnaká
+konverzácia, alebo rovnaký event, suma a dátum). Automatic vytvorí záznam
+len vtedy, keď je všetko isté, mail prišiel až po zapnutí Automatic a nič
+podobné v TIQR ešte nie je. Inak návrh počká na potvrdenie a povie prečo.
+Záznamy z mailov robí len jeden počítač. Nejasný prípad sa dá opraviť vo
+formulári ešte pred vytvorením a predaj z mailu vie vybrať konkrétne
+lístky.
+
+**Discord pri každom zázname.** Nový event, objednávka, predaj aj finančný
+záznam sa pošle do svojho kanála sám (každý druh sa dá vypnúť), dôležitý
+mail príde ako krátke zhrnutie a na každom zázname je tlačidlo **Send to
+Discord**. Správy majú značku TIQR. V Settings sa Discord nastavuje celý len
+prvýkrát, potom je to krátky zoznam kanálov s náhľadom.
+
+**Jeden sync.** V Settings → Data je jedna karta: živý sync medzi počítačmi
+a záloha v Google Drive, ktorá sa ukladá sama pri spustení a zatvorení
+appky. Ručné tlačidlá sú pod Advanced.
+
+**Bezpečnosť.** Prihlásenia (Gmail, Google) a Anthropic kľúč už nie sú v
+databáze, ale v súbore `<databáza>.secrets.json` vedľa nej - nejdú do zálohy
+v Drive, do bodov obnovy, do Sync down ani do živého syncu.
+
+**Ďalej:** bočný panel v troch skupinách (Pulls ostáva úplne dole, ako od
+2.98.0), Pulls rozdelené na Active a Completed, nepriehľadné hlavičky
+tabuliek, Finance bez kariet nalepených na seba a mailové panely až po
+spodok okna.
+
+**Repozitár:** 234 starých reportov a denníkov je v priečinku `history/`.
+Zip na vydanie má len tri veci: `1-CLICK-UPDATE.bat`, `AKO-ZACAT.txt` a
+priečinok `tiqr-manager`.
+
+Mailový súbor má schému 3; číslovaná migrácia nepribudla (ďalšia je 047).
+Nové knižnice `ammonia` (čistenie HTML) a `encoding_rs` (kódovania mailov).
+Testy: `cargo test` 1546 prešlo (0 zlyhalo, 4 vynechané), `npm test` 33, živý sync proti Firestore
+emulátoru 9 krokov. Neoverené so skutočnou Gmail schránkou, skutočným
+Discordom ani na skutočnom Windows.
+
 ## 2.112.0 - Živý sync: zmena na jednom počítači je o pár sekúnd na druhom
 
 **Všetko ako jedna appka.** Objednávka, lístok, predaj, úprava, zmazanie,

@@ -489,8 +489,8 @@ ALTER TABLE mail.mail_messages ADD COLUMN extract_text TEXT;
 -- What Automatic decided about this message and why, kept for the screen.
 ALTER TABLE mail.mail_messages ADD COLUMN auto_decision TEXT;
 ALTER TABLE mail.mail_messages ADD COLUMN auto_reason TEXT;
--- Where marko moved it in TIQR - a folder key, one of his labels or one of
--- his own folders. NULL = where Gmail has it. TIQR's own, like read state:
+-- Where marko moved it in TIQR - a folder key, one of the Gmail labels or
+-- one of marko's own folders. NULL = where Gmail has it. TIQR's own, like read state:
 -- Gmail is never changed.
 ALTER TABLE mail.mail_messages ADD COLUMN moved_to TEXT;
 ALTER TABLE mail.mail_messages ADD COLUMN moved_at TEXT;

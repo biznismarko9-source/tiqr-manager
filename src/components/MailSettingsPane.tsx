@@ -76,7 +76,7 @@ const SECTIONS: { key: SectionKey; title: string; description: string; icon: typ
   { key: "automatic", title: "Automatic", description: "Records made from mail", icon: IconGauge },
 ];
 
-/* Where the pane opens: the section he was last in, for this session. */
+/* Where the pane opens: the section open last, for this session. */
 let lastSection: SectionKey = "mailbox";
 
 const FIELD_LABEL: Record<string, string> = {
@@ -196,7 +196,7 @@ export function MailSettingsPane({
 }: {
   status: MailConnectionStatus;
   onStatus: (s: MailConnectionStatus) => void;
-  /** 2.113.0: where a rule can move mail - his own folders and labels. */
+  /** 2.113.0: where a rule can move mail - marko's own folders and labels. */
   localFolders?: MailLocalFolder[];
   labels?: MailLabel[];
 }) {
@@ -602,7 +602,7 @@ export function MailSettingsPane({
 
       <Section
         title="Showing a message"
-        hint="An opened message is cleaned before it is shown - nothing in it can run - and its pictures are copied into TIQR first, so the sender never learns when you open it."
+        hint="An opened message is cleaned before it is shown - nothing in it can run. Its pictures are copied into TIQR when it is first opened, by TIQR itself; after that they come from TIQR's copy, so a sender can see that first download at most, never each time you read it."
       >
         <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
           <input
@@ -614,8 +614,8 @@ export function MailSettingsPane({
           <span>
             <span className="font-medium">Copy pictures from the web into TIQR</span>
             <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
-              Pictures inside the message itself are always shown. Off: a logo or banner kept on the web stays out.
-              Tracking pixels are always left out.
+              Pictures inside the message itself are always shown. Off: nothing is fetched from the web, and a logo or
+              banner kept there stays out. Tracking pixels are always left out.
             </span>
           </span>
         </label>
@@ -916,7 +916,7 @@ export function MailSettingsPane({
               </Select>
             </div>
             {/* 2.113.0: a rule can file mail - in TIQR's own places, one of
-                his Gmail labels or one of his own folders. */}
+                the Gmail labels or one of marko's own folders. */}
             {actionKind(draft.action) === "move" && (
               <div className="w-[180px] shrink-0">
                 <Select

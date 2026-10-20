@@ -99,9 +99,9 @@ type NavItem = { to: string; label: string; icon: typeof IconGauge; end?: boolea
 // casti": the ticket business (Dashboard, Events, Inventory, Sales), then
 // Finance on its own, then Mail and Notes. Still only links, no headers and
 // nothing to open or close (PROTECTED_AREAS, 2.43.0) - just a hairline
-// between the groups. Pulls was not in his list; it stays where 2.98.0 put
-// it at his request, at the very bottom under everything ("a pull is a
-// favour done on somebody else's card", not his own stock).
+// between the groups. Pulls was not in that list; it stays where 2.98.0 put
+// it on marko's own request, at the very bottom under everything ("a pull
+// is a favour done on somebody else's card", not marko's own stock).
 const NAV_GROUPS: NavItem[][] = [
   [
     { to: "/", label: "Dashboard", icon: IconGauge, end: true },
