@@ -3414,6 +3414,13 @@ pub struct MailConnectionStatus {
     /// 2.113.0: whether THIS computer makes records from mail. Two computers
     /// reading one mailbox would otherwise both make every order.
     pub automation_here: bool,
+    /// 2.113.0: the reader - the language Translate writes in, whether
+    /// pictures on the web are copied into TIQR, and what the AI helper used
+    /// this month (calls, tokens in, tokens out).
+    pub translate_to: String,
+    pub remote_images: bool,
+    pub ai_calls_this_month: i64,
+    pub ai_tokens_this_month: i64,
     /// How often the app syncs by itself, in seconds. `0` is off. This is
     /// polling, not push: TIQR has no server for Google to push to.
     pub sync_interval_seconds: i64,

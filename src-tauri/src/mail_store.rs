@@ -499,14 +499,6 @@ ALTER TABLE mail.mail_messages ADD COLUMN has_attachments INTEGER NOT NULL DEFAU
 CREATE INDEX IF NOT EXISTS mail.idx_mail_messages_moved ON mail_messages (moved_to) WHERE moved_to IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mail.idx_mail_messages_thread ON mail_messages (provider_thread_id);
 
--- marko's own folders in TIQR.
-CREATE TABLE IF NOT EXISTS mail.mail_folders (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    position   INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-
 -- A message as it was shown when marko opened it: the cleaned, safe HTML
 -- (images already inside it) and the plain text. Opening it again needs no
 -- connection. Cleared with the rest of a message's text by the retention.
@@ -514,6 +506,9 @@ CREATE TABLE IF NOT EXISTS mail.mail_bodies (
     message_id INTEGER PRIMARY KEY REFERENCES mail_messages (id) ON DELETE CASCADE,
     html       TEXT,
     text       TEXT NOT NULL DEFAULT '',
+    -- Where each picture in `html` came from, as JSON: what TIQR needs to
+    -- fetch it again should its copy in the files folder be gone.
+    images     TEXT,
     fetched_at TEXT NOT NULL
 );
 

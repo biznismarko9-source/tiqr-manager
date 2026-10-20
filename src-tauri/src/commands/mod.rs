@@ -30,6 +30,8 @@ pub mod lookups;
 // arrives. Writes no business record; see its module doc comment.
 pub mod mail;
 pub mod mail_sync;
+// 2.113.0: the mail reader - safe HTML, pictures and attachments in TIQR, translate.
+pub mod mail_view;
 pub mod shared_settings;
 pub mod notes;
 pub mod notifications;

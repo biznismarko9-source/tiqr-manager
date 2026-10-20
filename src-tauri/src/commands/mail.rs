@@ -1523,6 +1523,45 @@ pub(crate) fn clip_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// 2.113.0: a message opened for the first time is read again from its whole
+/// text. An older one arrived before its body was worth downloading, so its
+/// numbers came from a 200-character preview. Only for a message that can
+/// still become a record - one that already did keeps what it was made from.
+pub(crate) fn reread_with_body(conn: &Connection, id: i64, body: &str) -> AppResult<()> {
+    let row: Option<(String, Option<String>, String, Option<i64>)> = conn
+        .query_row(
+            "SELECT subject, snippet, category, created_id FROM mail_messages WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((subject, snippet, category, created)) = row else {
+        return Ok(());
+    };
+    if created.is_some() || proposal_kind_for(&category).is_none() || body.trim().is_empty() {
+        return Ok(());
+    }
+    let reading = read_message(&format!("{subject}\n{}", snippet.unwrap_or_default()), body);
+    conn.execute(
+        "UPDATE mail_messages
+            SET extracted_amount_cents = ?2, extracted_currency = ?3, extracted_quantity = ?4, extracted_reference = ?5,
+                extracted_unit_cents = ?6, extracted_basis = ?7, extracted_evidence = ?8, extract_text = ?9
+          WHERE id = ?1",
+        params![
+            id,
+            reading.money.as_ref().map(|m| m.total_cents),
+            reading.money.as_ref().map(|m| m.currency.clone()),
+            reading.quantity.as_ref().map(|q| q.n),
+            reading.reference.as_ref().map(|r| r.value.clone()),
+            reading.money.as_ref().and_then(|m| m.unit_cents),
+            reading.money.as_ref().map(|m| m.basis.clone()),
+            evidence_json(&reading),
+            clip_chars(body, EXTRACT_TEXT_CHARS),
+        ],
+    )?;
+    Ok(())
+}
+
 /// 2.113.0: everything a message says, read once, with the words for each.
 ///
 /// `head` is the subject and Gmail's preview; `body` is the message text when
@@ -2032,6 +2071,13 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
         auto_sale: automation_mode(conn, "sale"),
         auto_finance: automation_mode(conn, "finance"),
         automation_here: automation_runs_here(conn).unwrap_or(true),
+        translate_to: crate::commands::mail_view::translate_target(conn),
+        remote_images: get_setting(conn, crate::commands::mail_view::MAIL_REMOTE_IMAGES_KEY)?.as_deref() != Some("off"),
+        ai_calls_this_month: crate::commands::mail_view::mail_ai_usage_this_month(conn).0,
+        ai_tokens_this_month: {
+            let (_, i, o) = crate::commands::mail_view::mail_ai_usage_this_month(conn);
+            i + o
+        },
         sync_interval_seconds: sync_interval_seconds(conn),
         unread_count: conn
             .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
@@ -2276,6 +2322,16 @@ pub(crate) fn purge_expired(conn: &Connection) -> AppResult<usize> {
     let n = conn.execute(
         "UPDATE mail_messages SET body_excerpt = NULL, snippet = NULL
          WHERE received_at < ?1 AND (body_excerpt IS NOT NULL OR snippet IS NOT NULL)",
+        params![cutoff],
+    )?;
+    // 2.113.0: the text TIQR kept of an opened message, and the text it read
+    // numbers from, go with the rest. Attachments stay - marko keeps those.
+    conn.execute(
+        "DELETE FROM mail_bodies WHERE message_id IN (SELECT id FROM mail_messages WHERE received_at < ?1)",
+        params![cutoff],
+    )?;
+    conn.execute(
+        "UPDATE mail_messages SET extract_text = NULL WHERE received_at < ?1 AND extract_text IS NOT NULL",
         params![cutoff],
     )?;
     Ok(n)
@@ -2991,6 +3047,15 @@ pub(crate) fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> 
               WHERE id = ?1 AND status <> 'review_required'",
             params![row_id],
         )?,
+        // 2.113.0: a folder that no longer exists moves nothing.
+        action if action.starts_with("move:") => {
+            let target = &action["move:".len()..];
+            if valid_move_target(conn, target)? {
+                move_mail_impl(conn, &[row_id], target)?
+            } else {
+                0
+            }
+        }
         // `keep` is a guard, not an edit. Its whole job was done by
         // `apply_rules` returning early so no later rule could act.
         _ => 0,
@@ -3023,6 +3088,9 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
     const FIELDS: &[&str] = &["from", "subject", "preview"];
     const KINDS: &[&str] = &["contains", "equals", "starts", "ends"];
     const ACTIONS: &[&str] = &["trash", "read", "review", "keep"];
+    // 2.113.0: "move:<place>" moves new mail from a sender straight into a
+    // folder - one of his, a label, or Inbox / Finances / Promotions.
+    let moves_to = rule.action.strip_prefix("move:");
 
     let needle = rule.needle.trim();
     if needle.is_empty() {
@@ -3033,9 +3101,15 @@ pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<M
     }
     if !FIELDS.contains(&rule.field.as_str())
         || !KINDS.contains(&rule.match_kind.as_str())
-        || !ACTIONS.contains(&rule.action.as_str())
+        || !(ACTIONS.contains(&rule.action.as_str()) || moves_to.is_some())
     {
         return Err(AppError::Validation("That is not a rule this version understands.".into()));
+    }
+    if let Some(target) = moves_to {
+        let conn = state.db.lock().unwrap();
+        if !valid_move_target(&conn, target)? {
+            return Err(AppError::Validation("Pick a folder for the rule to move mail into.".into()));
+        }
     }
 
     {
@@ -3183,7 +3257,7 @@ const MAIL_AUTO_SALE_KEY: &str = "mail_auto_sale";
 const MAIL_AUTO_FINANCE_KEY: &str = "mail_auto_finance";
 /// 2.113.0: which computer makes records from mail. Travels with the mail
 /// settings (shared_settings.rs), so both computers agree on one.
-pub(crate) const MAIL_AUTO_DEVICE_KEY: &str = "mail_auto_device";
+pub(crate) const MAIL_AUTO_DEVICE_KEY: &str = "mail_records_computer";
 
 pub(crate) fn automation_mode(conn: &Connection, kind: &str) -> String {
     let key = match kind {
@@ -4457,6 +4531,28 @@ pub fn set_mail_automation(
     status_impl(&conn)
 }
 
+/// 2.113.0: the reader's two choices. Either may be left out.
+#[tauri::command]
+pub fn set_mail_reader_options(
+    state: State<AppState>,
+    translate_to: Option<String>,
+    remote_images: Option<bool>,
+) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    if let Some(lang) = translate_to {
+        let lang = lang.trim().to_ascii_lowercase();
+        if crate::commands::mail_view::language_name(&lang) == "Slovak" && lang != "sk" {
+            return Err(AppError::Validation("TIQR cannot translate into that language.".into()));
+        }
+        set_setting(&conn, crate::commands::mail_view::MAIL_TRANSLATE_TO_KEY, &lang)?;
+    }
+    if let Some(on) = remote_images {
+        set_setting(&conn, crate::commands::mail_view::MAIL_REMOTE_IMAGES_KEY, if on { "on" } else { "off" })?;
+    }
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
+    status_impl(&conn)
+}
+
 /// 2.113.0: "Run Automatic here" - this computer takes over making records
 /// from mail; the other one goes back to proposing.
 #[tauri::command]
@@ -4516,31 +4612,54 @@ enum Atom<'a> {
     Otp,
     Review,
     Label(&'a str),
+    /// 2.113.0: still where Gmail has it - marko has not moved it in TIQR.
+    Unmoved,
+    /// 2.113.0: marko moved it here in TIQR.
+    MovedTo(&'a str),
 }
+
+/// 2.113.0: one of marko's own folders in TIQR (`tiqr_3`). Never a Gmail
+/// label id - Gmail's own are `label_<n>` and the system names.
+pub(crate) fn is_local_folder_key(key: &str) -> bool {
+    key.strip_prefix("tiqr_").is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The places a message can be moved to besides his own folders and labels.
+pub(crate) const MOVE_TARGETS: &[&str] = &["inbox", "finances", "promotions"];
 
 fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
     use Atom::*;
     let junk = format!("({} OR {} OR {})", atom(Spam), atom(Trash), atom(LocalTrash));
+    // 2.113.0: "aby som vedel dane maily presunut tak kde chcem". A message
+    // marko moved is in the place he moved it to and in no other place; the
+    // views across places (Important, Starred, Codes, Review) still show it.
+    let placed = |own: String, key: &str| {
+        format!("(({} AND {own}) OR ({} AND NOT {}))", atom(Unmoved), atom(MovedTo(key)), atom(LocalTrash))
+    };
     Some(match folder {
         // "hlavny inbox: tam budu vsetky spravy okrem napriklad spamu a
         // promotions" - everything received, archived mail included, but
         // not his own sent mail and not drafts.
-        "inbox" => format!(
-            "NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {})",
-            atom(Promo),
-            atom(Draft),
-            atom(Sent),
-            atom(Inbox)
+        "inbox" => placed(
+            format!(
+                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}))",
+                atom(Promo),
+                atom(Draft),
+                atom(Sent),
+                atom(Inbox)
+            ),
+            "inbox",
         ),
         "important" => format!("NOT {junk} AND {}", atom(Recognised)),
         "starred" => format!("NOT {junk} AND {}", atom(Starred)),
-        "finances" => format!("NOT {junk} AND NOT {} AND {}", atom(Promo), atom(Finance)),
+        "finances" => placed(format!("(NOT {junk} AND NOT {} AND {})", atom(Promo), atom(Finance)), "finances"),
         "otp" => format!("NOT {junk} AND {}", atom(Otp)),
         "review" => format!("NOT {} AND {}", atom(LocalTrash), atom(Review)),
-        "promotions" => format!("NOT {junk} AND {}", atom(Promo)),
-        "spam" => format!("NOT {} AND {}", atom(LocalTrash), atom(Spam)),
-        "trash" => format!("({} OR {})", atom(Trash), atom(LocalTrash)),
-        key if is_label_key(key) => format!("NOT {junk} AND {}", atom(Label(key))),
+        "promotions" => placed(format!("(NOT {junk} AND {})", atom(Promo)), "promotions"),
+        "spam" => format!("NOT {} AND {} AND {}", atom(LocalTrash), atom(Spam), atom(Unmoved)),
+        "trash" => format!("({} OR ({} AND {}))", atom(LocalTrash), atom(Trash), atom(Unmoved)),
+        key if is_local_folder_key(key) => format!("({} AND NOT {})", atom(MovedTo(key)), atom(LocalTrash)),
+        key if is_label_key(key) => placed(format!("(NOT {junk} AND {})", atom(Label(key))), key),
         _ => return None,
     })
 }
@@ -4562,6 +4681,9 @@ fn row_atom(a: Atom) -> String {
         Atom::Otp => "(otp_code IS NOT NULL)".to_string(),
         Atom::Review => "(status = 'review_required')".to_string(),
         Atom::Label(k) => has_label(k),
+        Atom::Unmoved => "(moved_to IS NULL)".to_string(),
+        // `k` is a checked key (see `folder_expr`), never free text.
+        Atom::MovedTo(k) => format!("(moved_to = '{k}')"),
     }
 }
 
@@ -4582,6 +4704,8 @@ fn count_atom(a: Atom) -> String {
         Atom::Otp => "otp".to_string(),
         Atom::Review => "rev".to_string(),
         Atom::Label(k) => format!("(instr(l, ',{k},') > 0)"),
+        Atom::Unmoved => "(mv IS NULL)".to_string(),
+        Atom::MovedTo(k) => format!("(mv = '{k}')"),
     }
 }
 
@@ -4591,10 +4715,10 @@ fn count_atom(a: Atom) -> String {
 const COUNT_ROWS: &str = "WITH m AS MATERIALIZED (
     SELECT ',' || IFNULL(labels, '') || ',' AS l, is_unread AS u, (is_starred = 1) AS st,
            (trashed_at IS NOT NULL) AS tt, (category <> 'other') AS imp, IFNULL(finance = 1, 0) AS fin,
-           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev
+           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv
       FROM mail_messages
 ), f AS MATERIALIZED (
-    SELECT l, u, st, tt, imp, fin, otp, rev,
+    SELECT l, u, st, tt, imp, fin, otp, rev, mv,
            (instr(l, ',spam,') > 0) AS sp, (instr(l, ',trash,') > 0) AS tr,
            (instr(l, ',category_promotions,') > 0) AS pr, (instr(l, ',draft,') > 0) AS dr,
            (instr(l, ',sent,') > 0) AS se, (instr(l, ',inbox,') > 0) AS ib
@@ -4695,13 +4819,168 @@ fn user_label_keys(conn: &Connection) -> AppResult<Vec<String>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Every folder's numbers for the rail: the built-in ones and his labels.
+/// Every folder's numbers for the rail: the built-in ones, his labels and
+/// his own folders.
 #[tauri::command]
 pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolderCount>> {
     let conn = state.db.lock().unwrap();
+    forget_moves_to_gone_places(&conn)?;
     let mut keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
     keys.extend(user_label_keys(&conn)?);
+    keys.extend(local_folders(&conn).into_iter().map(|f| f.id));
     folder_counts_impl(&conn, &keys)
+}
+
+// ===========================================================================
+// MOVING MAIL (2.113.0)
+// ===========================================================================
+//
+// marko: "aby som vedel dane maily presunut tak kde chcem do ineho miesta".
+// TIQR's own, exactly like read state: Gmail is read-only to this app and is
+// never changed. A message can go to the Inbox, Finances, Promotions, one of
+// his Gmail labels, or one of his own folders here - and back to where Gmail
+// has it. His own folders travel to the other computer with the mail
+// settings (`mail_folders`, shared_settings.rs), so a rule that moves mail
+// into one works on both; which message he moved by hand stays on the
+// computer he moved it on, like everything else about a message.
+
+/// One of marko's own folders in TIQR.
+#[derive(Debug, Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLocalFolder {
+    pub id: String,
+    pub name: String,
+}
+
+pub(crate) const MAIL_FOLDERS_KEY: &str = "mail_folders";
+
+pub(crate) fn local_folders(conn: &Connection) -> Vec<MailLocalFolder> {
+    get_setting(conn, MAIL_FOLDERS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<MailLocalFolder>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| is_local_folder_key(&f.id))
+        .collect()
+}
+
+fn save_local_folders(conn: &Connection, folders: &[MailLocalFolder]) -> AppResult<()> {
+    let raw = serde_json::to_string(folders).map_err(|e| AppError::Other(e.to_string()))?;
+    set_setting(conn, MAIL_FOLDERS_KEY, &raw)?;
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+/// Whether `target` is somewhere a message can be moved to right now.
+pub(crate) fn valid_move_target(conn: &Connection, target: &str) -> AppResult<bool> {
+    if MOVE_TARGETS.contains(&target) {
+        return Ok(true);
+    }
+    if is_local_folder_key(target) {
+        return Ok(local_folders(conn).iter().any(|f| f.id == target));
+    }
+    if is_label_key(target) {
+        return Ok(conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM mail_labels WHERE id = ?1 AND kind = 'user')", [target], |r| r.get(0))?);
+    }
+    Ok(false)
+}
+
+/// A folder that is gone - deleted here, deleted on the other computer, or a
+/// label deleted in Gmail - takes no message with it: what was moved there
+/// goes back to where Gmail has it.
+pub(crate) fn forget_moves_to_gone_places(conn: &Connection) -> AppResult<usize> {
+    let mut stmt = conn.prepare("SELECT DISTINCT moved_to FROM mail_messages WHERE moved_to IS NOT NULL")?;
+    let targets: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let mut n = 0;
+    for t in targets {
+        if !valid_move_target(conn, &t)? {
+            n += conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE moved_to = ?1", [&t])?;
+        }
+    }
+    Ok(n)
+}
+
+/// Moves messages - `target` empty puts them back where Gmail has them.
+pub(crate) fn move_mail_impl(conn: &Connection, ids: &[i64], target: &str) -> AppResult<usize> {
+    let target = target.trim();
+    if !target.is_empty() && !valid_move_target(conn, target)? {
+        return Err(AppError::Validation("That is not a place a message can be moved to.".into()));
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut n = 0;
+    for id in ids {
+        n += if target.is_empty() {
+            conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE id = ?1", [id])?
+        } else {
+            // Moving a message out of TIQR's trash brings it back first.
+            conn.execute(
+                "UPDATE mail_messages SET moved_to = ?2, moved_at = ?3, trashed_at = NULL WHERE id = ?1",
+                params![id, target, now],
+            )?
+        };
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn move_mail(state: State<AppState>, ids: Vec<i64>, target: String) -> AppResult<usize> {
+    let conn = state.db.lock().unwrap();
+    move_mail_impl(&conn, &ids, &target)
+}
+
+fn folder_name(raw: &str, folders: &[MailLocalFolder], except: Option<&str>) -> AppResult<String> {
+    let name: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err(AppError::Validation("A folder name is 1 to 40 characters.".into()));
+    }
+    if folders.iter().any(|f| Some(f.id.as_str()) != except && f.name.eq_ignore_ascii_case(&name)) {
+        return Err(AppError::Validation("You already have a folder with that name.".into()));
+    }
+    Ok(name)
+}
+
+#[tauri::command]
+pub fn list_mail_local_folders(state: State<AppState>) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    Ok(local_folders(&conn))
+}
+
+#[tauri::command]
+pub fn create_mail_local_folder(state: State<AppState>, name: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    let name = folder_name(&name, &folders, None)?;
+    if folders.len() >= 100 {
+        return Err(AppError::Validation("That is a hundred folders already.".into()));
+    }
+    let next = folders.iter().filter_map(|f| f.id.strip_prefix("tiqr_")?.parse::<u32>().ok()).max().unwrap_or(0) + 1;
+    folders.push(MailLocalFolder { id: format!("tiqr_{next}"), name });
+    save_local_folders(&conn, &folders)?;
+    Ok(folders)
+}
+
+#[tauri::command]
+pub fn rename_mail_local_folder(state: State<AppState>, id: String, name: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    let name = folder_name(&name, &folders, Some(&id))?;
+    let folder = folders.iter_mut().find(|f| f.id == id).ok_or_else(|| AppError::NotFound("That folder is gone.".into()))?;
+    folder.name = name;
+    save_local_folders(&conn, &folders)?;
+    Ok(folders)
+}
+
+/// The folder goes; its messages go back to where Gmail has them - nothing
+/// in it is deleted.
+#[tauri::command]
+pub fn delete_mail_local_folder(state: State<AppState>, id: String) -> AppResult<Vec<MailLocalFolder>> {
+    let conn = state.db.lock().unwrap();
+    let mut folders = local_folders(&conn);
+    folders.retain(|f| f.id != id);
+    save_local_folders(&conn, &folders)?;
+    conn.execute("UPDATE mail_messages SET moved_to = NULL, moved_at = NULL WHERE moved_to = ?1", [&id])?;
+    Ok(folders)
 }
 
 /// Gmail's folders, as the UI's left rail shows them.
@@ -7011,6 +7290,78 @@ mod tests {
         assert_eq!(folder_pids(&conn, "spam"), vec!["spam"]);
         assert_eq!(folder_pids(&conn, "trash"), vec!["gtrash", "ttrash"]);
         assert!(list_folder_impl(&conn, "'; DROP TABLE mail_messages; --", None, None, 10).is_err());
+    }
+
+    /// 2.113.0: "aby som vedel dane maily presunut tak kde chcem".
+    #[test]
+    fn a_moved_message_is_where_marko_put_it_and_nowhere_else() {
+        let conn = test_conn();
+        conn.execute("INSERT INTO mail_labels (id, name, kind, updated_at) VALUES ('label_8', 'OASIS', 'user', 'x')", []).unwrap();
+        let a = put(&conn, "a", "inbox", "2026-10-10T00:00:00Z");
+        let b = put(&conn, "b", "inbox", "2026-10-09T00:00:00Z");
+        let junk = put(&conn, "junk", "spam", "2026-10-08T00:00:00Z");
+        let folders = {
+            let mut f = local_folders(&conn);
+            f.push(MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() });
+            save_local_folders(&conn, &f).unwrap();
+            local_folders(&conn)
+        };
+        assert_eq!(folders.len(), 1);
+
+        assert_eq!(move_mail_impl(&conn, &[a], "tiqr_1").unwrap(), 1);
+        assert_eq!(move_mail_impl(&conn, &[b], "label_8").unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "inbox"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "tiqr_1"), vec!["a"]);
+        assert_eq!(folder_pids(&conn, "label_8"), vec!["b"]);
+        let counts = folder_counts_impl(&conn, &["inbox".into(), "tiqr_1".into(), "label_8".into()]).unwrap();
+        assert_eq!(counts.iter().map(|c| c.total).collect::<Vec<_>>(), vec![0, 1, 1], "counts agree with the lists");
+
+        // Out of Spam and into the Inbox: in the Inbox, out of Spam.
+        move_mail_impl(&conn, &[junk], "inbox").unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["junk"]);
+        assert!(folder_pids(&conn, "spam").is_empty());
+        // ...and still never trusted.
+        assert!(is_untrusted(&summary_of(&conn, junk).labels));
+
+        // Back to where Gmail has it.
+        move_mail_impl(&conn, &[b], "").unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["b", "junk"]);
+
+        // Nowhere that does not exist.
+        assert!(move_mail_impl(&conn, &[a], "tiqr_9").is_err());
+        assert!(move_mail_impl(&conn, &[a], "starred").is_err(), "a view is not a place");
+        assert!(move_mail_impl(&conn, &[a], "x'; DROP TABLE mail_messages; --").is_err());
+
+        // A folder deleted - here or on the other computer - takes nothing with it.
+        save_local_folders(&conn, &[]).unwrap();
+        assert_eq!(forget_moves_to_gone_places(&conn).unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["a", "b", "junk"]);
+    }
+
+    #[test]
+    fn a_rule_can_move_new_mail_into_a_folder() {
+        let conn = test_conn();
+        save_local_folders(&conn, &[MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() }]).unwrap();
+        let id = put(&conn, "v", "inbox", "2026-10-10T00:00:00Z");
+        let hit = RuleHit { rule_id: "r1".into(), action: "move:tiqr_1".into() };
+        assert!(run_rule_action(&conn, id, &hit).unwrap());
+        assert_eq!(folder_pids(&conn, "tiqr_1"), vec!["v"]);
+        let gone = RuleHit { rule_id: "r1".into(), action: "move:tiqr_7".into() };
+        let other = put(&conn, "w", "inbox", "2026-10-11T00:00:00Z");
+        assert!(!run_rule_action(&conn, other, &gone).unwrap(), "a folder that is gone moves nothing");
+    }
+
+    #[test]
+    fn folder_keys_are_checked_before_they_reach_sql() {
+        assert!(is_local_folder_key("tiqr_12"));
+        assert!(!is_local_folder_key("tiqr_"));
+        assert!(!is_local_folder_key("tiqr_1a"));
+        assert!(!is_local_folder_key("label_8"));
+        let names = vec![MailLocalFolder { id: "tiqr_1".into(), name: "Viagogo".into() }];
+        assert!(folder_name("  ", &names, None).is_err());
+        assert!(folder_name("viagogo", &names, None).is_err(), "names are unique, whatever the case");
+        assert_eq!(folder_name("  Oasis   2026 ", &names, None).unwrap(), "Oasis 2026");
+        assert_eq!(folder_name("Viagogo", &names, Some("tiqr_1")).unwrap(), "Viagogo", "renaming to itself is fine");
     }
 
     #[test]

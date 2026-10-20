@@ -56,8 +56,12 @@ pub(crate) const MAIL: Group = Group {
         "mail_sync_interval_seconds",
         "mail_extra_senders",
         "mail_senders_seeded",
-        // 2.113.0: which computer makes records from mail (mail.rs).
-        "mail_auto_device",
+        // 2.113.0: which computer makes records from mail (mail.rs), his own
+        // mail folders, and the reader's choices (mail_view.rs).
+        "mail_records_computer",
+        "mail_folders",
+        "mail_translate_to",
+        "mail_remote_images",
     ],
     tables: &["mail_rules", "mail_senders"],
 };
