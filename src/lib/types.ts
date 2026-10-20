@@ -3115,6 +3115,16 @@ export interface MailFact {
     | "reference";
 }
 
+/** 2.113.1: a muted sender - its mail still arrives, hidden under Muted
+ *  (commands/mail.rs, "MUTED SENDERS"). */
+export interface MailMute {
+  /** "news@shop.com" (that sender) or "shop.com" (everyone at it). */
+  who: string;
+  since: string;
+  /** When it ends; null until unmuted. */
+  until?: string | null;
+}
+
 /** 2.113.1: what a link in a message gave when TIQR fetched it - a file,
  *  kept with the message like an attachment, or a web page for the browser. */
 export interface MailLinkDownload {

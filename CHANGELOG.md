@@ -16,7 +16,7 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
-## 2.113.1 - Opravy po 2.113.0 a podstatné z mailu: kľúčové údaje, skryté osobné údaje, stiahnutie z odkazu
+## 2.113.1 - Opravy po 2.113.0 a mail: kľúčové údaje, stiahnutie z odkazu, stíšenie, hviezdičky, zmeny z Gmailu
 
 **Finance → Transactions už nie je rozbité.** Stĺpce Category a Amount sa
 zúžili na jedno písmeno na riadok („B iz ni s...", „- € 2 5 7"). Príčina: od
@@ -79,14 +79,57 @@ niekam vedie. Pri prejdení myšou má taký odkaz tlačidlá *Download* aj
 vo viagogo) sa otvárajú v prehliadači ako doteraz. Mail v Spame alebo Koši
 nikdy nič nesťahuje.
 
+**Stíšenie odosielateľa (Mute).** Odosielateľ, ktorý veľa spamuje, sa dá
+stíšiť na 1 deň, 7 dní, 30 dní alebo natrvalo - jedna adresa alebo všetci z
+jeho domény. Jeho maily ďalej chodia a ostávajú v TIQR, len sú skryté:
+
+- nie sú v Inboxe, Important, Finances, OTP codes, Promotions ani v štítkoch;
+- nerátajú sa medzi neprečítané;
+- sú v novom priečinku **Muted** so zoznamom stíšených a tlačidlom *Unmute*.
+
+Ďalšie pravidlá:
+
+- Mail s objednávkou, predajom, výplatou, refundom, zrušením, zmenou eventu
+  alebo aktualizáciou objednávky sa neskryje nikdy.
+- Hviezdička, Needs review a tvoje priečinky ukazujú mail aj od stíšeného
+  odosielateľa.
+- Keď stíšenie skončí, nové maily sa ukazujú znova a staršie ostávajú v Muted;
+  *Unmute* vráti všetky.
+- Celú zdieľanú doménu (gmail.com, azet.sk...) stíšiť nejde, len konkrétnu
+  adresu.
+- Zoznam stíšených prejde aj na druhý počítač, ako pravidlá. Gmail sa nemení.
+
+**Hviezdička v TIQR.** Tlačidlo *Star* v otvorenom maili, hviezdička priamo v
+riadku zoznamu a *Star/Unstar* pre označené maily. Je to hviezdička TIQR
+(prístup do Gmailu je len na čítanie), takže v Gmaile sa neobjaví. Ďalšia
+kontrola Gmailu ju neprepíše, kým hviezdičku nezmeníš v Gmaile.
+
+**Zmeny z Gmailu sa prenesú do TIQR.** Keď mail prečítaš v Gmaile (v mobile,
+v prehliadači), je prečítaný aj v TIQR. Keď ho tam označíš ako neprečítaný,
+je neprečítaný aj tu. Hviezdičky z Gmailu sa prenášali už predtým. TIQR
+preberá len zmenu: mail, ktorý si prečítal v TIQR, ostane prečítaný, kým sa v
+Gmaile niečo nezmení. Kontroluje sa to každých 20 sekúnd.
+
+**OTP: kód z Ticketmastera.** Mail „John, Here's Your Authentication Code" s
+kódom „1 3 8 8 8 0" je teraz v OTP codes. Kód sa hľadá pri každom výskyte
+slova ako „authentication code", nie len pri prvom (to bolo v predmete), a
+kód napísaný s medzerami („1 3 8 8 8 0", „138 880") sa číta ako jeden.
+Telefónne číslo s medzerami ani rok kódom nie sú. Kódy mailov z posledných 60
+dní sa pri prvom spustení prečítajú znova, takže sa tam presunie aj mail,
+ktorý už máš. Zo Spamu a Koša kód nikdy.
+
 **Drobnosti:** text z HTML mailov už správne číta písmená zapísané ako
 `&Ntilde;`, `&uuml;`, `&Scaron;` (ESPAÑA, München, Škoda). Escape po kliknutí
-na odkaz v maili zatvorí náhľad (klávesnica ostávala v rámčeku správy).
+na odkaz v maili zatvorí náhľad (klávesnica ostávala v rámčeku správy). Nad
+mailom už nevisí bublina „Message".
 
-`cargo test` TESTCOUNT, `npm test` 34, build v poriadku; obrazovky Finance a
+Mailová databáza má krok 4 (stĺpec pre hviezdičku v TIQR); žiadna číslovaná
+migrácia, ďalšia je 047.
+
+`cargo test` 1568 prešlo (4 ignorované, ako doteraz), `npm test` 37, build v poriadku; obrazovky Finance a
 Inventory skontrolované v prehliadači pri šírke 1000 aj 1440 bodov, čítačka
 mailov (kľúčové údaje, skryté a odkryté, stiahnutie z odkazu, náhľad) v tmavom
-aj svetlom režime.
+aj svetlom režime, hviezdička, menu Mute a priečinok Muted.
 
 ## 2.113.0 - Mail ako v poriadnom mailovom programe, Discord pri každom zázname, jeden sync, jednoduchší repozitár
 

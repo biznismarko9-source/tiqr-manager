@@ -1626,20 +1626,24 @@ pub(crate) fn reread_with_body(conn: &Connection, id: i64, body: &str) -> AppRes
 /// step 4 (mail_store.rs).
 pub(crate) fn reread_codes(conn: &Connection) -> rusqlite::Result<usize> {
     let since = (Utc::now() - ChronoDuration::days(60)).to_rfc3339();
-    let rows: Vec<(i64, String, String, String)> = {
+    // A message already opened has its whole text too; its start is read
+    // when the preview has no code.
+    let rows: Vec<(i64, String, String, String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT id, IFNULL(subject, ''), IFNULL(snippet, ''), IFNULL(labels, '') FROM mail_messages
-              WHERE otp_code IS NULL AND received_at >= ?1",
+            "SELECT m.id, IFNULL(m.subject, ''), IFNULL(m.snippet, ''), IFNULL(m.labels, ''),
+                    IFNULL(substr((SELECT b.text FROM mail_bodies b WHERE b.message_id = m.id), 1, 1200), '')
+               FROM mail_messages m
+              WHERE m.otp_code IS NULL AND m.received_at >= ?1",
         )?;
-        let rows = stmt.query_map([&since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        let rows = stmt.query_map([&since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
         rows.collect::<Result<_, _>>()?
     };
     let mut n = 0;
-    for (id, subject, snippet, labels) in rows {
+    for (id, subject, snippet, labels, body) in rows {
         if is_untrusted(&labels) {
             continue;
         }
-        if let Some(code) = extract_otp(&subject, &snippet) {
+        if let Some(code) = extract_otp(&subject, &snippet).or_else(|| extract_otp(&subject, &body)) {
             n += conn.execute("UPDATE mail_messages SET otp_code = ?2 WHERE id = ?1", params![id, code])?;
         }
     }
@@ -6145,12 +6149,27 @@ mod tests {
         };
         put_code_mail("tm", "inbox");
         put_code_mail("phish", "spam");
-        assert_eq!(reread_codes(&conn).unwrap(), 1);
+        // Opened, with a preview that never reached the code.
+        conn.execute(
+            "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                        received_at, first_seen_at, updated_at, labels)
+             VALUES ('gmail', 'opened', 'me', 'noreply@seatgeek.com', 'Sign in to SeatGeek', 'Hi John, someone is signing in',
+                     ?1, ?1, ?1, 'inbox')",
+            [&now],
+        )
+        .unwrap();
+        let opened = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO mail_bodies (message_id, text, fetched_at) VALUES (?1, 'Hi John, someone is signing in.\nYour login code: 7 7 4 0 1 9', 'x')",
+            [opened],
+        )
+        .unwrap();
+        assert_eq!(reread_codes(&conn).unwrap(), 2);
         let code: Option<String> =
             conn.query_row("SELECT otp_code FROM mail_messages WHERE provider_message_id = 'tm'", [], |r| r.get(0)).unwrap();
         assert_eq!(code.as_deref(), Some("138880"));
         let pids: Vec<String> = list_folder_impl(&conn, "otp", None, None, 10).unwrap().into_iter().map(|m| m.provider_message_id).collect();
-        assert_eq!(pids, vec!["tm"], "in OTP codes now; never a code from Spam");
+        assert_eq!(pids, vec!["opened", "tm"], "in OTP codes now, newest first; never a code from Spam");
         assert_eq!(reread_codes(&conn).unwrap(), 0, "nothing twice");
     }
 

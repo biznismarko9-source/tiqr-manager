@@ -2681,6 +2681,27 @@ itself before this release and still is not.
   Trash refused.
 * `mail::decode_entities` decodes accented letter entities case-sensitively
   (`LETTER_ENTITIES`).
+* **Muted senders** (`mail.rs`, "MUTED SENDERS"): `mail_muted` (JSON list of
+  `MailMute {who, since, until}` in app_settings, shared with the MAIL
+  settings group). `muted_sql` builds the condition from checked values
+  only; `Atom::Muted` keeps it out of inbox/important/finances/otp/
+  promotions/labels; new built-in folder `muted`; unread count excludes it.
+  Record categories are never muted; Starred, Review and own folders still
+  show it. An ended mute keeps hiding what came before its end. Commands
+  `list_mail_mutes`, `mute_mail_sender`, `unmute_mail_sender`; the reader's
+  Mute menu, the Muted folder strip (`lib/mailMute.ts`).
+* **Stars in TIQR** (`star_mail`, mail schema 4 `starred_here`): a walk of
+  Gmail's Starred never undoes a TIQR star or unstar; a star changed in
+  Gmail (history) clears `starred_here` and wins. Star in the reader, in
+  the list row, and Star/Unstar for a selection.
+* **Gmail's UNREAD changes are followed** (`mail_sync::add_flag`/
+  `remove_flag` with `gmail_changed`): read in Gmail -> read here, marked
+  unread in Gmail -> unread here; TIQR's own read state otherwise stays.
+  This reverses the 041 rule of never taking read state from Gmail.
+* **One-time codes**: `extract_otp` tries every code word occurrence and
+  reads spaced groups (`spaced_code`); `reread_codes` (schema step 4) and
+  `reread_code_with_body` (on opening) fill codes of stored mail.
+* Mail store schema 4 (`mail_store.rs`); no numbered migration, next is 047.
 
 **2.113.0 - mail shown as designed, Discord for every record, one sync, a
 simpler repository.** One long request from marko; the Slovak report is

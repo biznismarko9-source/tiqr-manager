@@ -1,4 +1,4 @@
-# TIQR Manager 2.113.1 — opravy po 2.113.0 a podstatné z mailu
+# TIQR Manager 2.113.1 — opravy po 2.113.0 a mail
 
 Štyri veci nahlásené hneď po 2.113.0:
 
@@ -7,7 +7,7 @@
 - *„keď prídu webhooks, tak tam nie je tiqr logo"*
 - *„v inventory je random nejaká biela čiara"*
 
-A dve nové:
+A nové:
 
 - *„pri mailoch ... napr. please send your tickets a tam je viac info ako
   napríklad poslať tam, meno a mail a to daj ako hidden a keď na to klikneš,
@@ -16,6 +16,12 @@ A dve nové:
 - *„keď je niečo také v maili, že download receipt, tak reálne keď na to
   kliknem, tak sa mi stiahne"*, *„aj takýto link"*, *„alebo také linky, kde
   sa dá kliknúť"*
+- *„chcem aj funkcie hide those mails, ak veľa spamujú, a na nejaký čas si
+  vieš vypnúť, aby si ich neprijímal, teda aj hej, ale skryl ich"*
+- *„aj takýto mail John, Here's Your Authentication Code má byť v OTP"*
+- *„taktiež možnosť dať na message starred"*
+- *„aj checkovať zmeny, ktoré sa urobia v Gmaili, napríklad keď prečíta
+  maily, ktoré nie sú starred"*
 
 ---
 
@@ -199,20 +205,109 @@ nepokazí.
 help centre vo viagogo sa otvárajú v prehliadači, ako doteraz. V prehliadači
 to bolo overené kliknutím priamo v správe.
 
-## 7. Drobnosti
+## 7. Stíšenie odosielateľa (Mute)
+
+**Kde:**
+
+- V otvorenom maili je tlačidlo **Mute** s ponukou:
+  - *This sender* (presne tá adresa);
+  - *Everyone at* (celá doména a jej poddomény);
+  - na 1 deň, 7 dní, 30 dní alebo *Always*.
+- Pri stíšenom odosielateľovi ukazuje *Muted* a dokedy, s tlačidlom
+  *Unmute*.
+- V ľavom paneli je nový priečinok **Muted** (objaví sa, keď je niečo
+  stíšené). Hore v ňom je zoznam stíšených s „for 6 more days" /
+  „until you unmute" a *Unmute*.
+
+**Čo stíšenie robí** (`commands/mail.rs`, „MUTED SENDERS"):
+
+- Maily ďalej chodia, sťahujú sa a ostávajú v TIQR. Sú len skryté z Inboxu,
+  Important, Finances, OTP codes, Promotions a štítkov z Gmailu.
+- Nerátajú sa medzi neprečítané (ani v hlavičke Mailu).
+- Ostávajú v Starred, Needs review a v tvojich priečinkoch, lebo tie sú tvoj
+  vlastný výber.
+- Mail, ktorý by mohol byť záznamom, sa neskryje nikdy: predaj, nákup,
+  výplata, refund, zrušenie, zmena eventu, aktualizácia objednávky. Obchod,
+  ktorý okrem predajov posiela aj newslettery, ťa tak nepripraví o predaj.
+- Keď stíšenie skončí, nové maily sa ukazujú znova. Čo prišlo predtým,
+  ostáva v Muted, lebo to bol ten spam. *Unmute* vráti všetko.
+- Celá zdieľaná doména (gmail.com, outlook.com, azet.sk, seznam.cz a
+  podobne) sa stíšiť nedá, iba konkrétna adresa. Inak by sa skryl každý
+  človek, ktorý odtiaľ píše.
+- Zoznam sa uloží v nastaveniach mailu a prejde na druhý počítač ako
+  pravidlá. Firebase pravidlá sa meniť nemusia.
+- Bezpečnosť: adresa a doména sa pred použitím v dotaze skontrolujú znak po
+  znaku a čas konca sa prečíta ako čas. Zoznam upravený ručne alebo pokazený
+  nič neskryje a nikam sa nedostane.
+- Gmail sa nemení.
+
+## 8. Hviezdička v TIQR a zmeny z Gmailu
+
+**Hviezdička:**
+
+- Tlačidlo *Star* / *Starred* v otvorenom maili.
+- Hviezdička v riadku zoznamu (pri prejdení myšou, jeden klik).
+- *Star* / *Unstar* pre označené maily.
+
+Je to hviezdička TIQR, lebo TIQR má do Gmailu prístup len na čítanie
+(`gmail.readonly`, zámerne). Do Gmailu sa nedostane a druhý počítač ju
+nevidí. Pamätá sa v novom stĺpci mailovej databázy (krok 4, `starred_here`),
+aby ju ďalšia kontrola priečinka Starred v Gmaile neprepísala. Keď
+hviezdičku zmeníš v Gmaile, platí tá.
+
+**Zmeny z Gmailu:**
+
+- TIQR číta históriu zmien Gmailu každých 20 sekúnd.
+- Hviezdičky a štítky z nej preberal už predtým; prečítanie zámerne nie (od
+  41. migrácie), aby mail prečítaný v TIQR neostal neprečítaný kvôli
+  mobilu.
+- Teraz preberá aj to, no len **zmenu**:
+  - mail prečítaný v Gmaile je prečítaný aj v TIQR;
+  - mail, ktorý v Gmaile označíš ako neprečítaný, je neprečítaný aj tu;
+  - čo si zmenil v TIQR, ostáva, kým sa to v Gmaile nezmení znova.
+- Opačným smerom to nejde: prečítanie v TIQR Gmail nezmení (prístup len na
+  čítanie).
+
+## 9. OTP: kód z Ticketmastera
+
+Mail „John, Here's Your Authentication Code" nebol v OTP codes. Mal dva
+dôvody:
+
+- TIQR hľadal kód len pri **prvom** výskyte slova „authentication code" - a
+  to bolo v predmete, kde žiadny kód nie je;
+- Ticketmaster píše kód **s medzerami** („1 3 8 8 8 0").
+
+**Oprava** (`mail.rs::extract_otp`):
+
+- Kód sa hľadá pri každom výskyte slova.
+- Kód v skupinách rovnakej dĺžky oddelených jednou medzerou („1 3 8 8 8 0",
+  „138 880", „12 34 56") je jeden kód so 4 až 8 číslicami.
+- Čo kódom nie je:
+  - skupiny rôznej dĺžky („4821 10 minút");
+  - dlhšie číslo (telefón s medzerami);
+  - rok;
+  - koniec dlhšieho čísla.
+
+Kódy mailov z posledných 60 dní sa pri prvom spustení 2.113.1 prečítajú
+znova raz, aj z textu už otvorených mailov, takže tam pribudne aj mail, ktorý
+už máš. Otvorený mail sa prečíta aj z celého textu. Zo Spamu a Koša nikdy.
+
+## 10. Drobnosti
 
 - Text z HTML mailov číta písmená zapísané ako `&Ntilde;`, `&uuml;`,
   `&Scaron;`, `&szlig;` (predtým ostali ako kód). Podľa toho textu sa čítajú
   kľúčové údaje aj čísla pre Automatic.
 - Po kliknutí na odkaz v maili ostávala klávesnica v rámčeku správy, takže
   Escape nezatvoril náhľad. Opravené.
+- Nad mailom visela bublina „Message" (názov rámčeka sa ukazoval ako
+  tooltip). Je preč.
 
 ---
 
 ## Testy
 
-- `cargo test --locked`: TESTCOUNT
-- `npm test`: 34 prešlo.
+- `cargo test --locked`: 1568 prešlo, 0 zlyhalo (4 ignorované, ako doteraz).
+- `npm test`: 37 prešlo.
 - `npm run build` prešiel.
 - Nové testy:
   - kľúčové údaje: mail „send your tickets", hodnota na ďalšom riadku,
@@ -223,7 +318,13 @@ to bolo overené kliknutím priamo v správe.
   - stiahnutie z odkazu cez skutočný malý server: PDF s menom od servera,
     presmerovanie, stránka, maskovaná stránka, súbor nad 25 MB, chyba 410;
   - zákaz lokálnych adries, cudzích portov a ne-webových adries, mená
-    súborov, rozpoznanie odkazu-súboru v 13 prípadoch, písmená s diakritikou.
+    súborov, rozpoznanie odkazu-súboru v 13 prípadoch, písmená s diakritikou;
+  - stíšenie: skrytie v priečinkoch a v počte neprečítaných, poddomény,
+    nikdy predaj, skončené stíšenie, Unmute, zhoda počtov so zoznamami,
+    neplatné a nebezpečné hodnoty;
+  - hviezdička v TIQR prežije kontrolu Gmailu, zmena v Gmaile vyhrá;
+    prečítanie a neprečítanie z Gmailu;
+  - kód „1 3 8 8 8 0" z mailu Ticketmastera, opätovné čítanie kódov.
 - Obrazovky v prehliadači s napodobeným backendom:
   - Transactions pri 1000 a 1440 bodoch (tmavý aj svetlý režim);
   - Inventory pri Retina mierke;
@@ -231,17 +332,24 @@ to bolo overené kliknutím priamo v správe.
   - čítačka mailov: kľúčové údaje skryté, jeden odkrytý, všetky odkryté;
     odkaz s *Download*; sťahovanie; náhľad stiahnutého súboru; príloha
     *from a link*. V prehliadači overené aj to, že faktúra-stránka sa
-    otvorí v prehliadači a #1160703 aj Concerts sa otvoria priamo.
+    otvorí v prehliadači a #1160703 aj Concerts sa otvoria priamo;
+  - hviezdička v riadku aj v čítačke, menu Mute, priečinok Muted so
+    zoznamom stíšených.
 
 ## Súbory
 
 - `src/index.css`
 - `src/pages/finance/Transactions.tsx`, `src/pages/finance/Accounts.tsx`
 - `src/components/Layout.tsx`
-- `src/components/MailReader.tsx`, `src/components/icons.tsx`
-- `src/lib/mailText.ts` (+ test), `src/lib/api.ts`, `src/lib/types.ts`
+- `src/components/MailReader.tsx`, `src/components/icons.tsx`,
+  `src/pages/MailIntelligence.tsx`
+- `src/lib/mailText.ts`, `src/lib/mailMute.ts` (nový), oba s testami,
+  `src/lib/api.ts`, `src/lib/types.ts`
 - `src-tauri/src/commands/mail_facts.rs` (nový), `mail_view.rs`,
-  `discord.rs`, `mail_sync.rs`, `mail.rs`, `mod.rs`, `lib.rs`
+  `discord.rs`, `mail_sync.rs`, `mail.rs`, `shared_settings.rs`, `mod.rs`,
+  `lib.rs`, `src-tauri/src/mail_store.rs` (krok 4)
 - `CHANGELOG.md`, `PROJECT_STATE/*`, verzia v piatich súboroch.
 
-Žiadna migrácia (ďalšia je 047), žiadna zmena dát.
+Žiadna číslovaná migrácia (ďalšia je 047). Mailová databáza má krok 4: nový
+stĺpec `starred_here` a jednorazové prečítanie kódov z mailov posledných 60
+dní.

@@ -34,10 +34,12 @@ import {
   type MailLabel,
   type MailLocalFolder,
   type MailMessageSummary,
+  type MailMute,
   type MailSyncResult,
 } from "../lib/types";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
-import { IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconTrash } from "../components/icons";
+import { IconBellOff, IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconStar, IconTrash } from "../components/icons";
+import { muteState } from "../lib/mailMute";
 import { MailSettingsPane } from "../components/MailSettingsPane";
 import {
   categoryLabel,
@@ -59,6 +61,7 @@ type Builtin =
   | "otp"
   | "review"
   | "promotions"
+  | "muted"
   | "spam"
   | "trash";
 
@@ -69,7 +72,7 @@ type Builtin =
    and the Inbox holds them. What each folder contains is decided in ONE
    place, the backend (commands/mail.rs::folder_expr). `gap` starts a new
    group in the rail. */
-const BUILTIN_FOLDERS: { key: Builtin; label: string; gap?: boolean }[] = [
+const BUILTIN_FOLDERS: { key: Builtin; label: string; gap?: boolean; onlyWhenUsed?: boolean }[] = [
   { key: "inbox", label: "Inbox" },
   { key: "important", label: "Important" },
   { key: "starred", label: "Starred" },
@@ -77,6 +80,8 @@ const BUILTIN_FOLDERS: { key: Builtin; label: string; gap?: boolean }[] = [
   { key: "otp", label: "OTP codes", gap: true },
   { key: "review", label: "Needs review" },
   { key: "promotions", label: "Promotions", gap: true },
+  // 2.113.1: shown once something is muted (commands/mail.rs, "MUTED SENDERS").
+  { key: "muted", label: "Muted", onlyWhenUsed: true },
   { key: "spam", label: "Spam" },
   { key: "trash", label: "Trash" },
 ];
@@ -244,6 +249,7 @@ const MailRow = memo(function MailRow({
   onToggle,
   onDragStart,
   onCopyCode,
+  onStar,
 }: {
   m: MailMessageSummary;
   active: boolean;
@@ -254,6 +260,7 @@ const MailRow = memo(function MailRow({
   onToggle: (id: number) => void;
   onDragStart: (id: number, e: React.DragEvent) => void;
   onCopyCode: (code: string) => void;
+  onStar: (id: number, starred: boolean) => void;
 }) {
   const onClick = () => onOpen(m.id);
   return (
@@ -262,7 +269,7 @@ const MailRow = memo(function MailRow({
       onClick={onClick}
       draggable
       onDragStart={(e) => onDragStart(m.id, e)}
-      className={`w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
+      className={`group w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
         active ? "bg-brand-600/10" : checked ? "bg-brand-500/[0.05]" : "hover:bg-surface-muted"
       }`}
     >
@@ -282,7 +289,23 @@ const MailRow = memo(function MailRow({
           aria-label="Select"
         />
         {m.isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" aria-label="Unread" />}
-        {m.isStarred && <span className="shrink-0 text-[11px] text-amber-500">&#9733;</span>}
+        {/* 2.113.1: one click stars it (TIQR's own star). Inside the row
+            button, so it stops the click like the code does. */}
+        <span
+          role="button"
+          tabIndex={-1}
+          title={m.isStarred ? "Remove the star" : "Star it"}
+          aria-label={m.isStarred ? "Remove the star" : "Star it"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStar(m.id, !m.isStarred);
+          }}
+          className={`shrink-0 self-center rounded p-px transition hover:bg-amber-500/15 ${
+            m.isStarred ? "text-amber-500" : "text-slate-300 opacity-0 group-hover:opacity-100 dark:text-slate-600"
+          }`}
+        >
+          <IconStar className={`h-3 w-3 ${m.isStarred ? "fill-amber-400" : ""}`} />
+        </span>
         <span
           className={`min-w-0 flex-1 truncate text-[13px] ${
             m.isUnread ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-600 dark:text-slate-300"
@@ -360,6 +383,8 @@ export default function MailIntelligence() {
   /** A folder being named: `null` id = a new one. */
   const [naming, setNaming] = useState<{ id: string | null; name: string } | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<MailLocalFolder | null>(null);
+  /** 2.113.1: the muted senders. */
+  const [mutes, setMutes] = useState<MailMute[]>([]);
 
   /* Which folder and search the screen is showing. A page that comes back
      after he has already moved on is dropped rather than shown under the
@@ -381,16 +406,18 @@ export default function MailIntelligence() {
   const open = useMemo(() => rows.find((m) => m.id === openId) ?? null, [rows, openId]);
 
   const loadHeader = useCallback(async () => {
-    const [s, l, f, c] = await Promise.all([
+    const [s, l, f, c, mu] = await Promise.all([
       api.getMailStatus(),
       api.listMailLabels(),
       api.listMailLocalFolders(),
       api.getMailFolderCounts(),
+      api.listMailMutes(),
     ]);
     setStatus(s);
     setLabels(l);
     setLocalFolders(f);
     setCounts(Object.fromEntries(c.map((x) => [x.key, x])));
+    setMutes(mu);
   }, []);
 
   /** The newest page of the folder on screen. */
@@ -614,6 +641,54 @@ export default function MailIntelligence() {
     }
   };
 
+  /* ---- stars and muted senders (2.113.1) -------------------------------- */
+
+  const starIds = async (ids: number[], starred: boolean) => {
+    if (ids.length === 0) return;
+    try {
+      await api.starMail(ids, starred);
+      // Unstarred in Starred: it leaves the folder.
+      settle(ids, folder === "starred" && !starred, { isStarred: starred });
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+  const onStar = useCallback(
+    (id: number, starred: boolean) => {
+      void api
+        .starMail([id], starred)
+        .then(() => {
+          setRows((prev) => prev.map((m) => (m.id === id ? { ...m, isStarred: starred } : m)));
+          void loadHeader().catch(() => undefined);
+        })
+        .catch((e) => toast.error(errMsg(e)));
+    },
+    [loadHeader, toast],
+  );
+
+  /** Its mail leaves every folder but Muted - the list is read again. */
+  const mute = async (who: string, days: number | null) => {
+    try {
+      setMutes(await api.muteMailSender(who, days));
+      const span = days === null ? "until you unmute" : `for ${days} day${days === 1 ? "" : "s"}`;
+      toast.success(`${who} muted ${span} - its mail is under Muted. Orders, sales and payouts still show.`);
+      void loadFolder();
+      void loadHeader().catch(() => undefined);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+  const unmute = async (who: string) => {
+    try {
+      setMutes(await api.unmuteMailSender(who));
+      toast.success(`${who} unmuted - all of its mail is back where it was.`);
+      void loadFolder();
+      void loadHeader().catch(() => undefined);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   /* ---- marko's own folders ---------------------------------------------- */
 
   const saveFolderName = async (id: string | null, name: string | null) => {
@@ -776,6 +851,7 @@ export default function MailIntelligence() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             {BUILTIN_FOLDERS.map((f) => {
               const c = counts[f.key];
+              if (f.onlyWhenUsed && !(c?.total ?? 0) && mutes.length === 0 && folder !== f.key) return null;
               return (
                 <div key={f.key} className={f.gap ? "mt-2 border-t border-slate-200 pt-2 dark:border-slate-800" : ""}>
                   <FolderRow
@@ -906,6 +982,16 @@ export default function MailIntelligence() {
                     <Button variant="ghost" size="sm" onClick={() => void bulk("unread")}>
                       Unread
                     </Button>
+                    {(() => {
+                      const all = rows.filter((m) => selected.has(m.id));
+                      const starred = all.length > 0 && all.every((m) => m.isStarred);
+                      return (
+                        <Button variant="ghost" size="sm" onClick={() => void starIds([...selected], !starred)}>
+                          <IconStar className={`h-3.5 w-3.5 ${starred ? "fill-amber-400 text-amber-500" : ""}`} />
+                          {starred ? "Unstar" : "Star"}
+                        </Button>
+                      );
+                    })()}
                     <MailMoveMenu
                       places={places}
                       current={folder}
@@ -938,6 +1024,34 @@ export default function MailIntelligence() {
                   </div>
                 </div>
               )}
+              {/* 2.113.1: who is muted, for how long, and Unmute. */}
+              {folder === "muted" && mutes.length > 0 && (
+                <div className="border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <p className="section-title mb-1 flex items-center gap-1.5">
+                    <IconBellOff className="h-3.5 w-3.5" /> Muted senders
+                  </p>
+                  <ul className="space-y-0.5">
+                    {mutes.map((m) => (
+                      <li key={m.who} className="flex items-center gap-2 text-[11.5px]">
+                        <span className="min-w-0 flex-1 truncate" title={m.who}>
+                          <span className="font-mono text-slate-700 dark:text-slate-200">{m.who}</span>{" "}
+                          <span className="text-slate-400 dark:text-slate-500">{muteState(m)}</span>
+                        </span>
+                        <button
+                          type="button"
+                          className="shrink-0 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
+                          onClick={() => void unmute(m.who)}
+                        >
+                          Unmute
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-[10.5px] leading-snug text-slate-400 dark:text-slate-500">
+                    Their mail still arrives and is kept here. Orders, sales and payouts always show where they belong.
+                  </p>
+                </div>
+              )}
               {listLoading && rows.length === 0 ? (
                 <div className="flex items-center gap-2 p-4 text-xs text-slate-500 dark:text-slate-400">
                   <Spinner className="h-4 w-4" /> Loading...
@@ -952,6 +1066,8 @@ export default function MailIntelligence() {
                       ? "No message in this folder matches the search."
                       : localFolders.some((f) => f.id === folder)
                         ? "Drag mail onto this folder in the list on the left, or open a message and use Move to."
+                        : folder === "muted"
+                          ? "Nothing is muted. Open a message from a sender that spams and use Mute to hide its mail for a while."
                         : progress.reading
                           ? `TIQR is reading your mail by itself, newest first - ${progress.reading} now. This folder fills in as it goes.`
                           : "There is no mail in this folder."}
@@ -970,6 +1086,7 @@ export default function MailIntelligence() {
                       onToggle={onToggle}
                       onDragStart={onDragStart}
                       onCopyCode={onCopyCode}
+                      onStar={onStar}
                     />
                   ))}
                   {hasMore ? (
@@ -995,8 +1112,11 @@ export default function MailIntelligence() {
                   status={status}
                   places={places}
                   placeName={placeName}
+                  mutes={mutes}
                   onMove={(ids, t) => void moveIds(ids, t)}
                   onTrash={(ids, restore) => void bulk(restore ? "restore" : "trash", ids)}
+                  onMute={(who, days) => void mute(who, days)}
+                  onUnmute={(who) => void unmute(who)}
                   onChanged={onReaderChanged}
                 />
               ) : (

@@ -26,11 +26,13 @@
 // downloaded INTO TIQR on the click and kept with the message like an
 // attachment - "realne ked na to kliknem tak sa mi stiahne". And the key
 // details of the message (where the tickets go, to whom, the price, by when)
-// sit at the top, a person's details hidden until clicked.
+// sit at the top, a person's details hidden until clicked. A sender that
+// spams can be muted for a while, and a message can be starred here.
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, errMsg } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import { MUTE_SPANS, canMuteDomain, domainOf, muteFor, muteState } from "../lib/mailMute";
 import {
   fileSize,
   hostOf,
@@ -49,12 +51,14 @@ import type {
   MailConnectionStatus,
   MailFact,
   MailMessageSummary,
+  MailMute,
   MailProposal,
   MailView,
 } from "../lib/types";
 import { SendToDiscordButton } from "./Discord";
 import {
   IconAlertTriangle,
+  IconBellOff,
   IconChevronDown,
   IconCopy,
   IconDownload,
@@ -66,6 +70,7 @@ import {
   IconPaperclip,
   IconRefresh,
   IconSparkles,
+  IconStar,
   IconTrash,
   IconX,
 } from "./icons";
@@ -192,6 +197,127 @@ export function MailMoveMenu({
           ))}
           <p className="border-t border-slate-200 px-2.5 pb-1 pt-1.5 text-[10.5px] leading-snug text-slate-400 dark:border-slate-800 dark:text-slate-500">
             Moved in TIQR only - Gmail is never changed.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Mute (2.113.1).
+   --------------------------------------------------------------------------- */
+
+/** Mute this sender, or everyone at its domain, for a while - "hide those
+ *  mails ak vela spamuju a na nejaky cas si vies vypnut". Or, when it is
+ *  muted, how long for and Unmute. */
+function MailMuteMenu({
+  address,
+  mute,
+  onMute,
+  onUnmute,
+}: {
+  address: string;
+  mute: MailMute | null;
+  onMute: (who: string, days: number | null) => void;
+  onUnmute: (who: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  /** Where the menu opens - in the window, so a narrow reader cannot cut it. */
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    const away = () => setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", key);
+    window.addEventListener("resize", away);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("resize", away);
+    };
+  }, [open]);
+  const toggle = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setAt({ left: Math.max(8, Math.min(r.left, window.innerWidth - 288 - 8)), top: r.bottom + 4 });
+    setOpen((v) => !v);
+  };
+
+  const domain = domainOf(address);
+  const choices = [
+    { who: address.trim().toLowerCase(), label: "This sender", detail: address.trim().toLowerCase() },
+    ...(canMuteDomain(domain) ? [{ who: domain, label: "Everyone at", detail: domain }] : []),
+  ];
+  const pick = (run: () => void) => {
+    setOpen(false);
+    run();
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <Button
+        variant={mute ? "secondary" : "ghost"}
+        size="sm"
+        onClick={toggle}
+        aria-expanded={open}
+        title={mute ? `Muted ${muteState(mute)}` : "Hide this sender's mail for a while"}
+      >
+        <IconBellOff className="h-3.5 w-3.5" />
+        {mute ? "Muted" : "Mute"}
+        <IconChevronDown className="h-3 w-3" />
+      </Button>
+      {open && at && (
+        <div
+          role="menu"
+          style={{ position: "fixed", left: at.left, top: at.top }}
+          className="z-40 w-72 rounded-lg bg-surface-raised p-2 shadow-overlay animate-[pop-in_.14s_ease-out]"
+        >
+          {mute ? (
+            <div className="px-1 pb-1">
+              <p className="text-xs leading-snug text-slate-700 dark:text-slate-200">
+                <span className="break-all font-mono">{mute.who}</span> is muted {muteState(mute)}.
+              </p>
+              <button
+                type="button"
+                role="menuitem"
+                className="mt-2 w-full rounded-md bg-surface-muted px-2.5 py-1.5 text-left text-xs font-medium text-brand-700 hover:bg-slate-200/70 dark:text-brand-300 dark:hover:bg-slate-700/60"
+                onClick={() => pick(() => onUnmute(mute.who))}
+              >
+                Unmute - show all of its mail again
+              </button>
+            </div>
+          ) : (
+            choices.map((c) => (
+              <div key={c.who} className="px-1 py-1">
+                <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title={c.detail}>
+                  {c.label} <span className="font-mono text-slate-700 dark:text-slate-200">{c.detail}</span>
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {MUTE_SPANS.map((span) => (
+                    <button
+                      key={span.label}
+                      type="button"
+                      role="menuitem"
+                      className="rounded-md bg-surface-muted px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-brand-500/15 hover:text-brand-700 dark:text-slate-200 dark:hover:text-brand-300"
+                      onClick={() => pick(() => onMute(c.who, span.days))}
+                    >
+                      {span.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+          <p className="mt-1 border-t border-slate-200 px-1 pt-1.5 text-[10.5px] leading-snug text-slate-400 dark:border-slate-800 dark:text-slate-500">
+            Its mail still arrives - hidden under Muted and not counted as unread. Orders, sales and payouts always
+            show. Gmail is not changed.
           </p>
         </div>
       )}
@@ -413,7 +539,9 @@ const MailHtmlFrame = memo(function MailHtmlFrame({
   return (
     <iframe
       ref={ref}
-      title="Message"
+      // Not a `title`: the frame's title shows as a tooltip over the whole
+      // message ("Message" floating over the text).
+      aria-label="Message"
       // No allow-scripts: nothing in the message can ever run. allow-same-
       // origin only lets THIS page measure it and catch its link clicks.
       sandbox="allow-same-origin"
@@ -781,8 +909,11 @@ export function MailReader({
   status,
   places,
   placeName,
+  mutes,
   onMove,
   onTrash,
+  onMute,
+  onUnmute,
   onChanged,
 }: {
   message: MailMessageSummary;
@@ -790,8 +921,12 @@ export function MailReader({
   places: MailPlace[];
   /** The name of the place a message was moved to, for its badge. */
   placeName: (key: string) => string | null;
+  /** 2.113.1: every muted sender. */
+  mutes: MailMute[];
   onMove: (ids: number[], target: string) => void;
   onTrash: (ids: number[], restore: boolean) => void;
+  onMute: (who: string, days: number | null) => void;
+  onUnmute: (who: string) => void;
   onChanged: (change: ReaderChange) => void;
 }) {
   const toast = useToast();
@@ -987,6 +1122,28 @@ export function MailReader({
         >
           {message.isUnread ? "Mark read" : "Mark unread"}
         </Button>
+        {/* 2.113.1: "moznost dat na message starred" - TIQR's own star. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          title={message.isStarred ? "Remove the star (in TIQR)" : "Star it (in TIQR - Gmail is not changed)"}
+          onClick={async () => {
+            try {
+              await api.starMail([message.id], !message.isStarred);
+              onChanged({ isStarred: !message.isStarred });
+            } catch (e) {
+              toast.error(errMsg(e));
+            }
+          }}
+        >
+          <IconStar
+            className={`h-3.5 w-3.5 ${message.isStarred ? "fill-amber-400 text-amber-500" : ""}`}
+          />
+          {message.isStarred ? "Starred" : "Star"}
+        </Button>
+        {!junk && (
+          <MailMuteMenu address={message.fromAddress} mute={muteFor(message.fromAddress, mutes)} onMute={onMute} onUnmute={onUnmute} />
+        )}
         <span className="mx-0.5 h-5 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
         {!sameLanguage && (
           <Button

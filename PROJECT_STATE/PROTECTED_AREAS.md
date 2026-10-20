@@ -21,7 +21,7 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
-## 2.113.1 - table cells, row lines, the Discord logo, key details, link downloads
+## 2.113.1 - table cells, row lines, the Discord logo, key details, link downloads, mute, stars
 
 - **`overflow-wrap: anywhere` belongs to `table-fixed` tables only.** In an
   auto-layout table it lets the browser size a column to one letter
@@ -41,6 +41,15 @@ current - nothing here is superseded, they just cover different areas.
   address. No AI. A person's details are `private` - dots in TIQR until
   clicked, `||spoilers||` in Discord; a Discord field or preview must never
   be cut inside a spoiler (whole lines only, dots past the length cap).
+- **Muting hides, never drops or misses a record.** A muted sender's mail is
+  still downloaded and kept; `muted_sql` must keep excluding the record
+  categories (sale, purchase, payout, refund, cancellation, event update,
+  order status) and must only ever contain values `mute_target` checked.
+  Shared mailbox domains (gmail.com...) cannot be muted whole.
+- **Read and star state: Gmail's CHANGES win, Gmail's state does not.** The
+  history's UNREAD/STARRED transitions are applied (`gmail_changed`); a
+  folder walk never undoes a star or unstar set in TIQR (`starred_here`).
+  TIQR never writes to Gmail - the scope stays `gmail.readonly`.
 - **A link is downloaded only by Rust, with the picture rules**
   (`download_mail_link`): public addresses, ports 80/443, every redirect
   checked, pinned resolve, 25 MB. Never from Spam or Trash. The URL is never

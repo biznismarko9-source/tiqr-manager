@@ -30,6 +30,11 @@ from old reports.
   until marko enables Pages (Settings -> Pages -> Deploy from a branch ->
   `main` / `/docs`). The Discord logo no longer depends on it.
 
+- **A star set in TIQR stays on that computer (2.113.1).** The Gmail access
+  is read-only, so the star does not reach Gmail and the other computer does
+  not see it (read state and moves behave the same). Reading a mail in TIQR
+  does not mark it read in Gmail either; the other way round works.
+
 - **Key details and link downloads (2.113.1): checked with fakes only** -
   Rust tests with a local web server and Chromium with a mocked backend, not
   real viagogo/StubHub mail or real receipt links. A label TIQR does not
