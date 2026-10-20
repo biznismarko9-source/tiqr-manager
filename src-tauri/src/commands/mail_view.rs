@@ -508,6 +508,10 @@ fn inline_images(html: &str, dir: &Path) -> (String, i64) {
 const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
 const MAX_IMAGES_PER_MESSAGE: usize = 40;
 const MAX_IMAGE_TOTAL: usize = 15 * 1024 * 1024;
+/// A message bigger than this is shown as its text: a few MB of markup is a
+/// mail no one designed to be read, and it would only slow the screen down.
+const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TEXT_CHARS: usize = 200_000;
 
 /// An address on the public internet - not this computer, not the home or
 /// office network, not a link-local or reserved range. A picture link in an
@@ -668,10 +672,11 @@ fn fetch_message(mb: &Mailbox, gmail_id: &str, message_id: i64, dir: &Path, remo
         (_, Some(h)) => strip_html(h),
         _ => snippet,
     };
+    let text = mail::clip_chars(&text, MAX_TEXT_CHARS);
     let mut images: Vec<(String, ImageSource)> = Vec::new();
     let mut left_out = 0i64;
     let mut html = None;
-    if let Some(raw_html) = &parts.html {
+    if let Some(raw_html) = parts.html.as_ref().filter(|h| h.len() <= MAX_HTML_BYTES) {
         let img_dir = dir.join("img");
         let _ = ensure_dir(&img_dir);
         let mut sources: Vec<(String, ImageSource)> = Vec::new();

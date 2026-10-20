@@ -301,3 +301,38 @@ export const IconSend = (p: SVGProps<SVGSVGElement>) => (
     <path d="M22 2 11 13" />
   </Svg>
 );
+// 2.113.0: the mail reader - attachments, folders, opening outside TIQR,
+// translating and a summary.
+export const IconPaperclip = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+  </Svg>
+);
+export const IconFolder = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+  </Svg>
+);
+export const IconExternalLink = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M15 3h6v6M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  </Svg>
+);
+export const IconLanguages = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6" />
+  </Svg>
+);
+export const IconSparkles = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M12 3 13.9 8.1 19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z" />
+    <path d="M19 3v4M17 5h4M5 17v4M3 19h4" />
+  </Svg>
+);
+export const IconEye = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </Svg>
+);

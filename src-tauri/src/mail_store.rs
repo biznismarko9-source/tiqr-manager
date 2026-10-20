@@ -34,9 +34,9 @@
 //! ## Least space
 //!
 //! Headers and Gmail's short preview only - a body is fetched when a message
-//! is opened and never stored (commands/mail.rs::get_mail_body). The file is
-//! created with incremental auto-vacuum so space freed by the retention purge
-//! goes back to the disk instead of sitting in the file.
+//! is opened and only then kept (commands/mail_view.rs::get_mail_view). The
+//! file is created with incremental auto-vacuum so space freed by the
+//! retention purge goes back to the disk instead of sitting in the file.
 //!
 //! ## Rule for future migrations
 //!

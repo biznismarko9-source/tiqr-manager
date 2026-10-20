@@ -275,7 +275,6 @@ pub fn run() {
             commands::mail::set_mail_paused,
             commands::mail::set_mail_retention_days,
             commands::mail::set_mail_extra_senders,
-            commands::mail::get_mail_body,
             commands::mail_view::get_mail_view,
             commands::mail_view::read_mail_attachment,
             commands::mail_view::open_mail_attachment,

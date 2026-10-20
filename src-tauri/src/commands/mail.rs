@@ -294,39 +294,6 @@ fn looks_secret(word: &str) -> bool {
         || (word.len() >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
 }
 
-/// How much of an opened message the reading pane gets - a long newsletter's
-/// worth, not a log line's.
-pub(crate) const BODY_DISPLAY_LIMIT: usize = 100_000;
-
-/// What the reading pane shows: the same credential redaction as
-/// `safe_detail`, but with the message's LINES kept.
-///
-/// 2.110.0: an opened message used to go through `safe_detail` itself, the
-/// log-line redactor - which joins everything into one line and stops at 400
-/// bytes. So every opened mail was its first few sentences in one run of
-/// text, even though `strip_html` keeps paragraphs on purpose (2.104.0).
-pub(crate) fn readable_body(raw: &str) -> String {
-    let capped = truncate_on_char_boundary(raw, BODY_DISPLAY_LIMIT);
-    let mut out = String::with_capacity(capped.len());
-    for (i, line) in capped.split('\n').enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        let mut first = true;
-        for word in line.split_whitespace() {
-            if !first {
-                out.push(' ');
-            }
-            first = false;
-            out.push_str(if looks_secret(word) { "[redacted]" } else { word });
-        }
-    }
-    if capped.len() < raw.len() {
-        out.push_str("\n...");
-    }
-    out
-}
-
 /// Turns an HTML part into plain text.
 ///
 /// Deliberately a STRIPPER, not a renderer or a sanitiser. The app never
@@ -2393,6 +2360,8 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<MailMessageSummary>
         extracted_basis: r.get(27)?,
         created_kind: r.get(28)?,
         created_id: r.get(29)?,
+        moved_to: r.get(30)?,
+        has_attachments: r.get::<_, i64>(31)? != 0,
     })
 }
 
@@ -2400,7 +2369,7 @@ const SUMMARY_COLUMNS: &str = "id, provider, provider_message_id, from_address, 
      snippet, received_at, category, confidence, detected_platform, status, review_reason, body_excerpt,
      is_unread, IFNULL(labels,''), is_starred, from_raw, to_address, reply_to, otp_code,
      extracted_amount_cents, extracted_currency, extracted_quantity, extracted_reference, trashed_at,
-     extracted_unit_cents, extracted_basis, created_kind, created_id";
+     extracted_unit_cents, extracted_basis, created_kind, created_id, moved_to, has_attachments";
 
 #[tauri::command]
 pub fn list_mail_messages(
@@ -2536,68 +2505,8 @@ pub fn set_mail_review_outcome(
     get_mail_message(state, id)
 }
 
-/// Fetch ONE message's full text from Gmail, on demand.
-///
-/// This is what makes the inbox an inbox without turning the database into a
-/// copy of the mailbox. The sync stores headers only; the body is pulled
-/// when marko actually opens a message, shown, and **never stored**. Close
-/// the message and it is gone from this app again.
-///
-/// Returns PLAIN TEXT. The HTML is stripped in Rust (`strip_html`) and the
-/// UI renders it as text - there is no path in this app that hands a message
-/// body to the DOM as markup, which is the whole reason it is stripped.
-#[tauri::command]
-pub async fn get_mail_body(state: State<'_, AppState>, id: i64) -> AppResult<String> {
-    let (provider_message_id, refresh_token) = {
-        let conn = state.db.lock().unwrap();
-        let pid: String = conn
-            .query_row(
-                "SELECT provider_message_id FROM mail_messages WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))?;
-        (pid, crate::secrets::get(&conn, MAIL_REFRESH_TOKEN_KEY)?)
-    };
-    let Some(refresh_token) = refresh_token else {
-        return Err(AppError::Validation("no mailbox is connected".to_string()));
-    };
-    let Some(client) = google_oauth::embedded_oauth_client() else {
-        return Err(AppError::Validation(
-            "this build has no Google client embedded".to_string(),
-        ));
-    };
-
-    let body = tauri::async_runtime::spawn_blocking(move || -> AppResult<String> {
-        let access_token = crate::commands::mail_sync::access_token(&client, &refresh_token)?;
-        let http = gmail_client()?;
-        let raw = gmail_get(
-            &http,
-            &access_token,
-            &format!("{GMAIL_API}/messages/{provider_message_id}?format=full"),
-        )?;
-        let payload = raw.get("payload").cloned().unwrap_or(serde_json::Value::Null);
-        let text = extract_body_text(&payload);
-        Ok(if text.trim().is_empty() {
-            jstr(&raw, "snippet").unwrap_or_default()
-        } else {
-            text
-        })
-    })
-    .await
-    .map_err(|_| AppError::External("the message did not finish loading".to_string()))??;
-
-    // Opening a message marks it read HERE. Gmail is untouched - the scope
-    // this app holds is read-only and cannot write a label. The UI says so.
-    {
-        let conn = state.db.lock().unwrap();
-        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE id = ?1", params![id])?;
-    }
-    Ok(readable_body(&body))
-}
-
-/// Read / unread, by hand. TIQR's own state; see `get_mail_body`.
+/// Read / unread, by hand. TIQR's own state - opening a message marks it
+/// read here (mail_view.rs::get_mail_view), never in Gmail.
 #[tauri::command]
 pub fn set_mail_read(state: State<AppState>, id: i64, read: bool) -> AppResult<()> {
     let conn = state.db.lock().unwrap();
@@ -7500,17 +7409,6 @@ mod tests {
         assert!(!finance_of("news@shop.com", "Big autumn sale", "other", "inbox"));
         assert!(!finance_of("service@paypal.com", "Your payout", "payout", "spam"), "never from spam");
         assert!(!finance_of("x@paypal.com.evil.test", "Hello", "other", "inbox"), "lookalike domain");
-    }
-
-    #[test]
-    fn an_opened_message_keeps_its_lines_and_is_not_cut_at_400_bytes() {
-        let body = format!("Hello Marko,\n\n{}\nToken: ya29.SOMETHINGSECRETLOOKING", "word ".repeat(200));
-        let out = readable_body(&body);
-        assert!(out.starts_with("Hello Marko,\n\n"), "{out}");
-        assert!(out.len() > 900, "{}", out.len());
-        assert!(!out.contains("ya29."), "credentials are still redacted");
-        let huge = "é".repeat(BODY_DISPLAY_LIMIT);
-        assert!(readable_body(&huge).ends_with("..."));
     }
 
     // ---- 2.109.1: text wider than one byte --------------------------------

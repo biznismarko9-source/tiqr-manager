@@ -2869,6 +2869,16 @@ export interface MailConnectionStatus {
   autoOrder: "off" | "manual" | "auto";
   autoSale: "off" | "manual" | "auto";
   autoFinance: "off" | "manual" | "auto";
+  /** 2.113.0: whether THIS computer makes records from mail. */
+  automationHere: boolean;
+  /** 2.113.0: the language Translate writes in ("sk", "en", ...). */
+  translateTo: string;
+  /** 2.113.0: whether pictures on the web are copied into TIQR when a
+   *  message is opened (TIQR downloads them, never the screen). */
+  remoteImages: boolean;
+  /** 2.113.0: what the AI helper used this month on this computer. */
+  aiCallsThisMonth: number;
+  aiTokensThisMonth: number;
   /** How often the app syncs by itself, in seconds. 0 is off.
    *
    *  This is POLLING, not push. Gmail's real push delivers to a public
@@ -2947,8 +2957,9 @@ export interface MailRule {
   matchKind: "contains" | "equals" | "starts" | "ends";
   needle: string;
   /** Every action is LOCAL to TIQR. The Gmail scope is read-only, so none
-   *  of these touches the mailbox at Google. */
-  action: "trash" | "read" | "review" | "keep";
+   *  of these touches the mailbox at Google. 2.113.0: `move:<place>` files
+   *  the message in TIQR - `move:finances`, `move:label_8`, `move:tiqr_2`. */
+  action: "trash" | "read" | "review" | "keep" | `move:${string}`;
   createdAt: string;
   hits: number;
   lastHitAt: string | null;
@@ -3051,6 +3062,68 @@ export interface MailMessageSummary {
   /** Gmail's own labels, comma separated and lower-cased - `inbox`,
    *  `unread`, `category_promotions`, `category_social`... */
   labels: string;
+  /** 2.113.0: where marko moved it in TIQR - `inbox`, `finances`,
+   *  `promotions`, one of his labels or one of his own folders (`tiqr_3`).
+   *  Null = where Gmail has it. Gmail itself is never changed. */
+  movedTo?: string | null;
+  /** 2.113.0: true once it was opened and seen to carry files. */
+  hasAttachments: boolean;
+}
+
+/** 2.113.0: one opened message, ready to show (commands/mail_view.rs).
+ *
+ *  `html` was CLEANED in Rust - no script, no event handler, no form, no
+ *  frame, links http/https/mailto only, pictures already inside it as data.
+ *  It is still never put into the page itself: it is shown only inside an
+ *  iframe that runs no script and loads nothing (components/MailReader.tsx).
+ *  Two walls, so one mistake is not enough. */
+export interface MailView {
+  html?: string | null;
+  text: string;
+  attachments: MailAttachmentInfo[];
+  imagesCopied: number;
+  imagesLeftOut: number;
+  /** True when it came from TIQR's own copy, not from Gmail just now. */
+  fromCache: boolean;
+  /** The language it is written in, when that is clear. */
+  language?: string | null;
+}
+
+/** 2.113.0: one attachment of an opened message. */
+export interface MailAttachmentInfo {
+  partId: string;
+  filename: string;
+  mime: string;
+  size: number;
+  /** What the file really is, by its bytes, once downloaded. */
+  kind?: "pdf" | "image" | "text" | "office" | "archive" | "program" | "other" | null;
+  /** Already in TIQR's files folder. */
+  saved: boolean;
+  canPreview: boolean;
+  /** Only a kind that cannot run anything opens in its own app. */
+  canOpen: boolean;
+  /** Said when a file is not what it claims to be, or cannot be opened. */
+  warning?: string | null;
+  /** A picture shown inside the message itself. */
+  inline: boolean;
+}
+
+/** 2.113.0: what the AI helper made of a message, on marko's click. */
+export interface MailAiResult {
+  text: string;
+  task: "translate" | "summary";
+  language: string;
+  /** Kept from an earlier click - cost nothing now. */
+  cached: boolean;
+  /** Only the first part of a long email was used. */
+  partial: boolean;
+}
+
+/** 2.113.0: one of marko's own folders in TIQR. */
+export interface MailLocalFolder {
+  /** `tiqr_<n>` - never a Gmail label id. */
+  id: string;
+  name: string;
 }
 
 /** One of Gmail's own folders. */
@@ -3083,6 +3156,70 @@ export interface MailProposal {
   matchedOrderCode?: string | null;
   createdKind?: string | null;
   createdId?: number | null;
+  /** 2.113.0: the least sure thing the proposal rests on. */
+  confidence: "high" | "medium" | "low";
+  /** Each figure with the words it was read from, and how sure. */
+  evidence: MailEvidence[];
+  /** Records that already look like this one. */
+  duplicates: MailDuplicate[];
+  /** For a sale: exactly which tickets it would sell. */
+  ticketIds: number[];
+  ticketsLabel?: string | null;
+  platformId?: number | null;
+  platformName?: string | null;
+  /** Finance: money in or out; null when it is not clear. */
+  entryType?: "income" | "expense" | null;
+  date: string;
+  reference?: string | null;
+  mode: "off" | "manual" | "auto";
+  /** Whether Automatic would make it by itself, and if not, why not. */
+  autoReady: boolean;
+  autoReason: string;
+  /** What Automatic did when it arrived. */
+  decision?: "created" | "review" | null;
+  decisionReason?: string | null;
+  createdLabel?: string | null;
+}
+
+/** 2.113.0: one thing a proposal rests on. */
+export interface MailEvidence {
+  field: string;
+  value: string;
+  source: string;
+  confidence: "high" | "medium" | "low";
+}
+
+/** 2.113.0: a record that already looks like the proposed one. */
+export interface MailDuplicate {
+  kind: "order" | "sale" | "finance";
+  id: number;
+  label: string;
+  reason: string;
+}
+
+/** 2.113.0: marko's corrections before creating - anything left out keeps
+ *  what was read from the message. */
+export interface MailCreateOverrides {
+  eventId?: number | null;
+  quantity?: number | null;
+  amountCents?: number | null;
+  currency?: string | null;
+  date?: string | null;
+  platformId?: number | null;
+  reference?: string | null;
+  ticketIds?: number[] | null;
+  entryType?: "income" | "expense" | null;
+  allowDuplicate?: boolean;
+}
+
+/** 2.113.0: an unsold ticket a sale email could be about. */
+export interface MailSaleCandidate {
+  ticketId: number;
+  orderCode: string;
+  section: string;
+  rowLabel: string;
+  seat: string;
+  status: string;
 }
 
 export interface MailLogEntry {

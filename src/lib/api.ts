@@ -135,6 +135,11 @@ import type {
   TicketUpdateInput,
   Transfer,
   TransferInput,
+  MailCreateOverrides,
+  MailSaleCandidate,
+  MailView,
+  MailAiResult,
+  MailLocalFolder,
 } from "./types";
 
 export const api = {
@@ -831,13 +836,39 @@ export const api = {
    *  marketplace senders. */
   setMailScope: (scope: "all" | "known") =>
     invoke<MailConnectionStatus>("set_mail_scope", { scope }),
-  /** Fetches ONE message's full text from Gmail, on demand.
-   *
-   *  The sync stores headers only - this is what the reading pane calls when
-   *  a message is opened. The body is never stored; close the message and it
-   *  is gone from this app again. Returns PLAIN TEXT with the HTML already
-   *  stripped in Rust: render it as text, never as markup. */
-  getMailBody: (id: number) => invoke<string>("get_mail_body", { id }),
+  /** 2.113.0: one message as it was designed, CLEANED in Rust, pictures
+   *  copied into TIQR, attachments listed. Downloaded from Gmail once, then
+   *  kept - `refresh` downloads it again. Show `html` only in the reader's
+   *  sandboxed iframe (components/MailReader.tsx), never in the page. */
+  getMailView: (id: number, refresh?: boolean) =>
+    invoke<MailView>("get_mail_view", { id, refresh: refresh ?? null }),
+  /** The bytes of one attachment, for a preview inside TIQR. */
+  readMailAttachment: (id: number, partId: string) =>
+    invoke<ArrayBuffer>("read_mail_attachment", { id, partId }),
+  /** Opens it in its own app - refused for a kind that could run anything. */
+  openMailAttachment: (id: number, partId: string) =>
+    invoke<void>("open_mail_attachment", { id, partId }),
+  /** A normal save dialog. Null when marko closed it. */
+  saveMailAttachment: (id: number, partId: string) =>
+    invoke<string | null>("save_mail_attachment", { id, partId }),
+  /** Translate or summarise an opened message - one click, one small call,
+   *  and the answer is kept so the same click never costs twice. */
+  mailAi: (id: number, task: "translate" | "summary", language?: string) =>
+    invoke<MailAiResult>("mail_ai", { id, task, language: language ?? null }),
+  /** 2.113.0: file messages anywhere in TIQR - `target` empty puts them
+   *  back where Gmail has them. Gmail is never changed. */
+  moveMail: (ids: number[], target: string) => invoke<number>("move_mail", { ids, target }),
+  listMailLocalFolders: () => invoke<MailLocalFolder[]>("list_mail_local_folders"),
+  createMailLocalFolder: (name: string) => invoke<MailLocalFolder[]>("create_mail_local_folder", { name }),
+  renameMailLocalFolder: (id: string, name: string) =>
+    invoke<MailLocalFolder[]>("rename_mail_local_folder", { id, name }),
+  /** The mail in it goes back to where Gmail has it - nothing is deleted. */
+  deleteMailLocalFolder: (id: string) => invoke<MailLocalFolder[]>("delete_mail_local_folder", { id }),
+  setMailReaderOptions: (opts: { translateTo?: string; remoteImages?: boolean }) =>
+    invoke<MailConnectionStatus>("set_mail_reader_options", {
+      translateTo: opts.translateTo ?? null,
+      remoteImages: opts.remoteImages ?? null,
+    }),
   /** Gmail's own folders, with counts. */
   listMailLabels: () => invoke<MailLabel[]>("list_mail_labels"),
   /** 2.110.0: one page of one folder, newest first. Pass the last message
@@ -874,7 +905,13 @@ export const api = {
   getMailProposal: (id: number) => invoke<MailProposal | null>("get_mail_proposal", { id }),
   /** Creates the record, through the SAME functions used when you type it
    *  in by hand. Refuses if the message already created one. */
-  createFromMail: (id: number) => invoke<MailProposal>("create_from_mail", { id }),
+  /** 2.113.0: with marko's corrections from the review form, if any. */
+  createFromMail: (id: number, overrides?: MailCreateOverrides) =>
+    invoke<MailProposal>("create_from_mail", { id, overrides: overrides ?? null }),
+  /** 2.113.0: the unsold tickets of one event, for picking what a sale email sold. */
+  listMailSaleCandidates: (eventId: number) => invoke<MailSaleCandidate[]>("list_mail_sale_candidates", { eventId }),
+  /** 2.113.0: make records from mail on this computer instead of the other one. */
+  claimMailAutomation: () => invoke<MailConnectionStatus>("claim_mail_automation"),
   setMailAutomation: (kind: "order" | "sale" | "finance", mode: "off" | "manual" | "auto") =>
     invoke<MailConnectionStatus>("set_mail_automation", { kind, mode }),
   /** How often the app syncs by itself. 0 turns it off. */

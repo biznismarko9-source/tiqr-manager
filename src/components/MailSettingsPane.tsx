@@ -21,18 +21,27 @@
 // the Gmail scope this app holds is read-only. No rule touches Gmail. Every
 // action below happens inside TIQR, and the worst a wrong rule can do is
 // move mail into TIQR's own trash, where it can be moved straight back.
+//
+// 2.113.0: "settings len v maily a to tiez rozdelil ako je to v primarnych
+// settings" - so the one long page became sections down the left, the way
+// Settings itself is laid out: Mailbox, Reading, What is read, Rules and
+// Automatic. A rule can now also file mail in a folder.
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import { requestMailSync } from "../lib/mailSync";
 import { lastSyncText, laneViews, syncHeadline } from "../lib/mailSyncStatus";
+import { MAIL_LANGUAGES } from "../lib/mailText";
 import {
   type MailConnectionStatus,
+  type MailLabel,
+  type MailLocalFolder,
   type MailRule,
   type MailSender,
   type MailTestResult,
 } from "../lib/types";
-import { Badge, Button, Card, Input, Select, Spinner } from "./ui";
+import { Badge, Button, Card, CHECKBOX_CLASS, Input, Select, Spinner } from "./ui";
+import { IconGauge, IconMail, IconRefresh, IconTag, IconUsers } from "./icons";
 import { useToast } from "../lib/toast";
 
 /* What each rule action does, in marko's terms rather than the column it
@@ -42,6 +51,7 @@ const ACTION_LABEL: Record<string, string> = {
   trash: "Move to trash",
   read: "Mark as read",
   review: "Send to Needs review",
+  move: "Move to a folder",
   keep: "Keep - stop here",
 };
 
@@ -49,8 +59,25 @@ const ACTION_HINT: Record<string, string> = {
   trash: "Goes to TIQR's trash. Still restorable; Gmail is untouched.",
   read: "Stays where it is, just stops counting as unread.",
   review: "Shows up in Needs review so you see it first.",
+  move: "Files it in TIQR - it shows in that folder instead of the Inbox. Gmail is untouched.",
   keep: "Protects it: no rule below this one can act on it.",
 };
+
+/** A rule's action is its kind - `move:<place>` is the kind "move". */
+const actionKind = (a: string) => (a.startsWith("move:") ? "move" : a);
+
+/* 2.113.0: the sections, down the left like Settings itself. */
+type SectionKey = "mailbox" | "reading" | "senders" | "rules" | "automatic";
+const SECTIONS: { key: SectionKey; title: string; description: string; icon: typeof IconMail }[] = [
+  { key: "mailbox", title: "Mailbox", description: "Connection and progress", icon: IconMail },
+  { key: "reading", title: "Reading", description: "How often, pictures, translate", icon: IconRefresh },
+  { key: "senders", title: "What is read", description: "Senders and your Gmail filter", icon: IconUsers },
+  { key: "rules", title: "Rules", description: "Sort new mail by itself", icon: IconTag },
+  { key: "automatic", title: "Automatic", description: "Records made from mail", icon: IconGauge },
+];
+
+/* Where the pane opens: the section he was last in, for this session. */
+let lastSection: SectionKey = "mailbox";
 
 const FIELD_LABEL: Record<string, string> = {
   from: "Sender",
@@ -164,11 +191,32 @@ const MAIL_GROUP = ["settings:mail"] as const;
 export function MailSettingsPane({
   status,
   onStatus,
+  localFolders = [],
+  labels = [],
 }: {
   status: MailConnectionStatus;
   onStatus: (s: MailConnectionStatus) => void;
+  /** 2.113.0: where a rule can move mail - his own folders and labels. */
+  localFolders?: MailLocalFolder[];
+  labels?: MailLabel[];
 }) {
   const toast = useToast();
+  const [section, setSection] = useState<SectionKey>(lastSection);
+  const choose = (k: SectionKey) => {
+    lastSection = k;
+    setSection(k);
+  };
+  const places = [
+    { key: "inbox", label: "Inbox" },
+    { key: "finances", label: "Finances" },
+    { key: "promotions", label: "Promotions" },
+    ...labels.map((l) => ({ key: l.id, label: l.name })),
+    ...localFolders.map((f) => ({ key: f.id, label: f.name })),
+  ];
+  const actionLabel = (a: string) =>
+    a.startsWith("move:")
+      ? `Move to ${places.find((p) => p.key === a.slice(5))?.label ?? "a folder that is gone"}`
+      : (ACTION_LABEL[a] ?? a);
 
   const [rules, setRules] = useState<MailRule[]>([]);
   const [senders, setSenders] = useState<MailSender[]>([]);
@@ -209,6 +257,10 @@ export function MailSettingsPane({
   const saveRule = async () => {
     if (!draft.needle.trim()) {
       toast.error("Type what the rule should look for.");
+      return;
+    }
+    if (draft.action === "move:") {
+      toast.error("Pick the folder the rule moves mail to.");
       return;
     }
     setBusy(true);
@@ -361,7 +413,37 @@ export function MailSettingsPane({
   const connected = status.connected;
 
   return (
-    <Card className="flex-1 overflow-y-auto p-0">
+    <Card className="flex min-w-0 flex-1 overflow-hidden p-0">
+      {/* The sections, down the left - the way Settings itself is laid out. */}
+      <nav className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-slate-200 p-2 dark:border-slate-800">
+        <p className="section-title px-2.5 pb-1.5 pt-1">Mail settings</p>
+        {SECTIONS.map((sec) => {
+          const on = sec.key === section;
+          return (
+            <button
+              key={sec.key}
+              type="button"
+              aria-current={on ? "page" : undefined}
+              onClick={() => choose(sec.key)}
+              className={`flex items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${
+                on
+                  ? "bg-brand-500/[0.12] text-brand-700 dark:text-brand-300"
+                  : "text-slate-600 hover:bg-surface-muted dark:text-slate-300"
+              }`}
+            >
+              <sec.icon className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0">
+                <span className={`block text-[12.5px] ${on ? "font-semibold" : "font-medium"}`}>{sec.title}</span>
+                <span className="block text-[10.5px] leading-snug text-slate-400 dark:text-slate-500">{sec.description}</span>
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        {section === "mailbox" && (
+          <>
       {/* ---- 1. the mailbox --------------------------------------------- */}
       <Section
         title="Mailbox"
@@ -462,196 +544,116 @@ export function MailSettingsPane({
         </div>
       </Section>
 
-      {/* ---- 2. rules ---------------------------------------------------- */}
+          </>
+        )}
+
+        {section === "reading" && (
+          <>
+      {/* ---- 6. fetching -------------------------------------------------- */}
       <Section
-        title="Rules"
-        hint="Run top to bottom on new mail. The first rule that matches wins and the rest are skipped - so a Keep above a Move to trash is what makes a broad rule safe to write."
+        title="Reading and keeping"
+        hint="TIQR reads every folder by itself, newest to oldest - Important, Starred, your labels and Finances first, then everything else. Once everything is read it checks for new mail on the interval below."
       >
-        {rules.length === 0 ? (
-          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-            No rules yet. Mail arrives exactly as Gmail sends it.
-          </p>
-        ) : (
-          /* One line per rule, read left to right as a sentence -
-             "Subject contains 'payout' -> Send to Needs review". The fixed
-             table columns this replaced left a gap the width of the pane
-             between a condition and what it does. */
-          <ul className="mb-4 divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800/70 dark:border-slate-800">
-            {rules.map((r, i) => (
-              <li key={r.id} className="flex items-center gap-3 px-2 py-2 text-xs">
-                <div className="flex shrink-0 flex-col">
-                  <button
-                    type="button"
-                    aria-label="Move up"
-                    disabled={i === 0}
-                    className="h-4 w-6 rounded text-[10px] leading-none text-slate-400 enabled:hover:bg-surface-muted enabled:hover:text-slate-700 disabled:opacity-25 dark:enabled:hover:text-slate-200"
-                    onClick={() => void move(i, -1)}
-                  >
-                    ▲
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Move down"
-                    disabled={i === rules.length - 1}
-                    className="h-4 w-6 rounded text-[10px] leading-none text-slate-400 enabled:hover:bg-surface-muted enabled:hover:text-slate-700 disabled:opacity-25 dark:enabled:hover:text-slate-200"
-                    onClick={() => void move(i, 1)}
-                  >
-                    ▼
-                  </button>
-                </div>
-                <p className={`min-w-0 flex-1 leading-relaxed ${r.enabled ? "" : "opacity-45"}`}>
-                  <span className="text-slate-500 dark:text-slate-400">
-                    {FIELD_LABEL[r.field] ?? r.field} {MATCH_LABEL[r.matchKind] ?? r.matchKind}{" "}
-                  </span>
-                  <span className="break-all font-medium text-slate-900 dark:text-slate-100">&ldquo;{r.needle}&rdquo;</span>
-                  <span className="mx-1.5 text-slate-400">&rarr;</span>
-                  <span className="whitespace-nowrap text-slate-700 dark:text-slate-200" title={ACTION_HINT[r.action] ?? ""}>
-                    {ACTION_LABEL[r.action] ?? r.action}
-                  </span>
-                  {!r.enabled && <span className="ml-1.5 text-[11px] text-slate-400">(off)</span>}
-                </p>
-                <span className="w-14 shrink-0 text-right tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
-                  {r.hits > 0 ? `${r.hits} hit${r.hits === 1 ? "" : "s"}` : "no hits"}
-                </span>
-                <div className="flex shrink-0 gap-1">
-                  <button
-                    type="button"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-surface-muted hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
-                    onClick={() => void toggleRule(r)}
-                  >
-                    {r.enabled ? "Turn off" : "Turn on"}
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-brand-600 hover:bg-surface-muted dark:text-brand-400"
-                    onClick={() => {
-                      setDraft(r);
-                      setEditingId(r.id);
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-red-600 hover:bg-surface-muted dark:text-red-400"
-                    onClick={() => void removeRule(r.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* the editor */}
-        <div className="rounded-lg bg-surface-muted p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {/* The width goes on a WRAPPER, not on Select: Select draws
-                its own `relative w-full` box around the element, so a width
-                class passed in lands on the inner <select> and the box
-                still takes the whole flex line. */}
-            <div className="w-[132px] shrink-0">
-              <Select
-                value={draft.field}
-                onChange={(e) => setDraft({ ...draft, field: e.target.value as MailRule["field"] })}
-              >
-                {Object.entries(FIELD_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="w-[124px] shrink-0">
-              <Select
-                value={draft.matchKind}
-                onChange={(e) => setDraft({ ...draft, matchKind: e.target.value as MailRule["matchKind"] })}
-              >
-                {Object.entries(MATCH_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {/* 2.110.0: this field sat INSIDE the 124px wrapper above, so
-                the text a rule looks for got squeezed under the select
-                instead of taking the rest of the line. */}
-            <div className="min-w-[200px] flex-1">
-              <Input
-                placeholder="viagogo.com, order confirmation, payout..."
-                value={draft.needle}
-                onChange={(e) => setDraft({ ...draft, needle: e.target.value })}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void saveRule();
-                }}
-              />
-            </div>
-            <span className="text-xs text-slate-500 dark:text-slate-400">then</span>
-            <div className="w-[208px] shrink-0">
-              <Select
-                value={draft.action}
-                onChange={(e) => setDraft({ ...draft, action: e.target.value as MailRule["action"] })}
-              >
-                {Object.entries(ACTION_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <Button variant="primary" disabled={busy} onClick={() => void saveRule()}>
-              {editingId ? "Save rule" : "Add rule"}
-            </Button>
-            {editingId && (
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setDraft(BLANK);
-                  setEditingId(null);
-                }}
-              >
-                Cancel
-              </Button>
-            )}
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-            {ACTION_HINT[draft.action]} Matching ignores capital letters.
-          </p>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-slate-500 dark:text-slate-400">Start from:</span>
-          {RULE_PRESETS.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              title={p.hint}
-              className="rounded-full border border-slate-300 px-2.5 py-1 text-[11px] text-slate-600 hover:bg-surface-muted dark:border-slate-700 dark:text-slate-300"
-              onClick={() => {
-                setDraft({ ...BLANK, ...p.rule });
-                setEditingId(null);
-              }}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-[220px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              Check for new mail
+            </label>
+            <Select
+              value={String(status.syncIntervalSeconds)}
+              onChange={(e) =>
+                void wrap(() => api.setMailSyncInterval(Number(e.target.value)), "Saved", true)
+              }
             >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        {rules.length > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button variant="secondary" disabled={applying} onClick={() => void runNow()}>
-              {applying ? <Spinner className="h-4 w-4" /> : null}
-              Run rules on mail I already have
-            </Button>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">
-              Otherwise rules only apply to mail that has not arrived yet.
-            </span>
+              <option value="0">Only when I press Sync</option>
+              <option value="30">Every 30 seconds</option>
+              <option value="60">Every minute</option>
+              <option value="300">Every 5 minutes</option>
+              <option value="900">Every 15 minutes</option>
+            </Select>
           </div>
-        )}
+          <div className="w-[260px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              Keep preview text for (days)
+            </label>
+            <div className="flex gap-2">
+              <div className="w-24">
+                <Input
+                  inputMode="numeric"
+                  value={retention}
+                  onChange={(e) => setRetention(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveRetention();
+                  }}
+                />
+              </div>
+              <Button variant="secondary" onClick={saveRetention}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+          Messages are never removed: older ones keep their sender, subject, date and labels, and only the
+          short preview is cleared, to save space. A message can only leave TIQR through Delete forever in
+          Trash - and nothing here ever touches Gmail. TIQR reads only while the app is open.
+        </p>
       </Section>
 
+      <Section
+        title="Showing a message"
+        hint="An opened message is cleaned before it is shown - nothing in it can run - and its pictures are copied into TIQR first, so the sender never learns when you open it."
+      >
+        <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+          <input
+            type="checkbox"
+            className={`${CHECKBOX_CLASS} mt-0.5`}
+            checked={status.remoteImages}
+            onChange={(e) => void wrap(() => api.setMailReaderOptions({ remoteImages: e.target.checked }), "Saved")}
+          />
+          <span>
+            <span className="font-medium">Copy pictures from the web into TIQR</span>
+            <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
+              Pictures inside the message itself are always shown. Off: a logo or banner kept on the web stays out.
+              Tracking pixels are always left out.
+            </span>
+          </span>
+        </label>
+        <div className="mt-4 w-[220px]">
+          <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Translate into</label>
+          <Select
+            value={status.translateTo}
+            onChange={(e) => void wrap(() => api.setMailReaderOptions({ translateTo: e.target.value }), "Saved")}
+          >
+            {MAIL_LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </Section>
+
+      <Section
+        title="AI helper"
+        hint="Translate and Summary in an opened message. Only on your click, never by itself - on the cheapest model, with long emails cut short, and every answer kept with the message so the same click never costs twice."
+      >
+        <p className="text-xs text-slate-700 dark:text-slate-200">
+          This month on this computer:{" "}
+          <span className="font-semibold tabular-nums">{status.aiCallsThisMonth.toLocaleString()}</span>{" "}
+          answer{status.aiCallsThisMonth === 1 ? "" : "s"},{" "}
+          <span className="tabular-nums">{status.aiTokensThisMonth.toLocaleString()}</span> tokens.
+        </p>
+        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          It uses your Anthropic key from Settings &rarr; Integrations &rarr; AI. Nothing in Mail uses AI unless you press
+          Translate or Summary.
+        </p>
+      </Section>
+          </>
+        )}
+
+        {section === "senders" && (
+          <>
       {/* ---- 3. senders --------------------------------------------------- */}
       <Section
         title="Senders TIQR watches"
@@ -767,10 +769,229 @@ export function MailSettingsPane({
         </p>
       </Section>
 
+          </>
+        )}
+
+        {section === "rules" && (
+          <>
+      {/* ---- 2. rules ---------------------------------------------------- */}
+      <Section
+        title="Rules"
+        hint="Run top to bottom on new mail. The first rule that matches wins and the rest are skipped - so a Keep above a Move to trash is what makes a broad rule safe to write."
+      >
+        {rules.length === 0 ? (
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+            No rules yet. Mail arrives exactly as Gmail sends it.
+          </p>
+        ) : (
+          /* One line per rule, read left to right as a sentence -
+             "Subject contains 'payout' -> Send to Needs review". The fixed
+             table columns this replaced left a gap the width of the pane
+             between a condition and what it does. */
+          <ul className="mb-4 divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800/70 dark:border-slate-800">
+            {rules.map((r, i) => (
+              <li key={r.id} className="flex items-center gap-3 px-2 py-2 text-xs">
+                <div className="flex shrink-0 flex-col">
+                  <button
+                    type="button"
+                    aria-label="Move up"
+                    disabled={i === 0}
+                    className="h-4 w-6 rounded text-[10px] leading-none text-slate-400 enabled:hover:bg-surface-muted enabled:hover:text-slate-700 disabled:opacity-25 dark:enabled:hover:text-slate-200"
+                    onClick={() => void move(i, -1)}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Move down"
+                    disabled={i === rules.length - 1}
+                    className="h-4 w-6 rounded text-[10px] leading-none text-slate-400 enabled:hover:bg-surface-muted enabled:hover:text-slate-700 disabled:opacity-25 dark:enabled:hover:text-slate-200"
+                    onClick={() => void move(i, 1)}
+                  >
+                    ▼
+                  </button>
+                </div>
+                <p className={`min-w-0 flex-1 leading-relaxed ${r.enabled ? "" : "opacity-45"}`}>
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {FIELD_LABEL[r.field] ?? r.field} {MATCH_LABEL[r.matchKind] ?? r.matchKind}{" "}
+                  </span>
+                  <span className="break-all font-medium text-slate-900 dark:text-slate-100">&ldquo;{r.needle}&rdquo;</span>
+                  <span className="mx-1.5 text-slate-400">&rarr;</span>
+                  <span className="whitespace-nowrap text-slate-700 dark:text-slate-200" title={ACTION_HINT[actionKind(r.action)] ?? ""}>
+                    {actionLabel(r.action)}
+                  </span>
+                  {!r.enabled && <span className="ml-1.5 text-[11px] text-slate-400">(off)</span>}
+                </p>
+                <span className="w-14 shrink-0 text-right tabular-nums text-[11px] text-slate-400 dark:text-slate-500">
+                  {r.hits > 0 ? `${r.hits} hit${r.hits === 1 ? "" : "s"}` : "no hits"}
+                </span>
+                <div className="flex shrink-0 gap-1">
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-surface-muted hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+                    onClick={() => void toggleRule(r)}
+                  >
+                    {r.enabled ? "Turn off" : "Turn on"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-brand-600 hover:bg-surface-muted dark:text-brand-400"
+                    onClick={() => {
+                      setDraft(r);
+                      setEditingId(r.id);
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-red-600 hover:bg-surface-muted dark:text-red-400"
+                    onClick={() => void removeRule(r.id)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* the editor */}
+        <div className="rounded-lg bg-surface-muted p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* The width goes on a WRAPPER, not on Select: Select draws
+                its own `relative w-full` box around the element, so a width
+                class passed in lands on the inner <select> and the box
+                still takes the whole flex line. */}
+            <div className="w-[132px] shrink-0">
+              <Select
+                value={draft.field}
+                onChange={(e) => setDraft({ ...draft, field: e.target.value as MailRule["field"] })}
+              >
+                {Object.entries(FIELD_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="w-[124px] shrink-0">
+              <Select
+                value={draft.matchKind}
+                onChange={(e) => setDraft({ ...draft, matchKind: e.target.value as MailRule["matchKind"] })}
+              >
+                {Object.entries(MATCH_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            {/* 2.110.0: this field sat INSIDE the 124px wrapper above, so
+                the text a rule looks for got squeezed under the select
+                instead of taking the rest of the line. */}
+            <div className="min-w-[200px] flex-1">
+              <Input
+                placeholder="viagogo.com, order confirmation, payout..."
+                value={draft.needle}
+                onChange={(e) => setDraft({ ...draft, needle: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveRule();
+                }}
+              />
+            </div>
+            <span className="text-xs text-slate-500 dark:text-slate-400">then</span>
+            <div className="w-[208px] shrink-0">
+              <Select
+                value={actionKind(draft.action)}
+                onChange={(e) =>
+                  setDraft({ ...draft, action: (e.target.value === "move" ? "move:" : e.target.value) as MailRule["action"] })
+                }
+              >
+                {Object.entries(ACTION_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            {/* 2.113.0: a rule can file mail - in TIQR's own places, one of
+                his Gmail labels or one of his own folders. */}
+            {actionKind(draft.action) === "move" && (
+              <div className="w-[180px] shrink-0">
+                <Select
+                  value={draft.action.slice(5)}
+                  onChange={(e) => setDraft({ ...draft, action: `move:${e.target.value}` })}
+                >
+                  <option value="">Pick a folder...</option>
+                  {places.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            <Button variant="primary" disabled={busy} onClick={() => void saveRule()}>
+              {editingId ? "Save rule" : "Add rule"}
+            </Button>
+            {editingId && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setDraft(BLANK);
+                  setEditingId(null);
+                }}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+            {ACTION_HINT[actionKind(draft.action)]} Matching ignores capital letters.
+          </p>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">Start from:</span>
+          {RULE_PRESETS.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              title={p.hint}
+              className="rounded-full border border-slate-300 px-2.5 py-1 text-[11px] text-slate-600 hover:bg-surface-muted dark:border-slate-700 dark:text-slate-300"
+              onClick={() => {
+                setDraft({ ...BLANK, ...p.rule });
+                setEditingId(null);
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {rules.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button variant="secondary" disabled={applying} onClick={() => void runNow()}>
+              {applying ? <Spinner className="h-4 w-4" /> : null}
+              Run rules on mail I already have
+            </Button>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              Otherwise rules only apply to mail that has not arrived yet.
+            </span>
+          </div>
+        )}
+      </Section>
+
+          </>
+        )}
+
+        {section === "automatic" && (
+          <>
       {/* ---- 5. automation ------------------------------------------------ */}
       <Section
         title="What TIQR may create by itself"
-        hint="Manual is the safe one: TIQR prepares the record and waits for your button. Auto only ever fires when every detail matched exactly - never on a guess. Set per computer: two computers both on Auto would each create the same record."
+        hint="Manual is the safe one: TIQR prepares the record and waits for your button. Automatic makes it only when it is certain - the checks are below - and anything unclear waits for you in the message, with the reason."
       >
         <div className="flex flex-wrap gap-3">
           {(
@@ -804,58 +1025,48 @@ export function MailSettingsPane({
             </div>
           ))}
         </div>
+
+        {/* 2.113.0: ONE computer makes the records, whichever has it - two
+            computers reading the same mailbox would otherwise both make
+            every order. The other one keeps proposing. */}
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-surface-muted px-3 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+          <p className="min-w-0 flex-1">
+            {status.automationHere ? (
+              <>
+                <span className="font-semibold text-slate-800 dark:text-slate-100">This computer makes the records.</span> Your
+                other computer only proposes them, so nothing is made twice.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold text-slate-800 dark:text-slate-100">Your other computer makes the records.</span>{" "}
+                This one only proposes them, so nothing is made twice.
+              </>
+            )}
+          </p>
+          {!status.automationHere && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void wrap(() => api.claimMailAutomation(), "This computer makes the records now")}
+            >
+              Make them here
+            </Button>
+          )}
+        </div>
+
+        <p className="mt-4 text-xs font-medium text-slate-700 dark:text-slate-200">Automatic makes a record only when</p>
+        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+          <li>the mail arrived after you switched Automatic on - old mail is never acted on;</li>
+          <li>every figure was read with certainty, from words you can see next to it in the message;</li>
+          <li>an order&apos;s event, or a sale&apos;s tickets, matched exactly - nothing is guessed into existence;</li>
+          <li>nothing like it is in TIQR yet - the same order number, the same email thread, or the same event, total and date;</li>
+          <li>no rule sent the mail to Needs review or to the trash.</li>
+        </ul>
       </Section>
 
-      {/* ---- 6. fetching -------------------------------------------------- */}
-      <Section
-        title="Reading and keeping"
-        hint="TIQR reads every folder by itself, newest to oldest - Important, Starred, your labels and Finances first, then everything else. Once everything is read it checks for new mail on the interval below."
-      >
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="w-[220px]">
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
-              Check for new mail
-            </label>
-            <Select
-              value={String(status.syncIntervalSeconds)}
-              onChange={(e) =>
-                void wrap(() => api.setMailSyncInterval(Number(e.target.value)), "Saved", true)
-              }
-            >
-              <option value="0">Only when I press Sync</option>
-              <option value="30">Every 30 seconds</option>
-              <option value="60">Every minute</option>
-              <option value="300">Every 5 minutes</option>
-              <option value="900">Every 15 minutes</option>
-            </Select>
-          </div>
-          <div className="w-[260px]">
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
-              Keep preview text for (days)
-            </label>
-            <div className="flex gap-2">
-              <div className="w-24">
-                <Input
-                  inputMode="numeric"
-                  value={retention}
-                  onChange={(e) => setRetention(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") saveRetention();
-                  }}
-                />
-              </div>
-              <Button variant="secondary" onClick={saveRetention}>
-                Save
-              </Button>
-            </div>
-          </div>
-        </div>
-        <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-          Messages are never removed: older ones keep their sender, subject, date and labels, and only the
-          short preview is cleared, to save space. A message can only leave TIQR through Delete forever in
-          Trash - and nothing here ever touches Gmail. TIQR reads only while the app is open.
-        </p>
-      </Section>
+          </>
+        )}
+      </div>
     </Card>
   );
 }
