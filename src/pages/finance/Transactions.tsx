@@ -20,6 +20,7 @@ import {
 } from "../../components/ui";
 import { FinanceCategoryBadge } from "../../components/FinanceCategoryBadge";
 import { IconPencil, IconPlus, IconSearch, IconTrash } from "../../components/icons";
+import { SendToDiscordButton } from "../../components/Discord";
 import { useToast } from "../../lib/toast";
 import { CURRENCIES } from "../Orders";
 import { PERIODS, SCOPES, periodBounds, type FinanceData, type PeriodKey, type ScopeFilter } from "./shared";
@@ -399,6 +400,8 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
       </td>
       <td className="td">
         <div className="flex items-center justify-end gap-1">
+          {/* 2.113.0: hidden until Discord is set up. */}
+          <SendToDiscordButton kind="finance" id={entry.id} look="row" />
           <button type="button" className="rounded p-1 text-slate-300 hover:text-brand-600 dark:text-slate-600 dark:hover:text-brand-400" title="Edit" onClick={() => onEdit(entry)}>
             <IconPencil className="h-4 w-4" />
           </button>

@@ -13,6 +13,8 @@ pub mod currency;
 pub mod dashboard;
 pub mod data_health;
 pub mod database;
+// 2.113.0: every Discord message TIQR posts, built and sent in one place.
+pub mod discord;
 pub mod event_categories;
 pub mod events;
 pub mod finance_accounts;

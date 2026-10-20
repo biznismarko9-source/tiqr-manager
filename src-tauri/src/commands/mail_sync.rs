@@ -74,7 +74,7 @@ use crate::commands::mail::{
     MailProviderKind, RuleSubject, FINANCE_QUERY_WORDS, FINANCE_SENDERS, GMAIL_API, MAIL_ACCOUNT_EMAIL_KEY,
     MAIL_CUSTOM_QUERY_KEY, MAIL_REFRESH_TOKEN_KEY,
 };
-use crate::commands::notifications::DiscordDestination;
+use crate::commands::discord::{self, Occasion, Subject};
 use crate::commands::sheets_sync::get_setting;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
@@ -1447,6 +1447,10 @@ struct Stored {
     duplicates: i64,
     review: i64,
     new_rows: Vec<(i64, String)>,
+    /// 2.113.0: the new rows Gmail's change history brought - mail that
+    /// ARRIVED since TIQR started watching, as opposed to mail a walk through
+    /// a folder found. Only these can be announced on Discord as news.
+    arrived: Vec<i64>,
 }
 
 /// Stores what came down and settles each id in the queue: stored, gone or
@@ -1491,6 +1495,16 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
                         }
                     }
                     out.new_rows.push((row_id, msg.subject.clone()));
+                    let source: Option<String> = conn
+                        .query_row(
+                            "SELECT source FROM mail_fetch_queue WHERE provider_message_id = ?1",
+                            params![pid],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if source.as_deref() == Some("history") {
+                        out.arrived.push(row_id);
+                    }
                 } else {
                     out.duplicates += 1;
                 }
@@ -1514,9 +1528,25 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
     Ok(out)
 }
 
-/// A Discord message about a record Automatic created, sent once the run's
-/// transaction is committed - never with it open.
-type Notice = (DiscordDestination, String);
+/// A Discord message - about a record Automatic created, or an important
+/// email that just arrived - sent once the run's transaction is committed,
+/// never with it open (commands/discord.rs).
+type Notice = (Subject, Occasion);
+
+/// At most this many emails are announced from one run, so a burst of mail
+/// is a few messages in the channel rather than a wall of them.
+const MAIL_NEWS_PER_RUN: usize = 5;
+
+/// The important emails among those that just arrived, after Automatic has
+/// had its turn - a message that became a record is announced as that record.
+fn mail_news(conn: &Connection, arrived: &[i64], now: DateTime<Utc>) -> Vec<Notice> {
+    arrived
+        .iter()
+        .filter(|id| discord::mail_is_news(conn, **id, now))
+        .take(MAIL_NEWS_PER_RUN)
+        .map(|id| (Subject::Mail(*id), Occasion::MailArrived))
+        .collect()
+}
 
 /// Only what marko has switched to `auto`, only for a proposal that is
 /// already `ready`, and never twice - the 2.106.0 rules, unchanged. Each
@@ -1524,7 +1554,7 @@ type Notice = (DiscordDestination, String);
 /// nothing behind, and the rest of the run goes on.
 fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> {
     let mut notices = Vec::new();
-    for (row_id, subject) in new_rows {
+    for (row_id, _subject) in new_rows {
         let category: String = conn
             .query_row(
                 "SELECT category FROM mail_messages WHERE id = ?1 AND created_id IS NULL",
@@ -1544,12 +1574,9 @@ fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> 
         match create_from_mail_impl(conn, *row_id, "auto") {
             Ok((k, rid)) => {
                 let _ = conn.execute_batch("RELEASE mail_auto_create");
-                let dest = match k.as_str() {
-                    "finance" => DiscordDestination::Finance,
-                    "order" => DiscordDestination::Inventory,
-                    _ => DiscordDestination::Sales,
-                };
-                notices.push((dest, format!("{k} #{rid} - {subject}")));
+                if let Ok(subject) = Subject::parse(&k, rid) {
+                    notices.push((subject, Occasion::FromMail { auto: true }));
+                }
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK TO mail_auto_create; RELEASE mail_auto_create");
@@ -1865,7 +1892,8 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
     }
 
     let stored = store_fetched(conn, plan, net.fetched, now)?;
-    let notices = run_automation(conn, &stored.new_rows);
+    let mut notices = run_automation(conn, &stored.new_rows);
+    notices.extend(mail_news(conn, &stored.arrived, now));
     backfill_finance(conn)?;
     if history_ran {
         purge_expired(conn)?;
@@ -1978,8 +2006,8 @@ fn apply_committed(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>)
     if reclaim {
         crate::mail_store::reclaim(conn);
     }
-    for (dest, text) in notices {
-        crate::commands::notifications::notify_discord(conn, dest, "Created from email", &text, &[]);
+    for (subject, occasion) in notices {
+        discord::announce(conn, subject, occasion);
     }
     Ok(result)
 }
@@ -2961,6 +2989,36 @@ mod tests {
         }
         assert_eq!(count("mail_messages"), 1);
         assert_eq!(count("finance_entries"), 1, "Automatic created it once");
+    }
+
+    /// 2.113.0: Discord hears about mail that ARRIVED - found by Gmail's
+    /// change history - never about mail a walk through a folder dug up, and
+    /// never more than a handful from one run.
+    #[test]
+    fn only_mail_that_arrived_while_tiqr_watched_is_announced_and_only_a_few_per_run() {
+        let conn = test_conn();
+        let sale = |id: &str| {
+            let m = fetched_as(id, "noreply@stubhub.com", "You sold your tickets", "inbox");
+            let c = classify_fetched(&m);
+            (id.to_string(), Fetched::Got(Box::new(m), c))
+        };
+        enqueue(&conn, "me", &ids(&["arrived"]), TIER_NEW, "history", NOW).unwrap();
+        enqueue(&conn, "me", &ids(&["walked"]), TIER_INBOX, "inbox", NOW).unwrap();
+        let stored =
+            store_fetched(&conn, &plan_with(&["arrived", "walked"]), vec![sale("arrived"), sale("walked")], at(NOW)).unwrap();
+        let arrived: i64 = conn
+            .query_row("SELECT id FROM mail_messages WHERE provider_message_id = 'arrived'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.arrived, vec![arrived]);
+        assert_eq!(mail_news(&conn, &stored.arrived, at(NOW)), vec![(Subject::Mail(arrived), Occasion::MailArrived)]);
+
+        let burst: Vec<String> = (0..8).map(|i| format!("burst{i}")).collect();
+        enqueue(&conn, "me", &burst, TIER_NEW, "history", NOW).unwrap();
+        let got: Vec<_> = burst.iter().map(|id| sale(id)).collect();
+        let refs: Vec<&str> = burst.iter().map(String::as_str).collect();
+        let stored = store_fetched(&conn, &plan_with(&refs), got, at(NOW)).unwrap();
+        assert_eq!(stored.arrived.len(), 8);
+        assert_eq!(mail_news(&conn, &stored.arrived, at(NOW)).len(), MAIL_NEWS_PER_RUN);
     }
 
     #[test]

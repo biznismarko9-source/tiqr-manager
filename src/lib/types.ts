@@ -1349,6 +1349,21 @@ export interface NotificationStatus {
   discordSalesSet: boolean;
   discordFinanceSet: boolean;
   discordInventorySet: boolean;
+  /** 2.113.0: the fourth channel - important mail that is none of the three. */
+  discordMailSet: boolean;
+  /** 2.113.0: what posts by itself, per kind. */
+  discordAuto: DiscordAutoConfig;
+}
+
+/** 2.113.0: which records announce themselves on Discord when they are
+ *  created (commands/discord.rs). All on unless switched off. */
+export interface DiscordAutoConfig {
+  events: boolean;
+  orders: boolean;
+  sales: boolean;
+  finance: boolean;
+  /** A short summary of an important email when it arrives. */
+  mail: boolean;
 }
 
 /** What Settings -> Notifications submits to `setNotificationConfig`. The
@@ -1372,6 +1387,9 @@ export interface NotificationConfigInput {
   discordSales?: string | null;
   discordFinance?: string | null;
   discordInventory?: string | null;
+  /** 2.113.0. An empty string removes the webhook. */
+  discordMail?: string | null;
+  discordAuto?: DiscordAutoConfig | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
@@ -1385,7 +1403,42 @@ export interface NotificationTestResult {
  * frontend has no webhook URL to send and `testDiscordWebhook` would not
  * accept one if it did - that is what stops the command being a
  * general-purpose HTTP POST on anything the frontend names. */
-export type DiscordDestination = "sales" | "finance" | "inventory";
+export type DiscordDestination = "sales" | "finance" | "inventory" | "mail";
+
+/** 2.113.0: one message TIQR posted to Discord, or tried to - the last 20,
+ *  newest first. Same three-valued `status` as a test. */
+export interface DiscordDelivery {
+  at: string;
+  destination: DiscordDestination;
+  title: string;
+  status: "delivered" | "failed" | "unknown";
+  message: string;
+  manual: boolean;
+}
+
+/** 2.113.0: the answer to a "Send to Discord" click. */
+export interface DiscordSendResult {
+  success: boolean;
+  status: "delivered" | "failed" | "unknown";
+  destination: DiscordDestination | "";
+  message: string;
+}
+
+/** 2.113.0: what can be sent to Discord with the button. */
+export type DiscordSubjectKind = "event" | "order" | "sale" | "finance" | "mail";
+
+/** 2.113.0: one embed exactly as TIQR would post it - Settings draws it as a
+ *  preview of what a channel receives. Text is Discord Markdown. */
+export interface DiscordEmbed {
+  author?: { name: string };
+  title?: string;
+  url?: string;
+  description?: string;
+  color?: number;
+  fields?: { name: string; value: string; inline?: boolean }[];
+  footer?: { text: string };
+  timestamp?: string;
+}
 
 /** The outcome of one real POST to Discord.
  *

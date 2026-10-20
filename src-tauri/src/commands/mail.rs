@@ -74,7 +74,6 @@
 //! and it is the one to keep green when phase 2 adds AI extraction.
 
 use crate::commands::google_auth;
-use crate::commands::notifications::DiscordDestination;
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
@@ -3118,20 +3117,11 @@ pub fn create_from_mail(state: State<AppState>, id: i64) -> AppResult<MailPropos
     {
         let conn = state.db.lock().unwrap();
         let (kind, rid) = create_from_mail_impl(&conn, id, "manual")?;
-        let dest = match kind.as_str() {
-            "finance" => DiscordDestination::Finance,
-            "order" => DiscordDestination::Inventory,
-            _ => DiscordDestination::Sales,
-        };
         // Best effort: a webhook that is off or unreachable must never undo
-        // a record that was created successfully.
-        crate::commands::notifications::notify_discord(
-            &conn,
-            dest,
-            "Created from email",
-            &format!("{kind} #{rid}"),
-            &[],
-        );
+        // a record that was created successfully (commands/discord.rs).
+        if let Ok(subject) = crate::commands::discord::Subject::parse(&kind, rid) {
+            crate::commands::discord::announce(&conn, subject, crate::commands::discord::Occasion::FromMail { auto: false });
+        }
     }
     // `get_mail_proposal` returns an Option - a message whose category maps
     // to nothing has no proposal. Here one was just created FROM a

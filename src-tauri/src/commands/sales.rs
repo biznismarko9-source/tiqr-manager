@@ -1,4 +1,5 @@
 use crate::codes;
+use crate::commands::discord;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance;
@@ -750,6 +751,8 @@ pub(crate) fn create_sale_impl(conn: &mut Connection, input: &SaleInput) -> AppR
 pub fn create_sale(state: State<AppState>, input: SaleInput) -> AppResult<Sale> {
     let mut conn = state.db.lock().unwrap();
     let sale_id = create_sale_impl(&mut conn, &input)?;
+    // 2.113.0: the Sales channel hears about it (commands/discord.rs).
+    discord::announce(&conn, discord::Subject::Sale(sale_id), discord::Occasion::Created);
     fetch_one(&conn, sale_id)
 }
 
@@ -920,6 +923,11 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
 pub fn create_sales_batch(state: State<AppState>, input: SaleBatchInput) -> AppResult<Vec<Sale>> {
     let mut conn = state.db.lock().unwrap();
     let sale_ids = create_sales_batch_impl(&mut conn, &input)?;
+    // 2.113.0: ONE message for the whole batch - any line of it stands for
+    // all of them (commands/discord.rs).
+    if let Some(first) = sale_ids.first() {
+        discord::announce(&conn, discord::Subject::Sale(*first), discord::Occasion::Created);
+    }
     sale_ids.into_iter().map(|id| fetch_one(&conn, id)).collect()
 }
 

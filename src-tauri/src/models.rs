@@ -1648,6 +1648,32 @@ pub struct DiscordChannelConfig {
     pub sales: String,
     pub finance: String,
     pub inventory: String,
+    /// 2.113.0: important mail (a cancellation, a date change) that belongs
+    /// to none of the three above; also where a mail summary goes when its
+    /// own channel is not set.
+    pub mail: String,
+    /// 2.113.0: what is posted by itself, per kind. A missing block (every
+    /// config before 2.113.0) is all on: marko asked for webhooks that fire.
+    pub auto: DiscordAutoConfig,
+}
+
+/// 2.113.0: which records announce themselves when they are created.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordAutoConfig {
+    pub events: bool,
+    pub orders: bool,
+    pub sales: bool,
+    pub finance: bool,
+    /// A summary of an important email - a sale, a purchase, a payout, a
+    /// refund, a cancellation or a date change - when it arrives.
+    pub mail: bool,
+}
+
+impl Default for DiscordAutoConfig {
+    fn default() -> Self {
+        DiscordAutoConfig { events: true, orders: true, sales: true, finance: true, mail: true }
+    }
 }
 
 /// 2.99.0: the structured result of ONE webhook test.
@@ -1678,6 +1704,37 @@ pub struct DiscordTestResult {
     pub test_id: String,
     /// Only set when Discord returned 429 and told us how long to wait.
     pub retry_after_seconds: Option<u64>,
+}
+
+/// 2.113.0: one message TIQR posted to Discord, or tried to. Settings lists
+/// the last few (commands/discord.rs), so a webhook that stopped working says
+/// so instead of going quiet.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordDelivery {
+    /// RFC3339, when the attempt finished.
+    pub at: String,
+    /// "sales" | "finance" | "inventory" | "mail"
+    pub destination: String,
+    /// What the message was about ("New sale · Oasis").
+    pub title: String,
+    /// "delivered" | "failed" | "unknown" - the same three as a test.
+    pub status: String,
+    /// Safe to show: never a URL or a response body.
+    pub message: String,
+    /// True for the "Send to Discord" button, false for an automatic post.
+    pub manual: bool,
+}
+
+/// 2.113.0: the answer to the "Send to Discord" button.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordSendResult {
+    pub success: bool,
+    /// "delivered" | "failed" | "unknown"
+    pub status: String,
+    pub destination: String,
+    pub message: String,
 }
 
 /// 2.0.78: ntfy (https://ntfy.sh) replaced Pushover as this app's mobile-
@@ -1717,6 +1774,9 @@ pub struct NotificationStatus {
     pub discord_sales_set: bool,
     pub discord_finance_set: bool,
     pub discord_inventory_set: bool,
+    /// 2.113.0.
+    pub discord_mail_set: bool,
+    pub discord_auto: DiscordAutoConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1755,6 +1815,11 @@ pub struct NotificationConfigInput {
     pub discord_finance: Option<String>,
     #[serde(default)]
     pub discord_inventory: Option<String>,
+    /// 2.113.0.
+    #[serde(default)]
+    pub discord_mail: Option<String>,
+    #[serde(default)]
+    pub discord_auto: Option<DiscordAutoConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per

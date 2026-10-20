@@ -27,9 +27,13 @@ import {
   type SheetSyncResult,
   type SpreadsheetTabsResult,
   type DataCheck,
+  type DiscordAutoConfig,
+  type DiscordDelivery,
   type DiscordDestination,
+  type DiscordEmbed,
   type DiscordTestResult,
 } from "../lib/types";
+import { DiscordEmbedPreview, DiscordRowSection, rememberDiscordStatus } from "../components/Discord";
 import { formatDateTime } from "../lib/format";
 import { readAutoSyncLog } from "../lib/autoSyncLog";
 import { PREFERRED_CURRENCIES, savePreferredCurrency, usePreferredCurrency } from "../lib/preferredCurrency";
@@ -3886,112 +3890,144 @@ function CsvImportModal({
 // WHERE THIS LIVES, and the one hazard that comes with it. Marko asked for
 // it under Integrations, and that is right for what it is - an optional
 // outside service you connect, like Google Sheets and the Anthropic key
-// beside it. But the three webhooks are stored on the SAME
-// `NotificationConfig` that Settings -> Notifications owns, because Discord
-// is a third delivery channel for the same alerts.
-//
-// 2.99.0 shipped with a hazard here and 2.100.0 removed it rather than
-// working around it: `setNotificationConfig` used to replace EVERY flag on
-// every save, so a save from this card switched desktop/ntfy off and a save
-// from Notifications switched Discord off. This card worked around one
-// direction by re-reading the live status first; CI caught the other
-// direction as a compile error. Every field of NotificationConfigInput is
-// now optional and omitting one leaves it alone, so each card simply sends
-// what it owns - see that type's own doc comment.
+// beside it. But the webhooks are stored on the SAME `NotificationConfig`
+// that Settings -> Notifications owns, because Discord is another delivery
+// channel. Every field of NotificationConfigInput is optional and omitting
+// one leaves it alone (2.100.0), so each save here sends only what it changes.
 //
 // The webhook URLs are never shown. A Discord webhook URL has its token in
 // the path - the URL IS the credential - so `NotificationStatus` carries
-// only `discord<Name>Set: boolean` and the dots below are drawn from those
-// booleans. There is no value behind them to reveal, by design, so "masking"
-// here is not hiding a string the frontend holds; the frontend never has it.
-const DISCORD_DESTINATIONS: { key: DiscordDestination; label: string; hint: string }[] = [
-  { key: "sales", label: "Sales", hint: "The channel for sales activity." },
-  { key: "finance", label: "Finance", hint: "The channel for money movements." },
-  { key: "inventory", label: "Inventory", hint: "The channel for stock and listings." },
+// only `discord<Name>Set: boolean`. There is no value behind the dots to
+// reveal, by design; the frontend never has it.
+//
+// 2.113.0: marko - "prvy krat ked to neni setuped sa ti ukaze cele a potom uz
+// len webhooks a vies si to otvorit a pozriet co to obsahuje, usetri to
+// miesto". So two faces:
+//  - nothing set up yet: the whole setup, once - how to get a webhook, the
+//    four channels and what each receives, one Save;
+//  - set up: one line per channel. A line opens to what that channel
+//    receives (with the switches for what posts by itself), a preview of its
+//    newest message drawn the way Discord draws it, and Test / Replace /
+//    Remove. Under the lines, the last messages TIQR sent and how each went.
+const DISCORD_CHANNELS: {
+  key: DiscordDestination;
+  label: string;
+  short: string;
+  receives: string;
+  auto: { key: keyof DiscordAutoConfig; label: string }[];
+}[] = [
+  {
+    key: "sales",
+    label: "Sales",
+    short: "New sales · sale emails",
+    receives: "Every new sale (one message for a whole batch), and the short summary of a sale email.",
+    auto: [{ key: "sales", label: "Post every new sale" }],
+  },
+  {
+    key: "inventory",
+    label: "Inventory",
+    short: "New events and purchases · order emails",
+    receives: "Every new event and purchase, and the short summary of a purchase or delivery email.",
+    auto: [
+      { key: "events", label: "Post every new event" },
+      { key: "orders", label: "Post every new purchase" },
+    ],
+  },
+  {
+    key: "finance",
+    label: "Finance",
+    short: "Income and expenses · payouts, refunds",
+    receives: "Every new income and expense, and the short summary of a payout or refund email.",
+    auto: [{ key: "finance", label: "Post every new income and expense" }],
+  },
+  {
+    key: "mail",
+    label: "Mail",
+    short: "Cancellations, event changes",
+    receives:
+      "Cancellations and event changes - and any important email whose own channel is not set. A summary never carries a one-time code or the email's text.",
+    auto: [{ key: "mail", label: "Summarise important emails as they arrive (in every channel)" }],
+  },
 ];
+
+const DISCORD_HOOK_PREFIXES = [
+  "https://discord.com/api/webhooks/",
+  "https://discordapp.com/api/webhooks/",
+  "https://ptb.discord.com/api/webhooks/",
+  "https://canary.discord.com/api/webhooks/",
+];
+
+function discordSet(s: NotificationStatus | null, d: DiscordDestination): boolean {
+  if (!s) return false;
+  return d === "sales"
+    ? s.discordSalesSet
+    : d === "finance"
+      ? s.discordFinanceSet
+      : d === "inventory"
+        ? s.discordInventorySet
+        : s.discordMailSet;
+}
+
+function hookInput(d: DiscordDestination, url: string): NotificationConfigInput {
+  return d === "sales"
+    ? { discordSales: url }
+    : d === "finance"
+      ? { discordFinance: url }
+      : d === "inventory"
+        ? { discordInventory: url }
+        : { discordMail: url };
+}
+
+/** Said before saving, so a half-pasted URL is caught here. */
+function hookProblem(url: string): string | null {
+  const u = url.trim();
+  if (!u) return null;
+  if (!DISCORD_HOOK_PREFIXES.some((p) => u.startsWith(p))) return "That is not a Discord webhook URL - it starts with https://discord.com/api/webhooks/";
+  return null;
+}
 
 function DiscordCard() {
   const toast = useToast();
   const [status, setStatus] = useState<NotificationStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [enabled, setEnabled] = useState(false);
-  const [drafts, setDrafts] = useState<Record<DiscordDestination, string>>({
-    sales: "",
-    finance: "",
-    inventory: "",
-  });
-  const [testBusy, setTestBusy] = useState<DiscordDestination | null>(null);
-  const [results, setResults] = useState<Partial<Record<DiscordDestination, DiscordTestResult>>>({});
+  const [open, setOpen] = useState<DiscordDestination | null>(null);
+  const [deliveries, setDeliveries] = useState<DiscordDelivery[]>([]);
+  const [showLog, setShowLog] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // Same rule as the ntfy topic: the secret inputs always reset to blank,
-  // never to a real value, because a real value is never sent here.
-  const applyStatus = (s: NotificationStatus) => {
+  const apply = (s: NotificationStatus) => {
     setStatus(s);
-    setEnabled(s.discordEnabled);
-    setDrafts({ sales: "", finance: "", inventory: "" });
+    rememberDiscordStatus(s);
   };
+  const loadDeliveries = () => api.getDiscordDeliveries().then(setDeliveries).catch(() => {});
 
   useEffect(() => {
     setLoading(true);
     api
       .getNotificationStatus()
-      .then(applyStatus)
+      .then(apply)
       .catch((e) => toast.error(errMsg(e)))
       .finally(() => setLoading(false));
+    loadDeliveries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isSet = (d: DiscordDestination) =>
-    d === "sales"
-      ? !!status?.discordSalesSet
-      : d === "finance"
-        ? !!status?.discordFinanceSet
-        : !!status?.discordInventorySet;
-
-  const doSave = async () => {
-    setSaving(true);
+  /** One change, saved at once. Resolves false when it was refused. */
+  const save = async (input: NotificationConfigInput, done?: string): Promise<boolean> => {
+    setBusy(true);
     try {
-      // 2.100.0: only this card's own fields. The re-read-the-live-status
-      // workaround that used to be here is gone - every field in
-      // NotificationConfigInput is optional now, so omitting desktop and
-      // ntfy leaves them alone instead of overwriting them.
-      const input: NotificationConfigInput = {
-        discordEnabled: enabled,
-        discordSales: drafts.sales.trim() ? drafts.sales.trim() : null,
-        discordFinance: drafts.finance.trim() ? drafts.finance.trim() : null,
-        discordInventory: drafts.inventory.trim() ? drafts.inventory.trim() : null,
-      };
-      applyStatus(await api.setNotificationConfig(input));
-      setResults({});
-      toast.success("Discord settings saved");
+      apply(await api.setNotificationConfig(input));
+      if (done) toast.success(done);
+      return true;
     } catch (e) {
       toast.error(errMsg(e));
+      return false;
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  // One real POST, through the backend, for one destination. Sends the
-  // destination NAME - this card has no URL to send and could not send one.
-  //
-  // Nothing is retried here. An "unknown" result means Discord may already
-  // have taken the message, and a silent second attempt is how one test
-  // becomes two messages in somebody's channel.
-  const doTest = async (destination: DiscordDestination) => {
-    setTestBusy(destination);
-    try {
-      const result = await api.testDiscordWebhook(destination);
-      setResults((r) => ({ ...r, [destination]: result }));
-      if (result.status === "failed") toast.error(result.message);
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setTestBusy(null);
-    }
-  };
-
-  if (loading) {
+  if (loading || !status) {
     return (
       <Card className="p-5">
         <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
@@ -4001,97 +4037,332 @@ function DiscordCard() {
     );
   }
 
-  const configured =
-    !!status &&
-    status.discordEnabled &&
-    (status.discordSalesSet || status.discordFinanceSet || status.discordInventorySet);
+  const anySet = DISCORD_CHANNELS.some((c) => discordSet(status, c.key));
+  if (!anySet) return <DiscordFirstSetup busy={busy} onSave={save} />;
 
+  const delivered = deliveries.filter((d) => d.status === "delivered").length;
+  const failed = deliveries.filter((d) => d.status === "failed").length;
+
+  return (
+    <Card className="overflow-hidden p-0">
+      <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Discord</h3>
+        <Badge tone={status.discordEnabled ? "sold" : "available"}>{status.discordEnabled ? "On" : "Paused"}</Badge>
+        <label className="ml-auto flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+          <input
+            type="checkbox"
+            className={CHECKBOX_CLASS}
+            checked={status.discordEnabled}
+            disabled={busy}
+            onChange={(e) =>
+              save(
+                { discordEnabled: e.target.checked },
+                e.target.checked ? "Discord is on" : "Discord is paused - nothing is posted",
+              )
+            }
+          />
+          Post to Discord
+        </label>
+      </div>
+      <ul className="divide-y divide-slate-200/70 border-t border-slate-200/70 dark:divide-slate-800 dark:border-slate-800">
+        {DISCORD_CHANNELS.map((c) => (
+          <DiscordChannelRow
+            key={c.key}
+            channel={c}
+            status={status}
+            open={open === c.key}
+            busy={busy}
+            onToggle={() => setOpen(open === c.key ? null : c.key)}
+            onSave={save}
+            onTested={loadDeliveries}
+          />
+        ))}
+      </ul>
+      <div className="border-t border-slate-200/70 px-5 py-3 dark:border-slate-800">
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 text-left text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+          onClick={() => {
+            if (!showLog) loadDeliveries();
+            setShowLog(!showLog);
+          }}
+        >
+          <span>Recent messages</span>
+          <span className="font-normal text-slate-400 dark:text-slate-500">
+            {deliveries.length === 0
+              ? "none since TIQR started"
+              : `${delivered} delivered${failed ? ` · ${failed} failed` : ""}`}
+          </span>
+          <IconChevronDown className={`ml-auto h-4 w-4 transition-transform ${showLog ? "rotate-180" : ""}`} />
+        </button>
+        {showLog && <DiscordDeliveryList deliveries={deliveries} />}
+      </div>
+    </Card>
+  );
+}
+
+/** The whole setup, shown only while no channel has a webhook. */
+function DiscordFirstSetup({
+  busy,
+  onSave,
+}: {
+  busy: boolean;
+  onSave: (input: NotificationConfigInput, done?: string) => Promise<boolean>;
+}) {
+  const [drafts, setDrafts] = useState<Record<DiscordDestination, string>>({ sales: "", finance: "", inventory: "", mail: "" });
+  const problems = DISCORD_CHANNELS.map((c) => hookProblem(drafts[c.key])).filter(Boolean);
+  const typed = DISCORD_CHANNELS.filter((c) => drafts[c.key].trim());
+  const submit = () => {
+    const input: NotificationConfigInput = { discordEnabled: true };
+    for (const c of typed) Object.assign(input, hookInput(c.key, drafts[c.key].trim()));
+    onSave(input, "Discord is set up");
+  };
   return (
     <Card className="p-5">
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Discord</h3>
-        <Badge tone={configured ? "sold" : "available"}>{configured ? "Connected" : "Off"}</Badge>
+        <Badge tone="available">Not set up</Badge>
       </div>
-      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
-        Posts to a Discord channel through a webhook. In Discord: Channel settings &rarr; Integrations &rarr;
-        Webhooks &rarr; New Webhook &rarr; Copy Webhook URL. Anyone who has that URL can post to the channel, so
-        treat it like a password. Saved here, the same webhooks are used on your other computer through cloud
-        sync.
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        TIQR posts a message to Discord for every new sale, purchase, event and finance entry, and a short
+        summary when an important email arrives. Every record also gets a <strong>Send to Discord</strong>{" "}
+        button.
       </p>
-
-      <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-        <input
-          type="checkbox"
-          className={CHECKBOX_CLASS}
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-        />
-        Send notifications to Discord
-      </label>
-
-      <div className="mt-4 space-y-5">
-        {DISCORD_DESTINATIONS.map((d) => (
-          <div key={d.key} className="border-t border-slate-200 pt-4 dark:border-slate-800">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{d.label}</span>
-              {isSet(d.key) ? (
-                <span
-                  className="font-mono text-xs text-slate-400 dark:text-slate-500"
-                  title="A webhook is saved. TIQR never shows it again, not even to you."
-                >
-                  &bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;
-                </span>
-              ) : (
-                <span className="text-xs text-slate-400 dark:text-slate-500">Not set</span>
-              )}
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{d.hint}</p>
-            <div className="mt-2 max-w-md">
-              <Field
-                label="Webhook URL"
-                hint={isSet(d.key) ? "Already saved - leave blank to keep it." : undefined}
-              >
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  placeholder={
-                    isSet(d.key)
-                      ? "Leave blank to keep the current webhook"
-                      : "https://discord.com/api/webhooks/..."
-                  }
-                  value={drafts[d.key]}
-                  onChange={(e) => setDrafts((v) => ({ ...v, [d.key]: e.target.value }))}
-                />
-              </Field>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                disabled={testBusy !== null || !isSet(d.key)}
-                onClick={() => doTest(d.key)}
-              >
-                {testBusy === d.key ? <Spinner className="h-4 w-4" /> : null}
-                Test webhook
-              </Button>
-              {!isSet(d.key) && (
-                <span className="text-xs text-slate-400 dark:text-slate-500">Save a webhook first.</span>
-              )}
-            </div>
-            <DiscordTestLine result={results[d.key]} />
-          </div>
+      <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-slate-600 dark:text-slate-300">
+        <li>In Discord, open the channel&apos;s settings &rarr; Integrations &rarr; Webhooks &rarr; New Webhook.</li>
+        <li>Copy Webhook URL and paste it below. One channel for everything is fine - paste the same URL into each line.</li>
+        <li>Save. Anyone with the URL can post to the channel, so treat it like a password.</li>
+      </ol>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        {DISCORD_CHANNELS.map((c) => (
+          <Field key={c.key} label={c.label} hint={c.receives}>
+            <Input
+              type="password"
+              autoComplete="off"
+              placeholder="https://discord.com/api/webhooks/..."
+              value={drafts[c.key]}
+              onChange={(e) => setDrafts((v) => ({ ...v, [c.key]: e.target.value }))}
+            />
+          </Field>
         ))}
       </div>
-
-      <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-        <Button variant="primary" disabled={saving} onClick={doSave}>
-          {saving ? <Spinner className="h-4 w-4" /> : null}
-          Save
+      {problems.length > 0 && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{problems[0]}</p>}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button variant="primary" disabled={busy || typed.length === 0 || problems.length > 0} onClick={submit}>
+          {busy ? <Spinner className="h-4 w-4" /> : null}
+          Save and turn on
         </Button>
-        <span className="text-xs text-slate-500 dark:text-slate-400">
-          &quot;Test webhook&quot; uses whatever is currently saved - save first if you just pasted a new URL.
-        </span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">The same webhooks reach your other computer through sync.</span>
       </div>
     </Card>
+  );
+}
+
+function DiscordChannelRow({
+  channel,
+  status,
+  open,
+  busy,
+  onToggle,
+  onSave,
+  onTested,
+}: {
+  channel: (typeof DISCORD_CHANNELS)[number];
+  status: NotificationStatus;
+  open: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  onSave: (input: NotificationConfigInput, done?: string) => Promise<boolean>;
+  onTested: () => void;
+}) {
+  const toast = useToast();
+  const set = discordSet(status, channel.key);
+  const [draft, setDraft] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<DiscordTestResult | undefined>();
+  const [preview, setPreview] = useState<DiscordEmbed | null | undefined>(undefined);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setPreview(undefined);
+    api
+      .previewDiscord(channel.key)
+      .then(setPreview)
+      .catch(() => setPreview(null));
+  }, [open, channel.key]);
+
+  const autoOn = channel.auto.filter((a) => status.discordAuto[a.key]).length;
+  const problem = hookProblem(draft);
+
+  const saveHook = async () => {
+    if (await onSave(hookInput(channel.key, draft.trim()), `${channel.label} webhook saved`)) {
+      setDraft("");
+      setReplacing(false);
+      setResult(undefined);
+    }
+  };
+  const test = async () => {
+    setTesting(true);
+    try {
+      const r = await api.testDiscordWebhook(channel.key);
+      setResult(r);
+      if (r.status === "failed") toast.error(r.message);
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setTesting(false);
+      onTested();
+    }
+  };
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-50 dark:hover:bg-white/[0.03]"
+      >
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${set ? (status.discordEnabled ? "bg-emerald-500" : "bg-amber-500") : "bg-slate-300 dark:bg-slate-600"}`}
+          aria-hidden="true"
+        />
+        <span className="w-20 shrink-0 text-sm font-medium text-slate-800 dark:text-slate-200">{channel.label}</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-slate-500 dark:text-slate-400">
+          {set ? channel.short : "Not set"}
+          {set && autoOn < channel.auto.length && (
+            <span className="text-amber-600 dark:text-amber-400"> · {autoOn === 0 ? "nothing posts by itself" : "partly by hand"}</span>
+          )}
+        </span>
+        <IconChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="space-y-4 bg-slate-50/70 px-5 pb-5 pt-2 dark:bg-white/[0.02]">
+          <DiscordRowSection title="What it receives">
+            <p className="text-xs text-slate-600 dark:text-slate-300">{channel.receives}</p>
+            <div className="mt-2 space-y-1.5">
+              {channel.auto.map((a) => (
+                <label key={a.key} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={status.discordAuto[a.key]}
+                    disabled={busy}
+                    onChange={(e) => onSave({ discordAuto: { ...status.discordAuto, [a.key]: e.target.checked } })}
+                  />
+                  {a.label}
+                </label>
+              ))}
+            </div>
+          </DiscordRowSection>
+
+          <DiscordRowSection title="Preview">
+            {preview === undefined ? (
+              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <Spinner className="h-3.5 w-3.5" /> Building the newest message...
+              </div>
+            ) : preview === null ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Nothing to show yet - the first {channel.label.toLowerCase()} message appears here once there is a record for it.
+              </p>
+            ) : (
+              <>
+                <DiscordEmbedPreview embed={preview} />
+                <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                  Built from your newest record, exactly as it would be posted. Nothing was sent.
+                </p>
+              </>
+            )}
+          </DiscordRowSection>
+
+          <DiscordRowSection title="Webhook">
+            {set && !replacing ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-slate-400 dark:text-slate-500" title="Saved. TIQR never shows it again, not even to you.">
+                  &bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;
+                </span>
+                <Button size="sm" variant="secondary" disabled={testing} onClick={test}>
+                  {testing ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  Send a test
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setReplacing(true)}>
+                  Replace
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmRemove(true)}>
+                  Remove
+                </Button>
+              </div>
+            ) : (
+              <div className="flex max-w-xl flex-wrap items-start gap-2">
+                <div className="min-w-[16rem] flex-1">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    placeholder="https://discord.com/api/webhooks/..."
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                  />
+                  {problem && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{problem}</p>}
+                </div>
+                <Button size="sm" variant="primary" disabled={busy || !draft.trim() || !!problem} onClick={saveHook}>
+                  Save
+                </Button>
+                {replacing && (
+                  <Button size="sm" variant="ghost" onClick={() => setReplacing(false)}>
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            )}
+            <DiscordTestLine result={result} />
+          </DiscordRowSection>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmRemove}
+        title={`Remove the ${channel.label} webhook?`}
+        message={`TIQR stops posting to this channel. ${channel.label} messages go nowhere until a webhook is set again.`}
+        confirmLabel="Remove"
+        danger
+        onConfirm={async () => {
+          if (await onSave(hookInput(channel.key, ""), `${channel.label} webhook removed`)) setConfirmRemove(false);
+        }}
+        onCancel={() => setConfirmRemove(false)}
+      />
+    </li>
+  );
+}
+
+/** What TIQR sent since it started, and how each one went. */
+function DiscordDeliveryList({ deliveries }: { deliveries: DiscordDelivery[] }) {
+  if (deliveries.length === 0) {
+    return <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Nothing was sent yet. Messages appear here as TIQR posts them.</p>;
+  }
+  const label = (d: DiscordDestination) => DISCORD_CHANNELS.find((c) => c.key === d)?.label ?? d;
+  return (
+    <ul className="mt-2 space-y-1.5">
+      {deliveries.map((d, i) => (
+        <li key={i} className="flex items-start gap-2 text-xs">
+          <span
+            className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+              d.status === "delivered" ? "bg-emerald-500" : d.status === "unknown" ? "bg-amber-500" : "bg-red-500"
+            }`}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="text-slate-700 dark:text-slate-200">{d.title}</span>
+            <span className="text-slate-400 dark:text-slate-500">
+              {" "}
+              · {label(d.destination)}
+              {d.manual ? " · sent by hand" : ""} · {formatDateTime(d.at)}
+            </span>
+            {d.status !== "delivered" && <span className="block text-slate-500 dark:text-slate-400">{d.message}</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

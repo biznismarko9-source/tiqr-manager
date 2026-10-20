@@ -1,5 +1,5 @@
 use crate::db::AppState;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use rusqlite::{params, Connection};
 use tauri::State;
 
@@ -8,8 +8,28 @@ use tauri::State;
 /// command. Not for business data - everything else in this app has a
 /// proper typed table and command.
 
+/// 2.113.0: the generic pair below serves the screen's own preferences only -
+/// the theme and which tab each list remembers ("ordersTab"). Every other key
+/// in `app_settings` (the Discord webhooks, the ntfy topic, the mail rules)
+/// has its own command that never hands its secret back, and this pair would
+/// otherwise read or overwrite any of them by name.
+pub(crate) fn is_screen_preference(key: &str) -> bool {
+    (key == "theme" || key.ends_with("Tab"))
+        && key.len() <= 40
+        && key.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn screen_preference(key: &str) -> AppResult<()> {
+    if is_screen_preference(key) {
+        Ok(())
+    } else {
+        Err(AppError::Validation(format!("\"{key}\" is not a screen preference")))
+    }
+}
+
 #[tauri::command]
 pub fn get_app_setting(state: State<AppState>, key: String) -> AppResult<Option<String>> {
+    screen_preference(&key)?;
     let conn = state.db.lock().unwrap();
     let value = conn
         .query_row(
@@ -23,6 +43,7 @@ pub fn get_app_setting(state: State<AppState>, key: String) -> AppResult<Option<
 
 #[tauri::command]
 pub fn set_app_setting(state: State<AppState>, key: String, value: String) -> AppResult<()> {
+    screen_preference(&key)?;
     let conn = state.db.lock().unwrap();
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
@@ -156,5 +177,29 @@ mod anthropic_api_key_tests {
         let conn = test_conn();
         set_anthropic_api_key_impl(&conn, "  sk-ant-fake-test-key  \n").unwrap();
         assert_eq!(read_anthropic_api_key(&conn).as_deref(), Some("sk-ant-fake-test-key"));
+    }
+}
+
+#[cfg(test)]
+mod screen_preference_tests {
+    use super::is_screen_preference;
+
+    #[test]
+    fn the_screen_reads_its_own_preferences_and_nothing_else() {
+        for key in ["theme", "dashboardTab", "ordersTab", "pullsTab", "pullsReceivedTab"] {
+            assert!(is_screen_preference(key), "{key}");
+        }
+        for key in [
+            "notification_config",
+            "mail_rules",
+            "google_oauth_refresh_token",
+            "anthropic_api_key",
+            "mail_auto_order",
+            "theme2",
+            "x_Tab",
+            "",
+        ] {
+            assert!(!is_screen_preference(key), "{key}");
+        }
     }
 }

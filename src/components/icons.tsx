@@ -294,3 +294,10 @@ export const IconLayoutGrid = (p: SVGProps<SVGSVGElement>) => (
     <rect x="13" y="13" width="8" height="8" rx="1.5" />
   </Svg>
 );
+// 2.113.0: "Send to Discord" (a paper plane - the action, not anyone's logo).
+export const IconSend = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m22 2-7 20-4-9-9-4Z" />
+    <path d="M22 2 11 13" />
+  </Svg>
+);

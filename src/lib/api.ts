@@ -57,7 +57,11 @@ import type {
   CurrencyConversion,
   DashboardData,
   DatabaseSwitchOutcome,
+  DiscordDelivery,
   DiscordDestination,
+  DiscordEmbed,
+  DiscordSendResult,
+  DiscordSubjectKind,
   DiscordTestResult,
   EventCategory,
   EventInput,
@@ -784,6 +788,16 @@ export const api = {
    * known and must not be retried automatically. */
   testDiscordWebhook: (destination: DiscordDestination) =>
     invoke<DiscordTestResult>("test_discord_webhook", { destination }),
+  /** 2.113.0: post one record (or email) to its Discord channel now, and
+   *  wait for Discord's answer. Takes a kind and an id - never a URL. */
+  sendToDiscord: (kind: DiscordSubjectKind, id: number) =>
+    invoke<DiscordSendResult>("send_to_discord", { kind, id }),
+  /** 2.113.0: the last messages TIQR posted or tried to, newest first. */
+  getDiscordDeliveries: () => invoke<DiscordDelivery[]>("get_discord_deliveries"),
+  /** 2.113.0: what a channel's newest message would look like, built from
+   *  the newest record it would carry. Null when there is nothing yet. */
+  previewDiscord: (destination: DiscordDestination) =>
+    invoke<DiscordEmbed | null>("preview_discord", { destination }),
   /** Silent by design (mirrors checkForUpdate's own "never surfaces an
    * error" contract) - a single disabled/misconfigured channel, or being
    * fully offline, must never interrupt the app with an error toast. See

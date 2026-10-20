@@ -248,6 +248,8 @@ fn status_from_config(config: &NotificationConfig) -> NotificationStatus {
         discord_sales_set: !config.discord.sales.trim().is_empty(),
         discord_finance_set: !config.discord.finance.trim().is_empty(),
         discord_inventory_set: !config.discord.inventory.trim().is_empty(),
+        discord_mail_set: !config.discord.mail.trim().is_empty(),
+        discord_auto: config.discord.auto.clone(),
     }
 }
 
@@ -272,6 +274,8 @@ fn apply_input(existing: NotificationConfig, input: NotificationConfigInput) -> 
             sales: input.discord_sales.unwrap_or(existing.discord.sales),
             finance: input.discord_finance.unwrap_or(existing.discord.finance),
             inventory: input.discord_inventory.unwrap_or(existing.discord.inventory),
+            mail: input.discord_mail.unwrap_or(existing.discord.mail),
+            auto: input.discord_auto.unwrap_or(existing.discord.auto),
         },
     }
 }
@@ -308,6 +312,8 @@ pub(crate) enum DiscordDestination {
     Sales,
     Finance,
     Inventory,
+    /// 2.113.0: important mail that is none of the three.
+    Mail,
 }
 
 impl DiscordDestination {
@@ -318,8 +324,9 @@ impl DiscordDestination {
             "sales" => Ok(DiscordDestination::Sales),
             "finance" => Ok(DiscordDestination::Finance),
             "inventory" => Ok(DiscordDestination::Inventory),
+            "mail" => Ok(DiscordDestination::Mail),
             other => Err(AppError::Validation(format!(
-                "\"{other}\" is not a Discord destination - expected sales, finance or inventory"
+                "\"{other}\" is not a Discord destination - expected sales, finance, inventory or mail"
             ))),
         }
     }
@@ -329,6 +336,7 @@ impl DiscordDestination {
             DiscordDestination::Sales => "sales",
             DiscordDestination::Finance => "finance",
             DiscordDestination::Inventory => "inventory",
+            DiscordDestination::Mail => "mail",
         }
     }
 
@@ -337,14 +345,16 @@ impl DiscordDestination {
             DiscordDestination::Sales => "Sales",
             DiscordDestination::Finance => "Finance",
             DiscordDestination::Inventory => "Inventory",
+            DiscordDestination::Mail => "Mail",
         }
     }
 
-    fn url_in<'a>(self, cfg: &'a DiscordChannelConfig) -> &'a str {
+    pub(crate) fn url_in<'a>(self, cfg: &'a DiscordChannelConfig) -> &'a str {
         match self {
             DiscordDestination::Sales => &cfg.sales,
             DiscordDestination::Finance => &cfg.finance,
             DiscordDestination::Inventory => &cfg.inventory,
+            DiscordDestination::Mail => &cfg.mail,
         }
     }
 }
@@ -483,20 +493,29 @@ fn cooldown_remaining(dest: DiscordDestination, now: Instant) -> Option<Duration
 /// The embed that reaches the channel. Carries the destination, the test id
 /// and the timestamp, and NOTHING from the database - no sale, no order, no
 /// figure. A test must not be able to leak business data into a chat channel.
+///
+/// 2.113.0: dressed like every other TIQR message (commands/discord.rs) -
+/// the logo as the sender's picture, a top line, the brand in the footer -
+/// so the first thing marko sees in a new channel is what the rest will
+/// look like.
 fn test_embed(dest: DiscordDestination, test_id: &str, tested_at: &str) -> serde_json::Value {
+    use crate::commands::discord::{BRAND, LOGO_URL};
     serde_json::json!({
-        "username": "TIQR Manager",
+        "username": BRAND,
+        "avatar_url": LOGO_URL,
+        "allowed_mentions": { "parse": [] },
         "embeds": [{
-            "title": "Discord connection successful",
-            "description": "Your TIQR Manager webhook is configured correctly and can receive messages.",
+            "author": { "name": "✅ Connected", "icon_url": LOGO_URL },
+            "title": format!("{} channel connected", dest.label()),
+            "description": "TIQR Manager can post here. This is a test notification - no records were changed.",
             "color": 0x8B5CF6,
             "fields": [
                 { "name": "Destination", "value": dest.label(), "inline": true },
                 { "name": "Status", "value": "Delivered", "inline": true },
-                { "name": "Test ID", "value": test_id, "inline": false },
-                { "name": "Timestamp", "value": tested_at, "inline": false }
+                { "name": "Test ID", "value": test_id, "inline": true }
             ],
-            "footer": { "text": "This is a test notification. No sales, inventory or financial records were changed." }
+            "footer": { "text": BRAND, "icon_url": LOGO_URL },
+            "timestamp": tested_at
         }]
     })
 }
@@ -509,7 +528,7 @@ fn test_embed(dest: DiscordDestination, test_id: &str, tested_at: &str) -> serde
 /// a brand-new install). A present-but-corrupt blob is a real, surfaced
 /// error, never silently discarded - same convention `sheets_sync::
 /// load_connection` already established for its own stored JSON blob.
-fn load_notification_config(conn: &Connection) -> AppResult<NotificationConfig> {
+pub(crate) fn load_notification_config(conn: &Connection) -> AppResult<NotificationConfig> {
     match get_setting(conn, NOTIFICATION_CONFIG_KEY)? {
         None => Ok(NotificationConfig::default()),
         Some(json) => serde_json::from_str(&json)
@@ -590,60 +609,6 @@ fn send_ntfy(cfg: &NtfyChannelConfig, title: &str, body: &str) -> AppResult<()> 
     Ok(())
 }
 
-/// Send one embed to a configured Discord destination.
-///
-/// 2.106.0: split out so Mail Intelligence can post "an order was created
-/// from a message" through the SAME path the test button uses - same host
-/// validation, same status table, same refusal to read a response body or
-/// put a URL in an error. A second sender would have been a second place
-/// to get those wrong.
-///
-/// Best-effort on purpose: a webhook that is off, unset or unreachable must
-/// never stop a record being created. The caller gets the outcome and
-/// decides; nothing here propagates a failure upward.
-pub(crate) fn notify_discord(
-    conn: &Connection,
-    dest: DiscordDestination,
-    title: &str,
-    description: &str,
-    fields: &[(String, String)],
-) -> bool {
-    let cfg = match load_notification_config(conn) {
-        Ok(c) => c.discord,
-        Err(_) => return false,
-    };
-    if !cfg.enabled {
-        return false;
-    }
-    let url = dest.url_in(&cfg).trim().to_string();
-    if validate_webhook_url(&url).is_err() {
-        return false;
-    }
-    let embed = serde_json::json!({
-        "username": "TIQR Manager",
-        "embeds": [{
-            "title": title,
-            "description": description,
-            "color": 0x8B5CF6,
-            "fields": fields
-                .iter()
-                .map(|(n, v)| serde_json::json!({ "name": n, "value": v, "inline": true }))
-                .collect::<Vec<_>>(),
-            "timestamp": Utc::now().to_rfc3339(),
-        }]
-    });
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    else {
-        return false;
-    };
-    match client.post(&url).json(&embed).send() {
-        Ok(r) => (200..=299).contains(&r.status().as_u16()),
-        Err(_) => false,
-    }
-}
-
 /// The blocking half of a test: one POST, one interpretation, no retries.
 ///
 /// Returns `(status, error_code, message, retry_after_seconds)` so the caller
@@ -722,6 +687,16 @@ pub fn get_notification_status(state: State<AppState>) -> AppResult<Notification
 
 #[tauri::command]
 pub fn set_notification_config(state: State<AppState>, input: NotificationConfigInput) -> AppResult<NotificationStatus> {
+    // 2.113.0: a pasted webhook is checked as it is saved, so a typo is said
+    // now rather than at the first message that never arrives. An empty
+    // string removes the webhook and needs no check.
+    for url in [&input.discord_sales, &input.discord_finance, &input.discord_inventory, &input.discord_mail]
+        .into_iter()
+        .flatten()
+        .filter(|u| !u.trim().is_empty())
+    {
+        validate_webhook_url(url)?;
+    }
     let conn = state.db.lock().unwrap();
     let existing = load_notification_config(&conn)?;
     let merged = apply_input(existing, input);
@@ -771,7 +746,8 @@ pub async fn test_discord_webhook(
     destination: String,
 ) -> AppResult<DiscordTestResult> {
     let dest = DiscordDestination::parse(&destination)?;
-    let tested_at = Utc::now().to_rfc3339();
+    // Milliseconds and `Z`: the one shape Discord's embed timestamp takes.
+    let tested_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let test_id = new_test_id();
 
     // Throttle BEFORE the lookup, so a flood of requests does not even read
@@ -1157,6 +1133,8 @@ mod tests {
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
+            discord_mail: None,
+            discord_auto: None,
         };
         let merged = apply_input(existing, input);
         assert_eq!(merged.ntfy.topic, "old-topic");
@@ -1179,6 +1157,8 @@ mod tests {
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
+            discord_mail: None,
+            discord_auto: None,
         };
         let merged = apply_input(existing, input);
         assert_eq!(merged.ntfy.topic, "new-topic");
@@ -1246,6 +1226,8 @@ mod tests {
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
+            discord_mail: None,
+            discord_auto: None,
         };
         let existing = load_notification_config(&conn).unwrap();
         let merged = apply_input(existing, input);
@@ -1591,6 +1573,8 @@ mod tests {
                 sales: REAL_SHAPED_URL.to_string(),
                 finance: String::new(),
                 inventory: "   ".to_string(),
+                mail: String::new(),
+                auto: Default::default(),
             },
         };
         let status = status_from_config(&cfg);
@@ -1621,6 +1605,8 @@ mod tests {
                 sales: sales.to_string(),
                 finance: finance.to_string(),
                 inventory: inventory.to_string(),
+                mail: String::new(),
+                auto: Default::default(),
             },
         }
     }
@@ -1640,6 +1626,8 @@ mod tests {
             discord_sales: sales.map(str::to_string),
             discord_finance: finance.map(str::to_string),
             discord_inventory: inventory.map(str::to_string),
+            discord_mail: None,
+            discord_auto: None,
         }
     }
 
@@ -1674,6 +1662,8 @@ mod tests {
                 sales: REAL_SHAPED_URL.to_string(),
                 finance: String::new(),
                 inventory: String::new(),
+                mail: String::new(),
+                auto: Default::default(),
             },
         };
         // Exactly what NotificationsCard sends: its own three fields only.
@@ -1685,6 +1675,8 @@ mod tests {
             discord_sales: None,
             discord_finance: None,
             discord_inventory: None,
+            discord_mail: None,
+            discord_auto: None,
         };
         let after = apply_input(existing, input);
         assert!(after.discord.enabled, "Discord must survive a Notifications save");
@@ -1704,6 +1696,8 @@ mod tests {
                 sales: REAL_SHAPED_URL.to_string(),
                 finance: String::new(),
                 inventory: String::new(),
+                mail: String::new(),
+                auto: Default::default(),
             },
         };
         let after = apply_input(
@@ -1716,6 +1710,8 @@ mod tests {
                 discord_sales: None,
                 discord_finance: None,
                 discord_inventory: None,
+                discord_mail: None,
+                discord_auto: None,
             },
         );
         assert_eq!(after.desktop_enabled, existing.desktop_enabled);

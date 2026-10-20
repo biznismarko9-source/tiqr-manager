@@ -22,6 +22,7 @@ import {
 } from "../components/icons";
 import { useToast } from "../lib/toast";
 import { EventFormModal } from "./Events";
+import { SendToDiscordButton } from "../components/Discord";
 
 // 2.2.4: marko's second follow-up on the Event Workspace. Two independent
 // changes bundled into one release:
@@ -153,6 +154,9 @@ export default function EventDetail() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* 2.113.0: marko - "pri kazdom evente, sale, finance atd vies
+              kliknut ... aby sa ti poslal". Hidden until Discord is set up. */}
+          <SendToDiscordButton kind="event" id={event.id} />
           <Button variant="secondary" onClick={() => setEditOpen(true)}>
             <IconPencil className="h-4 w-4" /> Edit
           </Button>

@@ -1,4 +1,5 @@
 use crate::codes;
+use crate::commands::discord;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::finance::{self, allocate_cents};
@@ -452,6 +453,9 @@ pub fn create_order(state: State<AppState>, input: OrderInput) -> AppResult<Orde
     let tx = conn.transaction()?;
     let order_id = create_order_impl(&tx, &input)?;
     tx.commit()?;
+    // 2.113.0: after the commit, so a message never describes a purchase
+    // that was rolled back (commands/discord.rs).
+    discord::announce(&conn, discord::Subject::Order(order_id), discord::Occasion::Created);
     fetch_one(&conn, order_id)
 }
 

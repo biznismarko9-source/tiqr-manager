@@ -262,6 +262,10 @@ pub fn run() {
             commands::notifications::test_desktop_notification,
             commands::notifications::test_ntfy_notification,
             commands::notifications::test_discord_webhook,
+            // 2.113.0: the "Send to Discord" button, and what was sent.
+            commands::discord::send_to_discord,
+            commands::discord::get_discord_deliveries,
+            commands::discord::preview_discord,
             commands::notifications::check_and_send_notifications,
             // 2.100.0: Mail Intelligence (phase 1).
             commands::mail::get_mail_status,
