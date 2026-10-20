@@ -336,3 +336,20 @@ export const IconEye = (p: SVGProps<SVGSVGElement>) => (
     <circle cx="12" cy="12" r="3" />
   </Svg>
 );
+export const IconStar = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="m12 2.8 2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.36 6.3 20.36l1.09-6.35-4.62-4.5 6.38-.93Z" />
+  </Svg>
+);
+export const IconBellOff = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M8.7 3.7A6 6 0 0 1 18 8.6c0 2.9.6 4.7 1.3 5.9M17 17H3.6S6 15 6 8.6c0-.6.1-1.2.3-1.8" />
+    <path d="M10.3 21a1.9 1.9 0 0 0 3.4 0M2 2l20 20" />
+  </Svg>
+);
+export const IconEyeOff = (p: SVGProps<SVGSVGElement>) => (
+  <Svg {...p}>
+    <path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.4 3.4M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20" />
+  </Svg>
+);

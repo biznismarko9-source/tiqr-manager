@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   fileSize,
   hostOf,
+  isDownloadLink,
   linkify,
   previewType,
   READER_CSP,
@@ -99,4 +100,22 @@ test("file sizes read like a mail program's", () => {
   assert.equal(fileSize(800), "800 B");
   assert.equal(fileSize(150_000), "146 KB");
   assert.equal(fileSize(3_500_000), "3.3 MB");
+});
+
+test("a link that is a file is told from a page", () => {
+  // marko's own: "Download receipt | Download invoice".
+  assert.ok(isDownloadLink("Download receipt", "https://pay.stripe.com/receipts/payment/CAcaFwoV"));
+  assert.ok(isDownloadLink("Download invoice", "https://invoice.stripe.com/i/acct_1/live_YWNj?s=em"));
+  assert.ok(isDownloadLink("Stiahnuť faktúru", "https://shop.example.sk/f/1"));
+  assert.ok(isDownloadLink("Rechnung herunterladen", "https://shop.example.de/r?id=2"));
+  assert.ok(isDownloadLink("Receipt", "https://shop.example/r/1"));
+  assert.ok(isDownloadLink("here", "https://shop.example/files/E-Tickets%20Oasis.pdf"), "the address ends in a file");
+  assert.ok(isDownloadLink("Get it", "https://pay.example/receipts/payment/abc/pdf"));
+  // The links in an ordinary mail stay links.
+  assert.ok(!isDownloadLink("Concerts", "https://www.viagogo.com/concerts"));
+  assert.ok(!isDownloadLink("help centre", "https://support.viagogo.com/hc/en-us"));
+  assert.ok(!isDownloadLink("#1160703", "https://viagogo.zendesk.com/hc/requests/1160703"));
+  assert.ok(!isDownloadLink("Download", "mailto:help@viagogo.com"), "only web addresses");
+  assert.ok(!isDownloadLink("Questions about the receipt for your order? Our help centre has the answers", "https://x.example/help"));
+  assert.ok(!isDownloadLink("Download", "not a link"));
 });

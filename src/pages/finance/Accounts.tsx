@@ -244,7 +244,18 @@ export default function Accounts({ accounts, categories, recurringExpenses, load
             // header's square corners stay inside the rounded edge.
             <Card className="overflow-hidden p-0">
               <div className="table-flush max-h-[calc(100vh-24rem)]">
-                <table className="w-full border-collapse">
+                {/* 2.113.1: fixed widths, as on Transactions - sized by its
+                    content this table squeezed columns to a letter a line. */}
+                <table className="w-full min-w-[880px] table-fixed border-collapse">
+                  <colgroup>
+                    <col />
+                    <col className="w-[120px]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[13%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[150px]" />
+                    <col className="w-[200px]" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th className="th">Name</th>
@@ -444,7 +455,7 @@ function RecurringRow({
       <td className="td">
         <span className="font-medium text-slate-800 dark:text-slate-200">{item.name}</span>
         {item.note && (
-          <span className="block max-w-[200px] truncate text-xs text-slate-500 dark:text-slate-400" title={item.note}>
+          <span className="block truncate text-xs text-slate-500 dark:text-slate-400" title={item.note}>
             {item.note}
           </span>
         )}
@@ -452,7 +463,7 @@ function RecurringRow({
       <td className="td tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(item.amountCents, item.currency)}</td>
       <td className="td">
         {FREQUENCY_LABELS[item.frequency]}
-        <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{item.scope === "business" ? "Business" : "Personal"}</span>
+        <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">{item.scope === "business" ? "Business" : "Personal"}</span>
       </td>
       <td className="td">
         {item.categoryName && item.categoryColorSlot !== null ? (
@@ -462,7 +473,7 @@ function RecurringRow({
         )}
       </td>
       <td className="td">{item.accountName ?? <span className="text-slate-300 dark:text-slate-600">-</span>}</td>
-      <td className="td whitespace-nowrap">
+      <td className="td">
         {!item.isActive ? (
           <Badge tone="soldout">Paused</Badge>
         ) : (

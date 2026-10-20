@@ -44,8 +44,9 @@
 //! downloaded copy from the other machine that has no `mail` attached. They
 //! must never touch a cache table again. A change to this schema is a new
 //! `user_version` step in `ensure`, not a numbered migration - `SCHEMA_V1`
-//! (2.110.0), `SCHEMA_V2` (2.111.0) and `SCHEMA_V3` (2.113.0) so far, and a
-//! released step is never edited, only followed by the next one.
+//! (2.110.0), `SCHEMA_V2` (2.111.0), `SCHEMA_V3` (2.113.0) and `SCHEMA_V4`
+//! (2.113.1) so far, and a released step is never edited, only followed by
+//! the next one.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -122,6 +123,16 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(SCHEMA_V3)?;
         tx.execute_batch("PRAGMA mail.user_version = 3;")?;
+        tx.commit()?;
+    }
+    if version < 4 {
+        // 2.113.1: and the one-time codes of recent mail read again with the
+        // rules that now find "1 3 8 8 8 0" (commands/mail.rs) - so a code
+        // already in the mailbox lands in OTP codes, not only the next one.
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_V4)?;
+        crate::commands::mail::reread_codes(&tx)?;
+        tx.execute_batch("PRAGMA mail.user_version = 4;")?;
         tx.commit()?;
     }
     relocate(conn)?;
@@ -479,6 +490,14 @@ ALTER TABLE mail.mail_sync_state ADD COLUMN trouble_streak INTEGER NOT NULL DEFA
 /// maile kde je nejaky attachment tak ten tiez dat do tiqr", "aj obrazky co
 /// su v maily tak prekopirj do tiqr", and "AI nesmie rozhodovat naslepo -
 /// kazdy navrh musi mat zdrojove udaje, mieru istoty a kontrolu duplicit".
+const SCHEMA_V4: &str = r#"
+-- 2.113.1: a star marko set (1) or took off (0) in TIQR. NULL = as Gmail has
+-- it. TIQR cannot change Gmail, so without this a walk of Gmail's Starred
+-- would undo a star set here; a star CHANGED in Gmail clears it again
+-- (commands/mail_sync.rs, add_flag / remove_flag).
+ALTER TABLE mail.mail_messages ADD COLUMN starred_here INTEGER;
+"#;
+
 const SCHEMA_V3: &str = r#"
 -- The words each number was read from, as JSON (commands/mail.rs, `Reading`).
 ALTER TABLE mail.mail_messages ADD COLUMN extracted_evidence TEXT;
@@ -603,7 +622,7 @@ mod tests {
         crate::db::run_migrations(&conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2, "every message is still here");
         let (labels, starred): (String, i64) = conn
@@ -665,7 +684,7 @@ mod tests {
 
         crate::db::run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
         let moved: Option<String> =

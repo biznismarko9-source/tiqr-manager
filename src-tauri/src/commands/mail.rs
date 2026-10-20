@@ -489,6 +489,34 @@ const NAMED_ENTITIES: &[(&str, &str)] = &[
     ("laquo", "\u{ab}"), ("raquo", "\u{bb}"), ("eacute", "\u{e9}"),
 ];
 
+/// 2.113.1: letters with accents, by their exact HTML name - `&Ntilde;` is
+/// "Ñ" and `&ntilde;` "ñ", so these are looked up, case and all, before the
+/// case-blind list above. A designed Spanish or German mail spells its names
+/// this way, and the key details (mail_facts.rs) are read from this text.
+const LETTER_ENTITIES: &[(&str, char)] = &[
+    ("Agrave", 'À'), ("agrave", 'à'), ("Egrave", 'È'), ("egrave", 'è'), ("Igrave", 'Ì'), ("igrave", 'ì'),
+    ("Ograve", 'Ò'), ("ograve", 'ò'), ("Ugrave", 'Ù'), ("ugrave", 'ù'), ("Aacute", 'Á'), ("aacute", 'á'),
+    ("Cacute", 'Ć'), ("cacute", 'ć'), ("Eacute", 'É'), ("eacute", 'é'), ("gacute", 'ǵ'), ("Iacute", 'Í'),
+    ("iacute", 'í'), ("Lacute", 'Ĺ'), ("lacute", 'ĺ'), ("Nacute", 'Ń'), ("nacute", 'ń'), ("Oacute", 'Ó'),
+    ("oacute", 'ó'), ("Racute", 'Ŕ'), ("racute", 'ŕ'), ("Sacute", 'Ś'), ("sacute", 'ś'), ("Uacute", 'Ú'),
+    ("uacute", 'ú'), ("Yacute", 'Ý'), ("yacute", 'ý'), ("Zacute", 'Ź'), ("zacute", 'ź'), ("Acirc", 'Â'),
+    ("acirc", 'â'), ("Ccirc", 'Ĉ'), ("ccirc", 'ĉ'), ("Ecirc", 'Ê'), ("ecirc", 'ê'), ("Gcirc", 'Ĝ'),
+    ("gcirc", 'ĝ'), ("Hcirc", 'Ĥ'), ("hcirc", 'ĥ'), ("Icirc", 'Î'), ("icirc", 'î'), ("Jcirc", 'Ĵ'),
+    ("jcirc", 'ĵ'), ("Ocirc", 'Ô'), ("ocirc", 'ô'), ("Scirc", 'Ŝ'), ("scirc", 'ŝ'), ("Ucirc", 'Û'),
+    ("ucirc", 'û'), ("Wcirc", 'Ŵ'), ("wcirc", 'ŵ'), ("xcirc", '◯'), ("Ycirc", 'Ŷ'), ("ycirc", 'ŷ'),
+    ("Atilde", 'Ã'), ("atilde", 'ã'), ("Itilde", 'Ĩ'), ("itilde", 'ĩ'), ("Ntilde", 'Ñ'), ("ntilde", 'ñ'),
+    ("Otilde", 'Õ'), ("otilde", 'õ'), ("Utilde", 'Ũ'), ("utilde", 'ũ'), ("Auml", 'Ä'), ("auml", 'ä'),
+    ("Euml", 'Ë'), ("euml", 'ë'), ("Iuml", 'Ï'), ("iuml", 'ï'), ("Ouml", 'Ö'), ("ouml", 'ö'),
+    ("Uuml", 'Ü'), ("uuml", 'ü'), ("Yuml", 'Ÿ'), ("yuml", 'ÿ'), ("Aring", 'Å'), ("aring", 'å'),
+    ("Uring", 'Ů'), ("uring", 'ů'), ("Ccedil", 'Ç'), ("ccedil", 'ç'), ("Gcedil", 'Ģ'), ("Kcedil", 'Ķ'),
+    ("kcedil", 'ķ'), ("Lcedil", 'Ļ'), ("lcedil", 'ļ'), ("Ncedil", 'Ņ'), ("ncedil", 'ņ'), ("Rcedil", 'Ŗ'),
+    ("rcedil", 'ŗ'), ("Scedil", 'Ş'), ("scedil", 'ş'), ("Tcedil", 'Ţ'), ("tcedil", 'ţ'), ("Ccaron", 'Č'),
+    ("ccaron", 'č'), ("Dcaron", 'Ď'), ("dcaron", 'ď'), ("Ecaron", 'Ě'), ("ecaron", 'ě'), ("Lcaron", 'Ľ'),
+    ("lcaron", 'ľ'), ("Ncaron", 'Ň'), ("ncaron", 'ň'), ("Rcaron", 'Ř'), ("rcaron", 'ř'), ("Scaron", 'Š'),
+    ("scaron", 'š'), ("Tcaron", 'Ť'), ("tcaron", 'ť'), ("Zcaron", 'Ž'), ("zcaron", 'ž'), ("szlig", 'ß'),
+    ("oslash", 'ø'), ("Oslash", 'Ø'), ("aelig", 'æ'), ("AElig", 'Æ'),
+];
+
 /// One pass, no allocation per entity. An `&` that does not begin a
 /// recognised entity is kept verbatim - this never guesses.
 pub(crate) fn decode_entities(input: &str) -> String {
@@ -513,6 +541,8 @@ pub(crate) fn decode_entities(input: &str) -> String {
                 num.parse::<u32>().ok()
             };
             code.and_then(char::from_u32).map(|c| c.to_string())
+        } else if let Some((_, c)) = LETTER_ENTITIES.iter().find(|(n, _)| *n == name) {
+            Some(c.to_string())
         } else {
             let lower = name.to_ascii_lowercase();
             NAMED_ENTITIES
@@ -701,14 +731,20 @@ const OTP_WINDOW: usize = 60;
 ///      `2026-10-17` is a date.
 ///   4. A bare 4-digit year is refused: mail says "2026" constantly and
 ///      almost never means a code.
+///
+/// 2.113.1: every place a code word appears is tried, not only the first -
+/// Ticketmaster's "John, Here's Your Authentication Code" names it in the
+/// subject and prints it under "Your Authentication Code:" in the text - and
+/// a code printed in spaced groups ("1 3 8 8 8 0", "138 880") is one code.
 pub(crate) fn extract_otp(subject: &str, body: &str) -> Option<String> {
     let hay = format!("{subject}\n{body}").to_lowercase();
     let bytes = hay.as_bytes();
     for kw in OTP_KEYWORDS {
-        let Some(at) = hay.find(kw) else { continue };
-        let to = (at + kw.len() + OTP_WINDOW).min(bytes.len());
-        if let Some(code) = first_standalone_code(&bytes[at..to]) {
-            return Some(code);
+        for (at, _) in hay.match_indices(kw) {
+            let to = (at + kw.len() + OTP_WINDOW).min(bytes.len());
+            if let Some(code) = first_standalone_code(&bytes[at..to]) {
+                return Some(code);
+            }
         }
     }
     None
@@ -729,6 +765,13 @@ fn first_standalone_code(b: &[u8]) -> Option<String> {
         }
         let len = i - start;
         let before_ok = start == 0 || !bad_before(b[start - 1]);
+        if before_ok {
+            if let Some((code, end)) = spaced_code(b, start, i) {
+                if end >= n || !bad_after(b, end) {
+                    return Some(code);
+                }
+            }
+        }
         let after_ok = i >= n || !bad_after(b, i);
         if (4..=8).contains(&len) && before_ok && after_ok {
             if let Ok(code) = std::str::from_utf8(&b[start..i]) {
@@ -739,6 +782,54 @@ fn first_standalone_code(b: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// 2.113.1: a code printed in groups of ONE length, one space apart - "1 3 8
+/// 8 8 0", "138 880", "12 34 56" - 4 to 8 digits in all. Groups of
+/// different lengths are not one number ("4821 10 minutes" is a code and a
+/// time), and neither is anything longer (a phone number). `b[start..end]`
+/// is the first group; returns the code and where it ends.
+fn spaced_code(b: &[u8], start: usize, end: usize) -> Option<(String, usize)> {
+    let group = end - start;
+    if group > 4 {
+        return None;
+    }
+    // Only from the first group: the tail of a longer spaced number ("0 9 1
+    // 1 2 3 4 5 6 7") is not a code of its own.
+    let continues = (start >= 2 && b[start - 1] == b' ' && b[start - 2].is_ascii_digit())
+        || (start >= 3 && b[start - 2..start] == [0xC2, 0xA0] && b[start - 3].is_ascii_digit());
+    if continues {
+        return None;
+    }
+    let mut digits: Vec<u8> = b[start..end].to_vec();
+    let (mut at, mut groups) = (end, 1);
+    loop {
+        // A plain space, or a no-break space as designed mail writes it.
+        let sep = if b.get(at) == Some(&b' ') {
+            1
+        } else if b.get(at..at + 2) == Some(&[0xC2, 0xA0][..]) {
+            2
+        } else {
+            0
+        };
+        if sep == 0 {
+            break;
+        }
+        let from = at + sep;
+        let mut to = from;
+        while to < b.len() && b[to].is_ascii_digit() {
+            to += 1;
+        }
+        if to - from != group {
+            break;
+        }
+        digits.extend_from_slice(&b[from..to]);
+        groups += 1;
+        at = to;
+    }
+    let code = String::from_utf8(digits).ok()?;
+    let fits = groups >= 2 && (4..=8).contains(&code.len()) && !(code.len() == 4 && looks_like_a_year(&code));
+    fits.then_some((code, at))
 }
 
 /// A character BEFORE the digits that means they are not a bare code:
@@ -1529,6 +1620,51 @@ pub(crate) fn reread_with_body(conn: &Connection, id: i64, body: &str) -> AppRes
     Ok(())
 }
 
+/// 2.113.1: the one-time codes of recent, trusted mail that has none yet,
+/// read again with today's rules - so a code already in the mailbox lands in
+/// OTP codes, not only the next one. Run once, by the mail store's schema
+/// step 4 (mail_store.rs).
+pub(crate) fn reread_codes(conn: &Connection) -> rusqlite::Result<usize> {
+    let since = (Utc::now() - ChronoDuration::days(60)).to_rfc3339();
+    // A message already opened has its whole text too; its start is read
+    // when the preview has no code.
+    let rows: Vec<(i64, String, String, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT m.id, IFNULL(m.subject, ''), IFNULL(m.snippet, ''), IFNULL(m.labels, ''),
+                    IFNULL(substr((SELECT b.text FROM mail_bodies b WHERE b.message_id = m.id), 1, 1200), '')
+               FROM mail_messages m
+              WHERE m.otp_code IS NULL AND m.received_at >= ?1",
+        )?;
+        let rows = stmt.query_map([&since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut n = 0;
+    for (id, subject, snippet, labels, body) in rows {
+        if is_untrusted(&labels) {
+            continue;
+        }
+        if let Some(code) = extract_otp(&subject, &snippet).or_else(|| extract_otp(&subject, &body)) {
+            n += conn.execute("UPDATE mail_messages SET otp_code = ?2 WHERE id = ?1", params![id, code])?;
+        }
+    }
+    Ok(n)
+}
+
+/// 2.113.1: an opened message's code from the start of its whole text, when
+/// its preview had none. The caller has checked it is not Spam or Trash.
+pub(crate) fn reread_code_with_body(conn: &Connection, id: i64, body: &str) -> AppResult<()> {
+    let row: Option<(String, Option<String>)> = conn
+        .query_row("SELECT subject, otp_code FROM mail_messages WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    if let Some((subject, None)) = row {
+        let head: String = body.chars().take(1200).collect();
+        if let Some(code) = extract_otp(&subject, &head) {
+            conn.execute("UPDATE mail_messages SET otp_code = ?2 WHERE id = ?1", params![id, code])?;
+        }
+    }
+    Ok(())
+}
+
 /// 2.113.0: everything a message says, read once, with the words for each.
 ///
 /// `head` is the subject and Gmail's preview; `body` is the message text when
@@ -2046,8 +2182,13 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
             i + o
         },
         sync_interval_seconds: sync_interval_seconds(conn),
+        // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
-            .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1 AND NOT IFNULL({}, 0)", muted_sql(conn)),
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0),
     })
 }
@@ -2627,6 +2768,26 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
 }
 
 /// Mark several read or unread at once.
+/// 2.113.1: marko's own star - "moznost dat na message starred". TIQR's,
+/// like read state (the Gmail access is read-only): it stays until he changes
+/// it here or the star is changed in Gmail (mail_sync.rs, `add_flag`).
+pub(crate) fn star_mail_impl(conn: &Connection, ids: &[i64], starred: bool) -> AppResult<usize> {
+    let mut n = 0;
+    for id in ids {
+        n += conn.execute(
+            "UPDATE mail_messages SET is_starred = ?2, starred_here = ?2 WHERE id = ?1",
+            params![id, i64::from(starred)],
+        )?;
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn star_mail(state: State<AppState>, ids: Vec<i64>, starred: bool) -> AppResult<usize> {
+    let conn = state.db.lock().unwrap();
+    star_mail_impl(&conn, &ids, starred)
+}
+
 #[tauri::command]
 pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> AppResult<usize> {
     if ids.is_empty() {
@@ -4487,7 +4648,7 @@ pub fn claim_mail_automation(state: State<AppState>) -> AppResult<MailConnection
 
 /// The folders this app defines, in the order the rail shows them.
 pub(crate) const BUILTIN_FOLDERS: &[&str] =
-    &["inbox", "important", "starred", "finances", "otp", "review", "promotions", "spam", "trash"];
+    &["inbox", "important", "starred", "finances", "otp", "review", "promotions", "muted", "spam", "trash"];
 
 /// A stored label id: lower-case letters, digits and `_` (`label_8`,
 /// `category_updates`). Anything else is not a folder - which is also what
@@ -4525,6 +4686,9 @@ enum Atom<'a> {
     Unmoved,
     /// 2.113.0: marko moved it here in TIQR.
     MovedTo(&'a str),
+    /// 2.113.1: from a sender marko muted, and not mail that could become a
+    /// record (`muted_sql`).
+    Muted,
 }
 
 /// 2.113.0: one of marko's own folders in TIQR (`tiqr_3`). Never a Gmail
@@ -4545,13 +4709,17 @@ fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
     let placed = |own: String, key: &str| {
         format!("(({} AND {own}) OR ({} AND NOT {}))", atom(Unmoved), atom(MovedTo(key)), atom(LocalTrash))
     };
+    // 2.113.1: a muted sender's mail is in Muted and in none of the places
+    // Gmail has it - Starred, Needs review and marko's own folders still
+    // show it, because those are his own choices.
+    let muted = atom(Muted);
     Some(match folder {
         // "hlavny inbox: tam budu vsetky spravy okrem napriklad spamu a
         // promotions" - everything received, archived mail included, but
         // not his own sent mail and not drafts.
         "inbox" => placed(
             format!(
-                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}))",
+                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}) AND NOT {muted})",
                 atom(Promo),
                 atom(Draft),
                 atom(Sent),
@@ -4559,23 +4727,27 @@ fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
             ),
             "inbox",
         ),
-        "important" => format!("NOT {junk} AND {}", atom(Recognised)),
+        "important" => format!("NOT {junk} AND {} AND NOT {muted}", atom(Recognised)),
         "starred" => format!("NOT {junk} AND {}", atom(Starred)),
-        "finances" => placed(format!("(NOT {junk} AND NOT {} AND {})", atom(Promo), atom(Finance)), "finances"),
-        "otp" => format!("NOT {junk} AND {}", atom(Otp)),
+        "finances" => placed(
+            format!("(NOT {junk} AND NOT {} AND {} AND NOT {muted})", atom(Promo), atom(Finance)),
+            "finances",
+        ),
+        "otp" => format!("NOT {junk} AND {} AND NOT {muted}", atom(Otp)),
         "review" => format!("NOT {} AND {}", atom(LocalTrash), atom(Review)),
-        "promotions" => placed(format!("(NOT {junk} AND {})", atom(Promo)), "promotions"),
+        "promotions" => placed(format!("(NOT {junk} AND {} AND NOT {muted})", atom(Promo)), "promotions"),
+        "muted" => format!("NOT {junk} AND {muted} AND {}", atom(Unmoved)),
         "spam" => format!("NOT {} AND {} AND {}", atom(LocalTrash), atom(Spam), atom(Unmoved)),
         "trash" => format!("({} OR ({} AND {}))", atom(LocalTrash), atom(Trash), atom(Unmoved)),
         key if is_local_folder_key(key) => format!("({} AND NOT {})", atom(MovedTo(key)), atom(LocalTrash)),
-        key if is_label_key(key) => placed(format!("(NOT {junk} AND {})", atom(Label(key))), key),
+        key if is_label_key(key) => placed(format!("(NOT {junk} AND {} AND NOT {muted})", atom(Label(key))), key),
         _ => return None,
     })
 }
 
 /// A fact read straight off a `mail_messages` row - for lists, which stop
-/// at the first 200 matches.
-fn row_atom(a: Atom) -> String {
+/// at the first 200 matches. `muted` is `muted_sql` of the moment.
+fn row_atom(a: Atom, muted: &str) -> String {
     match a {
         Atom::Spam => has_label("spam"),
         Atom::Trash => has_label("trash"),
@@ -4593,10 +4765,11 @@ fn row_atom(a: Atom) -> String {
         Atom::Unmoved => "(moved_to IS NULL)".to_string(),
         // `k` is a checked key (see `folder_expr`), never free text.
         Atom::MovedTo(k) => format!("(moved_to = '{k}')"),
+        Atom::Muted => muted.to_string(),
     }
 }
 
-/// The same fact, from `COUNT_ROWS` below - where each one was worked out
+/// The same fact, from `count_rows` below - where each one was worked out
 /// once per message rather than once per folder that asks.
 fn count_atom(a: Atom) -> String {
     match a {
@@ -4615,29 +4788,35 @@ fn count_atom(a: Atom) -> String {
         Atom::Label(k) => format!("(instr(l, ',{k},') > 0)"),
         Atom::Unmoved => "(mv IS NULL)".to_string(),
         Atom::MovedTo(k) => format!("(mv = '{k}')"),
+        Atom::Muted => "mu".to_string(),
     }
 }
 
 /// Every fact, once per message, MATERIALIZED - so counting nineteen folders
 /// over 100 000 messages builds each message's label list once instead of
-/// fifty times.
-const COUNT_ROWS: &str = "WITH m AS MATERIALIZED (
+/// fifty times. `muted` is `muted_sql` of the moment.
+fn count_rows(muted: &str) -> String {
+    format!(
+        "WITH m AS MATERIALIZED (
     SELECT ',' || IFNULL(labels, '') || ',' AS l, is_unread AS u, (is_starred = 1) AS st,
            (trashed_at IS NOT NULL) AS tt, (category <> 'other') AS imp, IFNULL(finance = 1, 0) AS fin,
-           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv
+           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv,
+           IFNULL({muted}, 0) AS mu
       FROM mail_messages
 ), f AS MATERIALIZED (
-    SELECT l, u, st, tt, imp, fin, otp, rev, mv,
+    SELECT l, u, st, tt, imp, fin, otp, rev, mv, mu,
            (instr(l, ',spam,') > 0) AS sp, (instr(l, ',trash,') > 0) AS tr,
            (instr(l, ',category_promotions,') > 0) AS pr, (instr(l, ',draft,') > 0) AS dr,
            (instr(l, ',sent,') > 0) AS se, (instr(l, ',inbox,') > 0) AS ib
       FROM m
-)";
+)"
+    )
+}
 
 /// One folder as a SQL condition on `mail_messages`, or `None` for
-/// something that is not one.
-pub(crate) fn folder_sql(folder: &str) -> Option<String> {
-    folder_expr(folder, &row_atom)
+/// something that is not one. `muted` is `muted_sql` of the moment.
+pub(crate) fn folder_sql(folder: &str, muted: &str) -> Option<String> {
+    folder_expr(folder, &|a| row_atom(a, muted))
 }
 
 /// One page of one folder, newest first.
@@ -4652,7 +4831,8 @@ pub(crate) fn list_folder_impl(
     before: Option<(&str, i64)>,
     limit: i64,
 ) -> AppResult<Vec<MailMessageSummary>> {
-    let Some(pred) = folder_sql(folder) else {
+    let muted = muted_sql(conn);
+    let Some(pred) = folder_sql(folder, &muted) else {
         return Err(AppError::Validation(format!("\"{folder}\" is not a mail folder")));
     };
     let mut clauses = vec![format!("({pred})")];
@@ -4703,7 +4883,7 @@ pub fn list_mail_folder(
 
 /// Total and unread for every folder asked for, in ONE pass over the mail.
 pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResult<Vec<MailFolderCount>> {
-    let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k).is_some()).collect();
+    let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k, "0").is_some()).collect();
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -4713,7 +4893,7 @@ pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResul
         cols.push(format!("IFNULL(SUM(CASE WHEN {p} THEN 1 ELSE 0 END), 0)"));
         cols.push(format!("IFNULL(SUM(CASE WHEN ({p}) AND u = 1 THEN 1 ELSE 0 END), 0)"));
     }
-    let sql = format!("{COUNT_ROWS} SELECT {} FROM f", cols.join(", "));
+    let sql = format!("{} SELECT {} FROM f", count_rows(&muted_sql(conn)), cols.join(", "));
     let values: Vec<i64> = conn.query_row(&sql, [], |r| (0..cols.len()).map(|i| r.get::<_, i64>(i)).collect())?;
     Ok(keys
         .iter()
@@ -4738,6 +4918,169 @@ pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolde
     keys.extend(user_label_keys(&conn)?);
     keys.extend(local_folders(&conn).into_iter().map(|f| f.id));
     folder_counts_impl(&conn, &keys)
+}
+
+// ===========================================================================
+// MUTED SENDERS (2.113.1)
+// ===========================================================================
+//
+// marko: "chcem aj funkcie hide those mails ak vela spamuju a na nejaky cas si
+// vies vypnut aby si ich neprijmal teda aj hej ale skryl ich". One address,
+// or everyone at a domain, muted for a day, a week, a month or until
+// unmuted. The mail still ARRIVES and is kept - it is only hidden: not in
+// the Inbox, Important, Finances, OTP codes, Promotions or the labels, not
+// counted as unread, and listed under Muted instead. Gmail is not changed.
+//
+// Mail TIQR recognises as a sale, a purchase, a payout, a refund, a
+// cancellation, an event change or an order update is NEVER hidden: muting
+// is for the noise, and a shop that also sends newsletters must not make
+// marko miss a sale. Starred, Needs review and his own folders show a muted
+// sender's mail too - those are his own choices.
+//
+// A mute that has ended keeps hiding what arrived before its end - that was
+// the noise - and new mail shows again. Unmute brings all of it back. The
+// list travels to the other computer with the mail settings.
+
+/// One muted sender.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailMute {
+    /// "news@shop.com" (that sender) or "shop.com" (everyone at it).
+    pub who: String,
+    pub since: String,
+    /// When it ends; `None` until unmuted.
+    pub until: Option<String>,
+}
+
+pub(crate) const MAIL_MUTED_KEY: &str = "mail_muted";
+
+/// What could become a record - never hidden by a mute.
+const RECORD_CATEGORIES: &str =
+    "'sale_confirmation','purchase_confirmation','payout','refund','cancellation','event_update','order_status'";
+
+/// Mailboxes everyone has: muting the whole domain would hide every person
+/// who writes from one.
+const SHARED_MAIL_DOMAINS: &[&str] = &[
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "icloud.com",
+    "me.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "gmx.de", "gmx.net", "web.de", "seznam.cz",
+    "email.cz", "centrum.cz", "centrum.sk", "azet.sk", "zoznam.sk", "post.sk", "atlas.sk", "pobox.sk", "wp.pl",
+    "o2.pl", "onet.pl", "interia.pl", "freemail.hu", "yandex.com", "mail.ru",
+];
+
+/// An address or a domain, as TIQR stores it - lower case, letters, digits
+/// and `.-_+%@` only, which is also what makes it safe in `muted_sql`.
+pub(crate) fn mute_target(raw: &str) -> Option<String> {
+    let who = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+    if who.is_empty() || who.len() > 254 || !who.chars().all(|c| c.is_ascii_alphanumeric() || ".-_+%@".contains(c)) {
+        return None;
+    }
+    match who.split_once('@') {
+        Some((local, domain)) => {
+            (!local.is_empty() && !domain.contains('@') && domain.contains('.') && !domain.starts_with('.')).then_some(who.clone())
+        }
+        None => {
+            let ok = who.contains('.')
+                && !who.starts_with(['.', '-'])
+                && !who.ends_with(['.', '-'])
+                && who.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+                && !SHARED_MAIL_DOMAINS.contains(&who.as_str());
+            ok.then_some(who)
+        }
+    }
+}
+
+pub(crate) fn mail_mutes(conn: &Connection) -> Vec<MailMute> {
+    get_setting(conn, MAIL_MUTED_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<MailMute>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| mute_target(&m.who).as_deref() == Some(m.who.as_str()))
+        .collect()
+}
+
+fn save_mutes(conn: &Connection, mutes: &[MailMute]) -> AppResult<()> {
+    let raw = serde_json::to_string(mutes).map_err(|e| AppError::Other(e.to_string()))?;
+    set_setting(conn, MAIL_MUTED_KEY, &raw)?;
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+/// The muted mail as a SQL condition on `mail_messages` - `0` when nobody is
+/// muted. Every value in it was checked (`mute_target`, a parsed time), so
+/// nothing a message says can reach the SQL.
+pub(crate) fn muted_sql(conn: &Connection) -> String {
+    let parts: Vec<String> = mail_mutes(conn)
+        .iter()
+        .filter_map(|m| {
+            let who = mute_target(&m.who)?;
+            let sender = if who.contains('@') {
+                format!("LOWER(from_address) = '{who}'")
+            } else {
+                format!("(LOWER(from_address) LIKE '%@{who}' OR LOWER(from_address) LIKE '%.{who}')")
+            };
+            Some(match &m.until {
+                None => sender,
+                Some(until) => {
+                    let until = DateTime::parse_from_rfc3339(until).ok()?.with_timezone(&Utc).to_rfc3339();
+                    format!("({sender} AND received_at < '{until}')")
+                }
+            })
+        })
+        .collect();
+    if parts.is_empty() {
+        return "0".to_string();
+    }
+    format!("(IFNULL(category, 'other') NOT IN ({RECORD_CATEGORIES}) AND ({}))", parts.join(" OR "))
+}
+
+pub(crate) fn mute_impl(conn: &Connection, who: &str, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
+    let Some(who) = mute_target(who) else {
+        return Err(AppError::Validation(
+            "That is not an address or a domain TIQR can mute (a shared one like gmail.com would hide everybody).".into(),
+        ));
+    };
+    if days.is_some_and(|d| !(1..=365).contains(&d)) {
+        return Err(AppError::Validation("A mute lasts from 1 to 365 days, or until you unmute.".into()));
+    }
+    let mut mutes = mail_mutes(conn);
+    mutes.retain(|m| m.who != who);
+    mutes.push(MailMute {
+        who,
+        since: now.to_rfc3339(),
+        until: days.map(|d| (now + ChronoDuration::days(d)).to_rfc3339()),
+    });
+    save_mutes(conn, &mutes)?;
+    Ok(mutes)
+}
+
+pub(crate) fn unmute_impl(conn: &Connection, who: &str) -> AppResult<Vec<MailMute>> {
+    let who = who.trim().trim_start_matches('@').to_ascii_lowercase();
+    let mut mutes = mail_mutes(conn);
+    mutes.retain(|m| m.who != who);
+    save_mutes(conn, &mutes)?;
+    Ok(mutes)
+}
+
+#[tauri::command]
+pub fn list_mail_mutes(state: State<AppState>) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    Ok(mail_mutes(&conn))
+}
+
+/// Mutes a sender (`who` an address) or a domain - for `days`, or until
+/// unmuted when `days` is empty.
+#[tauri::command]
+pub fn mute_mail_sender(state: State<AppState>, who: String, days: Option<i64>) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    mute_impl(&conn, &who, days, Utc::now())
+}
+
+/// Shows all of a muted sender's mail again.
+#[tauri::command]
+pub fn unmute_mail_sender(state: State<AppState>, who: String) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    unmute_impl(&conn, &who)
 }
 
 // ===========================================================================
@@ -5191,6 +5534,10 @@ mod tests {
         assert_eq!(decode_entities("it&rsquo;s"), "it's");
         assert_eq!(decode_entities("&euro;440"), "\u{20ac}440");
         assert_eq!(decode_entities("more&hellip;"), "more...");
+        // 2.113.1: accented letters keep their case.
+        assert_eq!(decode_entities("ESPA&Ntilde;A - Espa&ntilde;a"), "ESPAÑA - España");
+        assert_eq!(decode_entities("M&uuml;nchen, &Scaron;koda, Stra&szlig;e, &Eacute;lan"), "München, Škoda, Straße, Élan");
+        assert_eq!(decode_entities("&EACUTE;"), "\u{e9}", "an unknown spelling falls back to the old list");
     }
 
     #[test]
@@ -5763,6 +6110,81 @@ mod tests {
     fn a_code_too_far_from_its_keyword_is_not_adopted() {
         let far = format!("Your verification code{}  482913", " ".repeat(OTP_WINDOW + 20));
         assert_eq!(extract_otp(&far, ""), None);
+    }
+
+    /// 2.113.1: marko's own Ticketmaster mail - the code word in the subject,
+    /// the code under a second one, printed with spaces.
+    #[test]
+    fn a_code_printed_with_spaces_under_a_later_code_word_is_found() {
+        let subject = "John, Here's Your Authentication Code";
+        let snippet = "Ticketmaster Confirm Your Account Please use this code to verify you are the account owner. \
+                       Your Authentication Code: 1 3 8 8 8 0 If you didn't request an authentication code, please reset your password.";
+        assert_eq!(extract_otp(subject, snippet).as_deref(), Some("138880"));
+        assert_eq!(extract_otp("Your code", "Your code: 138\u{a0}880").as_deref(), Some("138880"), "a no-break space");
+        assert_eq!(extract_otp("Your code", "Your code is 12 34 56.").as_deref(), Some("123456"));
+        // Groups of different lengths are not one number, nor is a long run.
+        assert_eq!(extract_otp("Your code is 4821 10 minutes left", "").as_deref(), Some("4821"));
+        assert_eq!(extract_otp("Your code", "call 0 9 1 1 2 3 4 5 6 7 now"), None, "ten digits is a phone number");
+        assert_eq!(extract_otp("Your code", "date 20 26"), None, "a year in pieces is still a year");
+        // Every code word is tried, not only its first appearance.
+        assert_eq!(
+            extract_otp("Your verification code", "Thanks for signing up. Your verification code is 552190.").as_deref(),
+            Some("552190")
+        );
+    }
+
+    #[test]
+    fn codes_already_stored_are_read_again_once() {
+        let conn = test_conn();
+        let now = Utc::now().to_rfc3339();
+        let put_code_mail = |pid: &str, labels: &str| {
+            conn.execute(
+                "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                            received_at, first_seen_at, updated_at, labels)
+                 VALUES ('gmail', ?1, 'me', 'customer_support@email.ticketmaster.com', 'John, Here''s Your Authentication Code',
+                         'Your Authentication Code: 1 3 8 8 8 0 If you didn''t request it', ?2, ?2, ?2, ?3)",
+                params![pid, now, labels],
+            )
+            .unwrap();
+        };
+        put_code_mail("tm", "inbox");
+        put_code_mail("phish", "spam");
+        // Opened, with a preview that never reached the code.
+        conn.execute(
+            "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                        received_at, first_seen_at, updated_at, labels)
+             VALUES ('gmail', 'opened', 'me', 'noreply@seatgeek.com', 'Sign in to SeatGeek', 'Hi John, someone is signing in',
+                     ?1, ?1, ?1, 'inbox')",
+            [&now],
+        )
+        .unwrap();
+        let opened = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO mail_bodies (message_id, text, fetched_at) VALUES (?1, 'Hi John, someone is signing in.\nYour login code: 7 7 4 0 1 9', 'x')",
+            [opened],
+        )
+        .unwrap();
+        assert_eq!(reread_codes(&conn).unwrap(), 2);
+        let code: Option<String> =
+            conn.query_row("SELECT otp_code FROM mail_messages WHERE provider_message_id = 'tm'", [], |r| r.get(0)).unwrap();
+        assert_eq!(code.as_deref(), Some("138880"));
+        let pids: Vec<String> = list_folder_impl(&conn, "otp", None, None, 10).unwrap().into_iter().map(|m| m.provider_message_id).collect();
+        assert_eq!(pids, vec!["opened", "tm"], "in OTP codes now, newest first; never a code from Spam");
+        assert_eq!(reread_codes(&conn).unwrap(), 0, "nothing twice");
+    }
+
+    /// 2.113.1: "moznost dat na message starred".
+    #[test]
+    fn a_star_set_in_tiqr_puts_the_message_in_starred() {
+        let conn = test_conn();
+        let id = put(&conn, "m", "inbox", "2026-10-10T00:00:00Z");
+        assert!(folder_pids(&conn, "starred").is_empty());
+        assert_eq!(star_mail_impl(&conn, &[id], true).unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "starred"), vec!["m"]);
+        let here: Option<i64> = conn.query_row("SELECT starred_here FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(here, Some(1), "remembered as TIQR's own star");
+        star_mail_impl(&conn, &[id], false).unwrap();
+        assert!(folder_pids(&conn, "starred").is_empty());
     }
 
     // ---- starred, spam and trust ------------------------------------------
@@ -7199,6 +7621,87 @@ mod tests {
         assert_eq!(folder_pids(&conn, "spam"), vec!["spam"]);
         assert_eq!(folder_pids(&conn, "trash"), vec!["gtrash", "ttrash"]);
         assert!(list_folder_impl(&conn, "'; DROP TABLE mail_messages; --", None, None, 10).is_err());
+    }
+
+    /// 2.113.1: "hide those mails ak vela spamuju a na nejaky cas si vies
+    /// vypnut ... aby si ich neprijmal, teda aj hej, ale skryl ich".
+    #[test]
+    fn a_muted_sender_still_arrives_but_is_hidden_until_unmuted() {
+        let conn = test_conn();
+        let from = |id: i64, addr: &str| {
+            conn.execute("UPDATE mail_messages SET from_address = ?2 WHERE id = ?1", params![id, addr]).unwrap();
+        };
+        let news = put(&conn, "news", "inbox", "2026-10-10T00:00:00Z");
+        from(news, "News@Shop.com");
+        let promo = put(&conn, "promo", "inbox,category_promotions", "2026-10-09T00:00:00Z");
+        from(promo, "deals@mail.shop.com");
+        let sale = put(&conn, "sale", "inbox", "2026-10-08T00:00:00Z");
+        from(sale, "orders@shop.com");
+        conn.execute("UPDATE mail_messages SET category = 'sale_confirmation' WHERE id = ?1", [sale]).unwrap();
+        let star = put(&conn, "star", "inbox,starred", "2026-10-07T00:00:00Z");
+        from(star, "news@shop.com");
+        let other = put(&conn, "lookalike", "inbox", "2026-10-06T00:00:00Z");
+        from(other, "hello@notshop.com");
+        conn.execute("UPDATE mail_messages SET is_unread = 1", []).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-10-11T00:00:00+00:00").unwrap().with_timezone(&Utc);
+
+        // One sender, until unmuted: out of the Inbox, into Muted, not unread.
+        mute_impl(&conn, "news@shop.com", None, now).unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["sale", "lookalike"]);
+        assert_eq!(folder_pids(&conn, "muted"), vec!["news", "star"]);
+        assert_eq!(folder_pids(&conn, "starred"), vec!["star"], "a star is marko's own choice");
+        assert_eq!(status_impl(&conn).unwrap().unread_count, 3, "a muted sender's mail is not counted as unread");
+
+        // Everyone at a domain: its subdomains too, never a lookalike, never a sale.
+        mute_impl(&conn, "@shop.com", Some(7), now).unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["sale", "lookalike"], "a sale is never hidden");
+        assert_eq!(folder_pids(&conn, "promotions"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "muted"), vec!["news", "promo", "star"]);
+        let keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
+        for c in folder_counts_impl(&conn, &keys).unwrap() {
+            assert_eq!(c.total as usize, folder_pids(&conn, &c.key).len(), "the count of {} agrees with its list", c.key);
+        }
+
+        // A mute that has ended keeps hiding what came before its end; new mail shows.
+        unmute_impl(&conn, "news@shop.com").unwrap();
+        let mut mutes = mail_mutes(&conn);
+        assert_eq!(mutes.len(), 1);
+        mutes[0].until = Some("2026-10-09T12:00:00+00:00".into());
+        save_mutes(&conn, &mutes).unwrap();
+        let later = put(&conn, "later", "inbox", "2026-10-12T00:00:00Z");
+        from(later, "deals@shop.com");
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["later", "news", "sale", "lookalike"]);
+        assert_eq!(folder_pids(&conn, "muted"), vec!["promo", "star"], "what came before the end stays hidden");
+
+        // Unmute: everything back.
+        unmute_impl(&conn, "SHOP.com").unwrap();
+        assert!(mail_mutes(&conn).is_empty());
+        assert_eq!(folder_pids(&conn, "muted"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "promotions"), vec!["promo"]);
+    }
+
+    #[test]
+    fn only_a_real_address_or_domain_can_be_muted() {
+        let conn = test_conn();
+        let now = Utc::now();
+        assert_eq!(mute_target(" @Shop.COM "), Some("shop.com".into()));
+        assert_eq!(mute_target("News+tag@shop.com"), Some("news+tag@shop.com".into()));
+        for bad in ["gmail.com", "@outlook.com", "shop", "x'; DROP TABLE mail_messages; --", "a@b", "@", "", "-shop.com", "a@@b.com"] {
+            assert!(mute_target(bad).is_none(), "{bad:?} must not be mutable");
+            assert!(mute_impl(&conn, bad, None, now).is_err(), "{bad:?}");
+        }
+        assert!(mute_target("anna@gmail.com").is_some(), "one person at gmail.com can be muted");
+        assert!(mute_impl(&conn, "shop.com", Some(0), now).is_err());
+        assert!(mute_impl(&conn, "shop.com", Some(400), now).is_err());
+        // A list edited by hand (or by an older version) cannot reach the SQL.
+        set_setting(&conn, MAIL_MUTED_KEY, r#"[{"who":"x' OR 1=1 --","since":"x","until":null},{"who":"shop.com","since":"x","until":"not a time"}]"#).unwrap();
+        assert!(mail_mutes(&conn).iter().all(|m| m.who == "shop.com"));
+        assert_eq!(muted_sql(&conn), "0", "a mute with a broken end hides nothing");
+        // Muting again replaces the old mute.
+        mute_impl(&conn, "shop.com", Some(1), now).unwrap();
+        mute_impl(&conn, "shop.com", None, now).unwrap();
+        let m = mail_mutes(&conn);
+        assert_eq!((m.len(), m[0].until.clone()), (1, None));
     }
 
     /// 2.113.0: "aby som vedel dane maily presunut tak kde chcem".

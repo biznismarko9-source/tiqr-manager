@@ -21,13 +21,22 @@
 // A click on a link is caught here and opened in the browser - after asking,
 // when the text of the link names a different site than the one it opens,
 // or when the message is in Spam or Trash.
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+//
+// 2.113.1: a link that is a file ("Download receipt", "Download invoice") is
+// downloaded INTO TIQR on the click and kept with the message like an
+// attachment - "realne ked na to kliknem tak sa mi stiahne". And the key
+// details of the message (where the tickets go, to whom, the price, by when)
+// sit at the top, a person's details hidden until clicked. A sender that
+// spams can be muted for a while, and a message can be starred here.
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, errMsg } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import { MUTE_SPANS, canMuteDomain, domainOf, muteFor, muteState } from "../lib/mailMute";
 import {
   fileSize,
   hostOf,
+  isDownloadLink,
   languageName,
   linkify,
   previewType,
@@ -40,23 +49,28 @@ import type {
   MailAiResult,
   MailAttachmentInfo,
   MailConnectionStatus,
+  MailFact,
   MailMessageSummary,
+  MailMute,
   MailProposal,
   MailView,
 } from "../lib/types";
 import { SendToDiscordButton } from "./Discord";
 import {
   IconAlertTriangle,
+  IconBellOff,
   IconChevronDown,
   IconCopy,
   IconDownload,
   IconExternalLink,
   IconEye,
+  IconEyeOff,
   IconFolder,
   IconLanguages,
   IconPaperclip,
   IconRefresh,
   IconSparkles,
+  IconStar,
   IconTrash,
   IconX,
 } from "./icons";
@@ -191,6 +205,127 @@ export function MailMoveMenu({
 }
 
 /* ---------------------------------------------------------------------------
+   Mute (2.113.1).
+   --------------------------------------------------------------------------- */
+
+/** Mute this sender, or everyone at its domain, for a while - "hide those
+ *  mails ak vela spamuju a na nejaky cas si vies vypnut". Or, when it is
+ *  muted, how long for and Unmute. */
+function MailMuteMenu({
+  address,
+  mute,
+  onMute,
+  onUnmute,
+}: {
+  address: string;
+  mute: MailMute | null;
+  onMute: (who: string, days: number | null) => void;
+  onUnmute: (who: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  /** Where the menu opens - in the window, so a narrow reader cannot cut it. */
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    const away = () => setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", key);
+    window.addEventListener("resize", away);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("resize", away);
+    };
+  }, [open]);
+  const toggle = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setAt({ left: Math.max(8, Math.min(r.left, window.innerWidth - 288 - 8)), top: r.bottom + 4 });
+    setOpen((v) => !v);
+  };
+
+  const domain = domainOf(address);
+  const choices = [
+    { who: address.trim().toLowerCase(), label: "This sender", detail: address.trim().toLowerCase() },
+    ...(canMuteDomain(domain) ? [{ who: domain, label: "Everyone at", detail: domain }] : []),
+  ];
+  const pick = (run: () => void) => {
+    setOpen(false);
+    run();
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <Button
+        variant={mute ? "secondary" : "ghost"}
+        size="sm"
+        onClick={toggle}
+        aria-expanded={open}
+        title={mute ? `Muted ${muteState(mute)}` : "Hide this sender's mail for a while"}
+      >
+        <IconBellOff className="h-3.5 w-3.5" />
+        {mute ? "Muted" : "Mute"}
+        <IconChevronDown className="h-3 w-3" />
+      </Button>
+      {open && at && (
+        <div
+          role="menu"
+          style={{ position: "fixed", left: at.left, top: at.top }}
+          className="z-40 w-72 rounded-lg bg-surface-raised p-2 shadow-overlay animate-[pop-in_.14s_ease-out]"
+        >
+          {mute ? (
+            <div className="px-1 pb-1">
+              <p className="text-xs leading-snug text-slate-700 dark:text-slate-200">
+                <span className="break-all font-mono">{mute.who}</span> is muted {muteState(mute)}.
+              </p>
+              <button
+                type="button"
+                role="menuitem"
+                className="mt-2 w-full rounded-md bg-surface-muted px-2.5 py-1.5 text-left text-xs font-medium text-brand-700 hover:bg-slate-200/70 dark:text-brand-300 dark:hover:bg-slate-700/60"
+                onClick={() => pick(() => onUnmute(mute.who))}
+              >
+                Unmute - show all of its mail again
+              </button>
+            </div>
+          ) : (
+            choices.map((c) => (
+              <div key={c.who} className="px-1 py-1">
+                <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title={c.detail}>
+                  {c.label} <span className="font-mono text-slate-700 dark:text-slate-200">{c.detail}</span>
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {MUTE_SPANS.map((span) => (
+                    <button
+                      key={span.label}
+                      type="button"
+                      role="menuitem"
+                      className="rounded-md bg-surface-muted px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-brand-500/15 hover:text-brand-700 dark:text-slate-200 dark:hover:text-brand-300"
+                      onClick={() => pick(() => onMute(c.who, span.days))}
+                    >
+                      {span.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+          <p className="mt-1 border-t border-slate-200 px-1 pt-1.5 text-[10.5px] leading-snug text-slate-400 dark:border-slate-800 dark:text-slate-500">
+            Its mail still arrives - hidden under Muted and not counted as unread. Orders, sales and payouts always
+            show. Gmail is not changed.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
    Links: the hover chip with one-click copy.
    --------------------------------------------------------------------------- */
 
@@ -205,13 +340,18 @@ interface ChipState {
 
 function LinkChip({
   chip,
+  canDownload,
   onOpen,
+  onDownload,
   onCopy,
   onEnter,
   onLeave,
 }: {
   chip: ChipState;
+  /** False for mail in Spam or Trash, whose files TIQR never downloads. */
+  canDownload: boolean;
   onOpen: () => void;
+  onDownload: () => void;
   onCopy: () => void;
   onEnter: () => void;
   onLeave: () => void;
@@ -219,7 +359,8 @@ function LinkChip({
   const mail = chip.href.toLowerCase().startsWith("mailto:");
   const where = mail ? chip.href.slice(7) : (hostOf(chip.href) ?? chip.href);
   const shown = shownElsewhere(chip.text, chip.href);
-  const width = 360;
+  const file = canDownload && !mail && isDownloadLink(chip.text, chip.href);
+  const width = file ? 400 : 360;
   const left = Math.max(8, Math.min(chip.left, window.innerWidth - width - 8));
   const below = chip.bottom + 40 < window.innerHeight;
   return (
@@ -241,8 +382,20 @@ function LinkChip({
         <IconCopy className="h-3 w-3" />
         {mail ? "Copy address" : "Copy link"}
       </button>
+      {file && (
+        <button
+          type="button"
+          title="Download the file into TIQR"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium hover:bg-white/15"
+          onClick={onDownload}
+        >
+          <IconDownload className="h-3 w-3" />
+          Download
+        </button>
+      )}
       <button
         type="button"
+        title={file ? "Open it in the browser instead" : undefined}
         className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium hover:bg-white/15"
         onClick={onOpen}
       >
@@ -386,7 +539,9 @@ const MailHtmlFrame = memo(function MailHtmlFrame({
   return (
     <iframe
       ref={ref}
-      title="Message"
+      // Not a `title`: the frame's title shows as a tooltip over the whole
+      // message ("Message" floating over the text).
+      aria-label="Message"
       // No allow-scripts: nothing in the message can ever run. allow-same-
       // origin only lets THIS page measure it and catch its link clicks.
       sandbox="allow-same-origin"
@@ -567,15 +722,16 @@ function AttachmentPreview({ messageId, att, onClose }: { messageId: number; att
 function AttachmentList({
   messageId,
   items,
+  onView,
   onUpdated,
 }: {
   messageId: number;
   items: MailAttachmentInfo[];
+  onView: (att: MailAttachmentInfo) => void;
   onUpdated: () => void;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const [previewing, setPreviewing] = useState<MailAttachmentInfo | null>(null);
 
   const run = async (att: MailAttachmentInfo, what: "open" | "save") => {
     setBusy(att.partId);
@@ -608,7 +764,14 @@ function AttachmentList({
                   {a.filename}
                 </span>
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {[fileSize(a.size), a.kind && a.kind !== "other" ? a.kind.toUpperCase() : null].filter(Boolean).join(" · ")}
+                  {[
+                    fileSize(a.size),
+                    a.kind && a.kind !== "other" ? a.kind.toUpperCase() : null,
+                    // 2.113.1: downloaded from a link in the message.
+                    a.partId.startsWith("L") ? "from a link" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </span>
               </span>
               {busy === a.partId && <Spinner className="h-3.5 w-3.5" />}
@@ -621,7 +784,7 @@ function AttachmentList({
             )}
             <div className="mt-1.5 flex flex-wrap gap-1">
               {a.canPreview && (
-                <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setPreviewing(a)}>
+                <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => onView(a)}>
                   <IconEye className="h-3.5 w-3.5" /> View
                 </Button>
               )}
@@ -637,15 +800,101 @@ function AttachmentList({
           </li>
         ))}
       </ul>
-      {previewing && (
-        <AttachmentPreview
-          messageId={messageId}
-          att={previewing}
-          onClose={() => {
-            setPreviewing(null);
-            onUpdated();
-          }}
-        />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Key details (2.113.1).
+   --------------------------------------------------------------------------- */
+
+/** The few lines that matter, from the message's own text
+ *  (commands/mail_facts.rs). marko: "poslat tam, meno a mail a to daj ako
+ *  hidden a ked na to kliknes tak sa to zobrazi a aj cena". A person's
+ *  details show as dots until clicked; any line copies with one click,
+ *  hidden or not. */
+function KeyDetails({ facts, onCopy }: { facts: MailFact[]; onCopy: (text: string, what: string) => void }) {
+  const [shown, setShown] = useState<Set<number>>(() => new Set());
+  const hidable = facts.flatMap((f, i) => (f.private ? [i] : []));
+  const allShown = hidable.length > 0 && hidable.every((i) => shown.has(i));
+  const toggle = (i: number) =>
+    setShown((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
+  return (
+    <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3">
+      <div className="flex items-center gap-2">
+        <p className="section-title">Key details</p>
+        {hidable.length > 0 && (
+          <button
+            type="button"
+            className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
+            onClick={() => setShown(allShown ? new Set() : new Set(hidable))}
+          >
+            {allShown ? <IconEyeOff className="h-3 w-3" /> : <IconEye className="h-3 w-3" />}
+            {allShown ? "Hide personal details" : "Show personal details"}
+          </button>
+        )}
+      </div>
+      <dl className="mt-1.5 grid grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)] items-center gap-x-4 gap-y-1 text-xs">
+        {facts.map((f, i) => {
+          const hidden = f.private && !shown.has(i);
+          return (
+            <Fragment key={`${f.label}-${i}`}>
+              <dt className="truncate text-slate-500 dark:text-slate-400" title={f.label}>
+                {f.label}
+              </dt>
+              <dd className="group flex min-w-0 items-center gap-1.5">
+                {hidden ? (
+                  <button
+                    type="button"
+                    onClick={() => toggle(i)}
+                    title="Click to show"
+                    className="-ml-2 inline-flex items-center gap-1.5 rounded-md bg-slate-200/80 px-2 py-0.5 text-slate-500 transition hover:bg-slate-300/80 dark:bg-slate-700/70 dark:text-slate-400 dark:hover:bg-slate-600/70"
+                  >
+                    <span aria-hidden="true" className="tracking-[0.18em]">
+                      ••••••••
+                    </span>
+                    <span className="text-[10.5px] font-medium">Show</span>
+                  </button>
+                ) : f.private ? (
+                  <button
+                    type="button"
+                    onClick={() => toggle(i)}
+                    title="Click to hide"
+                    className="-ml-2 min-w-0 break-words rounded-md px-2 py-0.5 text-left text-slate-800 transition hover:bg-slate-200/60 dark:text-slate-100 dark:hover:bg-slate-700/50"
+                  >
+                    {f.value}
+                  </button>
+                ) : (
+                  <span
+                    className={`min-w-0 break-words py-0.5 text-slate-800 dark:text-slate-100 ${f.kind === "money" ? "num font-semibold" : ""}`}
+                  >
+                    {f.value}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  aria-label={`Copy ${f.label}`}
+                  title="Copy"
+                  className="shrink-0 rounded p-0.5 text-slate-400 opacity-0 transition hover:text-slate-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-slate-200"
+                  onClick={() => onCopy(f.value, f.label)}
+                >
+                  <IconCopy className="h-3 w-3" />
+                </button>
+              </dd>
+            </Fragment>
+          );
+        })}
+      </dl>
+      {hidable.length > 0 && (
+        <p className="mt-2 text-[10.5px] text-slate-400 dark:text-slate-500">
+          A person&apos;s details stay hidden until you click them - in Discord too, as a spoiler.
+        </p>
       )}
     </div>
   );
@@ -660,8 +909,11 @@ export function MailReader({
   status,
   places,
   placeName,
+  mutes,
   onMove,
   onTrash,
+  onMute,
+  onUnmute,
   onChanged,
 }: {
   message: MailMessageSummary;
@@ -669,8 +921,12 @@ export function MailReader({
   places: MailPlace[];
   /** The name of the place a message was moved to, for its badge. */
   placeName: (key: string) => string | null;
+  /** 2.113.1: every muted sender. */
+  mutes: MailMute[];
   onMove: (ids: number[], target: string) => void;
   onTrash: (ids: number[], restore: boolean) => void;
+  onMute: (who: string, days: number | null) => void;
+  onUnmute: (who: string) => void;
   onChanged: (change: ReaderChange) => void;
 }) {
   const toast = useToast();
@@ -682,9 +938,14 @@ export function MailReader({
   const [ai, setAi] = useState<MailAiResult | null>(null);
   const [aiBusy, setAiBusy] = useState<"translate" | "summary" | null>(null);
   const [chip, setChip] = useState<ChipState | null>(null);
-  const [confirmLink, setConfirmLink] = useState<{ href: string; shown: string | null } | null>(null);
+  const [confirmLink, setConfirmLink] = useState<{ href: string; shown: string | null; download: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState<MailAttachmentInfo | null>(null);
+  /** The link whose file is being downloaded into TIQR. */
+  const [downloading, setDownloading] = useState<string | null>(null);
   const hideTimer = useRef<number | null>(null);
+  const currentId = useRef(message.id);
+  currentId.current = message.id;
 
   const junk = isJunk(message);
   const code = message.otpCode ?? null;
@@ -717,6 +978,7 @@ export function MailReader({
     setProposal(null);
     setAi(null);
     setChip(null);
+    setPreviewing(null);
     load();
     api
       .getMailProposal(message.id)
@@ -740,12 +1002,52 @@ export function MailReader({
       toast.error(errMsg(e));
     }
   };
+  /** A link that is a file, downloaded into TIQR and kept with the message.
+   *  A web page - or a file TIQR could not get (a sign-in in front of it) -
+   *  opens in the browser instead, so a click always gets marko somewhere. */
+  const downloadLink = async (href: string) => {
+    const id = message.id;
+    if (downloading === href) return;
+    setDownloading(href);
+    try {
+      const got = await api.downloadMailLink(id, href);
+      if (currentId.current !== id) return;
+      if (got.outcome !== "file" || !got.partId) {
+        await openNow(href);
+        return;
+      }
+      const v = await api.getMailView(id);
+      if (currentId.current !== id) return;
+      setView((prev) => (prev ? { ...prev, attachments: v.attachments } : v));
+      if (!message.hasAttachments) onChanged({ hasAttachments: true });
+      const att = v.attachments.find((a) => a.partId === got.partId);
+      if (att?.canPreview) setPreviewing(att);
+      else toast.success(`${got.filename ?? "The file"} is in TIQR, with the attachments.`);
+    } catch (e) {
+      toast.error(`${errMsg(e)} Opening it in the browser.`);
+      await openNow(href);
+    } finally {
+      setDownloading((d) => (d === href ? null : d));
+    }
+  };
+  const downloadRef = useRef(downloadLink);
+  downloadRef.current = downloadLink;
+
+  /** `auto`: a file is downloaded, anything else opens in the browser. The
+   *  link chip asks for one of the two outright. */
   const onLink = useCallback(
-    (href: string, text: string) => {
+    (href: string, text: string, mode: "auto" | "browser" | "download" = "auto") => {
       if (!openable(href)) return;
       setChip(null);
+      // A click inside the message leaves the keyboard in its frame, where
+      // Escape would never reach the preview or the question that follows.
+      if (document.activeElement instanceof HTMLIFrameElement) document.activeElement.blur();
+      // Mail in Spam or Trash never has a file downloaded into TIQR.
+      const web = /^https?:\/\//i.test(href.trim());
+      const download = !junk && web && (mode === "download" || (mode === "auto" && isDownloadLink(text, href)));
       const shown = shownElsewhere(text, href);
-      if (shown || junk) setConfirmLink({ href, shown });
+      if (shown || junk) setConfirmLink({ href, shown, download });
+      else if (download) void downloadRef.current(href);
       else void openNow(href);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -820,6 +1122,28 @@ export function MailReader({
         >
           {message.isUnread ? "Mark read" : "Mark unread"}
         </Button>
+        {/* 2.113.1: "moznost dat na message starred" - TIQR's own star. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          title={message.isStarred ? "Remove the star (in TIQR)" : "Star it (in TIQR - Gmail is not changed)"}
+          onClick={async () => {
+            try {
+              await api.starMail([message.id], !message.isStarred);
+              onChanged({ isStarred: !message.isStarred });
+            } catch (e) {
+              toast.error(errMsg(e));
+            }
+          }}
+        >
+          <IconStar
+            className={`h-3.5 w-3.5 ${message.isStarred ? "fill-amber-400 text-amber-500" : ""}`}
+          />
+          {message.isStarred ? "Starred" : "Star"}
+        </Button>
+        {!junk && (
+          <MailMuteMenu address={message.fromAddress} mute={muteFor(message.fromAddress, mutes)} onMute={onMute} onUnmute={onUnmute} />
+        )}
         <span className="mx-0.5 h-5 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
         {!sameLanguage && (
           <Button
@@ -844,6 +1168,11 @@ export function MailReader({
           Summary
         </Button>
         <SendToDiscordButton kind="mail" id={message.id} size="sm" />
+        {downloading && (
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <Spinner className="h-3.5 w-3.5" /> Downloading the file...
+          </span>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto" onScroll={() => chip && setChip(null)}>
@@ -936,6 +1265,11 @@ export function MailReader({
             </button>
           )}
 
+          {/* 2.113.1: the lines that matter, from the whole message. */}
+          {!junk && (view?.facts ?? []).length > 0 && (
+            <KeyDetails key={message.id} facts={view?.facts ?? []} onCopy={(t, what) => void copy(t, what)} />
+          )}
+
           {/* WHAT THIS COULD BECOME - every figure with its source, how sure,
               and whether something like it already exists
               (components/MailProposal.tsx). */}
@@ -1026,7 +1360,9 @@ export function MailReader({
             </div>
           )}
 
-          {attachments.length > 0 && <AttachmentList messageId={message.id} items={attachments} onUpdated={refreshAttachments} />}
+          {attachments.length > 0 && (
+            <AttachmentList messageId={message.id} items={attachments} onView={setPreviewing} onUpdated={refreshAttachments} />
+          )}
         </div>
 
         {/* ---- the message itself ----------------------------------------- */}
@@ -1110,9 +1446,11 @@ export function MailReader({
       {chip && (
         <LinkChip
           chip={chip}
+          canDownload={!junk}
           onEnter={() => hideTimer.current && window.clearTimeout(hideTimer.current)}
           onLeave={onHoverEnd}
-          onOpen={() => onLink(chip.href, chip.text)}
+          onOpen={() => onLink(chip.href, chip.text, "browser")}
+          onDownload={() => onLink(chip.href, chip.text, "download")}
           onCopy={() => {
             const mail = chip.href.toLowerCase().startsWith("mailto:");
             void copy(mail ? chip.href.slice(7) : chip.href, mail ? "Address" : "Link");
@@ -1138,15 +1476,28 @@ export function MailReader({
             </>
           )
         }
-        confirmLabel="Open it"
+        confirmLabel={confirmLink?.download ? "Download it" : "Open it"}
         danger={!!confirmLink?.shown}
         onCancel={() => setConfirmLink(null)}
         onConfirm={() => {
-          const href = confirmLink?.href;
+          const c = confirmLink;
           setConfirmLink(null);
-          if (href) void openNow(href);
+          if (!c) return;
+          if (c.download) void downloadRef.current(c.href);
+          else void openNow(c.href);
         }}
       />
+
+      {previewing && (
+        <AttachmentPreview
+          messageId={message.id}
+          att={previewing}
+          onClose={() => {
+            setPreviewing(null);
+            refreshAttachments();
+          }}
+        />
+      )}
     </div>
   );
 }

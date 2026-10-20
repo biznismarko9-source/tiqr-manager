@@ -99,9 +99,9 @@ type NavItem = { to: string; label: string; icon: typeof IconGauge; end?: boolea
 // casti": the ticket business (Dashboard, Events, Inventory, Sales), then
 // Finance on its own, then Mail and Notes. Still only links, no headers and
 // nothing to open or close (PROTECTED_AREAS, 2.43.0) - just a hairline
-// between the groups. Pulls was not in that list; it stays where 2.98.0 put
-// it on marko's own request, at the very bottom under everything ("a pull
-// is a favour done on somebody else's card", not marko's own stock).
+// between the groups. 2.113.1: Pulls right under Sales, in the ticket group
+// ("pulls daj pod sales") - no longer at the very bottom where 2.98.0 had
+// put it.
 const NAV_GROUPS: NavItem[][] = [
   [
     { to: "/", label: "Dashboard", icon: IconGauge, end: true },
@@ -112,6 +112,7 @@ const NAV_GROUPS: NavItem[][] = [
     { to: "/events", label: "Events", icon: IconCalendarDays },
     { to: "/orders", label: "Inventory", icon: IconPackage },
     { to: "/sales", label: "Sales", icon: IconReceipt },
+    { to: "/pulls", label: "Pulls", icon: IconUsers },
   ],
   // Finance covers money that has nothing to do with tickets (rent, fees,
   // personal spend) and owns its own four tabs, categories and accounts.
@@ -122,7 +123,6 @@ const NAV_GROUPS: NavItem[][] = [
     // 2.61.0: Notes. The 2.51-2.57 spreadsheet is gone from the app; its
     // TABLES are deliberately still in the database (CURRENT_STATE 2.61.0).
     { to: "/notes", label: "Notes", icon: IconClipboard },
-    { to: "/pulls", label: "Pulls", icon: IconUsers },
   ],
 ];
 

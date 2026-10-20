@@ -140,6 +140,8 @@ import type {
   MailView,
   MailAiResult,
   MailLocalFolder,
+  MailLinkDownload,
+  MailMute,
 } from "./types";
 
 export const api = {
@@ -851,6 +853,18 @@ export const api = {
   /** A normal save dialog. Null when marko closed it. */
   saveMailAttachment: (id: number, partId: string) =>
     invoke<string | null>("save_mail_attachment", { id, partId }),
+  /** 2.113.1: downloads the file a link in the message points at ("Download
+   *  receipt") and keeps it with the message like an attachment. "page"
+   *  when the address is a web page - open that in the browser instead. */
+  downloadMailLink: (id: number, url: string) =>
+    invoke<MailLinkDownload>("download_mail_link", { id, url }),
+  /** 2.113.1: muted senders - their mail still arrives, hidden under Muted.
+   *  `who` is an address or a domain; `days` null mutes until unmuted. */
+  listMailMutes: () => invoke<MailMute[]>("list_mail_mutes"),
+  muteMailSender: (who: string, days: number | null) => invoke<MailMute[]>("mute_mail_sender", { who, days }),
+  unmuteMailSender: (who: string) => invoke<MailMute[]>("unmute_mail_sender", { who }),
+  /** 2.113.1: TIQR's own star (Gmail is read-only here). */
+  starMail: (ids: number[], starred: boolean) => invoke<number>("star_mail", { ids, starred }),
   /** Translate or summarise an opened message - one click, one small call,
    *  and the answer is kept so the same click never costs twice. */
   mailAi: (id: number, task: "translate" | "summary", language?: string) =>

@@ -134,6 +134,53 @@ export function shownElsewhere(text: string, href: string): string | null {
   return m[1].toLowerCase();
 }
 
+/* 2.113.1: marko - "ked je nieco taketo v maily ze download receipt tak
+   realne ked na to kliknem tak sa mi stiahne". A link that is a FILE is
+   downloaded into TIQR (commands/mail_view.rs::download_mail_link); every
+   other link opens in the browser. A guess that is wrong costs nothing: an
+   address that answers with a web page is opened in the browser anyway. */
+
+/** The end of an address that is a file. */
+const FILE_PATH = /\.(pdf|zip|ics|pkpass|csv|xlsx?|docx?|odt|png|jpe?g|gif|webp|txt)$/i;
+/** "Download" in the languages TIQR's mail comes in, without accents. */
+const DOWNLOAD_WORDS = ["download", "stiahn", "stahn", "herunterlad", "descarg", "telecharg", "scaric", "pobierz", "letolt", "baixar"];
+/** A document a link can be named after ("Receipt", "Faktúra"). */
+const DOCUMENT_WORDS = [
+  "receipt", "invoice", "faktur", "rechnung", "beleg", "quittung", "factura", "fattura", "recibo", "ricevuta",
+  "e-ticket", "eticket", "uctenk", "doklad", "paragon", "pdf",
+];
+
+const folded = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+
+/** Whether a link is a file to download - "Download receipt", "Stiahnuť
+ *  faktúru", ".../invoice.pdf" - rather than a page to visit. */
+export function isDownloadLink(text: string, href: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(href.trim());
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  let path = url.pathname;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // a broken escape: the address as written
+  }
+  if (FILE_PATH.test(path) || /\/(pdf|download)\/?$/i.test(path)) return true;
+  const words = folded(text);
+  // A link the length of a sentence is text, not a button.
+  if (!words || words.length > 60) return false;
+  if (DOWNLOAD_WORDS.some((w) => words.includes(w))) return true;
+  return words.length <= 40 && words.split(/[^a-z0-9-]+/).some((x) => DOCUMENT_WORDS.some((w) => x.startsWith(w)));
+}
+
 /** A file size the way a mail program writes it. */
 export function fileSize(bytes: number): string {
   if (!(bytes > 0)) return "";

@@ -32,6 +32,8 @@ pub mod mail;
 pub mod mail_sync;
 // 2.113.0: the mail reader - safe HTML, pictures and attachments in TIQR, translate.
 pub mod mail_view;
+// 2.113.1: the few lines of a mail that matter - where tickets go, how much.
+pub mod mail_facts;
 pub mod shared_settings;
 pub mod notes;
 pub mod notifications;

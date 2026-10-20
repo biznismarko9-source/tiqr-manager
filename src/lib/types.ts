@@ -3087,6 +3087,50 @@ export interface MailView {
   fromCache: boolean;
   /** The language it is written in, when that is clear. */
   language?: string | null;
+  /** 2.113.1: the few lines that matter, from the message's own text
+   *  (commands/mail_facts.rs). Empty for Spam and Trash. */
+  facts: MailFact[];
+}
+
+/** 2.113.1: one key detail of a message - "Total Proceeds: €720.78". A
+ *  person's details (`private`) stay hidden until clicked. */
+export interface MailFact {
+  /** The mail's own label, tidied. */
+  label: string;
+  value: string;
+  private: boolean;
+  kind:
+    | "sendTo"
+    | "name"
+    | "email"
+    | "phone"
+    | "address"
+    | "deadline"
+    | "money"
+    | "event"
+    | "when"
+    | "venue"
+    | "tickets"
+    | "seats"
+    | "reference";
+}
+
+/** 2.113.1: a muted sender - its mail still arrives, hidden under Muted
+ *  (commands/mail.rs, "MUTED SENDERS"). */
+export interface MailMute {
+  /** "news@shop.com" (that sender) or "shop.com" (everyone at it). */
+  who: string;
+  since: string;
+  /** When it ends; null until unmuted. */
+  until?: string | null;
+}
+
+/** 2.113.1: what a link in a message gave when TIQR fetched it - a file,
+ *  kept with the message like an attachment, or a web page for the browser. */
+export interface MailLinkDownload {
+  outcome: "file" | "page";
+  partId?: string | null;
+  filename?: string | null;
 }
 
 /** 2.113.0: one attachment of an opened message. */

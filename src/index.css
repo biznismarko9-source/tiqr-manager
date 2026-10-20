@@ -328,7 +328,7 @@
      --------------------------------------------------------------------- */
   /* 3.0: sentence case, same reasoning as .th-c below. Metrics untouched. */
   .th {
-    @apply px-3 py-2.5 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
+    @apply px-3 py-2.5 text-left text-[11px] leading-4 font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td {
     @apply px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300;
@@ -353,6 +353,15 @@
     overflow-wrap: anywhere;
     min-width: 0;
   }
+  /* 2.113.1: ...but only in a `table-fixed` table. `anywhere` also tells the
+     browser a word may be one letter wide, and an AUTO-layout table sizes its
+     columns from exactly that - so Finance's Transactions squeezed Category
+     and Amount down to a letter per line ("aby to nebolo rozbite"), while
+     columns that never wrap took the rest. `break-word` still breaks a word
+     that would overflow, but never shrinks a column below its longest word. */
+  table:not(.table-fixed) :is(.th, .td, .th-c, .td-c, .th-c-narrow, .td-c-narrow) {
+    overflow-wrap: break-word;
+  }
   /* 1.8.2: compact table cells for Sales.tsx / SaleDetail.tsx ONLY - a
      separate class (not an override of .th/.td) so every other table in the
      app (Tickets, Orders, Events, Inventory) is completely unaffected. Same
@@ -367,7 +376,7 @@
      `uppercase` makes the text narrower, never wider, so the no-horizontal-
      scrollbar guarantee those measurements protect still holds. */
   .th-c {
-    @apply px-2 py-2 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
+    @apply px-2 py-2 text-left text-[11px] leading-4 font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td-c {
     @apply px-2 py-2 text-sm text-slate-700 dark:text-slate-300;
@@ -383,10 +392,10 @@
      PROTECTED-AREAS-NOTES.md before changing px-1/text-[11px] here, both
      modes were measured against these exact values. */
   .th-c-narrow {
-    @apply px-1 py-1 text-left text-[11px] font-medium tracking-normal text-slate-500 dark:text-slate-400;
+    @apply px-1 py-1 text-left text-[11px] leading-4 font-medium tracking-normal text-slate-500 dark:text-slate-400;
   }
   .td-c-narrow {
-    @apply px-1 py-1.5 text-[11px] text-slate-700 dark:text-slate-300;
+    @apply px-1 py-1.5 text-[11px] leading-4 text-slate-700 dark:text-slate-300;
   }
 
   /* The bordered surface every list table sits in. Replaces the identical
@@ -513,6 +522,18 @@
   .table-shell tbody tr:last-child,
   .table-flush tbody tr:last-child {
     box-shadow: none;
+  }
+  /* 2.113.1: ONE line between two rows - the row's own line above. Most
+     tables here also put Tailwind's `divide-y` on their tbody, which drew a
+     second, collapsed border at every boundary beside it. With rows sitting
+     on half pixels (11px text at a 1.5 line height is 16.5px) the two lines
+     fell on the same device pixel at some boundaries and side by side at
+     others, so one line in a list came out much brighter than the rest
+     (marko: "v inventory je random nejaka biela ciara"). The 11px cells now
+     have a whole-pixel line height too (`leading-4`). */
+  .table-shell .divide-y > tr:not([hidden]),
+  .table-flush .divide-y > tr:not([hidden]) {
+    border-top-width: 0;
   }
   .table-shell tbody tr:hover,
   .table-flush tbody tr:hover {
