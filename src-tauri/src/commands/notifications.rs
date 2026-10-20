@@ -250,6 +250,7 @@ fn status_from_config(config: &NotificationConfig) -> NotificationStatus {
         discord_inventory_set: !config.discord.inventory.trim().is_empty(),
         discord_mail_set: !config.discord.mail.trim().is_empty(),
         discord_auto: config.discord.auto.clone(),
+        discord_mail_options: config.discord.mail_options.clone(),
     }
 }
 
@@ -276,6 +277,7 @@ fn apply_input(existing: NotificationConfig, input: NotificationConfigInput) -> 
             inventory: input.discord_inventory.unwrap_or(existing.discord.inventory),
             mail: input.discord_mail.unwrap_or(existing.discord.mail),
             auto: input.discord_auto.unwrap_or(existing.discord.auto),
+            mail_options: input.discord_mail_options.unwrap_or(existing.discord.mail_options),
         },
     }
 }
@@ -536,7 +538,7 @@ pub(crate) fn load_notification_config(conn: &Connection) -> AppResult<Notificat
     }
 }
 
-fn save_notification_config(conn: &Connection, config: &NotificationConfig) -> AppResult<()> {
+pub(crate) fn save_notification_config(conn: &Connection, config: &NotificationConfig) -> AppResult<()> {
     let raw = serde_json::to_string(config)
         .map_err(|e| AppError::Other(format!("failed to serialize notification settings: {e}")))?;
     set_setting(conn, NOTIFICATION_CONFIG_KEY, &raw)
@@ -1135,6 +1137,7 @@ mod tests {
             discord_inventory: None,
             discord_mail: None,
             discord_auto: None,
+            discord_mail_options: None,
         };
         let merged = apply_input(existing, input);
         assert_eq!(merged.ntfy.topic, "old-topic");
@@ -1159,6 +1162,7 @@ mod tests {
             discord_inventory: None,
             discord_mail: None,
             discord_auto: None,
+            discord_mail_options: None,
         };
         let merged = apply_input(existing, input);
         assert_eq!(merged.ntfy.topic, "new-topic");
@@ -1228,6 +1232,7 @@ mod tests {
             discord_inventory: None,
             discord_mail: None,
             discord_auto: None,
+            discord_mail_options: None,
         };
         let existing = load_notification_config(&conn).unwrap();
         let merged = apply_input(existing, input);
@@ -1575,6 +1580,7 @@ mod tests {
                 inventory: "   ".to_string(),
                 mail: String::new(),
                 auto: Default::default(),
+                mail_options: Default::default(),
             },
         };
         let status = status_from_config(&cfg);
@@ -1607,6 +1613,7 @@ mod tests {
                 inventory: inventory.to_string(),
                 mail: String::new(),
                 auto: Default::default(),
+                mail_options: Default::default(),
             },
         }
     }
@@ -1628,6 +1635,7 @@ mod tests {
             discord_inventory: inventory.map(str::to_string),
             discord_mail: None,
             discord_auto: None,
+            discord_mail_options: None,
         }
     }
 
@@ -1664,6 +1672,7 @@ mod tests {
                 inventory: String::new(),
                 mail: String::new(),
                 auto: Default::default(),
+                mail_options: Default::default(),
             },
         };
         // Exactly what NotificationsCard sends: its own three fields only.
@@ -1677,6 +1686,7 @@ mod tests {
             discord_inventory: None,
             discord_mail: None,
             discord_auto: None,
+            discord_mail_options: None,
         };
         let after = apply_input(existing, input);
         assert!(after.discord.enabled, "Discord must survive a Notifications save");
@@ -1698,6 +1708,7 @@ mod tests {
                 inventory: String::new(),
                 mail: String::new(),
                 auto: Default::default(),
+                mail_options: Default::default(),
             },
         };
         let after = apply_input(
@@ -1712,6 +1723,7 @@ mod tests {
                 discord_inventory: None,
                 discord_mail: None,
                 discord_auto: None,
+                discord_mail_options: None,
             },
         );
         assert_eq!(after.desktop_enabled, existing.desktop_enabled);

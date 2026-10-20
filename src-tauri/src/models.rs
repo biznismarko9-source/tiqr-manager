@@ -1655,6 +1655,49 @@ pub struct DiscordChannelConfig {
     /// 2.113.0: what is posted by itself, per kind. A missing block (every
     /// config before 2.113.0) is all on: marko asked for webhooks that fire.
     pub auto: DiscordAutoConfig,
+    /// 2.114.0: which mail is passed on, and what its message carries.
+    pub mail_options: DiscordMailConfig,
+}
+
+/// 2.114.0: marko - "co posielat dalej, ako posielat". Which kinds of mail
+/// post a summary by themselves (under `auto.mail`, the switch over all of
+/// them), and what such a message carries. A missing block is everything on,
+/// which is how 2.113 behaved.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordMailConfig {
+    /// A sale confirmation.
+    pub sales: bool,
+    /// A purchase confirmation.
+    pub purchases: bool,
+    /// A payout or a refund.
+    pub money: bool,
+    /// A cancellation or an event change.
+    pub changes: bool,
+    /// "Your tickets are ready", a transfer, a delivery update.
+    pub order_updates: bool,
+    /// The few lines that matter - where tickets go, by when, the price.
+    pub key_details: bool,
+    /// A person's name, e-mail, phone or address - always as a spoiler. Off:
+    /// never sent at all.
+    pub personal: bool,
+    /// The opening words of the mail, when nothing better is known.
+    pub preview: bool,
+}
+
+impl Default for DiscordMailConfig {
+    fn default() -> Self {
+        DiscordMailConfig {
+            sales: true,
+            purchases: true,
+            money: true,
+            changes: true,
+            order_updates: true,
+            key_details: true,
+            personal: true,
+            preview: true,
+        }
+    }
 }
 
 /// 2.113.0: which records announce themselves when they are created.
@@ -1777,6 +1820,8 @@ pub struct NotificationStatus {
     /// 2.113.0.
     pub discord_mail_set: bool,
     pub discord_auto: DiscordAutoConfig,
+    /// 2.114.0.
+    pub discord_mail_options: DiscordMailConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1820,6 +1865,9 @@ pub struct NotificationConfigInput {
     pub discord_mail: Option<String>,
     #[serde(default)]
     pub discord_auto: Option<DiscordAutoConfig>,
+    /// 2.114.0.
+    #[serde(default)]
+    pub discord_mail_options: Option<DiscordMailConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per
