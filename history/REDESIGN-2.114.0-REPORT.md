@@ -1,6 +1,6 @@
 # TIQR Manager 2.114.0 — jednoduché webhooky, hromadné mazanie, AI upratanie, nastavenia mailu
 
-Čo si napísal po 2.113.1:
+Tvoje požiadavky po 2.113.1:
 
 - *„takto je v maili meno a mail a takto dal webhook ako meno, treba
   opraviť"* (Ticket Holder: Details namiesto Luis Somoza)
@@ -87,8 +87,8 @@ V priečinku Promotions je hore pruh **Clean up with AI**. Ako funguje
 
 1. **Najprv zadarmo, bez AI.** Vždy sa ponechá mail s hviezdičkou, od
    predajcu lístkov, ktorého TIQR pozná, s kódom, rozpoznaný ako
-   objednávka, predaj alebo aktualizácia objednávky, alebo mail, ktorý si
-   sám presunul.
+   objednávka, predaj alebo aktualizácia objednávky, alebo mail, ktorý už
+   bol presunutý do iného priečinka.
 2. **Zvyšok čo najlacnejšie:**
    - najlacnejší model (`claude-haiku-5-5`);
    - bez premýšľania, s najnižším úsilím;

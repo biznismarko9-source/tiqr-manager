@@ -53,8 +53,8 @@ Všetko sa robí v jednej transakcii, takže aj tisíce mailov idú hneď.
 **AI upratanie Promotions.** V priečinku Promotions je *Clean up with AI*:
 
 - Bez AI a zadarmo sa vždy ponechá mail s hviezdičkou, od predajcu lístkov,
-  s kódom, rozpoznaný ako objednávka alebo predaj, alebo mail, ktorý si
-  presunul.
+  s kódom, rozpoznaný ako objednávka alebo predaj, alebo mail, ktorý už bol
+  presunutý do iného priečinka.
 - Zvyšok ide na najlacnejší model: doména odosielateľa (nie adresa),
   predmet a pár slov náhľadu, 60 mailov na dopyt, bez premýšľania, s
   najnižším úsilím. Odpoveď je jedno písmeno na mail.
