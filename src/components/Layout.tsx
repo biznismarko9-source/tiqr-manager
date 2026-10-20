@@ -439,10 +439,20 @@ export default function Layout() {
           driveBackupOnly.current = liveReady && uid ? await driveIsBackupOnly(uid) : false;
           if (cancelled) return;
           if (driveBackupOnly.current && (plan.action === "pull" || plan.action === "merge")) {
+            // 2.113.0: and a copy this computer has not saved there yet - its
+            // last close did not get to finish, say - is saved now instead of
+            // only at the next close. This computer's copy is as complete as
+            // any, so it replaces the backup, as on close.
+            if (plan.localDirty) {
+              setSyncActivity({ label: "Saving the backup to Google Drive", blocking: false });
+              await api.cloudSyncPush(true);
+            }
             recordAutoSync({
               at: Date.now(),
-              action: "idle",
-              reason: "Live sync keeps both computers level - Google Drive is the backup copy.",
+              action: plan.localDirty ? "push" : "idle",
+              reason: plan.localDirty
+                ? "Backup saved to Google Drive - live sync keeps both computers level."
+                : "Live sync keeps both computers level - Google Drive is the backup copy.",
               error: null,
             });
             setSyncFailure(null);

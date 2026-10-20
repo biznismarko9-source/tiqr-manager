@@ -39,6 +39,7 @@ import { readAutoSyncLog } from "../lib/autoSyncLog";
 import { PREFERRED_CURRENCIES, savePreferredCurrency, usePreferredCurrency } from "../lib/preferredCurrency";
 import { addDoc, collection, getDocs, limit, orderBy, query, serverTimestamp } from "firebase/firestore";
 import { LiveSyncCard } from "../components/LiveSyncCard";
+import { onLiveSync } from "../lib/liveSync";
 import { auth, db } from "../lib/firebase";
 import {
   Badge,
@@ -242,6 +243,24 @@ const SYNC_STATE_LABEL: Record<string, string> = {
   off: "Off",
 };
 
+/** 2.113.0: the same states, in backup words - while live sync is on, the
+ *  Drive copy is the backup, and the other computer having saved it last is
+ *  not a "conflict". */
+const BACKUP_STATE_LABEL: Record<string, string> = {
+  syncing: "Saving",
+  offline: "Offline",
+  failed: "Failed",
+  off: "Off",
+  localChanges: "Saves on close",
+};
+const BACKUP_STATE_TONE: Record<string, string> = {
+  syncing: "partial",
+  offline: "available",
+  failed: "unpaid",
+  off: "available",
+  localChanges: "listed",
+};
+
 /** Reuses the existing badge tones rather than adding new ones - the same
  *  green/amber/red vocabulary the rest of the app already speaks. */
 const SYNC_STATE_TONE: Record<string, string> = {
@@ -256,14 +275,15 @@ const SYNC_STATE_TONE: Record<string, string> = {
 };
 
 /** The last few automatic-sync attempts on this machine, newest first.
- *  Reads localStorage on mount only: the tick runs every five minutes, so a
- *  live subscription would buy nothing a panel re-open does not. */
+ *  Reads localStorage on mount only: the automatic run happens when TIQR
+ *  starts and when it closes (2.59.0), so a live subscription would buy
+ *  nothing a panel re-open does not. */
 function AutoSyncHistory() {
   const [log] = useState(() => readAutoSyncLog());
   if (log.length === 0) {
     return (
       <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        Automatic sync hasn&apos;t run on this computer yet - it checks at launch and every 5 minutes.
+        Automatic sync hasn&apos;t run on this computer yet - it runs when TIQR starts and when it closes.
       </p>
     );
   }
@@ -519,6 +539,19 @@ export default function Settings() {
   // one case the button stops and asks; every other press just goes.
   const [syncChoice, setSyncChoice] = useState(false);
   const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
+  // 2.113.0: whether live sync is on here - the Drive part of the sync card
+  // is then the backup, and its hand controls fold away under Advanced.
+  const [liveOn, setLiveOn] = useState(false);
+  const [showDriveTools, setShowDriveTools] = useState(false);
+  useEffect(() => {
+    const read = () =>
+      api
+        .liveSyncStatus()
+        .then((st) => setLiveOn(st.enabled))
+        .catch(() => undefined);
+    void read();
+    return onLiveSync(() => void read());
+  }, []);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   // 2.12.1: the last sync error, kept so a FIXABLE one can be turned into a
   // button. Google's own 403 body carries the exact Cloud Console URL for
@@ -1184,27 +1217,37 @@ export default function Settings() {
                 title="Keeping your data safe"
                 hint="Copies of this database, and the one action that can replace it. Read each button before pressing it."
               >
-              {/* 2.112.0: live sync first - it is how the two computers stay
-                  level now; the Drive card below is the backup copy. */}
-              <LiveSyncCard />
-              {/* 2.12.0: Cloud sync sits above Backup/Restore because it is
-                  the same concern - moving this database between machines -
-                  just automatic. It reuses the very same snapshot and restore
-                  machinery those two cards use. */}
+              {/* 2.113.0: ONE sync - "jedna synchronizacia". Live sync is how
+                  the computers stay level; Google Drive keeps a full copy as
+                  the backup and saves it by itself. The buttons that move a
+                  whole copy one way or the other are still here, under
+                  Advanced, for a computer that is not on live sync yet and for
+                  putting things right. It sits above Backup/Restore for
+                  2.12.0's reason: the same concern, and the very same
+                  snapshot and restore machinery. */}
               <Card className="p-5">
                 <h3 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Sync between your computers</h3>
-                {/* 2.30.1: one line instead of four sentences. What it does is
-                    visible from the controls; the only thing that genuinely
-                    needed explaining is the both-changed case, and that has
-                    its own warning below when it actually happens. */}
+                <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+                  Two parts, both automatic: live sync keeps your computers level within seconds, and Google Drive
+                  keeps a full copy as the backup. A change made offline waits until it can be sent, and anything
+                  that replaces your data takes a copy of it first - so nothing is lost on the way.
+                </p>
+                <div className="rounded-xl bg-surface-muted px-4 py-3.5">
+                  <LiveSyncCard embedded />
+                </div>
+
+                <div className="mt-3 rounded-xl bg-surface-muted px-4 py-3.5">
+                <p className="section-title mb-1">Backup in Google Drive</p>
                 <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-                  One copy in your own Google Drive, kept level by itself.
+                  {liveOn
+                    ? "A full copy of this computer's data, saved by itself when TIQR starts and closes. Google keeps the earlier versions too - see Backup & restore below."
+                    : "One copy in your own Google Drive, kept level by itself - the way across for a computer that is not on live sync yet."}
                 </p>
 
                 {sync && !sync.signedIn ? (
                   <p className="text-xs text-amber-700 dark:text-amber-400">
-                    Sign in with Google first (Settings &rarr; Integrations). Cloud sync uses the same sign-in as Google
-                    Sheets, and needs Drive access allowed.
+                    Sign in with Google first (Settings &rarr; Integrations). The backup in Drive uses the same sign-in
+                    as Google Sheets, and needs Drive access allowed.
                   </p>
                 ) : (
                   <>
@@ -1216,7 +1259,7 @@ export default function Settings() {
                         disabled={syncDisabled}
                         onChange={(e) => doSyncToggle(e.target.checked)}
                       />
-                      Turn on cloud sync
+                      Keep a copy in Google Drive
                     </label>
 
                     {sync?.enabled && (
@@ -1227,9 +1270,23 @@ export default function Settings() {
                             so this can never disagree with what the automatic
                             check decided. */}
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                          <Badge tone={SYNC_STATE_TONE[sync.state] ?? "available"}>{SYNC_STATE_LABEL[sync.state] ?? sync.state}</Badge>
+                          {/* 2.113.0: while live sync is on, Drive is a backup -
+                              so its state is said in backup words. "Cloud
+                              changes" or "Conflict" only mean the other
+                              computer saved the last copy, which is fine. */}
+                          {liveOn ? (
+                            <Badge tone={BACKUP_STATE_TONE[sync.state] ?? "paid"}>{BACKUP_STATE_LABEL[sync.state] ?? "Kept"}</Badge>
+                          ) : (
+                            <Badge tone={SYNC_STATE_TONE[sync.state] ?? "available"}>{SYNC_STATE_LABEL[sync.state] ?? sync.state}</Badge>
+                          )}
                           <span className="text-slate-500 dark:text-slate-400">
-                            {sync.lastSyncAt ? `Last synced ${formatDateTime(sync.lastSyncAt)}` : "Never synced from this computer"}
+                            {liveOn
+                              ? sync.remoteModifiedAt
+                                ? `Backup saved ${formatDateTime(sync.remoteModifiedAt)}`
+                                : "No backup saved yet"
+                              : sync.lastSyncAt
+                                ? `Last synced ${formatDateTime(sync.lastSyncAt)}`
+                                : "Never synced from this computer"}
                           </span>
                         </div>
                         {sync.lastError && sync.state !== "syncing" && (
@@ -1243,6 +1300,17 @@ export default function Settings() {
                             five minutes since. This is per-machine on purpose:
                             "is autosync alive here" is a question about here.
                             See lib/autoSyncLog.ts. */}
+                        {liveOn && (
+                          <button
+                            type="button"
+                            onClick={() => setShowDriveTools((v) => !v)}
+                            className="mt-3 text-xs text-slate-500 underline-offset-2 hover:underline dark:text-slate-400"
+                          >
+                            {showDriveTools ? "Hide the advanced controls" : "Advanced - move a whole copy by hand"}
+                          </button>
+                        )}
+                        {(!liveOn || showDriveTools) && (
+                          <>
                         <AutoSyncHistory />
                         {/* 2.19.0: "Combine both" used to live only inside the
                             prompt that appears after a push is refused, so a
@@ -1456,6 +1524,9 @@ export default function Settings() {
                           </div>
                         )}
 
+                          </>
+                        )}
+
                         {syncError && (
                           <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-inset ring-red-200 dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/25">
                             <p className="whitespace-pre-line">{syncError}</p>
@@ -1488,12 +1559,15 @@ export default function Settings() {
                         </dl>
 
                         <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
-                          Replaces this computer's data. A backup is taken first.
+                          {liveOn
+                            ? "Taking a copy from Drive replaces this computer's data and pauses live sync here. A backup is taken first."
+                            : "Replaces this computer's data. A backup is taken first."}
                         </p>
                       </>
                     )}
                   </>
                 )}
+                </div>
               </Card>
 
               <Card className="p-5">
