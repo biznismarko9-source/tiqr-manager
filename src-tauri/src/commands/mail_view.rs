@@ -1395,9 +1395,9 @@ pub async fn save_mail_attachment(app: tauri::AppHandle, state: State<'_, AppSta
 /// The cheapest current model: marko asked for the AI helper to use as
 /// little as possible ("aby zral co najmenej usagu"). Translating and
 /// summarising one email does not need more.
-const MAIL_AI_MODEL: &str = "claude-haiku-5-5";
-const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+pub(crate) const MAIL_AI_MODEL: &str = "claude-haiku-5-5";
+pub(crate) const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+pub(crate) const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 /// How much of an email is sent. A longer one is cut here, and the answer
 /// says so - a whole newsletter is not worth paying to translate.
 const MAIL_AI_INPUT_CHARS: usize = 12_000;
@@ -1506,11 +1506,11 @@ pub(crate) fn ai_answer(v: &Value) -> Result<(String, bool, i64, i64), String> {
     Ok((text.trim().to_string(), cut, input, output))
 }
 
-fn ai_key(conn: &Connection) -> Option<String> {
+pub(crate) fn ai_key(conn: &Connection) -> Option<String> {
     crate::commands::settings::read_anthropic_api_key(conn).or_else(crate::ai_categorize::embedded_anthropic_api_key)
 }
 
-fn record_mail_ai_usage(conn: &Connection, input: i64, output: i64) {
+pub(crate) fn record_mail_ai_usage(conn: &Connection, input: i64, output: i64) {
     let month = chrono::Local::now().format("%Y-%m").to_string();
     let mut by_month: std::collections::BTreeMap<String, (i64, i64, i64)> = get_setting(conn, MAIL_AI_USAGE_KEY)
         .ok()

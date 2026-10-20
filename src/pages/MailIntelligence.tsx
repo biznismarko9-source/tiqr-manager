@@ -41,6 +41,7 @@ import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spin
 import { IconBellOff, IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconStar, IconTrash } from "../components/icons";
 import { muteState } from "../lib/mailMute";
 import { MailSettingsPane } from "../components/MailSettingsPane";
+import { PromoCleanup } from "../components/PromoCleanup";
 import {
   categoryLabel,
   isJunk,
@@ -385,6 +386,9 @@ export default function MailIntelligence() {
   const [deletingFolder, setDeletingFolder] = useState<MailLocalFolder | null>(null);
   /** 2.113.1: the muted senders. */
   const [mutes, setMutes] = useState<MailMute[]>([]);
+  /** 2.114.0: a big batch waiting for "Move N to Trash?". */
+  const [confirmTrash, setConfirmTrash] = useState<number[] | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
 
   /* Which folder and search the screen is showing. A page that comes back
      after he has already moved on is dropped rather than shown under the
@@ -523,6 +527,19 @@ export default function MailIntelligence() {
   }, [refreshTop, loadHeader]);
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
+  /** 2.114.0: "v bulku vediet oznacit maily a vymazat ich". The rows on
+   *  screen first; then, one click more, the whole folder. */
+  const selectLoaded = () => setSelected(new Set(rowsRef.current.map((m) => m.id)));
+  const selectWholeFolder = async () => {
+    setSelectingAll(true);
+    try {
+      setSelected(new Set(await api.listMailFolderIds(folder, query)));
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setSelectingAll(false);
+    }
+  };
 
   const pick = (key: string) => {
     setFolder(key);
@@ -639,6 +656,13 @@ export default function MailIntelligence() {
     } catch (e) {
       toast.error(errMsg(e));
     }
+  };
+
+  /** To the Trash - after asking, for a big batch. Delete forever is only
+   *  ever from the Trash (marko: "vzdy najskor presunutie do kosa"). */
+  const deleteIds = (ids: number[]) => {
+    if (ids.length > 50) setConfirmTrash(ids);
+    else void bulk("trash", ids);
   };
 
   /* ---- stars and muted senders (2.113.1) -------------------------------- */
@@ -965,9 +989,51 @@ export default function MailIntelligence() {
         ) : (
           <>
             <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
+              {/* 2.114.0: "80% z toho su shits" - sorted on a click, moved only
+                  when marko says so (components/PromoCleanup.tsx). */}
+              {folder === "promotions" && !query && (
+                <PromoCleanup
+                  onMoved={() => {
+                    void loadFolder();
+                    void loadHeader().catch(() => undefined);
+                  }}
+                />
+              )}
+              {rows.length > 0 && selected.size === 0 && (
+                <label className="flex cursor-pointer items-center gap-2 border-b border-slate-200 px-3 py-1.5 text-[11px] text-slate-400 hover:text-slate-600 dark:border-slate-800 dark:text-slate-500 dark:hover:text-slate-300">
+                  <input type="checkbox" className="h-3.5 w-3.5 cursor-pointer" checked={false} onChange={selectLoaded} />
+                  Select all
+                </label>
+              )}
               {selected.size > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
-                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{selected.size} selected</span>
+                  {(() => {
+                    const allShown = rows.length > 0 && rows.every((m) => selected.has(m.id));
+                    const total = query ? null : (counts[folder]?.total ?? null);
+                    const more = allShown && (hasMore || (total !== null && total > selected.size));
+                    return (
+                      <>
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 cursor-pointer"
+                          checked={allShown}
+                          aria-label={allShown ? "Clear the selection" : "Select all"}
+                          onChange={() => (allShown ? clearSelection() : selectLoaded())}
+                        />
+                        <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{fmt(selected.size)} selected</span>
+                        {more && (
+                          <button
+                            type="button"
+                            disabled={selectingAll}
+                            className="text-[11px] font-medium text-brand-600 hover:underline disabled:opacity-50 dark:text-brand-400"
+                            onClick={() => void selectWholeFolder()}
+                          >
+                            {selectingAll ? "Selecting..." : total !== null ? `Select all ${fmt(total)}` : "Select every match"}
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="text-[11px] text-brand-600 hover:underline dark:text-brand-400"
@@ -1008,7 +1074,7 @@ export default function MailIntelligence() {
                             in the trash regardless of what this button does. */}
                         {confirmDelete ? (
                           <Button variant="danger" size="sm" onClick={() => void bulk("delete")}>
-                            Delete forever?
+                            Delete {fmt(selected.size)} forever?
                           </Button>
                         ) : (
                           <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(true)}>
@@ -1017,8 +1083,13 @@ export default function MailIntelligence() {
                         )}
                       </>
                     ) : (
-                      <Button variant="secondary" size="sm" onClick={() => void bulk("trash")}>
-                        Trash
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        title="Moves them to Trash - restore them or delete them forever from there"
+                        onClick={() => deleteIds([...selected])}
+                      >
+                        <IconTrash className="h-3.5 w-3.5" /> Delete
                       </Button>
                     )}
                   </div>
@@ -1140,6 +1211,19 @@ export default function MailIntelligence() {
         danger
         onCancel={() => setDeletingFolder(null)}
         onConfirm={() => deletingFolder && void removeFolder(deletingFolder)}
+      />
+
+      <ConfirmDialog
+        open={!!confirmTrash}
+        title={`Move ${fmt(confirmTrash?.length ?? 0)} messages to Trash?`}
+        message="They stay in Trash - restore them from there any time, or delete them forever there. Gmail is not changed."
+        confirmLabel="Move to Trash"
+        onCancel={() => setConfirmTrash(null)}
+        onConfirm={() => {
+          const ids = confirmTrash ?? [];
+          setConfirmTrash(null);
+          void bulk("trash", ids);
+        }}
       />
     </div>
   );

@@ -3115,6 +3115,31 @@ export interface MailFact {
     | "reference";
 }
 
+/** 2.114.0: what one "Clean up with AI" click did (commands/mail_cleanup.rs). */
+export interface PromoScan {
+  scanned: number;
+  junk: number;
+  unsure: number;
+  keep: number;
+  /** Requests to the AI and what they used. */
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Promotions never looked at yet - the next click goes on with them. */
+  remaining: number;
+}
+
+/** 2.114.0: a promotion offered for the Trash - "junk" (sure) or "unsure". */
+export interface PromoSuggestion {
+  id: number;
+  fromName?: string | null;
+  fromAddress: string;
+  subject: string;
+  snippet?: string | null;
+  receivedAt: string;
+  verdict: "junk" | "unsure";
+}
+
 /** 2.113.1: a muted sender - its mail still arrives, hidden under Muted
  *  (commands/mail.rs, "MUTED SENDERS"). */
 export interface MailMute {

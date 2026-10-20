@@ -2687,13 +2687,17 @@ pub fn trash_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
     }
     let conn = state.db.lock().unwrap();
     let now = Utc::now().to_rfc3339();
+    // 2.114.0: one transaction, so a whole folder selected at once is one
+    // write rather than thousands.
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
             params![now, id],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2704,10 +2708,12 @@ pub fn restore_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
     let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])?;
+        n += tx.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2733,8 +2739,11 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
     if ids.is_empty() {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
-    let live: i64 = {
-        let marks = vec!["?"; ids.len()].join(",");
+    // 2.114.0: in pieces - a whole Trash selected at once is more ids than
+    // one statement may carry.
+    let mut live: i64 = 0;
+    for part in ids.chunks(500) {
+        let marks = vec!["?"; part.len()].join(",");
         // In TIQR's trash OR in Gmail's - both are what the Trash folder
         // shows, so both count as "moved to the trash first".
         let sql = format!(
@@ -2743,9 +2752,9 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
                 AND instr(',' || IFNULL(labels, '') || ',', ',trash,') = 0
                 AND id IN ({marks})"
         );
-        let refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-        conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?
-    };
+        let refs: Vec<&dyn rusqlite::ToSql> = part.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        live += conn.query_row(&sql, refs.as_slice(), |r| r.get::<_, i64>(0))?;
+    }
     if live > 0 {
         return Err(AppError::Validation(format!(
             "{live} of these are not in the trash yet. Move them to the trash first."
@@ -2767,18 +2776,19 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
     Ok(n)
 }
 
-/// Mark several read or unread at once.
 /// 2.113.1: marko's own star - "moznost dat na message starred". TIQR's,
 /// like read state (the Gmail access is read-only): it stays until he changes
 /// it here or the star is changed in Gmail (mail_sync.rs, `add_flag`).
 pub(crate) fn star_mail_impl(conn: &Connection, ids: &[i64], starred: bool) -> AppResult<usize> {
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0;
     for id in ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET is_starred = ?2, starred_here = ?2 WHERE id = ?1",
             params![id, i64::from(starred)],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2788,19 +2798,22 @@ pub fn star_mail(state: State<AppState>, ids: Vec<i64>, starred: bool) -> AppRes
     star_mail_impl(&conn, &ids, starred)
 }
 
+/// Mark several read or unread at once.
 #[tauri::command]
 pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> AppResult<usize> {
     if ids.is_empty() {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
     let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET is_unread = ?1 WHERE id = ?2",
             params![if read { 0 } else { 1 }, id],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -4881,6 +4894,36 @@ pub fn list_mail_folder(
     list_folder_impl(&conn, &folder, search.as_deref(), before, limit.unwrap_or(200))
 }
 
+/// 2.114.0: every message of a folder (and search), newest first - for
+/// "select all", which means the whole folder, not the page on screen.
+pub(crate) fn folder_ids_impl(conn: &Connection, folder: &str, search: Option<&str>) -> AppResult<Vec<i64>> {
+    let muted = muted_sql(conn);
+    let Some(pred) = folder_sql(folder, &muted) else {
+        return Err(AppError::Validation(format!("\"{folder}\" is not a mail folder")));
+    };
+    let mut sql = format!("SELECT id FROM mail_messages WHERE ({pred})");
+    let like = search.map(str::trim).filter(|q| !q.is_empty()).map(|q| format!("%{}%", q.to_lowercase()));
+    if like.is_some() {
+        sql.push_str(
+            " AND (LOWER(from_address) LIKE ?1 OR LOWER(IFNULL(from_name, '')) LIKE ?1
+                   OR LOWER(subject) LIKE ?1 OR LOWER(IFNULL(snippet, '')) LIKE ?1)",
+        );
+    }
+    sql.push_str(" ORDER BY received_at DESC, id DESC LIMIT 100000");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match &like {
+        Some(l) => stmt.query_map([l], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?,
+        None => stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?,
+    };
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn list_mail_folder_ids(state: State<AppState>, folder: String, search: Option<String>) -> AppResult<Vec<i64>> {
+    let conn = state.db.lock().unwrap();
+    folder_ids_impl(&conn, &folder, search.as_deref())
+}
+
 /// Total and unread for every folder asked for, in ONE pass over the mail.
 pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResult<Vec<MailFolderCount>> {
     let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k, "0").is_some()).collect();
@@ -6171,6 +6214,28 @@ mod tests {
         let pids: Vec<String> = list_folder_impl(&conn, "otp", None, None, 10).unwrap().into_iter().map(|m| m.provider_message_id).collect();
         assert_eq!(pids, vec!["opened", "tm"], "in OTP codes now, newest first; never a code from Spam");
         assert_eq!(reread_codes(&conn).unwrap(), 0, "nothing twice");
+    }
+
+    /// 2.114.0: "v bulku vediet oznacit maily a vymazat ich" - select all
+    /// is the whole folder, not the page on screen.
+    #[test]
+    fn select_all_means_the_whole_folder_and_its_search() {
+        let conn = test_conn();
+        for i in 0..1205 {
+            put(&conn, &format!("p{i}"), "inbox,category_promotions", &format!("2026-10-{:02}T00:00:00Z", 1 + i % 28));
+        }
+        put(&conn, "keep", "inbox", "2026-10-10T00:00:00Z");
+        let ids = folder_ids_impl(&conn, "promotions", None).unwrap();
+        assert_eq!(ids.len(), 1205, "every one, past any page");
+        assert_eq!(folder_ids_impl(&conn, "promotions", Some("p12")).unwrap().len(), 16, "p12, p120..p129 and p1200..p1204");
+        assert!(folder_ids_impl(&conn, "'; DROP TABLE mail_messages; --", None).is_err());
+        // Into the trash, then out of it for good - in pieces, not one huge statement.
+        let now = Utc::now().to_rfc3339();
+        for id in &ids {
+            conn.execute("UPDATE mail_messages SET trashed_at = ?2 WHERE id = ?1", params![id, now]).unwrap();
+        }
+        assert_eq!(delete_forever_impl(&conn, &ids).unwrap(), 1205);
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["keep"]);
     }
 
     /// 2.113.1: "moznost dat na message starred".

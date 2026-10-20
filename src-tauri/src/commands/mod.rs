@@ -34,6 +34,9 @@ pub mod mail_sync;
 pub mod mail_view;
 // 2.113.1: the few lines of a mail that matter - where tickets go, how much.
 pub mod mail_facts;
+/// 2.114.0: sorting Promotions into junk and keep - free rules first, the
+/// cheapest model for the rest, on a click, nothing moved without marko.
+pub mod mail_cleanup;
 pub mod shared_settings;
 pub mod notes;
 pub mod notifications;
