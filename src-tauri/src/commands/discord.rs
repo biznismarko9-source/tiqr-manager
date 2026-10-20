@@ -38,6 +38,7 @@
 use crate::commands::notifications::{
     interpret_discord_status, load_notification_config, validate_webhook_url, DiscordDestination,
 };
+use crate::commands::mail_facts::MailFact;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
 use crate::models::{DiscordAutoConfig, DiscordChannelConfig, DiscordDelivery, DiscordSendResult};
@@ -50,9 +51,15 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::State;
 
-/// Served by GitHub Pages with the privacy page (`docs/`). Should it ever
-/// fail to load, Discord shows its default picture and nothing else changes.
-pub(crate) const LOGO_URL: &str = "https://biznismarko9-source.github.io/tiqr-manager/tiqr-logo.png";
+/// The logo file in the repository itself (`docs/tiqr-logo.png` on `main`),
+/// straight from GitHub. 2.113.1: it used to point at GitHub Pages, which is
+/// not switched on for this repository - every `github.io` address answers
+/// 404 - so each message showed a broken picture where the logo belongs
+/// (marko: "ked pridu webhooks tak tam nieje tiqr logo"). This address
+/// answers with the PNG itself, checked when it was changed. It needs only
+/// the file on `main` and the repository being public, which the updater
+/// already depends on.
+pub(crate) const LOGO_URL: &str = "https://raw.githubusercontent.com/biznismarko9-source/tiqr-manager/main/docs/tiqr-logo.png";
 pub(crate) const BRAND: &str = "TIQR Manager";
 
 // One colour per kind, so a channel reads at a glance.
@@ -822,6 +829,25 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         _ => None,
     };
     let tickets = qty.filter(|q| *q > 0).map(|q| plural(q, "ticket", "tickets"));
+    // 2.113.1: the lines that matter, from the message's own text - the
+    // opened copy, else the body read on arrival, else Gmail's preview.
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE((SELECT NULLIF(text, '') FROM mail_bodies WHERE message_id = ?1), extract_text)
+               FROM mail_messages WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let facts = crate::commands::mail_view::facts_for(conn, id, text.as_deref().unwrap_or(&snippet));
+    // A person's details are spoilers in the text and dots in the title.
+    let secrets: Vec<String> = facts
+        .iter()
+        .filter(|f| f.private)
+        .map(|f| hide(&f.value))
+        .filter(|v| v.chars().count() >= 3)
+        .collect();
     let who = format!("**{}**", md(&sender));
     let mut summary = match category.as_str() {
         "sale_confirmation" => format!("{who} confirms a sale"),
@@ -843,7 +869,7 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
     if !bits.is_empty() {
         summary.push_str(&format!(": {}", bits.join(" for ")));
     }
-    let preview = md(&clip(&hide(&snippet), 280));
+    let preview = md_spoilered(&hide(&snippet), &secrets, 280);
     let description = if preview.is_empty() { summary } else { format!("{summary}\n> {preview}") };
     let received_field = DateTime::parse_from_rfc3339(&received)
         .map(|d| format!("<t:{}:f>", d.timestamp()))
@@ -857,11 +883,42 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
     let url = (!gmail_id.is_empty() && gmail_id.chars().all(|c| c.is_ascii_hexdigit()))
         .then(|| format!("https://mail.google.com/mail/u/0/#all/{gmail_id}"));
     let manual_label = if matches!(occasion, Occasion::Manual) { "Email" } else { label };
+    let reference = reference.map(|r| hide(&r));
+    // The key details, without what the fields above already say.
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let said = |f: &MailFact, field: Option<&String>| field.is_some_and(|v| !digits(v).is_empty() && digits(v) == digits(&f.value));
+    let mut details = String::new();
+    for f in &facts {
+        let repeated = match f.kind {
+            "money" => said(f, price.as_ref()),
+            "tickets" => said(f, tickets.as_ref()),
+            "reference" => reference.as_ref().is_some_and(|r| r.trim() == f.value.trim()),
+            _ => false,
+        };
+        let value = hide(&f.value);
+        if repeated || value.trim().is_empty() {
+            continue;
+        }
+        let shown = if f.private { format!("||{}||", md(&value)) } else { md(&value) };
+        let line = format!("**{}:** {shown}", md(&f.label));
+        // Whole lines only: a spoiler cut in half would show what it hides.
+        if details.chars().count() + line.chars().count() + 1 > 950 {
+            break;
+        }
+        if !details.is_empty() {
+            details.push('\n');
+        }
+        details.push_str(&line);
+    }
+    let mut title = hide(&subject);
+    for secret in &secrets {
+        title = replace_ignoring_case(&title, secret, "•••");
+    }
     Ok(Some(Embed {
         routes,
         color,
         headline: format!("{icon} {manual_label}"),
-        title: hide(&subject),
+        title,
         url,
         description,
         fields: vec![
@@ -869,10 +926,82 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
             ("Received".to_string(), received_field, true),
             ("Amount".to_string(), price.unwrap_or_default(), true),
             ("Tickets".to_string(), tickets.unwrap_or_default(), true),
-            ("Reference".to_string(), reference.map(|r| md(&hide(&r))).unwrap_or_default(), true),
+            ("Reference".to_string(), reference.map(|r| md(&r)).unwrap_or_default(), true),
+            ("📌 Key details".to_string(), details, false),
         ],
         code: None,
     }))
+}
+
+/// `needle` replaced wherever it appears, whatever its case - compared
+/// letter by letter, so a letter whose lower case is longer cannot shift
+/// where a match is.
+fn replace_ignoring_case(text: &str, needle: &str, with: &str) -> String {
+    let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (mut j, mut k) = (i, 0);
+        while k < needle.len() && j < chars.len() {
+            let lower: Vec<char> = chars[j].to_lowercase().collect();
+            if needle.len() - k < lower.len() || needle[k..k + lower.len()] != lower[..] {
+                break;
+            }
+            k += lower.len();
+            j += 1;
+        }
+        if k == needle.len() {
+            out.push_str(with);
+            i = j;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Email text for a Markdown place (`md`), at most `max` characters, with
+/// each of `secrets` as a spoiler. A secret the cut would split is left
+/// out whole, never shown half.
+fn md_spoilered(raw: &str, secrets: &[String], max: usize) -> String {
+    const OPEN: char = '\u{E000}';
+    const CLOSE: char = '\u{E001}';
+    // Marks no email can contain stand in for the secrets until the escaping
+    // is done.
+    let unmarked = |s: &str| s.chars().filter(|c| *c != OPEN && *c != CLOSE).collect::<String>();
+    let secrets: Vec<String> = secrets.iter().map(|s| unmarked(s)).collect();
+    let mut order: Vec<(usize, &String)> = secrets.iter().enumerate().filter(|(_, s)| !s.trim().is_empty()).collect();
+    order.sort_by_key(|(_, s)| std::cmp::Reverse(s.chars().count()));
+    let mut text = unmarked(raw);
+    for (i, secret) in &order {
+        text = replace_ignoring_case(&text, secret, &format!("{OPEN}{i}{CLOSE}"));
+    }
+    let mut cut = clip(&text, max);
+    if let Some(open) = cut.rfind(OPEN) {
+        if !cut[open..].contains(CLOSE) {
+            cut.truncate(open);
+            cut = format!("{}…", cut.trim_end());
+        }
+    }
+    let escaped = md(&cut);
+    let mut out = escaped.clone();
+    for (i, secret) in secrets.iter().enumerate() {
+        out = out.replace(&format!("{OPEN}{i}{CLOSE}"), &format!("||{}||", md(secret)));
+    }
+    // Discord's own cut at 1800 must never fall inside a spoiler: a preview
+    // that would grow that long hides its secrets as dots instead.
+    if out.chars().count() > 1400 {
+        out = escaped;
+        for i in 0..secrets.len() {
+            out = out.replace(&format!("{OPEN}{i}{CLOSE}"), "•••");
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1594,60 @@ mod tests {
         assert!(e["description"].as_str().unwrap().starts_with("**StubHub** confirms a sale: **2 tickets** for **€600.00**\n> "));
         assert_eq!(field(&post, "From"), Some("StubHub · stubhub.com"));
         assert!(field(&post, "Received").unwrap().starts_with("<t:"));
+    }
+
+    /// 2.113.1: "poslat tam, meno a mail a to daj ako hidden ... a aj cena".
+    #[test]
+    fn a_mail_summary_lists_its_key_details_and_hides_a_persons_details() {
+        let conn = test_conn();
+        let now = Utc::now().to_rfc3339();
+        let id = seed_mail(&conn, "sale_confirmation", "high", "Please send your tickets to Anna Kovacova", &now);
+        conn.execute(
+            "UPDATE mail_messages SET snippet = 'Please send the tickets to ANNA.K@example.com before Friday.',
+                    extract_text = ?2 WHERE id = ?1",
+            params![
+                id,
+                "Please send your tickets\nBuyer's name: Anna Kovacova\nBuyer email: anna.k@example.com\nSend by: 14 Nov 2026\n\
+                 Event: Oasis Live 25\nQuantity: 2\nSale Price: €650.00\nTotal Proceeds: €600.00\nYour code: 482913"
+            ],
+        )
+        .unwrap();
+        let post = post_for(&conn, Subject::Mail(id), Occasion::MailArrived).unwrap().unwrap();
+        let details = field(&post, "📌 Key details").expect("a key details field");
+        assert!(details.contains("**Buyer's name:** ||Anna Kovacova||"), "{details}");
+        assert!(details.contains("**Buyer email:** ||anna.k@example.com||"), "{details}");
+        assert!(details.contains("**Send by:** 14 Nov 2026"), "{details}");
+        assert!(details.contains("**Event:** Oasis Live 25"), "{details}");
+        assert!(details.contains("**Sale Price:** €650.00"), "the other price stays: {details}");
+        assert!(!details.contains("Total Proceeds"), "the Amount field says it already: {details}");
+        assert!(!details.contains("Quantity"), "the Tickets field says it already: {details}");
+        assert!(!all_text(&post).contains("482913"), "a one-time code never leaves TIQR");
+        let e = embed(&post);
+        assert_eq!(e["title"], "Please send your tickets to •••");
+        let description = e["description"].as_str().unwrap();
+        assert!(description.contains("||anna.k@example.com||"), "{description}");
+        // Outside a spoiler the details appear nowhere.
+        let text = all_text(&post);
+        let bare = text.replace("||Anna Kovacova||", "").replace("||anna.k@example.com||", "");
+        assert!(!bare.to_lowercase().contains("anna"), "{text}");
+    }
+
+    #[test]
+    fn a_spoiler_is_never_cut_in_half() {
+        let secrets = vec!["anna.k@example.com".to_string()];
+        let long = format!("{} send to anna.k@example.com", "word ".repeat(10));
+        let cut = md_spoilered(&long, &secrets, 60);
+        assert!(!cut.contains("anna"), "{cut}");
+        assert!(cut.ends_with('…'), "{cut}");
+        assert_eq!(md_spoilered("To ANNA.K@example.com!", &secrets, 280), "To ||anna.k@example.com||!");
+        assert_eq!(md_spoilered("a *b* \u{E000}0\u{E001}", &[], 280), "a \\*b\\* 0");
+        assert_eq!(replace_ignoring_case("Hi ANNA and anna", "Anna", "•"), "Hi • and •");
+        assert_eq!(replace_ignoring_case("İstanbul: Ján NOVÁK", "ján novák", "•"), "İstanbul: •");
+        // So many spoilers that the text would outgrow Discord's cut: dots.
+        let many = vec!["anna.kovacova@example.com".to_string()];
+        let crowded = md_spoilered(&"anna.kovacova@example.com ".repeat(70), &many, 280);
+        assert!(!crowded.contains("anna") && crowded.contains("•••"), "{crowded}");
+        assert!(crowded.chars().count() <= 1400);
     }
 
     #[test]

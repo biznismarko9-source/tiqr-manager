@@ -16,6 +16,78 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.113.1 - Opravy po 2.113.0 a podstatné z mailu: kľúčové údaje, skryté osobné údaje, stiahnutie z odkazu
+
+**Finance → Transactions už nie je rozbité.** Stĺpce Category a Amount sa
+zúžili na jedno písmeno na riadok („B iz ni s...", „- € 2 5 7"). Príčina: od
+2.102.0 smie text v bunke tabuľky zalomiť kdekoľvek, aby nikdy nepretiekol do
+susedného stĺpca - to je správne v tabuľke s pevnými šírkami stĺpcov, ale
+tabuľky vo Finance si šírky rátali z obsahu, a tam to dovolilo zúžiť stĺpec
+na jedno písmeno. Transactions a opakované výdavky v Accounts majú teraz
+pevné šírky ako každý iný zoznam v appke (miesto/kto dostane, čo ostane, a
+dlhý text skráti s celým textom po prejdení myšou), a v tabuľkách, ktoré si
+šírky rátajú z obsahu, sa slovo zalomí len vtedy, keď by naozaj pretieklo.
+
+**Pulls je hneď pod Sales** v bočnom paneli.
+
+**Logo TIQR v Discorde.** Správy ukazovali namiesto loga rozbitý obrázok:
+logo bolo na adrese GitHub Pages, ktoré pre tento repozitár nie sú zapnuté
+(každá adresa `github.io` vracia 404). Teraz sa berie priamo zo súboru v
+repozitári (`docs/tiqr-logo.png` na `main`), overené, že sa načíta. Staré
+správy v Discorde ostanú, ako boli; nové už logo majú.
+
+**Biela čiara v Inventory.** Medzi dvoma riadkami boli dve čiary naraz (okraj
+tabuľky aj čiara riadka), a keďže riadky stáli na polovičných pixeloch, na
+niektorých miestach sa spojili a jedna čiara vyšla oveľa svetlejšia. Teraz
+je medzi riadkami len jedna čiara a riadky majú celé pixely - vo všetkých
+zoznamoch.
+
+**Kľúčové údaje z mailu - z celého obsahu, nie len z prvého riadku.** Pri
+maili typu „please send your tickets" TIQR vyberie to podstatné: kam a komu
+poslať lístky (meno, e-mail), dokedy, cenu a výplatu, event, dátum, miesto,
+počet lístkov, sedadlá, číslo objednávky - každý riadok s menovkou, akú mu
+dal sám mail („Total Proceeds", „Buyer's name"). Bez AI a bez hádania: hodnota
+sa berie len vedľa menovky, ktorú mail napísal, alebo z vety, ktorá priamo
+žiada poslať lístky na adresu. Čítajú sa menovky po anglicky, slovensky,
+česky, nemecky a španielsky; pri citovanom staršom maili sa číta len nová
+časť. Adresa odosielateľa a tvoja vlastná schránka nikdy nie sú „kam poslať".
+
+- **V TIQR** je to karta *Key details* hore v otvorenom maili.
+- **Osobné údaje** (meno, e-mail, telefón, adresa, komu poslať) sú skryté
+  ako bodky. Ukážu sa až po kliknutí, hromadne cez *Show personal details*.
+  Skopírovať sa dajú aj bez odkrytia.
+- **V Discorde** je pole *📌 Key details*. Osobné údaje sú tam ako spoiler
+  (ukáže ho až klik), aj v náhľade textu. V nadpise sú nahradené bodkami.
+  Čo už hovoria polia Amount, Tickets a Reference, sa neopakuje.
+- Pri príchode sa celé telo načíta aj pri aktualizácii objednávky, zrušení a
+  zmene eventu (predtým len pri nákupe, predaji, výplate a refunde). Discord
+  tak má kľúčové údaje z reálneho obsahu. Nová správa bez kľúčových údajov
+  vyzerá ako predtým.
+
+**„Download receipt" naozaj stiahne súbor.** Klik na odkaz, ktorý je súbor
+(„Download receipt", „Download invoice", „Stiahnuť faktúru", „Rechnung
+herunterladen", adresa končiaca na `.pdf` a podobne), stiahne súbor priamo do
+TIQR. Súbor sa uloží k mailu medzi prílohy (s poznámkou *from a link*) a
+obrázok či PDF sa hneď otvorí v náhľade. Odtiaľ ide *Open* aj *Save* ako pri
+prílohe. Sťahuje Rust, nie obrazovka, a len z verejného internetu: každé
+presmerovanie sa kontroluje, sú povolené len porty 80/443 a najviac 25 MB. Či
+je to program, sa zisťuje podľa obsahu súboru, nie podľa mena, a program
+TIQR neotvorí. Ak adresa vráti webovú stránku (prihlásenie, stránka faktúry)
+alebo sa súbor stiahnuť nedá, odkaz sa otvorí v prehliadači - klik teda vždy
+niekam vedie. Pri prejdení myšou má taký odkaz tlačidlá *Download* aj
+*Open*. Ostatné odkazy (#1160703 v Zendesku, Concerts/Festivals/help centre
+vo viagogo) sa otvárajú v prehliadači ako doteraz. Mail v Spame alebo Koši
+nikdy nič nesťahuje.
+
+**Drobnosti:** text z HTML mailov už správne číta písmená zapísané ako
+`&Ntilde;`, `&uuml;`, `&Scaron;` (ESPAÑA, München, Škoda). Escape po kliknutí
+na odkaz v maili zatvorí náhľad (klávesnica ostávala v rámčeku správy).
+
+`cargo test` TESTCOUNT, `npm test` 34, build v poriadku; obrazovky Finance a
+Inventory skontrolované v prehliadači pri šírke 1000 aj 1440 bodov, čítačka
+mailov (kľúčové údaje, skryté a odkryté, stiahnutie z odkazu, náhľad) v tmavom
+aj svetlom režime.
+
 ## 2.113.0 - Mail ako v poriadnom mailovom programe, Discord pri každom zázname, jeden sync, jednoduchší repozitár
 
 **Mail sa zobrazí tak, ako bol navrhnutý** - obrázky, tabuľky, tlačidlá -

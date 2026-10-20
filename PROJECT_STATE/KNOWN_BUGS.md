@@ -22,6 +22,22 @@ from old reports.
 
 ## Open
 
+- **GitHub Pages is not enabled for the repository** (2.113.1 finding: no
+  `pages-build-deployment` workflow, and Discord could not load the logo from
+  github.io). `src/lib/firebase.ts` sends the password-reset continue URL to
+  `https://biznismarko9-source.github.io/tiqr-manager/reset-redirect.html`,
+  and the Google consent screen links `privacy.html` there - both answer 404
+  until marko enables Pages (Settings -> Pages -> Deploy from a branch ->
+  `main` / `/docs`). The Discord logo no longer depends on it.
+
+- **Key details and link downloads (2.113.1): checked with fakes only** -
+  Rust tests with a local web server and Chromium with a mocked backend, not
+  real viagogo/StubHub mail or real receipt links. A label TIQR does not
+  know gives no key detail (nothing is guessed); a receipt behind a sign-in
+  opens in the browser rather than downloading. Facts are computed when a
+  message is opened, so a mail arriving without its body (unknown sender,
+  older than 14 days) shows in Discord with the preview only.
+
 - **Mail reader (2.113.0): not run against a real Gmail mailbox, a real
   Discord server or WebView2 on real Windows** - only fakes in the Rust
   tests and screens in Chromium with a mocked backend. The PDF preview

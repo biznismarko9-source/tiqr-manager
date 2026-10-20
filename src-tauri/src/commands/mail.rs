@@ -489,6 +489,34 @@ const NAMED_ENTITIES: &[(&str, &str)] = &[
     ("laquo", "\u{ab}"), ("raquo", "\u{bb}"), ("eacute", "\u{e9}"),
 ];
 
+/// 2.113.1: letters with accents, by their exact HTML name - `&Ntilde;` is
+/// "Ñ" and `&ntilde;` "ñ", so these are looked up, case and all, before the
+/// case-blind list above. A designed Spanish or German mail spells its names
+/// this way, and the key details (mail_facts.rs) are read from this text.
+const LETTER_ENTITIES: &[(&str, char)] = &[
+    ("Agrave", 'À'), ("agrave", 'à'), ("Egrave", 'È'), ("egrave", 'è'), ("Igrave", 'Ì'), ("igrave", 'ì'),
+    ("Ograve", 'Ò'), ("ograve", 'ò'), ("Ugrave", 'Ù'), ("ugrave", 'ù'), ("Aacute", 'Á'), ("aacute", 'á'),
+    ("Cacute", 'Ć'), ("cacute", 'ć'), ("Eacute", 'É'), ("eacute", 'é'), ("gacute", 'ǵ'), ("Iacute", 'Í'),
+    ("iacute", 'í'), ("Lacute", 'Ĺ'), ("lacute", 'ĺ'), ("Nacute", 'Ń'), ("nacute", 'ń'), ("Oacute", 'Ó'),
+    ("oacute", 'ó'), ("Racute", 'Ŕ'), ("racute", 'ŕ'), ("Sacute", 'Ś'), ("sacute", 'ś'), ("Uacute", 'Ú'),
+    ("uacute", 'ú'), ("Yacute", 'Ý'), ("yacute", 'ý'), ("Zacute", 'Ź'), ("zacute", 'ź'), ("Acirc", 'Â'),
+    ("acirc", 'â'), ("Ccirc", 'Ĉ'), ("ccirc", 'ĉ'), ("Ecirc", 'Ê'), ("ecirc", 'ê'), ("Gcirc", 'Ĝ'),
+    ("gcirc", 'ĝ'), ("Hcirc", 'Ĥ'), ("hcirc", 'ĥ'), ("Icirc", 'Î'), ("icirc", 'î'), ("Jcirc", 'Ĵ'),
+    ("jcirc", 'ĵ'), ("Ocirc", 'Ô'), ("ocirc", 'ô'), ("Scirc", 'Ŝ'), ("scirc", 'ŝ'), ("Ucirc", 'Û'),
+    ("ucirc", 'û'), ("Wcirc", 'Ŵ'), ("wcirc", 'ŵ'), ("xcirc", '◯'), ("Ycirc", 'Ŷ'), ("ycirc", 'ŷ'),
+    ("Atilde", 'Ã'), ("atilde", 'ã'), ("Itilde", 'Ĩ'), ("itilde", 'ĩ'), ("Ntilde", 'Ñ'), ("ntilde", 'ñ'),
+    ("Otilde", 'Õ'), ("otilde", 'õ'), ("Utilde", 'Ũ'), ("utilde", 'ũ'), ("Auml", 'Ä'), ("auml", 'ä'),
+    ("Euml", 'Ë'), ("euml", 'ë'), ("Iuml", 'Ï'), ("iuml", 'ï'), ("Ouml", 'Ö'), ("ouml", 'ö'),
+    ("Uuml", 'Ü'), ("uuml", 'ü'), ("Yuml", 'Ÿ'), ("yuml", 'ÿ'), ("Aring", 'Å'), ("aring", 'å'),
+    ("Uring", 'Ů'), ("uring", 'ů'), ("Ccedil", 'Ç'), ("ccedil", 'ç'), ("Gcedil", 'Ģ'), ("Kcedil", 'Ķ'),
+    ("kcedil", 'ķ'), ("Lcedil", 'Ļ'), ("lcedil", 'ļ'), ("Ncedil", 'Ņ'), ("ncedil", 'ņ'), ("Rcedil", 'Ŗ'),
+    ("rcedil", 'ŗ'), ("Scedil", 'Ş'), ("scedil", 'ş'), ("Tcedil", 'Ţ'), ("tcedil", 'ţ'), ("Ccaron", 'Č'),
+    ("ccaron", 'č'), ("Dcaron", 'Ď'), ("dcaron", 'ď'), ("Ecaron", 'Ě'), ("ecaron", 'ě'), ("Lcaron", 'Ľ'),
+    ("lcaron", 'ľ'), ("Ncaron", 'Ň'), ("ncaron", 'ň'), ("Rcaron", 'Ř'), ("rcaron", 'ř'), ("Scaron", 'Š'),
+    ("scaron", 'š'), ("Tcaron", 'Ť'), ("tcaron", 'ť'), ("Zcaron", 'Ž'), ("zcaron", 'ž'), ("szlig", 'ß'),
+    ("oslash", 'ø'), ("Oslash", 'Ø'), ("aelig", 'æ'), ("AElig", 'Æ'),
+];
+
 /// One pass, no allocation per entity. An `&` that does not begin a
 /// recognised entity is kept verbatim - this never guesses.
 pub(crate) fn decode_entities(input: &str) -> String {
@@ -513,6 +541,8 @@ pub(crate) fn decode_entities(input: &str) -> String {
                 num.parse::<u32>().ok()
             };
             code.and_then(char::from_u32).map(|c| c.to_string())
+        } else if let Some((_, c)) = LETTER_ENTITIES.iter().find(|(n, _)| *n == name) {
+            Some(c.to_string())
         } else {
             let lower = name.to_ascii_lowercase();
             NAMED_ENTITIES
@@ -2046,8 +2076,13 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
             i + o
         },
         sync_interval_seconds: sync_interval_seconds(conn),
+        // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
-            .query_row("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1", [], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM mail_messages WHERE is_unread = 1 AND NOT IFNULL({}, 0)", muted_sql(conn)),
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0),
     })
 }
@@ -4487,7 +4522,7 @@ pub fn claim_mail_automation(state: State<AppState>) -> AppResult<MailConnection
 
 /// The folders this app defines, in the order the rail shows them.
 pub(crate) const BUILTIN_FOLDERS: &[&str] =
-    &["inbox", "important", "starred", "finances", "otp", "review", "promotions", "spam", "trash"];
+    &["inbox", "important", "starred", "finances", "otp", "review", "promotions", "muted", "spam", "trash"];
 
 /// A stored label id: lower-case letters, digits and `_` (`label_8`,
 /// `category_updates`). Anything else is not a folder - which is also what
@@ -4525,6 +4560,9 @@ enum Atom<'a> {
     Unmoved,
     /// 2.113.0: marko moved it here in TIQR.
     MovedTo(&'a str),
+    /// 2.113.1: from a sender marko muted, and not mail that could become a
+    /// record (`muted_sql`).
+    Muted,
 }
 
 /// 2.113.0: one of marko's own folders in TIQR (`tiqr_3`). Never a Gmail
@@ -4545,13 +4583,17 @@ fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
     let placed = |own: String, key: &str| {
         format!("(({} AND {own}) OR ({} AND NOT {}))", atom(Unmoved), atom(MovedTo(key)), atom(LocalTrash))
     };
+    // 2.113.1: a muted sender's mail is in Muted and in none of the places
+    // Gmail has it - Starred, Needs review and marko's own folders still
+    // show it, because those are his own choices.
+    let muted = atom(Muted);
     Some(match folder {
         // "hlavny inbox: tam budu vsetky spravy okrem napriklad spamu a
         // promotions" - everything received, archived mail included, but
         // not his own sent mail and not drafts.
         "inbox" => placed(
             format!(
-                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}))",
+                "(NOT {junk} AND NOT {} AND NOT {} AND NOT ({} AND NOT {}) AND NOT {muted})",
                 atom(Promo),
                 atom(Draft),
                 atom(Sent),
@@ -4559,23 +4601,27 @@ fn folder_expr(folder: &str, atom: &dyn Fn(Atom) -> String) -> Option<String> {
             ),
             "inbox",
         ),
-        "important" => format!("NOT {junk} AND {}", atom(Recognised)),
+        "important" => format!("NOT {junk} AND {} AND NOT {muted}", atom(Recognised)),
         "starred" => format!("NOT {junk} AND {}", atom(Starred)),
-        "finances" => placed(format!("(NOT {junk} AND NOT {} AND {})", atom(Promo), atom(Finance)), "finances"),
-        "otp" => format!("NOT {junk} AND {}", atom(Otp)),
+        "finances" => placed(
+            format!("(NOT {junk} AND NOT {} AND {} AND NOT {muted})", atom(Promo), atom(Finance)),
+            "finances",
+        ),
+        "otp" => format!("NOT {junk} AND {} AND NOT {muted}", atom(Otp)),
         "review" => format!("NOT {} AND {}", atom(LocalTrash), atom(Review)),
-        "promotions" => placed(format!("(NOT {junk} AND {})", atom(Promo)), "promotions"),
+        "promotions" => placed(format!("(NOT {junk} AND {} AND NOT {muted})", atom(Promo)), "promotions"),
+        "muted" => format!("NOT {junk} AND {muted} AND {}", atom(Unmoved)),
         "spam" => format!("NOT {} AND {} AND {}", atom(LocalTrash), atom(Spam), atom(Unmoved)),
         "trash" => format!("({} OR ({} AND {}))", atom(LocalTrash), atom(Trash), atom(Unmoved)),
         key if is_local_folder_key(key) => format!("({} AND NOT {})", atom(MovedTo(key)), atom(LocalTrash)),
-        key if is_label_key(key) => placed(format!("(NOT {junk} AND {})", atom(Label(key))), key),
+        key if is_label_key(key) => placed(format!("(NOT {junk} AND {} AND NOT {muted})", atom(Label(key))), key),
         _ => return None,
     })
 }
 
 /// A fact read straight off a `mail_messages` row - for lists, which stop
-/// at the first 200 matches.
-fn row_atom(a: Atom) -> String {
+/// at the first 200 matches. `muted` is `muted_sql` of the moment.
+fn row_atom(a: Atom, muted: &str) -> String {
     match a {
         Atom::Spam => has_label("spam"),
         Atom::Trash => has_label("trash"),
@@ -4593,10 +4639,11 @@ fn row_atom(a: Atom) -> String {
         Atom::Unmoved => "(moved_to IS NULL)".to_string(),
         // `k` is a checked key (see `folder_expr`), never free text.
         Atom::MovedTo(k) => format!("(moved_to = '{k}')"),
+        Atom::Muted => muted.to_string(),
     }
 }
 
-/// The same fact, from `COUNT_ROWS` below - where each one was worked out
+/// The same fact, from `count_rows` below - where each one was worked out
 /// once per message rather than once per folder that asks.
 fn count_atom(a: Atom) -> String {
     match a {
@@ -4615,29 +4662,35 @@ fn count_atom(a: Atom) -> String {
         Atom::Label(k) => format!("(instr(l, ',{k},') > 0)"),
         Atom::Unmoved => "(mv IS NULL)".to_string(),
         Atom::MovedTo(k) => format!("(mv = '{k}')"),
+        Atom::Muted => "mu".to_string(),
     }
 }
 
 /// Every fact, once per message, MATERIALIZED - so counting nineteen folders
 /// over 100 000 messages builds each message's label list once instead of
-/// fifty times.
-const COUNT_ROWS: &str = "WITH m AS MATERIALIZED (
+/// fifty times. `muted` is `muted_sql` of the moment.
+fn count_rows(muted: &str) -> String {
+    format!(
+        "WITH m AS MATERIALIZED (
     SELECT ',' || IFNULL(labels, '') || ',' AS l, is_unread AS u, (is_starred = 1) AS st,
            (trashed_at IS NOT NULL) AS tt, (category <> 'other') AS imp, IFNULL(finance = 1, 0) AS fin,
-           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv
+           (otp_code IS NOT NULL) AS otp, (status = 'review_required') AS rev, moved_to AS mv,
+           IFNULL({muted}, 0) AS mu
       FROM mail_messages
 ), f AS MATERIALIZED (
-    SELECT l, u, st, tt, imp, fin, otp, rev, mv,
+    SELECT l, u, st, tt, imp, fin, otp, rev, mv, mu,
            (instr(l, ',spam,') > 0) AS sp, (instr(l, ',trash,') > 0) AS tr,
            (instr(l, ',category_promotions,') > 0) AS pr, (instr(l, ',draft,') > 0) AS dr,
            (instr(l, ',sent,') > 0) AS se, (instr(l, ',inbox,') > 0) AS ib
       FROM m
-)";
+)"
+    )
+}
 
 /// One folder as a SQL condition on `mail_messages`, or `None` for
-/// something that is not one.
-pub(crate) fn folder_sql(folder: &str) -> Option<String> {
-    folder_expr(folder, &row_atom)
+/// something that is not one. `muted` is `muted_sql` of the moment.
+pub(crate) fn folder_sql(folder: &str, muted: &str) -> Option<String> {
+    folder_expr(folder, &|a| row_atom(a, muted))
 }
 
 /// One page of one folder, newest first.
@@ -4652,7 +4705,8 @@ pub(crate) fn list_folder_impl(
     before: Option<(&str, i64)>,
     limit: i64,
 ) -> AppResult<Vec<MailMessageSummary>> {
-    let Some(pred) = folder_sql(folder) else {
+    let muted = muted_sql(conn);
+    let Some(pred) = folder_sql(folder, &muted) else {
         return Err(AppError::Validation(format!("\"{folder}\" is not a mail folder")));
     };
     let mut clauses = vec![format!("({pred})")];
@@ -4703,7 +4757,7 @@ pub fn list_mail_folder(
 
 /// Total and unread for every folder asked for, in ONE pass over the mail.
 pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResult<Vec<MailFolderCount>> {
-    let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k).is_some()).collect();
+    let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k, "0").is_some()).collect();
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -4713,7 +4767,7 @@ pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResul
         cols.push(format!("IFNULL(SUM(CASE WHEN {p} THEN 1 ELSE 0 END), 0)"));
         cols.push(format!("IFNULL(SUM(CASE WHEN ({p}) AND u = 1 THEN 1 ELSE 0 END), 0)"));
     }
-    let sql = format!("{COUNT_ROWS} SELECT {} FROM f", cols.join(", "));
+    let sql = format!("{} SELECT {} FROM f", count_rows(&muted_sql(conn)), cols.join(", "));
     let values: Vec<i64> = conn.query_row(&sql, [], |r| (0..cols.len()).map(|i| r.get::<_, i64>(i)).collect())?;
     Ok(keys
         .iter()
@@ -4738,6 +4792,169 @@ pub fn get_mail_folder_counts(state: State<AppState>) -> AppResult<Vec<MailFolde
     keys.extend(user_label_keys(&conn)?);
     keys.extend(local_folders(&conn).into_iter().map(|f| f.id));
     folder_counts_impl(&conn, &keys)
+}
+
+// ===========================================================================
+// MUTED SENDERS (2.113.1)
+// ===========================================================================
+//
+// marko: "chcem aj funkcie hide those mails ak vela spamuju a na nejaky cas si
+// vies vypnut aby si ich neprijmal teda aj hej ale skryl ich". One address,
+// or everyone at a domain, muted for a day, a week, a month or until
+// unmuted. The mail still ARRIVES and is kept - it is only hidden: not in
+// the Inbox, Important, Finances, OTP codes, Promotions or the labels, not
+// counted as unread, and listed under Muted instead. Gmail is not changed.
+//
+// Mail TIQR recognises as a sale, a purchase, a payout, a refund, a
+// cancellation, an event change or an order update is NEVER hidden: muting
+// is for the noise, and a shop that also sends newsletters must not make
+// marko miss a sale. Starred, Needs review and his own folders show a muted
+// sender's mail too - those are his own choices.
+//
+// A mute that has ended keeps hiding what arrived before its end - that was
+// the noise - and new mail shows again. Unmute brings all of it back. The
+// list travels to the other computer with the mail settings.
+
+/// One muted sender.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailMute {
+    /// "news@shop.com" (that sender) or "shop.com" (everyone at it).
+    pub who: String,
+    pub since: String,
+    /// When it ends; `None` until unmuted.
+    pub until: Option<String>,
+}
+
+pub(crate) const MAIL_MUTED_KEY: &str = "mail_muted";
+
+/// What could become a record - never hidden by a mute.
+const RECORD_CATEGORIES: &str =
+    "'sale_confirmation','purchase_confirmation','payout','refund','cancellation','event_update','order_status'";
+
+/// Mailboxes everyone has: muting the whole domain would hide every person
+/// who writes from one.
+const SHARED_MAIL_DOMAINS: &[&str] = &[
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "icloud.com",
+    "me.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "gmx.de", "gmx.net", "web.de", "seznam.cz",
+    "email.cz", "centrum.cz", "centrum.sk", "azet.sk", "zoznam.sk", "post.sk", "atlas.sk", "pobox.sk", "wp.pl",
+    "o2.pl", "onet.pl", "interia.pl", "freemail.hu", "yandex.com", "mail.ru",
+];
+
+/// An address or a domain, as TIQR stores it - lower case, letters, digits
+/// and `.-_+%@` only, which is also what makes it safe in `muted_sql`.
+pub(crate) fn mute_target(raw: &str) -> Option<String> {
+    let who = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+    if who.is_empty() || who.len() > 254 || !who.chars().all(|c| c.is_ascii_alphanumeric() || ".-_+%@".contains(c)) {
+        return None;
+    }
+    match who.split_once('@') {
+        Some((local, domain)) => {
+            (!local.is_empty() && !domain.contains('@') && domain.contains('.') && !domain.starts_with('.')).then_some(who.clone())
+        }
+        None => {
+            let ok = who.contains('.')
+                && !who.starts_with(['.', '-'])
+                && !who.ends_with(['.', '-'])
+                && who.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+                && !SHARED_MAIL_DOMAINS.contains(&who.as_str());
+            ok.then_some(who)
+        }
+    }
+}
+
+pub(crate) fn mail_mutes(conn: &Connection) -> Vec<MailMute> {
+    get_setting(conn, MAIL_MUTED_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<MailMute>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| mute_target(&m.who).as_deref() == Some(m.who.as_str()))
+        .collect()
+}
+
+fn save_mutes(conn: &Connection, mutes: &[MailMute]) -> AppResult<()> {
+    let raw = serde_json::to_string(mutes).map_err(|e| AppError::Other(e.to_string()))?;
+    set_setting(conn, MAIL_MUTED_KEY, &raw)?;
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+/// The muted mail as a SQL condition on `mail_messages` - `0` when nobody is
+/// muted. Every value in it was checked (`mute_target`, a parsed time), so
+/// nothing a message says can reach the SQL.
+pub(crate) fn muted_sql(conn: &Connection) -> String {
+    let parts: Vec<String> = mail_mutes(conn)
+        .iter()
+        .filter_map(|m| {
+            let who = mute_target(&m.who)?;
+            let sender = if who.contains('@') {
+                format!("LOWER(from_address) = '{who}'")
+            } else {
+                format!("(LOWER(from_address) LIKE '%@{who}' OR LOWER(from_address) LIKE '%.{who}')")
+            };
+            Some(match &m.until {
+                None => sender,
+                Some(until) => {
+                    let until = DateTime::parse_from_rfc3339(until).ok()?.with_timezone(&Utc).to_rfc3339();
+                    format!("({sender} AND received_at < '{until}')")
+                }
+            })
+        })
+        .collect();
+    if parts.is_empty() {
+        return "0".to_string();
+    }
+    format!("(IFNULL(category, 'other') NOT IN ({RECORD_CATEGORIES}) AND ({}))", parts.join(" OR "))
+}
+
+pub(crate) fn mute_impl(conn: &Connection, who: &str, days: Option<i64>, now: DateTime<Utc>) -> AppResult<Vec<MailMute>> {
+    let Some(who) = mute_target(who) else {
+        return Err(AppError::Validation(
+            "That is not an address or a domain TIQR can mute (a shared one like gmail.com would hide everybody).".into(),
+        ));
+    };
+    if days.is_some_and(|d| !(1..=365).contains(&d)) {
+        return Err(AppError::Validation("A mute lasts from 1 to 365 days, or until you unmute.".into()));
+    }
+    let mut mutes = mail_mutes(conn);
+    mutes.retain(|m| m.who != who);
+    mutes.push(MailMute {
+        who,
+        since: now.to_rfc3339(),
+        until: days.map(|d| (now + ChronoDuration::days(d)).to_rfc3339()),
+    });
+    save_mutes(conn, &mutes)?;
+    Ok(mutes)
+}
+
+pub(crate) fn unmute_impl(conn: &Connection, who: &str) -> AppResult<Vec<MailMute>> {
+    let who = who.trim().trim_start_matches('@').to_ascii_lowercase();
+    let mut mutes = mail_mutes(conn);
+    mutes.retain(|m| m.who != who);
+    save_mutes(conn, &mutes)?;
+    Ok(mutes)
+}
+
+#[tauri::command]
+pub fn list_mail_mutes(state: State<AppState>) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    Ok(mail_mutes(&conn))
+}
+
+/// Mutes a sender (`who` an address) or a domain - for `days`, or until
+/// unmuted when `days` is empty.
+#[tauri::command]
+pub fn mute_mail_sender(state: State<AppState>, who: String, days: Option<i64>) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    mute_impl(&conn, &who, days, Utc::now())
+}
+
+/// Shows all of a muted sender's mail again.
+#[tauri::command]
+pub fn unmute_mail_sender(state: State<AppState>, who: String) -> AppResult<Vec<MailMute>> {
+    let conn = state.db.lock().unwrap();
+    unmute_impl(&conn, &who)
 }
 
 // ===========================================================================
@@ -5191,6 +5408,10 @@ mod tests {
         assert_eq!(decode_entities("it&rsquo;s"), "it's");
         assert_eq!(decode_entities("&euro;440"), "\u{20ac}440");
         assert_eq!(decode_entities("more&hellip;"), "more...");
+        // 2.113.1: accented letters keep their case.
+        assert_eq!(decode_entities("ESPA&Ntilde;A - Espa&ntilde;a"), "ESPAÑA - España");
+        assert_eq!(decode_entities("M&uuml;nchen, &Scaron;koda, Stra&szlig;e, &Eacute;lan"), "München, Škoda, Straße, Élan");
+        assert_eq!(decode_entities("&EACUTE;"), "\u{e9}", "an unknown spelling falls back to the old list");
     }
 
     #[test]
@@ -7199,6 +7420,87 @@ mod tests {
         assert_eq!(folder_pids(&conn, "spam"), vec!["spam"]);
         assert_eq!(folder_pids(&conn, "trash"), vec!["gtrash", "ttrash"]);
         assert!(list_folder_impl(&conn, "'; DROP TABLE mail_messages; --", None, None, 10).is_err());
+    }
+
+    /// 2.113.1: "hide those mails ak vela spamuju a na nejaky cas si vies
+    /// vypnut ... aby si ich neprijmal, teda aj hej, ale skryl ich".
+    #[test]
+    fn a_muted_sender_still_arrives_but_is_hidden_until_unmuted() {
+        let conn = test_conn();
+        let from = |id: i64, addr: &str| {
+            conn.execute("UPDATE mail_messages SET from_address = ?2 WHERE id = ?1", params![id, addr]).unwrap();
+        };
+        let news = put(&conn, "news", "inbox", "2026-10-10T00:00:00Z");
+        from(news, "News@Shop.com");
+        let promo = put(&conn, "promo", "inbox,category_promotions", "2026-10-09T00:00:00Z");
+        from(promo, "deals@mail.shop.com");
+        let sale = put(&conn, "sale", "inbox", "2026-10-08T00:00:00Z");
+        from(sale, "orders@shop.com");
+        conn.execute("UPDATE mail_messages SET category = 'sale_confirmation' WHERE id = ?1", [sale]).unwrap();
+        let star = put(&conn, "star", "inbox,starred", "2026-10-07T00:00:00Z");
+        from(star, "news@shop.com");
+        let other = put(&conn, "lookalike", "inbox", "2026-10-06T00:00:00Z");
+        from(other, "hello@notshop.com");
+        conn.execute("UPDATE mail_messages SET is_unread = 1", []).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-10-11T00:00:00+00:00").unwrap().with_timezone(&Utc);
+
+        // One sender, until unmuted: out of the Inbox, into Muted, not unread.
+        mute_impl(&conn, "news@shop.com", None, now).unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["sale", "lookalike"]);
+        assert_eq!(folder_pids(&conn, "muted"), vec!["news", "star"]);
+        assert_eq!(folder_pids(&conn, "starred"), vec!["star"], "a star is marko's own choice");
+        assert_eq!(status_impl(&conn).unwrap().unread_count, 3, "a muted sender's mail is not counted as unread");
+
+        // Everyone at a domain: its subdomains too, never a lookalike, never a sale.
+        mute_impl(&conn, "@shop.com", Some(7), now).unwrap();
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["sale", "lookalike"], "a sale is never hidden");
+        assert_eq!(folder_pids(&conn, "promotions"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "muted"), vec!["news", "promo", "star"]);
+        let keys: Vec<String> = BUILTIN_FOLDERS.iter().map(|k| k.to_string()).collect();
+        for c in folder_counts_impl(&conn, &keys).unwrap() {
+            assert_eq!(c.total as usize, folder_pids(&conn, &c.key).len(), "the count of {} agrees with its list", c.key);
+        }
+
+        // A mute that has ended keeps hiding what came before its end; new mail shows.
+        unmute_impl(&conn, "news@shop.com").unwrap();
+        let mut mutes = mail_mutes(&conn);
+        assert_eq!(mutes.len(), 1);
+        mutes[0].until = Some("2026-10-09T12:00:00+00:00".into());
+        save_mutes(&conn, &mutes).unwrap();
+        let later = put(&conn, "later", "inbox", "2026-10-12T00:00:00Z");
+        from(later, "deals@shop.com");
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["later", "news", "sale", "lookalike"]);
+        assert_eq!(folder_pids(&conn, "muted"), vec!["promo", "star"], "what came before the end stays hidden");
+
+        // Unmute: everything back.
+        unmute_impl(&conn, "SHOP.com").unwrap();
+        assert!(mail_mutes(&conn).is_empty());
+        assert_eq!(folder_pids(&conn, "muted"), Vec::<String>::new());
+        assert_eq!(folder_pids(&conn, "promotions"), vec!["promo"]);
+    }
+
+    #[test]
+    fn only_a_real_address_or_domain_can_be_muted() {
+        let conn = test_conn();
+        let now = Utc::now();
+        assert_eq!(mute_target(" @Shop.COM "), Some("shop.com".into()));
+        assert_eq!(mute_target("News+tag@shop.com"), Some("news+tag@shop.com".into()));
+        for bad in ["gmail.com", "@outlook.com", "shop", "x'; DROP TABLE mail_messages; --", "a@b", "@", "", "-shop.com", "a@@b.com"] {
+            assert!(mute_target(bad).is_none(), "{bad:?} must not be mutable");
+            assert!(mute_impl(&conn, bad, None, now).is_err(), "{bad:?}");
+        }
+        assert!(mute_target("anna@gmail.com").is_some(), "one person at gmail.com can be muted");
+        assert!(mute_impl(&conn, "shop.com", Some(0), now).is_err());
+        assert!(mute_impl(&conn, "shop.com", Some(400), now).is_err());
+        // A list edited by hand (or by an older version) cannot reach the SQL.
+        set_setting(&conn, MAIL_MUTED_KEY, r#"[{"who":"x' OR 1=1 --","since":"x","until":null},{"who":"shop.com","since":"x","until":"not a time"}]"#).unwrap();
+        assert!(mail_mutes(&conn).iter().all(|m| m.who == "shop.com"));
+        assert_eq!(muted_sql(&conn), "0", "a mute with a broken end hides nothing");
+        // Muting again replaces the old mute.
+        mute_impl(&conn, "shop.com", Some(1), now).unwrap();
+        mute_impl(&conn, "shop.com", None, now).unwrap();
+        let m = mail_mutes(&conn);
+        assert_eq!((m.len(), m[0].until.clone()), (1, None));
     }
 
     /// 2.113.0: "aby som vedel dane maily presunut tak kde chcem".

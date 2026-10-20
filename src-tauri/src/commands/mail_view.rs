@@ -34,6 +34,7 @@
 use crate::commands::mail::{
     self, gmail_client, is_untrusted, strip_html, GMAIL_API, MAIL_REFRESH_TOKEN_KEY,
 };
+use crate::commands::mail_facts::{key_facts, MailFact};
 use crate::commands::mail_sync::{access_token, gmail_json, GmailFailure};
 use crate::commands::sheets_sync::{get_setting, set_setting};
 use crate::db::AppState;
@@ -74,6 +75,9 @@ pub struct MailView {
     pub from_cache: bool,
     /// The language it is written in, when that is clear ("de", "en", ...).
     pub language: Option<String>,
+    /// 2.113.1: the few lines that matter - where tickets go, to whom, how
+    /// much, by when (mail_facts.rs). A person's details are `private`.
+    pub facts: Vec<MailFact>,
 }
 
 /// One attachment, as the screen lists it.
@@ -167,6 +171,11 @@ pub(crate) fn safe_filename(raw: &str) -> String {
 /// A part id as Gmail writes it ("0", "1.2.3"), and nothing else - it ends
 /// up in a file name.
 fn valid_part_id(p: &str) -> bool {
+    // 2.113.1: `L` + 12 hex digits is a file downloaded from a link in the
+    // message (`download_mail_link`), kept like an attachment.
+    if let Some(hex) = p.strip_prefix('L') {
+        return hex.len() == 12 && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
     !p.is_empty() && p.len() <= 32 && p.chars().all(|c| c.is_ascii_digit() || c == '.') && !p.contains("..")
 }
 
@@ -645,6 +654,22 @@ fn message_row(conn: &Connection, id: i64) -> AppResult<(String, String, bool)> 
     .ok_or_else(|| AppError::NotFound(format!("mail message #{id} not found")))
 }
 
+/// The key details of a message's text - none for Spam or Trash, whose
+/// claims are never repeated. Discord's summary of a message uses it too.
+pub(crate) fn facts_for(conn: &Connection, id: i64, text: &str) -> Vec<MailFact> {
+    let row: Option<(String, String)> = conn
+        .query_row("SELECT from_address, IFNULL(labels,'') FROM mail_messages WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .ok()
+        .flatten();
+    let Some((from, labels)) = row else { return Vec::new() };
+    if is_untrusted(&labels) {
+        return Vec::new();
+    }
+    let own = get_setting(conn, mail::MAIL_ACCOUNT_EMAIL_KEY).ok().flatten();
+    key_facts(text, &from, own.as_deref())
+}
+
 /// "Copy pictures from the web into TIQR" - on unless marko switched it off.
 pub(crate) const MAIL_REMOTE_IMAGES_KEY: &str = "mail_remote_images";
 
@@ -890,6 +915,7 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
         return Ok(MailView {
             html,
             language: detect_language(&text).map(str::to_string),
+            facts: facts_for(&conn, id, &text),
             text,
             attachments: attachment_infos(&conn, id)?,
             images_copied: shown,
@@ -934,8 +960,13 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
                 params![id, p.part_id, safe_filename(&p.filename), p.mime, p.size, p.attachment_id, p.content_id, i64::from(p.inline)],
             )?;
         }
-        let files = fetched.attachments.iter().filter(|p| !p.inline).count();
-        tx.execute("UPDATE mail_messages SET has_attachments = ?2 WHERE id = ?1", params![id, i64::from(files > 0)])?;
+        // Every file kept with it counts - one downloaded from a link too.
+        tx.execute(
+            "UPDATE mail_messages SET has_attachments =
+                    (SELECT COUNT(*) > 0 FROM mail_attachments WHERE message_id = ?1 AND is_inline = 0)
+              WHERE id = ?1",
+            [id],
+        )?;
         // The whole text is here now: read the numbers again from it, for a
         // message that could still become a record.
         if !is_untrusted(&labels) {
@@ -954,6 +985,7 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
     Ok(MailView {
         html,
         language: detect_language(&fetched.text).map(str::to_string),
+        facts: facts_for(&conn, id, &fetched.text),
         text: fetched.text,
         attachments: attachment_infos(&conn, id)?,
         images_copied: shown,
@@ -1038,6 +1070,10 @@ async fn attachment_file(state: &State<'_, AppState>, id: i64, part_id: &str) ->
             return Ok((path, row.filename, row.mime));
         }
     }
+    if part_id.starts_with('L') {
+        // A file from a link: Gmail never had it.
+        return Err(AppError::NotFound("That file is no longer in TIQR - click its link in the message again.".to_string()));
+    }
     let part = part_id.to_string();
     let (row, bytes) = tauri::async_runtime::spawn_blocking(move || -> AppResult<(AttachmentRow, Vec<u8>)> {
         let bytes = download_attachment(&row, &part)?;
@@ -1111,6 +1147,225 @@ pub async fn open_mail_attachment(app: tauri::AppHandle, state: State<'_, AppSta
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| AppError::External(format!("Couldn't open the file: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Links that are files (2.113.1).
+// ---------------------------------------------------------------------------
+//
+// marko: "ked je nieco taketo v maily ze download receipt tak realne ked na
+// to kliknem tak sa mi stiahne". A "Download receipt" or "Download invoice"
+// link is fetched HERE, the way pictures are - public addresses only, every
+// redirect checked, a size cap - and the file is kept with the message like
+// an attachment, so it is viewed, opened and saved the same way. An address
+// that answers with a web page belongs in a browser, and the screen opens it
+// there instead.
+
+const MAX_LINK_BYTES: usize = 25 * 1024 * 1024;
+
+/// What a link in a message gave when TIQR fetched it.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLinkDownload {
+    /// "file" - kept with the message (`part_id`); "page" - the address
+    /// answers with a web page, for the browser.
+    pub outcome: String,
+    pub part_id: Option<String>,
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum LinkFetch {
+    File { bytes: Vec<u8>, mime: String, filename: Option<String> },
+    Page,
+}
+
+/// `%41` -> `A`, for a file name out of an address.
+fn percent_decode(s: &str) -> String {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The name a server gives a file: `filename*=UTF-8''...` first, then
+/// `filename="..."`.
+fn disposition_filename(header: &str) -> Option<String> {
+    let mut plain = None;
+    for part in header.split(';').map(str::trim) {
+        let lower = part.to_ascii_lowercase();
+        if lower.starts_with("filename*=") {
+            let v = &part["filename*=".len()..];
+            let v = v.trim().trim_matches('"');
+            let name = v.split_once("''").map(|(_, n)| n).unwrap_or(v);
+            let decoded = percent_decode(name);
+            if !decoded.trim().is_empty() {
+                return Some(decoded);
+            }
+        } else if lower.starts_with("filename=") {
+            let v = part["filename=".len()..].trim().trim_matches('"');
+            if !v.trim().is_empty() {
+                plain = Some(v.to_string());
+            }
+        }
+    }
+    plain
+}
+
+/// A name for the file: what the server called it, else the last part of
+/// its address - with an extension that matches what the bytes are, so a
+/// receipt from `download.php` is saved as a PDF.
+fn link_filename(given: Option<&str>, url: &reqwest::Url, bytes: &[u8]) -> String {
+    let from_url = url
+        .path_segments()
+        .and_then(|mut segs| segs.next_back().map(str::to_string))
+        .map(|s| percent_decode(&s))
+        .filter(|s| !s.trim().is_empty());
+    let name = safe_filename(given.map(str::to_string).or(from_url).as_deref().unwrap_or("download"));
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), ext.to_ascii_lowercase()),
+        _ => (name.clone(), String::new()),
+    };
+    let want: &[&str] = match sniff_kind(bytes, &name) {
+        "pdf" => &["pdf"],
+        "image" => match sniff_image(bytes) {
+            Some("image/png") => &["png"],
+            Some("image/gif") => &["gif"],
+            Some("image/webp") => &["webp"],
+            _ => &["jpg", "jpeg"],
+        },
+        "archive" if bytes.starts_with(b"PK\x03\x04") => &["zip"],
+        _ => return name,
+    };
+    if want.contains(&ext.as_str()) {
+        return name;
+    }
+    // The address's own ending (`.php`, `.aspx`) says nothing about the file.
+    let web = matches!(ext.as_str(), "php" | "asp" | "aspx" | "jsp" | "cgi" | "do" | "action" | "htm" | "html" | "ashx");
+    let base = if web || ext.is_empty() { stem } else { name.clone() };
+    format!("{base}.{}", want[0])
+}
+
+/// Fetches one link: every hop checked (public addresses, ports 80/443 -
+/// both lifted only by the tests, which serve on localhost), at most
+/// `MAX_LINK_BYTES`, and a web page reported as a page.
+fn fetch_link_with(url: &str, local_ok: bool) -> Result<(LinkFetch, reqwest::Url), String> {
+    let mut current = url.trim().to_string();
+    for _ in 0..8 {
+        let parsed = reqwest::Url::parse(&current).map_err(|_| "not a web address".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err("not a web address".to_string());
+        }
+        let host = parsed.host_str().ok_or("no host")?.to_string();
+        let port = parsed.port_or_known_default().ok_or("no port")?;
+        if !local_ok && port != 80 && port != 443 {
+            return Err("an unusual port".to_string());
+        }
+        let addrs: Vec<SocketAddr> = (host.as_str(), port).to_socket_addrs().map_err(|_| "unknown host".to_string())?.collect();
+        if addrs.is_empty() || (!local_ok && addrs.iter().any(|a| !is_public_ip(a.ip()))) {
+            return Err("not on the public internet".to_string());
+        }
+        let mut builder = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&host, addrs[0])
+            .user_agent("Mozilla/5.0 (compatible; TIQR Manager)");
+        if local_ok {
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().map_err(|e| e.to_string())?;
+        let resp = client.get(parsed.clone()).send().map_err(|_| "no answer".to_string())?;
+        let status = resp.status();
+        if status.is_redirection() {
+            let next = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or("a redirect to nowhere")?;
+            current = parsed.join(next).map_err(|_| "a bad redirect".to_string())?.to_string();
+            continue;
+        }
+        if !status.is_success() {
+            return Err(format!("the link answered {}", status.as_u16()));
+        }
+        let header = |name: reqwest::header::HeaderName| {
+            resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+        };
+        let mime = header(reqwest::header::CONTENT_TYPE).unwrap_or_default();
+        let disposition = header(reqwest::header::CONTENT_DISPOSITION);
+        let attachment = disposition.as_deref().is_some_and(|d| d.trim().to_ascii_lowercase().starts_with("attachment"));
+        let lower_mime = mime.to_ascii_lowercase();
+        if !attachment && (lower_mime.starts_with("text/html") || lower_mime.starts_with("application/xhtml")) {
+            return Ok((LinkFetch::Page, parsed));
+        }
+        if resp.content_length().is_some_and(|n| n > MAX_LINK_BYTES as u64) {
+            return Err("the file is bigger than 25 MB".to_string());
+        }
+        let mut bytes = Vec::new();
+        resp.take(MAX_LINK_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| "cut off".to_string())?;
+        if bytes.len() > MAX_LINK_BYTES {
+            return Err("the file is bigger than 25 MB".to_string());
+        }
+        // A page that does not say it is one is still a page.
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();
+        if !attachment && (head.trim_start().starts_with("<!doctype html") || head.contains("<html")) {
+            return Ok((LinkFetch::Page, parsed));
+        }
+        let filename = disposition.as_deref().and_then(disposition_filename);
+        return Ok((LinkFetch::File { bytes, mime, filename }, parsed));
+    }
+    Err("too many redirects".to_string())
+}
+
+/// Downloads the file a link in the message points at and keeps it with the
+/// message, like an attachment. Refused for Spam and Trash.
+#[tauri::command]
+pub async fn download_mail_link(state: State<'_, AppState>, id: i64, url: String) -> AppResult<MailLinkDownload> {
+    let (folder, labels) = {
+        let conn = state.db.lock().unwrap();
+        let (_, labels, _) = message_row(&conn, id)?;
+        (files_dir(&conn)?.join("att").join(id.to_string()), labels)
+    };
+    if is_untrusted(&labels) {
+        return Err(AppError::Validation("TIQR does not download files from mail in Spam or Trash.".to_string()));
+    }
+    let target = url.clone();
+    let (fetched, final_url) = tauri::async_runtime::spawn_blocking(move || fetch_link_with(&target, false))
+        .await
+        .map_err(|_| AppError::External("the download did not finish".to_string()))?
+        .map_err(|why| AppError::External(format!("Couldn't download it - {why}.")))?;
+    let LinkFetch::File { bytes, mime, filename } = fetched else {
+        return Ok(MailLinkDownload { outcome: "page".to_string(), part_id: None, filename: None });
+    };
+    let sha = sha_hex(&bytes);
+    let part_id = format!("L{}", &sha[..12]);
+    let filename = link_filename(filename.as_deref(), &final_url, &bytes);
+    let kind = sniff_kind(&bytes, &filename);
+    ensure_dir(&folder)?;
+    let name = format!("{part_id}-{filename}");
+    std::fs::write(folder.join(&name), &bytes).map_err(|e| AppError::Io(format!("Couldn't keep the file: {e}")))?;
+    let conn = state.db.lock().unwrap();
+    conn.execute(
+        "INSERT INTO mail_attachments (message_id, part_id, filename, declared_mime, size, is_inline, sniffed_kind, sha256, cached_file, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)
+         ON CONFLICT(message_id, part_id) DO UPDATE SET cached_file = excluded.cached_file, fetched_at = excluded.fetched_at,
+                filename = excluded.filename, size = excluded.size, sniffed_kind = excluded.sniffed_kind",
+        params![id, part_id, filename, mime, bytes.len() as i64, kind, sha, name, Utc::now().to_rfc3339()],
+    )?;
+    conn.execute("UPDATE mail_messages SET has_attachments = 1 WHERE id = ?1", [id])?;
+    Ok(MailLinkDownload { outcome: "file".to_string(), part_id: Some(part_id), filename: Some(filename) })
 }
 
 /// Saves an attachment wherever marko picks. Returns the file name, or
@@ -1469,6 +1724,97 @@ mod tests {
         assert!(logo.inline && logo.content_id.as_deref() == Some("logo"));
         let pdf = &parts.attachments[1];
         assert_eq!((pdf.filename.as_str(), pdf.inline, pdf.attachment_id.as_deref()), ("tickets.pdf", false, Some("A2")));
+    }
+
+    /// A web server on this computer that answers each path with its canned
+    /// response, for `count` requests.
+    fn serve(routes: Vec<(&'static str, Vec<u8>)>, count: usize) -> u16 {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(count) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let answer = routes
+                    .iter()
+                    .find(|(p, _)| *p == path)
+                    .map(|(_, r)| r.clone())
+                    .unwrap_or_else(|| b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+                let _ = stream.write_all(&answer);
+            }
+        });
+        port
+    }
+
+    fn response(headers: &str, body: &[u8]) -> Vec<u8> {
+        let mut r = format!("HTTP/1.1 200 OK\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        r.extend_from_slice(body);
+        r
+    }
+
+    #[test]
+    fn a_download_link_gives_the_file_and_a_web_page_stays_a_page() {
+        let pdf = b"%PDF-1.7 receipt".to_vec();
+        let port = serve(
+            vec![
+                ("/receipt", response("Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"Receipt 1160703.pdf\"\r\n", &pdf)),
+                ("/go", b"HTTP/1.1 302 Found\r\nLocation: /files/invoice%20march.pdf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()),
+                ("/files/invoice%20march.pdf", response("Content-Type: application/octet-stream\r\n", &pdf)),
+                ("/help", response("Content-Type: text/html; charset=utf-8\r\n", b"<html><body>Help centre</body></html>")),
+                ("/sneaky", response("Content-Type: application/octet-stream\r\n", b"<!DOCTYPE html><html>sign in</html>")),
+                ("/huge", b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: 30000000\r\nConnection: close\r\n\r\n".to_vec()),
+                ("/gone", b"HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()),
+            ],
+            8,
+        );
+        let at = |p: &str| format!("http://127.0.0.1:{port}{p}");
+
+        let (got, url) = fetch_link_with(&at("/receipt"), true).unwrap();
+        let LinkFetch::File { bytes, filename, .. } = got else { panic!("a file") };
+        assert_eq!(bytes, pdf);
+        assert_eq!(link_filename(filename.as_deref(), &url, &bytes), "Receipt 1160703.pdf");
+
+        let (got, url) = fetch_link_with(&at("/go"), true).unwrap();
+        assert!(url.path().ends_with("/invoice%20march.pdf"), "the redirect was followed: {url}");
+        let LinkFetch::File { bytes, filename, .. } = got else { panic!("a file") };
+        assert_eq!(link_filename(filename.as_deref(), &url, &bytes), "invoice march.pdf");
+
+        assert_eq!(fetch_link_with(&at("/help"), true).unwrap().0, LinkFetch::Page);
+        assert_eq!(fetch_link_with(&at("/sneaky"), true).unwrap().0, LinkFetch::Page, "a page that hides what it is");
+        assert!(fetch_link_with(&at("/huge"), true).unwrap_err().contains("25 MB"));
+        assert!(fetch_link_with(&at("/gone"), true).unwrap_err().contains("410"));
+    }
+
+    #[test]
+    fn a_link_never_reaches_this_computer_or_the_home_network() {
+        // Without the tests' exception: a local address, an odd port, no web.
+        assert!(fetch_link_with("http://127.0.0.1/receipt.pdf", false).unwrap_err().contains("public internet"));
+        assert!(fetch_link_with("http://192.168.1.1/admin", false).unwrap_err().contains("public internet"));
+        assert!(fetch_link_with("http://example.com:8080/a.pdf", false).unwrap_err().contains("port"));
+        assert!(fetch_link_with("file:///etc/passwd", false).unwrap_err().contains("web address"));
+        assert!(fetch_link_with("javascript:alert(1)", false).unwrap_err().contains("web address"));
+    }
+
+    #[test]
+    fn a_downloaded_file_gets_a_safe_name_that_says_what_it_is() {
+        let pdf = b"%PDF-1.4".as_slice();
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0].as_slice();
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+        assert_eq!(disposition_filename("attachment; filename*=UTF-8''Rechnung%20%C3%BC.pdf"), Some("Rechnung ü.pdf".to_string()));
+        assert_eq!(disposition_filename("attachment; filename=\"a.pdf\"; filename*=UTF-8''b.pdf"), Some("b.pdf".to_string()));
+        assert_eq!(disposition_filename("inline; filename=ticket.pdf"), Some("ticket.pdf".to_string()));
+        assert_eq!(disposition_filename("attachment"), None);
+        assert_eq!(percent_decode("%E2%82%AC 5%2"), "€ 5%2");
+        assert_eq!(link_filename(None, &url("https://shop.example/dl?id=5"), pdf), "dl.pdf");
+        assert_eq!(link_filename(None, &url("https://shop.example/download.php?id=5"), pdf), "download.pdf");
+        assert_eq!(link_filename(Some("../../receipt"), &url("https://x.example/"), pdf), "receipt.pdf");
+        assert_eq!(link_filename(Some("logo.pdf"), &url("https://x.example/"), png), "logo.pdf.png");
+        assert_eq!(link_filename(None, &url("https://x.example/"), b"just some bytes"), "download");
+        assert!(valid_part_id("L0123456789ab") && !valid_part_id("L0123") && !valid_part_id("L../../etc/x1"));
     }
 
     #[test]

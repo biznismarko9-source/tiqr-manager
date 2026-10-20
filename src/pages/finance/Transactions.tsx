@@ -286,7 +286,22 @@ export default function Transactions({ entries, categories, accounts, transfers,
                moved 500px. The class's own doc comment already says it belongs
                on a box that scrolls - this usage just never gave it one. */
             <div className="table-flush max-h-[calc(100vh-21rem)]">
-              <table className="w-full border-collapse">
+              {/* 2.113.1: fixed widths, the convention every other list in
+                  the app follows (2.102.0). Sized by its content, this table
+                  let Category and Amount collapse to a letter per line. Place
+                  takes what is left and truncates, with the full text on
+                  hover. */}
+              <table className="w-full min-w-[860px] table-fixed border-collapse">
+                <colgroup>
+                  <col className="w-[112px]" />
+                  <col className="w-[112px]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[12%]" />
+                  <col />
+                  <col className="w-[12%]" />
+                  <col className="w-[124px]" />
+                  <col className="w-[104px]" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th className="th">Date</th>
@@ -370,7 +385,7 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
       <td className="td whitespace-nowrap">{formatDate(entry.entryDate)}</td>
       <td className="td">
         <Badge tone={entry.entryType === "income" ? "sold" : "cancelled"}>{entry.entryType === "income" ? "Income" : "Expense"}</Badge>
-        <span className="ml-1.5 text-xs text-slate-500 dark:text-slate-400">{entry.scope === "business" ? "Business" : "Personal"}</span>
+        <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">{entry.scope === "business" ? "Business" : "Personal"}</span>
       </td>
       <td className="td">
         {entry.categoryName && entry.categoryColorSlot !== null ? (
@@ -383,7 +398,7 @@ function EntryRow({ entry, onEdit, onDelete }: { entry: FinanceEntry; onEdit: (e
       <td className="td truncate" title={entry.place ?? undefined}>
         {entry.place ?? <span className="text-slate-300 dark:text-slate-600">-</span>}
       </td>
-      <td className="td max-w-[220px] truncate" title={entry.note ?? undefined}>
+      <td className="td truncate" title={entry.note ?? undefined}>
         {entry.note ?? <span className="text-slate-300 dark:text-slate-600">-</span>}
       </td>
       {/* 2.82.0: an expense is rose, not neutral slate. Income was already
@@ -424,13 +439,13 @@ function TransferRow({ transfer, onDelete }: { transfer: Transfer; onDelete: (t:
       <td className="td">
         <span className="text-slate-300 dark:text-slate-600">-</span>
       </td>
-      <td className="td whitespace-nowrap">
+      <td className="td">
         {transfer.fromAccountName ?? "?"} &rarr; {transfer.toAccountName ?? "?"}
       </td>
       <td className="td">
         <span className="text-slate-300 dark:text-slate-600">-</span>
       </td>
-      <td className="td max-w-[220px] truncate" title={transfer.note ?? undefined}>
+      <td className="td truncate" title={transfer.note ?? undefined}>
         {transfer.note ?? <span className="text-slate-300 dark:text-slate-600">-</span>}
       </td>
       <td className="td text-right tabular-nums text-slate-600 dark:text-slate-400">{formatMoney(transfer.amountCents, transfer.currency)}</td>

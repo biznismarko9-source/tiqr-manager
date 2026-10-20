@@ -140,6 +140,7 @@ import type {
   MailView,
   MailAiResult,
   MailLocalFolder,
+  MailLinkDownload,
 } from "./types";
 
 export const api = {
@@ -851,6 +852,11 @@ export const api = {
   /** A normal save dialog. Null when marko closed it. */
   saveMailAttachment: (id: number, partId: string) =>
     invoke<string | null>("save_mail_attachment", { id, partId }),
+  /** 2.113.1: downloads the file a link in the message points at ("Download
+   *  receipt") and keeps it with the message like an attachment. "page"
+   *  when the address is a web page - open that in the browser instead. */
+  downloadMailLink: (id: number, url: string) =>
+    invoke<MailLinkDownload>("download_mail_link", { id, url }),
   /** Translate or summarise an opened message - one click, one small call,
    *  and the answer is kept so the same click never costs twice. */
   mailAi: (id: number, task: "translate" | "summary", language?: string) =>

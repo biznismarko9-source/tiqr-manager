@@ -21,6 +21,31 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.113.1 - table cells, row lines, the Discord logo, key details, link downloads
+
+- **`overflow-wrap: anywhere` belongs to `table-fixed` tables only.** In an
+  auto-layout table it lets the browser size a column to one letter
+  (Finance Transactions showed "B iz ni s"). `index.css` scopes it with
+  `table:not(.table-fixed) ... { overflow-wrap: break-word }`. A new list
+  should be `table-fixed` with a `<colgroup>`, like every other list.
+- **One line between rows.** `.table-shell`/`.table-flush` rows draw their
+  own inset bottom line; the `divide-y` border Tailwind adds on the tbody is
+  neutralised there (`border-top-width: 0`). Two lines per boundary on half
+  pixels rendered unevenly ("random biela ciara"). Keep 11px cells at
+  `leading-4` so rows stay whole pixels.
+- **The Discord logo comes from raw.githubusercontent.com** (`main/docs/
+  tiqr-logo.png`), not GitHub Pages, which is not enabled for the repository.
+  Moving or renaming `docs/tiqr-logo.png` breaks every message's logo.
+- **Key details never guess** (`mail_facts.rs`): a value only beside a label
+  the mail wrote, or from a sentence that asks to send tickets to an
+  address. No AI. A person's details are `private` - dots in TIQR until
+  clicked, `||spoilers||` in Discord; a Discord field or preview must never
+  be cut inside a spoiler (whole lines only, dots past the length cap).
+- **A link is downloaded only by Rust, with the picture rules**
+  (`download_mail_link`): public addresses, ports 80/443, every redirect
+  checked, pinned resolve, 25 MB. Never from Spam or Trash. The URL is never
+  logged. A web page is never kept as a file - it opens in the browser.
+
 ## 2.113.0 - the mail reader's two walls, secrets out of the database, the release zip
 
 - **A message's HTML reaches the screen only through BOTH walls.** Rust

@@ -23,7 +23,7 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.113.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.113.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2649,6 +2649,39 @@ itself before this release and still is not.
 
 ## Current focus / most recent work
 
+**2.113.1 - fixes reported right after 2.113.0** (report:
+`history/REDESIGN-2.113.1-REPORT.md`):
+* Finance Transactions and Accounts' recurring table are `table-fixed` with
+  a colgroup; `index.css` now keeps `overflow-wrap: anywhere` for
+  `table-fixed` tables only and uses `break-word` elsewhere (auto layout
+  sized columns to one letter with `anywhere`).
+* Sidebar: Pulls right under Sales (first group).
+* Discord `LOGO_URL` -> raw.githubusercontent.com `main/docs/tiqr-logo.png`;
+  GitHub Pages is apparently not enabled (no pages workflow), so github.io
+  404s - see KNOWN_BUGS for privacy.html / reset-redirect.html.
+* One row separator in `.table-shell`/`.table-flush` (divide-y borders
+  neutralised, the row's inset line kept) and `leading-4` on the 11px cells,
+  so rows are whole pixels and every line renders the same.
+* **Key details** (`commands/mail_facts.rs`, new): deterministic, label-based
+  picking of at most 8 facts from a message's text (send-to, name, e-mail,
+  phone, address, deadline, money, event, date, venue, tickets, seats,
+  reference); EN/SK/CZ/DE/ES labels; quoted mail ignored; sender, own
+  mailbox and shop desks never "send to". `MailView.facts` (computed on
+  open, not stored); `MailReader` *Key details* card, private values dots
+  until clicked. Discord `mail_embed` adds a *📌 Key details* field from
+  `mail_bodies.text` / `extract_text` / snippet, private values as
+  `||spoilers||` (also in the preview; "•••" in the title), never cut
+  mid-spoiler. `mail_sync::wants_body` also reads OrderStatus,
+  Cancellation and EventUpdate bodies on arrival.
+* **Download links** (`mail_view::download_mail_link`): a link that is a file
+  (`lib/mailText.ts::isDownloadLink`) is fetched in Rust with the picture
+  rules (public IPs, ports 80/443, checked redirects, pinned resolve, 25 MB,
+  30 s), kept in `mail_attachments` as part `L<sha12>` with `cached_file`,
+  and previewed; a web page or a failure opens the browser instead. Spam and
+  Trash refused.
+* `mail::decode_entities` decodes accented letter entities case-sensitively
+  (`LETTER_ENTITIES`).
+
 **2.113.0 - mail shown as designed, Discord for every record, one sync, a
 simpler repository.** One long request from marko; the Slovak report is
 `history/REDESIGN-2.113.0-REPORT.md`.
@@ -2688,7 +2721,8 @@ simpler repository.** One long request from marko; the Slovak report is
   (live part = `LiveSyncCard embedded`, Drive part in backup words while
   live, hand tools under Advanced); a dirty backup is force-saved at launch
   when every computer is live (Layout tick).
-* **Also**: sidebar in three groups (Pulls kept at the bottom per 2.98.0),
+* **Also**: sidebar in three groups (Pulls kept at the bottom per 2.98.0 -
+  moved under Sales in 2.113.1),
   Pulls Active/Completed (`lib/pullStatus.ts`), opaque sticky headers,
   Finance spacing, panes fill the window (`lib/useFillHeight.ts`), Mail
   settings in sections.

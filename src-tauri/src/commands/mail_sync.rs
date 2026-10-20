@@ -1321,10 +1321,20 @@ const BODY_READ_CHARS: usize = 20_000;
 /// Automatic to act on. Its numbers are then read from the whole message
 /// instead of Gmail's 200-character preview ("metadata first, the body when
 /// it is needed"). An older one is read again when marko opens it.
+///
+/// 2.113.1: also an order update, a cancellation and an event change - the
+/// other mail Discord is told about - so its key details (where the tickets
+/// go, the price, the deadline; mail_facts.rs) come from the real content.
 pub(crate) fn wants_body(m: &mail::FetchedMessage, c: &mail::Classification, now: DateTime<Utc>) -> bool {
     let candidate = matches!(
         c.category,
-        MailCategory::PurchaseConfirmation | MailCategory::SaleConfirmation | MailCategory::Payout | MailCategory::Refund
+        MailCategory::PurchaseConfirmation
+            | MailCategory::SaleConfirmation
+            | MailCategory::Payout
+            | MailCategory::Refund
+            | MailCategory::OrderStatus
+            | MailCategory::Cancellation
+            | MailCategory::EventUpdate
     );
     let recent = DateTime::parse_from_rfc3339(&m.received_at)
         .map(|at| now.signed_duration_since(at.with_timezone(&Utc)) <= chrono::Duration::days(BODY_ON_ARRIVAL_DAYS))
@@ -3292,6 +3302,24 @@ mod tests {
             .unwrap();
         assert_eq!(amount, Some(24000));
         assert!(evidence.unwrap().contains("Total paid 240,00 EUR"));
+    }
+
+    /// 2.113.1: every kind of mail Discord hears about has its body read - an
+    /// account notice or a newsletter still does not.
+    #[test]
+    fn the_mail_discord_is_told_about_is_read_from_its_body() {
+        let at = DateTime::parse_from_rfc3339(NOW).unwrap().with_timezone(&Utc);
+        let wants = |subject: &str, labels: &str| {
+            let m = fetched("noreply@viagogo.com", subject, labels);
+            wants_body(&m, &classify_fetched(&m), at)
+        };
+        assert!(wants("Your tickets are ready for download", "inbox"));
+        assert!(wants("Event cancelled: refund on the way", "inbox"));
+        assert!(wants("Event update: new date", "inbox"));
+        assert!(!wants("Verify your password", "inbox"));
+        assert!(!wants("Your tickets are ready for download", "spam"));
+        let shop = fetched("news@shop.example", "Your tickets are ready for download", "inbox");
+        assert!(!wants_body(&shop, &classify_fetched(&shop), at), "only from a marketplace TIQR knows");
     }
 
     /// Scenario 10.
