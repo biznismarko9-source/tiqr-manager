@@ -283,6 +283,7 @@ pub fn run() {
             commands::mail::list_mail_mutes,
             commands::mail::mute_mail_sender,
             commands::mail::unmute_mail_sender,
+            commands::mail::star_mail,
             commands::mail_view::mail_ai,
             commands::mail::set_mail_read,
             commands::mail::set_mail_scope,

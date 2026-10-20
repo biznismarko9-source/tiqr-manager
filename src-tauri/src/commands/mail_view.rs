@@ -971,6 +971,7 @@ pub async fn get_mail_view(state: State<'_, AppState>, id: i64, refresh: Option<
         // message that could still become a record.
         if !is_untrusted(&labels) {
             mail::reread_with_body(&tx, id, &fetched.text)?;
+            mail::reread_code_with_body(&tx, id, &fetched.text)?;
         }
         tx.commit()?;
     }

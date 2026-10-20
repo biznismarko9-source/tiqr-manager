@@ -731,14 +731,20 @@ const OTP_WINDOW: usize = 60;
 ///      `2026-10-17` is a date.
 ///   4. A bare 4-digit year is refused: mail says "2026" constantly and
 ///      almost never means a code.
+///
+/// 2.113.1: every place a code word appears is tried, not only the first -
+/// Ticketmaster's "John, Here's Your Authentication Code" names it in the
+/// subject and prints it under "Your Authentication Code:" in the text - and
+/// a code printed in spaced groups ("1 3 8 8 8 0", "138 880") is one code.
 pub(crate) fn extract_otp(subject: &str, body: &str) -> Option<String> {
     let hay = format!("{subject}\n{body}").to_lowercase();
     let bytes = hay.as_bytes();
     for kw in OTP_KEYWORDS {
-        let Some(at) = hay.find(kw) else { continue };
-        let to = (at + kw.len() + OTP_WINDOW).min(bytes.len());
-        if let Some(code) = first_standalone_code(&bytes[at..to]) {
-            return Some(code);
+        for (at, _) in hay.match_indices(kw) {
+            let to = (at + kw.len() + OTP_WINDOW).min(bytes.len());
+            if let Some(code) = first_standalone_code(&bytes[at..to]) {
+                return Some(code);
+            }
         }
     }
     None
@@ -759,6 +765,13 @@ fn first_standalone_code(b: &[u8]) -> Option<String> {
         }
         let len = i - start;
         let before_ok = start == 0 || !bad_before(b[start - 1]);
+        if before_ok {
+            if let Some((code, end)) = spaced_code(b, start, i) {
+                if end >= n || !bad_after(b, end) {
+                    return Some(code);
+                }
+            }
+        }
         let after_ok = i >= n || !bad_after(b, i);
         if (4..=8).contains(&len) && before_ok && after_ok {
             if let Ok(code) = std::str::from_utf8(&b[start..i]) {
@@ -769,6 +782,54 @@ fn first_standalone_code(b: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// 2.113.1: a code printed in groups of ONE length, one space apart - "1 3 8
+/// 8 8 0", "138 880", "12 34 56" - 4 to 8 digits in all. Groups of
+/// different lengths are not one number ("4821 10 minutes" is a code and a
+/// time), and neither is anything longer (a phone number). `b[start..end]`
+/// is the first group; returns the code and where it ends.
+fn spaced_code(b: &[u8], start: usize, end: usize) -> Option<(String, usize)> {
+    let group = end - start;
+    if group > 4 {
+        return None;
+    }
+    // Only from the first group: the tail of a longer spaced number ("0 9 1
+    // 1 2 3 4 5 6 7") is not a code of its own.
+    let continues = (start >= 2 && b[start - 1] == b' ' && b[start - 2].is_ascii_digit())
+        || (start >= 3 && b[start - 2..start] == [0xC2, 0xA0] && b[start - 3].is_ascii_digit());
+    if continues {
+        return None;
+    }
+    let mut digits: Vec<u8> = b[start..end].to_vec();
+    let (mut at, mut groups) = (end, 1);
+    loop {
+        // A plain space, or a no-break space as designed mail writes it.
+        let sep = if b.get(at) == Some(&b' ') {
+            1
+        } else if b.get(at..at + 2) == Some(&[0xC2, 0xA0][..]) {
+            2
+        } else {
+            0
+        };
+        if sep == 0 {
+            break;
+        }
+        let from = at + sep;
+        let mut to = from;
+        while to < b.len() && b[to].is_ascii_digit() {
+            to += 1;
+        }
+        if to - from != group {
+            break;
+        }
+        digits.extend_from_slice(&b[from..to]);
+        groups += 1;
+        at = to;
+    }
+    let code = String::from_utf8(digits).ok()?;
+    let fits = groups >= 2 && (4..=8).contains(&code.len()) && !(code.len() == 4 && looks_like_a_year(&code));
+    fits.then_some((code, at))
 }
 
 /// A character BEFORE the digits that means they are not a bare code:
@@ -1556,6 +1617,47 @@ pub(crate) fn reread_with_body(conn: &Connection, id: i64, body: &str) -> AppRes
             clip_chars(body, EXTRACT_TEXT_CHARS),
         ],
     )?;
+    Ok(())
+}
+
+/// 2.113.1: the one-time codes of recent, trusted mail that has none yet,
+/// read again with today's rules - so a code already in the mailbox lands in
+/// OTP codes, not only the next one. Run once, by the mail store's schema
+/// step 4 (mail_store.rs).
+pub(crate) fn reread_codes(conn: &Connection) -> rusqlite::Result<usize> {
+    let since = (Utc::now() - ChronoDuration::days(60)).to_rfc3339();
+    let rows: Vec<(i64, String, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, IFNULL(subject, ''), IFNULL(snippet, ''), IFNULL(labels, '') FROM mail_messages
+              WHERE otp_code IS NULL AND received_at >= ?1",
+        )?;
+        let rows = stmt.query_map([&since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut n = 0;
+    for (id, subject, snippet, labels) in rows {
+        if is_untrusted(&labels) {
+            continue;
+        }
+        if let Some(code) = extract_otp(&subject, &snippet) {
+            n += conn.execute("UPDATE mail_messages SET otp_code = ?2 WHERE id = ?1", params![id, code])?;
+        }
+    }
+    Ok(n)
+}
+
+/// 2.113.1: an opened message's code from the start of its whole text, when
+/// its preview had none. The caller has checked it is not Spam or Trash.
+pub(crate) fn reread_code_with_body(conn: &Connection, id: i64, body: &str) -> AppResult<()> {
+    let row: Option<(String, Option<String>)> = conn
+        .query_row("SELECT subject, otp_code FROM mail_messages WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    if let Some((subject, None)) = row {
+        let head: String = body.chars().take(1200).collect();
+        if let Some(code) = extract_otp(&subject, &head) {
+            conn.execute("UPDATE mail_messages SET otp_code = ?2 WHERE id = ?1", params![id, code])?;
+        }
+    }
     Ok(())
 }
 
@@ -2662,6 +2764,26 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
 }
 
 /// Mark several read or unread at once.
+/// 2.113.1: marko's own star - "moznost dat na message starred". TIQR's,
+/// like read state (the Gmail access is read-only): it stays until he changes
+/// it here or the star is changed in Gmail (mail_sync.rs, `add_flag`).
+pub(crate) fn star_mail_impl(conn: &Connection, ids: &[i64], starred: bool) -> AppResult<usize> {
+    let mut n = 0;
+    for id in ids {
+        n += conn.execute(
+            "UPDATE mail_messages SET is_starred = ?2, starred_here = ?2 WHERE id = ?1",
+            params![id, i64::from(starred)],
+        )?;
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn star_mail(state: State<AppState>, ids: Vec<i64>, starred: bool) -> AppResult<usize> {
+    let conn = state.db.lock().unwrap();
+    star_mail_impl(&conn, &ids, starred)
+}
+
 #[tauri::command]
 pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> AppResult<usize> {
     if ids.is_empty() {
@@ -5984,6 +6106,66 @@ mod tests {
     fn a_code_too_far_from_its_keyword_is_not_adopted() {
         let far = format!("Your verification code{}  482913", " ".repeat(OTP_WINDOW + 20));
         assert_eq!(extract_otp(&far, ""), None);
+    }
+
+    /// 2.113.1: marko's own Ticketmaster mail - the code word in the subject,
+    /// the code under a second one, printed with spaces.
+    #[test]
+    fn a_code_printed_with_spaces_under_a_later_code_word_is_found() {
+        let subject = "John, Here's Your Authentication Code";
+        let snippet = "Ticketmaster Confirm Your Account Please use this code to verify you are the account owner. \
+                       Your Authentication Code: 1 3 8 8 8 0 If you didn't request an authentication code, please reset your password.";
+        assert_eq!(extract_otp(subject, snippet).as_deref(), Some("138880"));
+        assert_eq!(extract_otp("Your code", "Your code: 138\u{a0}880").as_deref(), Some("138880"), "a no-break space");
+        assert_eq!(extract_otp("Your code", "Your code is 12 34 56.").as_deref(), Some("123456"));
+        // Groups of different lengths are not one number, nor is a long run.
+        assert_eq!(extract_otp("Your code is 4821 10 minutes left", "").as_deref(), Some("4821"));
+        assert_eq!(extract_otp("Your code", "call 0 9 1 1 2 3 4 5 6 7 now"), None, "ten digits is a phone number");
+        assert_eq!(extract_otp("Your code", "date 20 26"), None, "a year in pieces is still a year");
+        // Every code word is tried, not only its first appearance.
+        assert_eq!(
+            extract_otp("Your verification code", "Thanks for signing up. Your verification code is 552190.").as_deref(),
+            Some("552190")
+        );
+    }
+
+    #[test]
+    fn codes_already_stored_are_read_again_once() {
+        let conn = test_conn();
+        let now = Utc::now().to_rfc3339();
+        let put_code_mail = |pid: &str, labels: &str| {
+            conn.execute(
+                "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                            received_at, first_seen_at, updated_at, labels)
+                 VALUES ('gmail', ?1, 'me', 'customer_support@email.ticketmaster.com', 'John, Here''s Your Authentication Code',
+                         'Your Authentication Code: 1 3 8 8 8 0 If you didn''t request it', ?2, ?2, ?2, ?3)",
+                params![pid, now, labels],
+            )
+            .unwrap();
+        };
+        put_code_mail("tm", "inbox");
+        put_code_mail("phish", "spam");
+        assert_eq!(reread_codes(&conn).unwrap(), 1);
+        let code: Option<String> =
+            conn.query_row("SELECT otp_code FROM mail_messages WHERE provider_message_id = 'tm'", [], |r| r.get(0)).unwrap();
+        assert_eq!(code.as_deref(), Some("138880"));
+        let pids: Vec<String> = list_folder_impl(&conn, "otp", None, None, 10).unwrap().into_iter().map(|m| m.provider_message_id).collect();
+        assert_eq!(pids, vec!["tm"], "in OTP codes now; never a code from Spam");
+        assert_eq!(reread_codes(&conn).unwrap(), 0, "nothing twice");
+    }
+
+    /// 2.113.1: "moznost dat na message starred".
+    #[test]
+    fn a_star_set_in_tiqr_puts_the_message_in_starred() {
+        let conn = test_conn();
+        let id = put(&conn, "m", "inbox", "2026-10-10T00:00:00Z");
+        assert!(folder_pids(&conn, "starred").is_empty());
+        assert_eq!(star_mail_impl(&conn, &[id], true).unwrap(), 1);
+        assert_eq!(folder_pids(&conn, "starred"), vec!["m"]);
+        let here: Option<i64> = conn.query_row("SELECT starred_here FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(here, Some(1), "remembered as TIQR's own star");
+        star_mail_impl(&conn, &[id], false).unwrap();
+        assert!(folder_pids(&conn, "starred").is_empty());
     }
 
     // ---- starred, spam and trust ------------------------------------------

@@ -571,7 +571,16 @@ pub(crate) fn has_label_sql(flag_param: &str) -> String {
     format!("instr(',' || IFNULL(labels, '') || ',', ',' || {flag_param} || ',') > 0")
 }
 
-fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str) -> AppResult<usize> {
+/// Puts a Gmail label on a stored message. `gmail_changed`: the label was
+/// just put on in Gmail (the change history) - rather than found there by a
+/// walk of a folder.
+///
+/// 2.113.1: a star or an unread mark set in TIQR (`starred_here`,
+/// `is_unread`) stays until Gmail CHANGES it. A walk only says what Gmail
+/// has, so it never undoes a star marko took off here; a change in Gmail -
+/// starred on the phone, read in Gmail - is newer than anything here, and
+/// TIQR follows it.
+fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
     let mut n = conn.execute(
         &format!(
             "UPDATE mail_messages
@@ -583,15 +592,31 @@ fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str) -> AppResult<us
         params![pid, flag, now],
     )?;
     if flag == "starred" {
+        n += if gmail_changed {
+            conn.execute(
+                "UPDATE mail_messages SET is_starred = 1, starred_here = NULL, labels_at = ?2
+                  WHERE provider_message_id = ?1 AND (is_starred = 0 OR starred_here IS NOT NULL)",
+                params![pid, now],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE mail_messages SET is_starred = 1, labels_at = ?2
+                  WHERE provider_message_id = ?1 AND is_starred = 0 AND IFNULL(starred_here, 1) = 1",
+                params![pid, now],
+            )?
+        };
+    }
+    if flag == "unread" && gmail_changed {
         n += conn.execute(
-            "UPDATE mail_messages SET is_starred = 1, labels_at = ?2 WHERE provider_message_id = ?1 AND is_starred = 0",
-            params![pid, now],
+            "UPDATE mail_messages SET is_unread = 1 WHERE provider_message_id = ?1 AND is_unread = 0",
+            params![pid],
         )?;
     }
     Ok(n)
 }
 
-fn remove_flag(conn: &Connection, pid: &str, flag: &str, now: &str) -> AppResult<usize> {
+/// Takes a Gmail label off a stored message - see `add_flag`.
+fn remove_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
     let mut n = conn.execute(
         &format!(
             "UPDATE mail_messages
@@ -603,9 +628,25 @@ fn remove_flag(conn: &Connection, pid: &str, flag: &str, now: &str) -> AppResult
         params![pid, flag, now],
     )?;
     if flag == "starred" {
+        n += if gmail_changed {
+            conn.execute(
+                "UPDATE mail_messages SET is_starred = 0, starred_here = NULL, labels_at = ?2
+                  WHERE provider_message_id = ?1 AND (is_starred = 1 OR starred_here IS NOT NULL)",
+                params![pid, now],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE mail_messages SET is_starred = 0, labels_at = ?2
+                  WHERE provider_message_id = ?1 AND is_starred = 1 AND IFNULL(starred_here, 0) = 0",
+                params![pid, now],
+            )?
+        };
+    }
+    if flag == "unread" && gmail_changed {
+        // Read in Gmail - on the phone, in the browser - is read here too.
         n += conn.execute(
-            "UPDATE mail_messages SET is_starred = 0, labels_at = ?2 WHERE provider_message_id = ?1 AND is_starred = 1",
-            params![pid, now],
+            "UPDATE mail_messages SET is_unread = 0 WHERE provider_message_id = ?1 AND is_unread = 1",
+            params![pid],
         )?;
     }
     Ok(n)
@@ -652,7 +693,7 @@ fn reconcile(conn: &Connection, section: &Section, pass_started_at: &str, now: &
     };
     let mut n = 0;
     for pid in &stale {
-        n += remove_flag(conn, pid, flag, now)?;
+        n += remove_flag(conn, pid, flag, now, false)?;
     }
     Ok(n)
 }
@@ -683,7 +724,7 @@ fn apply_listing(
         )?;
         for id in ids {
             seen.execute(params![section.key, id])?;
-            changed += add_flag(conn, id, flag, now)?;
+            changed += add_flag(conn, id, flag, now, false)?;
         }
     }
     conn.execute(
@@ -803,9 +844,11 @@ fn is_stored(conn: &Connection, pid: &str) -> AppResult<bool> {
 /// Repeating an event changes nothing: a flag is added only where missing and
 /// taken off only where present, and an id is queued once.
 ///
-/// TIQR's own read state is deliberately left alone (migration 041): Gmail's
-/// UNREAD going on or off is not applied, so a message he marked read here
-/// is not turned unread because his phone saw it differently.
+/// 2.113.1: Gmail's UNREAD going off or on IS applied now - marko: "aj
+/// checkovat zmeny ktore sa urobia v gmaily, napriklad ked precita maily".
+/// Only the CHANGE is followed: a message marked read here stays read while
+/// Gmail still calls it unread, and is turned unread only when Gmail marks it
+/// unread again. TIQR still cannot change Gmail (`gmail.readonly`).
 pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryEvent], now: &str) -> AppResult<(usize, usize)> {
     let mut changed = 0usize;
     let mut arrived: Vec<String> = Vec::new();
@@ -825,8 +868,8 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
             }
             HistoryEvent::LabelsAdded { id, labels } => {
                 if is_stored(conn, id)? {
-                    for l in labels.iter().filter(|l| *l != "unread") {
-                        changed += add_flag(conn, id, l, now)?;
+                    for l in labels {
+                        changed += add_flag(conn, id, l, now, true)?;
                     }
                 } else if has(labels, "starred") {
                     // An old message he just starred in Gmail.
@@ -836,8 +879,8 @@ pub(crate) fn apply_history(conn: &Connection, account: &str, events: &[HistoryE
                 }
             }
             HistoryEvent::LabelsRemoved { id, labels } => {
-                for l in labels.iter().filter(|l| *l != "unread") {
-                    changed += remove_flag(conn, id, l, now)?;
+                for l in labels {
+                    changed += remove_flag(conn, id, l, now, true)?;
                 }
             }
         }
@@ -2873,19 +2916,61 @@ mod tests {
     fn history_queues_new_mail_first_and_applies_stars_to_stored_mail() {
         let conn = test_conn();
         insert(&conn, "s1", "inbox", false, NOW);
-        insert(&conn, "s2", "inbox,starred", true, NOW);
-        conn.execute("UPDATE mail_messages SET is_unread = 0", []).unwrap();
+        insert(&conn, "s2", "inbox,starred,unread", true, NOW);
+        conn.execute("UPDATE mail_messages SET is_unread = 0 WHERE provider_message_id = 's1'", []).unwrap();
+        conn.execute("UPDATE mail_messages SET is_unread = 1 WHERE provider_message_id = 's2'", []).unwrap();
         let (events, ..) = parse_history_page(&history_fixture());
         apply_history(&conn, "me", &events, NOW).unwrap();
 
         assert_eq!(labels_of(&conn, "s1").1, 1, "starred in Gmail, starred here");
         let (labels, starred) = labels_of(&conn, "s2");
         assert_eq!((labels.as_str(), starred), ("inbox", 0));
+        // 2.113.1: read in Gmail, read here.
         let unread: i64 = conn.query_row("SELECT SUM(is_unread) FROM mail_messages", [], |r| r.get(0)).unwrap();
-        assert_eq!(unread, 0, "TIQR's own read state is never taken from Gmail");
+        assert_eq!(unread, 0, "read in Gmail is read in TIQR");
         // New mail first - spam too, it is new - and the draft never.
         assert_eq!(peek(&conn, 10, NOW).unwrap(), vec!["n1", "sp"]);
         assert_eq!(queued(&conn, "sp").unwrap().0, TIER_NEW);
+    }
+
+    /// 2.113.1: "aj checkovat zmeny ktore sa urobia v gmaily" and "moznost
+    /// dat na message starred". A change in Gmail wins; what marko set in
+    /// TIQR stays while Gmail only repeats what it had.
+    #[test]
+    fn gmail_changes_are_followed_and_tiqr_choices_survive_a_walk() {
+        const LATER: &str = "2026-10-18T13:00:00+00:00";
+        let conn = test_conn();
+        insert(&conn, "m", "inbox,unread", false, NOW);
+        conn.execute("UPDATE mail_messages SET is_unread = 1", []).unwrap();
+        let unread = |c: &Connection| -> i64 {
+            c.query_row("SELECT is_unread FROM mail_messages WHERE provider_message_id = 'm'", [], |r| r.get(0)).unwrap()
+        };
+        // Read in Gmail on the phone: read here.
+        apply_history(&conn, "me", &[HistoryEvent::LabelsRemoved { id: "m".into(), labels: vec!["unread".into()] }], NOW).unwrap();
+        assert_eq!(unread(&conn), 0);
+        // Marked unread here: stays unread while Gmail says nothing new.
+        conn.execute("UPDATE mail_messages SET is_unread = 1", []).unwrap();
+        apply_history(&conn, "me", &[HistoryEvent::LabelsAdded { id: "m".into(), labels: vec!["label_7".into()] }], NOW).unwrap();
+        assert_eq!(unread(&conn), 1);
+        // Marked unread in Gmail again, after it was read here: unread.
+        conn.execute("UPDATE mail_messages SET is_unread = 0", []).unwrap();
+        apply_history(&conn, "me", &[HistoryEvent::LabelsAdded { id: "m".into(), labels: vec!["unread".into()] }], NOW).unwrap();
+        assert_eq!(unread(&conn), 1);
+
+        // A star set in TIQR survives a walk of Gmail's Starred that does not list it...
+        conn.execute("UPDATE mail_messages SET is_starred = 1, starred_here = 1", []).unwrap();
+        let starred = plan_sections("all", &[], &[], "").into_iter().find(|s| s.key == "starred").unwrap();
+        apply_listing(&conn, "me", &starred, None, &[], None, LATER).unwrap();
+        assert_eq!(labels_of(&conn, "m").1, 1, "a walk does not undo a star set in TIQR");
+        // ...and a star taken off in TIQR is not put back by a walk that lists it.
+        conn.execute("UPDATE mail_messages SET is_starred = 0, starred_here = 0", []).unwrap();
+        apply_listing(&conn, "me", &starred, None, &ids(&["m"]), None, LATER).unwrap();
+        assert_eq!(labels_of(&conn, "m").1, 0, "a walk does not undo an unstar either");
+        // A star CHANGED in Gmail wins over both.
+        apply_history(&conn, "me", &[HistoryEvent::LabelsAdded { id: "m".into(), labels: vec!["starred".into()] }], LATER).unwrap();
+        assert_eq!(labels_of(&conn, "m").1, 1);
+        let here: Option<i64> = conn.query_row("SELECT starred_here FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(here, None, "Gmail's change is the latest word");
     }
 
     /// Scenario 8.
