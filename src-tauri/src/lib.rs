@@ -288,6 +288,8 @@ pub fn run() {
             commands::mail::set_mail_read_bulk,
             commands::mail::get_mail_proposal,
             commands::mail::create_from_mail,
+            commands::mail::list_mail_sale_candidates,
+            commands::mail::claim_mail_automation,
             commands::mail::set_mail_automation,
             commands::mail::set_mail_sync_interval,
             commands::mail::test_mail_connection,

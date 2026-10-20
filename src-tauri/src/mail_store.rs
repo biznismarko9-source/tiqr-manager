@@ -44,8 +44,8 @@
 //! downloaded copy from the other machine that has no `mail` attached. They
 //! must never touch a cache table again. A change to this schema is a new
 //! `user_version` step in `ensure`, not a numbered migration - `SCHEMA_V1`
-//! (2.110.0) and `SCHEMA_V2` (2.111.0) so far, and a released step is never
-//! edited, only followed by the next one.
+//! (2.110.0), `SCHEMA_V2` (2.111.0) and `SCHEMA_V3` (2.113.0) so far, and a
+//! released step is never edited, only followed by the next one.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -116,6 +116,12 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(SCHEMA_V2)?;
         tx.execute_batch("PRAGMA mail.user_version = 2;")?;
+        tx.commit()?;
+    }
+    if version < 3 {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_V3)?;
+        tx.execute_batch("PRAGMA mail.user_version = 3;")?;
         tx.commit()?;
     }
     relocate(conn)?;
@@ -465,6 +471,82 @@ ALTER TABLE mail.mail_sync_state ADD COLUMN rate_limit_streak INTEGER NOT NULL D
 ALTER TABLE mail.mail_sync_state ADD COLUMN trouble_streak INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// 2.113.0. What reading a message for a record rests on, where marko filed
+/// it in TIQR, and what TIQR keeps once a message has been opened - its text,
+/// its attachments and a translation.
+///
+/// marko: "aby som vedel dane maily presunut tak kde chcem", "pri kazdom
+/// maile kde je nejaky attachment tak ten tiez dat do tiqr", "aj obrazky co
+/// su v maily tak prekopirj do tiqr", and "AI nesmie rozhodovat naslepo -
+/// kazdy navrh musi mat zdrojove udaje, mieru istoty a kontrolu duplicit".
+const SCHEMA_V3: &str = r#"
+-- The words each number was read from, as JSON (commands/mail.rs, `Reading`).
+ALTER TABLE mail.mail_messages ADD COLUMN extracted_evidence TEXT;
+-- The text of a message that could become a record, read from its body when
+-- it arrived (at most a few thousand characters), so an event created later
+-- can still be matched to it. NULL for every other message.
+ALTER TABLE mail.mail_messages ADD COLUMN extract_text TEXT;
+-- What Automatic decided about this message and why, kept for the screen.
+ALTER TABLE mail.mail_messages ADD COLUMN auto_decision TEXT;
+ALTER TABLE mail.mail_messages ADD COLUMN auto_reason TEXT;
+-- Where marko moved it in TIQR - a folder key, one of his labels or one of
+-- his own folders. NULL = where Gmail has it. TIQR's own, like read state:
+-- Gmail is never changed.
+ALTER TABLE mail.mail_messages ADD COLUMN moved_to TEXT;
+ALTER TABLE mail.mail_messages ADD COLUMN moved_at TEXT;
+-- 1 once an opened message was seen to carry attachments.
+ALTER TABLE mail.mail_messages ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS mail.idx_mail_messages_moved ON mail_messages (moved_to) WHERE moved_to IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mail.idx_mail_messages_thread ON mail_messages (provider_thread_id);
+
+-- marko's own folders in TIQR.
+CREATE TABLE IF NOT EXISTS mail.mail_folders (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+-- A message as it was shown when marko opened it: the cleaned, safe HTML
+-- (images already inside it) and the plain text. Opening it again needs no
+-- connection. Cleared with the rest of a message's text by the retention.
+CREATE TABLE IF NOT EXISTS mail.mail_bodies (
+    message_id INTEGER PRIMARY KEY REFERENCES mail_messages (id) ON DELETE CASCADE,
+    html       TEXT,
+    text       TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT NOT NULL
+);
+
+-- Every attachment of an opened message. `cached_file` is set once it was
+-- downloaded into the attachments folder next to the mail file.
+CREATE TABLE IF NOT EXISTS mail.mail_attachments (
+    message_id          INTEGER NOT NULL REFERENCES mail_messages (id) ON DELETE CASCADE,
+    part_id             TEXT NOT NULL,
+    filename            TEXT NOT NULL,
+    declared_mime       TEXT,
+    size                INTEGER NOT NULL DEFAULT 0,
+    gmail_attachment_id TEXT,
+    content_id          TEXT,
+    is_inline           INTEGER NOT NULL DEFAULT 0,
+    sniffed_kind        TEXT,
+    sha256              TEXT,
+    cached_file         TEXT,
+    fetched_at          TEXT,
+    PRIMARY KEY (message_id, part_id)
+) WITHOUT ROWID;
+
+-- What AI made of a message on marko's click - a translation, a summary, a
+-- reading of the numbers - kept, so the same question is never paid twice.
+CREATE TABLE IF NOT EXISTS mail.mail_ai (
+    message_id INTEGER NOT NULL REFERENCES mail_messages (id) ON DELETE CASCADE,
+    task       TEXT NOT NULL,
+    result     TEXT NOT NULL,
+    model      TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, task)
+) WITHOUT ROWID;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,7 +608,7 @@ mod tests {
         crate::db::run_migrations(&conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2, "every message is still here");
         let (labels, starred): (String, i64) = conn
@@ -571,6 +653,56 @@ mod tests {
         ensure(&conn).unwrap();
         let again: i64 = conn.query_row("SELECT priority FROM mail_fetch_queue WHERE provider_message_id = 'star'", [], |r| r.get(0)).unwrap();
         assert_eq!(again, TIER_STARRED, "the renumbering ran once, not twice");
+    }
+
+    /// 2.113.0: a 2.111.0 mail file goes through schema 3 with every message
+    /// kept, and what V3 adds goes when its message goes.
+    #[test]
+    fn mail_from_2_111_survives_schema_3_and_its_extras_follow_their_message() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        attach_in_memory(&conn).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch("PRAGMA mail.user_version = 2;").unwrap();
+        let kept = insert_message(&conn, "kept");
+        let gone = insert_message(&conn, "gone");
+
+        crate::db::run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 3);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let moved: Option<String> =
+            conn.query_row("SELECT moved_to FROM mail_messages WHERE id = ?1", [kept], |r| r.get(0)).unwrap();
+        assert_eq!(moved, None, "nothing is moved by an upgrade");
+
+        for id in [kept, gone] {
+            conn.execute("INSERT INTO mail_bodies (message_id, text, fetched_at) VALUES (?1, 'hi', 'x')", [id]).unwrap();
+            conn.execute(
+                "INSERT INTO mail_attachments (message_id, part_id, filename) VALUES (?1, '1', 'ticket.pdf')",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mail_ai (message_id, task, result, created_at) VALUES (?1, 'translate:sk', 'Ahoj', 'x')",
+                [id],
+            )
+            .unwrap();
+        }
+        with_delete_unlocked(&conn, |c| c.execute("DELETE FROM mail_messages WHERE id = ?1", [gone])).unwrap();
+        for table in ["mail_bodies", "mail_attachments", "mail_ai"] {
+            let left: Vec<i64> = conn
+                .prepare(&format!("SELECT message_id FROM {table}"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(left, vec![kept], "{table}");
+        }
+        // Running it again changes nothing.
+        ensure(&conn).unwrap();
     }
 
     #[test]

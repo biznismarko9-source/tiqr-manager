@@ -759,6 +759,18 @@ pub fn create_sale(state: State<AppState>, input: SaleInput) -> AppResult<Sale> 
 /// Core logic behind `create_sales_batch` - see that command's doc comment
 /// for the "why one sale row per ticket" rationale. Returns the new sale ids.
 pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchInput) -> AppResult<Vec<i64>> {
+    let tx = conn.transaction()?;
+    let sale_ids = insert_sales_batch(&tx, input)?;
+    tx.commit()?;
+    Ok(sale_ids)
+}
+
+/// 2.113.0: the checks and the writes of `create_sales_batch_impl`, inside a
+/// transaction the CALLER holds - so a sale made from an email is written in
+/// the same savepoint as the email's own "this made sale X" mark, and one
+/// that fails half way leaves neither. Every check runs before the first
+/// write, exactly as before.
+pub(crate) fn insert_sales_batch(tx: &Connection, input: &SaleBatchInput) -> AppResult<Vec<i64>> {
     if input.lines.is_empty() {
         return Err(AppError::Validation(
             "Select at least one ticket to sell".into(),
@@ -792,8 +804,6 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
             }
         }
     }
-
-    let tx = conn.transaction()?;
 
     let payment_status = input
         .payment_status
@@ -897,7 +907,6 @@ pub(crate) fn create_sales_batch_impl(conn: &mut Connection, input: &SaleBatchIn
         )?;
     }
 
-    tx.commit()?;
     Ok(sale_ids)
 }
 

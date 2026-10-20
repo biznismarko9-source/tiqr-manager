@@ -3411,6 +3411,9 @@ pub struct MailConnectionStatus {
     pub auto_order: String,
     pub auto_sale: String,
     pub auto_finance: String,
+    /// 2.113.0: whether THIS computer makes records from mail. Two computers
+    /// reading one mailbox would otherwise both make every order.
+    pub automation_here: bool,
     /// How often the app syncs by itself, in seconds. `0` is off. This is
     /// polling, not push: TIQR has no server for Google to push to.
     pub sync_interval_seconds: i64,
