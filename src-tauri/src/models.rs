@@ -1390,6 +1390,15 @@ pub struct PullReceived {
     /// `None` whenever `order_id` is `None`. Same LEFT JOIN pattern as
     /// `Pull.platform_name`.
     pub order_code: Option<String>,
+    /// 2.114.1, marko: "pri tych co som predal inym tak aka ciastka" - what
+    /// the linked order's tickets were sold for: its sales that are not
+    /// refunded, the same ones Order Detail's Revenue counts. One total per
+    /// currency (nearly always just one), never converted. Empty when there
+    /// is no linked order or nothing of it is sold yet. Read-only - see
+    /// commands/pulls_received.rs::attach_sold.
+    pub sold: Vec<SoldTotal>,
+    /// How many of the linked order's tickets those sales cover.
+    pub sold_quantity: i64,
     /// `"manual"` (typed directly in the app) or `"sheet_sync"` (auto-created
     /// by Orders & Sales sheet sync when a synced row's `pull` column says
     /// "yes" - see commands/orders_sheet_sync.rs::maybe_link_pull_received).
@@ -1399,6 +1408,14 @@ pub struct PullReceived {
     pub is_demo: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// One currency's total in `PullReceived::sold`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoldTotal {
+    pub currency: String,
+    pub cents: i64,
 }
 
 /// Input for `create_pull_received`. `source` deliberately isn't here as
@@ -1655,6 +1672,49 @@ pub struct DiscordChannelConfig {
     /// 2.113.0: what is posted by itself, per kind. A missing block (every
     /// config before 2.113.0) is all on: marko asked for webhooks that fire.
     pub auto: DiscordAutoConfig,
+    /// 2.114.0: which mail is passed on, and what its message carries.
+    pub mail_options: DiscordMailConfig,
+}
+
+/// 2.114.0: marko - "co posielat dalej, ako posielat". Which kinds of mail
+/// post a summary by themselves (under `auto.mail`, the switch over all of
+/// them), and what such a message carries. A missing block is everything on,
+/// which is how 2.113 behaved.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordMailConfig {
+    /// A sale confirmation.
+    pub sales: bool,
+    /// A purchase confirmation.
+    pub purchases: bool,
+    /// A payout or a refund.
+    pub money: bool,
+    /// A cancellation or an event change.
+    pub changes: bool,
+    /// "Your tickets are ready", a transfer, a delivery update.
+    pub order_updates: bool,
+    /// The few lines that matter - where tickets go, by when, the price.
+    pub key_details: bool,
+    /// A person's name, e-mail, phone or address - always as a spoiler. Off:
+    /// never sent at all.
+    pub personal: bool,
+    /// The opening words of the mail, when nothing better is known.
+    pub preview: bool,
+}
+
+impl Default for DiscordMailConfig {
+    fn default() -> Self {
+        DiscordMailConfig {
+            sales: true,
+            purchases: true,
+            money: true,
+            changes: true,
+            order_updates: true,
+            key_details: true,
+            personal: true,
+            preview: true,
+        }
+    }
 }
 
 /// 2.113.0: which records announce themselves when they are created.
@@ -1777,6 +1837,8 @@ pub struct NotificationStatus {
     /// 2.113.0.
     pub discord_mail_set: bool,
     pub discord_auto: DiscordAutoConfig,
+    /// 2.114.0.
+    pub discord_mail_options: DiscordMailConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1820,6 +1882,9 @@ pub struct NotificationConfigInput {
     pub discord_mail: Option<String>,
     #[serde(default)]
     pub discord_auto: Option<DiscordAutoConfig>,
+    /// 2.114.0.
+    #[serde(default)]
+    pub discord_mail_options: Option<DiscordMailConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per
@@ -3405,6 +3470,9 @@ pub struct MailConnectionStatus {
     /// 2.104.0: `"all"` (the whole mailbox) or `"known"` (marketplace
     /// senders only).
     pub scope: String,
+    /// 2.114.0: folders TIQR does not read at all - "promotions", "spam",
+    /// "trash" (Settings, What is read).
+    pub skip_folders: Vec<String>,
     pub unread_count: i64,
     /// "off" | "manual" | "auto", per record kind. `manual` is the default
     /// and the one marko described: the proposal waits for his button.

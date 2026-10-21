@@ -142,6 +142,8 @@ import type {
   MailLocalFolder,
   MailLinkDownload,
   MailMute,
+  PromoScan,
+  PromoSuggestion,
 } from "./types";
 
 export const api = {
@@ -865,6 +867,14 @@ export const api = {
   unmuteMailSender: (who: string) => invoke<MailMute[]>("unmute_mail_sender", { who }),
   /** 2.113.1: TIQR's own star (Gmail is read-only here). */
   starMail: (ids: number[], starred: boolean) => invoke<number>("star_mail", { ids, starred }),
+  /** 2.114.0: every message of a folder (and search) - "select all" is the
+   *  whole folder, not the page on screen. */
+  listMailFolderIds: (folder: string, search: string | null) =>
+    invoke<number[]>("list_mail_folder_ids", { folder, search }),
+  /** 2.114.0: sort the next promotions nobody looked at yet - free rules,
+   *  then the cheapest model; nothing is moved. */
+  scanPromotions: () => invoke<PromoScan>("scan_promotions"),
+  listPromoSuggestions: () => invoke<PromoSuggestion[]>("list_promo_suggestions"),
   /** Translate or summarise an opened message - one click, one small call,
    *  and the answer is kept so the same click never costs twice. */
   mailAi: (id: number, task: "translate" | "summary", language?: string) =>
@@ -950,6 +960,10 @@ export const api = {
   /** Gmail's own search syntax, appended to the window. Rejected rather
    *  than half-applied when brackets or quotes do not balance. */
   setMailCustomQuery: (query: string) => invoke<void>("set_mail_custom_query", { query }),
+  /** 2.114.0: folders TIQR does not read at all. */
+  setMailSkipFolders: (folders: string[]) => invoke<MailConnectionStatus>("set_mail_skip_folders", { folders }),
+  /** 2.114.0: how many messages already here a rule would act on. */
+  countMailRuleMatches: (rule: MailRule) => invoke<number>("count_mail_rule_matches", { rule }),
   /** One call to Gmail's profile endpoint. Proves the authorisation works
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),

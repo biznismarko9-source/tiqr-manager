@@ -26,22 +26,33 @@
 // settings" - so the one long page became sections down the left, the way
 // Settings itself is laid out: Mailbox, Reading, What is read, Rules and
 // Automatic. A rule can now also file mail in a folder.
+//
+// 2.114.0: "viac veci pridat do settings aby si clovek presne vedel nastavit
+// ako ten mail ma fungovat, co a ako prijat, co posielat dalej, ako posielat,
+// rules lepsie, mute". Which folders are read at all; what mail goes on to
+// Discord and what its message carries; rules that look anywhere, star, and
+// say how many messages they would catch before they are saved; and the
+// muted senders, added and unmuted here.
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import { requestMailSync } from "../lib/mailSync";
 import { lastSyncText, laneViews, syncHeadline } from "../lib/mailSyncStatus";
 import { MAIL_LANGUAGES } from "../lib/mailText";
+import { MUTE_SPANS, muteState } from "../lib/mailMute";
 import {
+  type DiscordMailConfig,
   type MailConnectionStatus,
   type MailLabel,
   type MailLocalFolder,
+  type MailMute,
   type MailRule,
   type MailSender,
   type MailTestResult,
+  type NotificationStatus,
 } from "../lib/types";
 import { Badge, Button, Card, CHECKBOX_CLASS, Input, Select, Spinner } from "./ui";
-import { IconGauge, IconMail, IconRefresh, IconTag, IconUsers } from "./icons";
+import { IconBellOff, IconGauge, IconMail, IconRefresh, IconSend, IconTag, IconUsers } from "./icons";
 import { useToast } from "../lib/toast";
 
 /* What each rule action does, in marko's terms rather than the column it
@@ -52,6 +63,7 @@ const ACTION_LABEL: Record<string, string> = {
   read: "Mark as read",
   review: "Send to Needs review",
   move: "Move to a folder",
+  star: "Star it",
   keep: "Keep - stop here",
 };
 
@@ -60,6 +72,7 @@ const ACTION_HINT: Record<string, string> = {
   read: "Stays where it is, just stops counting as unread.",
   review: "Shows up in Needs review so you see it first.",
   move: "Files it in TIQR - it shows in that folder instead of the Inbox. Gmail is untouched.",
+  star: "Puts a star on it in TIQR, so it is in Starred.",
   keep: "Protects it: no rule below this one can act on it.",
 };
 
@@ -67,13 +80,40 @@ const ACTION_HINT: Record<string, string> = {
 const actionKind = (a: string) => (a.startsWith("move:") ? "move" : a);
 
 /* 2.113.0: the sections, down the left like Settings itself. */
-type SectionKey = "mailbox" | "reading" | "senders" | "rules" | "automatic";
+type SectionKey = "mailbox" | "reading" | "senders" | "rules" | "muted" | "discord" | "automatic";
 const SECTIONS: { key: SectionKey; title: string; description: string; icon: typeof IconMail }[] = [
   { key: "mailbox", title: "Mailbox", description: "Connection and progress", icon: IconMail },
   { key: "reading", title: "Reading", description: "How often, pictures, translate", icon: IconRefresh },
-  { key: "senders", title: "What is read", description: "Senders and your Gmail filter", icon: IconUsers },
+  { key: "senders", title: "What is read", description: "Folders, senders, your filter", icon: IconUsers },
   { key: "rules", title: "Rules", description: "Sort new mail by itself", icon: IconTag },
+  { key: "muted", title: "Muted senders", description: "Hidden for a while", icon: IconBellOff },
+  { key: "discord", title: "Discord", description: "What goes on, and how", icon: IconSend },
   { key: "automatic", title: "Automatic", description: "Records made from mail", icon: IconGauge },
+];
+
+/* 2.114.0: the folders that can be left out of reading altogether. */
+const SKIPPABLE: { key: "promotions" | "spam" | "trash"; label: string; hint: string }[] = [
+  { key: "promotions", label: "Promotions", hint: "Gmail's Promotions tab" },
+  { key: "spam", label: "Spam", hint: "Never trusted anyway" },
+  { key: "trash", label: "Trash", hint: "Gmail's own trash" },
+];
+
+/* 2.114.0: which mail goes on to Discord by itself, and what it carries. */
+const MAIL_KINDS: { key: keyof DiscordMailConfig; label: string }[] = [
+  { key: "sales", label: "Sales" },
+  { key: "purchases", label: "Purchases" },
+  { key: "money", label: "Payouts and refunds" },
+  { key: "changes", label: "Cancellations and event changes" },
+  { key: "orderUpdates", label: "Order updates - tickets ready, transfers" },
+];
+const MAIL_PARTS: { key: keyof DiscordMailConfig; label: string; hint: string }[] = [
+  { key: "keyDetails", label: "Key details", hint: "Where the tickets go, by when, the event, the other prices." },
+  {
+    key: "personal",
+    label: "Personal details",
+    hint: "The buyer's name and e-mail - always as a spoiler. Off: never sent to Discord at all.",
+  },
+  { key: "preview", label: "The opening words", hint: "Only when nothing better is known about the mail." },
 ];
 
 /* Where the pane opens: the section open last, for this session. */
@@ -83,6 +123,7 @@ const FIELD_LABEL: Record<string, string> = {
   from: "Sender",
   subject: "Subject",
   preview: "Preview text",
+  any: "Sender, subject or preview",
 };
 
 const MATCH_LABEL: Record<string, string> = {
@@ -231,12 +272,25 @@ export function MailSettingsPane({
   const [applying, setApplying] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<MailTestResult | null>(null);
+  /* 2.114.0 */
+  const [notif, setNotif] = useState<NotificationStatus | null>(null);
+  const [mutes, setMutes] = useState<MailMute[]>([]);
+  const [muteWho, setMuteWho] = useState("");
+  const [muteDays, setMuteDays] = useState<string>("7");
+  const [ruleMatches, setRuleMatches] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [r, s] = await Promise.all([api.listMailRules(), api.listMailSenders()]);
+      const [r, s, n, m] = await Promise.all([
+        api.listMailRules(),
+        api.listMailSenders(),
+        api.getNotificationStatus(),
+        api.listMailMutes(),
+      ]);
       setRules(r);
       setSenders(s);
+      setNotif(n);
+      setMutes(m);
     } catch (e) {
       toast.error(errMsg(e));
     } finally {
@@ -251,6 +305,61 @@ export function MailSettingsPane({
 
   // 2.112.0: rules and senders changed on the other computer arrive live.
   useDataChanged(() => void load(), MAIL_GROUP);
+
+  /* 2.114.0: how many messages already here the rule in the editor would
+     act on - while it is written, so a rule is never a guess. */
+  useEffect(() => {
+    if (!draft.needle.trim()) {
+      setRuleMatches(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      api
+        .countMailRuleMatches(draft)
+        .then(setRuleMatches)
+        .catch(() => setRuleMatches(null));
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [draft]);
+
+  /* ---- what is read, Discord, muted (2.114.0) ------------------------- */
+
+  const toggleSkip = (key: "promotions" | "spam" | "trash", read: boolean) => {
+    const skip = new Set(status.skipFolders ?? []);
+    if (read) skip.delete(key);
+    else skip.add(key);
+    void wrap(() => api.setMailSkipFolders([...skip]), read ? "TIQR reads it again" : "TIQR no longer reads it", true);
+  };
+
+  const saveDiscord = async (input: Parameters<typeof api.setNotificationConfig>[0]) => {
+    try {
+      setNotif(await api.setNotificationConfig(input));
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const addMute = async () => {
+    const who = muteWho.trim();
+    if (!who) return;
+    try {
+      setMutes(await api.muteMailSender(who, muteDays === "always" ? null : Number(muteDays)));
+      setMuteWho("");
+      toast.success(`${who} muted - its mail is under Muted.`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const unmute = async (who: string) => {
+    try {
+      setMutes(await api.unmuteMailSender(who));
+      toast.success(`${who} unmuted`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
 
   /* ---- rules --------------------------------------------------------- */
 
@@ -654,6 +763,32 @@ export function MailSettingsPane({
 
         {section === "senders" && (
           <>
+      {/* ---- 2.114.0: folders read at all ------------------------------- */}
+      <Section
+        title="Folders TIQR reads"
+        hint="Untick a folder and TIQR stops reading it: nothing new from it is downloaded. What is already in TIQR stays, and a message you starred or put in one of your labels is still read."
+      >
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
+          {SKIPPABLE.map((f) => {
+            const read = !(status.skipFolders ?? []).includes(f.key);
+            return (
+              <label key={f.key} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  className={`${CHECKBOX_CLASS} mt-0.5`}
+                  checked={read}
+                  onChange={(e) => toggleSkip(f.key, e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">{f.label}</span>
+                  <span className="block text-[11px] text-slate-500 dark:text-slate-400">{f.hint}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </Section>
+
       {/* ---- 3. senders --------------------------------------------------- */}
       <Section
         title="Senders TIQR watches"
@@ -949,6 +1084,13 @@ export function MailSettingsPane({
           </div>
           <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
             {ACTION_HINT[actionKind(draft.action)]} Matching ignores capital letters.
+            {ruleMatches !== null && (
+              <span className="ml-1 font-medium text-slate-700 dark:text-slate-200">
+                {ruleMatches === 0
+                  ? "It matches none of the mail you already have."
+                  : `It matches ${ruleMatches.toLocaleString()} message${ruleMatches === 1 ? "" : "s"} you already have.`}
+              </span>
+            )}
           </p>
         </div>
 
@@ -983,6 +1125,132 @@ export function MailSettingsPane({
         )}
       </Section>
 
+          </>
+        )}
+
+        {section === "muted" && (
+          <Section
+            title="Muted senders"
+            hint="Their mail still arrives and is kept - hidden under Muted and not counted as unread. Orders, sales and payouts from them always show. A whole shared mailbox (gmail.com, azet.sk...) cannot be muted, only one address at it."
+          >
+            {mutes.length === 0 ? (
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Nobody is muted.</p>
+            ) : (
+              <ul className="mb-4 divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800/70 dark:border-slate-800">
+                {mutes.map((m) => (
+                  <li key={m.who} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-mono text-slate-800 dark:text-slate-100">{m.who}</span>{" "}
+                      <span className="text-slate-500 dark:text-slate-400">{muteState(m)}</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-brand-600 hover:bg-surface-muted dark:text-brand-400"
+                      onClick={() => void unmute(m.who)}
+                    >
+                      Unmute
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="w-64">
+                <Input
+                  placeholder="news@shop.com or shop.com"
+                  value={muteWho}
+                  onChange={(e) => setMuteWho(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void addMute();
+                  }}
+                />
+              </div>
+              <div className="w-36">
+                <Select value={muteDays} onChange={(e) => setMuteDays(e.target.value)}>
+                  {MUTE_SPANS.map((sp) => (
+                    <option key={sp.label} value={sp.days === null ? "always" : String(sp.days)}>
+                      {sp.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <Button variant="secondary" onClick={() => void addMute()}>
+                Mute
+              </Button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+              Or open a message and use Mute there. The list is the same on your other computer.
+            </p>
+          </Section>
+        )}
+
+        {section === "discord" && (
+          <>
+            <Section
+              title="Mail that goes on to Discord"
+              hint="Important mail posts a short message by itself when it arrives - never old mail, never Spam or Trash, never mail a record was made from (the record's own message says it). The webhooks are set in Settings → Integrations → Discord."
+            >
+              {!notif ? (
+                <Spinner className="h-4 w-4" />
+              ) : (
+                <>
+                  {!notif.discordEnabled && (
+                    <p className="mb-3 rounded-lg bg-surface-muted px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                      Discord is off. Switch it on in Settings → Integrations → Discord - these choices are kept.
+                    </p>
+                  )}
+                  <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      className={`${CHECKBOX_CLASS} mt-0.5`}
+                      checked={notif.discordAuto.mail}
+                      onChange={(e) => void saveDiscord({ discordAuto: { ...notif.discordAuto, mail: e.target.checked } })}
+                    />
+                    <span className="font-medium">Post important mail by itself</span>
+                  </label>
+                  <div className={`mt-3 grid gap-2 sm:grid-cols-2 ${notif.discordAuto.mail ? "" : "pointer-events-none opacity-45"}`}>
+                    {MAIL_KINDS.map((k) => (
+                      <label key={k.key} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                        <input
+                          type="checkbox"
+                          className={CHECKBOX_CLASS}
+                          checked={notif.discordMailOptions[k.key]}
+                          onChange={(e) =>
+                            void saveDiscord({ discordMailOptions: { ...notif.discordMailOptions, [k.key]: e.target.checked } })
+                          }
+                        />
+                        {k.label}
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </Section>
+            <Section
+              title="What a mail message carries"
+              hint="Every message is a title and a few short lines - who and how much, then what you choose here. Send to Discord on a message uses the same choices."
+            >
+              {notif && (
+                <div className="space-y-2.5">
+                  {MAIL_PARTS.map((p) => (
+                    <label key={p.key} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+                      <input
+                        type="checkbox"
+                        className={`${CHECKBOX_CLASS} mt-0.5`}
+                        checked={notif.discordMailOptions[p.key]}
+                        onChange={(e) =>
+                          void saveDiscord({ discordMailOptions: { ...notif.discordMailOptions, [p.key]: e.target.checked } })
+                        }
+                      />
+                      <span>
+                        <span className="font-medium">{p.label}</span>
+                        <span className="block text-[11px] text-slate-500 dark:text-slate-400">{p.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </Section>
           </>
         )}
 

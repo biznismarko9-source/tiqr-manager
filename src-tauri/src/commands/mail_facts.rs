@@ -266,10 +266,22 @@ fn looks_like_money(v: &str) -> bool {
     has_symbol || cents
 }
 
+/// 2.114.0: words that head a section rather than fill one - "Ticket Holder
+/// Details" is a heading, not a ticket holder called Details.
+const HEADING_WORDS: &[&str] = &[
+    "details", "detail", "information", "info", "summary", "overview", "below", "above", "here", "list", "data",
+    "section", "name", "names", "holder", "holders", "address", "contact", "udaje", "informacie", "daten", "angaben",
+    "datos", "informacion", "detalles",
+];
+
 /// Whether `value` is a fair value for `kind`, and the value to keep.
 fn accept(kind: Kind, value: &str, strict: bool) -> Option<String> {
     let v = value.trim().trim_end_matches(['.', ',', ';']).trim();
     if v.is_empty() || matches!(v.to_ascii_lowercase().as_str(), "-" | "n/a" | "na" | "none" | "--") {
+        return None;
+    }
+    let words = fold(v);
+    if !words.is_empty() && words.split(' ').all(|w| HEADING_WORDS.contains(&w)) {
         return None;
     }
     // Without a colon, a value that reads on as a sentence is not one - an
@@ -369,10 +381,9 @@ pub(crate) fn key_facts(text: &str, sender: &str, own: Option<&str>) -> Vec<Mail
         found.push((kind, MailFact { label, value, private, kind: kind.as_str() }));
     };
 
+    // 1. "Label: value" - what the mail itself put a colon after says the
+    //    most, so it is read first and takes its kind's places.
     for (i, line) in lines.iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
         if let Some((label, rest)) = split_label(line) {
             if let Some(kind) = kind_of(label) {
                 // "Total Proceeds:" with the value on the next line.
@@ -384,8 +395,13 @@ pub(crate) fn key_facts(text: &str, sender: &str, own: Option<&str>) -> Vec<Mail
                 if let Some(v) = accept(kind, value, false) {
                     push(kind, label, v, &mut found);
                 }
-                continue;
             }
+        }
+    }
+    // 2. A table row without a colon, only where 1. left room.
+    for line in &lines {
+        if line.is_empty() || split_label(line).is_some_and(|(label, _)| kind_of(label).is_some()) {
+            continue;
         }
         if let Some((label, rest)) = split_known_prefix(line) {
             if let Some(kind) = kind_of(&label) {
@@ -417,8 +433,35 @@ pub(crate) fn key_facts(text: &str, sender: &str, own: Option<&str>) -> Vec<Mail
         }
     }
 
+    // 2.114.0: "nie vzdy a vsade su tieto personal details". A person's
+    // details belong to mail about sending tickets to someone - a receipt
+    // that greets marko by his own name has none worth showing.
+    if !asks_to_deliver(&lines) {
+        found.retain(|(kind, fact)| !kind.private() || names_the_buyer(&fact.label));
+    }
     found.sort_by_key(|(k, _)| *k);
     found.into_iter().take(8).map(|(_, f)| f).collect()
+}
+
+/// The mail asks for tickets to be sent, transferred or delivered somewhere.
+fn asks_to_deliver(lines: &[&str]) -> bool {
+    let text = fold(&lines.join(" "));
+    let words: Vec<&str> = text.split(' ').collect();
+    let delivery = [
+        "send", "transfer", "deliver", "forward", "assign", "ship", "upload", "poslat", "posli", "preposlat", "odoslat",
+        "prevest", "senden", "ubertragen", "versenden", "enviar", "transferir", "envoyer", "inviare",
+    ];
+    let tickets = ["ticket", "tickets", "eticket", "etickets", "listok", "listky", "vstupenk", "karte", "karten", "entrada", "entradas", "billet", "biglietti"];
+    words.iter().any(|w| delivery.iter().any(|d| w.starts_with(d))) && words.iter().any(|w| tickets.iter().any(|t| w.starts_with(t)))
+}
+
+/// A label that names the buyer or where tickets go, whatever the rest of
+/// the mail says ("Ticket holder", "Buyer's name", "Recipient").
+fn names_the_buyer(label: &str) -> bool {
+    let l = fold(label);
+    ["buyer", "holder", "attendee", "recipient", "send", "transfer", "deliver", "guest", "kupujuc", "kupujic", "prijemca", "empfanger", "comprador", "destinatario", "titular"]
+        .iter()
+        .any(|w| l.contains(w))
 }
 
 #[cfg(test)]
@@ -476,7 +519,7 @@ mod tests {
 
     #[test]
     fn the_mailbox_and_the_sender_are_never_where_to_send() {
-        let text = "Email: biznismarko9@gmail.com\nRecipient: orders@viagogo.com\nName: Marko";
+        let text = "Please send the tickets to the buyer.\nEmail: biznismarko9@gmail.com\nRecipient: orders@viagogo.com\nName: Marko";
         let l = labels(&key_facts(text, "orders@viagogo.com", Some("biznismarko9@gmail.com")));
         assert_eq!(l, vec!["Name=Marko (private)"]);
     }
@@ -484,7 +527,7 @@ mod tests {
     #[test]
     fn slovak_german_and_spanish_labels_are_read() {
         let l = labels(&key_facts(
-            "Meno: Ján Novák\nCelkom: 89,90 €\nPodujatie: Elán - Košice\nDátum: 12.11.2026\nBestellnummer: DE-4412\nTotal a pagar: 120,00 EUR",
+            "Prosím, pošlite lístky kupujúcemu.\nMeno: Ján Novák\nCelkom: 89,90 €\nPodujatie: Elán - Košice\nDátum: 12.11.2026\nBestellnummer: DE-4412\nTotal a pagar: 120,00 EUR",
             "x@y.sk",
             None,
         ));
@@ -524,6 +567,41 @@ mod tests {
         assert!(l.contains(&"Buyer email=anna.k@example.com (private)".to_string()), "{l:?}");
         assert!(l.contains(&"Total Proceeds=€162.50".to_string()), "{l:?}");
         assert!(l.contains(&"Event=ESPAÑA - INGLATERRA".to_string()), "{l:?}");
+    }
+
+    /// 2.114.0: marko's viagogo mail - the heading "Ticket Holder Details"
+    /// was read as a name ("Details") and took the place of the real one.
+    #[test]
+    fn a_heading_is_never_a_value_and_the_real_name_is_found() {
+        let html = "<h3>Ticket Holder Details</h3><p>Use the following details when preparing the tickets to be transferred:</p>\
+                    <table><tr><td colspan=2><b>Ticket Holder # 1</b></td></tr>\
+                    <tr><td>Full Name:</td><td><b>Luis Somoza</b></td></tr>\
+                    <tr><td>Email Address:</td><td>d1jedi@aol.com</td></tr></table>";
+        let text = crate::commands::mail::strip_html(html);
+        let l = labels(&key_facts(&text, "orders@viagogo.com", None));
+        assert_eq!(l, vec!["Full Name=Luis Somoza (private)", "Email Address=d1jedi@aol.com (private)"], "from {text:?}");
+        // Nor a heading in another shape.
+        for heading in ["Buyer Information", "Customer details", "Event Summary", "Venue information"] {
+            assert!(key_facts(heading, "x@y.com", None).is_empty(), "{heading:?} is a heading");
+        }
+    }
+
+    /// 2.114.0: "nie vzdy a vsade su tieto personal details" - a name or an
+    /// address is worth showing when the mail is about sending tickets to
+    /// someone, not on every order confirmation that greets marko by name.
+    #[test]
+    fn personal_details_only_where_tickets_go_to_someone() {
+        let receipt = "Thanks for your order!\nName: Marko Novak\nEmail: marko.n@example.com\nOrder total: €240.00";
+        let l = labels(&key_facts(receipt, "noreply@ticketmaster.com", None));
+        assert_eq!(l, vec!["Order total=€240.00"], "a receipt keeps its money, not marko's own details");
+        let transfer = "Please transfer the tickets to the buyer.\nName: Anna Kovacova\nEmail: anna.k@example.com";
+        assert_eq!(labels(&key_facts(transfer, "noreply@stubhub.com", None)).len(), 2);
+        let holder = "Ticket holder: Luis Somoza\nTotal: €162.50";
+        assert_eq!(
+            labels(&key_facts(holder, "x@y.com", None)),
+            vec!["Ticket holder=Luis Somoza (private)", "Total=€162.50"],
+            "a label that names the buyer says it by itself"
+        );
     }
 
     #[test]

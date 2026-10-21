@@ -1083,11 +1083,23 @@ export interface PullReceived {
   orderId: number | null;
   /** The linked order's own code (e.g. "ORD-000042"), for display only - null whenever orderId is null. */
   orderCode: string | null;
+  /** 2.114.1: what the linked order's tickets were sold for - its sales that
+   * are not refunded, one total per currency (nearly always one), never
+   * converted. Empty when there is no linked order or nothing is sold yet. */
+  sold: SoldTotal[];
+  /** How many of the linked order's tickets those sales cover. */
+  soldQuantity: number;
   /** "manual" (typed in the app) or "sheet_sync" (auto-created by Orders & Sales sheet sync). */
   source: "manual" | "sheet_sync";
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One currency's total in `PullReceived.sold`. */
+export interface SoldTotal {
+  currency: string;
+  cents: number;
 }
 
 export interface PullReceivedInput {
@@ -1353,6 +1365,25 @@ export interface NotificationStatus {
   discordMailSet: boolean;
   /** 2.113.0: what posts by itself, per kind. */
   discordAuto: DiscordAutoConfig;
+  /** 2.114.0: which mail is passed on, and what its message carries. */
+  discordMailOptions: DiscordMailConfig;
+}
+
+/** 2.114.0: "co posielat dalej, ako posielat" (commands/discord.rs). */
+export interface DiscordMailConfig {
+  sales: boolean;
+  purchases: boolean;
+  /** Payouts and refunds. */
+  money: boolean;
+  /** Cancellations and event changes. */
+  changes: boolean;
+  /** "Your tickets are ready", transfers, delivery updates. */
+  orderUpdates: boolean;
+  keyDetails: boolean;
+  /** Names, e-mails, phones, addresses - always as spoilers. Off: never sent. */
+  personal: boolean;
+  /** The opening words, when nothing better is known. */
+  preview: boolean;
 }
 
 /** 2.113.0: which records announce themselves on Discord when they are
@@ -1390,6 +1421,8 @@ export interface NotificationConfigInput {
   /** 2.113.0. An empty string removes the webhook. */
   discordMail?: string | null;
   discordAuto?: DiscordAutoConfig | null;
+  /** 2.114.0. */
+  discordMailOptions?: DiscordMailConfig | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
@@ -2863,6 +2896,8 @@ export interface MailConnectionStatus {
    *  senders only). */
   scope: "all" | "known";
   unreadCount: number;
+  /** 2.114.0: folders TIQR does not read at all. */
+  skipFolders: ("promotions" | "spam" | "trash")[];
   /** What the SYNC may do unattended, per record kind. `manual` is the
    *  default and the one marko described: the proposal waits for his
    *  button. `auto` only ever acts on a proposal that is already ready. */
@@ -2953,13 +2988,14 @@ export interface MailRule {
   id: string;
   position: number;
   enabled: boolean;
-  field: "from" | "subject" | "preview";
+  /** 2.114.0: `any` - the sender, the subject or the preview. */
+  field: "from" | "subject" | "preview" | "any";
   matchKind: "contains" | "equals" | "starts" | "ends";
   needle: string;
   /** Every action is LOCAL to TIQR. The Gmail scope is read-only, so none
    *  of these touches the mailbox at Google. 2.113.0: `move:<place>` files
    *  the message in TIQR - `move:finances`, `move:label_8`, `move:tiqr_2`. */
-  action: "trash" | "read" | "review" | "keep" | `move:${string}`;
+  action: "trash" | "read" | "review" | "keep" | "star" | `move:${string}`;
   createdAt: string;
   hits: number;
   lastHitAt: string | null;
@@ -3113,6 +3149,31 @@ export interface MailFact {
     | "tickets"
     | "seats"
     | "reference";
+}
+
+/** 2.114.0: what one "Clean up with AI" click did (commands/mail_cleanup.rs). */
+export interface PromoScan {
+  scanned: number;
+  junk: number;
+  unsure: number;
+  keep: number;
+  /** Requests to the AI and what they used. */
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Promotions never looked at yet - the next click goes on with them. */
+  remaining: number;
+}
+
+/** 2.114.0: a promotion offered for the Trash - "junk" (sure) or "unsure". */
+export interface PromoSuggestion {
+  id: number;
+  fromName?: string | null;
+  fromAddress: string;
+  subject: string;
+  snippet?: string | null;
+  receivedAt: string;
+  verdict: "junk" | "unsure";
 }
 
 /** 2.113.1: a muted sender - its mail still arrives, hidden under Muted

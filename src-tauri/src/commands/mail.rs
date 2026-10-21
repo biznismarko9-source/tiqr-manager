@@ -2182,6 +2182,7 @@ fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> {
             i + o
         },
         sync_interval_seconds: sync_interval_seconds(conn),
+        skip_folders: skipped_folders(conn),
         // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
             .query_row(
@@ -2687,13 +2688,17 @@ pub fn trash_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
     }
     let conn = state.db.lock().unwrap();
     let now = Utc::now().to_rfc3339();
+    // 2.114.0: one transaction, so a whole folder selected at once is one
+    // write rather than thousands.
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
             params![now, id],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2704,10 +2709,12 @@ pub fn restore_mail(state: State<AppState>, ids: Vec<i64>) -> AppResult<usize> {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
     let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])?;
+        n += tx.execute("UPDATE mail_messages SET trashed_at = NULL WHERE id = ?1", params![id])?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2733,8 +2740,11 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
     if ids.is_empty() {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
-    let live: i64 = {
-        let marks = vec!["?"; ids.len()].join(",");
+    // 2.114.0: in pieces - a whole Trash selected at once is more ids than
+    // one statement may carry.
+    let mut live: i64 = 0;
+    for part in ids.chunks(500) {
+        let marks = vec!["?"; part.len()].join(",");
         // In TIQR's trash OR in Gmail's - both are what the Trash folder
         // shows, so both count as "moved to the trash first".
         let sql = format!(
@@ -2743,9 +2753,9 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
                 AND instr(',' || IFNULL(labels, '') || ',', ',trash,') = 0
                 AND id IN ({marks})"
         );
-        let refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-        conn.query_row(&sql, refs.as_slice(), |r| r.get(0))?
-    };
+        let refs: Vec<&dyn rusqlite::ToSql> = part.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        live += conn.query_row(&sql, refs.as_slice(), |r| r.get::<_, i64>(0))?;
+    }
     if live > 0 {
         return Err(AppError::Validation(format!(
             "{live} of these are not in the trash yet. Move them to the trash first."
@@ -2767,18 +2777,19 @@ pub(crate) fn delete_forever_impl(conn: &Connection, ids: &[i64]) -> AppResult<u
     Ok(n)
 }
 
-/// Mark several read or unread at once.
 /// 2.113.1: marko's own star - "moznost dat na message starred". TIQR's,
 /// like read state (the Gmail access is read-only): it stays until he changes
 /// it here or the star is changed in Gmail (mail_sync.rs, `add_flag`).
 pub(crate) fn star_mail_impl(conn: &Connection, ids: &[i64], starred: bool) -> AppResult<usize> {
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0;
     for id in ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET is_starred = ?2, starred_here = ?2 WHERE id = ?1",
             params![id, i64::from(starred)],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -2788,19 +2799,22 @@ pub fn star_mail(state: State<AppState>, ids: Vec<i64>, starred: bool) -> AppRes
     star_mail_impl(&conn, &ids, starred)
 }
 
+/// Mark several read or unread at once.
 #[tauri::command]
 pub fn set_mail_read_bulk(state: State<AppState>, ids: Vec<i64>, read: bool) -> AppResult<usize> {
     if ids.is_empty() {
         return Err(AppError::Validation("nothing was selected".to_string()));
     }
     let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
     let mut n = 0usize;
     for id in &ids {
-        n += conn.execute(
+        n += tx.execute(
             "UPDATE mail_messages SET is_unread = ?1 WHERE id = ?2",
             params![if read { 0 } else { 1 }, id],
         )?;
     }
+    tx.commit()?;
     Ok(n)
 }
 
@@ -3045,13 +3059,31 @@ pub(crate) fn rule_matches(rule: &MailRule, subject: &RuleSubject) -> bool {
     if !rule.enabled || rule.needle.trim().is_empty() {
         return false;
     }
+    let any;
     let hay = match rule.field.as_str() {
         "from" => subject.from,
         "subject" => subject.subject,
         "preview" => subject.preview,
+        // 2.114.0: the sender, the subject or the preview - whichever says it.
+        "any" => {
+            any = format!("{}\n{}\n{}", subject.from, subject.subject, subject.preview);
+            &any
+        }
         _ => return false,
     }
     .to_lowercase();
+    if rule.field == "any" && matches!(rule.match_kind.as_str(), "equals" | "starts" | "ends") {
+        // "Sender or subject is exactly ..." means either one of them.
+        let needle = rule.needle.trim().to_lowercase();
+        return [subject.from, subject.subject, subject.preview].iter().any(|h| {
+            let h = h.to_lowercase();
+            match rule.match_kind.as_str() {
+                "equals" => h == needle,
+                "starts" => h.starts_with(&needle),
+                _ => h.ends_with(&needle),
+            }
+        });
+    }
     let needle = rule.needle.trim().to_lowercase();
     match rule.match_kind.as_str() {
         "contains" => hay.contains(&needle),
@@ -3117,6 +3149,11 @@ pub(crate) fn run_rule_action(conn: &Connection, row_id: i64, hit: &RuleHit) -> 
               WHERE id = ?1 AND status <> 'review_required'",
             params![row_id],
         )?,
+        // 2.114.0: TIQR's own star, as the star button sets it.
+        "star" => conn.execute(
+            "UPDATE mail_messages SET is_starred = 1, starred_here = 1 WHERE id = ?1 AND is_starred = 0",
+            params![row_id],
+        )?,
         // 2.113.0: a folder that no longer exists moves nothing.
         action if action.starts_with("move:") => {
             let target = &action["move:".len()..];
@@ -3155,9 +3192,9 @@ pub fn list_mail_rules(state: State<AppState>) -> AppResult<Vec<MailRule>> {
 /// Creates or updates one rule. An empty `id` means "new".
 #[tauri::command]
 pub fn save_mail_rule(state: State<AppState>, rule: MailRule) -> AppResult<Vec<MailRule>> {
-    const FIELDS: &[&str] = &["from", "subject", "preview"];
+    const FIELDS: &[&str] = &["from", "subject", "preview", "any"];
     const KINDS: &[&str] = &["contains", "equals", "starts", "ends"];
-    const ACTIONS: &[&str] = &["trash", "read", "review", "keep"];
+    const ACTIONS: &[&str] = &["trash", "read", "review", "keep", "star"];
     // 2.113.0: "move:<place>" moves new mail from a sender straight into a
     // folder - one of marko's own, a label, or Inbox / Finances / Promotions.
     let moves_to = rule.action.strip_prefix("move:");
@@ -3281,6 +3318,32 @@ pub fn apply_mail_rules_now(state: State<AppState>) -> AppResult<i64> {
         }
     }
     Ok(touched)
+}
+
+/// 2.114.0: how many messages already here a rule would act on - shown while
+/// the rule is written, so it is never a guess. Whether it is switched on
+/// does not matter for the count.
+pub(crate) fn count_rule_matches(conn: &Connection, rule: &MailRule) -> AppResult<i64> {
+    let rule = MailRule { enabled: true, ..rule.clone() };
+    if rule.needle.trim().is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = conn.prepare("SELECT from_address, subject, IFNULL(snippet, '') FROM mail_messages WHERE trashed_at IS NULL")?;
+    let mut n = 0i64;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let (from, subject, preview): (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        if rule_matches(&rule, &RuleSubject { from: &from, subject: &subject, preview: &preview }) {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn count_mail_rule_matches(state: State<AppState>, rule: MailRule) -> AppResult<i64> {
+    let conn = state.db.lock().unwrap();
+    count_rule_matches(&conn, &rule)
 }
 
 #[tauri::command]
@@ -4881,6 +4944,36 @@ pub fn list_mail_folder(
     list_folder_impl(&conn, &folder, search.as_deref(), before, limit.unwrap_or(200))
 }
 
+/// 2.114.0: every message of a folder (and search), newest first - for
+/// "select all", which means the whole folder, not the page on screen.
+pub(crate) fn folder_ids_impl(conn: &Connection, folder: &str, search: Option<&str>) -> AppResult<Vec<i64>> {
+    let muted = muted_sql(conn);
+    let Some(pred) = folder_sql(folder, &muted) else {
+        return Err(AppError::Validation(format!("\"{folder}\" is not a mail folder")));
+    };
+    let mut sql = format!("SELECT id FROM mail_messages WHERE ({pred})");
+    let like = search.map(str::trim).filter(|q| !q.is_empty()).map(|q| format!("%{}%", q.to_lowercase()));
+    if like.is_some() {
+        sql.push_str(
+            " AND (LOWER(from_address) LIKE ?1 OR LOWER(IFNULL(from_name, '')) LIKE ?1
+                   OR LOWER(subject) LIKE ?1 OR LOWER(IFNULL(snippet, '')) LIKE ?1)",
+        );
+    }
+    sql.push_str(" ORDER BY received_at DESC, id DESC LIMIT 100000");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match &like {
+        Some(l) => stmt.query_map([l], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?,
+        None => stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?,
+    };
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn list_mail_folder_ids(state: State<AppState>, folder: String, search: Option<String>) -> AppResult<Vec<i64>> {
+    let conn = state.db.lock().unwrap();
+    folder_ids_impl(&conn, &folder, search.as_deref())
+}
+
 /// Total and unread for every folder asked for, in ONE pass over the mail.
 pub(crate) fn folder_counts_impl(conn: &Connection, keys: &[String]) -> AppResult<Vec<MailFolderCount>> {
     let keys: Vec<&String> = keys.iter().filter(|k| folder_sql(k, "0").is_some()).collect();
@@ -5081,6 +5174,39 @@ pub fn mute_mail_sender(state: State<AppState>, who: String, days: Option<i64>) 
 pub fn unmute_mail_sender(state: State<AppState>, who: String) -> AppResult<Vec<MailMute>> {
     let conn = state.db.lock().unwrap();
     unmute_impl(&conn, &who)
+}
+
+// ===========================================================================
+// WHAT IS NOT READ AT ALL (2.114.0)
+// ===========================================================================
+//
+// marko: "co a ako prijat". Promotions, Spam and Trash can each be left out
+// of reading altogether: no walk of the folder, nothing new from it queued
+// (mail_sync.rs). What is already in TIQR stays; a starred message or one in
+// one of his labels is still read wherever Gmail keeps it.
+
+pub(crate) const MAIL_SKIP_FOLDERS_KEY: &str = "mail_skip_folders";
+const SKIPPABLE: &[&str] = &["promotions", "spam", "trash"];
+
+pub(crate) fn skipped_folders(conn: &Connection) -> Vec<String> {
+    get_setting(conn, MAIL_SKIP_FOLDERS_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .split(',')
+        .map(|f| f.trim().to_string())
+        .filter(|f| SKIPPABLE.contains(&f.as_str()))
+        .collect()
+}
+
+#[tauri::command]
+pub fn set_mail_skip_folders(state: State<AppState>, folders: Vec<String>) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    let mut keep: Vec<&str> = SKIPPABLE.iter().copied().filter(|f| folders.iter().any(|x| x == f)).collect();
+    keep.dedup();
+    set_setting(&conn, MAIL_SKIP_FOLDERS_KEY, &keep.join(","))?;
+    crate::commands::shared_settings::touch(&conn, &crate::commands::shared_settings::MAIL)?;
+    status_impl(&conn)
 }
 
 // ===========================================================================
@@ -5888,6 +6014,36 @@ mod tests {
         RuleSubject { from, subject, preview }
     }
 
+    /// 2.114.0: "rules lepsie" - one rule for the sender or the subject,
+    /// a star, and how many messages it would take before it is saved.
+    #[test]
+    fn a_rule_can_look_anywhere_star_and_say_what_it_would_catch() {
+        let conn = test_conn();
+        let m = |pid: &str, from: &str, subject: &str| {
+            conn.execute(
+                "INSERT INTO mail_messages (provider, provider_message_id, account_email, from_address, subject, snippet,
+                                            received_at, first_seen_at, updated_at, labels)
+                 VALUES ('gmail', ?1, 'me', ?2, ?3, '', 'x', 'x', 'x', 'inbox')",
+                params![pid, from, subject],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let a = m("a", "news@oasisinet.com", "Tour dates");
+        let b = m("b", "x@y.com", "Oasis presale tomorrow");
+        m("c", "x@y.com", "Weekly deals");
+        let any = rule("any", "contains", "oasis", "star");
+        assert_eq!(count_rule_matches(&conn, &any).unwrap(), 2, "the sender of one, the subject of the other");
+        assert_eq!(count_rule_matches(&conn, &rule("any", "equals", "weekly deals", "read")).unwrap(), 1);
+        assert_eq!(count_rule_matches(&conn, &MailRule { enabled: false, ..any.clone() }).unwrap(), 2, "a rule switched off still counts");
+        let hit = apply_rules(&[any], &RuleSubject { from: "news@oasisinet.com", subject: "Tour dates", preview: "" }).unwrap();
+        assert!(run_rule_action(&conn, a, &hit).unwrap());
+        let starred: (i64, Option<i64>) =
+            conn.query_row("SELECT is_starred, starred_here FROM mail_messages WHERE id = ?1", [a], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(starred, (1, Some(1)), "starred the way the star button does it");
+        let _ = b;
+    }
+
     #[test]
     fn a_rule_matches_on_the_field_it_names_and_no_other() {
         let s = subject_of("news@viagogo.com", "Weekly deals", "cheap tickets inside");
@@ -6171,6 +6327,28 @@ mod tests {
         let pids: Vec<String> = list_folder_impl(&conn, "otp", None, None, 10).unwrap().into_iter().map(|m| m.provider_message_id).collect();
         assert_eq!(pids, vec!["opened", "tm"], "in OTP codes now, newest first; never a code from Spam");
         assert_eq!(reread_codes(&conn).unwrap(), 0, "nothing twice");
+    }
+
+    /// 2.114.0: "v bulku vediet oznacit maily a vymazat ich" - select all
+    /// is the whole folder, not the page on screen.
+    #[test]
+    fn select_all_means_the_whole_folder_and_its_search() {
+        let conn = test_conn();
+        for i in 0..1205 {
+            put(&conn, &format!("p{i}"), "inbox,category_promotions", &format!("2026-10-{:02}T00:00:00Z", 1 + i % 28));
+        }
+        put(&conn, "keep", "inbox", "2026-10-10T00:00:00Z");
+        let ids = folder_ids_impl(&conn, "promotions", None).unwrap();
+        assert_eq!(ids.len(), 1205, "every one, past any page");
+        assert_eq!(folder_ids_impl(&conn, "promotions", Some("p12")).unwrap().len(), 16, "p12, p120..p129 and p1200..p1204");
+        assert!(folder_ids_impl(&conn, "'; DROP TABLE mail_messages; --", None).is_err());
+        // Into the trash, then out of it for good - in pieces, not one huge statement.
+        let now = Utc::now().to_rfc3339();
+        for id in &ids {
+            conn.execute("UPDATE mail_messages SET trashed_at = ?2 WHERE id = ?1", params![id, now]).unwrap();
+        }
+        assert_eq!(delete_forever_impl(&conn, &ids).unwrap(), 1205);
+        assert_eq!(folder_pids(&conn, "inbox"), vec!["keep"]);
     }
 
     /// 2.113.1: "moznost dat na message starred".

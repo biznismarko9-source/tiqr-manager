@@ -21,6 +21,47 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.114.2 - Given pulls' Earned bar is an overall figure
+
+- **Earned / Paid / Outstanding count every pull the search, platform and
+  dates select** - Active and Completed together, any transfer state. The
+  tab and the Status filter narrow only the table (`visiblePulls`). Do not
+  move the Status filter back into `api.listPulls` (`transferDone`): the bar
+  would quietly start following it.
+- **Fees in different currencies are never added together or converted**
+  (`feeTotals`, one amount per currency, biggest first), the same rule as
+  Received's *Sold for*.
+
+## 2.114.1 - what a received pull sold for
+
+- **"Sold for" is read, never stored.** `pulls_received::attach_sold`
+  computes it on every read from the linked order's tickets and their
+  sales that are not refunded - the same rule as
+  `orders::fetch_sales_summary` (Order Detail's Revenue). Keep the two
+  rules the same, and keep it one grouped query for a whole list, never one
+  per row.
+- **Currencies are never added together or converted** - one `SoldTotal`
+  per currency. The cell lets two amounts wrap onto a second line rather
+  than truncate money.
+- **The Received table's colgroups are now 8 (narrow) and 9 (wide)
+  columns.** *Sold for* was funded from Event; both still sum to what they
+  summed to before (99.999, the rounding of the original percentages).
+
+## 2.114.0 - compact Discord messages, the Promotions cleanup
+
+- **A Discord message is a title and a few whole lines.** No field grid;
+  the mail description is built line by line under 1500 characters so a
+  spoiler is never cut. Personal details off means they are never sent
+  (the preview shows dots), not merely unspoilered.
+- **The Promotions cleanup never moves mail by itself.** `scan_promotions`
+  only records J/K/? per message (`mail_ai` task `triage`); only marko's
+  click trashes, into TIQR's restorable Trash. Starred, marketplace,
+  recognised, code-carrying and moved mail is kept by rule and never sent to
+  the AI; only the sender's domain, the subject and 140 characters of the
+  preview are sent.
+- **Select all is the whole folder** (`list_mail_folder_ids`), so bulk
+  actions must stay transactional and chunked (thousands of ids).
+
 ## 2.113.1 - table cells, row lines, the Discord logo, key details, link downloads, mute, stars
 
 - **`overflow-wrap: anywhere` belongs to `table-fixed` tables only.** In an

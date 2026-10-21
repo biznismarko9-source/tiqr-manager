@@ -238,22 +238,37 @@ fn relative(raw: &str) -> Option<String> {
     Some(format!("<t:{ts}:R>"))
 }
 
-/// An event date as a field: the day, and under it how far away it is.
-fn event_when(raw: Option<&str>) -> String {
+/// 2.114.0: an event date on one line - the day, and how far away it is
+/// ("Sun 26 Jul 2026 · in 9 days", kept current by Discord).
+fn when_line(raw: Option<&str>) -> String {
     match raw.and_then(|r| day(r).map(|d| (d, relative(r)))) {
-        Some((d, Some(rel))) => format!("{}\n{rel}", md(&d)),
+        Some((d, Some(rel))) => format!("{} · {rel}", md(&d)),
         Some((d, None)) => md(&d),
-        None => "To be announced".to_string(),
+        None => "Date to be announced".to_string(),
     }
 }
 
-fn place(venue: &str, city: &str, country: &str) -> String {
-    let town: Vec<&str> = [city.trim(), country.trim()].into_iter().filter(|s| !s.is_empty()).collect();
-    match (venue.trim().is_empty(), town.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => md(venue),
-        (true, false) => md(&town.join(", ")),
-        (false, false) => format!("{}\n{}", md(venue), md(&town.join(", "))),
+/// "Wembley Stadium, London, UK" - on one line.
+fn place_line(venue: &str, city: &str, country: &str) -> String {
+    let parts: Vec<&str> = [venue.trim(), city.trim(), country.trim()].into_iter().filter(|s| !s.is_empty()).collect();
+    md(&parts.join(", "))
+}
+
+/// 2.114.0: marko - "tie webhooks viac zjednodusit lebo tam je vela info a je
+/// to potom neprehladne, fakt len to najdolezitejsie". A message is a title
+/// and a few short lines; empty ones are left out.
+fn lines(parts: Vec<String>) -> String {
+    parts.into_iter().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+/// The seats on one line: the first two groups, then how many more.
+fn seats_line(tickets: &[(String, String, String)]) -> String {
+    let all = seat_lines(tickets);
+    let groups: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
+    match groups.len() {
+        0 => String::new(),
+        1 | 2 => format!("💺 {}", groups.join(" · ")),
+        n => format!("💺 {} · +{} more", groups[..2].join(" · "), n - 2),
     }
 }
 
@@ -389,28 +404,6 @@ fn headline(icon: &str, created: &str, from_mail: &str, manual: &str, occasion: 
     format!("{icon} {words}")
 }
 
-/// The email a record was made from, as a field: which sender, which subject.
-fn source_mail_field(conn: &Connection, kind: &str, id: i64) -> Option<(String, String, bool)> {
-    let (subject, platform, from): (String, Option<String>, String) = conn
-        .query_row(
-            "SELECT subject, detected_platform, from_address FROM mail_messages
-              WHERE created_kind = ?1 AND created_id = ?2 ORDER BY id DESC LIMIT 1",
-            params![kind, id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .ok()?;
-    let who = platform
-        .filter(|p| !p.trim().is_empty())
-        .or_else(|| crate::commands::mail::domain_of(&from))
-        .unwrap_or_default();
-    let value = if who.is_empty() {
-        md(&clip(&subject, 200))
-    } else {
-        format!("{} · {}", md(&who), md(&clip(&subject, 200)))
-    };
-    Some(("✉️ From email".to_string(), value, false))
-}
-
 /// Builds the message for one record, or `None` when the record is gone.
 pub(crate) fn post_for(conn: &Connection, subject: Subject, occasion: Occasion) -> AppResult<Option<Post>> {
     let embed = match subject {
@@ -451,36 +444,38 @@ fn event_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Opti
         id,
     )?;
 
-    let mut description = String::new();
-    if !artist.trim().is_empty() && !name.to_lowercase().contains(&artist.trim().to_lowercase()) {
-        description.push_str(&format!("**{}**", md(&artist)));
-    }
-    let (color, status_label) = match status.as_str() {
-        "cancelled" => (RED, "Cancelled"),
-        "completed" => (PURPLE, "Completed"),
-        _ => (PURPLE, "Upcoming"),
-    };
+    let artist_line = (!artist.trim().is_empty() && !name.to_lowercase().contains(&artist.trim().to_lowercase()))
+        .then(|| format!("**{}**", md(&artist)))
+        .unwrap_or_default();
+    let where_ = place_line(&venue, &city, &country);
     let tickets = if total == 0 {
-        "None yet".to_string()
+        String::new()
     } else {
-        format!("{} · {in_stock} in stock · {sold} sold", plural(total, "ticket", "tickets"))
+        format!("🎟️ {} · {in_stock} in stock · {sold} sold", plural(total, "ticket", "tickets"))
     };
+    let mut money_parts = Vec::new();
+    if !money_list(&spent).is_empty() {
+        money_parts.push(format!("Bought {}", money_list(&spent)));
+    }
+    if !money_list(&revenue).is_empty() {
+        money_parts.push(format!("Sold {}", money_list(&revenue)));
+    }
+    let description = lines(vec![
+        if status == "cancelled" { "**Cancelled**".to_string() } else { String::new() },
+        artist_line,
+        format!("📅 {}{}", when_line(date.as_deref()), if where_.is_empty() { String::new() } else { format!(" · {where_}") }),
+        tickets,
+        money_parts.join(" · "),
+    ]);
+    let _ = &category;
     Ok(Some(Embed {
         routes: vec![DiscordDestination::Inventory],
-        color,
+        color: if status == "cancelled" { RED } else { PURPLE },
         headline: headline("📅", "New event", "Event from email", "Event", occasion),
         title: name,
         url: None,
         description,
-        fields: vec![
-            ("Date".to_string(), event_when(date.as_deref()), true),
-            ("Venue".to_string(), place(&venue, &city, &country), true),
-            ("Category".to_string(), md(&category), true),
-            ("Status".to_string(), status_label.to_string(), true),
-            ("Tickets".to_string(), tickets, true),
-            ("Bought for".to_string(), money_list(&spent), true),
-            ("Sold for".to_string(), money_list(&revenue), true),
-        ],
+        fields: Vec::new(),
         code: None,
     }))
 }
@@ -536,32 +531,27 @@ fn order_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Opti
     else {
         return Ok(None);
     };
-    let seats = seat_lines(&tickets_of(
+    let seats = seats_line(&tickets_of(
         conn,
         "SELECT IFNULL(section,''), IFNULL(row_label,''), IFNULL(seat,'') FROM tickets WHERE order_id = ?1 ORDER BY id",
         id,
     )?);
     let source = platform.clone().or(supplier.clone()).filter(|s| !s.trim().is_empty());
-    let mut description = format!("**{}** bought", plural(qty, "ticket", "tickets"));
+    let mut first = format!("**{}** bought", plural(qty, "ticket", "tickets"));
     if let Some(s) = &source {
-        description.push_str(&format!(" on **{}**", md(s)));
+        first.push_str(&format!(" on **{}**", md(s)));
     }
-    description.push_str(&format!(" for **{}**", money(total, &cur)));
-    let mut fields = vec![
-        ("Event date".to_string(), event_when(date.as_deref()), true),
-        ("Venue".to_string(), place(&venue, &city, ""), true),
-        ("Price".to_string(), format!("{qty} × {}", money(unit, &cur)), true),
-        ("Fees".to_string(), money(fees + other, &cur), true),
-        ("Total".to_string(), format!("**{}**", money(total, &cur)), true),
-        ("Payment".to_string(), payment_label(&paid).to_string(), true),
-        ("Seats".to_string(), seats, false),
-        ("Bought".to_string(), day(&bought_on).map(|d| md(&d)).unwrap_or_default(), true),
-        ("Supplier".to_string(), supplier.filter(|s| Some(s) != platform.as_ref()).map(|s| md(&s)).unwrap_or_default(), true),
-        ("Reference".to_string(), reference.map(|r| md(&r)).unwrap_or_default(), true),
-    ];
-    if matches!(occasion, Occasion::FromMail { .. }) {
-        fields.extend(source_mail_field(conn, "order", id));
+    first.push_str(&format!(" for **{}**", money(total, &cur)));
+    if paid != "paid" {
+        first.push_str(&format!(" · {}", payment_label(&paid).to_lowercase()));
     }
+    let where_ = place_line(&venue, &city, "");
+    let description = lines(vec![
+        first,
+        format!("📅 {}{}", when_line(date.as_deref()), if where_.is_empty() { String::new() } else { format!(" · {where_}") }),
+        seats,
+    ]);
+    let _ = (unit, fees, other, bought_on, reference);
     Ok(Some(Embed {
         routes: vec![DiscordDestination::Inventory],
         color: BLUE,
@@ -569,7 +559,7 @@ fn order_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Opti
         title: event,
         url: None,
         description,
-        fields,
+        fields: Vec::new(),
         code: Some(code),
     }))
 }
@@ -655,38 +645,31 @@ fn sale_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         k => format!("{} + {} more", first.event, k - 1),
     };
     let platform = first.platform.clone().filter(|p| !p.trim().is_empty());
-    let mut description = format!("**{}** sold", plural(n, "ticket", "tickets"));
+    let mut top = format!("**{}** sold", plural(n, "ticket", "tickets"));
     if let Some(p) = &platform {
-        description.push_str(&format!(" on **{}**", md(p)));
+        top.push_str(&format!(" on **{}**", md(p)));
     }
-    description.push_str(&format!(" for **{}**", money_list(&revenue)));
+    top.push_str(&format!(" for **{}**", money_list(&revenue)));
     let refunded = lines.iter().all(|l| l.status == "refunded");
-    let status = if lines.iter().all(|l| l.status == first.status) {
-        payment_label(&first.status)
-    } else {
-        "Partly paid"
-    };
-    let profit_text = match profit {
+    let same_status = lines.iter().all(|l| l.status == first.status);
+    if refunded {
+        top.push_str(" · refunded");
+    } else if !same_status {
+        top.push_str(" · partly paid");
+    } else if first.status != "paid" {
+        top.push_str(&format!(" · {}", payment_label(&first.status).to_lowercase()));
+    }
+    let profit_line = match profit {
         Some((p, cost)) if cost > 0 => {
             let roi = (p as f64) * 100.0 / (cost as f64);
-            format!("**{}** · ROI {roi:.0}%", money(p, &first.cur))
+            format!("Profit **{}** · ROI {roi:.0}%", money(p, &first.cur))
         }
-        Some((p, _)) => format!("**{}**", money(p, &first.cur)),
-        None => "Mixed currencies".to_string(),
+        Some((p, _)) => format!("Profit **{}**", money(p, &first.cur)),
+        None => String::new(),
     };
     let seats: Vec<(String, String, String)> = lines.iter().map(|l| l.seat.clone()).collect();
-    let mut fields = vec![
-        ("Event date".to_string(), event_when(first.date.as_deref()), true),
-        ("Sold".to_string(), day(&first.sale_date).map(|d| md(&d)).unwrap_or_default(), true),
-        ("Payment".to_string(), status.to_string(), true),
-        ("Revenue".to_string(), money_list(&revenue), true),
-        ("Fees".to_string(), money_list(&fees), true),
-        ("Profit".to_string(), profit_text, true),
-        ("Seats".to_string(), seat_lines(&seats), false),
-    ];
-    if matches!(occasion, Occasion::FromMail { .. }) {
-        fields.extend(source_mail_field(conn, "sale", id));
-    }
+    let description = self::lines(vec![top, profit_line, format!("📅 {}", when_line(first.date.as_deref())), seats_line(&seats)]);
+    let _ = (&fees, &first.sale_date);
     Ok(Some(Embed {
         routes: vec![DiscordDestination::Sales],
         color: if refunded { AMBER } else { GREEN },
@@ -694,7 +677,7 @@ fn sale_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         title,
         url: None,
         description,
-        fields,
+        fields: Vec::new(),
         code: Some(code),
     }))
 }
@@ -739,16 +722,20 @@ fn finance_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Op
     if let Some(p) = nonempty(&place_name).filter(|p| Some(p) != nonempty(&category).as_ref()) {
         description.push_str(&format!(" · {}", md(&p)));
     }
-    let mut fields = vec![
-        ("Date".to_string(), day(&date).map(|d| md(&d)).unwrap_or_default(), true),
-        ("Account".to_string(), nonempty(&account).map(|a| md(&a)).unwrap_or_default(), true),
-        ("Scope".to_string(), if scope == "business" { "Business" } else { "Personal" }.to_string(), true),
-        ("Order".to_string(), nonempty(&order).map(|o| md(&o)).unwrap_or_default(), true),
-        ("Note".to_string(), nonempty(&note).map(|n| md(&clip(&n, 300))).unwrap_or_default(), false),
-    ];
-    if matches!(occasion, Occasion::FromMail { .. }) {
-        fields.extend(source_mail_field(conn, "finance", id));
-    }
+    let meta: Vec<String> = [
+        day(&date).map(|d| md(&d)),
+        nonempty(&account).map(|a| md(&a)),
+        Some(if scope == "business" { "Business" } else { "Personal" }.to_string()),
+        nonempty(&order).map(|o| md(&o)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let description = lines(vec![
+        description,
+        format!("📅 {}", meta.join(" · ")),
+        nonempty(&note).map(|n| md(&clip(&n, 140))).unwrap_or_default(),
+    ]);
     Ok(Some(Embed {
         routes: vec![DiscordDestination::Finance],
         color: if income { GREEN } else { RED },
@@ -756,7 +743,7 @@ fn finance_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Op
         title,
         url: None,
         description,
-        fields,
+        fields: Vec::new(),
         code: None,
     }))
 }
@@ -840,6 +827,7 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         )
         .optional()?
         .flatten();
+    let options = load_notification_config(conn)?.discord.mail_options;
     let facts = crate::commands::mail_view::facts_for(conn, id, text.as_deref().unwrap_or(&snippet));
     // A person's details are spoilers in the text and dots in the title.
     let secrets: Vec<String> = facts
@@ -848,72 +836,67 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         .map(|f| hide(&f.value))
         .filter(|v| v.chars().count() >= 3)
         .collect();
-    let who = format!("**{}**", md(&sender));
-    let mut summary = match category.as_str() {
-        "sale_confirmation" => format!("{who} confirms a sale"),
-        "purchase_confirmation" => format!("Purchase confirmed by {who}"),
-        "order_status" => format!("Order update from {who}"),
-        "payout" => format!("Payout from {who}"),
-        "refund" => format!("Refund from {who}"),
-        "cancellation" => format!("Cancellation notice from {who}"),
-        "event_update" => format!("Event change from {who}"),
-        _ => format!("From {who}"),
-    };
-    let mut bits: Vec<String> = Vec::new();
-    if let Some(t) = &tickets {
-        bits.push(format!("**{t}**"));
+    // 2.114.0: a few short lines and nothing else (`lines`). Who and how
+    // much; where the tickets go, by when, for which event; the opening
+    // words only when nothing better is known.
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let said = |value: &str, field: Option<&String>| field.is_some_and(|v| !digits(v).is_empty() && digits(v) == digits(value));
+    let mut top = vec![format!("**{}**", md(&sender))];
+    top.extend(tickets.clone());
+    top.extend(price.as_ref().map(|p| format!("**{p}**")));
+    let mut out: Vec<String> = vec![top.join(" · ")];
+    if options.key_details {
+        let of = |kinds: &[&str]| facts.iter().filter(|f| kinds.contains(&f.kind)).collect::<Vec<_>>();
+        let value = |f: &MailFact| md(&hide(&f.value));
+        let labelled = |f: &MailFact| format!("{} {}", md(&f.label), value(f));
+        if options.personal {
+            let people: Vec<String> = facts.iter().filter(|f| f.private).map(|f| format!("||{}||", value(f))).collect();
+            if !people.is_empty() {
+                out.push(format!("📤 {}", people.join(" · ")));
+            }
+        }
+        if let Some(f) = of(&["deadline"]).first() {
+            out.push(format!("⏰ {}", labelled(f)));
+        }
+        let event: Vec<String> = of(&["event", "when", "venue"]).into_iter().map(value).collect();
+        if !event.is_empty() {
+            out.push(format!("🎫 {}", event.join(" · ")));
+        }
+        let cash: Vec<String> = of(&["money"]).into_iter().filter(|f| !said(&f.value, price.as_ref())).map(labelled).collect();
+        if !cash.is_empty() {
+            out.push(format!("💶 {}", cash.join(" · ")));
+        }
+        let seats: Vec<String> = of(&["seats"]).into_iter().map(labelled).collect();
+        if !seats.is_empty() {
+            out.push(format!("💺 {}", seats.join(" · ")));
+        }
     }
-    if let Some(p) = &price {
-        bits.push(format!("**{p}**"));
+    if out.len() == 1 && price.is_none() && tickets.is_none() && options.preview {
+        let preview = md_spoilered(&hide(&snippet), &secrets, 220, options.personal);
+        if !preview.is_empty() {
+            out.push(format!("> {preview}"));
+        }
     }
-    if !bits.is_empty() {
-        summary.push_str(&format!(": {}", bits.join(" for ")));
+    // Whole lines only, well inside Discord's limit: a spoiler is never cut.
+    let mut description = String::new();
+    for l in out {
+        if description.chars().count() + l.chars().count() + 1 > 1500 {
+            break;
+        }
+        if !description.is_empty() {
+            description.push('\n');
+        }
+        description.push_str(&l);
     }
-    let preview = md_spoilered(&hide(&snippet), &secrets, 280);
-    let description = if preview.is_empty() { summary } else { format!("{summary}\n> {preview}") };
-    let received_field = DateTime::parse_from_rfc3339(&received)
-        .map(|d| format!("<t:{}:f>", d.timestamp()))
-        .unwrap_or_default();
-    let from_field = if domain.is_empty() || sender.eq_ignore_ascii_case(&domain) {
-        md(&sender)
-    } else {
-        format!("{} · {}", md(&sender), md(&domain))
-    };
     // Gmail's ids are hex; anything else does not become a link.
     let url = (!gmail_id.is_empty() && gmail_id.chars().all(|c| c.is_ascii_hexdigit()))
         .then(|| format!("https://mail.google.com/mail/u/0/#all/{gmail_id}"));
     let manual_label = if matches!(occasion, Occasion::Manual) { "Email" } else { label };
-    let reference = reference.map(|r| hide(&r));
-    // The key details, without what the fields above already say.
-    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
-    let said = |f: &MailFact, field: Option<&String>| field.is_some_and(|v| !digits(v).is_empty() && digits(v) == digits(&f.value));
-    let mut details = String::new();
-    for f in &facts {
-        let repeated = match f.kind {
-            "money" => said(f, price.as_ref()),
-            "tickets" => said(f, tickets.as_ref()),
-            "reference" => reference.as_ref().is_some_and(|r| r.trim() == f.value.trim()),
-            _ => false,
-        };
-        let value = hide(&f.value);
-        if repeated || value.trim().is_empty() {
-            continue;
-        }
-        let shown = if f.private { format!("||{}||", md(&value)) } else { md(&value) };
-        let line = format!("**{}:** {shown}", md(&f.label));
-        // Whole lines only: a spoiler cut in half would show what it hides.
-        if details.chars().count() + line.chars().count() + 1 > 950 {
-            break;
-        }
-        if !details.is_empty() {
-            details.push('\n');
-        }
-        details.push_str(&line);
-    }
     let mut title = hide(&subject);
     for secret in &secrets {
         title = replace_ignoring_case(&title, secret, "•••");
     }
+    let _ = (&received, &domain);
     Ok(Some(Embed {
         routes,
         color,
@@ -921,15 +904,9 @@ fn mail_embed(conn: &Connection, id: i64, occasion: Occasion) -> AppResult<Optio
         title,
         url,
         description,
-        fields: vec![
-            ("From".to_string(), from_field, true),
-            ("Received".to_string(), received_field, true),
-            ("Amount".to_string(), price.unwrap_or_default(), true),
-            ("Tickets".to_string(), tickets.unwrap_or_default(), true),
-            ("Reference".to_string(), reference.map(|r| md(&r)).unwrap_or_default(), true),
-            ("📌 Key details".to_string(), details, false),
-        ],
-        code: None,
+        fields: Vec::new(),
+        // The order or sale number goes by the brand, out of the way.
+        code: reference.map(|r| hide(&r)),
     }))
 }
 
@@ -968,7 +945,7 @@ fn replace_ignoring_case(text: &str, needle: &str, with: &str) -> String {
 /// Email text for a Markdown place (`md`), at most `max` characters, with
 /// each of `secrets` as a spoiler. A secret the cut would split is left
 /// out whole, never shown half.
-fn md_spoilered(raw: &str, secrets: &[String], max: usize) -> String {
+fn md_spoilered(raw: &str, secrets: &[String], max: usize, spoil: bool) -> String {
     const OPEN: char = '\u{E000}';
     const CLOSE: char = '\u{E001}';
     // Marks no email can contain stand in for the secrets until the escaping
@@ -994,8 +971,9 @@ fn md_spoilered(raw: &str, secrets: &[String], max: usize) -> String {
         out = out.replace(&format!("{OPEN}{i}{CLOSE}"), &format!("||{}||", md(secret)));
     }
     // Discord's own cut at 1800 must never fall inside a spoiler: a preview
-    // that would grow that long hides its secrets as dots instead.
-    if out.chars().count() > 1400 {
+    // that would grow that long hides its secrets as dots instead - and so
+    // does one whose personal details are switched off.
+    if !spoil || out.chars().count() > 1400 {
         out = escaped;
         for i in 0..secrets.len() {
             out = out.replace(&format!("{OPEN}{i}{CLOSE}"), "•••");
@@ -1023,6 +1001,14 @@ pub(crate) fn plan(conn: &Connection, subject: Subject, occasion: Occasion) -> A
     if !cfg.enabled || !subject.auto_on(&cfg.auto) {
         return Ok(None);
     }
+    // 2.114.0: which kinds of mail are passed on (Settings, Mail -> Discord).
+    if let Subject::Mail(id) = subject {
+        let category: Option<String> =
+            conn.query_row("SELECT category FROM mail_messages WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        if !category.is_some_and(|c| mail_kind_on(&cfg.mail_options, &c)) {
+            return Ok(None);
+        }
+    }
     let Some(post) = post_for(conn, subject, occasion)? else {
         return Ok(None);
     };
@@ -1030,6 +1016,18 @@ pub(crate) fn plan(conn: &Connection, subject: Subject, occasion: Occasion) -> A
         return Ok(None);
     };
     Ok(Some((dest, url, post)))
+}
+
+/// Whether this kind of mail is passed on by itself.
+pub(crate) fn mail_kind_on(o: &crate::models::DiscordMailConfig, category: &str) -> bool {
+    match category {
+        "sale_confirmation" => o.sales,
+        "purchase_confirmation" => o.purchases,
+        "payout" | "refund" => o.money,
+        "cancellation" | "event_update" => o.changes,
+        "order_status" => o.order_updates,
+        _ => false,
+    }
 }
 
 /// Posts a message about something that just happened. Never fails and never
@@ -1347,15 +1345,6 @@ mod tests {
         &post.payload["embeds"][0]
     }
 
-    fn field<'a>(post: &'a Post, name: &str) -> Option<&'a str> {
-        embed(post)["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["name"] == name)
-            .and_then(|f| f["value"].as_str())
-    }
-
     fn all_text(post: &Post) -> String {
         post.payload.to_string()
     }
@@ -1439,7 +1428,7 @@ mod tests {
         assert_eq!(day("2026-07-26 19:30").as_deref(), Some("Sun 26 Jul 2026 · 19:30"));
         assert_eq!(day("TBD"), None);
         assert_eq!(relative("2026-07-26").as_deref(), Some("<t:1785067200:R>"));
-        assert_eq!(event_when(None), "To be announced");
+        assert_eq!(when_line(None), "Date to be announced");
     }
 
     #[test]
@@ -1463,12 +1452,14 @@ mod tests {
         assert_eq!(e["author"]["name"], "🛒 New purchase");
         assert_eq!(e["footer"]["text"], "TIQR Manager · OASIS-001");
         assert_eq!(e["color"], BLUE);
-        assert_eq!(e["description"], "**2 tickets** bought on **Ticketmaster** for **€225.00**");
-        assert_eq!(field(&post, "Price"), Some("2 × €110.00"));
-        assert_eq!(field(&post, "Total"), Some("**€225.00**"));
-        assert_eq!(field(&post, "Seats"), Some("Sec 112 · Row F · 14, 15"));
-        assert_eq!(field(&post, "Payment"), Some("Paid"));
-        assert!(field(&post, "Event date").unwrap().starts_with("Sun 26 Jul 2026\n<t:"));
+        // 2.114.0: "fakt len to najdolezitejsie" - three short lines, no grid.
+        assert_eq!(
+            e["description"],
+            "**2 tickets** bought on **Ticketmaster** for **€225.00**\n\
+             📅 Sun 26 Jul 2026 · <t:1785067200:R> · Wembley Stadium, London\n\
+             💺 Sec 112 · Row F · 14, 15"
+        );
+        assert_eq!(e["fields"], json!([]));
         // The branding, the timestamp Discord accepts and no pings.
         assert_eq!(post.payload["username"], "TIQR Manager");
         assert_eq!(post.payload["avatar_url"], LOGO_URL);
@@ -1505,12 +1496,15 @@ mod tests {
         let post = post_for(&conn, Subject::Sale(ids[1]), Occasion::Created).unwrap().unwrap();
         assert_eq!(post.routes, vec![DiscordDestination::Sales]);
         let e = embed(&post);
-        assert_eq!(e["description"], "**2 tickets** sold for **€600.00**");
-        assert_eq!(field(&post, "Revenue"), Some("€600.00"));
-        assert_eq!(field(&post, "Fees"), Some("€60.00"));
         // 540 net - 220 cost = 320, on 220 spent.
-        assert_eq!(field(&post, "Profit"), Some("**€320.00** · ROI 145%"));
-        assert_eq!(field(&post, "Payment"), Some("Pending"));
+        assert_eq!(
+            e["description"],
+            "**2 tickets** sold for **€600.00** · pending\n\
+             Profit **€320.00** · ROI 145%\n\
+             📅 Sun 26 Jul 2026 · <t:1785067200:R>\n\
+             💺 Sec 112 · Row F · 14, 15"
+        );
+        assert_eq!(e["fields"], json!([]));
         assert_eq!(e["color"], GREEN);
         // Who bought is not Discord's business.
         assert!(!all_text(&post).contains("jane"), "{}", all_text(&post));
@@ -1518,8 +1512,9 @@ mod tests {
         // In another currency the profit is not made up.
         conn.execute("UPDATE sales SET currency = 'USD' WHERE id = ?1", [ids[0]]).unwrap();
         let post = post_for(&conn, Subject::Sale(ids[0]), Occasion::Manual).unwrap().unwrap();
-        assert_eq!(field(&post, "Profit"), Some("Mixed currencies"));
-        assert_eq!(field(&post, "Revenue"), Some("$300.00 + €300.00"));
+        let d = embed(&post)["description"].as_str().unwrap().to_string();
+        assert!(d.starts_with("**2 tickets** sold for **$300.00 + €300.00**"), "{d}");
+        assert!(!d.contains("Profit"), "no profit made up across currencies: {d}");
         assert_eq!(embed(&post)["author"]["name"], "💰 Sale");
     }
 
@@ -1540,10 +1535,9 @@ mod tests {
         assert_eq!(post.routes, vec![DiscordDestination::Finance]);
         assert_eq!(e["author"]["name"], "💸 New expense");
         assert_eq!(e["title"], "Fuel");
-        assert_eq!(e["description"], "**-€45.50** out · Shell");
+        assert_eq!(e["description"], "**-€45.50** out · Shell\n📅 Mon 4 May 2026 · Business\nTrip to \\*\\*Vienna\\*\\*");
         assert_eq!(e["color"], RED);
-        assert_eq!(field(&post, "Scope"), Some("Business"));
-        assert_eq!(field(&post, "Note"), Some("Trip to \\*\\*Vienna\\*\\*"));
+        assert_eq!(e["fields"], json!([]));
     }
 
     #[test]
@@ -1554,11 +1548,13 @@ mod tests {
         conn.execute("UPDATE tickets SET status = 'sold' WHERE seat = '14'", []).unwrap();
         let post = post_for(&conn, Subject::Event(event), Occasion::Manual).unwrap().unwrap();
         assert_eq!(embed(&post)["author"]["name"], "📅 Event");
-        assert_eq!(field(&post, "Tickets"), Some("3 tickets · 2 in stock · 1 sold"));
-        assert_eq!(field(&post, "Venue"), Some("Wembley Stadium\nLondon, UK"));
-        assert_eq!(field(&post, "Bought for"), Some("€305.00"));
-        // "Oasis" is already in "Oasis Live".
-        assert_eq!(embed(&post)["description"], "");
+        // "Oasis" is already in "Oasis Live", so no artist line.
+        assert_eq!(
+            embed(&post)["description"],
+            "📅 Sun 26 Jul 2026 · <t:1785067200:R> · Wembley Stadium, London, UK\n\
+             🎟️ 3 tickets · 2 in stock · 1 sold\n\
+             Bought €305.00"
+        );
     }
 
     fn seed_mail(conn: &Connection, category: &str, confidence: &str, subject: &str, received: &str) -> i64 {
@@ -1591,9 +1587,50 @@ mod tests {
         assert!(!text.contains("482913"), "a one-time code left TIQR: {text}");
         assert!(!text.contains("noreply@"), "the sender's full address left TIQR: {text}");
         assert!(!text.contains("https://evil"), "{text}");
-        assert!(e["description"].as_str().unwrap().starts_with("**StubHub** confirms a sale: **2 tickets** for **€600.00**\n> "));
-        assert_eq!(field(&post, "From"), Some("StubHub · stubhub.com"));
-        assert!(field(&post, "Received").unwrap().starts_with("<t:"));
+        // 2.114.0: one line - who and how much - when that is what is known;
+        // the opening words only when nothing better is.
+        assert_eq!(e["description"], "**StubHub** · 2 tickets · **€600.00**");
+        assert_eq!(e["fields"], json!([]));
+        conn.execute("UPDATE mail_messages SET extracted_amount_cents = NULL, extracted_quantity = NULL WHERE id = ?1", [id]).unwrap();
+        let post = post_for(&conn, Subject::Mail(id), Occasion::MailArrived).unwrap().unwrap();
+        let d = embed(&post)["description"].as_str().unwrap().to_string();
+        assert!(d.starts_with("**StubHub**\n> Great news! You sold 2 tickets."), "{d}");
+        assert!(!d.contains("482913"), "{d}");
+    }
+
+    /// 2.114.0: "co posielat dalej, ako posielat" - which mail and what of it.
+    #[test]
+    fn mail_settings_decide_which_mail_goes_and_what_it_carries() {
+        let conn = test_conn();
+        let mut cfg = load_notification_config(&conn).unwrap();
+        cfg.discord.enabled = true;
+        cfg.discord.mail = "https://discord.com/api/webhooks/1/abc".into();
+        cfg.discord.sales = "https://discord.com/api/webhooks/2/def".into();
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
+        let now = Utc::now().to_rfc3339();
+        let id = seed_mail(&conn, "sale_confirmation", "high", "Please send your tickets", &now);
+        conn.execute(
+            "UPDATE mail_messages SET extract_text = 'Please send your tickets to the buyer.\nBuyer email: anna.k@example.com\nSend by: 14 Nov 2026' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(plan(&conn, Subject::Mail(id), Occasion::MailArrived).unwrap().is_some());
+        let text = |c: &Connection| all_text(&post_for(c, Subject::Mail(id), Occasion::MailArrived).unwrap().unwrap());
+        assert!(text(&conn).contains("||anna.k@example.com||"));
+
+        cfg.discord.mail_options.personal = false;
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
+        let t = text(&conn);
+        assert!(!t.contains("anna.k"), "personal details off: never sent: {t}");
+        assert!(t.contains("Send by 14 Nov 2026"), "{t}");
+
+        cfg.discord.mail_options.key_details = false;
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
+        assert!(!text(&conn).contains("Send by"));
+
+        cfg.discord.mail_options.sales = false;
+        crate::commands::notifications::save_notification_config(&conn, &cfg).unwrap();
+        assert!(plan(&conn, Subject::Mail(id), Occasion::MailArrived).unwrap().is_none(), "sale mail switched off");
     }
 
     /// 2.113.1: "poslat tam, meno a mail a to daj ako hidden ... a aj cena".
@@ -1613,19 +1650,19 @@ mod tests {
         )
         .unwrap();
         let post = post_for(&conn, Subject::Mail(id), Occasion::MailArrived).unwrap().unwrap();
-        let details = field(&post, "📌 Key details").expect("a key details field");
-        assert!(details.contains("**Buyer's name:** ||Anna Kovacova||"), "{details}");
-        assert!(details.contains("**Buyer email:** ||anna.k@example.com||"), "{details}");
-        assert!(details.contains("**Send by:** 14 Nov 2026"), "{details}");
-        assert!(details.contains("**Event:** Oasis Live 25"), "{details}");
-        assert!(details.contains("**Sale Price:** €650.00"), "the other price stays: {details}");
-        assert!(!details.contains("Total Proceeds"), "the Amount field says it already: {details}");
-        assert!(!details.contains("Quantity"), "the Tickets field says it already: {details}");
-        assert!(!all_text(&post).contains("482913"), "a one-time code never leaves TIQR");
         let e = embed(&post);
+        // 2.114.0: a few lines - who and how much, where the tickets go, by
+        // when, for which event, and the other price.
+        assert_eq!(
+            e["description"],
+            "**StubHub** · 2 tickets · **€600.00**\n\
+             📤 ||Anna Kovacova|| · ||anna.k@example.com||\n\
+             ⏰ Send by 14 Nov 2026\n\
+             🎫 Oasis Live 25\n\
+             💶 Sale Price €650.00"
+        );
+        assert!(!all_text(&post).contains("482913"), "a one-time code never leaves TIQR");
         assert_eq!(e["title"], "Please send your tickets to •••");
-        let description = e["description"].as_str().unwrap();
-        assert!(description.contains("||anna.k@example.com||"), "{description}");
         // Outside a spoiler the details appear nowhere.
         let text = all_text(&post);
         let bare = text.replace("||Anna Kovacova||", "").replace("||anna.k@example.com||", "");
@@ -1636,16 +1673,16 @@ mod tests {
     fn a_spoiler_is_never_cut_in_half() {
         let secrets = vec!["anna.k@example.com".to_string()];
         let long = format!("{} send to anna.k@example.com", "word ".repeat(10));
-        let cut = md_spoilered(&long, &secrets, 60);
+        let cut = md_spoilered(&long, &secrets, 60, true);
         assert!(!cut.contains("anna"), "{cut}");
         assert!(cut.ends_with('…'), "{cut}");
-        assert_eq!(md_spoilered("To ANNA.K@example.com!", &secrets, 280), "To ||anna.k@example.com||!");
-        assert_eq!(md_spoilered("a *b* \u{E000}0\u{E001}", &[], 280), "a \\*b\\* 0");
+        assert_eq!(md_spoilered("To ANNA.K@example.com!", &secrets, 280, true), "To ||anna.k@example.com||!");
+        assert_eq!(md_spoilered("a *b* \u{E000}0\u{E001}", &[], 280, true), "a \\*b\\* 0");
         assert_eq!(replace_ignoring_case("Hi ANNA and anna", "Anna", "•"), "Hi • and •");
         assert_eq!(replace_ignoring_case("İstanbul: Ján NOVÁK", "ján novák", "•"), "İstanbul: •");
         // So many spoilers that the text would outgrow Discord's cut: dots.
         let many = vec!["anna.kovacova@example.com".to_string()];
-        let crowded = md_spoilered(&"anna.kovacova@example.com ".repeat(70), &many, 280);
+        let crowded = md_spoilered(&"anna.kovacova@example.com ".repeat(70), &many, 280, true);
         assert!(!crowded.contains("anna") && crowded.contains("•••"), "{crowded}");
         assert!(crowded.chars().count() <= 1400);
     }
