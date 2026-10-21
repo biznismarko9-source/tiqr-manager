@@ -86,7 +86,7 @@ use crate::models::{
 use std::collections::HashMap;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2184,6 +2184,14 @@ pub(crate) fn status_impl(conn: &Connection) -> AppResult<MailConnectionStatus> 
         sync_interval_seconds: sync_interval_seconds(conn),
         skip_folders: skipped_folders(conn),
         share_reading: crate::commands::mail_share::share_enabled(conn),
+        mark_read: choice(conn, MAIL_MARK_READ_KEY, &MARK_READ),
+        after_move: choice(conn, MAIL_AFTER_MOVE_KEY, &AFTER_MOVE),
+        list_preview: switch(conn, MAIL_LIST_PREVIEW_KEY, true),
+        list_tags: switch(conn, MAIL_LIST_TAGS_KEY, true),
+        list_compact: switch(conn, MAIL_LIST_COMPACT_KEY, false),
+        start_folder: choice(conn, MAIL_START_FOLDER_KEY, &START_FOLDER),
+        shortcuts: switch(conn, MAIL_SHORTCUTS_KEY, true),
+        read_speed: choice(conn, MAIL_READ_SPEED_KEY, &READ_SPEED),
         // 2.113.1: a muted sender's mail is not news.
         unread_count: conn
             .query_row(
@@ -4685,6 +4693,117 @@ pub fn set_mail_automation(
         set_setting(&conn, since_key(&kind), &Utc::now().to_rfc3339())?;
         claim_automation(&conn)?;
     }
+    status_impl(&conn)
+}
+
+// 2.115.0, marko: "celkovo do mailu pridat viac funkcii, nastaveni aby
+// vsetko si clovek vedel dat ako chce". The Mail screen's own choices, each
+// defaulting to the way Mail always worked; the first of each list is that
+// default. All but the reading speed are the same on both computers.
+pub(crate) const MAIL_MARK_READ_KEY: &str = "mail_mark_read";
+pub(crate) const MAIL_AFTER_MOVE_KEY: &str = "mail_after_move";
+pub(crate) const MAIL_LIST_PREVIEW_KEY: &str = "mail_list_preview";
+pub(crate) const MAIL_LIST_TAGS_KEY: &str = "mail_list_tags";
+pub(crate) const MAIL_LIST_COMPACT_KEY: &str = "mail_list_compact";
+pub(crate) const MAIL_START_FOLDER_KEY: &str = "mail_start_folder";
+pub(crate) const MAIL_SHORTCUTS_KEY: &str = "mail_shortcuts";
+/// Per computer, never shared: one of them may sit on a slow connection.
+pub(crate) const MAIL_READ_SPEED_KEY: &str = "mail_read_speed";
+
+const MARK_READ: [&str; 3] = ["open", "delay", "manual"];
+const AFTER_MOVE: [&str; 3] = ["list", "older", "newer"];
+const START_FOLDER: [&str; 4] = ["inbox", "important", "starred", "last"];
+const READ_SPEED: [&str; 2] = ["full", "gentle"];
+
+/// A stored choice, or the default (the first) for anything else.
+fn choice(conn: &Connection, key: &str, allowed: &[&'static str]) -> String {
+    let stored = get_setting(conn, key).ok().flatten();
+    allowed.iter().find(|a| stored.as_deref() == Some(**a)).copied().unwrap_or(allowed[0]).to_string()
+}
+
+fn switch(conn: &Connection, key: &str, default_on: bool) -> bool {
+    match get_setting(conn, key).ok().flatten().as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => default_on,
+    }
+}
+
+/// Opening a message marks it read - unless marko chose later, or by hand.
+pub(crate) fn marks_read_on_open(conn: &Connection) -> bool {
+    choice(conn, MAIL_MARK_READ_KEY, &MARK_READ) == "open"
+}
+
+/// This computer reads Gmail gently: fewer at a time, with a pause between.
+pub(crate) fn reads_gently(conn: &Connection) -> bool {
+    choice(conn, MAIL_READ_SPEED_KEY, &READ_SPEED) == "gentle"
+}
+
+/// 2.115.0: the Mail screen's choices. Any may be left out.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MailScreenOptions {
+    pub mark_read: Option<String>,
+    pub after_move: Option<String>,
+    pub list_preview: Option<bool>,
+    pub list_tags: Option<bool>,
+    pub list_compact: Option<bool>,
+    pub start_folder: Option<String>,
+    pub shortcuts: Option<bool>,
+}
+
+pub(crate) fn set_screen_options(conn: &Connection, o: MailScreenOptions) -> AppResult<()> {
+    let pick = |v: String, allowed: &[&str], what: &str| -> AppResult<String> {
+        if allowed.contains(&v.as_str()) {
+            Ok(v)
+        } else {
+            Err(AppError::Validation(format!("\"{v}\" is not a choice for {what}.")))
+        }
+    };
+    let mut choices: Vec<(&str, String)> = Vec::new();
+    if let Some(v) = o.mark_read {
+        choices.push((MAIL_MARK_READ_KEY, pick(v, &MARK_READ, "when mail counts as read")?));
+    }
+    if let Some(v) = o.after_move {
+        choices.push((MAIL_AFTER_MOVE_KEY, pick(v, &AFTER_MOVE, "what opens after a move")?));
+    }
+    if let Some(v) = o.start_folder {
+        choices.push((MAIL_START_FOLDER_KEY, pick(v, &START_FOLDER, "where Mail opens")?));
+    }
+    for (key, on) in [
+        (MAIL_LIST_PREVIEW_KEY, o.list_preview),
+        (MAIL_LIST_TAGS_KEY, o.list_tags),
+        (MAIL_LIST_COMPACT_KEY, o.list_compact),
+        (MAIL_SHORTCUTS_KEY, o.shortcuts),
+    ] {
+        if let Some(on) = on {
+            choices.push((key, if on { "on" } else { "off" }.to_string()));
+        }
+    }
+    if choices.is_empty() {
+        return Ok(());
+    }
+    for (key, v) in &choices {
+        set_setting(conn, key, v)?;
+    }
+    crate::commands::shared_settings::touch(conn, &crate::commands::shared_settings::MAIL)
+}
+
+#[tauri::command]
+pub fn set_mail_screen_options(state: State<AppState>, options: MailScreenOptions) -> AppResult<MailConnectionStatus> {
+    let conn = state.db.lock().unwrap();
+    set_screen_options(&conn, options)?;
+    status_impl(&conn)
+}
+
+/// 2.115.0: "full" or "gentle" - for this computer only.
+#[tauri::command]
+pub fn set_mail_read_speed(state: State<AppState>, speed: String) -> AppResult<MailConnectionStatus> {
+    if !READ_SPEED.contains(&speed.as_str()) {
+        return Err(AppError::Validation(format!("\"{speed}\" is not a reading speed.")));
+    }
+    let conn = state.db.lock().unwrap();
+    set_setting(&conn, MAIL_READ_SPEED_KEY, &speed)?;
     status_impl(&conn)
 }
 
@@ -8000,6 +8119,44 @@ mod tests {
     }
 
     /// 2.115.0: "mute nastavit aj podla objectu".
+    #[test]
+    fn the_mail_screen_choices_default_to_how_mail_always_worked_and_take_only_real_choices() {
+        let conn = test_conn();
+        let s = status_impl(&conn).unwrap();
+        assert_eq!(
+            (s.mark_read.as_str(), s.after_move.as_str(), s.start_folder.as_str(), s.read_speed.as_str()),
+            ("open", "list", "inbox", "full")
+        );
+        assert!(s.list_preview && s.list_tags && !s.list_compact && s.shortcuts);
+        assert!(marks_read_on_open(&conn) && !reads_gently(&conn));
+
+        set_screen_options(
+            &conn,
+            MailScreenOptions {
+                mark_read: Some("manual".into()),
+                after_move: Some("older".into()),
+                list_compact: Some(true),
+                shortcuts: Some(false),
+                start_folder: Some("last".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let s = status_impl(&conn).unwrap();
+        assert_eq!((s.mark_read.as_str(), s.after_move.as_str(), s.start_folder.as_str()), ("manual", "older", "last"));
+        assert!(s.list_compact && !s.shortcuts && s.list_preview, "what was left out stays");
+        assert!(!marks_read_on_open(&conn));
+        let stamp = get_setting(&conn, "shared_mail_at").unwrap();
+        assert!(stamp.is_some(), "the same on the other computer");
+
+        let wrong = set_screen_options(&conn, MailScreenOptions { after_move: Some("sideways".into()), ..Default::default() });
+        assert!(wrong.is_err());
+        assert_eq!(status_impl(&conn).unwrap().after_move, "older", "nothing changed by a wrong one");
+        set_setting(&conn, MAIL_READ_SPEED_KEY, "gentle").unwrap();
+        assert!(reads_gently(&conn));
+        assert!(!crate::commands::shared_settings::MAIL.keys.contains(&MAIL_READ_SPEED_KEY), "each computer's own");
+    }
+
     #[test]
     fn a_subject_mute_hides_mail_with_those_words_whatever_the_case_and_accents() {
         let conn = test_conn();

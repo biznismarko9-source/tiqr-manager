@@ -2579,6 +2579,24 @@ export interface ShareImported {
   received: number;
 }
 
+/** 2.115.0: when an opened message counts as read - on opening, after a few
+ *  seconds open, or only when marked. */
+export type MailMarkRead = "open" | "delay" | "manual";
+/** 2.115.0: what opens after the open message is moved or deleted. */
+export type MailAfterMove = "list" | "older" | "newer";
+/** 2.115.0: the folder Mail opens in - "last" is wherever it was left. */
+export type MailStartFolder = "inbox" | "important" | "starred" | "last";
+
+export interface MailScreenOptions {
+  markRead?: MailMarkRead;
+  afterMove?: MailAfterMove;
+  listPreview?: boolean;
+  listTags?: boolean;
+  listCompact?: boolean;
+  startFolder?: MailStartFolder;
+  shortcuts?: boolean;
+}
+
 export interface ShareInfo {
   enabled: boolean;
   connected: boolean;
@@ -2956,6 +2974,16 @@ export interface MailConnectionStatus {
   /** 2.115.0: two computers share the reading - while both run, one reads
    *  Gmail and sends the other the mail. */
   shareReading: boolean;
+  /** 2.115.0: how the Mail screen behaves - the same on both computers. */
+  markRead: MailMarkRead;
+  afterMove: MailAfterMove;
+  listPreview: boolean;
+  listTags: boolean;
+  listCompact: boolean;
+  startFolder: MailStartFolder;
+  shortcuts: boolean;
+  /** 2.115.0: how fast THIS computer reads Gmail. */
+  readSpeed: "full" | "gentle";
   /** What the SYNC may do unattended, per record kind. `manual` is the
    *  default and the one marko described: the proposal waits for his
    *  button. `auto` only ever acts on a proposal that is already ready. */

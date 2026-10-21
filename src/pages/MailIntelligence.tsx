@@ -248,6 +248,9 @@ const MailRow = memo(function MailRow({
   active,
   checked,
   movedName,
+  preview,
+  tags,
+  compact,
   onOpen,
   onToggle,
   onDragStart,
@@ -257,6 +260,10 @@ const MailRow = memo(function MailRow({
   m: MailMessageSummary;
   active: boolean;
   checked: boolean;
+  /** 2.115.0: the list's look (Mail -> Settings -> Mail screen). */
+  preview: boolean;
+  tags: boolean;
+  compact: boolean;
   /** Where it was moved to, when that is not the folder on screen. */
   movedName: string | null;
   onOpen: (id: number) => void;
@@ -271,8 +278,9 @@ const MailRow = memo(function MailRow({
       type="button"
       onClick={onClick}
       draggable
+      data-mail-row={m.id}
       onDragStart={(e) => onDragStart(m.id, e)}
-      className={`group w-full border-b border-slate-200 px-3 py-2.5 text-left transition dark:border-slate-800 ${
+      className={`group w-full border-b border-slate-200 px-3 ${compact ? "py-1.5" : "py-2.5"} text-left transition dark:border-slate-800 ${
         active ? "bg-brand-600/10" : checked ? "bg-brand-500/[0.05]" : "hover:bg-surface-muted"
       }`}
     >
@@ -347,11 +355,12 @@ const MailRow = memo(function MailRow({
           {m.otpCode}
         </span>
       ) : (
+        preview &&
         m.snippet && <p className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">{m.snippet}</p>
       )}
-      {((m.category !== "other" && !isJunk(m)) || movedName) && (
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          {m.category !== "other" && !isJunk(m) && <Badge tone="sold">{categoryLabel(m.category)}</Badge>}
+      {((tags && m.category !== "other" && !isJunk(m)) || movedName) && (
+        <div className={`${compact ? "mt-0.5" : "mt-1"} flex flex-wrap items-center gap-1.5`}>
+          {tags && m.category !== "other" && !isJunk(m) && <Badge tone="sold">{categoryLabel(m.category)}</Badge>}
           {movedName && (
             <span className="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-px text-[10.5px] text-slate-500 dark:text-slate-400">
               <IconFolder className="h-2.5 w-2.5" />
@@ -364,9 +373,50 @@ const MailRow = memo(function MailRow({
   );
 });
 
+/* 2.115.0: where Mail opens (Mail -> Settings -> Mail screen). The choice is
+   remembered here as well, so the very first look is already the right
+   folder; "Where I left off" is this computer's own. */
+const START_KEY = "tiqr:mail-start";
+const LAST_KEY = "tiqr:mail-folder";
+/* 2.115.0: the list's width, dragged by its edge. */
+const LIST_WIDTH_KEY = "tiqr:mail-list-width";
+const LIST_DEFAULT = 360;
+const LIST_MIN = 260;
+const LIST_MAX = 720;
+const READER_MIN = 340;
+
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // A window that keeps nothing: Mail opens in the Inbox next time.
+  }
+}
+
+function firstFolder(): string {
+  const choice = readStorage(START_KEY);
+  if (choice === "important" || choice === "starred") return choice;
+  if (choice === "last") return readStorage(LAST_KEY) || "inbox";
+  return "inbox";
+}
+
+/** A key pressed while typing is the typing's, not a shortcut. */
+function typing(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
+
 export default function MailIntelligence() {
   const toast = useToast();
-  const [folder, setFolder] = useState<string>("inbox");
+  const [folder, setFolder] = useState<string>(firstFolder);
   const [status, setStatus] = useState<MailConnectionStatus | null>(null);
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const [localFolders, setLocalFolders] = useState<MailLocalFolder[]>([]);
@@ -552,6 +602,24 @@ export default function MailIntelligence() {
     setConfirmDelete(false);
   };
 
+  /* 2.115.0: where Mail opens. The choice is remembered for next time; the
+     first time it is known, Mail goes there - unless a folder was picked
+     already. */
+  const startedIn = useRef<string | null>(folder);
+  useEffect(() => {
+    if (!status) return;
+    writeStorage(START_KEY, status.startFolder ?? "inbox");
+    const from = startedIn.current;
+    startedIn.current = null;
+    if (from === null || folder !== from) return;
+    const want = status.startFolder === "last" ? readStorage(LAST_KEY) || "inbox" : status.startFolder ?? "inbox";
+    if (want !== folder) pick(want);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.startFolder, status !== null]);
+  useEffect(() => {
+    if (folder !== SETTINGS_FOLDER) writeStorage(LAST_KEY, folder);
+  }, [folder]);
+
   const onOpen = useCallback((id: number) => setOpenId(id), []);
   const onToggle = useCallback(
     (id: number) =>
@@ -622,6 +690,21 @@ export default function MailIntelligence() {
    *  folder and the counts are read again. */
   const settle = (ids: number[], gone: boolean, patch?: Partial<MailMessageSummary>) => {
     const hit = new Set(ids);
+    // 2.115.0: the open one went - the next older, the next newer, or back
+    // to the list, as marko chose. The list runs newest first.
+    if (gone && openId !== null && hit.has(openId)) {
+      const list = rowsRef.current;
+      const at = list.findIndex((m) => m.id === openId);
+      const step = status?.afterMove === "older" ? 1 : status?.afterMove === "newer" ? -1 : 0;
+      let next: number | null = null;
+      for (let i = at + step; step !== 0 && at >= 0 && i >= 0 && i < list.length; i += step) {
+        if (!hit.has(list[i].id)) {
+          next = list[i].id;
+          break;
+        }
+      }
+      setOpenId(next);
+    }
     setRows((prev) =>
       gone ? prev.filter((m) => !hit.has(m.id)) : patch ? prev.map((m) => (hit.has(m.id) ? { ...m, ...patch } : m)) : prev,
     );
@@ -694,6 +777,73 @@ export default function MailIntelligence() {
     [loadHeader, toast],
   );
 
+  /* 2.115.0: keys (Mail -> Settings -> Mail screen): up and down (or k and j)
+     go through the list, s stars, u marks read or unread, Delete moves the
+     open message to the Trash - never further - and / goes to the search.
+     Never while typing, never under a dialog, and never inside the message
+     itself, which keeps its own keys. */
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keysRef.current = (e: KeyboardEvent) => {
+    if (!status?.shortcuts || folder === SETTINGS_FOLDER) return;
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
+    if (document.querySelector('[role="dialog"]')) return;
+    const list = rowsRef.current;
+    const at = list.findIndex((m) => m.id === openId);
+    const current = at >= 0 ? list[at] : null;
+    const go = (i: number) => {
+      const m = list[Math.max(0, Math.min(list.length - 1, i))];
+      if (!m) return;
+      setOpenId(m.id);
+      const row = document.querySelector<HTMLElement>(`[data-mail-row="${m.id}"]`);
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: "nearest" });
+    };
+    switch (e.key) {
+      case "ArrowDown":
+      case "j":
+        e.preventDefault();
+        go(at + 1);
+        break;
+      case "ArrowUp":
+      case "k":
+        e.preventDefault();
+        go(at < 0 ? 0 : at - 1);
+        break;
+      case "s":
+        if (current) onStar(current.id, !current.isStarred);
+        break;
+      case "u":
+        if (current) {
+          const unread = !current.isUnread;
+          void api
+            .setMailRead(current.id, !unread)
+            .then(() => {
+              setRows((prev) => prev.map((m) => (m.id === current.id ? { ...m, isUnread: unread } : m)));
+              void loadHeader().catch(() => undefined);
+            })
+            .catch((err) => toast.error(errMsg(err)));
+        }
+        break;
+      case "Delete":
+      case "#":
+        // In the Trash, Delete forever stays a button of its own.
+        if (current && folder !== "trash") {
+          e.preventDefault();
+          deleteIds([current.id]);
+        }
+        break;
+      case "/":
+        e.preventDefault();
+        document.getElementById("mail-search")?.focus();
+        break;
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   /** Its mail leaves every folder but Muted - the list is read again. */
   const mute = async (kind: MuteKind, who: string, days: number | null) => {
     try {
@@ -759,6 +909,42 @@ export default function MailIntelligence() {
   // 2.113.0: the panes reach the bottom of the window (lib/useFillHeight.ts).
   const panesRef = useRef<HTMLDivElement>(null);
   const panesHeight = useFillHeight(panesRef);
+  /* 2.115.0, marko: "ked je mail vacsi tak si vies potiahnut posuvnikom aby
+     sa zvacsila ta cast kde je mail". The edge between the list and the
+     message is a handle: dragged left, the message gets the room. Kept per
+     computer - their screens differ. */
+  const [listWidth, setListWidth] = useState(() => {
+    const stored = Number(readStorage(LIST_WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= LIST_MIN ? Math.min(stored, LIST_MAX) : LIST_DEFAULT;
+  });
+  const [resizing, setResizing] = useState(false);
+  const saveListWidth = (w: number) => {
+    const width = Math.round(Math.max(LIST_MIN, Math.min(LIST_MAX, w)));
+    setListWidth(width);
+    writeStorage(LIST_WIDTH_KEY, String(width));
+  };
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const from = listWidth;
+    // The message keeps room enough to read.
+    const room = (panesRef.current?.clientWidth ?? 1200) - 200 - 32 - READER_MIN;
+    const max = Math.max(LIST_MIN, Math.min(LIST_MAX, room));
+    let last = from;
+    setResizing(true);
+    const move = (ev: PointerEvent) => {
+      last = Math.max(LIST_MIN, Math.min(max, from + ev.clientX - startX));
+      setListWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setResizing(false);
+      saveListWidth(last);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   useRemeasure([loading, status?.connected]);
 
   if (loading) {
@@ -830,7 +1016,12 @@ export default function MailIntelligence() {
         actions={
           <>
             <div className="w-56">
-              <Input placeholder="Search this folder" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input
+                id="mail-search"
+                placeholder="Search this folder"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
             </div>
             {/* Sync asks the one reader (commands/mail_sync.rs, started by
                 Layout.tsx) to go now; when reading is paused, the same
@@ -1025,7 +1216,7 @@ export default function MailIntelligence() {
           <MailSettingsPane status={status} onStatus={setStatus} localFolders={localFolders} labels={userLabels} />
         ) : (
           <>
-            <Card className="flex w-[360px] shrink-0 flex-col overflow-hidden p-0">
+            <Card className="flex shrink flex-col overflow-hidden p-0" style={{ width: listWidth, minWidth: LIST_MIN }}>
               {/* 2.114.0: "80% z toho su shits" - sorted on a click, moved only
                   when marko says so (components/PromoCleanup.tsx). */}
               {folder === "promotions" && !query && (
@@ -1196,6 +1387,9 @@ export default function MailIntelligence() {
                       active={openId === m.id}
                       checked={selected.has(m.id)}
                       movedName={m.movedTo && m.movedTo !== folder ? placeName(m.movedTo) : null}
+                      preview={status.listPreview ?? true}
+                      tags={status.listTags ?? true}
+                      compact={status.listCompact ?? false}
                       onOpen={onOpen}
                       onToggle={onToggle}
                       onDragStart={onDragStart}
@@ -1219,7 +1413,38 @@ export default function MailIntelligence() {
               )}
             </Card>
 
-            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0">
+            {/* The handle: dragged, or the arrow keys once it has focus;
+                a double click puts it back. It sits in the gap, so the gap
+                looks as before. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Width of the message list"
+              aria-valuenow={listWidth}
+              aria-valuemin={LIST_MIN}
+              aria-valuemax={LIST_MAX}
+              tabIndex={0}
+              title="Drag to make the message wider or narrower - double-click to put it back"
+              onPointerDown={startResize}
+              onDoubleClick={() => saveListWidth(LIST_DEFAULT)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  saveListWidth(listWidth + (e.key === "ArrowLeft" ? -40 : 40));
+                }
+              }}
+              className="group -mx-3 flex w-2 shrink-0 cursor-col-resize items-center justify-center rounded focus:outline-none"
+            >
+              <span
+                className={`h-12 w-1 rounded-full transition ${
+                  resizing ? "bg-brand-500" : "bg-slate-300 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 dark:bg-slate-600"
+                }`}
+              />
+            </div>
+            {/* While dragging, the message's own frame must not catch the mouse. */}
+            {resizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+            <Card className="flex min-w-0 flex-1 flex-col overflow-hidden p-0" style={{ minWidth: READER_MIN }}>
               {open ? (
                 <MailReader
                   message={open}
@@ -1239,6 +1464,11 @@ export default function MailIntelligence() {
                   <p className="text-[11px] text-slate-400 dark:text-slate-500">
                     Drag messages onto a folder on the left to move them.
                   </p>
+                  {status.shortcuts && (
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                      Or press <kbd className="font-sans">↓</kbd> - the arrow keys go through the list.
+                    </p>
+                  )}
                 </div>
               )}
             </Card>

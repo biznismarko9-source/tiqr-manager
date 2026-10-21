@@ -145,13 +145,27 @@ from old reports.
 
 ## Documented limitations (not bugs, but worth remembering)
 
-- **Mail is per computer, on purpose (2.110.0, explained in 2.114.3).** Each
-  computer reads Gmail itself into its own mail file; mail never travels
-  through Firebase or Drive. A second computer therefore fills up by itself,
-  only while TIQR runs on it (since 2.114.3 at full pace even minimised -
-  about Gmail's quota, roughly 20-50 messages a second). Gmail's own total is
-  shown beside this computer's count; it includes sent mail, which TIQR
-  does not read.
+- **Mail is per computer, shared while both run (2.110.0; 2.115.0).** Each
+  computer keeps its own mail file. Alone, it reads Gmail itself (since
+  2.114.3 at full pace even minimised). While both run with "Two computers,
+  one reader" on (the default) and live sync on, one reads Gmail and
+  forwards what it stored through `users/{uid}/mail`; each batch is deleted
+  once stored, and mail never goes through Drive. Gmail's own total is shown
+  beside this computer's count; it includes sent mail, which TIQR does not
+  read.
+
+- **Sharing the reading needs the 2.115.0 firestore.rules published** in the
+  Firebase Console. Until then each computer reads Gmail itself and Mail ->
+  Settings says why. It also stops while live sync is not running, while
+  mail is paused on a computer, or when Firebase's daily free limit is used
+  up (both computers running all day use about 3,000 writes and 5,000 reads
+  of the 20,000/50,000). A minimised window whose timers stop for minutes
+  can make the computers swap roles once; nothing is lost either way.
+
+- **The first follow sends everything a computer lacks** (2.115.0) - for a
+  mailbox of 100,000 that is about half an hour of batches through
+  Firestore, once. A computer whose own reading went through every folder
+  gets only the last week before its last read instead.
 
 - **Connecting a DIFFERENT Gmail account keeps the old account's mail in the
   folders** (2.110.0). Folder queries (`commands/mail.rs::folder_expr`) do

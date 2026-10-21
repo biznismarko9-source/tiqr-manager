@@ -88,6 +88,9 @@ export interface MailPlace {
   group: "TIQR" | "Your labels" | "Your folders";
 }
 
+/** 2.115.0: how long an opened message stays unread when marko chose "After 3 seconds". */
+const MARK_READ_AFTER_MS = 3_000;
+
 const CATEGORY_LABELS: Record<string, string> = {
   sale_confirmation: "Sale",
   purchase_confirmation: "Purchase",
@@ -1002,10 +1005,11 @@ export function MailReader({
         .getMailView(message.id, refresh)
         .then((v) => {
           setView(v);
-          // Opening marks it read, in TIQR only - and is when TIQR first
-          // learns whether it carries files.
+          // Opening marks it read, in TIQR only - unless marko chose later or
+          // by hand (2.115.0) - and is when TIQR first learns whether it
+          // carries files.
           const change: Partial<MailMessageSummary> = {};
-          if (message.isUnread) change.isUnread = false;
+          if (message.isUnread && (status.markRead ?? "open") === "open") change.isUnread = false;
           if (!message.hasAttachments && v.attachments.some((a) => !a.inline)) change.hasAttachments = true;
           if (Object.keys(change).length > 0) onChanged(change);
         })
@@ -1015,6 +1019,20 @@ export function MailReader({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [message.id],
   );
+
+  // 2.115.0: "After 3 seconds" - read once it has stayed open that long, so
+  // running down the list with the arrow keys does not read everything.
+  useEffect(() => {
+    if (status.markRead !== "delay" || !message.isUnread) return;
+    const timer = setTimeout(() => {
+      api
+        .setMailRead(message.id, true)
+        .then(() => onChanged({ isUnread: false }))
+        .catch(() => {});
+    }, MARK_READ_AFTER_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.id, status.markRead]);
 
   useEffect(() => {
     setView(null);
@@ -1443,7 +1461,7 @@ export function MailReader({
                 </span>
               )}
               {view.imagesLeftOut > 0 && (
-                <span title="Tracking pixels, pictures too big, or files that were not pictures">
+                <span title="Tracking pixels, pictures too big, files that were not pictures, and pictures that did not come - those are tried again the next time this message is opened">
                   {view.imagesLeftOut} left out
                 </span>
               )}

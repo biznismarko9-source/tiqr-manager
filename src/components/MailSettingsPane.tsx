@@ -44,7 +44,10 @@ import { MAIL_LANGUAGES } from "../lib/mailText";
 import { MUTE_SPANS, muteKind, muteState, type MuteKind } from "../lib/mailMute";
 import {
   type DiscordMailConfig,
+  type MailAfterMove,
   type MailConnectionStatus,
+  type MailMarkRead,
+  type MailStartFolder,
   type MailLabel,
   type MailLocalFolder,
   type MailMute,
@@ -54,7 +57,7 @@ import {
   type NotificationStatus,
 } from "../lib/types";
 import { Badge, Button, Card, CHECKBOX_CLASS, Input, Select, Spinner } from "./ui";
-import { IconBellOff, IconGauge, IconMail, IconRefresh, IconSend, IconTag, IconUsers } from "./icons";
+import { IconBellOff, IconGauge, IconLayoutGrid, IconMail, IconRefresh, IconSend, IconTag, IconUsers } from "./icons";
 import { useToast } from "../lib/toast";
 
 /* What each rule action does, in marko's terms rather than the column it
@@ -82,10 +85,11 @@ const ACTION_HINT: Record<string, string> = {
 const actionKind = (a: string) => (a.startsWith("move:") ? "move" : a);
 
 /* 2.113.0: the sections, down the left like Settings itself. */
-type SectionKey = "mailbox" | "reading" | "senders" | "rules" | "muted" | "discord" | "automatic";
+type SectionKey = "mailbox" | "reading" | "screen" | "senders" | "rules" | "muted" | "discord" | "automatic";
 const SECTIONS: { key: SectionKey; title: string; description: string; icon: typeof IconMail }[] = [
   { key: "mailbox", title: "Mailbox", description: "Connection and progress", icon: IconMail },
-  { key: "reading", title: "Reading", description: "How often, pictures, translate", icon: IconRefresh },
+  { key: "reading", title: "Reading", description: "How often and how fast, pictures", icon: IconRefresh },
+  { key: "screen", title: "Mail screen", description: "The list, where it opens, keys", icon: IconLayoutGrid },
   { key: "senders", title: "What is read", description: "Folders, senders, your filter", icon: IconUsers },
   { key: "rules", title: "Rules", description: "Sort new mail by itself", icon: IconTag },
   { key: "muted", title: "Muted", description: "Senders and subjects, hidden", icon: IconBellOff },
@@ -747,6 +751,21 @@ export function MailSettingsPane({
               <option value="900">Every 15 minutes</option>
             </Select>
           </div>
+          {/* 2.115.0: each computer's own - one may sit on a slow line. */}
+          <div className="w-[260px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              Reading speed on this computer
+            </label>
+            <Select
+              value={status.readSpeed ?? "full"}
+              onChange={(e) =>
+                void wrap(() => api.setMailReadSpeed(e.target.value as "full" | "gentle"), "Saved", true)
+              }
+            >
+              <option value="full">Full - as fast as Gmail allows</option>
+              <option value="gentle">Gentle - fewer at a time, with pauses</option>
+            </Select>
+          </div>
           <div className="w-[260px]">
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
               Keep preview text for (days)
@@ -771,7 +790,9 @@ export function MailSettingsPane({
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
           Messages are never removed: older ones keep their sender, subject, date and labels, and only the
           short preview is cleared, to save space. A message can only leave TIQR through Delete forever in
-          Trash - and nothing here ever touches Gmail. TIQR reads only while the app is open.
+          Trash - and nothing here ever touches Gmail. TIQR reads only while the app is open. Gentle reading
+          takes several times longer to read a big mailbox, and leaves Gmail plenty of room - for a slow
+          connection, or when Google keeps asking TIQR to slow down.
         </p>
       </Section>
 
@@ -794,6 +815,23 @@ export function MailSettingsPane({
             </span>
           </span>
         </label>
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <div className="w-[260px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              An opened message counts as read
+            </label>
+            <Select
+              value={status.markRead ?? "open"}
+              onChange={(e) =>
+                void wrap(() => api.setMailScreenOptions({ markRead: e.target.value as MailMarkRead }), "Saved")
+              }
+            >
+              <option value="open">As soon as it opens</option>
+              <option value="delay">After it stays open 3 seconds</option>
+              <option value="manual">Only when I mark it read</option>
+            </Select>
+          </div>
+        </div>
         <div className="mt-4 w-[220px]">
           <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Translate into</label>
           <Select
@@ -823,6 +861,107 @@ export function MailSettingsPane({
           It uses your Anthropic key from Settings &rarr; Integrations &rarr; AI. Nothing in Mail uses AI unless you press
           Translate or Summary.
         </p>
+      </Section>
+          </>
+        )}
+
+        {section === "screen" && (
+          <>
+      {/* ---- 2.115.0: the Mail screen ------------------------------------- */}
+      {/* marko: "celkovo do mailu pridat viac funkcii, nastaveni aby vsetko si
+          clovek vedel dat ako chce". Each choice starts as Mail always
+          worked, and is the same on both computers. */}
+      <Section
+        title="Opening and moving on"
+        hint="Where Mail opens, and what it shows after the open message goes to another folder or to the Trash."
+      >
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-[240px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Mail opens in</label>
+            <Select
+              value={status.startFolder ?? "inbox"}
+              onChange={(e) =>
+                void wrap(() => api.setMailScreenOptions({ startFolder: e.target.value as MailStartFolder }), "Saved")
+              }
+            >
+              <option value="inbox">Inbox</option>
+              <option value="important">Important</option>
+              <option value="starred">Starred</option>
+              <option value="last">Where I left it</option>
+            </Select>
+          </div>
+          <div className="w-[300px]">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              After moving or deleting the open message
+            </label>
+            <Select
+              value={status.afterMove ?? "list"}
+              onChange={(e) =>
+                void wrap(() => api.setMailScreenOptions({ afterMove: e.target.value as MailAfterMove }), "Saved")
+              }
+            >
+              <option value="list">Show nothing - back to the list</option>
+              <option value="older">Open the next one down (older)</option>
+              <option value="newer">Open the one above (newer)</option>
+            </Select>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="The list" hint="How much each message shows in the list.">
+        <div className="flex flex-col gap-2.5">
+          {(
+            [
+              { key: "listPreview", on: status.listPreview ?? true, label: "Preview line", hint: "The first words of the message under its subject." },
+              { key: "listTags", on: status.listTags ?? true, label: "Tags", hint: "Sale, Payout, Order and the like under a message TIQR recognised." },
+              { key: "listCompact", on: status.listCompact ?? false, label: "Compact rows", hint: "Less space around each message - more of them fit." },
+            ] as const
+          ).map((o) => (
+            <label key={o.key} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                className={`${CHECKBOX_CLASS} mt-0.5`}
+                checked={o.on}
+                onChange={(e) => void wrap(() => api.setMailScreenOptions({ [o.key]: e.target.checked }), "Saved")}
+              />
+              <span>
+                <span className="font-medium">{o.label}</span>
+                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">{o.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Keys" hint="For going through mail without the mouse. They never work while you type, and Delete only ever moves a message to the Trash.">
+        <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+          <input
+            type="checkbox"
+            className={`${CHECKBOX_CLASS} mt-0.5`}
+            checked={status.shortcuts ?? true}
+            onChange={(e) => void wrap(() => api.setMailScreenOptions({ shortcuts: e.target.checked }), "Saved")}
+          />
+          <span className="font-medium">Keyboard shortcuts on the Mail screen</span>
+        </label>
+        <dl className="mt-3 grid max-w-md grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+          {[
+            ["↓ or J", "Next message (older)"],
+            ["↑ or K", "Message above (newer)"],
+            ["S", "Star or unstar"],
+            ["U", "Mark read or unread"],
+            ["Delete or #", "Move to the Trash"],
+            ["/", "Search this folder"],
+          ].map(([key, what]) => (
+            <div key={key} className="contents">
+              <dt>
+                <kbd className="rounded border border-slate-300 bg-surface-muted px-1.5 py-px font-sans text-[10.5px] dark:border-slate-600">
+                  {key}
+                </kbd>
+              </dt>
+              <dd className="text-slate-500 dark:text-slate-400">{what}</dd>
+            </div>
+          ))}
+        </dl>
       </Section>
           </>
         )}

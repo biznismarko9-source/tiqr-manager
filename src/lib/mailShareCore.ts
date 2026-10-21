@@ -32,14 +32,20 @@ export const LEASE_ABANDONED_MS = 15 * 60_000;
 export type ShareRole = "off" | "solo" | "reader" | "follower";
 
 /** The one lease per mailbox - FNV-1a 64 of the address, so no address is in
- *  a document id. */
+ *  a document id. In two 32-bit halves rather than a BigInt, which the Mac
+ *  build's oldest Safari does not have: the prime is 2^40 + 0x1b3, so a
+ *  multiply is a shift by 40 plus a small product, each exact in a double. */
 export function leaseId(account: string): string {
-  let h = 0xcbf29ce484222325n;
+  let hi = 0xcbf29ce4;
+  let lo = 0x84222325;
   for (const b of new TextEncoder().encode(account.trim().toLowerCase())) {
-    h ^= BigInt(b);
-    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+    lo = (lo ^ b) >>> 0;
+    const low = lo * 0x1b3;
+    const carry = Math.floor(low / 0x1_0000_0000);
+    hi = (hi * 0x1b3 + carry + ((lo << 8) >>> 0)) >>> 0;
+    lo = low >>> 0;
   }
-  return `lease~${h.toString(16).padStart(16, "0")}`;
+  return `lease~${hi.toString(16).padStart(8, "0")}${lo.toString(16).padStart(8, "0")}`;
 }
 
 export const cursorId = (follower: string, reader: string) => `cursor~${follower}~${reader}`;

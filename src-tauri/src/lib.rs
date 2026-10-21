@@ -284,6 +284,8 @@ pub fn run() {
             commands::mail::mute_mail_sender,
             commands::mail::unmute_mail_sender,
             commands::mail::mute_mail_subject,
+            commands::mail::set_mail_screen_options,
+            commands::mail::set_mail_read_speed,
             commands::mail_share::mail_share_info,
             commands::mail_share::mail_share_export,
             commands::mail_share::mail_share_import,

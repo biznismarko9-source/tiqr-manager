@@ -459,7 +459,7 @@ pub fn mail_share_cursor(state: State<AppState>, sender: String) -> AppResult<Sh
 }
 
 /// The other computer reads Gmail for this one (`on`), renewed by the window
-/// every half minute - or no longer.
+/// every minute - or no longer.
 #[tauri::command]
 pub fn mail_share_follow(on: bool) {
     mail_sync::set_following(on);

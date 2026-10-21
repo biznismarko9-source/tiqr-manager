@@ -123,6 +123,14 @@ const FETCH_BATCH: usize = 40;
 /// that ceiling, and the connections here are already kept alive.
 const FETCH_THREADS: usize = 4;
 
+/// 2.115.0: "Gentle" in Mail -> Settings -> Reading, for a slow connection or
+/// a Google that keeps slowing TIQR down: half the messages a run, two
+/// downloads at a time, and two seconds between runs - a long first read
+/// takes several times longer, and Gmail has room to spare.
+const GENTLE_FETCH_BATCH: usize = 20;
+const GENTLE_FETCH_THREADS: usize = 2;
+const GENTLE_CHAIN_DELAY_MS: i64 = 2_000;
+
 /// The next folder page is listed only while fewer than this many ids can be
 /// downloaded. Finding runs a little ahead of downloading, never a whole
 /// mailbox ahead.
@@ -1190,6 +1198,10 @@ struct Plan {
     listing: Option<(Section, Option<String>)>,
     batch: Vec<String>,
     interval_secs: i64,
+    /// 2.115.0: downloads at a time, and the pause before the next run while
+    /// there is more - the reading speed this computer is set to.
+    workers: usize,
+    chain_ms: i64,
     /// Gmail's base URL: `GMAIL_API`, or a fake Gmail in a test.
     api: String,
 }
@@ -1303,8 +1315,11 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
     // Measured against what can be downloaded now, so messages waiting to
     // be tried again never stop the walks from going on.
     let listing = if due_count(conn, &now_s)? < LOW_WATER { next_walk(conn, &sections)? } else { None };
-    let batch = peek(conn, FETCH_BATCH, &now_s)?;
+    let gentle = mail::reads_gently(conn);
+    let batch = peek(conn, if gentle { GENTLE_FETCH_BATCH } else { FETCH_BATCH }, &now_s)?;
     Ok(Ok(Plan {
+        workers: if gentle { GENTLE_FETCH_THREADS } else { FETCH_THREADS },
+        chain_ms: if gentle { GENTLE_CHAIN_DELAY_MS } else { CHAIN_DELAY_MS },
         refresh_token,
         account_email,
         known_scope: scope == "known" && !senders.is_empty(),
@@ -1447,12 +1462,12 @@ pub(crate) fn wants_body(m: &mail::FetchedMessage, c: &mail::Classification, now
 /// METADATA - sender, subject, date, labels and Gmail's preview - and, for
 /// the few messages `wants_body` picks, the text of the body to read the
 /// numbers from. Nothing else is downloaded until a message is opened.
-fn fetch_batch(http: &reqwest::blocking::Client, token: &str, api: &str, ids: &[String]) -> Vec<(String, Fetched)> {
+fn fetch_batch(http: &reqwest::blocking::Client, token: &str, api: &str, ids: &[String], workers: usize) -> Vec<(String, Fetched)> {
     if ids.is_empty() {
         return Vec::new();
     }
     let stop = AtomicBool::new(false);
-    let per = ids.len().div_ceil(FETCH_THREADS).max(1);
+    let per = ids.len().div_ceil(workers.max(1)).max(1);
     std::thread::scope(|scope| {
         let handles: Vec<_> = ids
             .chunks(per)
@@ -1559,7 +1574,7 @@ fn network(plan: &Plan, http: &reqwest::blocking::Client, token: &str) -> AppRes
         }
         net.listing = Some(r);
     }
-    net.fetched = fetch_batch(http, token, api, &plan.batch);
+    net.fetched = fetch_batch(http, token, api, &plan.batch, plan.workers);
     let mut trouble = None;
     let mut limits = Vec::new();
     for (_, f) in &net.fetched {
@@ -2140,7 +2155,7 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
         let google = net.retry_after_secs.map_or(0, |s| (s as i64).saturating_mul(1000));
         backoff_ms(RATE_LIMIT_PAUSE_MS, streak, RATE_LIMIT_MAX_MS).max(google)
     } else if more {
-        CHAIN_DELAY_MS
+        plan.chain_ms
     } else {
         // Everything read: new mail on his interval - sooner when a message
         // that failed is due again before it.
@@ -2548,6 +2563,8 @@ mod tests {
             listing: None,
             batch: ids(batch),
             interval_secs: 60,
+            workers: FETCH_THREADS,
+            chain_ms: CHAIN_DELAY_MS,
             api: GMAIL_API.to_string(),
         }
     }
@@ -3745,7 +3762,7 @@ mod tests {
             ok(json!({"id": "news", "threadId": "t2", "labelIds": ["INBOX"], "snippet": "Big sale", "internalDate": ms,
                       "payload": {"headers": headers("Shop <news@shop.example>", "Big sale this weekend")}}))
         });
-        let got = fetch_batch(&client(), "tok", &gmail.api, &ids(&["pay", "news"]));
+        let got = fetch_batch(&client(), "tok", &gmail.api, &ids(&["pay", "news"]), FETCH_THREADS);
         assert_eq!(full_calls.load(Ordering::SeqCst), 1, "one body, for the payout only");
         let body_of = |id: &str| match &got.iter().find(|(i, _)| i == id).unwrap().1 {
             Fetched::Got(m, _) => m.body_text.clone(),

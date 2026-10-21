@@ -16,6 +16,61 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.115.0 - Jeden počítač číta Gmail za oba, stíšenie podľa predmetu, mail podľa seba
+
+**Dva počítače, jeden čitateľ.** Keď bežia oba, Gmail číta len jeden (drží
+zámok v `users/{uid}/mail` vo Firestore) a druhému posiela, čo uložil, po
+dávkach. Druhý každú dávku uloží, prečíta si ju sám (svoje pravidlá a
+Automatic, žiadna správa na Discord) a hneď ju zmaže. Sám počítač číta Gmail
+ako doteraz. To končí slučku „Google asked TIQR to slow down", ktorú robili
+dva počítače čítajúce naraz.
+
+- Zatvorený čitateľ odovzdá čítanie hneď; zmiznutý ho stratí po 3 minútach,
+  posúdených podľa vlastných hodín každého počítača.
+- Schránka prečítaná do konca dostane pri prvom spojení len posledný týždeň.
+- Sync na prijímajúcom počítači poprosí čitateľa, aby sa pozrel hneď.
+- Prepínač a stav sú v Mail → Settings → Mailbox, stav aj hore na obrazovke
+  Mail.
+- Treba zverejniť nové `firestore.rules`. Kým nie sú zverejnené, každý
+  počítač číta sám.
+
+**Mute podľa predmetu** popri odosielateľovi. Na veľkých písmenách,
+diakritike ani interpunkcii nezáleží (`tiqr_fold`).
+
+**Nové nastavenia mailu.**
+- Rýchlosť čítania na tomto počítači (Full/Gentle).
+- Kedy je správa prečítaná: hneď, po 3 s alebo len ručne.
+- Kde sa Mail otvorí.
+- Čo sa otvorí po presunutí alebo zmazaní.
+- Náhľad, štítky a kompaktné riadky v zozname.
+- Klávesy: ↑↓/J/K, S, U, Delete do koša a /.
+
+**Obrázky v mailoch.** Obrázok, ktorý neprišiel, si v uloženej kópii drží
+miesto a pri ďalšom otvorení sa skúsi znova. Staré kópie so strateným
+obrázkom sa raz stiahnu znova. Pribudlo:
+- sťahovanie s hlavičkami prehliadača;
+- všetky adresy servera, IPv4 ako prvé;
+- `//` adresy a lepšie `cid:`;
+- AVIF;
+- 150 obrázkov na mail namiesto 40.
+
+**Obrazovky.**
+- Okraj medzi zoznamom a mailom sa dá potiahnuť.
+- Bočné menu je užšie (176 px) a dá sa zbaliť na ikony.
+- New order: Qty je vždy políčko a očíslované sedadlá sa mu prispôsobia
+  („23" a 3 dá „23-25").
+- Tabuľka lístkov v objednávke a zoznam Inventory majú pevné šírky stĺpcov
+  („Edit" sa už neláme po písmenách).
+
+Mailová databáza krok 6 (`labels_at` pre staré maily, index,
+`mail_share_cursors`), žiadna číslovaná migrácia (ďalšia je 047).
+
+Zip obsahuje aj všetko z 2.114.0 až 2.114.3 - stačí spustiť tento.
+
+`cargo test` 1595 prešlo (4 ignorované, ako doteraz), `npm test` 53, build
+v poriadku. Proti emulátoru Firestore so skutočnými pravidlami: zdieľanie
+mailu 13 kontrol, živá synchronizácia 9.
+
 ## 2.114.3 - Mail na každom počítači dobehne sám a vidno, koľko mu chýba
 
 **Prečo mal Mac 100 000 mailov a Windows 16 000.** Každý počítač číta Gmail

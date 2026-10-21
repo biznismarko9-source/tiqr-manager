@@ -182,7 +182,7 @@ export class MailShareSession {
   }
 
   /** Closing: the lease goes back at once, so the other computer reads
-   *  Gmail from now on rather than in a minute and a half. */
+   *  Gmail from now on rather than in three minutes. */
   async stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);

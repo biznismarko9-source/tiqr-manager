@@ -21,6 +21,41 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.115.0 - one Gmail reader for two computers; pictures keep their place
+
+- **Only the lease holder reads Gmail; a follower's reader stands by**
+  (`mail_sync::following`). Whatever goes wrong with Firebase - refused,
+  unreachable, the daily limit - the session goes `solo` and this computer
+  reads Gmail itself. Never leave a computer standing by on a lease nobody
+  renews: `FOLLOWING_FOR_MS` must stay longer than the tick, and `stop()`
+  must turn following off.
+- **"Lately" is measured by this computer's own clock against what it saw
+  change** (`seeLease`, `presentUntil`) - never by comparing the other
+  computer's server timestamp with local time, except for the 15-minute
+  "abandoned" rule and a cursor's first look. Two clocks that disagree must
+  never have both computers taking the lease in turns.
+- **A batch is stored, the cursor moved, the batch deleted - in that order**,
+  and a batch that can never be stored is deleted too. Nothing may pile up
+  in Firestore: stop-and-wait per follower, one batch in flight.
+- **What travels is what Gmail gave** (`SharedMail`) plus the extract text.
+  Never a category, an OTP code as such, a local move, a record. The
+  receiving side re-checks every field (`checked`) and reads each message
+  itself; it never announces "mail arrived" on Discord.
+- **A follower's first cursor is written down once** (`first_cursor` via
+  `cursor`) - computing it again later could skip mail. A mailbox that is
+  not read through starts from the beginning.
+- **firestore.rules must be published by hand** for any of this to work;
+  the app says so ("Firebase refused - publish the new firestore.rules").
+- **Pictures: a wanted picture keeps its token** in the kept body even when
+  it did not come, and `mail_bodies.images` (v2) says where each comes from
+  - that is what lets `kept_view` try again. Pictures are fetched by TIQR
+  only, never by the message's frame.
+- **The Delete key only ever moves a message to the Trash** - never in the
+  Trash, never "Delete forever".
+- **No BigInt in the frontend** (`mailShareCore.ts::leaseId` is two 32-bit
+  halves): the Mac build targets Safari 13, and `vite build` fails on a
+  BigInt literal.
+
 ## 2.114.3 - the mail reader is a thread; reading progress is precious
 
 - **The reader runs in the backend** (`mail_sync::start_reader`), not on a

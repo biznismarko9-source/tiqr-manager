@@ -147,6 +147,7 @@ import type {
   SharedMail,
   ShareImported,
   ShareInfo,
+  MailScreenOptions,
   ShareProgress,
   PromoScan,
   PromoSuggestion,
@@ -985,6 +986,11 @@ export const api = {
   mailShareCursor: (sender: string) => invoke<ShareProgress>("mail_share_cursor", { sender }),
   mailShareFollow: (on: boolean) => invoke<void>("mail_share_follow", { on }),
   setMailShare: (on: boolean) => invoke<MailConnectionStatus>("set_mail_share", { on }),
+  /** 2.115.0: the Mail screen's choices - any may be left out. */
+  setMailScreenOptions: (options: MailScreenOptions) =>
+    invoke<MailConnectionStatus>("set_mail_screen_options", { options }),
+  /** 2.115.0: "full" or "gentle", for this computer only. */
+  setMailReadSpeed: (speed: "full" | "gentle") => invoke<MailConnectionStatus>("set_mail_read_speed", { speed }),
   /** 2.114.3: the mail reader runs in the backend, on a thread of its own -
    *  this starts it (once; a second call does nothing). Every run arrives as
    *  the `mail-sync` event. */

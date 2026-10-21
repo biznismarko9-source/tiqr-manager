@@ -3476,6 +3476,20 @@ pub struct MailConnectionStatus {
     /// 2.115.0: two computers share the reading - while both run, one reads
     /// Gmail and sends the other the mail (commands/mail_share.rs).
     pub share_reading: bool,
+    /// 2.115.0: how the Mail screen behaves, the same on both computers -
+    /// when an opened message counts as read ("open", "delay", "manual"),
+    /// what opens after the open one is moved or deleted ("list", "older",
+    /// "newer"), how the list looks, the folder Mail opens in ("inbox",
+    /// "important", "starred", "last") and whether the keys work.
+    pub mark_read: String,
+    pub after_move: String,
+    pub list_preview: bool,
+    pub list_tags: bool,
+    pub list_compact: bool,
+    pub start_folder: String,
+    pub shortcuts: bool,
+    /// 2.115.0: how fast THIS computer reads Gmail - "full" or "gentle".
+    pub read_speed: String,
     pub unread_count: i64,
     /// "off" | "manual" | "auto", per record kind. `manual` is the default
     /// and the one marko described: the proposal waits for his button.
