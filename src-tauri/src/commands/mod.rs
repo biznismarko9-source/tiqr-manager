@@ -29,6 +29,7 @@ pub mod lookups;
 // 2.100.0: Mail Intelligence (phase 1) - read a mailbox, classify what
 // arrives. Writes no business record; see its module doc comment.
 pub mod mail;
+pub mod mail_share;
 pub mod mail_sync;
 // 2.113.0: the mail reader - safe HTML, pictures and attachments in TIQR, translate.
 pub mod mail_view;

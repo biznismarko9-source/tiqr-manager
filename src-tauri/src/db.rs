@@ -402,8 +402,27 @@ fn counts_as_user_change(db: &str, table: &str) -> bool {
     db != "mail" && !is_bookkeeping_table(table)
 }
 
+/// 2.115.0: `tiqr_fold(text)` - `mail_facts::fold_words` in SQL: lower case,
+/// accents folded, words only. A subject mute compares with it (mail.rs,
+/// `muted_sql`). Deterministic, so SQLite may reuse a result in a statement.
+/// On every connection the mail is queried on: `open_connection` and
+/// `test_conn`.
+pub(crate) fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "tiqr_fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: Option<String> = ctx.get(0)?;
+            Ok(text.map(|s| crate::commands::mail_facts::fold_words(&s)))
+        },
+    )
+}
+
 pub fn open_connection(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    register_functions(&conn)?;
     // journal_mode returns a row with the resulting mode, so query_row it explicitly.
     let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.execute_batch(
@@ -499,6 +518,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
 #[cfg(test)]
 pub fn test_conn() -> Connection {
     let conn = Connection::open_in_memory().expect("open in-memory db");
+    register_functions(&conn).expect("register SQL functions");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("enable foreign keys");
     // 2.110.0: the same two-file layout the app runs on.

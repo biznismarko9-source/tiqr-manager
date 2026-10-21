@@ -28,6 +28,8 @@ import { copyText } from "../lib/clipboard";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
 import { mergeTopPage } from "../lib/mailRows";
 import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone, storedVsGmail } from "../lib/mailSyncStatus";
+import { askReaderToSync, nudgeMailShare, useMailShareView } from "../lib/mailShare";
+import { shareLine } from "../lib/mailShareCore";
 import {
   type MailConnectionStatus,
   type MailFolderCount,
@@ -39,7 +41,7 @@ import {
 } from "../lib/types";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, PageHeader, Spinner } from "../components/ui";
 import { IconBellOff, IconFolder, IconMail, IconPaperclip, IconPencil, IconPlus, IconStar, IconTrash } from "../components/icons";
-import { muteState } from "../lib/mailMute";
+import { muteKind, muteState, type MuteKind } from "../lib/mailMute";
 import { MailSettingsPane } from "../components/MailSettingsPane";
 import { PromoCleanup } from "../components/PromoCleanup";
 import {
@@ -378,6 +380,8 @@ export default function MailIntelligence() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<MailSyncResult | null>(lastMailSync());
+  /** 2.115.0: whether the other computer reads Gmail for this one. */
+  const share = useMailShareView();
   const [nudged, setNudged] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -691,21 +695,29 @@ export default function MailIntelligence() {
   );
 
   /** Its mail leaves every folder but Muted - the list is read again. */
-  const mute = async (who: string, days: number | null) => {
+  const mute = async (kind: MuteKind, who: string, days: number | null) => {
     try {
-      setMutes(await api.muteMailSender(who, days));
+      setMutes(await (kind === "subject" ? api.muteMailSubject(who, days) : api.muteMailSender(who, days)));
       const span = days === null ? "until you unmute" : `for ${days} day${days === 1 ? "" : "s"}`;
-      toast.success(`${who} muted ${span} - its mail is under Muted. Orders, sales and payouts still show.`);
+      toast.success(
+        kind === "subject"
+          ? `Mail with "${who}" in the subject muted ${span} - it is under Muted. Orders, sales and payouts still show.`
+          : `${who} muted ${span} - its mail is under Muted. Orders, sales and payouts still show.`,
+      );
       void loadFolder();
       void loadHeader().catch(() => undefined);
     } catch (e) {
       toast.error(errMsg(e));
     }
   };
-  const unmute = async (who: string) => {
+  const unmute = async (kind: MuteKind, who: string) => {
     try {
-      setMutes(await api.unmuteMailSender(who));
-      toast.success(`${who} unmuted - all of its mail is back where it was.`);
+      setMutes(await (kind === "subject" ? api.unmuteMailSubject(who) : api.unmuteMailSender(who)));
+      toast.success(
+        kind === "subject"
+          ? `"${who}" unmuted - that mail is back where it was.`
+          : `${who} unmuted - all of its mail is back where it was.`,
+      );
       void loadFolder();
       void loadHeader().catch(() => undefined);
     } catch (e) {
@@ -790,15 +802,20 @@ export default function MailIntelligence() {
      lane it is on and how much each still has to download. */
   const progress = lastRun?.progress ?? status.progress;
   const failed = lastRun?.status === "failed";
-  const headline = syncHeadline({
-    progress,
-    paused: status.paused,
-    failed,
-    rateLimited: !!lastRun?.rateLimited,
-    intervalSeconds: status.syncIntervalSeconds,
-  });
-  const lanes = laneViews(progress, fmt);
-  const busy = nudged || isReading(progress, status.paused, failed);
+  // 2.115.0: while the other computer reads Gmail for this one, this one's
+  // lanes stand still - the line says where the mail comes from instead.
+  const following = share.role === "follower";
+  const headline = following
+    ? shareLine(share, fmt)
+    : syncHeadline({
+        progress,
+        paused: status.paused,
+        failed,
+        rateLimited: !!lastRun?.rateLimited,
+        intervalSeconds: status.syncIntervalSeconds,
+      });
+  const lanes = following ? [] : laneViews(progress, fmt);
+  const busy = nudged || (!following && isReading(progress, status.paused, failed));
   const dropOn = (key: string) => (ids: number[]) => void (key === "trash" ? bulk("trash", ids) : moveIds(ids, key));
 
   return (
@@ -822,9 +839,18 @@ export default function MailIntelligence() {
               variant="secondary"
               disabled={nudged}
               onClick={async () => {
+                // 2.115.0: the other computer reads Gmail for this one - it
+                // is the one asked to look now.
+                if (following && !status.paused && askReaderToSync()) {
+                  toast.success(`Your ${share.peer ?? "other computer"} checks Gmail now`);
+                  return;
+                }
                 setNudged(true);
                 try {
-                  if (status.paused) setStatus(await api.setMailPaused(false));
+                  if (status.paused) {
+                    setStatus(await api.setMailPaused(false));
+                    nudgeMailShare();
+                  }
                   requestMailSync();
                 } catch (e) {
                   setNudged(false);
@@ -853,8 +879,18 @@ export default function MailIntelligence() {
             <span className={`tabular-nums ${LANE_TONE[l.tone]}`}>{l.text}</span>
           </span>
         ))}
+        {share.role === "reader" && share.peer && (
+          <span className="whitespace-nowrap text-slate-500 dark:text-slate-400" title={shareLine(share, fmt)}>
+            Sends to your {share.peer}
+            {share.sent > 0 ? ` · ${fmt(share.sent)}` : ""}
+          </span>
+        )}
         <span className="ml-auto whitespace-nowrap text-slate-400 dark:text-slate-500">
-          {lastSyncText(progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+          {/* While following: when mail last came from the other computer. */}
+          {lastSyncText(
+            following ? lastRun?.syncedAt ?? progress.lastSuccessAt : progress.lastSuccessAt ?? status.lastSyncAt,
+            new Date(),
+          )}
         </span>
       </Card>
 
@@ -1100,19 +1136,25 @@ export default function MailIntelligence() {
               {folder === "muted" && mutes.length > 0 && (
                 <div className="border-b border-slate-200 px-3 py-2 dark:border-slate-800">
                   <p className="section-title mb-1 flex items-center gap-1.5">
-                    <IconBellOff className="h-3.5 w-3.5" /> Muted senders
+                    <IconBellOff className="h-3.5 w-3.5" /> Muted
                   </p>
                   <ul className="space-y-0.5">
                     {mutes.map((m) => (
-                      <li key={m.who} className="flex items-center gap-2 text-[11.5px]">
+                      <li key={`${muteKind(m)}:${m.who}`} className="flex items-center gap-2 text-[11.5px]">
                         <span className="min-w-0 flex-1 truncate" title={m.who}>
-                          <span className="font-mono text-slate-700 dark:text-slate-200">{m.who}</span>{" "}
+                          {muteKind(m) === "subject" ? (
+                            <span className="text-slate-700 dark:text-slate-200">
+                              Subject &ldquo;{m.who}&rdquo;
+                            </span>
+                          ) : (
+                            <span className="font-mono text-slate-700 dark:text-slate-200">{m.who}</span>
+                          )}{" "}
                           <span className="text-slate-400 dark:text-slate-500">{muteState(m)}</span>
                         </span>
                         <button
                           type="button"
                           className="shrink-0 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
-                          onClick={() => void unmute(m.who)}
+                          onClick={() => void unmute(muteKind(m), m.who)}
                         >
                           Unmute
                         </button>
@@ -1187,8 +1229,8 @@ export default function MailIntelligence() {
                   mutes={mutes}
                   onMove={(ids, t) => void moveIds(ids, t)}
                   onTrash={(ids, restore) => void bulk(restore ? "restore" : "trash", ids)}
-                  onMute={(who, days) => void mute(who, days)}
-                  onUnmute={(who) => void unmute(who)}
+                  onMute={(kind, who, days) => void mute(kind, who, days)}
+                  onUnmute={(kind, who) => void unmute(kind, who)}
                   onChanged={onReaderChanged}
                 />
               ) : (

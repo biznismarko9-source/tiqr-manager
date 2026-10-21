@@ -3473,6 +3473,9 @@ pub struct MailConnectionStatus {
     /// 2.114.0: folders TIQR does not read at all - "promotions", "spam",
     /// "trash" (Settings, What is read).
     pub skip_folders: Vec<String>,
+    /// 2.115.0: two computers share the reading - while both run, one reads
+    /// Gmail and sends the other the mail (commands/mail_share.rs).
+    pub share_reading: bool,
     pub unread_count: i64,
     /// "off" | "manual" | "auto", per record kind. `manual` is the default
     /// and the one marko described: the proposal waits for his button.

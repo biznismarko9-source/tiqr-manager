@@ -37,9 +37,11 @@ import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import { requestMailSync } from "../lib/mailSync";
+import { nudgeMailShare, useMailShareView } from "../lib/mailShare";
+import { shareLine } from "../lib/mailShareCore";
 import { lastSyncText, laneViews, syncHeadline, storedVsGmail } from "../lib/mailSyncStatus";
 import { MAIL_LANGUAGES } from "../lib/mailText";
-import { MUTE_SPANS, muteState } from "../lib/mailMute";
+import { MUTE_SPANS, muteKind, muteState, type MuteKind } from "../lib/mailMute";
 import {
   type DiscordMailConfig,
   type MailConnectionStatus,
@@ -86,7 +88,7 @@ const SECTIONS: { key: SectionKey; title: string; description: string; icon: typ
   { key: "reading", title: "Reading", description: "How often, pictures, translate", icon: IconRefresh },
   { key: "senders", title: "What is read", description: "Folders, senders, your filter", icon: IconUsers },
   { key: "rules", title: "Rules", description: "Sort new mail by itself", icon: IconTag },
-  { key: "muted", title: "Muted senders", description: "Hidden for a while", icon: IconBellOff },
+  { key: "muted", title: "Muted", description: "Senders and subjects, hidden", icon: IconBellOff },
   { key: "discord", title: "Discord", description: "What goes on, and how", icon: IconSend },
   { key: "automatic", title: "Automatic", description: "Records made from mail", icon: IconGauge },
 ];
@@ -242,6 +244,7 @@ export function MailSettingsPane({
   labels?: MailLabel[];
 }) {
   const toast = useToast();
+  const share = useMailShareView();
   const [section, setSection] = useState<SectionKey>(lastSection);
   const choose = (k: SectionKey) => {
     lastSection = k;
@@ -276,6 +279,8 @@ export function MailSettingsPane({
   const [notif, setNotif] = useState<NotificationStatus | null>(null);
   const [mutes, setMutes] = useState<MailMute[]>([]);
   const [muteWho, setMuteWho] = useState("");
+  /** 2.115.0: an address or domain, or words in the subject. */
+  const [muteBy, setMuteBy] = useState<MuteKind>("sender");
   const [muteDays, setMuteDays] = useState<string>("7");
   const [ruleMatches, setRuleMatches] = useState<number | null>(null);
 
@@ -343,19 +348,20 @@ export function MailSettingsPane({
   const addMute = async () => {
     const who = muteWho.trim();
     if (!who) return;
+    const days = muteDays === "always" ? null : Number(muteDays);
     try {
-      setMutes(await api.muteMailSender(who, muteDays === "always" ? null : Number(muteDays)));
+      setMutes(await (muteBy === "subject" ? api.muteMailSubject(who, days) : api.muteMailSender(who, days)));
       setMuteWho("");
-      toast.success(`${who} muted - its mail is under Muted.`);
+      toast.success(muteBy === "subject" ? `Mail with "${who}" in the subject muted - it is under Muted.` : `${who} muted - its mail is under Muted.`);
     } catch (e) {
       toast.error(errMsg(e));
     }
   };
 
-  const unmute = async (who: string) => {
+  const unmute = async (kind: MuteKind, who: string) => {
     try {
-      setMutes(await api.unmuteMailSender(who));
-      toast.success(`${who} unmuted`);
+      setMutes(await (kind === "subject" ? api.unmuteMailSubject(who) : api.unmuteMailSender(who)));
+      toast.success(kind === "subject" ? `"${who}" unmuted` : `${who} unmuted`);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -556,7 +562,7 @@ export function MailSettingsPane({
       {/* ---- 1. the mailbox --------------------------------------------- */}
       <Section
         title="Mailbox"
-        hint="Read-only access. TIQR cannot send, delete or change anything in Gmail - everything below happens inside TIQR. The connection, rules, senders and filter are the same on your other computer through cloud sync; each computer reads the mail from Gmail itself."
+        hint="Read-only access. TIQR cannot send, delete or change anything in Gmail - everything below happens inside TIQR. The connection, rules, senders and filter are the same on your other computer through cloud sync."
       >
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Badge tone={connected ? "sold" : "available"}>{connected ? "Connected" : "Off"}</Badge>
@@ -572,33 +578,77 @@ export function MailSettingsPane({
         {connected && (
           <div className="mb-3 rounded-lg bg-surface-muted px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
             <p className="font-medium text-slate-800 dark:text-slate-100">
-              {syncHeadline({
-                progress: status.progress,
-                paused: status.paused,
-                failed: false,
-                rateLimited: false,
-                intervalSeconds: status.syncIntervalSeconds,
-              })}
+              {/* While the other computer reads for this one, its own lanes
+                  stand still - what they would say is not what happens. */}
+              {share.role === "follower"
+                ? shareLine(share, (n) => n.toLocaleString())
+                : syncHeadline({
+                    progress: status.progress,
+                    paused: status.paused,
+                    failed: false,
+                    rateLimited: false,
+                    intervalSeconds: status.syncIntervalSeconds,
+                  })}
             </p>
-            <ul className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
-              {laneViews(status.progress, (n) => n.toLocaleString()).map((l) => (
-                <li key={l.key} className="contents" title={l.hint}>
-                  <span className="text-slate-500 dark:text-slate-400">{l.label}</span>
-                  <span className="tabular-nums">{l.text}</span>
-                </li>
-              ))}
-            </ul>
+            {share.role !== "follower" && (
+              <ul className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+                {laneViews(status.progress, (n) => n.toLocaleString()).map((l) => (
+                  <li key={l.key} className="contents" title={l.hint}>
+                    <span className="text-slate-500 dark:text-slate-400">{l.label}</span>
+                    <span className="tabular-nums">{l.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-              {storedVsGmail(status.progress, (n) => n.toLocaleString())} &middot; {bytes(status.storeBytes)} &middot;{" "}
-              {lastSyncText(status.progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+              {storedVsGmail(status.progress, (n) => n.toLocaleString())} &middot; {bytes(status.storeBytes)}
+              {/* This computer's own last read of Gmail - not news while the other one reads. */}
+              {share.role !== "follower" && (
+                <> &middot; {lastSyncText(status.progress.lastSuccessAt ?? status.lastSyncAt, new Date())}</>
+              )}
             </p>
-            {/* 2.114.3, marko: "na macu mam 100 000 sprav ulozenych a na
-                windowse ukazuje len 16k, ako keby fungovali zvlast". They
-                do, on purpose: mail never goes through the cloud. */}
-            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-              Each computer reads Gmail on its own and keeps its own copy - mail is never copied through the cloud.
-              A computer catches up whenever TIQR is open on it, even minimised.
-            </p>
+          </div>
+        )}
+
+        {/* 2.115.0, marko: "ak naraz tak len jeden a ten to bude posielat
+            tomu druhemu aby to bolo obmedzene" - two computers reading one
+            mailbox at once is what made Google slow TIQR down. */}
+        {connected && (
+          <div className="mb-3 rounded-lg bg-surface-muted px-3 py-2">
+            <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                className={`${CHECKBOX_CLASS} mt-0.5`}
+                checked={status.shareReading}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  void wrap(async () => {
+                    const next = await api.setMailShare(on);
+                    nudgeMailShare();
+                    return next;
+                  }, on ? "Your computers share the reading" : "Each computer reads Gmail itself");
+                }}
+              />
+              <span>
+                <span className="font-medium">Two computers, one reader</span>
+                <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
+                  While TIQR runs on both computers, only one reads Gmail and sends the other what it stored - so
+                  Google has no reason to slow TIQR down. The mail goes through your TIQR account&apos;s Firebase and
+                  is deleted there as soon as the other computer has stored it. A computer running alone reads Gmail
+                  itself. Uses live sync (Settings &rarr; Data); this switch is the same on both computers.
+                </span>
+              </span>
+            </label>
+            {/* While following, the line above already says it. */}
+            {share.role !== "follower" && (
+              <p
+                className={`mt-1.5 text-[11px] font-medium ${
+                  share.warn ? "text-amber-600 dark:text-amber-400" : "text-slate-700 dark:text-slate-200"
+                }`}
+              >
+                {shareLine(share, (n) => n.toLocaleString())}
+              </p>
+            )}
           </div>
         )}
 
@@ -649,7 +699,16 @@ export function MailSettingsPane({
                 {testing ? <Spinner className="h-4 w-4" /> : null}
                 Test connection
               </Button>
-              <Button variant="secondary" onClick={() => void wrap(() => api.setMailPaused(!status.paused), "", true)}>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  void wrap(async () => {
+                    const next = await api.setMailPaused(!status.paused);
+                    nudgeMailShare();
+                    return next;
+                  }, "", true)
+                }
+              >
                 {status.paused ? "Resume sync" : "Pause sync"}
               </Button>
               <Button variant="ghost" onClick={() => void wrap(() => api.disconnectMail(), "Mailbox disconnected")}>
@@ -1137,23 +1196,30 @@ export function MailSettingsPane({
 
         {section === "muted" && (
           <Section
-            title="Muted senders"
-            hint="Their mail still arrives and is kept - hidden under Muted and not counted as unread. Orders, sales and payouts from them always show. A whole shared mailbox (gmail.com, azet.sk...) cannot be muted, only one address at it."
+            title="Muted"
+            hint="A muted sender's mail, or mail with muted words in its subject, still arrives and is kept - hidden under Muted and not counted as unread. Orders, sales and payouts always show. A whole shared mailbox (gmail.com, azet.sk...) cannot be muted, only one address at it."
           >
             {mutes.length === 0 ? (
-              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Nobody is muted.</p>
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Nothing is muted.</p>
             ) : (
               <ul className="mb-4 divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800/70 dark:border-slate-800">
                 {mutes.map((m) => (
-                  <li key={m.who} className="flex items-center gap-3 px-3 py-2 text-xs">
-                    <span className="min-w-0 flex-1 truncate">
-                      <span className="font-mono text-slate-800 dark:text-slate-100">{m.who}</span>{" "}
+                  <li key={`${muteKind(m)}:${m.who}`} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="w-14 shrink-0 text-[10.5px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                      {muteKind(m) === "subject" ? "Subject" : "Sender"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={m.who}>
+                      {muteKind(m) === "subject" ? (
+                        <span className="text-slate-800 dark:text-slate-100">&ldquo;{m.who}&rdquo;</span>
+                      ) : (
+                        <span className="font-mono text-slate-800 dark:text-slate-100">{m.who}</span>
+                      )}{" "}
                       <span className="text-slate-500 dark:text-slate-400">{muteState(m)}</span>
                     </span>
                     <button
                       type="button"
                       className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-brand-600 hover:bg-surface-muted dark:text-brand-400"
-                      onClick={() => void unmute(m.who)}
+                      onClick={() => void unmute(muteKind(m), m.who)}
                     >
                       Unmute
                     </button>
@@ -1162,9 +1228,15 @@ export function MailSettingsPane({
               </ul>
             )}
             <div className="flex flex-wrap items-center gap-2">
+              <div className="w-44">
+                <Select value={muteBy} onChange={(e) => setMuteBy(e.target.value as MuteKind)} aria-label="Mute by">
+                  <option value="sender">Address or domain</option>
+                  <option value="subject">Words in the subject</option>
+                </Select>
+              </div>
               <div className="w-64">
                 <Input
-                  placeholder="news@shop.com or shop.com"
+                  placeholder={muteBy === "subject" ? "weekly digest" : "news@shop.com or shop.com"}
                   value={muteWho}
                   onChange={(e) => setMuteWho(e.target.value)}
                   onKeyDown={(e) => {
@@ -1186,7 +1258,9 @@ export function MailSettingsPane({
               </Button>
             </div>
             <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-              Or open a message and use Mute there. The list is the same on your other computer.
+              Words in the subject: whole words, in that order, whatever the case and the accents - "posledna sanca"
+              also mutes "Posledná šanca". Or open a message and use Mute there. The list is the same on your other
+              computer.
             </p>
           </Section>
         )}

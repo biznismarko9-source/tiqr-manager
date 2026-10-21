@@ -32,7 +32,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, errMsg } from "../lib/api";
 import { copyText } from "../lib/clipboard";
-import { MUTE_SPANS, canMuteDomain, domainOf, muteFor, muteState } from "../lib/mailMute";
+import { MUTE_SPANS, canMuteDomain, domainOf, muteFor, muteState, subjectMuteFor, subjectSuggestion, type MuteKind } from "../lib/mailMute";
 import {
   fileSize,
   hostOf,
@@ -209,19 +209,27 @@ export function MailMoveMenu({
    --------------------------------------------------------------------------- */
 
 /** Mute this sender, or everyone at its domain, for a while - "hide those
- *  mails ak vela spamuju a na nejaky cas si vies vypnut". Or, when it is
- *  muted, how long for and Unmute. */
+ *  mails ak vela spamuju a na nejaky cas si vies vypnut". 2.115.0: or mail
+ *  with these words in the subject ("mute nastavit aj podla objectu"). Or,
+ *  when it is muted, how long for and Unmute. */
 function MailMuteMenu({
   address,
-  mute,
+  subject,
+  mutes,
   onMute,
   onUnmute,
 }: {
   address: string;
-  mute: MailMute | null;
-  onMute: (who: string, days: number | null) => void;
-  onUnmute: (who: string) => void;
+  subject: string;
+  mutes: MailMute[];
+  onMute: (kind: MuteKind, who: string, days: number | null) => void;
+  onUnmute: (kind: MuteKind, who: string) => void;
 }) {
+  const senderMute = muteFor(address, mutes);
+  const subjectMute = senderMute ? null : subjectMuteFor(subject, mutes);
+  const mute = senderMute ?? subjectMute;
+  const [words, setWords] = useState(() => subjectSuggestion(subject));
+  useEffect(() => setWords(subjectSuggestion(subject)), [subject]);
   const [open, setOpen] = useState(false);
   /** Where the menu opens - in the window, so a narrow reader cannot cut it. */
   const [at, setAt] = useState<{ left: number; top: number } | null>(null);
@@ -267,7 +275,7 @@ function MailMuteMenu({
         size="sm"
         onClick={toggle}
         aria-expanded={open}
-        title={mute ? `Muted ${muteState(mute)}` : "Hide this sender's mail for a while"}
+        title={mute ? `Muted ${muteState(mute)}` : "Hide this sender's mail, or mail with this subject, for a while"}
       >
         <IconBellOff className="h-3.5 w-3.5" />
         {mute ? "Muted" : "Mute"}
@@ -282,19 +290,29 @@ function MailMuteMenu({
           {mute ? (
             <div className="px-1 pb-1">
               <p className="text-xs leading-snug text-slate-700 dark:text-slate-200">
-                <span className="break-all font-mono">{mute.who}</span> is muted {muteState(mute)}.
+                {subjectMute ? (
+                  <>
+                    Mail with <span className="font-medium">&ldquo;{subjectMute.who}&rdquo;</span> in the subject is muted{" "}
+                    {muteState(subjectMute)}.
+                  </>
+                ) : (
+                  <>
+                    <span className="break-all font-mono">{mute.who}</span> is muted {muteState(mute)}.
+                  </>
+                )}
               </p>
               <button
                 type="button"
                 role="menuitem"
                 className="mt-2 w-full rounded-md bg-surface-muted px-2.5 py-1.5 text-left text-xs font-medium text-brand-700 hover:bg-slate-200/70 dark:text-brand-300 dark:hover:bg-slate-700/60"
-                onClick={() => pick(() => onUnmute(mute.who))}
+                onClick={() => pick(() => onUnmute(subjectMute ? "subject" : "sender", mute.who))}
               >
                 Unmute - show all of its mail again
               </button>
             </div>
           ) : (
-            choices.map((c) => (
+            <>
+            {choices.map((c) => (
               <div key={c.who} className="px-1 py-1">
                 <p className="truncate text-[11px] text-slate-500 dark:text-slate-400" title={c.detail}>
                   {c.label} <span className="font-mono text-slate-700 dark:text-slate-200">{c.detail}</span>
@@ -306,14 +324,40 @@ function MailMuteMenu({
                       type="button"
                       role="menuitem"
                       className="rounded-md bg-surface-muted px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-brand-500/15 hover:text-brand-700 dark:text-slate-200 dark:hover:text-brand-300"
-                      onClick={() => pick(() => onMute(c.who, span.days))}
+                      onClick={() => pick(() => onMute("sender", c.who, span.days))}
                     >
                       {span.label}
                     </button>
                   ))}
                 </div>
               </div>
-            ))
+            ))}
+            <div className="mt-1 border-t border-slate-200 px-1 pb-1 pt-2 dark:border-slate-800">
+              <label className="block text-[11px] text-slate-500 dark:text-slate-400">
+                Mail with these words in the subject
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-200 bg-surface px-2 py-1 text-xs text-slate-800 focus:border-brand-500 focus:outline-none dark:border-slate-700 dark:text-slate-100"
+                  value={words}
+                  onChange={(e) => setWords(e.target.value)}
+                  aria-label="Words in the subject to mute"
+                />
+              </label>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {MUTE_SPANS.map((span) => (
+                  <button
+                    key={span.label}
+                    type="button"
+                    role="menuitem"
+                    disabled={words.trim().length < 3}
+                    className="rounded-md bg-surface-muted px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-brand-500/15 hover:text-brand-700 disabled:opacity-40 dark:text-slate-200 dark:hover:text-brand-300"
+                    onClick={() => pick(() => onMute("subject", words.trim(), span.days))}
+                  >
+                    {span.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            </>
           )}
           <p className="mt-1 border-t border-slate-200 px-1 pt-1.5 text-[10.5px] leading-snug text-slate-400 dark:border-slate-800 dark:text-slate-500">
             Its mail still arrives - hidden under Muted and not counted as unread. Orders, sales and payouts always
@@ -925,8 +969,8 @@ export function MailReader({
   mutes: MailMute[];
   onMove: (ids: number[], target: string) => void;
   onTrash: (ids: number[], restore: boolean) => void;
-  onMute: (who: string, days: number | null) => void;
-  onUnmute: (who: string) => void;
+  onMute: (kind: MuteKind, who: string, days: number | null) => void;
+  onUnmute: (kind: MuteKind, who: string) => void;
   onChanged: (change: ReaderChange) => void;
 }) {
   const toast = useToast();
@@ -1142,7 +1186,7 @@ export function MailReader({
           {message.isStarred ? "Starred" : "Star"}
         </Button>
         {!junk && (
-          <MailMuteMenu address={message.fromAddress} mute={muteFor(message.fromAddress, mutes)} onMute={onMute} onUnmute={onUnmute} />
+          <MailMuteMenu address={message.fromAddress} subject={message.subject} mutes={mutes} onMute={onMute} onUnmute={onUnmute} />
         )}
         <span className="mx-0.5 h-5 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
         {!sameLanguage && (

@@ -34,6 +34,7 @@ import {
   type LiveSyncView,
 } from "../lib/liveSync";
 import { phaseLabel, phaseTone } from "../lib/liveSyncCore";
+import { closeMailShare, startMailShare } from "../lib/mailShare";
 import { useToast } from "../lib/toast";
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -217,6 +218,9 @@ export default function Layout() {
     if (!uid) return;
     const off = onLiveSync(setLive);
     const stop = startLiveSync(uid);
+    // 2.115.0: beside it, in the same Firestore space - while both computers
+    // run, one reads Gmail and sends the other the mail.
+    const stopShare = startMailShare(uid);
     api
       .liveSyncStatus()
       .then((s) => {
@@ -227,6 +231,7 @@ export default function Layout() {
     return () => {
       off();
       stop();
+      stopShare();
     };
   }, [user?.email]);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -629,6 +634,10 @@ export default function Layout() {
             // Closing must never depend on any of it having worked. What was
             // not sent is still marked dirty and goes on the next launch.
           }
+          // 2.115.0: if this computer reads Gmail for the other one, it hands
+          // that back first - or, past the timeout, the other computer takes
+          // it over by itself a few minutes later.
+          await Promise.race([closeMailShare().catch(() => undefined), new Promise((r) => setTimeout(r, 2_500))]);
           void win.destroy();
         });
       } catch {

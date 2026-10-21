@@ -5,7 +5,8 @@ rules_version = '2';
 // 2.0.71: added for the account-approval gate (stop one person from
 // registering multiple accounts); 2.23.0 added the suggestion box; 2.112.0
 // added live sync between computers (the users/{uid}/rows|parts|settings|
-// devices block below). Those three are everything Firestore is used for in
+// devices block below); 2.115.0 added one Gmail reader for two computers
+// (users/{uid}/mail). Those four are everything Firestore is used for in
 // this app - see src/lib/firebase.ts's own comment on `db` before reaching
 // for Firestore anywhere else without updating this file too.
 //
@@ -136,6 +137,29 @@ service cloud.firestore {
       allow delete: if isOwner(userId);
     }
 
+    // 2.115.0: two computers, one Gmail reader (src/lib/mailShareSession.ts,
+    // src-tauri/src/commands/mail_share.rs). Two computers reading the same
+    // mailbox at once went over what Gmail allows one account, and Google
+    // slowed both down. While both run, the one holding the lease reads Gmail
+    // and sends the other what it stored, one batch at a time; the other
+    // deletes each batch as soon as it has stored it, so mail only passes
+    // through here.
+    //
+    //   lease~{mailbox}              who reads Gmail for that mailbox (a hash
+    //                                of the address, never the address)
+    //   cursor~{follower}~{reader}   how far the follower has got, and that it
+    //                                is there - written by the follower only
+    //   drop~{follower}~{seq}        one batch for the follower
+    //
+    // Under the account's own users/{uid} like live sync: nobody else's is
+    // readable or writable. Every document is {dev, at, p} - the computer that
+    // wrote it, the server's time, and a JSON string the app checks again
+    // before using anything in it.
+    match /users/{userId}/mail/{docId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId) && validMail(docId);
+    }
+
     function isOwner(userId) {
       return request.auth != null && request.auth.uid == userId;
     }
@@ -164,6 +188,19 @@ service cloud.firestore {
       return d.keys().hasOnly(['group', 'stamp', 'dev', 'body', 'at'])
           && d.group == group && d.stamp is string && d.body is string
           && d.at == request.time;
+    }
+
+    function validMail(docId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['dev', 'at', 'p'])
+          && d.dev is string && d.dev.matches('^[0-9a-f]{32}$')
+          && d.p is string
+          && d.at == request.time
+          && ((docId.matches('^lease~[0-9a-f]{16}$') && d.p.size() <= 2000)
+              || (docId.matches('^cursor~' + d.dev + '~[0-9a-f]{32}$') && d.p.size() <= 2000)
+              // Under Firestore's 1 MiB a document, accents and all - the app
+              // sends at most 600,000 bytes of mail in one.
+              || (docId.matches('^drop~[0-9a-f]{32}~[0-9a-z]{12}$') && d.p.size() <= 900000));
     }
 
     // Everything else is denied by default (no rule matches -> no access) -

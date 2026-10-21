@@ -2539,6 +2539,61 @@ export interface CloudSyncAutoPlan {
 
 // --- Live sync (2.112.0) - commands/live_sync.rs ----------------------
 
+/** 2.115.0: two computers, one Gmail reader (commands/mail_share.rs). What
+ *  travels for one message - what Gmail gave the computer that read it. */
+export interface SharedMail {
+  id: string;
+  thread?: string | null;
+  fromRaw?: string | null;
+  fromAddress: string;
+  fromName?: string | null;
+  to?: string | null;
+  replyTo?: string | null;
+  subject: string;
+  snippet?: string | null;
+  receivedAt: string;
+  labels: string;
+  unread: boolean;
+  starred: boolean;
+  labelsAt: string;
+  text?: string | null;
+}
+
+/** How far a receiving computer has got with one sender: up to and
+ *  including this (labels_at, row id) of the sender's. */
+export interface ShareCursor {
+  at: string;
+  id: number;
+}
+
+export interface ShareBatch {
+  account: string;
+  rows: SharedMail[];
+  upTo: ShareCursor;
+  more: boolean;
+}
+
+export interface ShareImported {
+  storedNew: number;
+  updated: number;
+  received: number;
+}
+
+export interface ShareInfo {
+  enabled: boolean;
+  connected: boolean;
+  account: string;
+  device: string | null;
+  /** Mail is paused on this computer - it neither reads for the other one
+   *  nor gets mail from it. */
+  paused: boolean;
+}
+
+export interface ShareProgress {
+  upTo: ShareCursor;
+  received: number;
+}
+
 export interface LiveSyncStatus {
   enabled: boolean;
   /** Whether on/off was ever decided for this database. */
@@ -2898,6 +2953,9 @@ export interface MailConnectionStatus {
   unreadCount: number;
   /** 2.114.0: folders TIQR does not read at all. */
   skipFolders: ("promotions" | "spam" | "trash")[];
+  /** 2.115.0: two computers share the reading - while both run, one reads
+   *  Gmail and sends the other the mail. */
+  shareReading: boolean;
   /** What the SYNC may do unattended, per record kind. `manual` is the
    *  default and the one marko described: the proposal waits for his
    *  button. `auto` only ever acts on a proposal that is already ready. */
@@ -3182,7 +3240,10 @@ export interface PromoSuggestion {
 /** 2.113.1: a muted sender - its mail still arrives, hidden under Muted
  *  (commands/mail.rs, "MUTED SENDERS"). */
 export interface MailMute {
-  /** "news@shop.com" (that sender) or "shop.com" (everyone at it). */
+  /** 2.115.0: what it hides by - absent on a mute from before, a sender. */
+  kind?: "sender" | "subject";
+  /** Sender: "news@shop.com" (that sender) or "shop.com" (everyone at it).
+   *  Subject: the words, as typed. */
   who: string;
   since: string;
   /** When it ends; null until unmuted. */

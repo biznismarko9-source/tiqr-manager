@@ -142,6 +142,12 @@ import type {
   MailLocalFolder,
   MailLinkDownload,
   MailMute,
+  ShareBatch,
+  ShareCursor,
+  SharedMail,
+  ShareImported,
+  ShareInfo,
+  ShareProgress,
   PromoScan,
   PromoSuggestion,
 } from "./types";
@@ -865,6 +871,9 @@ export const api = {
   listMailMutes: () => invoke<MailMute[]>("list_mail_mutes"),
   muteMailSender: (who: string, days: number | null) => invoke<MailMute[]>("mute_mail_sender", { who, days }),
   unmuteMailSender: (who: string) => invoke<MailMute[]>("unmute_mail_sender", { who }),
+  /** 2.115.0: mail whose subject has these words, for `days` or until unmuted. */
+  muteMailSubject: (words: string, days: number | null) => invoke<MailMute[]>("mute_mail_subject", { words, days }),
+  unmuteMailSubject: (words: string) => invoke<MailMute[]>("unmute_mail_subject", { words }),
   /** 2.113.1: TIQR's own star (Gmail is read-only here). */
   starMail: (ids: number[], starred: boolean) => invoke<number>("star_mail", { ids, starred }),
   /** 2.114.0: every message of a folder (and search) - "select all" is the
@@ -968,6 +977,14 @@ export const api = {
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),
   syncMailNow: () => invoke<MailSyncResult>("sync_mail_now"),
+  /** 2.115.0: two computers, one Gmail reader (lib/mailShareSession.ts). */
+  mailShareInfo: () => invoke<ShareInfo>("mail_share_info"),
+  mailShareExport: (after: ShareCursor, maxBytes?: number) => invoke<ShareBatch>("mail_share_export", { after, maxBytes }),
+  mailShareImport: (sender: string, account: string, rows: SharedMail[], upTo: ShareCursor) =>
+    invoke<ShareImported>("mail_share_import", { sender, account, rows, upTo }),
+  mailShareCursor: (sender: string) => invoke<ShareProgress>("mail_share_cursor", { sender }),
+  mailShareFollow: (on: boolean) => invoke<void>("mail_share_follow", { on }),
+  setMailShare: (on: boolean) => invoke<MailConnectionStatus>("set_mail_share", { on }),
   /** 2.114.3: the mail reader runs in the backend, on a thread of its own -
    *  this starts it (once; a second call does nothing). Every run arrives as
    *  the `mail-sync` event. */

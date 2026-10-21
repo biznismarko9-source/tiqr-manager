@@ -85,7 +85,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -536,7 +536,7 @@ pub(crate) fn peek(conn: &Connection, limit: usize, now: &str) -> AppResult<Vec<
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-fn dequeue(conn: &Connection, ids: &[String]) -> AppResult<()> {
+pub(crate) fn dequeue(conn: &Connection, ids: &[String]) -> AppResult<()> {
     let mut stmt = conn.prepare("DELETE FROM mail_fetch_queue WHERE provider_message_id = ?1")?;
     for id in ids {
         stmt.execute(params![id])?;
@@ -607,7 +607,7 @@ pub(crate) fn has_label_sql(flag_param: &str) -> String {
 /// has, so it never undoes a star marko took off here; a change in Gmail -
 /// starred on the phone, read in Gmail - is newer than anything here, and
 /// TIQR follows it.
-fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
+pub(crate) fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
     let mut n = conn.execute(
         &format!(
             "UPDATE mail_messages
@@ -643,7 +643,7 @@ fn add_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: 
 }
 
 /// Takes a Gmail label off a stored message - see `add_flag`.
-fn remove_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
+pub(crate) fn remove_flag(conn: &Connection, pid: &str, flag: &str, now: &str, gmail_changed: bool) -> AppResult<usize> {
     let mut n = conn.execute(
         &format!(
             "UPDATE mail_messages
@@ -1685,7 +1685,7 @@ fn store_fetched(conn: &Connection, plan: &Plan, fetched: Vec<(String, Fetched)>
 /// A Discord message - about a record Automatic created, or an important
 /// email that just arrived - sent once the run's transaction is committed,
 /// never with it open (commands/discord.rs).
-type Notice = (Subject, Occasion);
+pub(crate) type Notice = (Subject, Occasion);
 
 /// At most this many emails are announced from one run, so a burst of mail
 /// is a few messages in the channel rather than a wall of them.
@@ -1707,7 +1707,7 @@ fn mail_news(conn: &Connection, arrived: &[i64], now: DateTime<Utc>) -> Vec<Noti
 /// inside its own savepoint: one that fails half way leaves nothing behind,
 /// and the rest of the run goes on. What it decided - made, or left for
 /// marko and why - is kept on the message for the screen.
-fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> {
+pub(crate) fn run_automation(conn: &Connection, new_rows: &[(i64, String)]) -> Vec<Notice> {
     let mut notices = Vec::new();
     for (row_id, _subject) in new_rows {
         let summary = conn
@@ -2191,6 +2191,10 @@ fn apply_committed(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>)
 pub(crate) async fn run_once(state: &AppState) -> AppResult<MailSyncResult> {
     let now = Utc::now();
     let at = now.to_rfc3339();
+    if following() {
+        let conn = state.db.lock().unwrap();
+        return Ok(skipped(FOLLOWING_MESSAGE, &at, progress_of(&conn, now)));
+    }
     let Some(_guard) = RunGuard::claim() else {
         let conn = state.db.lock().unwrap();
         return Ok(skipped("A sync is already running.", &at, progress_of(&conn, now)));
@@ -2294,6 +2298,42 @@ pub(crate) fn start_reader(app: tauri::AppHandle) {
     }
 }
 
+/// 2.115.0: until when the other computer reads Gmail for this one and sends
+/// it the mail (mail_share.rs), in milliseconds since the epoch - 0 when it
+/// does not. The window renews it every minute while it follows; when that
+/// stops - the other computer gone, the window gone - it runs out and this
+/// computer reads Gmail itself again. Four minutes: a minimised window's
+/// timers may run only once a minute, and a renewal a little late must not
+/// set both computers reading.
+static FOLLOWING_UNTIL: AtomicI64 = AtomicI64::new(0);
+const FOLLOWING_FOR_MS: i64 = 240_000;
+
+pub(crate) fn set_following(on: bool) {
+    let was = following();
+    FOLLOWING_UNTIL.store(if on { Utc::now().timestamp_millis() + FOLLOWING_FOR_MS } else { 0 }, Ordering::SeqCst);
+    if was && !on {
+        wake_reader();
+    }
+}
+
+pub(crate) fn following() -> bool {
+    Utc::now().timestamp_millis() < FOLLOWING_UNTIL.load(Ordering::SeqCst)
+}
+
+/// What a run says while the other computer reads Gmail for this one.
+pub(crate) const FOLLOWING_MESSAGE: &str = "Your other computer is reading Gmail and sends the mail here.";
+
+/// 2.115.0: what the window hears when mail from the other computer was
+/// stored - the same `mail-sync` a run sends, so the Mail screen refreshes
+/// from it as from any run.
+pub(crate) fn following_result(conn: &Connection, stored_new: i64, changed: bool) -> MailSyncResult {
+    let now = Utc::now();
+    let mut r = skipped(FOLLOWING_MESSAGE, &now.to_rfc3339(), progress_of(conn, now));
+    r.stored_new = stored_new;
+    r.changed = changed;
+    r
+}
+
 /// The window went away: the run under way finishes, no new one starts.
 pub(crate) fn hold_reader() {
     READER_HELD.store(true, Ordering::SeqCst);
@@ -2355,6 +2395,11 @@ fn reader_loop(app: tauri::AppHandle) {
         if READER_HELD.load(Ordering::SeqCst) {
             // Until `start_reader` wakes it again.
             next = None;
+            continue;
+        }
+        if following() {
+            // Looked at again in a while: the other computer may be gone.
+            next = Some(15_000);
             continue;
         }
         let state = app.state::<AppState>();

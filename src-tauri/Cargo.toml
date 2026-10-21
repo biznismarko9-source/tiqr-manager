@@ -67,7 +67,7 @@ serde_json = "1"
 # 17 tables that carry no `updated_at` column (transfers, every lookup list),
 # where a scan over timestamps would silently miss an edit. Not a new
 # dependency: the same rusqlite, one more feature flag.
-rusqlite = { version = "0.32", features = ["bundled", "backup", "hooks"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup", "hooks", "functions"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
 anyhow = "1"

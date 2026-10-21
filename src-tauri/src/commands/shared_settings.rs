@@ -67,6 +67,8 @@ pub(crate) const MAIL: Group = Group {
         "mail_muted",
         // 2.114.0: folders not read at all (mail.rs).
         "mail_skip_folders",
+        // 2.115.0: whether two computers share the reading (mail_share.rs).
+        "mail_share",
     ],
     tables: &["mail_rules", "mail_senders"],
 };

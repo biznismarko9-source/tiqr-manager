@@ -164,8 +164,10 @@ const LABELS: &[(Kind, &[&str])] = &[
     ),
 ];
 
-/// A label in comparable form: lower case, accents folded, words only.
-fn fold(s: &str) -> String {
+/// Text in comparable form: lower case, accents folded, words only, one
+/// space between them. 2.115.0: also what a subject mute compares, through
+/// the `tiqr_fold` SQL function (db.rs) - so "Účet" and "ucet" are one word.
+pub(crate) fn fold_words(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         let mapped: &str = match c {
@@ -195,8 +197,14 @@ fn fold(s: &str) -> String {
         };
         out.push_str(mapped);
     }
-    let words: Vec<&str> = out.split_whitespace().collect();
-    // "Your payout", "The total" - the same label.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A label in comparable form: `fold_words`, and "Your payout", "The total"
+/// the same label as "payout", "total".
+fn fold(s: &str) -> String {
+    let folded = fold_words(s);
+    let words: Vec<&str> = folded.split_whitespace().collect();
     let skip = usize::from(matches!(words.first(), Some(&"your") | Some(&"the")) && words.len() > 1);
     words[skip..].join(" ")
 }
