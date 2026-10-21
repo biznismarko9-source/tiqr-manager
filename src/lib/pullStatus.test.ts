@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { formatMoney } from "./format.ts";
-import { isPullDone, isReceivedPullDone, soldCell } from "./pullStatus.ts";
+import { feeTotals, isPullDone, isReceivedPullDone, soldCell } from "./pullStatus.ts";
 
 test("a pull is completed only when it is both paid and transferred", () => {
   assert.equal(isPullDone({ paid: true, transferDone: true }), true);
@@ -52,4 +52,29 @@ test("a received pull shows what its tickets sold for, and how many of them", ()
     part: null,
     title: "Not linked to an order",
   });
+});
+
+test("pulls done for others add up to what they earned, paid and still owed", () => {
+  const money = formatMoney;
+  const t = feeTotals([
+    { priceCents: 4_000, currency: "EUR", paid: true },
+    { priceCents: 2_500, currency: "EUR", paid: false },
+    { priceCents: 5_000, currency: "GBP", paid: false },
+    { priceCents: 0, currency: "EUR", paid: false },
+  ]);
+  assert.deepEqual(t, {
+    count: 4,
+    // Each currency on its own, the biggest first, and in that same order below.
+    earned: `${money(6_500, "EUR")} + ${money(5_000, "GBP")}`,
+    paid: money(4_000, "EUR"),
+    outstanding: `${money(2_500, "EUR")} + ${money(5_000, "GBP")}`,
+    anyEarned: true,
+  });
+  const nothingPaid = feeTotals([{ priceCents: 3_000, currency: "EUR", paid: false }]);
+  assert.equal(nothingPaid?.paid, money(0, "EUR"));
+  assert.equal(nothingPaid?.outstanding, money(3_000, "EUR"));
+  const allPaid = feeTotals([{ priceCents: 3_000, currency: "EUR", paid: true }]);
+  assert.equal(allPaid?.outstanding, money(0, "EUR"));
+  assert.equal(feeTotals([{ priceCents: 0, currency: "EUR", paid: true }])?.anyEarned, false);
+  assert.equal(feeTotals([]), null);
 });

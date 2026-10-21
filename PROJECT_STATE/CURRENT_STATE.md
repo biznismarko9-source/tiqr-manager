@@ -23,7 +23,7 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.114.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.114.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2648,6 +2648,19 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.114.2 - Given pulls: what they earned in all** (report:
+`history/REDESIGN-2.114.2-REPORT.md`; marko, correcting 2.114.1's reading:
+"skor som to myslel tak ako celkovo som natom zarobil", then chose "Given:
+sucet Fee" when asked):
+* Pulls (Given): a `SummaryStat` bar above the table - Earned (every fee),
+  Paid, Outstanding - from `lib/pullStatus.ts::feeTotals`, one amount per
+  currency, never converted. It counts every pull the search, platform and
+  dates select, both tabs and every transfer state.
+* `GivenPulls.load` no longer sends `transferDone`; the Status filter is
+  applied client-side in `visiblePulls` (Active only, as before), so the
+  table is unchanged and the bar never follows the tab or Status.
+* 2.114.1's *Sold for* column on Received stays.
 
 **2.114.1 - received pulls show what their tickets sold for** (report:
 `history/REDESIGN-2.114.1-REPORT.md`; marko: "pri pulls by som aj chcel

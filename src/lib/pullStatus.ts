@@ -43,3 +43,44 @@ export function soldCell(p: { orderId: number | null; quantity: number; sold: So
   }
   return { amounts, part: null, title: `${tickets(p.soldQuantity)} sold` };
 }
+
+/** What Pulls (Given)'s summary bar shows. */
+export interface FeeTotals {
+  /** How many pulls the figures cover. */
+  count: number;
+  /** Every fee, paid yet or not - e.g. "€1,240.00", or "€1,240.00 + £50.00"
+   *  (never added across currencies, biggest first). */
+  earned: string;
+  /** The fees the buyers have already paid. */
+  paid: string;
+  /** The fees still owed. */
+  outstanding: string;
+  /** Whether any fee is above zero - only then is "Earned" shown in green. */
+  anyEarned: boolean;
+}
+
+/** 2.114.2, marko: "ako celkovo som na tom zarobil" - what the pulls done for
+ *  others earned in all: the sum of their fees, split into paid and still
+ *  owed, one amount per currency. Null when there is no pull. */
+export function feeTotals(pulls: { priceCents: number; currency: string; paid: boolean }[]): FeeTotals | null {
+  if (pulls.length === 0) return null;
+  const byCurrency = new Map<string, { earned: number; paid: number }>();
+  for (const p of pulls) {
+    const t = byCurrency.get(p.currency) ?? { earned: 0, paid: 0 };
+    t.earned += p.priceCents;
+    if (p.paid) t.paid += p.priceCents;
+    byCurrency.set(p.currency, t);
+  }
+  const rows = [...byCurrency.entries()].sort((a, b) => b[1].earned - a[1].earned || a[0].localeCompare(b[0]));
+  const amounts = (pick: (t: { earned: number; paid: number }) => number) => {
+    const parts = rows.filter(([, t]) => pick(t) !== 0).map(([currency, t]) => formatMoney(pick(t), currency));
+    return parts.length > 0 ? parts.join(" + ") : formatMoney(0, rows[0][0]);
+  };
+  return {
+    count: pulls.length,
+    earned: amounts((t) => t.earned),
+    paid: amounts((t) => t.paid),
+    outstanding: amounts((t) => t.earned - t.paid),
+    anyEarned: rows.some(([, t]) => t.earned > 0),
+  };
+}

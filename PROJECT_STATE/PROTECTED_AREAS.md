@@ -21,6 +21,17 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.114.2 - Given pulls' Earned bar is an overall figure
+
+- **Earned / Paid / Outstanding count every pull the search, platform and
+  dates select** - Active and Completed together, any transfer state. The
+  tab and the Status filter narrow only the table (`visiblePulls`). Do not
+  move the Status filter back into `api.listPulls` (`transferDone`): the bar
+  would quietly start following it.
+- **Fees in different currencies are never added together or converted**
+  (`feeTotals`, one amount per currency, biggest first), the same rule as
+  Received's *Sold for*.
+
 ## 2.114.1 - what a received pull sold for
 
 - **"Sold for" is read, never stored.** `pulls_received::attach_sold`

@@ -16,6 +16,31 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.114.2 - Given pully: celkový zárobok, zaplatené a nezaplatené
+
+**Pulls → Given → riadok nad tabuľkou:** *Earned* (súčet Fee), *Paid*
+(fee, ktoré už kupujúci zaplatili) a *Outstanding* (ešte nezaplatené),
+napríklad „Earned: €165.00 from 6 pulls · Paid: €115.00 · Outstanding:
+€50.00".
+
+- Rátajú sa všetky pully, ktoré vyberá vyhľadávanie, platforma a dátumy:
+  Active aj Completed spolu a v každom stave prenosu. Záložka a filter
+  Status menia len tabuľku, nie súčet, rovnako ako Paid/Outstanding v
+  Sales. S dátumami Od/Do je to zárobok za obdobie, s menom vo
+  vyhľadávaní zárobok od jedného kupujúceho.
+- Meny sa nesčítavajú ani neprepočítavajú: „€165.00 + £25.00".
+- Filter Status sa teraz uplatňuje v appke nad načítaným zoznamom, nie v
+  databáze; tabuľka ukazuje presne to isté ako predtým.
+
+Stĺpec *Sold for* pri Received pulloch z 2.114.1 ostáva.
+
+Zip obsahuje aj všetko z 2.114.0 a 2.114.1 - stačí spustiť tento.
+
+`cargo test` 1579 prešlo (4 ignorované, ako doteraz), `npm test` 40, build v poriadku; obrazovka
+overená v prehliadači s napodobeným backendom (1080 px aj 1700 px,
+svetlá aj tmavá téma); súčet sa nemení pri prepínaní záložiek ani filtra
+Status.
+
 ## 2.114.1 - Pri prijatých pulloch suma, za ktorú sa lístky predali
 
 **Pulls → Received → nový stĺpec *Sold for*** (hneď za Fee). Pri pulli,
