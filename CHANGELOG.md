@@ -16,6 +16,36 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.114.1 - Pri prijatých pulloch suma, za ktorú sa lístky predali
+
+**Pulls → Received → nový stĺpec *Sold for*** (hneď za Fee). Pri pulli,
+ktorého lístky sa stali objednávkou a potom sa predali, je vidieť, za
+koľko:
+
+- súčet predajov lístkov z prepojenej objednávky; refundovaný predaj sa
+  nepočíta, rovnako ako Revenue na detaile objednávky;
+- keď je predaná len časť, za sumou je napríklad „· 1/4" (1 lístok zo 4);
+- predaje v dvoch menách sa nesčítavajú ani neprepočítavajú, stoja vedľa
+  seba („£360.00 + €120.00") a radšej sa zalomia, než by sa odrezali;
+- „-" znamená, že sa zatiaľ nič nepredalo alebo pull nemá objednávku;
+  bublina pri myši povie, ktoré z toho;
+- v okne úpravy pullu je pod prepojenou objednávkou riadok „Sold for
+  €200.00 · 1 of 4 tickets sold".
+
+Suma sa nikam neukladá, počíta sa pri každom zobrazení z predajov, takže
+sedí aj po neskoršom predaji, refunde alebo oprave ceny. Fee pre pullera
+ostáva len informačný. Given pully sa nemenia.
+
+Stĺpec dostal miesto zo stĺpca Event (9 % v širokej, 10 % v úzkej
+tabuľke); súčty šírok ostali ako predtým.
+
+Zip obsahuje aj všetko z 2.114.0 - ak 2.114.0 ešte nebolo vydané, stačí
+spustiť tento.
+
+`cargo test` 1579 prešlo (4 ignorované, ako doteraz), `npm test` 39, build v poriadku; obrazovka
+overená v prehliadači s napodobeným backendom pri najmenšom okne (1080 px
+s bočným panelom) aj pri širokom, bez vodorovného posúvania.
+
 ## 2.114.0 - Jednoduché webhooky, správne meno kupujúceho, hromadné mazanie, AI upratanie Promotions, viac nastavení mailu
 
 **Meno vo webhooku.** Pri viagogo maili „Ticket Holder Details / Full Name:

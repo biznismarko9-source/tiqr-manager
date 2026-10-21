@@ -1345,15 +1345,6 @@ mod tests {
         &post.payload["embeds"][0]
     }
 
-    fn field<'a>(post: &'a Post, name: &str) -> Option<&'a str> {
-        embed(post)["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["name"] == name)
-            .and_then(|f| f["value"].as_str())
-    }
-
     fn all_text(post: &Post) -> String {
         post.payload.to_string()
     }

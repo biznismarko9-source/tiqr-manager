@@ -23,7 +23,7 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.114.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.114.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2648,6 +2648,20 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.114.1 - received pulls show what their tickets sold for** (report:
+`history/REDESIGN-2.114.1-REPORT.md`; marko: "pri pulls by som aj chcel
+vidiet pri tych co som predal inym tak aka ciastka"):
+* `PullReceived.sold` (`SoldTotal { currency, cents }`, one per currency,
+  biggest first, never converted) and `sold_quantity`, filled by
+  `pulls_received::attach_sold` - one grouped query over the linked
+  orders' tickets and their sales that are not refunded (Order Detail's
+  Revenue rule) - on every read path (list, one, per order). Computed on
+  read, never stored; no migration.
+* Pulls (Received): *Sold for* column after Fee (`SoldForCell`, text from
+  `lib/pullStatus.ts::soldCell`), funded from Event (wide 40.028 -> 31.028
+  plus 9, narrow 38.78 -> 28.78 plus 10); the edit form shows `SoldNote`
+  under the linked order while that link is the saved one.
 
 **2.114.0 - simpler webhooks, the right buyer name, bulk delete, AI cleanup
 of Promotions, more mail settings** (report: `history/REDESIGN-2.114.0-REPORT.md`):

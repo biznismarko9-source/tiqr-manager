@@ -1083,11 +1083,23 @@ export interface PullReceived {
   orderId: number | null;
   /** The linked order's own code (e.g. "ORD-000042"), for display only - null whenever orderId is null. */
   orderCode: string | null;
+  /** 2.114.1: what the linked order's tickets were sold for - its sales that
+   * are not refunded, one total per currency (nearly always one), never
+   * converted. Empty when there is no linked order or nothing is sold yet. */
+  sold: SoldTotal[];
+  /** How many of the linked order's tickets those sales cover. */
+  soldQuantity: number;
   /** "manual" (typed in the app) or "sheet_sync" (auto-created by Orders & Sales sheet sync). */
   source: "manual" | "sheet_sync";
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One currency's total in `PullReceived.sold`. */
+export interface SoldTotal {
+  currency: string;
+  cents: number;
 }
 
 export interface PullReceivedInput {

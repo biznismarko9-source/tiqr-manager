@@ -37,6 +37,12 @@ from old reports.
   sure", never junk. Discord's new compact messages were checked as JSON in
   tests, not in a real Discord client.
 
+- **Pulls (Received), wide table: a synced pull's order code is cut to
+  "ORD-0..."** beside its *Synced* badge (seen while checking 2.114.1; the
+  Order column's 8.162% is unchanged since 2.0.38 and the narrow table hides
+  the column). The link's tooltip still names the order. A fix means
+  funding a wider Order column from another one.
+
 - **A star set in TIQR stays on that computer (2.113.1).** The Gmail access
   is read-only, so the star does not reach Gmail and the other computer does
   not see it (read state and moves behave the same). Reading a mail in TIQR

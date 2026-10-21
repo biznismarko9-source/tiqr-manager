@@ -21,6 +21,21 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.114.1 - what a received pull sold for
+
+- **"Sold for" is read, never stored.** `pulls_received::attach_sold`
+  computes it on every read from the linked order's tickets and their
+  sales that are not refunded - the same rule as
+  `orders::fetch_sales_summary` (Order Detail's Revenue). Keep the two
+  rules the same, and keep it one grouped query for a whole list, never one
+  per row.
+- **Currencies are never added together or converted** - one `SoldTotal`
+  per currency. The cell lets two amounts wrap onto a second line rather
+  than truncate money.
+- **The Received table's colgroups are now 8 (narrow) and 9 (wide)
+  columns.** *Sold for* was funded from Event; both still sum to what they
+  summed to before (99.999, the rounding of the original percentages).
+
 ## 2.114.0 - compact Discord messages, the Promotions cleanup
 
 - **A Discord message is a title and a few whole lines.** No field grid;

@@ -1,7 +1,8 @@
 // Run with `npm test` (Node 22.18+ runs TypeScript directly).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isPullDone, isReceivedPullDone } from "./pullStatus.ts";
+import { formatMoney } from "./format.ts";
+import { isPullDone, isReceivedPullDone, soldCell } from "./pullStatus.ts";
 
 test("a pull is completed only when it is both paid and transferred", () => {
   assert.equal(isPullDone({ paid: true, transferDone: true }), true);
@@ -18,4 +19,37 @@ test("a received pull is completed once it became an order or its event is over"
   assert.equal(isReceivedPullDone({ orderId: null, eventDate: "2026-10-20" }, today), false);
   assert.equal(isReceivedPullDone({ orderId: null, eventDate: "2026-12-31" }, today), false);
   assert.equal(isReceivedPullDone({ orderId: null, eventDate: null }, today), false);
+});
+
+test("a received pull shows what its tickets sold for, and how many of them", () => {
+  const eur = (cents: number) => [{ currency: "EUR", cents }];
+  assert.deepEqual(soldCell({ orderId: 7, quantity: 2, sold: eur(45_000), soldQuantity: 2 }), {
+    amounts: [formatMoney(45_000, "EUR")],
+    part: null,
+    title: "2 tickets sold",
+  });
+  assert.deepEqual(soldCell({ orderId: 7, quantity: 4, sold: eur(20_000), soldQuantity: 1 }), {
+    amounts: [formatMoney(20_000, "EUR")],
+    part: "1/4",
+    title: "1 of 4 tickets sold",
+  });
+  // Two currencies stay side by side, never added together.
+  const mixed = soldCell({
+    orderId: 7,
+    quantity: 3,
+    sold: [{ currency: "GBP", cents: 20_000 }, { currency: "EUR", cents: 10_000 }],
+    soldQuantity: 3,
+  });
+  assert.deepEqual(mixed.amounts, [formatMoney(20_000, "GBP"), formatMoney(10_000, "EUR")]);
+  assert.equal(soldCell({ orderId: 7, quantity: 1, sold: eur(9_900), soldQuantity: 1 }).title, "1 ticket sold");
+  assert.deepEqual(soldCell({ orderId: 7, quantity: 2, sold: [], soldQuantity: 0 }), {
+    amounts: [],
+    part: null,
+    title: "Nothing sold yet",
+  });
+  assert.deepEqual(soldCell({ orderId: null, quantity: 2, sold: [], soldQuantity: 0 }), {
+    amounts: [],
+    part: null,
+    title: "Not linked to an order",
+  });
 });

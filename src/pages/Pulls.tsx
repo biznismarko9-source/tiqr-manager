@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import AiImportPanel from "../components/AiImportPanel";
 import PullRowsModal from "./PullRowsModal";
 import { isIsoDate, matchByName } from "../lib/aiImport";
@@ -50,7 +50,7 @@ import { IconAlertTriangle, IconLink, IconPlus, IconSearch, IconTrash, IconUsers
 import { useToast } from "../lib/toast";
 import { useNarrowTables } from "../lib/useNarrowTables";
 import { useListTab } from "../lib/useListTab";
-import { isPullDone, isReceivedPullDone } from "../lib/pullStatus";
+import { isPullDone, isReceivedPullDone, soldCell } from "../lib/pullStatus";
 import { completionStatus } from "../lib/completion";
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "CZK", "PLN", "HUF", "SEK", "NOK", "DKK", "RON", "TRY", "BGN"];
@@ -1337,9 +1337,10 @@ function ReceivedPulls() {
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[11.707%]" />
                 <col className="w-[9.146%]" />
-                <col className="w-[38.78%]" />
+                <col className="w-[28.78%]" />
                 <col className="w-[8.659%]" />
                 <col className="w-[4.39%]" />
+                <col className="w-[10%]" />
                 <col className="w-[10%]" />
                 <col className="w-[17.317%]" />
               </colgroup>
@@ -1348,10 +1349,11 @@ function ReceivedPulls() {
                 {selectionMode && <col className="w-8" />}
                 <col className="w-[9.084%]" />
                 <col className="w-[10.22%]" />
-                <col className="w-[40.028%]" />
+                <col className="w-[31.028%]" />
                 <col className="w-[6.884%]" />
                 <col className="w-[3.691%]" />
                 <col className="w-[7.807%]" />
+                <col className="w-[9%]" />
                 <col className="w-[8.162%]" />
                 <col className="w-[14.123%]" />
               </colgroup>
@@ -1375,6 +1377,7 @@ function ReceivedPulls() {
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>Event date</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Qty</th>
                 <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Fee</th>
+                <th className={`${isNarrow ? "th-c-narrow" : "th-c"} text-right`}>Sold for</th>
                 {!isNarrow && <th className="th-c">Order</th>}
                 <th className={isNarrow ? "th-c-narrow" : "th-c"}>More info</th>
               </tr>
@@ -1421,6 +1424,7 @@ function ReceivedPulls() {
                   </td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{p.quantity}</td>
                   <td className={`${isNarrow ? "td-c-narrow" : "td-c"} text-right tabular-nums whitespace-nowrap`}>{formatMoney(p.amountCents, p.currency)}</td>
+                  <SoldForCell pull={p} narrow={isNarrow} />
                   {!isNarrow && (
                     <td className="td-c">
                       {p.orderId && p.orderCode ? (
@@ -1490,6 +1494,48 @@ function ReceivedPulls() {
         onConfirm={confirmDeleteSelected}
       />
     </>
+  );
+}
+
+/** 2.114.1: Pulls (Received)'s "Sold for" cell - see soldCell
+ * (lib/pullStatus.ts). An amount never breaks; sales in two currencies may
+ * wrap onto a second line rather than hide behind "...". The "2/4" part only
+ * fits the wide table; the tooltip always says it. */
+function SoldForCell({ pull, narrow }: { pull: PullReceived; narrow: boolean }) {
+  const s = soldCell(pull);
+  return (
+    <td
+      className={`${narrow ? "td-c-narrow" : "td-c"} overflow-hidden text-right tabular-nums`}
+      title={s.amounts.length ? `${s.amounts.join(" + ")} · ${s.title}` : s.title}
+    >
+      {s.amounts.length === 0 ? (
+        <span className="text-slate-400 dark:text-slate-500">-</span>
+      ) : (
+        s.amounts.map((amount, i) => (
+          <Fragment key={i}>
+            {i > 0 && " + "}
+            <span className="whitespace-nowrap">{amount}</span>
+          </Fragment>
+        ))
+      )}
+      {s.part && !narrow && <span className="ml-1 whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">· {s.part}</span>}
+    </td>
+  );
+}
+
+/** The same, as a line under the linked order in the edit form. */
+function SoldNote({ pull }: { pull: PullReceived }) {
+  const s = soldCell(pull);
+  return (
+    <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+      {s.amounts.length ? (
+        <>
+          Sold for <span className="font-medium text-slate-700 dark:text-slate-200">{s.amounts.join(" + ")}</span> · {s.title}
+        </>
+      ) : (
+        s.title
+      )}
+    </p>
   );
 }
 
@@ -1776,6 +1822,8 @@ export function PullReceivedFormModal({
           </div>
           <div className="col-span-2">
             <OrderLinkPicker orderId={linkedOrder?.id ?? null} orderCode={linkedOrder?.code ?? null} onChange={setLinkedOrder} />
+            {/* What the saved link sold for - hidden once the link is changed here and not saved yet. */}
+            {pull && linkedOrder?.id === pull.orderId && <SoldNote pull={pull} />}
           </div>
         </FormGroup>
       </div>

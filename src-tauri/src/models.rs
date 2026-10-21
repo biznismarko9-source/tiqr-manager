@@ -1390,6 +1390,15 @@ pub struct PullReceived {
     /// `None` whenever `order_id` is `None`. Same LEFT JOIN pattern as
     /// `Pull.platform_name`.
     pub order_code: Option<String>,
+    /// 2.114.1, marko: "pri tych co som predal inym tak aka ciastka" - what
+    /// the linked order's tickets were sold for: its sales that are not
+    /// refunded, the same ones Order Detail's Revenue counts. One total per
+    /// currency (nearly always just one), never converted. Empty when there
+    /// is no linked order or nothing of it is sold yet. Read-only - see
+    /// commands/pulls_received.rs::attach_sold.
+    pub sold: Vec<SoldTotal>,
+    /// How many of the linked order's tickets those sales cover.
+    pub sold_quantity: i64,
     /// `"manual"` (typed directly in the app) or `"sheet_sync"` (auto-created
     /// by Orders & Sales sheet sync when a synced row's `pull` column says
     /// "yes" - see commands/orders_sheet_sync.rs::maybe_link_pull_received).
@@ -1399,6 +1408,14 @@ pub struct PullReceived {
     pub is_demo: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// One currency's total in `PullReceived::sold`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoldTotal {
+    pub currency: String,
+    pub cents: i64,
 }
 
 /// Input for `create_pull_received`. `source` deliberately isn't here as

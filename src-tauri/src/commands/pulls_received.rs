@@ -27,8 +27,9 @@
 use crate::codes;
 use crate::db::AppState;
 use crate::error::{AppError, AppResult};
-use crate::models::{BulkDeleteResult, BulkDeleteSkip, PullReceived, PullReceivedEditInput, PullReceivedInput};
+use crate::models::{BulkDeleteResult, BulkDeleteSkip, PullReceived, PullReceivedEditInput, PullReceivedInput, SoldTotal};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::HashMap;
 use tauri::State;
 
 // Same safety cap and rationale as every other unfiltered list view in this
@@ -57,6 +58,8 @@ fn map_pull_received(row: &Row) -> rusqlite::Result<PullReceived> {
         more_info: row.get("more_info")?,
         order_id: row.get("order_id")?,
         order_code: row.get("order_code")?,
+        sold: Vec::new(),
+        sold_quantity: 0,
         source: row.get("source")?,
         is_demo: row.get("is_demo")?,
         created_at: row.get("created_at")?,
@@ -69,8 +72,54 @@ fn map_pull_received(row: &Row) -> rusqlite::Result<PullReceived> {
 /// way the manual `#[tauri::command]`s do.
 pub(crate) fn fetch_one(conn: &Connection, id: i64) -> AppResult<PullReceived> {
     let sql = format!("{BASE_SQL} WHERE pr.id = ?1");
-    conn.query_row(&sql, [id], map_pull_received)
-        .map_err(|_| AppError::NotFound(format!("Pull received #{id} not found")))
+    let mut pull = conn
+        .query_row(&sql, [id], map_pull_received)
+        .map_err(|_| AppError::NotFound(format!("Pull received #{id} not found")))?;
+    let order_id = pull.order_id;
+    attach_sold(conn, std::slice::from_mut(&mut pull), order_id)?;
+    Ok(pull)
+}
+
+/// 2.114.1: fills in `sold`/`sold_quantity` - what each pull's linked order
+/// sold for. Only sales that are not refunded count, the same rule as Order
+/// Detail's Revenue (`commands::orders::fetch_sales_summary`); each currency
+/// keeps its own total, biggest first. One grouped query for a whole list,
+/// never one per row: `order_id` narrows it to that one order, `None` reads
+/// every order some received pull links to.
+fn attach_sold(conn: &Connection, pulls: &mut [PullReceived], order_id: Option<i64>) -> AppResult<()> {
+    if pulls.iter().all(|p| p.order_id.is_none()) {
+        return Ok(());
+    }
+    let scope = match order_id {
+        Some(_) => "t.order_id = ?1",
+        None => "t.order_id IN (SELECT order_id FROM pulls_received WHERE order_id IS NOT NULL)",
+    };
+    let sql = format!(
+        "SELECT t.order_id, sa.currency, COUNT(*), SUM(sa.sale_price_cents)
+         FROM tickets t
+         JOIN sales sa ON sa.ticket_id = t.id AND sa.payment_status != 'refunded'
+         WHERE {scope}
+         GROUP BY t.order_id, sa.currency
+         ORDER BY t.order_id, SUM(sa.sale_price_cents) DESC, sa.currency"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(order_id), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+    })?;
+    let mut by_order: HashMap<i64, (i64, Vec<SoldTotal>)> = HashMap::new();
+    for row in rows {
+        let (id, currency, count, cents) = row?;
+        let entry = by_order.entry(id).or_default();
+        entry.0 += count;
+        entry.1.push(SoldTotal { currency, cents });
+    }
+    for p in pulls.iter_mut() {
+        if let Some((count, totals)) = p.order_id.and_then(|id| by_order.get(&id)) {
+            p.sold_quantity = *count;
+            p.sold = totals.clone();
+        }
+    }
+    Ok(())
 }
 
 /// Free-text search across every field marko would actually recognize a
@@ -120,7 +169,9 @@ fn list_pulls_received_impl(
     let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), map_pull_received)?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    let mut pulls = rows.collect::<Result<Vec<_>, _>>()?;
+    attach_sold(conn, &mut pulls, None)?;
+    Ok(pulls)
 }
 
 #[tauri::command]
@@ -365,7 +416,9 @@ fn list_pulls_received_for_order_impl(conn: &Connection, order_id: i64) -> AppRe
     let sql = format!("{BASE_SQL} WHERE pr.order_id = ?1 ORDER BY pr.id ASC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([order_id], map_pull_received)?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    let mut pulls = rows.collect::<Result<Vec<_>, _>>()?;
+    attach_sold(conn, &mut pulls, Some(order_id))?;
+    Ok(pulls)
 }
 
 #[tauri::command]
@@ -849,5 +902,77 @@ mod tests {
         let conn = test_conn();
         let order_id = seed_order_with(&conn, "ORD-000042", 1, "EUR", "2026-10-15");
         assert!(list_pulls_received_for_order_impl(&conn, order_id).unwrap().is_empty());
+    }
+
+    // ---- sold (2.114.1) ---------------------------------------------------------
+
+    /// One ticket of `order_id` and, when given, its sale (cents, currency,
+    /// payment status).
+    fn add_ticket(conn: &Connection, order_id: i64, code: &str, sale: Option<(i64, &str, &str)>) {
+        let event_id: i64 = conn.query_row("SELECT event_id FROM orders WHERE id = ?1", [order_id], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO tickets(code, event_id, order_id) VALUES (?1, ?2, ?3)", params![code, event_id, order_id])
+            .unwrap();
+        let ticket_id = conn.last_insert_rowid();
+        if let Some((cents, currency, status)) = sale {
+            conn.execute(
+                "INSERT INTO sales(code, ticket_id, sale_date, sale_price_cents, currency, payment_status)
+                 VALUES (?1, ?2, '2026-10-01', ?3, ?4, ?5)",
+                params![format!("SAL-{code}"), ticket_id, cents, currency, status],
+            )
+            .unwrap();
+        }
+    }
+
+    fn eur(cents: i64) -> Vec<SoldTotal> {
+        vec![SoldTotal { currency: "EUR".into(), cents }]
+    }
+
+    #[test]
+    fn a_received_pull_shows_what_its_tickets_sold_for() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 4, "EUR", "2026-10-15");
+        add_ticket(&conn, order_id, "T1", Some((25_000, "EUR", "paid")));
+        add_ticket(&conn, order_id, "T2", Some((20_000, "EUR", "pending")));
+        // Refunded is not sold, and neither is a ticket still in stock.
+        add_ticket(&conn, order_id, "T3", Some((30_000, "EUR", "refunded")));
+        add_ticket(&conn, order_id, "T4", None);
+        let other_order = seed_order_with(&conn, "ORD-000043", 1, "EUR", "2026-10-16");
+        add_ticket(&conn, other_order, "B1", Some((9_900, "EUR", "paid")));
+
+        let pull = link_pull_received_to_order_impl(&conn, order_id, "Jozef", 1500).unwrap();
+        let other = link_pull_received_to_order_impl(&conn, other_order, "Peter", 500).unwrap();
+        let standalone = create_pull_received_impl(&conn, &base_input("Maria"), false).unwrap();
+        assert_eq!((pull.sold.clone(), pull.sold_quantity), (eur(45_000), 2), "saving hands it back too");
+
+        let one = fetch_one(&conn, pull.id).unwrap();
+        assert_eq!((one.sold, one.sold_quantity), (eur(45_000), 2));
+
+        let list = list_pulls_received_impl(&conn, None, None, None).unwrap();
+        let row = |id: i64| list.iter().find(|p| p.id == id).unwrap();
+        assert_eq!((row(pull.id).sold.clone(), row(pull.id).sold_quantity), (eur(45_000), 2));
+        assert_eq!((row(other.id).sold.clone(), row(other.id).sold_quantity), (eur(9_900), 1), "each pull its own order");
+        assert!(row(standalone.id).sold.is_empty() && row(standalone.id).sold_quantity == 0, "no order, nothing sold");
+
+        let for_order = list_pulls_received_for_order_impl(&conn, order_id).unwrap();
+        assert_eq!((for_order[0].sold.clone(), for_order[0].sold_quantity), (eur(45_000), 2));
+    }
+
+    #[test]
+    fn sold_starts_empty_and_keeps_each_currency_apart() {
+        let conn = test_conn();
+        let order_id = seed_order_with(&conn, "ORD-000042", 3, "EUR", "2026-10-15");
+        let pull = link_pull_received_to_order_impl(&conn, order_id, "Jozef", 0).unwrap();
+        assert!(pull.sold.is_empty() && pull.sold_quantity == 0, "linked, but nothing sold yet");
+
+        add_ticket(&conn, order_id, "T1", Some((10_000, "EUR", "paid")));
+        add_ticket(&conn, order_id, "T2", Some((15_000, "GBP", "paid")));
+        add_ticket(&conn, order_id, "T3", Some((5_000, "GBP", "pending")));
+        let p = fetch_one(&conn, pull.id).unwrap();
+        assert_eq!(
+            p.sold,
+            vec![SoldTotal { currency: "GBP".into(), cents: 20_000 }, SoldTotal { currency: "EUR".into(), cents: 10_000 }],
+            "never added across currencies; the biggest first"
+        );
+        assert_eq!(p.sold_quantity, 3);
     }
 }
