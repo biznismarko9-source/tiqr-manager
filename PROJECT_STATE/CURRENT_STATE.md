@@ -23,7 +23,7 @@ signed-in account's own `users/{uid}` (opt-in per computer).
 
 ## Version
 
-**2.114.2**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.114.3**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2648,6 +2648,27 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.114.3 - mail catches up on every computer, and shows how far**
+(report: `history/REDESIGN-2.114.3-REPORT.md`; marko: "na macu mam 100 000
+sprav ulozenych a na windowse ukazuje len 16k ako keby fungovali zvlast"):
+* The mail reader is a backend thread (`mail_sync::start_reader`, named
+  `mail-reader`): `run_once` in a loop, paced by `next_after` (the rules
+  Layout.tsx's timer loop had), woken by `wake_reader` (Condvar; a wake
+  during a run is kept), held by `hold_reader` when Layout unmounts. Every
+  run is emitted as `mail-sync`; Layout republishes it (`publishMailSync`).
+  Commands `start_mail_reader`, `wake_mail_reader`, `hold_mail_reader`;
+  `sync_mail_now` stays for a one-off run.
+* `shared_settings::merge_from_remote` (Drive merge) resets the engine only
+  for another mailbox (account email changed - then it also drops this
+  computer's Gmail token), like `live_sync::settings_apply`; it no longer
+  clears the address when the other file has none.
+* Mail store `SCHEMA_V5`: `mail_sync_sections.set_aside_at` (`skip_walk`
+  stamps it, `retry_set_aside` restarts after `SET_ASIDE_RETRY_SECS` = 6 h),
+  `mail_sync_state.gmail_total` + `totals_checked_at` (profile
+  `messagesTotal` every `TOTALS_EVERY_SECS` = 600; a totals-only read never
+  takes the historyId). `MailSyncProgress.gmail_total`;
+  `lib/mailSyncStatus.ts::storedVsGmail` on the Mail screen and in settings.
 
 **2.114.2 - Given pulls: what they earned in all** (report:
 `history/REDESIGN-2.114.2-REPORT.md`; marko, correcting 2.114.1's reading:

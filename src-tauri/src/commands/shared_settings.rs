@@ -26,6 +26,7 @@
 //!   Auto would each create the same order from the same email.
 //! * Pause, and everything about where reading has got to - that is the
 //!   mail file, which never travels.
+use crate::commands::mail::{MAIL_ACCOUNT_EMAIL_KEY, MAIL_GRANTED_SCOPE_KEY, MAIL_REFRESH_TOKEN_KEY};
 use crate::commands::sheets_sync::{delete_setting, get_setting, set_setting};
 use crate::error::AppResult;
 use chrono::Utc;
@@ -149,6 +150,7 @@ fn replace_table(conn: &Connection, table: &str) -> AppResult<()> {
 /// computer's file attached as `remote`. Returns the groups taken from it.
 pub(crate) fn merge_from_remote(conn: &Connection) -> AppResult<Vec<&'static str>> {
     let mut taken = Vec::new();
+    let mut other_mailbox = false;
     for g in GROUPS {
         // A file from before 2.110.0 has no stamp, and says nothing.
         let Some(theirs) = remote_setting(conn, g.stamp_key)? else {
@@ -159,7 +161,23 @@ pub(crate) fn merge_from_remote(conn: &Connection) -> AppResult<Vec<&'static str
             continue;
         }
         for key in g.keys {
-            match remote_setting(conn, key)? {
+            let theirs = remote_setting(conn, key)?;
+            // 2.114.3: the mailbox address the way live sync takes it
+            // (live_sync::settings_apply) - a computer with none never
+            // clears it here, and only a DIFFERENT address is another
+            // mailbox, whose sign-in this computer's is not.
+            if *key == MAIL_ACCOUNT_EMAIL_KEY {
+                let Some(theirs) = theirs.filter(|v| !v.is_empty()) else { continue };
+                let ours = get_setting(conn, key)?;
+                if ours.as_deref().is_some_and(|o| !o.is_empty() && !o.eq_ignore_ascii_case(&theirs)) {
+                    crate::secrets::delete(conn, MAIL_REFRESH_TOKEN_KEY)?;
+                    crate::secrets::delete(conn, MAIL_GRANTED_SCOPE_KEY)?;
+                    other_mailbox = true;
+                }
+                set_setting(conn, key, &theirs)?;
+                continue;
+            }
+            match theirs {
                 Some(v) => set_setting(conn, key, &v)?,
                 None => delete_setting(conn, key)?,
             }
@@ -172,12 +190,12 @@ pub(crate) fn merge_from_remote(conn: &Connection) -> AppResult<Vec<&'static str
         set_setting(conn, g.stamp_key, &theirs)?;
         taken.push(g.name);
     }
-    if taken.contains(&MAIL.name) {
-        // Another connection, or the same one again: where this computer's
-        // folder walks had got to no longer means anything.
-        if crate::mail_store::is_attached(conn) {
-            crate::commands::mail_sync::reset_engine(conn)?;
-        }
+    // Another mailbox: where this computer's folder walks had got to no
+    // longer means anything. 2.114.3: ONLY then, the same as live sync - a
+    // newer mute, folder, rule or reader choice from the other computer used
+    // to send every walk here back to the top and empty the queue too.
+    if other_mailbox && taken.contains(&MAIL.name) && crate::mail_store::is_attached(conn) {
+        crate::commands::mail_sync::reset_engine(conn)?;
     }
     Ok(taken)
 }
@@ -275,6 +293,63 @@ mod tests {
         });
         assert_eq!(merge_from_remote(&local).unwrap(), vec!["mail"]);
         assert_eq!(crate::secrets::get(&local, crate::secrets::GMAIL_REFRESH_TOKEN).unwrap().as_deref(), Some("1//mine"));
+        done(&local, path);
+    }
+
+    /// 2.114.3: a newer mute, folder or rule from the other computer is the
+    /// same mailbox, so where reading had got to here stays; only another
+    /// mailbox starts reading again - and drops the sign-in of the old one.
+    #[test]
+    fn only_another_mailbox_sends_reading_back_to_the_start() {
+        let local = test_conn();
+        set_setting(&local, MAIL_ACCOUNT_EMAIL_KEY, "biznismarko9@gmail.com").unwrap();
+        crate::secrets::set(&local, crate::secrets::GMAIL_REFRESH_TOKEN, "1//mine").unwrap();
+        set_setting(&local, MAIL.stamp_key, "2026-10-01T00:00:00+00:00").unwrap();
+        local
+            .execute(
+                "INSERT INTO mail_sync_sections (key, title, tier, spec, page_token) VALUES ('inbox', 'Inbox', 50, 'q', 'page-7')",
+                [],
+            )
+            .unwrap();
+        local
+            .execute(
+                "INSERT INTO mail_fetch_queue (provider_message_id, account_email, queued_at) VALUES ('m1', 'biznismarko9@gmail.com', 'x')",
+                [],
+            )
+            .unwrap();
+        let reading = |c: &Connection| -> (Option<String>, i64) {
+            (
+                c.query_row("SELECT page_token FROM mail_sync_sections WHERE key = 'inbox'", [], |r| r.get(0)).unwrap(),
+                c.query_row("SELECT COUNT(*) FROM mail_fetch_queue", [], |r| r.get(0)).unwrap(),
+            )
+        };
+        let token = |c: &Connection| crate::secrets::get(c, crate::secrets::GMAIL_REFRESH_TOKEN).unwrap();
+
+        let path = with_remote(&local, |r| {
+            set_setting(r, MAIL_ACCOUNT_EMAIL_KEY, "BiznisMarko9@gmail.com").unwrap();
+            set_setting(r, "mail_muted", "[{\"pattern\":\"shop.example\"}]").unwrap();
+            set_setting(r, MAIL.stamp_key, "2026-10-18T00:00:00+00:00").unwrap();
+        });
+        assert_eq!(merge_from_remote(&local).unwrap(), vec!["mail"]);
+        assert!(get_setting(&local, "mail_muted").unwrap().unwrap().contains("shop.example"), "the newer setting is taken");
+        assert_eq!(reading(&local), (Some("page-7".to_string()), 1), "same mailbox: the walk and the queue stay");
+        assert_eq!(token(&local).as_deref(), Some("1//mine"));
+        done(&local, path);
+
+        // A computer with no address at all never clears this one's.
+        let path = with_remote(&local, |r| set_setting(r, MAIL.stamp_key, "2026-10-18T06:00:00+00:00").unwrap());
+        assert_eq!(merge_from_remote(&local).unwrap(), vec!["mail"]);
+        assert_eq!(get_setting(&local, MAIL_ACCOUNT_EMAIL_KEY).unwrap().as_deref(), Some("BiznisMarko9@gmail.com"));
+        assert_eq!(reading(&local), (Some("page-7".to_string()), 1));
+        done(&local, path);
+
+        let path = with_remote(&local, |r| {
+            set_setting(r, MAIL_ACCOUNT_EMAIL_KEY, "someone.else@gmail.com").unwrap();
+            set_setting(r, MAIL.stamp_key, "2026-10-19T00:00:00+00:00").unwrap();
+        });
+        assert_eq!(merge_from_remote(&local).unwrap(), vec!["mail"]);
+        assert_eq!(reading(&local), (None, 0), "another mailbox: reading starts again");
+        assert_eq!(token(&local), None, "this sign-in belongs to the old mailbox");
         done(&local, path);
     }
 

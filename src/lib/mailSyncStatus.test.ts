@@ -1,7 +1,7 @@
 // Run with `npm test` (Node 22.18+ runs TypeScript directly).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isReading, lastSyncText, laneText, laneViews, syncHeadline } from "./mailSyncStatus.ts";
+import { isReading, lastSyncText, laneText, laneViews, syncHeadline, storedVsGmail } from "./mailSyncStatus.ts";
 import type { MailLaneProgress, MailSyncProgress } from "./types.ts";
 
 const fmt = (n: number) => String(n);
@@ -91,4 +91,12 @@ test("last sync is a time today and a date before that", () => {
   assert.equal(lastSyncText(new Date(2026, 9, 17, 9, 5).toISOString(), now), "Last sync 17 Oct");
   assert.equal(lastSyncText(null, now), "Not synced yet");
   assert.equal(lastSyncText("nonsense", now), "Not synced yet");
+});
+
+test("this computer's count stands beside Gmail's own, once Gmail was asked", () => {
+  const fmt = (n: number) => n.toLocaleString("en-US");
+  assert.equal(storedVsGmail({ storedTotal: 16_234, gmailTotal: 104_512 }, fmt), "16,234 on this computer · Gmail has 104,512 in all");
+  assert.equal(storedVsGmail({ storedTotal: 16_234, gmailTotal: null }, fmt), "16,234 on this computer");
+  assert.equal(storedVsGmail({ storedTotal: 16_234 }, fmt), "16,234 on this computer", "from a backend before 2.114.3");
+  assert.equal(storedVsGmail({ storedTotal: 0, gmailTotal: 0 }, fmt), "0 on this computer");
 });

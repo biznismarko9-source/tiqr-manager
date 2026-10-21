@@ -27,7 +27,7 @@ import { api, errMsg } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { lastMailSync, onMailSynced, requestMailSync } from "../lib/mailSync";
 import { mergeTopPage } from "../lib/mailRows";
-import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone } from "../lib/mailSyncStatus";
+import { isReading, lastSyncText, laneViews, syncHeadline, type LaneTone, storedVsGmail } from "../lib/mailSyncStatus";
 import {
   type MailConnectionStatus,
   type MailFolderCount,
@@ -807,7 +807,7 @@ export default function MailIntelligence() {
     <div>
       <PageHeader
         title="Mail"
-        subtitle={`${status.accountEmail ?? "Your inbox"} · ${fmt(progress.storedTotal)} on this computer${
+        subtitle={`${status.accountEmail ?? "Your inbox"} · ${storedVsGmail(progress, fmt)}${
           status.unreadCount > 0 ? ` · ${fmt(status.unreadCount)} unread` : ""
         }`}
         actions={
@@ -815,8 +815,9 @@ export default function MailIntelligence() {
             <div className="w-56">
               <Input placeholder="Search this folder" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            {/* Sync asks the one reader (Layout.tsx) to go now; when reading
-                is paused, the same button resumes it. */}
+            {/* Sync asks the one reader (commands/mail_sync.rs, started by
+                Layout.tsx) to go now; when reading is paused, the same
+                button resumes it. */}
             <Button
               variant="secondary"
               disabled={nudged}

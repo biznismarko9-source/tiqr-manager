@@ -44,9 +44,9 @@
 //! downloaded copy from the other machine that has no `mail` attached. They
 //! must never touch a cache table again. A change to this schema is a new
 //! `user_version` step in `ensure`, not a numbered migration - `SCHEMA_V1`
-//! (2.110.0), `SCHEMA_V2` (2.111.0), `SCHEMA_V3` (2.113.0) and `SCHEMA_V4`
-//! (2.113.1) so far, and a released step is never edited, only followed by
-//! the next one.
+//! (2.110.0), `SCHEMA_V2` (2.111.0), `SCHEMA_V3` (2.113.0), `SCHEMA_V4`
+//! (2.113.1) and `SCHEMA_V5` (2.114.3) so far, and a released step is never
+//! edited, only followed by the next one.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -133,6 +133,12 @@ pub fn ensure(conn: &Connection) -> rusqlite::Result<()> {
         tx.execute_batch(SCHEMA_V4)?;
         crate::commands::mail::reread_codes(&tx)?;
         tx.execute_batch("PRAGMA mail.user_version = 4;")?;
+        tx.commit()?;
+    }
+    if version < 5 {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_V5)?;
+        tx.execute_batch("PRAGMA mail.user_version = 5;")?;
         tx.commit()?;
     }
     relocate(conn)?;
@@ -490,6 +496,17 @@ ALTER TABLE mail.mail_sync_state ADD COLUMN trouble_streak INTEGER NOT NULL DEFA
 /// maile kde je nejaky attachment tak ten tiez dat do tiqr", "aj obrazky co
 /// su v maily tak prekopirj do tiqr", and "AI nesmie rozhodovat naslepo -
 /// kazdy navrh musi mat zdrojove udaje, mieru istoty a kontrolu duplicit".
+const SCHEMA_V5: &str = r#"
+-- 2.114.3: when Gmail refused to list a folder at all. It is tried again a
+-- few hours later instead of counting as read to the end for good
+-- (commands/mail_sync.rs, skip_walk).
+ALTER TABLE mail.mail_sync_sections ADD COLUMN set_aside_at TEXT;
+-- 2.114.3: how many messages Gmail says the mailbox holds, and when that was
+-- last asked - shown beside what this computer has.
+ALTER TABLE mail.mail_sync_state ADD COLUMN gmail_total INTEGER;
+ALTER TABLE mail.mail_sync_state ADD COLUMN totals_checked_at TEXT;
+"#;
+
 const SCHEMA_V4: &str = r#"
 -- 2.113.1: a star marko set (1) or took off (0) in TIQR. NULL = as Gmail has
 -- it. TIQR cannot change Gmail, so without this a walk of Gmail's Starred
@@ -622,7 +639,7 @@ mod tests {
         crate::db::run_migrations(&conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2, "every message is still here");
         let (labels, starred): (String, i64) = conn
@@ -684,7 +701,7 @@ mod tests {
 
         crate::db::run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA mail.user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
         let moved: Option<String> =

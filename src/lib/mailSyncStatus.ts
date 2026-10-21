@@ -133,3 +133,12 @@ export function lastSyncText(iso: string | null | undefined, now: Date): string 
 export function isReading(progress: MailSyncProgress, paused: boolean, failed: boolean): boolean {
   return !paused && !failed && progress.phase !== "idle";
 }
+
+/** 2.114.3: what this computer holds, beside what Gmail itself counts - each
+ *  computer reads Gmail on its own, so each fills up by itself (marko: 100,000
+ *  on the Mac, 16,000 on Windows). Gmail's count is its own, sent mail
+ *  included, which TIQR does not read - so the two need not meet exactly. */
+export function storedVsGmail(p: Pick<MailSyncProgress, "storedTotal" | "gmailTotal">, fmt: Fmt): string {
+  const here = `${fmt(p.storedTotal)} on this computer`;
+  return p.gmailTotal != null && p.gmailTotal > 0 ? `${here} · Gmail has ${fmt(p.gmailTotal)} in all` : here;
+}

@@ -39,7 +39,7 @@ import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ScanRunFinishedPayload } from "../lib/types";
+import type { MailSyncResult, ScanRunFinishedPayload } from "../lib/types";
 import { Tour } from "./Tour";
 import logo from "../assets/logo.png";
 
@@ -667,88 +667,38 @@ export default function Layout() {
   // limitations"). Same silent shape too: mail is an optional integration
   // and its being off, paused or unreachable must never interrupt the app.
   //
-  // 2.110.0: THIS is the mail reader, for the whole app. marko: "chcem aby
-  // to citalo spravy od najmladsiej po najstarsiu po tych castiach a samo,
-  // nie ze ja vzdy sync musim davat". One run is about a second of work
-  // (commands/mail_sync.rs); while there is anything left to read the next
-  // one follows straight away, then it checks for new mail on his interval.
-  // The backend says how long to wait (`nextDelayMs`), including after
-  // Google asked it to slow down.
+  // 2.110.0: marko: "chcem aby to citalo spravy od najmladsiej po najstarsiu
+  // po tych castiach a samo, nie ze ja vzdy sync musim davat".
   //
-  // Every run is announced (lib/mailSync.ts) and the Mail screen refreshes
-  // from that. Its Sync button asks THIS loop to go now - it never starts a
-  // second one, which is how the same message used to be fetched twice.
-  //
-  // An interval of 0 is "only when I press Sync": nothing starts by itself,
-  // but a pressed Sync still reads on until everything is read.
+  // 2.114.3: the reader itself runs in the backend now, on a thread of its
+  // own (commands/mail_sync.rs, start_reader) - this window's timers are
+  // slowed down by the webview whenever it is minimised or behind other
+  // windows, and the reading used to go with them (marko: 100,000 messages
+  // on the Mac, 16,000 on Windows). This only starts it, passes the Sync
+  // button on (lib/mailSync.ts) and announces every run, which the Mail
+  // screen refreshes from as before. The interval, the "0 = only when I
+  // press Sync" rule and Google's pauses are all decided there.
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
-    let running = false;
-    // Sync pressed, or a setting changed, while a run was going: one more
-    // straight after it, rather than leaving the change for the interval.
-    let again = false;
-
-    const schedule = (ms: number) => {
-      if (stopped) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => void run(), ms);
-    };
-
-    const run = async () => {
-      if (stopped) return;
-      if (running) {
-        again = true;
-        return;
-      }
-      running = true;
-      let next: number | null = 60_000;
-      try {
-        const r = await api.syncMailNow();
-        publishMailSync(r);
-        if (r.status === "skipped") {
-          // Not connected or paused: look again in a minute. Another run
-          // in flight: in a moment.
-          next = r.message.startsWith("A sync is already running") ? 2_000 : 60_000;
-        } else if (r.nextDelayMs > 0) {
-          next = r.nextDelayMs;
-        } else {
-          // Interval 0 and everything read: wait for the button.
-          next = r.moreWaiting ? 250 : null;
-        }
-      } catch {
-        // Silent, same as the notification check above.
-        next = 60_000;
-      } finally {
-        running = false;
-      }
-      if (again) {
-        again = false;
-        if (next === null || next > 250) next = 250;
-      }
-      if (next !== null) schedule(next);
-    };
-
-    // The first run a few seconds after start, so it does not compete with
-    // the app opening - and not at all when he set the interval to 0. With
-    // no mailbox yet it just looks again each minute (one settings read);
-    // connecting one asks for a run straight away anyway.
-    api
-      .getMailStatus()
-      .then((s) => {
-        if (s.syncIntervalSeconds > 0) schedule(s.connected ? 3_000 : 60_000);
+    let unlisten: (() => void) | undefined;
+    listen<MailSyncResult>("mail-sync", (e) => publishMailSync(e.payload))
+      .then((un) => {
+        if (stopped) un();
+        else unlisten = un;
       })
       .catch(() => {});
-    const off = onMailSyncRequested(() => schedule(0));
-
+    api.startMailReader().catch(() => {});
+    const off = onMailSyncRequested(() => {
+      api.wakeMailReader().catch(() => {});
+    });
     return () => {
       stopped = true;
       off();
-      if (timer) clearTimeout(timer);
+      unlisten?.();
+      api.holdMailReader().catch(() => {});
     };
   }, []);
 
-  // Superseded by the self-rescheduling timer above; kept out of the way.
   return (
     <div className="flex h-full w-full overflow-hidden bg-slate-50 dark:bg-transparent">
       {/* 2.0.30: w-56 (224px) -> w-48 (192px) - marko asked to make the
