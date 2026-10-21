@@ -86,7 +86,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -131,6 +131,14 @@ const LOW_WATER: i64 = 200;
 /// Gmail's label list is re-read this often, so a label made in Gmail shows
 /// up without a restart.
 const LABELS_EVERY_SECS: i64 = 300;
+
+/// 2.114.3: Gmail's own count of the mailbox is asked for this often - one
+/// cheap profile read, so the screen can say how far this computer has got.
+const TOTALS_EVERY_SECS: i64 = 600;
+
+/// 2.114.3: a folder Gmail refused to list is tried again after this long,
+/// instead of counting as read to the end for good.
+const SET_ASIDE_RETRY_SECS: i64 = 6 * 3600;
 
 /// The change history - new mail - is read at most this often. While there
 /// is work, runs come a second apart, so new mail never waits for a long
@@ -361,7 +369,7 @@ fn sync_section_rows(conn: &Connection, sections: &[Section], now: &str) -> AppR
                 conn.execute(
                     "UPDATE mail_sync_sections
                         SET title = ?2, tier = ?3, spec = ?4, page_token = NULL, done = 0, listed = 0,
-                            pass_started_at = NULL, updated_at = ?5
+                            pass_started_at = NULL, updated_at = ?5, set_aside_at = NULL
                       WHERE key = ?1",
                     params![s.key, s.title, s.tier, s.spec(), now],
                 )?;
@@ -405,7 +413,7 @@ fn next_walk(conn: &Connection, sections: &[Section]) -> AppResult<Option<(Secti
 /// new mailbox was connected.
 pub(crate) fn reset_walks(conn: &Connection) -> AppResult<()> {
     conn.execute(
-        "UPDATE mail_sync_sections SET page_token = NULL, done = 0, listed = 0, pass_started_at = NULL",
+        "UPDATE mail_sync_sections SET page_token = NULL, done = 0, listed = 0, pass_started_at = NULL, set_aside_at = NULL",
         [],
     )?;
     conn.execute("DELETE FROM mail_section_seen", [])?;
@@ -414,10 +422,13 @@ pub(crate) fn reset_walks(conn: &Connection) -> AppResult<()> {
 
 /// A folder Gmail refuses to list at all is marked read-to-the-end, so the
 /// folders after it are not held up. Its definition changing (a fixed
-/// filter, a label made again) starts it afresh through `sync_section_rows`.
+/// filter, a label made again) starts it afresh through `sync_section_rows`,
+/// and since 2.114.3 so does time: `retry_set_aside` tries it again
+/// `SET_ASIDE_RETRY_SECS` later, so one refusal never leaves a folder
+/// unread for good.
 fn skip_walk(conn: &Connection, key: &str, now: &str) -> AppResult<()> {
     conn.execute(
-        "UPDATE mail_sync_sections SET done = 1, page_token = NULL, updated_at = ?2 WHERE key = ?1",
+        "UPDATE mail_sync_sections SET done = 1, page_token = NULL, updated_at = ?2, set_aside_at = ?2 WHERE key = ?1",
         params![key, now],
     )?;
     conn.execute("DELETE FROM mail_section_seen WHERE section = ?1", params![key])?;
@@ -426,10 +437,26 @@ fn skip_walk(conn: &Connection, key: &str, now: &str) -> AppResult<()> {
 
 fn restart_walk(conn: &Connection, key: &str) -> AppResult<()> {
     conn.execute(
-        "UPDATE mail_sync_sections SET page_token = NULL, done = 0, listed = 0, pass_started_at = NULL WHERE key = ?1",
+        "UPDATE mail_sync_sections SET page_token = NULL, done = 0, listed = 0, pass_started_at = NULL, set_aside_at = NULL
+          WHERE key = ?1",
         params![key],
     )?;
     conn.execute("DELETE FROM mail_section_seen WHERE section = ?1", params![key])?;
+    Ok(())
+}
+
+/// 2.114.3: every folder set aside long enough ago is walked again.
+fn retry_set_aside(conn: &Connection, now: DateTime<Utc>) -> AppResult<()> {
+    let set_aside: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT key, set_aside_at FROM mail_sync_sections WHERE set_aside_at IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (key, at) in set_aside {
+        if due(Some(&at), SET_ASIDE_RETRY_SECS, now) {
+            restart_walk(conn, &key)?;
+        }
+    }
     Ok(())
 }
 
@@ -1156,6 +1183,8 @@ struct Plan {
     known_scope: bool,
     senders: Vec<String>,
     need_profile: bool,
+    /// 2.114.3: Gmail's own count is due again (`TOTALS_EVERY_SECS`).
+    totals_due: bool,
     labels_due: bool,
     history_from: Option<String>,
     listing: Option<(Section, Option<String>)>,
@@ -1179,6 +1208,10 @@ enum Fetched {
 #[derive(Debug, Default)]
 struct Net {
     profile_history: Option<String>,
+    /// 2.114.3: the profile was read this run - and Gmail's `messagesTotal`
+    /// in it, when it sent one.
+    profile_read: bool,
+    gmail_total: Option<i64>,
     labels: Option<Vec<(String, String, String)>>,
     history: Option<Result<HistoryRead, GmailFailure>>,
     listing: Option<Result<(Vec<String>, Option<String>), GmailFailure>>,
@@ -1205,12 +1238,14 @@ struct EngineState {
     last_history_id: Option<String>,
     history_checked_at: Option<String>,
     labels_checked_at: Option<String>,
+    totals_checked_at: Option<String>,
 }
 
 fn engine_state(conn: &Connection) -> AppResult<EngineState> {
     Ok(conn
         .query_row(
-            "SELECT paused, last_history_id, history_checked_at, labels_checked_at FROM mail_sync_state WHERE id = 1",
+            "SELECT paused, last_history_id, history_checked_at, labels_checked_at, totals_checked_at
+               FROM mail_sync_state WHERE id = 1",
             [],
             |r| {
                 Ok(EngineState {
@@ -1218,6 +1253,7 @@ fn engine_state(conn: &Connection) -> AppResult<EngineState> {
                     last_history_id: r.get(1)?,
                     history_checked_at: r.get(2)?,
                     labels_checked_at: r.get(3)?,
+                    totals_checked_at: r.get(4)?,
                 })
             },
         )
@@ -1250,10 +1286,12 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
         conn.execute("DELETE FROM mail_fetch_queue WHERE source = ?1", params![key])?;
     }
     sync_section_rows(conn, &sections, &now_s)?;
+    retry_set_aside(conn, now)?;
 
     // 0 is "only when I press Sync"; a pressed Sync still reads history.
     let interval_secs = sync_interval_seconds(conn);
     let need_profile = st.last_history_id.is_none();
+    let totals_due = due(st.totals_checked_at.as_deref(), TOTALS_EVERY_SECS, now);
     let labels_due = due(st.labels_checked_at.as_deref(), LABELS_EVERY_SECS, now);
     let history_from = if need_profile {
         None
@@ -1272,6 +1310,7 @@ fn make_plan(conn: &Connection, now: DateTime<Utc>) -> AppResult<Result<Plan, &'
         known_scope: scope == "known" && !senders.is_empty(),
         senders,
         need_profile,
+        totals_due,
         labels_due,
         history_from,
         listing,
@@ -1474,12 +1513,21 @@ fn network(plan: &Plan, http: &reqwest::blocking::Client, token: &str) -> AppRes
     let api = plan.api.as_str();
     let mut net = Net::default();
 
-    if plan.need_profile {
+    if plan.need_profile || plan.totals_due {
         // The starting point for the change history, taken before any walk
         // lists a page - so whatever arrives while a long first read is under
-        // way is in the history.
+        // way is in the history. 2.114.3: the same read every
+        // `TOTALS_EVERY_SECS` for Gmail's own count - and then ONLY the
+        // count: a newer historyId would skip whatever changed since the
+        // last history read.
         match gmail_json(http, token, &format!("{api}/profile")) {
-            Ok(v) => net.profile_history = str_of(&v, "historyId"),
+            Ok(v) => {
+                if plan.need_profile {
+                    net.profile_history = str_of(&v, "historyId");
+                }
+                net.profile_read = true;
+                net.gmail_total = v.get("messagesTotal").and_then(Value::as_i64);
+            }
             Err(f) if f.stops_the_run() || f.is_rate_limit() => return Ok(net.stopped_by(f)),
             Err(f) => net.note_trouble(&f),
         }
@@ -1817,6 +1865,12 @@ pub(crate) fn progress_of(conn: &Connection, now: DateTime<Utc>) -> MailSyncProg
             rows.collect::<Result<Vec<_>, _>>()
         })
         .unwrap_or_default();
+    let gmail_total: Option<i64> = conn
+        .query_row("SELECT gmail_total FROM mail_sync_state WHERE id = 1", [], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
     let (stored_total, last_success_at, anchored): (i64, Option<String>, bool) = (
         conn.query_row("SELECT COUNT(*) FROM mail_messages", [], |r| r.get(0)).unwrap_or(0),
         conn.query_row("SELECT last_sync_at FROM mail_sync_state WHERE id = 1", [], |r| r.get(0))
@@ -1871,6 +1925,7 @@ pub(crate) fn progress_of(conn: &Connection, now: DateTime<Utc>) -> MailSyncProg
         due: lanes.iter().map(|l| l.1).sum(),
         retry_later: lanes.iter().map(|l| l.0 - l.1).sum(),
         last_success_at,
+        gmail_total,
     }
 }
 
@@ -1951,6 +2006,12 @@ fn apply(conn: &Connection, plan: &Plan, net: Net, now: DateTime<Utc>) -> AppRes
         save_labels(conn, labels, &now_s)?;
         conn.execute("UPDATE mail_sync_state SET labels_checked_at = ?1 WHERE id = 1", params![now_s])?;
         changed = true;
+    }
+    if net.profile_read {
+        conn.execute(
+            "UPDATE mail_sync_state SET gmail_total = COALESCE(?1, gmail_total), totals_checked_at = ?2 WHERE id = 1",
+            params![net.gmail_total, now_s],
+        )?;
     }
     if let Some(h) = &net.profile_history {
         // The checkpoint is taken BEFORE the first walk, so everything that
@@ -2191,6 +2252,124 @@ pub(crate) async fn run_once(state: &AppState) -> AppResult<MailSyncResult> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The reader (2.114.3).
+// ---------------------------------------------------------------------------
+//
+// marko: "na macu mam 100 000 sprav ulozenych a na windowse ukazuje len 16k".
+// Each computer reads Gmail itself, so each catches up only while it reads -
+// and until 2.114.2 the reading ran on the window's timer (Layout.tsx). A
+// webview slows its timers down while its window is minimised or behind
+// other windows, and the reading went with them. It runs here now, on a
+// thread of its own, at the same pace whatever the window is doing. The
+// window starts it, passes the Sync button on (`wake_reader`) and hears every
+// run as the `mail-sync` event, which the Mail screen refreshes from as
+// before.
+
+/// `mail-sync`: every run's `MailSyncResult`, for the window.
+pub(crate) const EVENT_MAIL_SYNC: &str = "mail-sync";
+
+static READER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// The window is gone (signed out): no new run starts until it is back - the
+/// same "while the app is in use" footing the window's own loop had.
+static READER_HELD: AtomicBool = AtomicBool::new(false);
+
+/// A wake that came while a run was going is kept, so one more run follows
+/// it straight away - the Sync button is never lost.
+static WAKE: Mutex<bool> = Mutex::new(false);
+static WAKE_SIGNAL: Condvar = Condvar::new();
+
+/// Started once; a second call (the window back after a reload or a
+/// sign-in) only lets a held reader go on.
+pub(crate) fn start_reader(app: tauri::AppHandle) {
+    READER_HELD.store(false, Ordering::SeqCst);
+    if READER_STARTED.swap(true, Ordering::SeqCst) {
+        wake_reader();
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("mail-reader".into()).spawn(move || reader_loop(app));
+    if spawned.is_err() {
+        READER_STARTED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The window went away: the run under way finishes, no new one starts.
+pub(crate) fn hold_reader() {
+    READER_HELD.store(true, Ordering::SeqCst);
+}
+
+/// "Now, not at the next turn": the Sync button, a changed setting.
+pub(crate) fn wake_reader() {
+    *WAKE.lock().unwrap() = true;
+    WAKE_SIGNAL.notify_all();
+}
+
+/// Waits `delay`, or for a wake only when there is none - whichever ends
+/// first.
+fn sleep_until_woken(delay: Option<Duration>) {
+    let woken = WAKE.lock().unwrap();
+    let mut woken = match delay {
+        Some(d) => WAKE_SIGNAL.wait_timeout_while(woken, d, |w| !*w).unwrap().0,
+        None => WAKE_SIGNAL.wait_while(woken, |w| !*w).unwrap(),
+    };
+    *woken = false;
+}
+
+/// The first run a few seconds after start, so it does not compete with the
+/// app opening - and none at all when marko set the interval to 0 ("only
+/// when I press Sync"). With no mailbox yet it looks again each minute;
+/// connecting one wakes it anyway.
+fn first_delay(conn: &Connection) -> Option<u64> {
+    if sync_interval_seconds(conn) <= 0 {
+        return None;
+    }
+    let connected = crate::secrets::get(conn, MAIL_REFRESH_TOKEN_KEY).ok().flatten().is_some();
+    Some(if connected { 3_000 } else { 60_000 })
+}
+
+/// When the run after `r` goes, in milliseconds - the rules the window's
+/// loop followed until 2.114.2, unchanged. `None` waits for the Sync button:
+/// interval 0 and everything read.
+pub(crate) fn next_after(r: &MailSyncResult) -> Option<u64> {
+    if r.status == "skipped" {
+        // Not connected or paused: look again in a minute. Another run in
+        // flight: in a moment.
+        return Some(if r.message.starts_with("A sync is already running") { 2_000 } else { 60_000 });
+    }
+    if r.next_delay_ms > 0 {
+        return Some(r.next_delay_ms as u64);
+    }
+    r.more_waiting.then_some(CHAIN_DELAY_MS.max(0) as u64)
+}
+
+fn reader_loop(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    let mut next = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        first_delay(&conn)
+    };
+    loop {
+        sleep_until_woken(next.map(Duration::from_millis));
+        if READER_HELD.load(Ordering::SeqCst) {
+            // Until `start_reader` wakes it again.
+            next = None;
+            continue;
+        }
+        let state = app.state::<AppState>();
+        next = match tauri::async_runtime::block_on(run_once(&state)) {
+            Ok(r) => {
+                let _ = app.emit(EVENT_MAIL_SYNC, &r);
+                next_after(&r)
+            }
+            // Silent, as mail always is: it is optional and must never get
+            // in the way of the app.
+            Err(_) => Some(60_000),
+        };
+    }
+}
+
 /// A new mailbox, or the same one connected again: nothing about where the
 /// old walks had got to applies.
 pub(crate) fn reset_engine(conn: &Connection) -> AppResult<()> {
@@ -2318,6 +2497,7 @@ mod tests {
             known_scope: false,
             senders: Vec::new(),
             need_profile: false,
+            totals_due: false,
             labels_due: false,
             history_from: None,
             listing: None,
@@ -3367,6 +3547,113 @@ mod tests {
 
     fn ok(v: Value) -> Answer {
         (200, Vec::new(), v.to_string())
+    }
+
+    // ---- 2.114.3: the reader on its own thread ------------------------------
+
+    #[test]
+    fn the_reader_keeps_the_pace_the_window_kept() {
+        let r = |status: &str, message: &str, next: i64, more: bool| MailSyncResult {
+            status: status.into(),
+            message: message.into(),
+            next_delay_ms: next,
+            more_waiting: more,
+            ..Default::default()
+        };
+        assert_eq!(next_after(&r("synced", "40 new", 0, true)), Some(CHAIN_DELAY_MS as u64), "more to read: straight on");
+        assert_eq!(next_after(&r("synced", "slow down", 30_000, true)), Some(30_000), "Google's pause wins");
+        assert_eq!(next_after(&r("synced", "Everything is read.", 60_000, false)), Some(60_000), "then his interval");
+        assert_eq!(next_after(&r("synced", "Everything is read.", 0, false)), None, "interval 0: the Sync button");
+        assert_eq!(next_after(&r("skipped", "Mail sync is paused.", 0, false)), Some(60_000));
+        assert_eq!(next_after(&r("skipped", "A sync is already running.", 0, false)), Some(2_000));
+
+        let conn = test_conn();
+        assert_eq!(first_delay(&conn), Some(60_000), "no mailbox yet: look again in a minute");
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        assert_eq!(first_delay(&conn), Some(3_000), "a few seconds after start");
+        set_setting(&conn, crate::commands::mail::MAIL_SYNC_INTERVAL_KEY, "0").unwrap();
+        assert_eq!(first_delay(&conn), None, "interval 0: nothing starts by itself");
+    }
+
+    #[test]
+    fn a_wake_cuts_the_wait_short_and_one_sent_during_a_run_is_kept() {
+        let started = std::time::Instant::now();
+        let waker = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            wake_reader();
+        });
+        sleep_until_woken(Some(Duration::from_secs(30)));
+        waker.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "woken, not timed out");
+        // Woken while no one was waiting: the next wait ends at once.
+        wake_reader();
+        let started = std::time::Instant::now();
+        sleep_until_woken(None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    // ---- 2.114.3: a refused folder is tried again; Gmail's own count --------
+
+    #[test]
+    fn a_folder_gmail_refused_is_walked_again_hours_later() {
+        let conn = test_conn();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        make_plan(&conn, now()).unwrap().expect("connected");
+        let mut plan = plan_with(&[]);
+        plan.listing = Some((section("inbox", &[]), None));
+        let net = Net { listing: Some(Err(GmailFailure::BadRequest)), ..Default::default() };
+        let r = apply_now(&conn, &plan, net, now());
+        assert!(r.message.contains("set aside"), "{}", r.message);
+        let inbox = |c: &Connection| -> (i64, bool) {
+            c.query_row("SELECT done, set_aside_at IS NOT NULL FROM mail_sync_sections WHERE key = 'inbox'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(inbox(&conn), (1, true), "set aside, so the folders after it go on");
+        make_plan(&conn, later(3600)).unwrap().expect("connected");
+        assert_eq!(inbox(&conn), (1, true), "not tried again straight away");
+        make_plan(&conn, later(SET_ASIDE_RETRY_SECS + 1)).unwrap().expect("connected");
+        assert_eq!(inbox(&conn), (0, false), "hours later it is walked again, from the top");
+    }
+
+    #[test]
+    fn gmails_own_count_is_asked_every_ten_minutes_and_never_moves_the_history_checkpoint() {
+        let conn = test_conn();
+        crate::secrets::set(&conn, MAIL_REFRESH_TOKEN_KEY, "r").unwrap();
+        set_setting(&conn, MAIL_ACCOUNT_EMAIL_KEY, "me@gmail.com").unwrap();
+        conn.execute(
+            "UPDATE mail_sync_state SET last_history_id = '150', history_checked_at = ?1, labels_checked_at = ?1 WHERE id = 1",
+            params![NOW],
+        )
+        .unwrap();
+        let gmail = FakeGmail::start(|target| match target.split('?').next().unwrap_or("") {
+            "/profile" => ok(json!({"emailAddress": "me@gmail.com", "historyId": "999", "messagesTotal": 104512})),
+            "/history" => ok(json!({"historyId": "150"})),
+            "/labels" => ok(json!({"labels": []})),
+            "/messages" => listing(&[]),
+            _ => (404, Vec::new(), "{}".to_string()),
+        });
+        let run = |when: DateTime<Utc>| {
+            let mut plan = make_plan(&conn, when).unwrap().expect("connected");
+            plan.api = gmail.api.clone();
+            let net = network(&plan, &client(), "t").unwrap();
+            apply_committed(&conn, &plan, net, when).unwrap()
+        };
+        let profiles = || gmail.requests().iter().filter(|t| t.starts_with("/profile")).count();
+
+        let first = run(now());
+        assert_eq!(first.progress.gmail_total, Some(104_512));
+        assert_eq!(profiles(), 1);
+        let anchor: Option<String> =
+            conn.query_row("SELECT last_history_id FROM mail_sync_state WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(anchor.as_deref(), Some("150"), "a newer historyId would skip what changed in between");
+
+        run(later(60));
+        assert_eq!(profiles(), 1, "not asked again within ten minutes");
+        let again = run(later(TOTALS_EVERY_SECS + 1));
+        assert_eq!(profiles(), 2);
+        assert_eq!(again.progress.gmail_total, Some(104_512));
     }
 
     fn client() -> reqwest::blocking::Client {

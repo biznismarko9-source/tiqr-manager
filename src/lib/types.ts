@@ -2959,6 +2959,9 @@ export interface MailSyncProgress {
   retryLater: number;
   /** 2.111.0: when a run last finished without an error. */
   lastSuccessAt?: string | null;
+  /** 2.114.3: how many messages Gmail itself says the mailbox holds (sent
+   *  mail included), read every few minutes; null until Gmail was asked. */
+  gmailTotal?: number | null;
 }
 
 /** 2.111.0: one lane of the queue. `waiting` is exact - what is queued;

@@ -16,6 +16,42 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.114.3 - Mail na každom počítači dobehne sám a vidno, koľko mu chýba
+
+**Prečo mal Mac 100 000 mailov a Windows 16 000.** Každý počítač číta Gmail
+sám a má vlastnú kópiu - maily sa zámerne nikdy nekopírujú cez cloud. Počítač
+teda dobieha len vtedy, keď na ňom TIQR beží. Nájdené tri veci, ktoré druhý
+počítač brzdili alebo vracali späť:
+
+- **Čítanie bežalo na časovači okna.** Keď je okno minimalizované alebo za
+  iným oknom, webview časovače spomalí - a s nimi aj čítanie. Teraz číta
+  samotný TIQR na vlastnom vlákne, rovnakou rýchlosťou bez ohľadu na okno.
+  Okno ho len spustí, posúva mu tlačidlo Sync a ukazuje priebeh.
+- **Spojenie s kópiou na Google Drive vracalo čítanie na začiatok** vždy,
+  keď druhý počítač zmenil hocijaké nastavenie mailu (stíšený odosielateľ,
+  priečinok, pravidlo, jazyk prekladu): všetky priečinky odznova a fronta
+  na stiahnutie vyprázdnená. Teraz len pri inej schránke, rovnako ako to
+  už robila živá synchronizácia.
+- **Priečinok, ktorý Gmail raz odmietol vypísať, sa rátal ako prečítaný
+  navždy.** Teraz sa po 6 hodinách skúsi znova.
+
+**Vidno, koľko chýba.** Mail a Mail → Settings ukazujú „16,234 on this
+computer · Gmail has 104,512 in all" (Gmail svoje číslo hlási sám, každých
+10 minút, aj s odoslanou poštou, ktorú TIQR nečíta - preto sa čísla nemusia
+stretnúť úplne presne) a vetu, že každý počítač číta Gmail sám.
+
+Mailová databáza krok 5 (stĺpce `set_aside_at`, `gmail_total`,
+`totals_checked_at`), žiadna číslovaná migrácia (ďalšia je 047).
+
+Zip obsahuje aj všetko z 2.114.0 až 2.114.2 - stačí spustiť tento.
+
+`cargo test` 1584 prešlo (4 ignorované, ako doteraz), `npm test` 41, build v poriadku. Nové testy:
+čítanie drží tempo, aké malo okno; Sync preruší čakanie a nestratí sa ani
+počas behu; Drive spojenie s novším nastavením zachová čítanie a iná schránka
+ho vráti na začiatok aj s odhlásením starej; odmietnutý priečinok sa po
+6 hodinách číta znova; počet z Gmailu sa pýta každých 10 minút a nikdy
+neposunie bod, odkiaľ sa sledujú zmeny.
+
 ## 2.114.2 - Given pully: celkový zárobok, zaplatené a nezaplatené
 
 **Pulls → Given → riadok nad tabuľkou:** *Earned* (súčet Fee), *Paid*

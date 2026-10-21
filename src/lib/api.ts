@@ -968,6 +968,15 @@ export const api = {
    *  and names the mailbox, without reading a single message. */
   testMailConnection: () => invoke<MailTestResult>("test_mail_connection"),
   syncMailNow: () => invoke<MailSyncResult>("sync_mail_now"),
+  /** 2.114.3: the mail reader runs in the backend, on a thread of its own -
+   *  this starts it (once; a second call does nothing). Every run arrives as
+   *  the `mail-sync` event. */
+  startMailReader: () => invoke<void>("start_mail_reader"),
+  /** 2.114.3: "now, not at the next turn" - what the Sync button sends. */
+  wakeMailReader: () => invoke<void>("wake_mail_reader"),
+  /** 2.114.3: the window went away (signed out) - no new run until
+   *  `startMailReader` again. */
+  holdMailReader: () => invoke<void>("hold_mail_reader"),
   /** Releases a sync claim left behind by a hard kill. Called once on the
    *  Mail Intelligence screen's first load, never on a timer. */
   clearStaleMailSync: () => invoke<MailConnectionStatus>("clear_stale_mail_sync"),

@@ -1,9 +1,10 @@
 // 2.110.0 - the line between the mail reader and the Mail screen.
 //
 // marko: "chcem aby to citalo spravy ... samo, nie ze ja vzdy sync musim
-// davat". So the reading runs in Layout, for the whole app, whichever screen
-// is open (see the mail effect there). The Mail screen only listens: every
-// run is announced here, and the screen refreshes what it shows from it.
+// davat". So the reading runs for the whole app, whichever screen is open -
+// since 2.114.3 in the backend, on a thread of its own (commands/mail_sync.rs,
+// started by Layout.tsx). The Mail screen only listens: every run is
+// announced here, and the screen refreshes what it shows from it.
 //
 // The Sync button does not run a sync of its own - two loops racing each
 // other is how the same message used to be fetched twice. It asks the one

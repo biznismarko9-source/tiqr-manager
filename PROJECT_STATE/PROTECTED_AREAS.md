@@ -21,6 +21,24 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.114.3 - the mail reader is a thread; reading progress is precious
+
+- **The reader runs in the backend** (`mail_sync::start_reader`), not on a
+  window timer: a webview slows its timers while minimised or covered, and
+  the reading went with them. Keep the pacing in `next_after` and test it
+  there; Layout.tsx only starts, wakes, holds and republishes. Never start a
+  second loop that calls `run_once` - `RunGuard` would make the two take
+  turns and each would think the other is "already running".
+- **Only another mailbox resets where reading has got to** - in BOTH
+  merges (`live_sync::settings_apply` and `shared_settings::merge_from_remote`).
+  A newer mute, folder, rule or reader choice is the same mailbox.
+- **A set-aside folder is not done for good**: `retry_set_aside` walks it
+  again after `SET_ASIDE_RETRY_SECS`. It still counts as done in between, so
+  the reader does not spin on a folder it cannot list.
+- **Gmail's total is Gmail's own number** (`messagesTotal`), sent mail
+  included - never an estimate of what TIQR will read, and a totals-only
+  profile read must never move `last_history_id`.
+
 ## 2.114.2 - Given pulls' Earned bar is an overall figure
 
 - **Earned / Paid / Outstanding count every pull the search, platform and

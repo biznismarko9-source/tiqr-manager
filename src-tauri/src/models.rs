@@ -3539,6 +3539,11 @@ pub struct MailSyncProgress {
     pub retry_later: i64,
     /// 2.111.0: when a run last finished without an error.
     pub last_success_at: Option<String>,
+    /// 2.114.3: how many messages Gmail itself says the mailbox holds (its
+    /// `messagesTotal`, sent mail included), read every few minutes - shown
+    /// beside `stored_total` so each computer can be seen catching up. None
+    /// until Gmail has been asked.
+    pub gmail_total: Option<i64>,
 }
 
 /// 2.111.0: one lane of the queue (commands/mail_sync.rs).

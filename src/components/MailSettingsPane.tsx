@@ -37,7 +37,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useDataChanged } from "../lib/dataChanged";
 import { requestMailSync } from "../lib/mailSync";
-import { lastSyncText, laneViews, syncHeadline } from "../lib/mailSyncStatus";
+import { lastSyncText, laneViews, syncHeadline, storedVsGmail } from "../lib/mailSyncStatus";
 import { MAIL_LANGUAGES } from "../lib/mailText";
 import { MUTE_SPANS, muteState } from "../lib/mailMute";
 import {
@@ -589,8 +589,15 @@ export function MailSettingsPane({
               ))}
             </ul>
             <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-              {status.progress.storedTotal.toLocaleString()} messages on this computer &middot;{" "}
-              {bytes(status.storeBytes)} &middot; {lastSyncText(status.progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+              {storedVsGmail(status.progress, (n) => n.toLocaleString())} &middot; {bytes(status.storeBytes)} &middot;{" "}
+              {lastSyncText(status.progress.lastSuccessAt ?? status.lastSyncAt, new Date())}
+            </p>
+            {/* 2.114.3, marko: "na macu mam 100 000 sprav ulozenych a na
+                windowse ukazuje len 16k, ako keby fungovali zvlast". They
+                do, on purpose: mail never goes through the cloud. */}
+            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+              Each computer reads Gmail on its own and keeps its own copy - mail is never copied through the cloud.
+              A computer catches up whenever TIQR is open on it, even minimised.
             </p>
           </div>
         )}

@@ -145,6 +145,14 @@ from old reports.
 
 ## Documented limitations (not bugs, but worth remembering)
 
+- **Mail is per computer, on purpose (2.110.0, explained in 2.114.3).** Each
+  computer reads Gmail itself into its own mail file; mail never travels
+  through Firebase or Drive. A second computer therefore fills up by itself,
+  only while TIQR runs on it (since 2.114.3 at full pace even minimised -
+  about Gmail's quota, roughly 20-50 messages a second). Gmail's own total is
+  shown beside this computer's count; it includes sent mail, which TIQR
+  does not read.
+
 - **Connecting a DIFFERENT Gmail account keeps the old account's mail in the
   folders** (2.110.0). Folder queries (`commands/mail.rs::folder_expr`) do
   not filter by `account_email`, and the mail file is never emptied - the

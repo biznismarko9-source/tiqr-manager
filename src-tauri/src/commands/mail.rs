@@ -2397,11 +2397,34 @@ pub async fn test_mail_connection(state: State<'_, AppState>) -> AppResult<MailT
 
 /// One run of the reading engine (commands/mail_sync.rs).
 ///
-/// The app chains these by itself while there is anything left to read
-/// (Layout.tsx), so the Sync button only ever means "now, not in a minute".
+/// 2.114.3: the app's own reader no longer calls this - it runs on a thread
+/// of its own (`start_mail_reader`). Kept for a direct, one-off run; while
+/// the reader is mid-run this answers "A sync is already running".
 #[tauri::command]
 pub async fn sync_mail_now(state: State<'_, AppState>) -> AppResult<MailSyncResult> {
     crate::commands::mail_sync::run_once(&state).await
+}
+
+/// 2.114.3: the window starts the mail reader once it is up (Layout.tsx). It
+/// then reads on by itself, whatever the window is doing, and announces
+/// every run as the `mail-sync` event. A second call does nothing.
+#[tauri::command]
+pub fn start_mail_reader(app: tauri::AppHandle) {
+    crate::commands::mail_sync::start_reader(app);
+}
+
+/// 2.114.3: "now, not at the next turn" - the Sync button, a changed
+/// setting. A wake that comes during a run gets one more run straight after.
+#[tauri::command]
+pub fn wake_mail_reader() {
+    crate::commands::mail_sync::wake_reader();
+}
+
+/// 2.114.3: the window went away (signed out): no new run starts until
+/// `start_mail_reader` is called again.
+#[tauri::command]
+pub fn hold_mail_reader() {
+    crate::commands::mail_sync::hold_reader();
 }
 
 /// Releases the run claim, recording an error if there was one. Called on
@@ -3371,7 +3394,7 @@ fn uuid_like(now: &str, seed: &str) -> String {
     format!("{h:016x}")
 }
 
-const MAIL_SYNC_INTERVAL_KEY: &str = "mail_sync_interval_seconds";
+pub(crate) const MAIL_SYNC_INTERVAL_KEY: &str = "mail_sync_interval_seconds";
 const DEFAULT_SYNC_INTERVAL: i64 = 60;
 
 pub(crate) fn sync_interval_seconds(conn: &Connection) -> i64 {
