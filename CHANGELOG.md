@@ -16,6 +16,19 @@ backfilled here, consistent with this file's own existing policy below;
 read the matching `REDESIGN-X.Y.Z-REPORT.md`/`*-REPORT.md` for any of
 those directly.)
 
+## 2.115.1 - V správe o predaji sú rad a sedadlá skryté
+
+**Discord, kanál Sales:** rad a sedadlá sú v správe o predaji spoiler -
+ukážu sa po kliknutí, sekcia ostáva viditeľná („💺 Sec 112 · ||Row F · 14,
+15||"). Platí pre novú správu, predaj z mailu aj „Send to Discord"; správy o
+nákupe sa nemenia. Prepínač v Settings → Integrations → Discord → Sales,
+zapnutý od začiatku (`DiscordChannelConfig.sale_options.hide_seats`, chýbajúci
+blok = zapnuté). Náhľad v nastaveniach ukazuje spoilery ako Discord.
+
+Zip obsahuje aj celé 2.115.0 - stačí spustiť tento.
+
+`cargo test` 1596 prešlo (4 ignorované, ako doteraz), `npm test` 53, build v poriadku.
+
 ## 2.115.0 - Jeden počítač číta Gmail za oba, stíšenie podľa predmetu, mail podľa seba
 
 **Dva počítače, jeden čitateľ.** Keď bežia oba, Gmail číta len jeden (drží

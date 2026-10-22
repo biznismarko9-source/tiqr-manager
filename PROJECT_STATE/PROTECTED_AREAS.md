@@ -21,6 +21,16 @@ older financial/orders/Sheets-sync code that the 2.1.x/2.2.0 work never
 touched (so it never needed writing about there). Both halves are real and
 current - nothing here is superseded, they just cover different areas.
 
+## 2.115.1 - a sale's row and seats are a spoiler
+
+- **Escape first, then wrap in `||`** (`seat_lines`). A row or seat that
+  carries `||` must never close the spoiler early - the test
+  `hidden_seats_keep_the_section_in_sight_and_nothing_can_close_the_spoiler`
+  holds that.
+- **`DiscordSaleConfig` defaults to hiding** - a config without the block
+  (every config before 2.115.1) hides. Keep the default on its own
+  `Default` impl: the derived `Default` of `DiscordChannelConfig` calls it.
+
 ## 2.115.0 - one Gmail reader for two computers; pictures keep their place
 
 - **Only the lease holder reads Gmail; a follower's reader stands by**

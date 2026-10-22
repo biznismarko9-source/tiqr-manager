@@ -26,7 +26,7 @@ once stored.
 
 ## Version
 
-**2.115.0**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
+**2.115.1**, consistent across `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and - in the release zip, no longer in the
 repository since 2.113.0 (see `RELEASE.md`) - `release.ps1`'s `$Version` and
 `1-CLICK-UPDATE.bat` - see the version-bump checklist in
@@ -2651,6 +2651,20 @@ itself before this release and still is not.
   logs, etc).
 
 ## Current focus / most recent work
+
+**2.115.1 - a sale's row and seats are hidden in Discord** (report:
+`history/REDESIGN-2.115.1-REPORT.md`; marko: "ak pride new sale tak vo
+webhooku by malo byt hide row a seats"):
+* `discord::seat_lines(tickets, hide)`: with `hide`, each group's row and
+  seats are a spoiler (escaped first, then `||...||`), the section stays in
+  sight, a bare count is never hidden. `sale_embed` hides per
+  `DiscordChannelConfig.sale_options.hide_seats` (`DiscordSaleConfig`,
+  default on - a config without the block hides); the order embed never.
+  `NotificationStatus.discord_sale_options` / `NotificationConfigInput.
+  discord_sale_options`; the switch sits under Sales in Settings ->
+  Integrations -> Discord.
+* `components/Discord.tsx::discordInline` reads `||` and the preview draws
+  a spoiler as a dark bar that opens on a click.
 
 **2.115.0 - one computer reads Gmail for both, mute by subject, Mail the way
 marko wants it** (report: `history/REDESIGN-2.115.0-REPORT.md`; marko: "ak

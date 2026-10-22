@@ -4329,6 +4329,20 @@ function DiscordChannelRow({
                   {a.label}
                 </label>
               ))}
+              {/* 2.115.1, marko: "ak pride new sale tak vo webhooku by malo
+                  byt hide row a seats". */}
+              {channel.key === "sales" && (
+                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX_CLASS}
+                    checked={status.discordSaleOptions?.hideSeats ?? true}
+                    disabled={busy}
+                    onChange={(e) => onSave({ discordSaleOptions: { hideSeats: e.target.checked } })}
+                  />
+                  Hide the row and seats - shown on a click in Discord, the section stays in sight
+                </label>
+              )}
             </div>
           </DiscordRowSection>
 

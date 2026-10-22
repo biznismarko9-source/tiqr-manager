@@ -1674,6 +1674,24 @@ pub struct DiscordChannelConfig {
     pub auto: DiscordAutoConfig,
     /// 2.114.0: which mail is passed on, and what its message carries.
     pub mail_options: DiscordMailConfig,
+    /// 2.115.1: how a sale's message looks.
+    pub sale_options: DiscordSaleConfig,
+}
+
+/// 2.115.1: marko - "ak pride new sale tak vo webhooku by malo byt hide row a
+/// seats". A missing block (every config before 2.115.1) hides them.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DiscordSaleConfig {
+    /// The row and the seats as a spoiler, shown on a click; the section
+    /// stays in sight. Off: shown as before.
+    pub hide_seats: bool,
+}
+
+impl Default for DiscordSaleConfig {
+    fn default() -> Self {
+        DiscordSaleConfig { hide_seats: true }
+    }
 }
 
 /// 2.114.0: marko - "co posielat dalej, ako posielat". Which kinds of mail
@@ -1839,6 +1857,8 @@ pub struct NotificationStatus {
     pub discord_auto: DiscordAutoConfig,
     /// 2.114.0.
     pub discord_mail_options: DiscordMailConfig,
+    /// 2.115.1.
+    pub discord_sale_options: DiscordSaleConfig,
 }
 
 /// What Settings -> Notifications sends to the SET command. The secret
@@ -1885,6 +1905,9 @@ pub struct NotificationConfigInput {
     /// 2.114.0.
     #[serde(default)]
     pub discord_mail_options: Option<DiscordMailConfig>,
+    /// 2.115.1.
+    #[serde(default)]
+    pub discord_sale_options: Option<DiscordSaleConfig>,
 }
 
 /// Result of a "Send test" click in Settings -> Notifications (one per

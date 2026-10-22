@@ -1367,6 +1367,15 @@ export interface NotificationStatus {
   discordAuto: DiscordAutoConfig;
   /** 2.114.0: which mail is passed on, and what its message carries. */
   discordMailOptions: DiscordMailConfig;
+  /** 2.115.1. */
+  discordSaleOptions: DiscordSaleConfig;
+}
+
+/** 2.115.1: how a sale's message looks - "hide row a seats". */
+export interface DiscordSaleConfig {
+  /** The row and the seats as a spoiler, shown on a click; the section stays
+   *  in sight. */
+  hideSeats: boolean;
 }
 
 /** 2.114.0: "co posielat dalej, ako posielat" (commands/discord.rs). */
@@ -1423,6 +1432,8 @@ export interface NotificationConfigInput {
   discordAuto?: DiscordAutoConfig | null;
   /** 2.114.0. */
   discordMailOptions?: DiscordMailConfig | null;
+  /** 2.115.1. */
+  discordSaleOptions?: DiscordSaleConfig | null;
 }
 
 /** Result of one "Send test" click (one per channel) - unlike the silent
